@@ -123,7 +123,7 @@ async function admit(env: MediaBindings, tenant: string, services: KeyServices) 
   if (refused) throw typeof refused === 'string' ? new HttpError(402, refused, 'SPEND_LIMIT') : refused;
   await runAdmission(env, tenant);
   // Compatibility for pre-money-track synthetic fixture settings only.
-  if (env.TEST_MODE !== '1' || !env.TEST_MEDIA_TENANTS) return;
+  if (env.TEST_MODE !== '1' || !env.TEST_MEDIA_TENANTS || services.accounts.tenants.has(tenant)) return;
   const configured = testConfig(env).tenants?.[tenant];
   const row = (await withSql(env, sql => sql.query('select t.billing,t.limits,a.balance,coalesce((select sum(amount) from credit_holds where tenant=t.id),0) held from tenants t left join credit_accounts a on a.tenant=t.id where t.id=$1', [tenant]))).rows[0];
   if (!row) throw new HttpError(401, 'Unknown account');
@@ -185,8 +185,10 @@ export async function handleMediaRequest(request: Request, env: MediaBindings, a
   if (kind==='speech' && typeof input.text!=='string') throw new HttpError(400,'text must be a string');
   const tenant=auth.tenantId, pending: Promise<void>[]=[];
   const services=await keyServices(env);
+  const baseUrl = (kind === 'images' ? env.AGENT_IMAGES_URL : kind === 'transcriptions' ? env.AGENT_TRANSCRIPTION_URL : undefined) ?? env.MEDIA_BASE_URL;
+  const outboundEnv = baseUrl === env.MEDIA_BASE_URL ? env : { ...env, MEDIA_BASE_URL: baseUrl };
   const drain = async <T>(task: Promise<T>) => { try { return await task; } finally { await Promise.all(pending); } };
-  const common={outbound:mediaOutbound(env),admit:()=>admit(env,tenant,services),record:(_tenant:string,usage:any)=>{ const write=record(env,services,tenant,usage); void write.catch(()=>{}); pending.push(write); }};
+  const common={outbound:mediaOutbound(outboundEnv),admit:()=>admit(env,tenant,services),record:(_tenant:string,usage:any)=>{ const write=record(env,services,tenant,usage); void write.catch(()=>{}); pending.push(write); }};
   const prices={...services.accounts.billing.pricing,...(env.TEST_MODE==='1'?JSON.parse(env.MEDIA_PRICING??'{}'):{})};
   const key=(_tenant:string,scope:string|undefined,provider:string)=>mediaKey(env,tenant,scope,provider,services);
   const azure=mediaAzure(env);
@@ -197,12 +199,12 @@ export async function handleMediaRequest(request: Request, env: MediaBindings, a
     if (typeof input.prompt!=='string' || !input.prompt.trim() || input.prompt.length>32000) throw new HttpError(400,'prompt must contain 1–32000 characters');
     if (!multipart) { if(input.images!==undefined && !Array.isArray(input.images)) throw new HttpError(400,'images must be an array'); const checked=(value:any)=>{if (value && Object.keys(value).some(k=>k!=='data' && k!=='url')) throw new HttpError(400,'Unknown image source field');return source(value);}; images=(input.images??[]).map(checked); mask=input.mask!==undefined?checked(input.mask):undefined; }
     if (input.path!==undefined && input.volumeId===undefined) throw new HttpError(400,'path requires volumeId');
-    const made=await drain(imageRequest({...common,imager:new Imager({provider:openaiImages({outbound:common.outbound,baseUrl:env.MEDIA_BASE_URL}),key:(t,s,p)=>mediaKey(env,t,s,p,services,azure?.imageDeployment),price:()=>prices.image}), owns:async(t,id)=>!!await volume(env,t,id),save:async(t,id,p,b,ct)=>{const {key,...saved}=await (await volume(env,t,id)).write(p,b,ct);return saved;}},tenant,{prompt:input.prompt,images,mask,options:imageOptions(input),...facts,...(hold?{hold}:{}),...(input.volumeId!==undefined?{volume:{id:input.volumeId,path:normalizePath(input.path??'/images')}}:{})},request.signal));
+    const made=await drain(imageRequest({...common,imager:new Imager({provider:openaiImages({outbound:common.outbound,baseUrl}),key:(t,s,p)=>mediaKey(env,t,s,p,services,azure?.imageDeployment),price:()=>prices.image}), owns:async(t,id)=>!!await volume(env,t,id),save:async(t,id,p,b,ct)=>{const {key,...saved}=await (await volume(env,t,id)).write(p,b,ct);return saved;}},tenant,{prompt:input.prompt,images,mask,options:imageOptions(input),...facts,...(hold?{hold}:{}),...(input.volumeId!==undefined?{volume:{id:input.volumeId,path:normalizePath(input.path??'/images')}}:{})},request.signal));
     return json(made);
   }
   if(kind==='transcriptions') {
     audio??=source(input);
-    const made=await drain(transcribeRequest({...common,transcriber:new Transcriber({provider:openaiTranscription({outbound:common.outbound,baseUrl:env.MEDIA_BASE_URL}),key:(t,s,p)=>mediaKey(env,t,s,p,services,azure?.transcriptionDeployment),price:()=>prices.transcription})},tenant,{audio,language:languageInput(input.language),prompt:input.prompt,...facts,...(hold?{hold}:{})},request.signal));
+    const made=await drain(transcribeRequest({...common,transcriber:new Transcriber({provider:openaiTranscription({outbound:common.outbound,baseUrl}),key:(t,s,p)=>mediaKey(env,t,s,p,services,azure?.transcriptionDeployment),price:()=>prices.transcription})},tenant,{audio,language:languageInput(input.language),prompt:input.prompt,...facts,...(hold?{hold}:{})},request.signal));
     return json(made);
   }
   const tts = speechPrices({AGENT_SPEECH_PRICES:env.AGENT_SPEECH_PRICES});

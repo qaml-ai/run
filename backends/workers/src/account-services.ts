@@ -14,6 +14,7 @@ import type { Webhooks } from "./webhook-policy.ts";
 import { RuntimeSigner } from "./runtime-identity.ts";
 import { defaultModelFor, type DefaultModelEnv } from "./default-model.ts";
 import { createJourney, publicJourneyRoutes, type JourneyEnv } from "./journey.ts";
+import { flushJourney } from "./journey-delivery.ts";
 import type { Journey } from "../../../src/core/journey.ts";
 export { oauthAllows } from "./account-access.ts";
 
@@ -121,7 +122,7 @@ export async function publicAccountRoutes(request: Request, service: AccountServ
   }
   const page = await publicJourneyRoutes(request, service.environment as unknown as AccountEnv, service.journey, service.auth);
   if (page) {
-    if (service.journey) ctx?.waitUntil(service.journey.send());
+    if (service.journey) ctx?.waitUntil(flushJourney(service.journey));
     return page;
   }
   if (path === "/.well-known/jwks.json" && request.method === "GET") {
@@ -138,7 +139,7 @@ export async function publicAccountRoutes(request: Request, service: AccountServ
   try { return await app.fetch(request); }
   finally {
     if (service.mail) ctx?.waitUntil(service.mail.stop());
-    if (service.journey) ctx?.waitUntil(service.journey.send());
+    if (service.journey) ctx?.waitUntil(flushJourney(service.journey));
   }
 }
 

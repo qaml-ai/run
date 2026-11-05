@@ -30,6 +30,7 @@ export class LocalWorker {
   private config: string;
   private readyToken: string;
   private stopping = false;
+  private ready = false;
   private listener?: Server;
   private sockets = new Set<Socket>();
   private cancelListen?: () => void;
@@ -47,6 +48,7 @@ export class LocalWorker {
   }
   async start() {
     this.stopping = false;
+    this.ready = false;
     this.inspectorPort = await unusedPort();
     if (this.stopping) throw new Error("Local Worker startup was cancelled");
     const env: NodeJS.ProcessEnv = {
@@ -91,6 +93,9 @@ export class LocalWorker {
         connection.on("close", () => this.sockets.delete(connection));
         connection.on("error", () => { socket.destroy(); upstream.destroy(); });
       }
+      // pipe() forwards EOF but can leave the response side open. Once the
+      // client is gone, close the upstream too so workerd observes the loss.
+      socket.once("close", () => upstream.destroy());
       socket.pipe(upstream).pipe(socket);
     });
     const save = (data: Buffer) => {
@@ -121,7 +126,7 @@ export class LocalWorker {
           headers: { authorization: `Bearer ${this.readyToken}` },
           signal: AbortSignal.timeout(1000),
         });
-        if (response.ok) return;
+        if (response.ok) { this.ready = true; return; }
       } catch {}
       await delay(250);
     }
@@ -134,6 +139,20 @@ export class LocalWorker {
     this.child = undefined;
     const listener = this.listener;
     this.listener = undefined;
+    const wasReady = this.ready;
+    this.ready = false;
+    if (!hard && wasReady && child?.pid && listener?.listening) {
+      try {
+        // Only the contract entrypoint implements this endpoint. Other local
+        // Workers return 404; crashes deliberately skip the graceful drain.
+        const response = await fetch(`${this.url}/__test/drain`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${this.readyToken}` },
+          signal: AbortSignal.timeout(15_000),
+        });
+        await response.body?.cancel();
+      } catch { /* A crashed worker still needs its process group cleaned up. */ }
+    }
     for (const socket of this.sockets) socket.destroy();
     const listenerClosed = new Promise<void>(resolve => {
       if (!listener) return resolve();

@@ -6,6 +6,7 @@ import { createHash, randomBytes } from "node:crypto";
 import pg from "pg";
 import { LocalWorker, unusedPort } from "./local-worker.ts";
 import { migrate } from "../scripts/migrate.mjs";
+import { publicAssets } from "../scripts/public-assets.mjs";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const activeFixtures = new Set<() => Promise<void>>();
 function stopActiveFixtures() {
@@ -118,7 +119,11 @@ export async function startFixture(
   const databaseUrl = parsed.toString(),
     db = new pg.Pool({ connectionString: databaseUrl });
   cleanups.push(() => closePool(db));
-  await migrate(db);
+  // Role settings belong to the cluster. The migration's advisory lock in each
+  // isolated database cannot serialize ALTER ROLE against another fixture.
+  await admin.query("select pg_advisory_lock(hashtext('agent-runtime:role-settings'))");
+  try { await migrate(db); }
+  finally { await admin.query("select pg_advisory_unlock(hashtext('agent-runtime:role-settings'))"); }
   for (const item of options.tenants ?? [{ id: tenant, token }]) {
     await db.query(
       "insert into tenants(id,created_at,billing) values($1,$2,$3) on conflict do nothing",
@@ -165,11 +170,19 @@ export async function startFixture(
     AGENT_SECRETS_KEY: "0".repeat(64),
     AGENT_OUTBOUND_ALLOW_HTTP: "true",
     AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.0/8,::1/128",
+    ...(options.vars?.AGENT_ACCOUNT_EMAIL_FROM ? { SCHEDULE_EMAIL_FROM: options.vars.AGENT_ACCOUNT_EMAIL_FROM } : {}),
     ...options.vars,
     ...(options.vars?.AGENT_PUBLIC_URL === "" ? { AGENT_PUBLIC_URL: `http://127.0.0.1:${port}`, PUBLIC_URL: `http://127.0.0.1:${port}` } : {}),
     ...(options.modelURL ? { TEST_MODEL_BASE_URL: options.modelURL } : {}),
   };
   const configPath = join(storage, "wrangler.json");
+  const assetDirectory = join(storage, "public");
+  await publicAssets(assetDirectory, {
+    docs: options.vars?.AGENT_DOCS_DIR,
+    registry: options.vars?.AGENT_REGISTRY_DIR,
+    console: options.vars?.AGENT_CONSOLE_DIR,
+  });
+  config.assets = { directory: assetDirectory, binding: "PUBLIC_ASSETS", run_worker_first: true, html_handling: "none", not_found_handling: "none" };
   await writeFile(configPath, JSON.stringify(config));
   if (stopped) throw new Error("Local Worker fixture startup was cancelled");
   const worker = new LocalWorker(

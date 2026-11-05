@@ -2,125 +2,17 @@
   "backend": "node",
   "area": "cached",
   "nodeKey": "1ff65be69bdb97687bb551ad863a1ab48c42d7c4726928e25ab5efd896fabdfc",
-  "suiteHash": "6141fce703b90a28e0c9c73b2a8963f902f7d758a3f799522ce9d77590eb999b",
-  "revision": "6b072bbeab6b198f654fc70889adb31c7b8c1002",
-  "durationMs": 76606.576471,
+  "suiteHash": "65af56a1c957282a54d6e7d0512980e7d2f5c6e73ad9674d05b2a73235d4351c",
+  "revision": "0bdefc191d38f7653a4568135fb743457e8f9fcb",
+  "durationMs": 139479.401681,
   "runtime": {
     "node": "v24.22.1",
     "platform": "linux",
     "arch": "x64"
   },
-  "recordedAt": "2026-11-05T22:58:09.270Z",
-  "expectedCases": 139,
+  "recordedAt": "2026-11-05T23:11:16.699Z",
+  "expectedCases": 296,
   "rows": [
-    {
-      "area": "access",
-      "source": "tests/browser-tokens.test.ts:119",
-      "name": "a snapshot shows a token's reader only what its scopes and event list let it read",
-      "status": "pass",
-      "durationMs": 3443.774468,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "access",
-      "source": "tests/browser-tokens.test.ts:154",
-      "name": "a token that redacts usage.cost reads no cost anywhere: the catalog's or the provider's, in events, snapshots, state, history and inputs",
-      "status": "pass",
-      "durationMs": 3557.777407,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "access",
-      "source": "tests/browser-tokens.test.ts:15",
-      "name": "a browser token reads its one agent's events, state, history and inputs, and nothing else",
-      "status": "pass",
-      "durationMs": 8245.538287,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "access",
-      "source": "tests/browser-tokens.test.ts:75",
-      "name": "a browser token's scopes, event list and redaction limit what it reads; a forged or expired one reads nothing",
-      "status": "pass",
-      "durationMs": 8664.1553,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "access",
-      "source": "tests/outbound-origins.test.ts:5",
-      "name": "an allowed origin serves a custom provider over http, while web_fetch still cannot reach it",
-      "status": "pass",
-      "durationMs": 7106.707831,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "access",
-      "source": "tests/tenant-reads.test.ts:117",
-      "name": "an agent with work left that cannot be loaded is tried again with capped backoff, never for good, and says so",
-      "status": "pass",
-      "durationMs": 8979.732254,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "access",
-      "source": "tests/tenant-reads.test.ts:144",
-      "name": "a request whose open-work mark could not be written is not taken, and its retry runs",
-      "status": "pass",
-      "durationMs": 3137.896862,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "access",
-      "source": "tests/tenant-reads.test.ts:44",
-      "name": "?request= keeps a stream or poll to one request's events and response",
-      "status": "pass",
-      "durationMs": 3548.982821,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "access",
-      "source": "tests/tenant-reads.test.ts:60",
-      "name": "a subscriber that goes away before its stream opens gives its place back",
-      "status": "pass",
-      "durationMs": 3727.978125,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "access",
-      "source": "tests/tenant-reads.test.ts:6",
-      "name": "a tenant reads its agent's events, state, history and inputs with its own token, and no other tenant can",
-      "status": "pass",
-      "durationMs": 5818.361803,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "access",
-      "source": "tests/tenant-reads.test.ts:82",
-      "name": "a tenant's own watcher bound, from the tenants file, replaces the default",
-      "status": "pass",
-      "durationMs": 3010.021229,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "access",
-      "source": "tests/tenant-reads.test.ts:95",
-      "name": "an idle agent's history, state and inputs are read without loading it",
-      "status": "pass",
-      "durationMs": 5623.911898,
-      "reason": "",
-      "backend": "node"
-    },
     {
       "area": "accounts",
       "source": "tests/account.test.ts",
@@ -131,11 +23,452 @@
       "backend": "node"
     },
     {
-      "area": "accounts",
-      "source": "tests/operator-tenants.test.ts",
-      "name": "the platform operator makes a prepaid tenant like a sign-up's, with an API token, credits it and deletes it",
+      "area": "ops",
+      "source": "tests/admin-site.test.ts:25",
+      "name": "the admin site answers only on its hostname, to people Cloudflare Access signed in, with every tenant's stats",
       "status": "pass",
-      "durationMs": 6331.959859,
+      "durationMs": 7081.146549,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "history",
+      "source": "tests/agent-fork.test.ts:132",
+      "name": "a fork of an agent mid-turn ends before the running turn: no partial turn, and the fork loads idle",
+      "status": "pass",
+      "durationMs": 8186.216492,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "history",
+      "source": "tests/agent-fork.test.ts:160",
+      "name": "a fork of a compacted agent keeps its summary: the model sees the summary and what follows, history keeps every message",
+      "status": "pass",
+      "durationMs": 6429.079108,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "history",
+      "source": "tests/agent-fork.test.ts:18",
+      "name": "a fork has the source's configuration, history and workspace, and from then on each goes its own way",
+      "status": "pass",
+      "durationMs": 8992.620968,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "history",
+      "source": "tests/agent-fork.test.ts:196",
+      "name": "a fork's key makes it idempotent: a retry returns the same fork, another source's fork with it is refused",
+      "status": "pass",
+      "durationMs": 6024.109667,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "history",
+      "source": "tests/agent-fork.test.ts:225",
+      "name": "only the source's tenant forks it, and never with a browser token",
+      "status": "pass",
+      "durationMs": 3092.234599,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "history",
+      "source": "tests/agent-fork.test.ts:235",
+      "name": "a fork pins the files its history refers to: they stay stored after the source, its workspace and the fork's copy are gone",
+      "status": "pass",
+      "durationMs": 5069.203461,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "history",
+      "source": "tests/agent-fork.test.ts:256",
+      "name": "the SDK's fork() makes a new agent from this one: its history, configuration and files; a key returns the same fork",
+      "status": "pass",
+      "durationMs": 5419.544096,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "history",
+      "source": "tests/agent-fork.test.ts:279",
+      "name": "a fork is cut from the source's journal: its history, and Pi's context as of the cut",
+      "status": "pass",
+      "durationMs": 4456.96451,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "history",
+      "source": "tests/agent-fork.test.ts:295",
+      "name": "a fork after a context reset starts from the context the reset left, where the source stood and at a cut after the reset",
+      "status": "pass",
+      "durationMs": 6601.238831,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "history",
+      "source": "tests/agent-fork.test.ts:76",
+      "name": "a fork may act for someone else and carry its own prompt addition and model headers: what a create fixes, the fork's create sets",
+      "status": "pass",
+      "durationMs": 4379.401253,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "history",
+      "source": "tests/agent-fork.test.ts:95",
+      "name": "a fork ends at a message: that message and the tool results answering it, or a request's whole turn",
+      "status": "pass",
+      "durationMs": 8716.705436,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agent-lifetime.test.ts:108",
+      "name": "the same key with a changed configuration reconfigures the agent instead of refusing; what cannot change says so",
+      "status": "pass",
+      "durationMs": 4268.023129,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agent-lifetime.test.ts:11",
+      "name": "an agent made with an idempotency key lives until deleted by default; one made without lives a day",
+      "status": "pass",
+      "durationMs": 6415.205783,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agent-lifetime.test.ts:142",
+      "name": "the last upsert wins: back to an earlier configuration, and upserts queued behind a running turn",
+      "status": "pass",
+      "durationMs": 3821.113857,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agent-lifetime.test.ts:23",
+      "name": "an agent with an idle lifetime lives on from each run it is sent",
+      "status": "pass",
+      "durationMs": 4012.634707,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agent-lifetime.test.ts:37",
+      "name": "agents are listed with the key they were made with, and their name",
+      "status": "pass",
+      "durationMs": 3562.991946,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agent-lifetime.test.ts:50",
+      "name": "an agent is made without a model key; its first run says which key to set",
+      "status": "pass",
+      "durationMs": 6132.502595,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agent-lifetime.test.ts:83",
+      "name": "a key whose agent was deleted or expired makes a fresh agent, with a new token; the old one stays gone",
+      "status": "pass",
+      "durationMs": 65604.968825,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "files",
+      "source": "tests/agent-links.test.ts:5",
+      "name": "a tenant signs links to its agent's files with its own token, as for its volumes",
+      "status": "pass",
+      "durationMs": 5914.206492,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-messaging.test.ts:136",
+      "name": "a browser token with the children scope reads its agent's sub-agents, and only theirs",
+      "status": "pass",
+      "durationMs": 5716.938936,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-messaging.test.ts:156",
+      "name": "a child that waits on a person notifies its parent, and notifies again when it resumes and ends",
+      "status": "pass",
+      "durationMs": 5023.331487,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-messaging.test.ts:21",
+      "name": "a parent messages its finished child, which works again with its history and notifies again; a child messages its parent",
+      "status": "pass",
+      "durationMs": 6992.054345,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-messaging.test.ts:61",
+      "name": "two agents messaging each other in a loop stop at the wake cap with agent_loop_limit, and a turn sends at most 20 messages",
+      "status": "pass",
+      "durationMs": 12129.314192,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-messaging.test.ts:97",
+      "name": "interrupt_agent aborts a child; aborting the parent aborts its children unless children: keep; deleting it deletes the children it made",
+      "status": "pass",
+      "durationMs": 11737.979689,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-progress.test.ts:109",
+      "name": "a child's message joins its busy parent's running turn at its next step, without a turn of its own",
+      "status": "pass",
+      "durationMs": 4821.055848,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-progress.test.ts:141",
+      "name": "a child's message cuts its parent's wait_agent short, and the parent reads it next",
+      "status": "pass",
+      "durationMs": 4522.38436,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-progress.test.ts:16",
+      "name": "a background child's progress rides on its parent's next tool result, latest only and once, without a turn; an ending supersedes it",
+      "status": "pass",
+      "durationMs": 6128.100559,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-progress.test.ts:168",
+      "name": "a response that starts a sub-agent and, beside it, messages and waits for it: those calls run once it has started",
+      "status": "pass",
+      "durationMs": 4601.401405,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-progress.test.ts:195",
+      "name": "a message to a sub-agent that already answered starts a turn, and wait_agent waits for that turn's answer, not the earlier one",
+      "status": "pass",
+      "durationMs": 4957.210002,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-progress.test.ts:217",
+      "name": "a sub-agent of the model's own design gets its instructions with its task, as its first message; one from a definition keeps its own prompt",
+      "status": "pass",
+      "durationMs": 4762.304567,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-progress.test.ts:244",
+      "name": "a sub-agent of the model's own design shares its parent's files at the same paths",
+      "status": "pass",
+      "durationMs": 4726.995932,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-progress.test.ts:265",
+      "name": "wait_agent with untilProgress returns on a report it has not seen, after its floor, so the parent can correct a sub-agent mid-run",
+      "status": "pass",
+      "durationMs": 5631.419806,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-progress.test.ts:75",
+      "name": "a delegate child's progress reaches its parent's watchers as subagent_progress and the delegate call's progress",
+      "status": "pass",
+      "durationMs": 4859.148523,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-progress.test.ts:91",
+      "name": "only a sub-agent reports progress, and a report is short",
+      "status": "pass",
+      "durationMs": 4657.601294,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agents-list.test.ts:17",
+      "name": "GET /v1/agents pages by cursor, filters by workspace, status and search, and lists activity and the last failure",
+      "status": "pass",
+      "durationMs": 9687.064141,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agents.test.ts:102",
+      "name": "an agent's credentials are for the account's own tokens: a browser token gets 403, an agent's token 401, and no browser origin is allowed",
+      "status": "pass",
+      "durationMs": 3749.143874,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agents.test.ts:124",
+      "name": "a tool that returns nothing succeeds with null; its context has a stable idempotency key and reports progress",
+      "status": "pass",
+      "durationMs": 4377.692055,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agents.test.ts:142",
+      "name": "a slow onEvent never holds up the agent's tool calls",
+      "status": "pass",
+      "durationMs": 17029.65705,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agents.test.ts:165",
+      "name": "an onEvent that throws is reported to onError, and the connection goes on",
+      "status": "pass",
+      "durationMs": 3892.453395,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agents.test.ts:174",
+      "name": "an approval: the run waits with its input, and answering it resolves with the resumed run",
+      "status": "pass",
+      "durationMs": 3804.45134,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agents.test.ts:195",
+      "name": "a run's wait has no timeout, and an AbortSignal stops the wait without stopping the run",
+      "status": "pass",
+      "durationMs": 5032.949446,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agents.test.ts:203",
+      "name": "the same key sent again while its run goes on joins that run, and one caller's timeout leaves the other waiting",
+      "status": "pass",
+      "durationMs": 4566.588343,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agents.test.ts:24",
+      "name": "run() resolves with a typed Run; the agent's id is public and its token stays out of logs",
+      "status": "pass",
+      "durationMs": 6849.935575,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agents.test.ts:42",
+      "name": "a key the provider refuses fails the run as model_key_invalid, with where to set a working one",
+      "status": "pass",
+      "durationMs": 4815.929147,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agents.test.ts:50",
+      "name": "a failed run throws a RunError with the run, or resolves with it given throwOnError: false",
+      "status": "pass",
+      "durationMs": 4435.707902,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agents.test.ts:63",
+      "name": "stream() yields tool calls, results and text, then done with the run",
+      "status": "pass",
+      "durationMs": 4547.370945,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agents.test.ts:83",
+      "name": "get() takes an existing agent by key or id without changing it; 404 for none, 409 for one made without a key",
+      "status": "pass",
+      "durationMs": 5366.897615,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "keys",
+      "source": "tests/api.test.ts:132",
+      "name": "tenants set provider keys over REST; keys are never returned by public endpoints",
+      "status": "pass",
+      "durationMs": 4911.452238,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "keys",
+      "source": "tests/api.test.ts:238",
+      "name": "tenants mint and revoke their own API tokens",
+      "status": "pass",
+      "durationMs": 2515.06713,
       "reason": "",
       "backend": "node"
     },
@@ -203,74 +536,29 @@
       "backend": "node"
     },
     {
-      "area": "auth",
-      "source": "tests/email-signup.test.ts",
-      "name": "adding a password: a Google account's own address at once, any other address through a link confirmed with the password",
+      "area": "quotas",
+      "source": "tests/api.test.ts:584",
+      "name": "a tenant at its agent quota gets 429 with Retry-After and nothing half-created; the same key succeeds once a slot frees",
       "status": "pass",
-      "durationMs": 3137.680724,
+      "durationMs": 10377.532314,
       "reason": "",
       "backend": "node"
     },
     {
-      "area": "auth",
-      "source": "tests/email-signup.test.ts",
-      "name": "an address a Google account signed up with is not joined, taken over or given a second account: its owner is told to use Google",
+      "area": "quotas",
+      "source": "tests/api.test.ts:615",
+      "name": "a tenant's own maxAgents replaces the default limit, and a change applies at the next tenants reload without a restart",
       "status": "pass",
-      "durationMs": 2756.714934,
+      "durationMs": 3425.055291,
       "reason": "",
       "backend": "node"
     },
     {
-      "area": "auth",
-      "source": "tests/email-signup.test.ts",
-      "name": "email sign-up: a link to finish it with the chosen password makes the tenant and signs in; nothing before that",
+      "area": "quotas",
+      "source": "tests/api.test.ts:656",
+      "name": "a tenant's monthly spend cap ends a turn after the response that crosses it, refuses new runs, and a reload raising it lets the turn continue",
       "status": "pass",
-      "durationMs": 5314.774455,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "auth",
-      "source": "tests/email-signup.test.ts",
-      "name": "mailing a link is limited per source and per address, whether or not the address has an account",
-      "status": "pass",
-      "durationMs": 2512.202303,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "auth",
-      "source": "tests/email-signup.test.ts",
-      "name": "password reset: the same answer for any address; the link sets a new password once and ends every password session",
-      "status": "pass",
-      "durationMs": 3379.703042,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "auth",
-      "source": "tests/email-signup.test.ts",
-      "name": "sign-up links: tampered, expired and used links fail alike; a second sign-up for an address with an account gets the same answer and a different mail",
-      "status": "pass",
-      "durationMs": 3317.396019,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "auth",
-      "source": "tests/email-signup.test.ts",
-      "name": "the MCP consent page: sign up there, follow the link, and come back signed in to consent",
-      "status": "pass",
-      "durationMs": 2689.265587,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "auth",
-      "source": "tests/email-signup.test.ts",
-      "name": "without account mail, or with sign-up closed, the forms are not offered and their routes refuse",
-      "status": "pass",
-      "durationMs": 4474.883599,
+      "durationMs": 3625.76498,
       "reason": "",
       "backend": "node"
     },
@@ -280,6 +568,78 @@
       "name": "auto top-up REST requires the exact quote version and explicit consent",
       "status": "pass",
       "durationMs": 5237.732239,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/background-agents.test.ts:103",
+      "name": "spawn_agent refuses past maxParallel running children and past the depth limit",
+      "status": "pass",
+      "durationMs": 10325.908773,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/background-agents.test.ts:131",
+      "name": "two agents waking each other through notifications stop at the wake cap with agent_loop_limit, the notification still in history",
+      "status": "pass",
+      "durationMs": 9827.275792,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/background-agents.test.ts:154",
+      "name": "a child's spend is charged to its parent when its notification lands, and a parent at its spend limit gets no turn",
+      "status": "pass",
+      "durationMs": 6127.638648,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/background-agents.test.ts:183",
+      "name": "aborting a parent while a child's notification waits keeps the notification: it lands without a turn",
+      "status": "pass",
+      "durationMs": 4502.481808,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/background-agents.test.ts:20",
+      "name": "spawn_agent returns at once, and the child's ending arrives once, as a notification with its source and marker",
+      "status": "pass",
+      "durationMs": 6426.229675,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/background-agents.test.ts:213",
+      "name": "children started together share what the parent may spend, and limits alone bound a tool's spawns without a tool for the model",
+      "status": "pass",
+      "durationMs": 7612.208163,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/background-agents.test.ts:75",
+      "name": "wait_agent answers a child's ending in its result, so no notification follows; list_agents lists children",
+      "status": "pass",
+      "durationMs": 5961.981664,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "webhooks",
+      "source": "tests/billing-alerts.test.ts",
+      "name": "registered billing webhooks are delivered by the existing worker with valid signatures",
+      "status": "pass",
+      "durationMs": 4057.526828,
       "reason": "",
       "backend": "node"
     },
@@ -307,15 +667,6 @@
       "name": "billing REST routes bind portal ownership to authentication and reject caller-supplied redirects",
       "status": "pass",
       "durationMs": 5428.208763,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "billing",
-      "source": "tests/billing.test.ts:623",
-      "name": "without Stripe, checkout answers 503 and the webhook 404",
-      "status": "pass",
-      "durationMs": 2217.565628,
       "reason": "",
       "backend": "node"
     },
@@ -402,28 +753,64 @@
     },
     {
       "area": "billing",
-      "source": "tests/credit-holds.test.ts:114",
-      "name": "a run on a tenant with too little credit stops before any call, as a spend limit; a small balance caps the call's max_tokens",
+      "source": "tests/billing.test.ts:623",
+      "name": "without Stripe, checkout answers 503 and the webhook 404",
       "status": "pass",
-      "durationMs": 6455.565613,
+      "durationMs": 2217.565628,
       "reason": "",
       "backend": "node"
     },
     {
-      "area": "billing",
-      "source": "tests/pi-durable-accounting.test.ts:48",
-      "name": "imported usage and forks are free; the next real turn is billed once (inline)",
+      "area": "access",
+      "source": "tests/browser-tokens.test.ts:119",
+      "name": "a snapshot shows a token's reader only what its scopes and event list let it read",
       "status": "pass",
-      "durationMs": 5821.391091,
+      "durationMs": 3443.774468,
       "reason": "",
       "backend": "node"
     },
     {
-      "area": "billing",
-      "source": "tests/pi-durable-accounting.test.ts:48",
-      "name": "imported usage and forks are free; the next real turn is billed once (process)",
+      "area": "access",
+      "source": "tests/browser-tokens.test.ts:15",
+      "name": "a browser token reads its one agent's events, state, history and inputs, and nothing else",
       "status": "pass",
-      "durationMs": 5504.032517,
+      "durationMs": 8245.538287,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "access",
+      "source": "tests/browser-tokens.test.ts:154",
+      "name": "a token that redacts usage.cost reads no cost anywhere: the catalog's or the provider's, in events, snapshots, state, history and inputs",
+      "status": "pass",
+      "durationMs": 3557.777407,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "access",
+      "source": "tests/browser-tokens.test.ts:75",
+      "name": "a browser token's scopes, event list and redaction limit what it reads; a forged or expired one reads nothing",
+      "status": "pass",
+      "durationMs": 8664.1553,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "oauth",
+      "source": "tests/chatgpt-plugin.test.ts:16",
+      "name": "the plugin's path works end to end, with the issuer on another origin than the MCP endpoint and sign-in pages: discovery, registration, email and password sign-in, consent, /v1/me, the review cases' tools, refresh, revocation",
+      "status": "pass",
+      "durationMs": 5547.977028,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "oauth",
+      "source": "tests/chatgpt-plugin.test.ts:16",
+      "name": "the plugin's path works end to end: discovery, registration, email and password sign-in, consent, /v1/me, the review cases' tools, refresh, revocation",
+      "status": "pass",
+      "durationMs": 9233.690941,
       "reason": "",
       "backend": "node"
     },
@@ -487,6 +874,249 @@
       "name": "the MCP server deploys and runs agents for a coding agent",
       "status": "pass",
       "durationMs": 4728.0093,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "history",
+      "source": "tests/context-reset.test.ts:118",
+      "name": "a context too large to load resets over the API, and the next prompt runs from the new context",
+      "status": "pass",
+      "durationMs": 12443.203065,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "keys",
+      "source": "tests/credential-exchange.test.ts",
+      "name": "through the API: saving lists the server with a credential for the definition, agents get their own, and nothing shows the credential",
+      "status": "pass",
+      "durationMs": 7553.989117,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "billing",
+      "source": "tests/credit-holds.test.ts:114",
+      "name": "a run on a tenant with too little credit stops before any call, as a spend limit; a small balance caps the call's max_tokens",
+      "status": "pass",
+      "durationMs": 6455.565613,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "definitions",
+      "source": "tests/definitions.test.ts:137",
+      "name": "a definition with applyOnUpdate reaches its live agents on every save that revises it, upserts included",
+      "status": "pass",
+      "durationMs": 3766.691079,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "definitions",
+      "source": "tests/definitions.test.ts:17",
+      "name": "definitions are the tenant's own, validated, and revised",
+      "status": "pass",
+      "durationMs": 2740.73061,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "definitions",
+      "source": "tests/definitions.test.ts:177",
+      "name": "an agent's own model, thinking level and prompt addition survive applying its definition",
+      "status": "pass",
+      "durationMs": 4098.259817,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "definitions",
+      "source": "tests/definitions.test.ts:217",
+      "name": "fileTools: false leaves the model present_file, and the file tools to code",
+      "status": "pass",
+      "durationMs": 4834.124287,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "definitions",
+      "source": "tests/definitions.test.ts:244",
+      "name": "the SDK makes an agent from a definition with its attached server's tools, which survive an apply",
+      "status": "pass",
+      "durationMs": 3643.218323,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "definitions",
+      "source": "tests/definitions.test.ts:328",
+      "name": "public configuration waits between turns, preserves history, and reports validation and outcome",
+      "status": "pass",
+      "durationMs": 3859.656343,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "definitions",
+      "source": "tests/definitions.test.ts:390",
+      "name": "a tenant's definitions are capped by its limit (409 DEFINITIONS_LIMIT), and the ones no agent uses can be listed to delete",
+      "status": "pass",
+      "durationMs": 3206.396525,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "definitions",
+      "source": "tests/definitions.test.ts:53",
+      "name": "a definition's key upserts it: the same key is the same definition, revised only when it changes",
+      "status": "pass",
+      "durationMs": 2334.404501,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "definitions",
+      "source": "tests/definitions.test.ts:75",
+      "name": "a definition's idle lifetime applies, and a lifetime given with the agent replaces it",
+      "status": "pass",
+      "durationMs": 3295.169364,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "definitions",
+      "source": "tests/definitions.test.ts:85",
+      "name": "agents are made from a definition, record its revision, and take a new one when it is applied",
+      "status": "pass",
+      "durationMs": 4455.621293,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "transport",
+      "source": "tests/deploy-drain.test.ts:117",
+      "name": "close() waits for no call the runtime gave up on, nor when there is nothing to finish",
+      "status": "pass",
+      "durationMs": 14999.679843,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "transport",
+      "source": "tests/deploy-drain.test.ts:130",
+      "name": "a tool process that dies mid-run: the run goes on, the restarted process serves its next calls, and the same idempotencyKey fetches its result",
+      "status": "pass",
+      "durationMs": 5199.785256,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "transport",
+      "source": "tests/deploy-drain.test.ts:26",
+      "name": "a rolling deploy loses no tool call: the new process takes over, and the old one finishes its call as it closes",
+      "status": "pass",
+      "durationMs": 7581.423561,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "transport",
+      "source": "tests/deploy-drain.test.ts:55",
+      "name": "a stop-then-start deploy loses no tool call: close() finishes the call, and the next process connects without a takeover even while it drains",
+      "status": "pass",
+      "durationMs": 5163.118216,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "transport",
+      "source": "tests/deploy-drain.test.ts:78",
+      "name": "a call cut off with its connection tells the model, in plain words, that it may or may not have run",
+      "status": "pass",
+      "durationMs": 14537.39279,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "transport",
+      "source": "tests/deploy-drain.test.ts:97",
+      "name": "a takeover while a call runs lets the replaced process answer it, then tells it it was replaced",
+      "status": "pass",
+      "durationMs": 5001.317638,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "auth",
+      "source": "tests/email-signup.test.ts",
+      "name": "adding a password: a Google account's own address at once, any other address through a link confirmed with the password",
+      "status": "pass",
+      "durationMs": 3137.680724,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "auth",
+      "source": "tests/email-signup.test.ts",
+      "name": "an address a Google account signed up with is not joined, taken over or given a second account: its owner is told to use Google",
+      "status": "pass",
+      "durationMs": 2756.714934,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "auth",
+      "source": "tests/email-signup.test.ts",
+      "name": "email sign-up: a link to finish it with the chosen password makes the tenant and signs in; nothing before that",
+      "status": "pass",
+      "durationMs": 5314.774455,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "auth",
+      "source": "tests/email-signup.test.ts",
+      "name": "mailing a link is limited per source and per address, whether or not the address has an account",
+      "status": "pass",
+      "durationMs": 2512.202303,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "auth",
+      "source": "tests/email-signup.test.ts",
+      "name": "password reset: the same answer for any address; the link sets a new password once and ends every password session",
+      "status": "pass",
+      "durationMs": 3379.703042,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "auth",
+      "source": "tests/email-signup.test.ts",
+      "name": "sign-up links: tampered, expired and used links fail alike; a second sign-up for an address with an account gets the same answer and a different mail",
+      "status": "pass",
+      "durationMs": 3317.396019,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "auth",
+      "source": "tests/email-signup.test.ts",
+      "name": "the MCP consent page: sign up there, follow the link, and come back signed in to consent",
+      "status": "pass",
+      "durationMs": 2689.265587,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "auth",
+      "source": "tests/email-signup.test.ts",
+      "name": "without account mail, or with sign-up closed, the forms are not offered and their routes refuse",
+      "status": "pass",
+      "durationMs": 4474.883599,
       "reason": "",
       "backend": "node"
     },
@@ -648,16 +1278,7 @@
       "source": "tests/end-user-webhooks.test.ts",
       "name": "end-user events reach an endpoint that selected them, signed",
       "status": "pass",
-      "durationMs": 6111.003445,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "files",
-      "source": "tests/agent-links.test.ts:5",
-      "name": "a tenant signs links to its agent's files with its own token, as for its volumes",
-      "status": "pass",
-      "durationMs": 5914.206492,
+      "durationMs": 5613.926886,
       "reason": "",
       "backend": "node"
     },
@@ -676,33 +1297,6 @@
       "name": "files reach a tool as URLs bound to the call: a file at its version, a directory as a snapshot, small ones inline",
       "status": "pass",
       "durationMs": 4869.4389,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "files",
-      "source": "tests/files.test.ts:261",
-      "name": "the TypeScript SDK attaches bytes, Blobs, local paths and workspace files; a file deleted or replaced after attaching still reads as attached",
-      "status": "pass",
-      "durationMs": 4277.88339,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "files",
-      "source": "tests/files.test.ts:76",
-      "name": "the REST API stores the upload's type and serves downloads with safe headers",
-      "status": "pass",
-      "durationMs": 5748.50148,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "files",
-      "source": "tests/files.test.ts:98",
-      "name": "signed links: bound to tenant, volume, path, method, expiry, size and content type; tampering fails",
-      "status": "pass",
-      "durationMs": 3748.93388,
       "reason": "",
       "backend": "node"
     },
@@ -735,46 +1329,163 @@
     },
     {
       "area": "files",
-      "source": "tests/tool-files.test.ts",
-      "name": "application-attached MCP files are saved to the workspace like a server's",
+      "source": "tests/files.test.ts:261",
+      "name": "the TypeScript SDK attaches bytes, Blobs, local paths and workspace files; a file deleted or replaced after attaching still reads as attached",
       "status": "pass",
-      "durationMs": 3830.96304,
+      "durationMs": 4277.88339,
       "reason": "",
       "backend": "node"
     },
     {
       "area": "files",
-      "source": "tests/tool-files.test.ts",
-      "name": "MCP images, audio, blobs and long text are saved to the workspace, under sanitized names",
+      "source": "tests/files.test.ts:76",
+      "name": "the REST API stores the upload's type and serves downloads with safe headers",
       "status": "pass",
-      "durationMs": 4881.13778,
+      "durationMs": 5748.50148,
       "reason": "",
       "backend": "node"
     },
     {
       "area": "files",
-      "source": "tests/tool-files.test.ts",
-      "name": "MCP tools take files by {$file}: base64 or a call-bound URL, only from the agent's mounts",
+      "source": "tests/files.test.ts:98",
+      "name": "signed links: bound to tenant, volume, path, method, expiry, size and content type; tampering fails",
       "status": "pass",
-      "durationMs": 8709.24157,
+      "durationMs": 3748.93388,
       "reason": "",
       "backend": "node"
     },
     {
-      "area": "files",
-      "source": "tests/tool-files.test.ts",
-      "name": "OpenAPI operations upload files (multipart, raw bytes, base64) and save binary responses",
+      "area": "history",
+      "source": "tests/history-formats.test.ts:88",
+      "name": "an agent made with importMessages begins with the conversation, and a refused import makes no agent",
       "status": "pass",
-      "durationMs": 4568.0144,
+      "durationMs": 7674.947691,
       "reason": "",
       "backend": "node"
     },
     {
-      "area": "files",
-      "source": "tests/tool-files.test.ts",
-      "name": "web_fetch saves PDFs and images to the workspace and shows them to the model",
+      "area": "history",
+      "source": "tests/history-import.test.ts:33",
+      "name": "a refused import answers 400 INVALID_HISTORY, or 413 HISTORY_TOO_LARGE, and makes no agent",
       "status": "pass",
-      "durationMs": 3820.05143,
+      "durationMs": 5795.942608,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "history",
+      "source": "tests/history-import.test.ts:46",
+      "name": "a compactionSummary in imported history stands for everything before it: history keeps every message, the model sees the summary and what follows",
+      "status": "pass",
+      "durationMs": 4428.95034,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "history",
+      "source": "tests/history-import.test.ts:66",
+      "name": "imported messages need only their role and content: usage, stopReason, timestamps and isError are filled in",
+      "status": "pass",
+      "durationMs": 4231.349095,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "history",
+      "source": "tests/history-none-ignored.test.ts:12",
+      "name": "a prompt's history: \"none\" is accepted and ignored: the run sees the agent's history, logged once per agent",
+      "status": "pass",
+      "durationMs": 4320.021415,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "history",
+      "source": "tests/history-none-ignored.test.ts:32",
+      "name": "the SDK still takes history: \"none\" (ignored), codeMode and configHash",
+      "status": "pass",
+      "durationMs": 7476.833327,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "history",
+      "source": "tests/history-none-ignored.test.ts:51",
+      "name": "a schedule's history: \"none\", sent or stored, is accepted and ignored: its wake-up sees the agent's history",
+      "status": "pass",
+      "durationMs": 4482.398703,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "history",
+      "source": "tests/history-pages.test.ts:266",
+      "name": "history comes in pages of whole turns, newest first, from Pi storage wherever the agent runs or not",
+      "status": "pass",
+      "durationMs": 12078.963605,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "history",
+      "source": "tests/history-pages.test.ts:321",
+      "name": "history maxBytes works alone on the API and through the SDK, with validated bounds",
+      "status": "pass",
+      "durationMs": 3861.399869,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "history",
+      "source": "tests/history-pages.test.ts:346",
+      "name": "history after pages forward on the API and through the SDK; after with before is a 400",
+      "status": "pass",
+      "durationMs": 3974.430861,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "history",
+      "source": "tests/history-pages.test.ts:400",
+      "name": "the newest page has the running turn's finished messages, at their indexes; purging removes the agent's history",
+      "status": "pass",
+      "durationMs": 5156.266768,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "transport",
+      "source": "tests/http-drain.test.ts:15",
+      "name": "idle sockets outlive the load balancer's 360 s; a drain answers a long poll under way in full, with Connection: close",
+      "status": "pass",
+      "durationMs": 8174.276757,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "agents",
+      "source": "tests/idempotency.test.ts:35",
+      "name": "a response carrying a secret shown once is never kept or replayed: its key's retry is a conflict",
+      "status": "pass",
+      "durationMs": 4355.444575,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "agents",
+      "source": "tests/idempotency.test.ts:58",
+      "name": "a key whose request died mid-way is taken over after a while, and a body past the limit is refused before it is read whole",
+      "status": "pass",
+      "durationMs": 3803.58709,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "agents",
+      "source": "tests/idempotency.test.ts:7",
+      "name": "an Idempotency-Key header on any POST replays its first success, refuses other parameters, and names a prompt's request",
+      "status": "pass",
+      "durationMs": 7116.626149,
       "reason": "",
       "backend": "node"
     },
@@ -816,19 +1527,19 @@
     },
     {
       "area": "images",
-      "source": "tests/images.test.ts:187",
-      "name": "an image whose scaling failed for now (its parse job crashed) is tried again on the next request, not held as omitted",
+      "source": "tests/images.test.ts",
+      "name": "a thread with over 20 images, one of them 2,400 px, gets a request where every image is at most 1,568 px; the stored history is unchanged",
       "status": "pass",
-      "durationMs": 6870.709878,
+      "durationMs": 9581.42949,
       "reason": "",
       "backend": "node"
     },
     {
       "area": "images",
-      "source": "tests/images.test.ts",
-      "name": "a thread with over 20 images, one of them 2,400 px, gets a request where every image is at most 1,568 px; the stored history is unchanged",
+      "source": "tests/images.test.ts:187",
+      "name": "an image whose scaling failed for now (its parse job crashed) is tried again on the next request, not held as omitted",
       "status": "pass",
-      "durationMs": 9581.42949,
+      "durationMs": 6870.709878,
       "reason": "",
       "backend": "node"
     },
@@ -879,37 +1590,10 @@
     },
     {
       "area": "keys",
-      "source": "tests/api.test.ts:132",
-      "name": "tenants set provider keys over REST; keys are never returned by public endpoints",
+      "source": "tests/key-scopes.test.ts",
+      "name": "Bedrock's region comes from the entry or its regional endpoint",
       "status": "pass",
-      "durationMs": 4911.452238,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "keys",
-      "source": "tests/api.test.ts:238",
-      "name": "tenants mint and revoke their own API tokens",
-      "status": "pass",
-      "durationMs": 2515.06713,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "keys",
-      "source": "tests/credential-exchange.test.ts",
-      "name": "through the API: saving lists the server with a credential for the definition, agents get their own, and nothing shows the credential",
-      "status": "pass",
-      "durationMs": 7553.989117,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "keys",
-      "source": "tests/key-scopes.test.ts:10",
-      "name": "key scopes store sealed entries, and an agent's calls use its scope's current key, gateway and headers, else the tenant's",
-      "status": "pass",
-      "durationMs": 4126.210136,
+      "durationMs": 2193.899073,
       "reason": "",
       "backend": "node"
     },
@@ -942,37 +1626,154 @@
     },
     {
       "area": "keys",
-      "source": "tests/key-scopes.test.ts",
-      "name": "Bedrock's region comes from the entry or its regional endpoint",
+      "source": "tests/key-scopes.test.ts:10",
+      "name": "key scopes store sealed entries, and an agent's calls use its scope's current key, gateway and headers, else the tenant's",
       "status": "pass",
-      "durationMs": 2193.899073,
+      "durationMs": 4126.210136,
       "reason": "",
       "backend": "node"
     },
     {
-      "area": "oauth",
-      "source": "tests/chatgpt-plugin.test.ts:16",
-      "name": "the plugin's path works end to end, with the issuer on another origin than the MCP endpoint and sign-in pages: discovery, registration, email and password sign-in, consent, /v1/me, the review cases' tools, refresh, revocation",
+      "area": "runs",
+      "source": "tests/loop-reliability.test.ts:118",
+      "name": "stopping an agent ends its turn and cancels the runs queued behind it, so nothing runs after the stop; queued: keep stops the turn only",
       "status": "pass",
-      "durationMs": 5547.977028,
+      "durationMs": 4270.727786,
       "reason": "",
       "backend": "node"
     },
     {
-      "area": "oauth",
-      "source": "tests/chatgpt-plugin.test.ts:16",
-      "name": "the plugin's path works end to end: discovery, registration, email and password sign-in, consent, /v1/me, the review cases' tools, refresh, revocation",
+      "area": "runs",
+      "source": "tests/loop-reliability.test.ts:151",
+      "name": "a stop drops the messages the agent holds for its next turn (the legacy steer): the next prompt never reads them",
       "status": "pass",
-      "durationMs": 9233.690941,
+      "durationMs": 3117.723542,
       "reason": "",
       "backend": "node"
     },
     {
-      "area": "ops",
-      "source": "tests/admin-site.test.ts:25",
-      "name": "the admin site answers only on its hostname, to people Cloudflare Access signed in, with every tenant's stats",
+      "area": "runs",
+      "source": "tests/loop-reliability.test.ts:167",
+      "name": "every view of an agent agrees whether it is busy: during a stall, and after a stop",
       "status": "pass",
-      "durationMs": 7081.146549,
+      "durationMs": 3223.466624,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "runs",
+      "source": "tests/loop-reliability.test.ts:179",
+      "name": "a steer is acknowledged at once and completes when the running turn takes it: a turn fed steers forever never fills the queue",
+      "status": "pass",
+      "durationMs": 8285.987199,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "runs",
+      "source": "tests/loop-reliability.test.ts:67",
+      "name": "a run past its agent's own maxSeconds is aborted inside a hung model request, and ends as its time limit's",
+      "status": "pass",
+      "durationMs": 14399.750289,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "runs",
+      "source": "tests/loop-reliability.test.ts:83",
+      "name": "a stalled model is retried, watchers see the stall, and a model that never answers fails its run with model_stream_stalled",
+      "status": "pass",
+      "durationMs": 24449.019871,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/multi-agent.test.ts:119",
+      "name": "parallel children share what their parent's run has left, rather than each getting all of it",
+      "status": "pass",
+      "durationMs": 4662.440107,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/multi-agent.test.ts:140",
+      "name": "children of one response share what their parent's run has left even when they run one after another",
+      "status": "pass",
+      "durationMs": 5776.262326,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/multi-agent.test.ts:16",
+      "name": "delegate starts a child from a definition, returns its answer, and links it to its parent",
+      "status": "pass",
+      "durationMs": 5412.454225,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/multi-agent.test.ts:160",
+      "name": "a caller cannot move a run's place in the delegation chain with prompt metadata",
+      "status": "pass",
+      "durationMs": 6119.487475,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/multi-agent.test.ts:179",
+      "name": "aborting a parent aborts the children it waits on; the stream shows them to subscribers that ask",
+      "status": "pass",
+      "durationMs": 4922.878576,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/multi-agent.test.ts:203",
+      "name": "aborting a parent answers once its delegate child has ended, charges what the child spent, and deleting the parent deletes the child",
+      "status": "pass",
+      "durationMs": 4745.971936,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/multi-agent.test.ts:232",
+      "name": "a delegate child whose ending no call took, its parent's run over, is landed by the sweep and charged to the parent",
+      "status": "pass",
+      "durationMs": 6201.755479,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/multi-agent.test.ts:57",
+      "name": "delegate calls in one response run at once, at most maxParallel together, and one with output answers in its schema",
+      "status": "pass",
+      "durationMs": 6689.106935,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/multi-agent.test.ts:86",
+      "name": "delegation stops at its depth limit, and a run's spend limit bounds its children and counts what they spent",
+      "status": "pass",
+      "durationMs": 8098.819709,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "accounts",
+      "source": "tests/operator-tenants.test.ts",
+      "name": "the platform operator makes a prepaid tenant like a sign-up's, with an API token, credits it and deletes it",
+      "status": "pass",
+      "durationMs": 6331.959859,
       "reason": "",
       "backend": "node"
     },
@@ -1004,29 +1805,137 @@
       "backend": "node"
     },
     {
-      "area": "quotas",
-      "source": "tests/api.test.ts:584",
-      "name": "a tenant at its agent quota gets 429 with Retry-After and nothing half-created; the same key succeeds once a slot frees",
+      "area": "access",
+      "source": "tests/outbound-origins.test.ts:5",
+      "name": "an allowed origin serves a custom provider over http, while web_fetch still cannot reach it",
       "status": "pass",
-      "durationMs": 10377.532314,
+      "durationMs": 7106.707831,
       "reason": "",
       "backend": "node"
     },
     {
-      "area": "quotas",
-      "source": "tests/api.test.ts:615",
-      "name": "a tenant's own maxAgents replaces the default limit, and a change applies at the next tenants reload without a restart",
+      "area": "billing",
+      "source": "tests/pi-durable-accounting.test.ts:48",
+      "name": "imported usage and forks are free; the next real turn is billed once (inline)",
       "status": "pass",
-      "durationMs": 3425.055291,
+      "durationMs": 5821.391091,
       "reason": "",
       "backend": "node"
     },
     {
-      "area": "quotas",
-      "source": "tests/api.test.ts:656",
-      "name": "a tenant's monthly spend cap ends a turn after the response that crosses it, refuses new runs, and a reload raising it lets the turn continue",
+      "area": "billing",
+      "source": "tests/pi-durable-accounting.test.ts:48",
+      "name": "imported usage and forks are free; the next real turn is billed once (process)",
       "status": "pass",
-      "durationMs": 3625.76498,
+      "durationMs": 5504.032517,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "history",
+      "source": "tests/pi-durable-context-guard.test.ts:107",
+      "name": "an oversized resumed range fails once, clears pending work, and remains readable and abortable",
+      "status": "pass",
+      "durationMs": 6947.000912,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "history",
+      "source": "tests/pi-durable-context-guard.test.ts:79",
+      "name": "a newly seeded oversized range fails startup with a coded outcome",
+      "status": "pass",
+      "durationMs": 7159.160405,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "history",
+      "source": "tests/pi-durable-context-guard.test.ts:90",
+      "name": "a live range stops with context_too_large and does not retry the model",
+      "status": "pass",
+      "durationMs": 6670.515194,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "volumes",
+      "source": "tests/projects.test.ts",
+      "name": "a project is a keyed volume seeded once, mounted with the workspace beside it, and published as checked snapshots",
+      "status": "pass",
+      "durationMs": 5718.098166,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "volumes",
+      "source": "tests/projects.test.ts",
+      "name": "a project is restored in place to a published version, and a check hands what it computed to store and the result",
+      "status": "pass",
+      "durationMs": 2552.261373,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "volumes",
+      "source": "tests/projects.test.ts",
+      "name": "pinned versions outlast keep and the snapshot cap, carry labels, and a snapshot can be made from contents",
+      "status": "pass",
+      "durationMs": 2946.365581,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "volumes",
+      "source": "tests/projects.test.ts",
+      "name": "publishTool finds the project from the call's identity, never its arguments, and tells the model what to fix",
+      "status": "pass",
+      "durationMs": 4883.965914,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "messages",
+      "source": "tests/prompt-options.test.ts:109",
+      "name": "the legacy /clients steer holds a message sent while idle for the next run, which a prompt sent in the same tick starts: one turn, in order",
+      "status": "pass",
+      "durationMs": 4305.24324,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "messages",
+      "source": "tests/prompt-options.test.ts:49",
+      "name": "a message sent just after a first prompt joins its turn, though the agent is still starting",
+      "status": "pass",
+      "durationMs": 5974.560476,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "messages",
+      "source": "tests/prompt-options.test.ts:60",
+      "name": "whileRunning: steer hands a running turn the message; with no turn running it starts one; retries are idempotent",
+      "status": "pass",
+      "durationMs": 6242.677092,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "messages",
+      "source": "tests/prompt-options.test.ts:7",
+      "name": "a prompt's requestId and metadata are kept on its user message and its request: in history, the stream and snapshots, never shown to the model",
+      "status": "pass",
+      "durationMs": 9039.958083,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "messages",
+      "source": "tests/prompt-options.test.ts:94",
+      "name": "a steered message the running turn did not take (it was aborted, keeping the queue) runs once, as a turn of its own",
+      "status": "pass",
+      "durationMs": 4217.420496,
       "reason": "",
       "backend": "node"
     },
@@ -1067,6 +1976,321 @@
       "backend": "node"
     },
     {
+      "area": "messages",
+      "source": "tests/request-wait.test.ts:36",
+      "name": "the SDK's requestStatus takes wait: one call that waits for a request sent without waiting",
+      "status": "pass",
+      "durationMs": 5256.433218,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "messages",
+      "source": "tests/request-wait.test.ts:6",
+      "name": "a request read with ?wait answers as soon as it settles, or when the wait ends, still running",
+      "status": "pass",
+      "durationMs": 14910.390343,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "runs",
+      "source": "tests/run-limits.test.ts:111",
+      "name": "a run stops at its time limit before its next model request",
+      "status": "pass",
+      "durationMs": 5903.703668,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "runs",
+      "source": "tests/run-limits.test.ts:12",
+      "name": "a run stops at its agent's limit of model responses with stopped turn_limit, and the next message continues",
+      "status": "pass",
+      "durationMs": 5548.90653,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "runs",
+      "source": "tests/run-limits.test.ts:42",
+      "name": "self-serve tenants get the runtime's maximums (or the operator's per tenant); admin tenants the admin backstop unless their entry sets one",
+      "status": "pass",
+      "durationMs": 12659.963968,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "runs",
+      "source": "tests/run-limits.test.ts:85",
+      "name": "an admin tenant's runaway run stops at the admin backstop",
+      "status": "pass",
+      "durationMs": 4530.659875,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "runs",
+      "source": "tests/run-limits.test.ts:94",
+      "name": "a definition's run limits reach its agents, and an agent's own stay when the definition is applied",
+      "status": "pass",
+      "durationMs": 4872.149619,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs-busy-limit.test.ts:12",
+      "name": "at a busy limit of 1, the next run starts as soon as one is seen to end: 40 stateless runs, then agent prompts alternating between two agents",
+      "status": "pass",
+      "durationMs": 76739.028257,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs-messages-at-end.test.ts:8",
+      "name": "a run's messages read as it ends are its messages, though its agent stops while answering",
+      "status": "pass",
+      "durationMs": 22997.178377,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs-stall.test.ts:8",
+      "name": "a run whose model stalls ends failed with model_stream_stalled, never hanging busy",
+      "status": "pass",
+      "durationMs": 27125.275731,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs.test.ts:109",
+      "name": "two runs with the same configuration share nothing: each model call has only its own input",
+      "status": "pass",
+      "durationMs": 4367.75895,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs.test.ts:121",
+      "name": "a run with output answers with an object that fits its schema",
+      "status": "pass",
+      "durationMs": 3046.82817,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs.test.ts:130",
+      "name": "an Idempotency-Key names one run: again with the same body it is that run, with another body a 409",
+      "status": "pass",
+      "durationMs": 4902.505752,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs.test.ts:151",
+      "name": "abort ends a running run as failed, code aborted",
+      "status": "pass",
+      "durationMs": 2986.466599,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs.test.ts:161",
+      "name": "runs count against busy agents and runs per minute, as agent runs do, and not against agent creates",
+      "status": "pass",
+      "durationMs": 14706.234426,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs.test.ts:195",
+      "name": "a run's event stream follows it to its end, and picks up after Last-Event-ID without a gap or a repeat",
+      "status": "pass",
+      "durationMs": 4266.693488,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs.test.ts:216",
+      "name": "an ended run is kept for its retention, then everything it stored is deleted",
+      "status": "pass",
+      "durationMs": 5107.572316,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs.test.ts:236",
+      "name": "a run's configuration is checked before anything is made",
+      "status": "pass",
+      "durationMs": 2102.512348,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs.test.ts:254",
+      "name": "the TypeScript SDK: agents.run in one call, runs.stream as it happens, runs.get, abort and messages",
+      "status": "pass",
+      "durationMs": 5642.943937,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs.test.ts:290",
+      "name": "a run with no tools gets none: no codemode and no file tools, only its instructions; one with tools, or that asks, has codemode",
+      "status": "pass",
+      "durationMs": 4773.36982,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs.test.ts:38",
+      "name": "a stateless run takes its configuration and input and answers with its result, in one call; it is no agent",
+      "status": "pass",
+      "durationMs": 4165.194015,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs.test.ts:76",
+      "name": "a run a model call failed says how in its error, beside code and message, and in its events",
+      "status": "pass",
+      "durationMs": 5422.915834,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs.test.ts:98",
+      "name": "without wait a run answers 202 at once; GET with wait has it end",
+      "status": "pass",
+      "durationMs": 3913.0305,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "schedules",
+      "source": "tests/schedule-api.test.ts:21",
+      "name": "public accounts can email their verified address and cannot email strangers or suppressed recipients",
+      "status": "pass",
+      "durationMs": 3242.824965,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "schedules",
+      "source": "tests/schedule-api.test.ts:37",
+      "name": "a calendar wake-up tells the model its fixed local edition date",
+      "status": "pass",
+      "durationMs": 3367.097677,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "schedules",
+      "source": "tests/schedule-api.test.ts:7",
+      "name": "calendar schedules and owner-configured email round trip through the API without crossing accounts",
+      "status": "pass",
+      "durationMs": 3889.159199,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/sdk-multi-agent.test.ts:13",
+      "name": "SDK: delegate settings on upsert bring their builtin; a run lists its child's id, and a stream with subagents shows it start and end",
+      "status": "pass",
+      "durationMs": 6273.90866,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "selfhost",
+      "source": "tests/selfhost.test.ts:39",
+      "name": "a runtime bootstrapped from AGENT_TENANT and AGENT_OPERATOR_TOKEN serves that tenant",
+      "status": "pass",
+      "durationMs": 5451.803793,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "selfhost",
+      "source": "tests/selfhost.test.ts:48",
+      "name": "on a runtime configured by AGENT_TENANT, a run without a model key also names AGENT_TENANT_API_KEYS",
+      "status": "pass",
+      "durationMs": 3360.839058,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "selfhost",
+      "source": "tests/selfhost.test.ts:57",
+      "name": "a private runtime names no URL to browsers: AGENT_BROWSER_URL overrides the browser token's url, or empty leaves it out, and links carry their path on the runtime",
+      "status": "pass",
+      "durationMs": 5616.64778,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "messages",
+      "source": "tests/sender.test.ts:8",
+      "name": "a message's sender reaches the model in a block only the runtime can write, and acts in the turn",
+      "status": "pass",
+      "durationMs": 5394.771364,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "agents",
+      "source": "tests/service-api.test.ts:102",
+      "name": "tenants provision and see only their own agents, billed to their own provider keys",
+      "status": "pass",
+      "durationMs": 3264.975646,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "agents",
+      "source": "tests/service-api.test.ts:43",
+      "name": "operator provisioning imports native history once; scoped reads do not journal transcript copies",
+      "status": "pass",
+      "durationMs": 3395.497568,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "agents",
+      "source": "tests/service-api.test.ts:62",
+      "name": "scoped configuration persists allowed fields and rejects provider credentials or endpoints",
+      "status": "pass",
+      "durationMs": 3587.686282,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "agents",
+      "source": "tests/service-api.test.ts:88",
+      "name": "provisioning takes models by name only, never an endpoint or credentials",
+      "status": "pass",
+      "durationMs": 2331.607833,
+      "reason": "",
+      "backend": "node"
+    },
+    {
       "area": "quotas",
       "source": "tests/spend-limits.test.ts",
       "name": "a run's own spend limit ends that run once it crosses it, and leaves the agent's limit and later runs alone",
@@ -1094,29 +2318,200 @@
       "backend": "node"
     },
     {
-      "area": "schedules",
-      "source": "tests/schedule-api.test.ts:21",
-      "name": "public accounts can email their verified address and cannot email strangers or suppressed recipients",
+      "area": "streaming",
+      "source": "tests/stream-deltas.test.ts:110",
+      "name": "a snapshot too large for one frame drops the turn's finished messages first, keeping the message still streaming",
       "status": "pass",
-      "durationMs": 3652.852549,
+      "durationMs": 4545.365645,
       "reason": "",
       "backend": "node"
     },
     {
-      "area": "schedules",
-      "source": "tests/schedule-api.test.ts:37",
-      "name": "a calendar wake-up tells the model its fixed local edition date",
+      "area": "streaming",
+      "source": "tests/stream-deltas.test.ts:132",
+      "name": "a tool call's updates are Pi's, less the message: toolcall_start names the call, toolcall_end carries it",
       "status": "pass",
-      "durationMs": 3791.9173,
+      "durationMs": 4611.039962,
       "reason": "",
       "backend": "node"
     },
     {
-      "area": "schedules",
-      "source": "tests/schedule-api.test.ts:7",
-      "name": "calendar schedules and owner-configured email round trip through the API without crossing accounts",
+      "area": "streaming",
+      "source": "tests/stream-deltas.test.ts:29",
+      "name": "message_update carries its delta alone; a subscriber that asks gets a snapshot of the running turn where it cannot replay, and one that does not a replay gap",
       "status": "pass",
-      "durationMs": 5897.340684,
+      "durationMs": 5136.785169,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "streaming",
+      "source": "tests/stream-deltas.test.ts:91",
+      "name": "the SDK's events carry no partial message, and it starts from a snapshot",
+      "status": "pass",
+      "durationMs": 4260.475752,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "access",
+      "source": "tests/tenant-reads.test.ts:117",
+      "name": "an agent with work left that cannot be loaded is tried again with capped backoff, never for good, and says so",
+      "status": "pass",
+      "durationMs": 8979.732254,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "access",
+      "source": "tests/tenant-reads.test.ts:144",
+      "name": "a request whose open-work mark could not be written is not taken, and its retry runs",
+      "status": "pass",
+      "durationMs": 3137.896862,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "access",
+      "source": "tests/tenant-reads.test.ts:44",
+      "name": "?request= keeps a stream or poll to one request's events and response",
+      "status": "pass",
+      "durationMs": 3548.982821,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "access",
+      "source": "tests/tenant-reads.test.ts:6",
+      "name": "a tenant reads its agent's events, state, history and inputs with its own token, and no other tenant can",
+      "status": "pass",
+      "durationMs": 5818.361803,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "access",
+      "source": "tests/tenant-reads.test.ts:60",
+      "name": "a subscriber that goes away before its stream opens gives its place back",
+      "status": "pass",
+      "durationMs": 3727.978125,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "access",
+      "source": "tests/tenant-reads.test.ts:82",
+      "name": "a tenant's own watcher bound, from the tenants file, replaces the default",
+      "status": "pass",
+      "durationMs": 3010.021229,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "access",
+      "source": "tests/tenant-reads.test.ts:95",
+      "name": "an idle agent's history, state and inputs are read without loading it",
+      "status": "pass",
+      "durationMs": 5623.911898,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "files",
+      "source": "tests/tool-files.test.ts",
+      "name": "MCP images, audio, blobs and long text are saved to the workspace, under sanitized names",
+      "status": "pass",
+      "durationMs": 4881.13778,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "files",
+      "source": "tests/tool-files.test.ts",
+      "name": "MCP tools take files by {$file}: base64 or a call-bound URL, only from the agent's mounts",
+      "status": "pass",
+      "durationMs": 8709.24157,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "files",
+      "source": "tests/tool-files.test.ts",
+      "name": "OpenAPI operations upload files (multipart, raw bytes, base64) and save binary responses",
+      "status": "pass",
+      "durationMs": 4568.0144,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "files",
+      "source": "tests/tool-files.test.ts",
+      "name": "application-attached MCP files are saved to the workspace like a server's",
+      "status": "pass",
+      "durationMs": 3830.96304,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "files",
+      "source": "tests/tool-files.test.ts",
+      "name": "web_fetch saves PDFs and images to the workspace and shows them to the model",
+      "status": "pass",
+      "durationMs": 3820.05143,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/tool-spawn.test.ts:15",
+      "name": "a trusted tool prepares a persistent worker and starts it as a background sub-agent; a busy worker queues the next task",
+      "status": "pass",
+      "durationMs": 7685.847903,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/tool-spawn.test.ts:75",
+      "name": "a spawn directive from a tool without runtime auth (an attached application's) is refused",
+      "status": "pass",
+      "durationMs": 3699.329972,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "webhooks",
+      "source": "tests/usage-webhooks.test.ts",
+      "name": "a rotated usage webhook secret signs beside the old one for a day, and removing the webhook stops events",
+      "status": "pass",
+      "durationMs": 3910.015668,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "webhooks",
+      "source": "tests/usage-webhooks.test.ts",
+      "name": "calls through a tenant's own endpoint are sent too, named as the agent names its model",
+      "status": "pass",
+      "durationMs": 5064.185949,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "webhooks",
+      "source": "tests/usage-webhooks.test.ts",
+      "name": "each model response's usage is POSTed, signed, to the tenant's webhook: retried after a failure, and kept across a restart",
+      "status": "pass",
+      "durationMs": 8502.849782,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "volumes",
+      "source": "tests/volumes.test.ts:538",
+      "name": "the REST API and SDK manage volumes within a tenant, and nothing crosses tenants",
+      "status": "pass",
+      "durationMs": 10763.57832,
       "reason": "",
       "backend": "node"
     },
@@ -1175,83 +2570,92 @@
       "backend": "node"
     },
     {
-      "area": "search",
-      "source": "tests/x-search.test.ts",
-      "name": "X search works in agents and stateless runs, uses tenant keys first and bills only platform requests",
+      "area": "webhooks",
+      "source": "tests/webhooks.test.ts",
+      "name": "a run whose event could not be written when it ended has it written with the agent's next load or run, once",
       "status": "pass",
-      "durationMs": 13060.73953,
+      "durationMs": 12166.970873,
       "reason": "",
       "backend": "node"
     },
     {
-      "area": "selfhost",
-      "source": "tests/selfhost.test.ts:39",
-      "name": "a runtime bootstrapped from AGENT_TENANT and AGENT_OPERATOR_TOKEN serves that tenant",
+      "area": "webhooks",
+      "source": "tests/webhooks.test.ts",
+      "name": "in a rolling deploy, nodes of the previous release see only usage webhook deliveries, and their usage webhook changes take effect",
       "status": "pass",
-      "durationMs": 5451.803793,
+      "durationMs": 3446.298277,
       "reason": "",
       "backend": "node"
     },
     {
-      "area": "selfhost",
-      "source": "tests/selfhost.test.ts:48",
-      "name": "on a runtime configured by AGENT_TENANT, a run without a model key also names AGENT_TENANT_API_KEYS",
+      "area": "webhooks",
+      "source": "tests/webhooks.test.ts:103",
+      "name": "a run that ends with an error is sent as run.failed",
       "status": "pass",
-      "durationMs": 3360.839058,
+      "durationMs": 3721.211652,
       "reason": "",
       "backend": "node"
     },
     {
-      "area": "selfhost",
-      "source": "tests/selfhost.test.ts:57",
-      "name": "a private runtime names no URL to browsers: AGENT_BROWSER_URL overrides the browser token's url, or empty leaves it out, and links carry their path on the runtime",
+      "area": "webhooks",
+      "source": "tests/webhooks.test.ts:118",
+      "name": "the usage webhook still works, apart from endpoints, and gets usage in its original body",
       "status": "pass",
-      "durationMs": 5616.64778,
+      "durationMs": 3724.85541,
       "reason": "",
       "backend": "node"
     },
     {
-      "area": "volumes",
-      "source": "tests/projects.test.ts",
-      "name": "a project is a keyed volume seeded once, mounted with the workspace beside it, and published as checked snapshots",
+      "area": "webhooks",
+      "source": "tests/webhooks.test.ts:25",
+      "name": "webhook endpoints: registered with the event types they want, managed, and each sent its events in a signed envelope",
       "status": "pass",
-      "durationMs": 5718.098166,
+      "durationMs": 6433.046081,
       "reason": "",
       "backend": "node"
     },
     {
-      "area": "volumes",
-      "source": "tests/projects.test.ts",
-      "name": "a project is restored in place to a published version, and a check hands what it computed to store and the result",
+      "area": "delegation",
+      "source": "tests/workflows.test.ts:106",
+      "name": "an agent's workflow settings reach its definition and its detail",
       "status": "pass",
-      "durationMs": 2552.261373,
+      "durationMs": 3404.14957,
       "reason": "",
       "backend": "node"
     },
     {
-      "area": "volumes",
-      "source": "tests/projects.test.ts",
-      "name": "pinned versions outlast keep and the snapshot cap, carry labels, and a snapshot can be made from contents",
+      "area": "delegation",
+      "source": "tests/workflows.test.ts:122",
+      "name": "an agent with the workflow builtin is offered run_workflow; one without never sees it",
       "status": "pass",
-      "durationMs": 2946.365581,
+      "durationMs": 4532.749836,
       "reason": "",
       "backend": "node"
     },
     {
-      "area": "volumes",
-      "source": "tests/projects.test.ts",
-      "name": "publishTool finds the project from the call's identity, never its arguments, and tells the model what to fix",
+      "area": "delegation",
+      "source": "tests/workflows.test.ts:23",
+      "name": "the SDK runs a stateless workflow with its builtin added automatically",
       "status": "pass",
-      "durationMs": 4883.965914,
+      "durationMs": 4954.72895,
       "reason": "",
       "backend": "node"
     },
     {
-      "area": "volumes",
-      "source": "tests/volumes.test.ts:538",
-      "name": "the REST API and SDK manage volumes within a tenant, and nothing crosses tenants",
+      "area": "delegation",
+      "source": "tests/workflows.test.ts:37",
+      "name": "run_workflow coordinates child agents from a script and returns only the script's value",
       "status": "pass",
-      "durationMs": 10763.57832,
+      "durationMs": 6385.179558,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/workflows.test.ts:90",
+      "name": "an agent call the settings do not allow answers null instead of failing the script",
+      "status": "pass",
+      "durationMs": 3883.407589,
       "reason": "",
       "backend": "node"
     },
@@ -1263,38 +2667,15 @@
       "durationMs": 7742.304692,
       "reason": "",
       "backend": "node"
-    }
-  ],
-  "shards": [
-    {
-      "index": 1,
-      "total": 6,
-      "durationMs": 27879.097999999998
     },
     {
-      "index": 2,
-      "total": 6,
-      "durationMs": 27340.254751
-    },
-    {
-      "index": 3,
-      "total": 6,
-      "durationMs": 76606.576471
-    },
-    {
-      "index": 4,
-      "total": 6,
-      "durationMs": 20612.445602
-    },
-    {
-      "index": 5,
-      "total": 6,
-      "durationMs": 21999.391699
-    },
-    {
-      "index": 6,
-      "total": 6,
-      "durationMs": 24313.786025
+      "area": "search",
+      "source": "tests/x-search.test.ts",
+      "name": "X search works in agents and stateless runs, uses tenant keys first and bills only platform requests",
+      "status": "pass",
+      "durationMs": 13060.73953,
+      "reason": "",
+      "backend": "node"
     }
   ]
 }

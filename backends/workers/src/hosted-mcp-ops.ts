@@ -38,7 +38,7 @@ export async function deploy(api: Api, manifests: Manifest[], options: { apply?:
     for (const { key, ...config } of manifest.agents) {
       try {
         const agent = await api.call("POST", "/v1/agents", { definition: saved.id, ...config }, { "Idempotency-Key": key });
-        result.agents.push({ key, id: agent.id, status: "ready", ...(agent.reconfigured ? { reconfigured: true as const } : {}) });
+        result.agents.push({ key, id: agent.id, status: "ready", ...(agent.reconfigured || agent.existingAgent ? { reconfigured: true as const } : {}) });
       } catch (error) {
         result.agents.push({ key, status: "failed", error: (error as Error).message });
       }
@@ -201,7 +201,7 @@ export async function upsertAgent(api: Api, key: string, config: { definition?: 
   const { definition, ...rest } = config;
   const body = { ...(definition ? { definition: await api.definitionId(definition) } : {}), ...Object.fromEntries(Object.entries(rest).filter(([, value]) => value !== undefined)) };
   const created = await api.call("POST", "/v1/agents", body, { "Idempotency-Key": key });
-  return { key, id: created.id, expiresAt: created.expiresAt, ...(created.reconfigured ? { reconfigured: true } : {}) };
+  return { key, id: created.id, expiresAt: created.expiresAt, ...(created.reconfigured || created.existingAgent ? { reconfigured: true } : {}) };
 }
 
 /** Change one agent's model, prompt or thinking level between its runs, and wait up to `wait` seconds for it to land. */

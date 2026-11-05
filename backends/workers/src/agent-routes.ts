@@ -18,7 +18,17 @@ function result(value: DirectoryEntry | DirectoryFailure): DirectoryEntry { if (
 async function call(env: ControlEnv, id: string, path: string, input?: unknown): Promise<Response> {
   return env.AGENTS.getByName(id).fetch(new Request(`https://agent${path}`, input === undefined ? undefined : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) }));
 }
-async function payload(response: Response) { const value = await response.json() as any; if (!response.ok) throw Object.assign(new ApiError(response.status, value.error ?? "Agent operation failed", value.code), { details: Object.fromEntries(Object.entries(value).filter(([key]) => !["error", "code"].includes(key))) }); return value; }
+async function payload(response: Response) {
+  const value = await response.json() as any;
+  if (!response.ok) {
+    const { error, code, ...details } = value;
+    throw Object.assign(new ApiError(response.status, error ?? "Agent operation failed", code), {
+      details,
+      ...(response.headers.has("retry-after") ? { retryAfter: Number(response.headers.get("retry-after")) } : {}),
+    });
+  }
+  return value;
+}
 export function runView(record: Record, retentionMs: number) {
   const result = record.outcome?.result ?? {}, ended = record.state === "completed";
   const error = !ended ? null : record.outcome?.error ? { code: /aborted/i.test(record.outcome.error) ? "aborted" : "runtime_error", message: record.outcome.error } : result.error ? { code: result.code ?? "model_error", message: result.error, ...result.modelError, ...Object.fromEntries(["limit", "reason", "bucket", "endUser"].flatMap(key => typeof result[key] === "string" ? [[key, result[key]]] : [])) } : null;
@@ -45,7 +55,7 @@ export async function statelessRoutes(request: Request, env: ControlEnv, auth: A
     const fingerprint = await digest(canonical(JSON.parse(JSON.stringify({ input, files, retentionSeconds, output, actor, from, metadata, spendLimit, ...given }))));
     const old = await directory.get(directoryKey) as typeof entry | null;
     if (old?.run && old.run.fingerprint !== fingerprint) throw new ApiError(409, "Idempotency-Key was used for a different run", "IDEMPOTENCY_CONFLICT");
-    if (old) entry = old;
+    if (old) entry = old.initialized ? old : result(await directory.upsert(old.config, directoryKey, url.origin));
     else {
       const noTools = !given.definition && !given.builtins?.length && !given.delegate && !given.mcpServers?.length && !given.fileTools && !given.mounts?.length && !attached.length;
       const config = await provisionDefinition(env, auth.tenantId, { ...(noTools ? { codeMode:false, fileTools:false, decide:false } : {}), ...given, type: "run", ttlSeconds: 604800 + retentionSeconds });
@@ -101,7 +111,7 @@ export async function agentLifecycleRoutes(request: Request, env: ControlEnv & F
   const answer = async (ready: NonNullable<typeof saved>) => {
     if (ready.forkedFrom?.agentId !== entry.id) throw new ApiError(409, "Key belongs to another agent");
     if (claim) await releaseForkClaim(env, entry.tenantId, claim);
-    return json({ id: ready.id, ...(includeToken ? { token: await agentToken(env.API_TOKEN, ready.id) } : {}), expiresAt: ready.expiresAt, forkedFrom: ready.forkedFrom }, 201);
+    return json({ id: ready.id, ...(includeToken ? { token: await agentToken(env.API_TOKEN, ready.id, ready.tokenVersion) } : {}), expiresAt: ready.expiresAt, forkedFrom: ready.forkedFrom }, 201);
   };
   if (saved?.forkedFrom) return answer(saved);
   if (saved && !claim) throw new ApiError(409, "Key belongs to another agent");

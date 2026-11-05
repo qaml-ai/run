@@ -7,6 +7,7 @@ import { databaseUnavailable, withSql } from "../src/postgres.ts";
 export * from "../src/index.ts";
 
 const resizeFailureKey = "contract-fixture/image-resize-failures";
+const pendingQueues = new Set<Promise<void>>();
 function imageFailureEnvironment(env: Env): Env {
   if ((env as Env & { TEST_IMAGE_RESIZE_FAILURE_ONCE?: string }).TEST_IMAGE_RESIZE_FAILURE_ONCE !== "1") return env;
   // Fail the real Images transform once, at its external-service boundary. The
@@ -66,6 +67,19 @@ async function readFixtureConfiguration(env: Env): Promise<string> {
       await new Promise(resolve => setTimeout(resolve, 10 * (attempt + 1)));
     }
   }
+}
+
+// A deployment keeps its environment identity between requests. Preserve that
+// identity until the fixture's tenant configuration actually changes, while
+// still reading every request so configuration reload assertions stay live.
+const configuredEnvironments = new WeakMap<Env, { configuration: string; env: Env }>();
+async function configuredEnvironment(env: Env): Promise<Env> {
+  const configuration = await fixtureConfiguration(env);
+  const previous = configuredEnvironments.get(env);
+  if (previous?.configuration === configuration) return previous.env;
+  const configured = { ...env, AGENT_TENANTS_JSON: configuration };
+  configuredEnvironments.set(env, { configuration, env: configured });
+  return configured;
 }
 
 /** Clock preparation only: execution still runs through the original DO alarm/job. */
@@ -130,15 +144,25 @@ export class CamelAgent extends RuntimeAgent {
 
 export default {
   ...application,
+  async queue(batch: Parameters<typeof application.queue>[0], env: Parameters<typeof application.queue>[1]) {
+    const pending = application.queue(batch, env);
+    pendingQueues.add(pending);
+    try { await pending; }
+    finally { pendingQueues.delete(pending); }
+  },
   async fetch(request: Request, env: Env, context: ExecutionContext) {
     if (env.TEST_MODE !== "1") return new Response("Test fixture disabled", { status: 404 });
+    if (request.method === "POST" && new URL(request.url).pathname === "/__test/drain") {
+      // Miniflare.dispose() kills workerd. A graceful source-host stop lets
+      // admitted deliveries finish their SQL writes before the process exits.
+      await Promise.allSettled([...pendingQueues]);
+      return new Response(null, { status: 204 });
+    }
     if (new URL(request.url).pathname === "/__test/image-resize-failures")
       return Response.json({ count: await env.BUCKET.head(resizeFailureKey) ? 1 : 0 });
     if (new URL(request.url).pathname === "/healthz") return application.fetch(request, env, context);
-    const configuration = fixtureConfiguration(env);
-    context.waitUntil(configuration.catch(() => {}));
-    return application.fetch(request, {
-      ...env, AGENT_TENANTS_JSON: await configuration,
-    }, context);
+    const configuration = configuredEnvironment(env);
+    context.waitUntil(configuration.then(() => {}, () => {}));
+    return application.fetch(request, await configuration, context);
   },
 };

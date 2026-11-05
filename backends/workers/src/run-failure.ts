@@ -21,7 +21,8 @@ export function projectRunFailure(options: RunFailureOptions): RunFailure | unde
   if (!error && !(options.outputExpected && !options.hasOutput)) return;
   if (!error) return { result: { error: 'The model ended its turn without calling final_output, so the run has no output in its schema', code: 'output_missing' } };
   const result: RunFailure['result'] = { error };
-  if (options.aborted || last?.stopReason === 'aborted' || /^(?:The run was aborted|Request was aborted|aborted|cancelled|canceled)(?:\b|$)/i.test(error)) result.code = /^cancel[le]+d$/i.test(error) ? 'cancelled' : 'aborted';
+  if (options.aborted) result.code = 'aborted';
+  else if (last?.stopReason === 'aborted' || /^(?:The run was aborted|Request was aborted|aborted|cancelled|canceled)(?:\b|$)/i.test(error)) result.code = /^cancel[le]+d$/i.test(error) ? 'cancelled' : 'aborted';
   else if (/\bcontext_too_large\b/.test(error)) { result.code = 'context_too_large'; result.stopped = 'turn_limit'; }
   else if (/\b(?:turn_limit|max(?:imum)? (?:turns|responses)|turn limit|response limit)\b/i.test(error)) { result.code = 'turn_limit'; result.stopped = 'turn_limit'; }
   else if (/\bspend_limit\b|spend limit/i.test(error)) { result.code = 'spend_limit'; result.stopped = 'spend_limit'; }

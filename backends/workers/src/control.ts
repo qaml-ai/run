@@ -26,6 +26,7 @@ import type { RateLimitState } from "./admission.ts";
 import { applyUsageRows } from "./accounts.ts";
 import { applyWorkspaceUsage, Workspaces } from "./workspaces.ts";
 import { activeCharge } from "../../../src/pricing.ts";
+import { canonical } from "../../../shared/durable-json.ts";
 import {
   enqueueEvents,
   webhookEvent,
@@ -50,6 +51,7 @@ export type ControlBindings = PostgresEnv & {
 export type ControlEnv = WebhookEnv & Omit<FileBindings,"HYPERDRIVE"> & {
   AGENTS: AgentNamespace;
   API_TOKEN: string;
+  AGENT_PUBLIC_URL?: string;
   MODEL: string;
   DEFAULT_TENANT?: string;
   TEST_MODE?: string;
@@ -62,6 +64,7 @@ export type AuthContext = {
 };
 export interface DirectoryEntry {
   id: string;
+  tokenVersion?: string;
   tenantId: string;
   key: string | null;
   config: AgentConfiguration;
@@ -71,13 +74,14 @@ export interface DirectoryEntry {
   expiresAt: number | null;
   revision: number;
   initialized: boolean;
+  reconfigured?: Record<string, unknown>;
   deleted?: true;
   cleanupPending?: boolean;
   pendingFork?: { sourceId: string; fingerprint: string };
   parentAgentId?: string;
   parentRunId?: string;
   /** Returned for an upsert of an existing agent; never persisted in its header. */
-  reconfigured?: true;
+  existingAgent?: true;
 }
 const creationRates = new WeakMap<DirectoryEntry, RateLimitState>();
 export const creationRate = (entry: DirectoryEntry) => creationRates.get(entry);
@@ -113,6 +117,9 @@ export async function authenticate(
     : null;
 }
 
+const mountIdentity = (mounts: AgentConfiguration['mounts']) => JSON.stringify((mounts ?? []).map(mount =>
+  [mount.volumeId, mount.path, mount.mode, mount.subpath ?? '/', mount.notify === true]));
+
 export class Directory {
   private env: ControlEnv;
   private tenantId: string;
@@ -142,7 +149,7 @@ export class Directory {
     if (!response.ok) return entry;
     const current = await response.json() as Pick<DirectoryEntry, "id" | "tenantId" | "config" | "revision" | "expiresAt">;
     if (current.id !== entry.id || current.tenantId !== this.tenantId) return entry;
-    return { ...entry, ...current, configHash: await digest(JSON.stringify(current.config)), initialized: true };
+    return { ...entry, ...current, configHash: await digest(canonical(current.config)), initialized: true };
   }
   async list(): Promise<DirectoryEntry[]> {
     const { rows } = await withSql(this.env, (sql) =>
@@ -158,6 +165,7 @@ export class Directory {
     suppliedKey?: string,
     runtimeOrigin?: string,
     pendingFork?: { sourceId: string; fingerprint: string },
+    queueConfiguration = false,
   ): Promise<DirectoryEntry | DirectoryFailure> {
     const fields = input && typeof input === "object" ? input as Record<string, unknown> : {};
     const defaultModel = fields.model === undefined
@@ -176,7 +184,32 @@ export class Directory {
     if (owner?.revoked) throw new ApiError(410,'Agent is deleted','AGENT_GONE');
     const previousEntry = await this.get(id), previousConfig = previousEntry?.config;
     if (fields.model === undefined && previousConfig?.model) config.model = previousConfig.model;
+    if (fields.language === undefined && previousConfig?.language !== undefined) config.language = previousConfig.language;
     const resolvedModel = await validateAgentModel(this.env, this.tenantId, config, { reference: previousConfig?.model, model: previousEntry?.resolvedModel, defaultModel: fields.model === undefined });
+    if (queueConfiguration && previousEntry) {
+      for (const field of ['subject', 'context', 'definition'] as const)
+        if (canonical(config[field] ?? null) !== canonical(previousEntry.config[field] ?? null))
+          throw new ApiError(409, `An agent's ${field} cannot change`);
+      if (fields.mounts !== undefined && fields.remount !== true) {
+        const mounts = await (await import('./file-mounts.ts')).prepareMounts(this.env, this.tenantId, id, fields.mounts);
+        if (mountIdentity(mounts) !== mountIdentity(previousEntry.config.mounts))
+          throw new ApiError(409, `An existing agent's mounts cannot change; delete it (DELETE /v1/agents/${id}) or use another idempotency key, or send remount: true to change its mounts`);
+      }
+      const target: Record<string, unknown> = { ...config };
+      // Resolve omitted fields when this target reaches the head of the queue.
+      if (fields.model === undefined) delete target.model;
+      if (fields.language === undefined) delete target.language;
+      const response = await this.env.AGENTS.getByName(id).fetch(new Request('https://agent/upsert', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: crypto.randomUUID(), method: 'configure', params: {
+          ...target, ...(fields.remount !== undefined ? { remount: fields.remount } : {}),
+        } }),
+      }));
+      const reconfigured = await response.json() as Record<string, unknown>;
+      if (!response.ok) return { failed: true, status: response.status, error: String(reconfigured.error ?? 'Agent configuration was refused'), code: String(reconfigured.code ?? 'CONFIGURATION_FAILED') };
+      const updated = reconfigured.state === 'completed' ? await this.get(id) : previousEntry;
+      return { ...(updated ?? previousEntry), reconfigured };
+    }
     const release = config.type !== "run" && !previousEntry?.initialized
       ? await reserveAgentCreation(this.env as import("./agent.ts").Env, this.tenantId, id)
       : async () => {};
@@ -213,9 +246,9 @@ export class Directory {
       if (pendingFork && old && (old.pendingFork?.sourceId !== pendingFork.sourceId || old.pendingFork?.fingerprint !== pendingFork.fingerprint))
         throw new ApiError(409, "Key belongs to another agent", "FORK_CONFLICT");
       if (requested===undefined && old?.config.mounts) config.mounts=old.config.mounts;
-      if(old?.config.mounts&&requested!==undefined&&JSON.stringify(old.config.mounts)!==JSON.stringify(config.mounts)&&(input as {remount?:boolean}).remount!==true)
+      if(old?.config.mounts&&requested!==undefined&&mountIdentity(old.config.mounts)!==mountIdentity(config.mounts)&&(input as {remount?:boolean}).remount!==true)
         throw new ApiError(409,`An existing agent's mounts cannot change; delete it (DELETE /v1/agents/${id}) or use another idempotency key, or send remount: true to change its mounts`);
-      const configHash=await digest(JSON.stringify(config));
+      const configHash=await digest(canonical(config));
       const sameModel = JSON.stringify(old?.resolvedModel) === JSON.stringify(resolvedModel);
       if (config.type !== "run")
         rate = await createAdmission(this.env, this.tenantId, !(old?.initialized && old.configHash === configHash));
@@ -223,7 +256,7 @@ export class Directory {
       const next: DirectoryEntry = {
         id,
         tenantId: this.tenantId,
-        key,
+        key: old ? old.key : key,
         config,
         ...(resolvedModel ? { resolvedModel } : {}),
         configHash,
@@ -236,6 +269,7 @@ export class Directory {
             ? old.revision
             : (old?.revision ?? 0) + 1,
         initialized: false,
+        ...(old?.tokenVersion ? { tokenVersion: old.tokenVersion } : {}),
         ...(old?.parentAgentId ? { parentAgentId: old.parentAgentId, parentRunId: old.parentRunId } : {}),
         ...(pendingFork ? { pendingFork } : {}),
       };
@@ -246,7 +280,7 @@ export class Directory {
         [
           id,
           this.tenantId,
-          JSON.stringify(next),
+          JSON.stringify({ ...next, initialized: old?.initialized ?? false }),
           next.revision,
           config.name ?? "",
           config.type ?? "agent",
@@ -286,10 +320,11 @@ export class Directory {
       entry.initialized = true;
       const applied = await withSql(this.env, (sql) =>
         sql.query(
-          "update agents set header=$3 where id=$1 and tenant=$2 and revision=$4 and not revoked",
-          [id, this.tenantId, JSON.stringify(entry), entry.revision],
+          "update agents set header=jsonb_set(header::jsonb, '{initialized}', 'true'::jsonb)::json where id=$1 and tenant=$2 and revision=$3 and not revoked returning header",
+          [id, this.tenantId, entry.revision],
         ),
       );
+      if (applied.rowCount) Object.assign(entry, applied.rows[0].header);
       if (!applied.rowCount) {
         const latest = await this.get(id);
         if (latest?.initialized && latest.configHash === entry.configHash) return latest;
@@ -306,7 +341,7 @@ export class Directory {
       const inherited = await workspaces.current(this.tenantId, "definition", config.definition);
       if (inherited) await workspaces.assign(this.tenantId, "agent", id, inherited.workspace, true);
     }
-    const result: DirectoryEntry = createdHere ? entry : { ...entry, reconfigured: true };
+    const result: DirectoryEntry = createdHere ? entry : { ...entry, existingAgent: true };
     if (rate) creationRates.set(result, rate);
     return result;
     } finally { await release(); }
@@ -884,37 +919,6 @@ export async function controlRoutes(
         )
       ).rows[0],
     );
-  const credits = new EndUserCredits(database(env));
-  if (path === "/v1/end-users/settings")
-    return json(
-      request.method === "GET"
-        ? await credits.settings(tenant)
-        : await credits.setSettings(tenant, await input(), {
-            merge: request.method === "PATCH",
-          }),
-    );
-  if (path === "/v1/end-users") return json(await credits.list(tenant));
-  const userMatch =
-    /^\/v1\/end-users\/([^/]+)(?:\/(ledger|lots|usage|days))?$/.exec(path);
-  if (userMatch) {
-    const id = decodeURIComponent(userMatch[1]),
-      part = userMatch[2];
-    if (part === "ledger")
-      return json(
-        request.method === "GET"
-          ? await credits.ledger(tenant, id)
-          : await credits.post(tenant, id, await input()),
-      );
-    if (part === "lots" && request.method === "POST")
-      return json(await credits.markLot(tenant, id, await input()));
-    if (part === "usage") return json(await credits.usage(tenant, id));
-    if (part === "days") return json(await credits.days(tenant, id));
-    return json(
-      request.method === "GET"
-        ? await credits.get(tenant, id)
-        : await credits.update(tenant, id, await input()),
-    );
-  }
   return null;
 }
 

@@ -2,15 +2,15 @@
   "backend": "node",
   "area": "definitions,delegation",
   "nodeKey": "1ff65be69bdb97687bb551ad863a1ab48c42d7c4726928e25ab5efd896fabdfc",
-  "suiteHash": "53b711772a495f726b3665f47e4255eb60c7cd94660a3a0782155f01ca852525",
-  "revision": "543403aa",
-  "durationMs": 100706.955632,
+  "suiteHash": "65af56a1c957282a54d6e7d0512980e7d2f5c6e73ad9674d05b2a73235d4351c",
+  "revision": "0bdefc191d38f7653a4568135fb743457e8f9fcb",
+  "durationMs": 139479.401681,
   "runtime": {
     "node": "v24.22.1",
     "platform": "linux",
     "arch": "x64"
   },
-  "recordedAt": "2026-11-05T22:52:31.164Z",
+  "recordedAt": "2026-11-05T23:11:16.699Z",
   "expectedCases": 49,
   "rows": [
     {
@@ -18,7 +18,7 @@
       "source": "tests/definitions.test.ts:137",
       "name": "a definition with applyOnUpdate reaches its live agents on every save that revises it, upserts included",
       "status": "pass",
-      "durationMs": 4547.488568,
+      "durationMs": 3766.691079,
       "reason": "",
       "backend": "node"
     },
@@ -27,7 +27,7 @@
       "source": "tests/definitions.test.ts:177",
       "name": "an agent's own model, thinking level and prompt addition survive applying its definition",
       "status": "pass",
-      "durationMs": 4551.778352,
+      "durationMs": 4098.259817,
       "reason": "",
       "backend": "node"
     },
@@ -36,7 +36,7 @@
       "source": "tests/definitions.test.ts:17",
       "name": "definitions are the tenant's own, validated, and revised",
       "status": "pass",
-      "durationMs": 3793.55076,
+      "durationMs": 2740.73061,
       "reason": "",
       "backend": "node"
     },
@@ -45,7 +45,7 @@
       "source": "tests/definitions.test.ts:217",
       "name": "fileTools: false leaves the model present_file, and the file tools to code",
       "status": "pass",
-      "durationMs": 5738.95471,
+      "durationMs": 4834.124287,
       "reason": "",
       "backend": "node"
     },
@@ -54,7 +54,7 @@
       "source": "tests/definitions.test.ts:244",
       "name": "the SDK makes an agent from a definition with its attached server's tools, which survive an apply",
       "status": "pass",
-      "durationMs": 4026.299071,
+      "durationMs": 3643.218323,
       "reason": "",
       "backend": "node"
     },
@@ -63,7 +63,7 @@
       "source": "tests/definitions.test.ts:328",
       "name": "public configuration waits between turns, preserves history, and reports validation and outcome",
       "status": "pass",
-      "durationMs": 4621.39817,
+      "durationMs": 3859.656343,
       "reason": "",
       "backend": "node"
     },
@@ -72,7 +72,7 @@
       "source": "tests/definitions.test.ts:390",
       "name": "a tenant's definitions are capped by its limit (409 DEFINITIONS_LIMIT), and the ones no agent uses can be listed to delete",
       "status": "pass",
-      "durationMs": 3682.097292,
+      "durationMs": 3206.396525,
       "reason": "",
       "backend": "node"
     },
@@ -81,7 +81,7 @@
       "source": "tests/definitions.test.ts:53",
       "name": "a definition's key upserts it: the same key is the same definition, revised only when it changes",
       "status": "pass",
-      "durationMs": 2753.389959,
+      "durationMs": 2334.404501,
       "reason": "",
       "backend": "node"
     },
@@ -90,7 +90,7 @@
       "source": "tests/definitions.test.ts:75",
       "name": "a definition's idle lifetime applies, and a lifetime given with the agent replaces it",
       "status": "pass",
-      "durationMs": 4330.775068,
+      "durationMs": 3295.169364,
       "reason": "",
       "backend": "node"
     },
@@ -99,7 +99,7 @@
       "source": "tests/definitions.test.ts:85",
       "name": "agents are made from a definition, record its revision, and take a new one when it is applied",
       "status": "pass",
-      "durationMs": 5235.869516,
+      "durationMs": 4455.621293,
       "reason": "",
       "backend": "node"
     },
@@ -108,7 +108,7 @@
       "source": "tests/agent-messaging.test.ts:136",
       "name": "a browser token with the children scope reads its agent's sub-agents, and only theirs",
       "status": "pass",
-      "durationMs": 6275.984582,
+      "durationMs": 5716.938936,
       "reason": "",
       "backend": "node"
     },
@@ -117,7 +117,7 @@
       "source": "tests/agent-messaging.test.ts:156",
       "name": "a child that waits on a person notifies its parent, and notifies again when it resumes and ends",
       "status": "pass",
-      "durationMs": 5935.769225,
+      "durationMs": 5023.331487,
       "reason": "",
       "backend": "node"
     },
@@ -126,7 +126,7 @@
       "source": "tests/agent-messaging.test.ts:21",
       "name": "a parent messages its finished child, which works again with its history and notifies again; a child messages its parent",
       "status": "pass",
-      "durationMs": 8410.023776,
+      "durationMs": 6992.054345,
       "reason": "",
       "backend": "node"
     },
@@ -135,7 +135,7 @@
       "source": "tests/agent-messaging.test.ts:61",
       "name": "two agents messaging each other in a loop stop at the wake cap with agent_loop_limit, and a turn sends at most 20 messages",
       "status": "pass",
-      "durationMs": 14029.221933,
+      "durationMs": 12129.314192,
       "reason": "",
       "backend": "node"
     },
@@ -144,7 +144,7 @@
       "source": "tests/agent-messaging.test.ts:97",
       "name": "interrupt_agent aborts a child; aborting the parent aborts its children unless children: keep; deleting it deletes the children it made",
       "status": "pass",
-      "durationMs": 13386.01057,
+      "durationMs": 11737.979689,
       "reason": "",
       "backend": "node"
     },
@@ -153,7 +153,7 @@
       "source": "tests/agent-progress.test.ts:109",
       "name": "a child's message joins its busy parent's running turn at its next step, without a turn of its own",
       "status": "pass",
-      "durationMs": 5505.753298,
+      "durationMs": 4821.055848,
       "reason": "",
       "backend": "node"
     },
@@ -162,7 +162,7 @@
       "source": "tests/agent-progress.test.ts:141",
       "name": "a child's message cuts its parent's wait_agent short, and the parent reads it next",
       "status": "pass",
-      "durationMs": 5540.694234,
+      "durationMs": 4522.38436,
       "reason": "",
       "backend": "node"
     },
@@ -171,7 +171,7 @@
       "source": "tests/agent-progress.test.ts:168",
       "name": "a response that starts a sub-agent and, beside it, messages and waits for it: those calls run once it has started",
       "status": "pass",
-      "durationMs": 5490.56696,
+      "durationMs": 4601.401405,
       "reason": "",
       "backend": "node"
     },
@@ -180,7 +180,7 @@
       "source": "tests/agent-progress.test.ts:16",
       "name": "a background child's progress rides on its parent's next tool result, latest only and once, without a turn; an ending supersedes it",
       "status": "pass",
-      "durationMs": 7189.367173,
+      "durationMs": 6128.100559,
       "reason": "",
       "backend": "node"
     },
@@ -189,7 +189,7 @@
       "source": "tests/agent-progress.test.ts:195",
       "name": "a message to a sub-agent that already answered starts a turn, and wait_agent waits for that turn's answer, not the earlier one",
       "status": "pass",
-      "durationMs": 6203.375811,
+      "durationMs": 4957.210002,
       "reason": "",
       "backend": "node"
     },
@@ -198,7 +198,7 @@
       "source": "tests/agent-progress.test.ts:217",
       "name": "a sub-agent of the model's own design gets its instructions with its task, as its first message; one from a definition keeps its own prompt",
       "status": "pass",
-      "durationMs": 5627.778346,
+      "durationMs": 4762.304567,
       "reason": "",
       "backend": "node"
     },
@@ -207,7 +207,7 @@
       "source": "tests/agent-progress.test.ts:244",
       "name": "a sub-agent of the model's own design shares its parent's files at the same paths",
       "status": "pass",
-      "durationMs": 5668.960702,
+      "durationMs": 4726.995932,
       "reason": "",
       "backend": "node"
     },
@@ -216,7 +216,7 @@
       "source": "tests/agent-progress.test.ts:265",
       "name": "wait_agent with untilProgress returns on a report it has not seen, after its floor, so the parent can correct a sub-agent mid-run",
       "status": "pass",
-      "durationMs": 7055.992009,
+      "durationMs": 5631.419806,
       "reason": "",
       "backend": "node"
     },
@@ -225,7 +225,7 @@
       "source": "tests/agent-progress.test.ts:75",
       "name": "a delegate child's progress reaches its parent's watchers as subagent_progress and the delegate call's progress",
       "status": "pass",
-      "durationMs": 5809.139248,
+      "durationMs": 4859.148523,
       "reason": "",
       "backend": "node"
     },
@@ -234,7 +234,7 @@
       "source": "tests/agent-progress.test.ts:91",
       "name": "only a sub-agent reports progress, and a report is short",
       "status": "pass",
-      "durationMs": 5201.459063,
+      "durationMs": 4657.601294,
       "reason": "",
       "backend": "node"
     },
@@ -243,7 +243,7 @@
       "source": "tests/background-agents.test.ts:103",
       "name": "spawn_agent refuses past maxParallel running children and past the depth limit",
       "status": "pass",
-      "durationMs": 11694.285232,
+      "durationMs": 10325.908773,
       "reason": "",
       "backend": "node"
     },
@@ -252,7 +252,7 @@
       "source": "tests/background-agents.test.ts:131",
       "name": "two agents waking each other through notifications stop at the wake cap with agent_loop_limit, the notification still in history",
       "status": "pass",
-      "durationMs": 10932.003987,
+      "durationMs": 9827.275792,
       "reason": "",
       "backend": "node"
     },
@@ -261,7 +261,7 @@
       "source": "tests/background-agents.test.ts:154",
       "name": "a child's spend is charged to its parent when its notification lands, and a parent at its spend limit gets no turn",
       "status": "pass",
-      "durationMs": 7192.132273,
+      "durationMs": 6127.638648,
       "reason": "",
       "backend": "node"
     },
@@ -270,7 +270,7 @@
       "source": "tests/background-agents.test.ts:183",
       "name": "aborting a parent while a child's notification waits keeps the notification: it lands without a turn",
       "status": "pass",
-      "durationMs": 5511.589682,
+      "durationMs": 4502.481808,
       "reason": "",
       "backend": "node"
     },
@@ -279,7 +279,7 @@
       "source": "tests/background-agents.test.ts:20",
       "name": "spawn_agent returns at once, and the child's ending arrives once, as a notification with its source and marker",
       "status": "pass",
-      "durationMs": 8159.510603,
+      "durationMs": 6426.229675,
       "reason": "",
       "backend": "node"
     },
@@ -288,7 +288,7 @@
       "source": "tests/background-agents.test.ts:213",
       "name": "children started together share what the parent may spend, and limits alone bound a tool's spawns without a tool for the model",
       "status": "pass",
-      "durationMs": 9405.986052,
+      "durationMs": 7612.208163,
       "reason": "",
       "backend": "node"
     },
@@ -297,7 +297,7 @@
       "source": "tests/background-agents.test.ts:75",
       "name": "wait_agent answers a child's ending in its result, so no notification follows; list_agents lists children",
       "status": "pass",
-      "durationMs": 7073.836702,
+      "durationMs": 5961.981664,
       "reason": "",
       "backend": "node"
     },
@@ -306,7 +306,7 @@
       "source": "tests/multi-agent.test.ts:119",
       "name": "parallel children share what their parent's run has left, rather than each getting all of it",
       "status": "pass",
-      "durationMs": 5310.584345,
+      "durationMs": 4662.440107,
       "reason": "",
       "backend": "node"
     },
@@ -315,7 +315,7 @@
       "source": "tests/multi-agent.test.ts:140",
       "name": "children of one response share what their parent's run has left even when they run one after another",
       "status": "pass",
-      "durationMs": 6198.65855,
+      "durationMs": 5776.262326,
       "reason": "",
       "backend": "node"
     },
@@ -324,7 +324,7 @@
       "source": "tests/multi-agent.test.ts:160",
       "name": "a caller cannot move a run's place in the delegation chain with prompt metadata",
       "status": "pass",
-      "durationMs": 5978.281645,
+      "durationMs": 6119.487475,
       "reason": "",
       "backend": "node"
     },
@@ -333,7 +333,7 @@
       "source": "tests/multi-agent.test.ts:16",
       "name": "delegate starts a child from a definition, returns its answer, and links it to its parent",
       "status": "pass",
-      "durationMs": 6420.047549,
+      "durationMs": 5412.454225,
       "reason": "",
       "backend": "node"
     },
@@ -342,7 +342,7 @@
       "source": "tests/multi-agent.test.ts:179",
       "name": "aborting a parent aborts the children it waits on; the stream shows them to subscribers that ask",
       "status": "pass",
-      "durationMs": 4433.237049,
+      "durationMs": 4922.878576,
       "reason": "",
       "backend": "node"
     },
@@ -351,7 +351,7 @@
       "source": "tests/multi-agent.test.ts:203",
       "name": "aborting a parent answers once its delegate child has ended, charges what the child spent, and deleting the parent deletes the child",
       "status": "pass",
-      "durationMs": 4776.938036,
+      "durationMs": 4745.971936,
       "reason": "",
       "backend": "node"
     },
@@ -360,7 +360,7 @@
       "source": "tests/multi-agent.test.ts:232",
       "name": "a delegate child whose ending no call took, its parent's run over, is landed by the sweep and charged to the parent",
       "status": "pass",
-      "durationMs": 6147.073271,
+      "durationMs": 6201.755479,
       "reason": "",
       "backend": "node"
     },
@@ -369,7 +369,7 @@
       "source": "tests/multi-agent.test.ts:57",
       "name": "delegate calls in one response run at once, at most maxParallel together, and one with output answers in its schema",
       "status": "pass",
-      "durationMs": 8172.620651,
+      "durationMs": 6689.106935,
       "reason": "",
       "backend": "node"
     },
@@ -378,7 +378,7 @@
       "source": "tests/multi-agent.test.ts:86",
       "name": "delegation stops at its depth limit, and a run's spend limit bounds its children and counts what they spent",
       "status": "pass",
-      "durationMs": 9114.834409,
+      "durationMs": 8098.819709,
       "reason": "",
       "backend": "node"
     },
@@ -387,7 +387,7 @@
       "source": "tests/sdk-multi-agent.test.ts:13",
       "name": "SDK: delegate settings on upsert bring their builtin; a run lists its child's id, and a stream with subagents shows it start and end",
       "status": "pass",
-      "durationMs": 7725.499924,
+      "durationMs": 6273.90866,
       "reason": "",
       "backend": "node"
     },
@@ -396,7 +396,7 @@
       "source": "tests/tool-spawn.test.ts:15",
       "name": "a trusted tool prepares a persistent worker and starts it as a background sub-agent; a busy worker queues the next task",
       "status": "pass",
-      "durationMs": 7854.718389,
+      "durationMs": 7685.847903,
       "reason": "",
       "backend": "node"
     },
@@ -405,7 +405,7 @@
       "source": "tests/tool-spawn.test.ts:75",
       "name": "a spawn directive from a tool without runtime auth (an attached application's) is refused",
       "status": "pass",
-      "durationMs": 4013.63779,
+      "durationMs": 3699.329972,
       "reason": "",
       "backend": "node"
     },
@@ -414,7 +414,7 @@
       "source": "tests/workflows.test.ts:106",
       "name": "an agent's workflow settings reach its definition and its detail",
       "status": "pass",
-      "durationMs": 3607.09687,
+      "durationMs": 3404.14957,
       "reason": "",
       "backend": "node"
     },
@@ -423,7 +423,7 @@
       "source": "tests/workflows.test.ts:122",
       "name": "an agent with the workflow builtin is offered run_workflow; one without never sees it",
       "status": "pass",
-      "durationMs": 4578.769079,
+      "durationMs": 4532.749836,
       "reason": "",
       "backend": "node"
     },
@@ -432,7 +432,7 @@
       "source": "tests/workflows.test.ts:23",
       "name": "the SDK runs a stateless workflow with its builtin added automatically",
       "status": "pass",
-      "durationMs": 5580.982531,
+      "durationMs": 4954.72895,
       "reason": "",
       "backend": "node"
     },
@@ -441,7 +441,7 @@
       "source": "tests/workflows.test.ts:37",
       "name": "run_workflow coordinates child agents from a script and returns only the script's value",
       "status": "pass",
-      "durationMs": 6684.503202,
+      "durationMs": 6385.179558,
       "reason": "",
       "backend": "node"
     },
@@ -450,7 +450,7 @@
       "source": "tests/workflows.test.ts:90",
       "name": "an agent call the settings do not allow answers null instead of failing the script",
       "status": "pass",
-      "durationMs": 3767.11605,
+      "durationMs": 3883.407589,
       "reason": "",
       "backend": "node"
     }

@@ -1,11 +1,11 @@
 import { serveToolFile } from './tool-files.ts';
 import { withMoneyMetrics } from "./money-metrics.ts";
+import { publicRoutes, publicPageHeaders, authenticationHint } from "./public-http.ts";
 import { firstPrompt } from "./first-prompt.ts";
 import { builtinWarnings } from "./builtin-warnings.ts";
 import { serveAgentMcp, agentMcpPreflight, agentMcpSignIn } from "./agent-mcp.ts";
 import { publicOrigins } from "./account-origins.ts";
 import { serveHostedMcp } from "./hosted-mcp.ts";
-import { publicDocs } from "./public-docs.ts";
 import { resolveDefinition, definitionUpsert } from "./definitions.ts";
 import { sweepComputers } from './computers/service.ts';
 import { CamelAgent, json, type Env } from "./agent.ts";
@@ -18,6 +18,11 @@ import {
   type DirectoryEntry,
   type DirectoryFailure,
 } from "./control.ts";
+import { agentToolView } from "./agent-tool-view.ts";
+import { agentActivity } from "./agent-activity.ts";
+import { listAgents } from "./agent-list.ts";
+import { withMoneyIdempotency } from "./money-idempotency.ts";
+import { skipMoneyIdempotency } from "./idempotency-routes.ts";
 import { ApiError, agentToken, configuration } from "./api-contract.ts";
 import { upsertAgent } from "./agent-upsert.ts";
 import { configurationModelError } from "./default-model.ts";
@@ -35,6 +40,7 @@ import { withSql } from "./postgres.ts";
 import {
   consumeWebhooks,
   publishPending,
+  resumeWebhookDeliveries,
   type DeliveryMessage,
 } from "./webhooks.ts";
 import { handleFileRequest, handleSignedFileRequest } from "./files.ts";
@@ -45,8 +51,10 @@ import { BROWSER_READS, corsPreflight, corsResponse } from "./cors.ts";
 import { browserResponse } from "./browser-response.ts";
 import { browserUrl } from "./selfhost-policy.ts";
 import { createJourney, sendJourney } from "./journey.ts";
+import { flushJourney } from "./journey-delivery.ts";
 import { keyServices } from "./security-services.ts";
 import { eventRead } from "./event-reads.ts";
+import { relayEvents } from "./event-relay.ts";
 import { decisionService, type DecisionEnv } from "./decision-service.ts";
 import { decisionRoute } from "./decision-runtime.ts";
 import {
@@ -56,12 +64,12 @@ import {
   configurationPatch,
 } from "./definitions.ts";
 import { statelessRoutes, agentLifecycleRoutes } from "./agent-routes.ts";
+import { rotateAgentCredentials } from "./agent-credentials.ts";
 import { modelCatalog } from "./model.ts";
 import { providerRoutes } from "./provider-routes.ts";
 import { TENANT_CONFIGURATION_KEYS } from "./access-policy.ts";
 import {
   readAgentSpendLimit,
-  setAgentSpendLimit,
   agentSpendView,
 } from "./agent-spend.ts";
 export { CamelAgent };
@@ -88,12 +96,12 @@ function credentials(entry: DirectoryEntry, token?: string) {
     ...(token === undefined ? {} : { token }),
     expiresAt: entry.expiresAt,
     configHash: entry.configHash,
-    ...(entry.reconfigured ? { reconfigured: true } : {}),
   };
 }
 function summary(entry: DirectoryEntry) {
   return {
     ...visibleConfiguration(entry.config),
+    tools: agentToolView(entry.config),
     ...(entry.config.definition ? { definition: { id: entry.config.definition, revision: entry.config.definitionRevision } } : {}),
     ...("forkedFrom" in entry ? { forkedFrom: entry.forkedFrom } : {}),
     ...(entry.parentAgentId ? { parentAgentId: entry.parentAgentId, parentRunId: entry.parentRunId } : {}),
@@ -109,18 +117,24 @@ function summary(entry: DirectoryEntry) {
     resume: null,
   };
 }
-async function forward(request: Request, env: Env, id: string, path: string) {
+async function forward(request: Request, env: Env, id: string, path: string, ctx: ExecutionContext) {
   const url = new URL(request.url);
   url.pathname = path;
-  return env.AGENTS.getByName(id).fetch(new Request(url, request));
+  const agent = env.AGENTS.getByName(id);
+  const response = await agent.fetch(new Request(url, request));
+  return relayEvents(response, request.signal, connection => agent.detachEventConnection(connection), task => ctx.waitUntil(task));
 }
 function scopedConfiguration(input: unknown) {
   if (!input || typeof input !== "object" || Array.isArray(input))
     throw new BadRequest("Expected configuration object");
   if (Object.hasOwn(input, "initialMessages") || Object.hasOwn(input, "importMessages"))
     throw new BadRequest("History can only be imported at creation");
+  if (Object.hasOwn(input, "subject") || Object.hasOwn(input, "context"))
+    throw new BadRequest("An agent's identity is set only at creation");
+  for (const key of TENANT_CONFIGURATION_KEYS)
+    if (Object.hasOwn(input, key))
+      throw new ApiError(403, `Only the tenant can change an agent's ${key}`, "FORBIDDEN");
   for (const key of [
-    ...TENANT_CONFIGURATION_KEYS,
     "definition",
     "openApi",
     "subject",
@@ -140,13 +154,42 @@ function scopedConfiguration(input: unknown) {
       );
 }
 
+function httpFailure(error: unknown, env: Env): Response {
+  const limited = admissionError(error);
+  if (limited) return limited;
+  if (error instanceof ApiError || error instanceof HttpError)
+    return Response.json({ error: error.message, code: error.code, ...errorFields(error), ...("details" in error ? error.details : {}) }, { status: error.status, headers: { 'cache-control': 'no-store', ...errorHeaders(error) } });
+  if (error instanceof BadRequest || error instanceof URIError)
+    return json({ error: error.message, code: "INVALID_REQUEST" }, 400);
+  failure(env, "http_failed", error);
+  const status = errorStatus(error, 500);
+  return Response.json({ error: "Backend operation failed", code: errorCode(error, status) },
+    { status, headers: { 'cache-control': 'no-store', ...errorHeaders(error) } });
+}
+
 const worker = {
-  async fetch(
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const recovery = resumeWebhookDeliveries(env);
+    if (recovery) ctx.waitUntil(recovery.catch(error => failure(env, "webhook_recovery_failed", error)));
+    try {
+      if (request.method === 'POST' && request.headers.has('idempotency-key') && !skipMoneyIdempotency(new URL(request.url).pathname)) {
+        const auth = await authenticateMoney(request, env) ?? await authenticate(request, env);
+        if (auth) {
+          const response = (await withMoneyIdempotency(request, env, auth.tenantId, next => worker.fetchRequest(next, env, ctx)))!;
+          return publicPageHeaders(request, corsResponse(request, response));
+        }
+      }
+      return await worker.fetchRequest(request, env, ctx);
+    } catch (error) {
+      return publicPageHeaders(request, corsResponse(request, httpFailure(error, env)));
+    }
+  },
+  async fetchRequest(
     request: Request,
     env: Env,
     ctx: ExecutionContext,
   ): Promise<Response> {
-    return withMoneyMetrics(env, async () => corsResponse(request, await (async () => {
+    return withMoneyMetrics(env, async () => publicPageHeaders(request, corsResponse(request, await (async () => {
     try {
       request = websocketAuthorization(request);
       if (request.method === "OPTIONS" && (/^\/v1\/agents\/client_[a-f0-9]{40}\/mcp$/.test(new URL(request.url).pathname) || new URL(request.url).pathname === "/mcp")) return agentMcpPreflight();
@@ -170,8 +213,8 @@ const worker = {
           backend: "workers-native",
           experimental: true,
         });
-      const docs = await publicDocs(request, env);
-      if (docs) return docs;
+      const publicResponse = await publicRoutes(request, env);
+      if (publicResponse) return publicResponse;
       const publicMoney = await publicMoneyRoutes(request, env, ctx);
       if (publicMoney) return publicMoney;
       if (path === "/console" || path.startsWith("/console/")) {
@@ -224,10 +267,9 @@ const worker = {
         }
         else if (
           (match[1] !== "v1/agents" || match[3] === "/mcp") &&
-          /^client_[a-f0-9]{40}$/.test(idOrKey) &&
-          (await authorized(request, await agentToken(env.API_TOKEN, idOrKey)))
+          /^client_[a-f0-9]{40}$/.test(idOrKey)
         ) {
-          entry =
+          const candidate =
             (
               await withSql(
                 env,
@@ -243,12 +285,13 @@ const worker = {
               ...row.header,
               ...(row.revoked ? { deleted: true } : {}),
             }))[0] ?? null;
+          if (candidate && await authorized(request, await agentToken(env.API_TOKEN, idOrKey, candidate.tokenVersion))) entry = candidate;
         }
       }
       if (!auth && !entry && match?.[1] === "v1/agents" && match[3] === "/mcp")
         return agentMcpSignIn(request, env.AGENT_PUBLIC_URL || url.origin, match[2]);
       if (!auth && !entry)
-        throw new ApiError(401, "Unauthorized", "UNAUTHORIZED");
+        throw new ApiError(401, authenticationHint(request, env.AGENT_PUBLIC_URL || url.origin), "UNAUTHORIZED");
       if (auth) {
         const computers = await handleComputerRequest(request, env, auth);
         if (computers) return computers;
@@ -285,7 +328,7 @@ const worker = {
           const entries = await new Directory(env, auth.tenantId).list();
           const inputs = [];
           for (const entry of entries) {
-            const response = await forward(request, env, entry.id, "/inputs");
+            const response = await forward(request, env, entry.id, "/inputs", ctx);
             if (!response.ok) return response;
             inputs.push(...await response.json() as Array<{ id: string; createdAt: number }>);
           }
@@ -308,11 +351,7 @@ const worker = {
         if (path === "/v1/agents") {
           const directory = new Directory(env, auth.tenantId);
           if (request.method === "GET")
-            return json(
-              (await directory.list())
-                .filter((entry) => entry.config.type !== "run")
-                .map(summary),
-            );
+            return listAgents(request, env, auth.tenantId, directory, summary);
           if (request.method === "POST") {
             const raw = await body(request, 17 * 1024 * 1024);
             if (!raw || typeof raw !== "object" || Array.isArray(raw))
@@ -336,17 +375,13 @@ const worker = {
               const journey = createJourney(env, accounts, env.AGENT_PUBLIC_URL || url.origin);
               if (journey) {
                 // A reused key has a configuration update, not another creation.
-                if (!upsert.reconfigured && !created.reconfigured) {
+                if (!created.existingAgent && !created.reconfigured) {
                   await journey.agentCreated({ tenant: auth.tenantId, via: auth.kind === 'console' ? 'console' : auth.kind === 'oauth' ? 'mcp' : 'api', ...(auth.kind === 'console' ? { browser: journey.browser(request) } : {}) });
                 }
-                ctx.waitUntil(journey.send());
+                ctx.waitUntil(flushJourney(journey));
               }
             }
-            if (Object.hasOwn(raw, "spendLimit"))
-              await setAgentSpendLimit(
-                env, auth.tenantId, created.id, (raw as { spendLimit: unknown }).spendLimit,
-              );
-            const answer = { ...credentials(created, auth.kind === "oauth" ? undefined : await agentToken(env.API_TOKEN, created.id)), ...(upsert.reconfigured ? { reconfigured: upsert.reconfigured } : {}), ...await builtinWarnings(env, auth.tenantId, created.config) };
+            const answer = { ...credentials(created, auth.kind === "oauth" ? undefined : await agentToken(env.API_TOKEN, created.id, created.tokenVersion)), ...(created.reconfigured ? { reconfigured: created.reconfigured } : {}), ...await builtinWarnings(env, auth.tenantId, created.config) };
             const headers = admissionHeaders(creationRate(created) ?? await createAdmission(env, auth.tenantId, false));
             if (!first) return Response.json(answer, { status: 201, headers });
             const submitted = await env.AGENTS.getByName(created.id).fetch(new Request("https://agent/requests", {
@@ -358,10 +393,9 @@ const worker = {
         }
         throw new ApiError(404, "Unknown API route", "NOT_FOUND");
       }
-      if (!entry || entry.config.type === "run") throw new ApiError(404, "Unknown agent", "AGENT_NOT_FOUND");
+      if (!entry || entry.config.type === "run") throw new ApiError(404, "Unknown agent", "NOT_FOUND");
       const tail = match[3] || "/";
-      if (tail === "/configuration-target")
-        throw new ApiError(404, "Not found", "NOT_FOUND");
+      if (tail === "/configuration-target" || tail === "/upsert") throw new ApiError(404, "Not found", "NOT_FOUND");
       // Internal computer operations are reachable only through the service
       // binding. Public cleanup must use the account-scoped confirmation route.
       if (tail === "/__computer" && env.TEST_MODE !== "1")
@@ -369,7 +403,7 @@ const worker = {
       const directory = new Directory(env, entry.tenantId);
       if (entry.deleted) {
         if ((auth || browser || ["/", "/credentials"].includes(tail)) && request.method === "GET")
-          throw new ApiError(404, "Unknown agent", "AGENT_NOT_FOUND");
+          throw new ApiError(404, "Unknown agent", "NOT_FOUND");
         if (auth && tail === "/" && request.method === "DELETE") {
           result(await directory.remove(entry.id));
           return json({ deleted: true });
@@ -378,7 +412,7 @@ const worker = {
       }
       if (entry.expiresAt && entry.expiresAt <= Date.now())
         throw new ApiError(410, "Agent expired", "AGENT_EXPIRED");
-      if (!entry.initialized)
+      if (!entry.initialized && !["/credentials", "/credentials/rotate"].includes(tail))
         throw new ApiError(
           503,
           "Agent initialization is pending; retry creation",
@@ -401,11 +435,15 @@ const worker = {
         const publicBrowser = browserUrl(env, url.origin);
         return json({ ...browserTokens.mint(entry.tenantId, entry.id, await body(request, 16 * 1024)), agentId: entry.id, ...(publicBrowser ? { url: publicBrowser } : {}) }, 201);
       }
+      if (tail === "/credentials/rotate" && request.method === "POST") {
+        if (!auth) throw new ApiError(401, "Account key required", "UNAUTHORIZED");
+        return json(await rotateAgentCredentials(env, entry));
+      }
       if (tail === "/credentials" && request.method === "GET") {
         if (!auth) throw new ApiError(401, "Account key required", "UNAUTHORIZED");
-        if (!entry.key) throw new ApiError(409, "AGENT_KEYLESS: this agent was made without a key, so its token is only what its create answered", "AGENT_KEYLESS");
+        if (!entry.key && !entry.tokenVersion) throw new ApiError(409, "AGENT_KEYLESS: this agent was made without a key, so its token is only what its create answered", "AGENT_KEYLESS");
         return json(
-          credentials(entry, await agentToken(env.API_TOKEN, entry.id)),
+          credentials(entry, await agentToken(env.API_TOKEN, entry.id, entry.tokenVersion)),
         );
       }
       if (tail === "/" && request.method === "DELETE") {
@@ -418,15 +456,17 @@ const worker = {
           env,
           entry.id,
           "/tool-sources",
+          ctx,
         );
         if (!response.ok) return response;
         const stateResponse = await forward(
-          new Request(request.url, { headers: request.headers }), env, entry.id, "/state",
+          new Request(request.url, { headers: request.headers }), env, entry.id, "/state", ctx,
         );
         if (!stateResponse.ok) return stateResponse;
         const state = await stateResponse.json() as { requests: { state: string }[]; cursor: number; running: boolean; spendLimit?: unknown };
         return json({
           ...summary(entry),
+          ...await agentActivity(env, entry.tenantId, entry.id),
           ...state,
           spendLimit: state.spendLimit ?? agentSpendView(
             await readAgentSpendLimit(env, entry.tenantId, entry.id),
@@ -484,7 +524,7 @@ const worker = {
         return forward(new Request(request.url, {
           method: "POST", headers: { "content-type": "application/json" },
           body: JSON.stringify({ id: requestId ?? request.headers.get("Idempotency-Key") ?? crypto.randomUUID(), method: "configure", params }),
-        }), env, entry.id, "/requests");
+        }), env, entry.id, "/requests", ctx);
       }
       if (tail === "/mounts") {
         if (request.method === "GET")
@@ -538,33 +578,34 @@ const worker = {
         if (match[1] === "v1/agents" || browser) eventUrl.searchParams.set("watch", "1");
         request = new Request(eventUrl, { method: request.method, headers, signal: request.signal });
       }
+      if (tail === '/prompt' && request.method === 'POST' && request.headers.has('idempotency-key')) {
+        const input = await body(request, 6 * 1024 * 1024) as Record<string, unknown>;
+        request = new Request(request.url, { method: 'POST', headers: request.headers, body: JSON.stringify({ ...input, requestId: request.headers.get('idempotency-key') }) });
+      }
       const response = tail === "/events"
-        ? await eventRead(request, env, entry.tenantId, entry.id, request => forward(request, env, entry!.id, tail))
-        : await forward(request, env, entry.id, tail);
+        ? await eventRead(request, env, entry.tenantId, entry.id, request => forward(request, env, entry!.id, tail, ctx))
+        : await forward(request, env, entry.id, tail, ctx);
       return browser ? browserResponse(response, browser, tail) : response;
     } catch (error) {
-      const limited = admissionError(error);
-      if (limited) return limited;
-      if (error instanceof ApiError || error instanceof HttpError)
-        return Response.json({ error: error.message, code: error.code, ...errorFields(error), ...("details" in error ? error.details : {}) }, { status: error.status, headers: { 'cache-control': 'no-store', ...errorHeaders(error) } });
-      if (error instanceof BadRequest || error instanceof URIError)
-        return json({ error: error.message, code: "INVALID_REQUEST" }, 400);
-      failure(env, "http_failed", error);
-      const status = errorStatus(error, 500);
-      return Response.json({ error: "Backend operation failed", code: errorCode(error, status) },
-        { status, headers: { 'cache-control': 'no-store', ...errorHeaders(error) } });
+      return httpFailure(error, env);
     }
-    })()));
+    })())));
   },
   async queue(batch: MessageBatch<DeliveryMessage>, env: Env) {
     return withMoneyMetrics(env, async () => {
-    await sendMoneyWebhooks(env);
+    const webhookRetry = await sendMoneyWebhooks(env);
     for (const message of batch.messages.filter(message => message.body.kind === "schedule")) {
       try { if (await deliverScheduleEmail(env, message.body.id)) message.ack(); else message.retry({ delaySeconds: 10 }); }
       catch { message.retry({ delaySeconds: 30 }); }
     }
     await consumeWebhooks({ ...batch, messages: batch.messages.filter(message => message.body.kind === "email") } as MessageBatch<DeliveryMessage>, env);
-    for (const message of batch.messages) if (message.body.kind !== "email" && message.body.kind !== "schedule") message.ack();
+    const webhookMessages = batch.messages.filter(message => message.body.kind !== "email" && message.body.kind !== "schedule");
+    // The outbox owns backoff and expiry. Queue delivery retries must not cap it.
+    if (webhookRetry !== undefined && webhookMessages.length) {
+      if (!env.WEBHOOKS) throw new Error("Webhook queue is not configured");
+      await env.WEBHOOKS.send(webhookMessages[0].body, { delaySeconds: Math.min(43_200, webhookRetry) });
+    }
+    for (const message of webhookMessages) message.ack();
     });
   },
   async scheduled(_controller: ScheduledController, env: Env) {
@@ -579,5 +620,5 @@ const worker = {
     } catch (error) { failure(env, "maintenance_failed", error); throw error; }
     });
   },
-} satisfies ExportedHandler<Env, DeliveryMessage>;
-export default worker;
+};
+export default worker satisfies ExportedHandler<Env, DeliveryMessage>;
