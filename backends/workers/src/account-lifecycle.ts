@@ -12,6 +12,7 @@ import type { FileEntry } from "./volume.ts";
 import type { Webhooks } from "./webhook-policy.ts";
 import { createStripe, type BillingEnv } from "./billing-routes.ts";
 import { ComputerService, type ComputerEnv } from "./computers/service.ts";
+import { transaction } from "./postgres.ts";
 
 export type AccountLifecycleEnv = FileBindings & BillingEnv & {
   TENANTS?: { getByName(id: string): { purgeAccountData(): Promise<void> } };
@@ -48,7 +49,11 @@ export function accountDeletions(env: AccountLifecycleEnv, service: AccountServi
       const rows = (await db.query("select id, tenant from agents where revoked and purged_at is not null and tenant <> '' and exists (select 1 from account_deletions d where d.tenant=agents.tenant and d.completed_at is null)")).rows;
       for (const { id, tenant } of rows) {
         await env.AGENTS.getByName(id).purgeAccountData(tenant, id);
-        await db.query("update agents set tenant='', name=id, type='general', model='', expires_at=null, header=$3 where id=$1 and tenant=$2 and revoked", [id, tenant, { version: 3, id, revoked: true, purged: true }]);
+        await transaction(db, async sql => {
+          // This table is keyed by agent, so the tenant-wide cleanup cannot find it.
+          await sql.query("delete from agent_spend_limits where agent = $1", [id]);
+          await sql.query("update agents set tenant='', name=id, type='general', model='', expires_at=null, header=$3 where id=$1 and tenant=$2 and revoked", [id, tenant, { version: 3, id, revoked: true, purged: true }]);
+        });
       }
     },
     removeComputers: async tenant => {

@@ -41,3 +41,41 @@ test("account route corrections hold through workerd authentication and routing"
     assert.equal((await call("/v1/providers", "GET", undefined, token.token)).status, 401);
   });
 });
+
+test("deleting an account removes agent spend limits and keeps its credit ledger", { timeout: 120_000 }, async t => {
+  const operator = "account-purge-operator-token-at-least-32-characters";
+  const r = await startFixture({ vars: {
+    AGENT_TENANTS_JSON: JSON.stringify({ tenants: { ops: { tokenSha256: createHash("sha256").update(operator).digest("hex"), apiKeys: {} } } }),
+    AGENT_BILLING_ADMINS: "ops",
+  } });
+  t.after(() => r.stop());
+  const tenant = "camelrun-proto-local";
+  const call = async (path: string, method = "GET", body?: unknown, token = r.token) => {
+    const response = await fetch(r.url + path, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    return { status: response.status, json: await response.json() as any };
+  };
+  const created = await call("/v1/agents", "POST", { model: "test/echo", spendLimit: { usd: 3 } });
+  assert.equal(created.status, 201);
+  const id = created.json.id;
+  await r.db.query("update agent_spend_limits set spent=1.25 where agent=$1", [id]);
+  assert.equal((await r.db.query("select count(*)::int n from agent_spend_limits where agent=$1", [id])).rows[0].n, 1);
+  const ledger = (await r.db.query("select * from credit_ledger where tenant=$1 order by id", [tenant])).rows;
+  const balance = (await r.db.query("select balance from credit_accounts where tenant=$1", [tenant])).rows[0].balance;
+  assert.ok(ledger.length > 0);
+
+  assert.equal((await call(`/v1/tenants/${tenant}`, "DELETE", undefined, operator)).status, 202);
+  let deleted = false;
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const status = await call(`/v1/tenants/${tenant}/deletion`, "GET", undefined, operator);
+    assert.equal(status.status, 200);
+    if (status.json.state === "deleted") { deleted = true; break; }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.ok(deleted, "account cleanup completes");
+  assert.equal((await r.db.query("select count(*)::int n from agent_spend_limits where agent=$1", [id])).rows[0].n, 0);
+  assert.deepEqual((await r.db.query("select * from credit_ledger where tenant=$1 order by id", [tenant])).rows, ledger);
+  assert.equal((await r.db.query("select balance from credit_accounts where tenant=$1", [tenant])).rows[0].balance, balance);
+  assert.equal((await call(`/v1/tenants/${tenant}`, "DELETE", undefined, operator)).status, 202, "repeated deletion remains idempotent");
+  assert.deepEqual((await r.db.query("select * from credit_ledger where tenant=$1 order by id", [tenant])).rows, ledger);
+});
