@@ -1,0 +1,897 @@
+import type { TenantAdmission } from "./tenant.ts";
+import {
+  ApiError,
+  configuration,
+  digest,
+  type AgentConfiguration,
+} from "./api-contract.ts";
+import { authorized, boundedText } from "./validation.ts";
+import {
+  withSql,
+  transaction,
+  database,
+  type PostgresEnv,
+  type Sql,
+} from "./postgres.ts";
+import { postLedger, accrueUsage, BillingSpendable } from "./billing-sql.ts";
+import { EndUserCredits } from "./end-user-credits.ts";
+import {
+  enqueueEvents,
+  webhookEvent,
+  stableUuid,
+  createEndpoint,
+  publishPending,
+  seal,
+  unseal,
+  type WebhookEnv,
+} from "./webhooks.ts";
+
+type AgentNamespace = {
+  getByName(id: string): { fetch(request: Request): Promise<Response> };
+};
+export type ControlBindings = PostgresEnv & {
+  TENANTS: DurableObjectNamespace<TenantAdmission>;
+  WEBHOOKS?: Queue<{ id: string }>;
+  METRICS?: AnalyticsEngineDataset;
+  DEFAULT_TENANT?: string;
+  TEST_MODE?: string;
+};
+export type ControlEnv = WebhookEnv & {
+  AGENTS: AgentNamespace;
+  API_TOKEN: string;
+  MODEL: string;
+  DEFAULT_TENANT?: string;
+  TEST_MODE?: string;
+};
+export type AuthContext = {
+  tenantId: string;
+  kind: "operator" | "api";
+  scopes: string[];
+};
+export interface DirectoryEntry {
+  id: string;
+  tenantId: string;
+  key: string | null;
+  config: AgentConfiguration;
+  configHash: string;
+  createdAt: number;
+  expiresAt: number | null;
+  revision: number;
+  initialized: boolean;
+  deleted?: true;
+  cleanupPending?: boolean;
+}
+export interface DirectoryFailure {
+  failed: true;
+  status: number;
+  error: string;
+  code: string;
+}
+export async function authenticate(
+  request: Request,
+  env: ControlEnv,
+): Promise<AuthContext | null> {
+  if (await authorized(request, env.API_TOKEN))
+    return {
+      tenantId: env.DEFAULT_TENANT ?? "camelrun-proto-local",
+      kind: "operator",
+      scopes: ["*"],
+    };
+  const token = request.headers
+    .get("authorization")
+    ?.match(/^Bearer (.+)$/)?.[1];
+  if (!token || token.length > 512) return null;
+  const hash = await digest(token);
+  const result = await withSql(env, (sql) =>
+    sql.query(
+      "select a.tenant from api_tokens a join tenants t on t.id=a.tenant where a.sha256=$1",
+      [hash],
+    ),
+  );
+  return result.rows[0]
+    ? { tenantId: result.rows[0].tenant, kind: "api", scopes: ["*"] }
+    : null;
+}
+
+export class Directory {
+  private env: ControlEnv;
+  private tenantId: string;
+  constructor(env: ControlEnv, tenantId: string) {
+    this.env = env;
+    this.tenantId = tenantId;
+  }
+  private async id(key: string) {
+    return /^client_[a-f0-9]{40}$/.test(key)
+      ? key
+      : `client_${(await digest(`${this.tenantId}:${key}`)).slice(0, 40)}`;
+  }
+  async get(key: string): Promise<DirectoryEntry | null> {
+    const id = await this.id(key);
+    const { rows } = await withSql(this.env, (sql) =>
+      sql.query(
+        "select header, revoked from agents where id=$1 and tenant=$2",
+        [id, this.tenantId],
+      ),
+    );
+    return rows[0]
+      ? { ...rows[0].header, ...(rows[0].revoked ? { deleted: true } : {}) }
+      : null;
+  }
+  async list(): Promise<DirectoryEntry[]> {
+    const { rows } = await withSql(this.env, (sql) =>
+      sql.query(
+        "select header from agents where tenant=$1 and not revoked and (expires_at is null or expires_at>$2) order by id limit 1000",
+        [this.tenantId, Date.now()],
+      ),
+    );
+    return rows.map((row) => row.header);
+  }
+  async upsert(
+    input: unknown,
+    suppliedKey?: string,
+  ): Promise<DirectoryEntry | DirectoryFailure> {
+    const { config, ttlSeconds } = configuration(input, this.env.MODEL);
+    const key =
+      suppliedKey === undefined
+        ? null
+        : boundedText(suppliedKey, "Idempotency-Key", 80);
+    const id = await this.id(key ?? crypto.randomUUID()),
+      configHash = await digest(JSON.stringify(config));
+    const entry = await transaction(this.env, async (sql) => {
+      // A transaction-scoped lock covers the absent row as well as concurrent creates.
+      await sql.query("select pg_advisory_xact_lock(hashtextextended($1,0))", [
+        id,
+      ]);
+      const previous = (
+        await sql.query(
+          "select tenant, header, revoked from agents where id=$1 for update",
+          [id],
+        )
+      ).rows[0];
+      if (previous && previous.tenant !== this.tenantId)
+        throw new ApiError(403, "Agent belongs to another tenant", "FORBIDDEN");
+      if (previous?.revoked)
+        throw new ApiError(410, "Agent is deleted", "AGENT_GONE");
+      const old = previous?.header as DirectoryEntry | undefined;
+      if (old?.initialized && old.configHash === configHash) return old;
+      const next: DirectoryEntry = {
+        id,
+        tenantId: this.tenantId,
+        key,
+        config,
+        configHash,
+        createdAt: old?.createdAt ?? Date.now(),
+        expiresAt:
+          old?.expiresAt ??
+          (ttlSeconds ? Date.now() + ttlSeconds * 1000 : null),
+        revision:
+          old?.configHash === configHash
+            ? old.revision
+            : (old?.revision ?? 0) + 1,
+        initialized: false,
+      };
+      const written = await sql.query(
+        `insert into agents(id,tenant,header,revision,name,type,model,expires_at) values($1,$2,$3,$4,$5,$6,$7,$8)
+        on conflict(id) do update set header=excluded.header,revision=excluded.revision,name=excluded.name,type=excluded.type,model=excluded.model,expires_at=excluded.expires_at
+        where agents.tenant=excluded.tenant returning id`,
+        [
+          id,
+          this.tenantId,
+          JSON.stringify(next),
+          next.revision,
+          config.name ?? "",
+          config.type ?? "agent",
+          config.model ?? this.env.MODEL,
+          next.expiresAt,
+        ],
+      );
+      if (!written.rowCount)
+        throw new ApiError(403, "Agent belongs to another tenant", "FORBIDDEN");
+      return next;
+    });
+    if (!entry.initialized) {
+      const response = await this.env.AGENTS.getByName(id).fetch(
+        new Request("https://agent/configuration", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id,
+            tenantId: this.tenantId,
+            config,
+            revision: entry.revision,
+            expiresAt: entry.expiresAt,
+          }),
+        }),
+      );
+      if (!response.ok)
+        return {
+          failed: true,
+          status: response.status,
+          error: "Agent configuration was refused",
+          code: "CONFIGURATION_FAILED",
+        };
+      entry.initialized = true;
+      const applied = await withSql(this.env, (sql) =>
+        sql.query(
+          "update agents set header=$3 where id=$1 and tenant=$2 and revision=$4 and not revoked",
+          [id, this.tenantId, JSON.stringify(entry), entry.revision],
+        ),
+      );
+      if (!applied.rowCount)
+        return {
+          failed: true,
+          status: 409,
+          error: "A newer configuration or revocation won; retry",
+          code: "CONFIGURATION_CHANGED",
+        };
+    }
+    return entry;
+  }
+  async remove(id: string): Promise<boolean | DirectoryFailure> {
+    const entry = await this.get(id);
+    if (!entry || (entry.deleted && !entry.cleanupPending)) return false;
+    entry.deleted = true;
+    entry.cleanupPending = true;
+    await withSql(this.env, (sql) =>
+      sql.query(
+        "update agents set revoked=true,header=$3 where id=$1 and tenant=$2",
+        [entry.id, this.tenantId, JSON.stringify(entry)],
+      ),
+    );
+    const response = await this.env.AGENTS.getByName(entry.id).fetch(
+      new Request("https://agent/", { method: "DELETE" }),
+    );
+    if (!response.ok)
+      return {
+        failed: true,
+        status: 503,
+        error: "Agent revoked; cleanup pending",
+        code: "CLEANUP_PENDING",
+      };
+    entry.cleanupPending = false;
+    entry.config = {};
+    entry.configHash = "";
+    entry.key = null;
+    await withSql(this.env, (sql) =>
+      sql.query(
+        "update agents set header=$3,purged_at=$4 where id=$1 and tenant=$2",
+        [entry.id, this.tenantId, JSON.stringify(entry), Date.now()],
+      ),
+    );
+    return true;
+  }
+}
+
+async function lockAccount(sql: Sql, tenantId: string) {
+  const row = (
+    await sql.query(
+      "select a.balance,a.purchased,t.billing from credit_accounts a join tenants t on t.id=a.tenant where a.tenant=$1 for update of a",
+      [tenantId],
+    )
+  ).rows[0];
+  if (!row) throw new ApiError(404, "Account not found", "ACCOUNT_NOT_FOUND");
+  return row;
+}
+async function verifyAgent(sql: Sql, tenantId: string, agentId: string) {
+  const row = (
+    await sql.query("select revoked from agents where id=$1 and tenant=$2", [
+      agentId,
+      tenantId,
+    ])
+  ).rows[0];
+  if (!row || row.revoked)
+    throw new ApiError(403, "Agent unavailable", "AGENT_GONE");
+}
+export async function reserveTurn(
+  env: PostgresEnv,
+  tenantId: string,
+  agentId: string,
+  requestId: string,
+  reserveMicros = 10_000,
+): Promise<{ held: number }> {
+  if (!Number.isSafeInteger(reserveMicros) || reserveMicros <= 0)
+    throw new ApiError(400, "Invalid reservation");
+  const id = await stableUuid(`turn:${tenantId}:${agentId}:${requestId}`);
+  return transaction(env, async (sql) => {
+    const account = await lockAccount(sql, tenantId);
+    await verifyAgent(sql, tenantId, agentId);
+    const existing = (
+      await sql.query("select tenant,amount from credit_holds where id=$1", [
+        id,
+      ])
+    ).rows[0];
+    if (existing) {
+      if (
+        existing.tenant !== tenantId ||
+        Number(existing.amount) !== reserveMicros
+      )
+        throw new ApiError(409, "Reservation changed", "IDEMPOTENCY_CONFLICT");
+      return { held: Number(existing.amount) };
+    }
+    const settled = (
+      await sql.query("select 1 from usage_flushes where id=$1", [id])
+    ).rowCount;
+    if (settled) return { held: 0 };
+    const held = Number(
+      (
+        await sql.query(
+          "select coalesce(sum(amount),0) held from credit_holds where tenant=$1",
+          [tenantId],
+        )
+      ).rows[0].held,
+    );
+    if (
+      account.billing !== "none" &&
+      (await new BillingSpendable().spendable(tenantId, sql)) - held <
+        reserveMicros
+    )
+      throw new ApiError(
+        402,
+        "Insufficient credit or hourly allowance",
+        "INSUFFICIENT_CREDIT",
+      );
+    // Expired/uncertain calls continue to hold credit until explicit settlement; no silent refund on expiry.
+    await sql.query(
+      "insert into credit_holds(id,tenant,amount,expires_at,created_at) values($1,$2,$3,$4,$5)",
+      [id, tenantId, reserveMicros, Date.now() + 600000, Date.now()],
+    );
+    return { held: reserveMicros };
+  });
+}
+export type TurnReceipt = {
+  tenantId: string;
+  agentId: string;
+  requestId: string;
+  costMicros: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  model?: string;
+  faultAfterCommit?: boolean;
+};
+export async function settleTurn(
+  env: PostgresEnv & {
+    TEST_MODE?: string;
+    WEBHOOKS?: Queue<{ id: string }>;
+    METRICS?: AnalyticsEngineDataset;
+  },
+  receipt: TurnReceipt,
+): Promise<{ duplicate: boolean }> {
+  if (
+    !Number.isSafeInteger(receipt.costMicros) ||
+    receipt.costMicros < 0 ||
+    ![receipt.inputTokens ?? 0, receipt.outputTokens ?? 0].every(
+      (n) => Number.isSafeInteger(n) && n >= 0,
+    )
+  )
+    throw new ApiError(400, "Invalid charge");
+  const { faultAfterCommit } = receipt;
+  const fingerprint = await digest(
+    JSON.stringify([
+      receipt.tenantId,
+      receipt.agentId,
+      receipt.requestId,
+      receipt.costMicros,
+      receipt.inputTokens ?? 0,
+      receipt.outputTokens ?? 0,
+      receipt.model ?? "local/fake",
+    ]),
+  );
+  const id = await stableUuid(
+      `turn:${receipt.tenantId}:${receipt.agentId}:${receipt.requestId}`,
+    ),
+    key = `workers:receipt:${id}`;
+  const result = await transaction(env, async (sql) => {
+    const account = await lockAccount(sql, receipt.tenantId);
+    const prior = (
+      await sql.query(
+        "select fingerprint from idempotency_keys where tenant=$1 and key=$2",
+        [receipt.tenantId, key],
+      )
+    ).rows[0];
+    if (prior) {
+      if (prior.fingerprint !== fingerprint)
+        throw new ApiError(409, "Receipt changed", "IDEMPOTENCY_CONFLICT");
+      return { duplicate: true };
+    }
+    const hold = (
+      await sql.query("select tenant,amount from credit_holds where id=$1", [
+        id,
+      ])
+    ).rows[0];
+    if (
+      !hold ||
+      hold.tenant !== receipt.tenantId ||
+      Number(hold.amount) < receipt.costMicros
+    )
+      throw new ApiError(409, "Missing or insufficient hold", "MISSING_HOLD");
+    if (receipt.costMicros > 0 && account.billing !== "none")
+      await accrueUsage(sql, [
+        {
+          tenant: receipt.tenantId,
+          amount: receipt.costMicros,
+          metadata: {
+            responses: 1,
+            inputTokens: receipt.inputTokens ?? 0,
+            outputTokens: receipt.outputTokens ?? 0,
+          },
+        },
+      ]);
+    await sql.query(
+      `insert into usage(tenant,day,model,responses,input,output,cost,platform_responses,platform_cost) values($1,$2,$3,1,$4,$5,$6,1,$6)
+      on conflict(tenant,day,model) do update set responses=usage.responses+1,input=usage.input+excluded.input,output=usage.output+excluded.output,cost=usage.cost+excluded.cost,platform_responses=usage.platform_responses+1,platform_cost=usage.platform_cost+excluded.platform_cost`,
+      [
+        receipt.tenantId,
+        new Date().toISOString().slice(0, 10),
+        receipt.model ?? "local/fake",
+        receipt.inputTokens ?? 0,
+        receipt.outputTokens ?? 0,
+        receipt.costMicros / 1000000,
+      ],
+    );
+    await sql.query("insert into usage_flushes(id) values($1)", [id]);
+    await sql.query(
+      "insert into idempotency_keys(tenant,key,fingerprint,status,body,content_type,created_at) values($1,$2,$3,200,$4,'application/json',$5)",
+      [
+        receipt.tenantId,
+        key,
+        fingerprint,
+        JSON.stringify({ duplicate: false }),
+        Date.now(),
+      ],
+    );
+    await sql.query("delete from credit_holds where id=$1 and tenant=$2", [
+      id,
+      receipt.tenantId,
+    ]);
+    await enqueueEvents(sql, [
+      webhookEvent(
+        "usage",
+        receipt.tenantId,
+        {
+          agentId: receipt.agentId,
+          requestId: receipt.requestId,
+          costMicros: receipt.costMicros,
+        },
+        id,
+      ),
+    ]);
+    return { duplicate: false };
+  });
+  if (faultAfterCommit && env.TEST_MODE === "1")
+    throw new Error("injected lost PG acknowledgement");
+  if (env.WEBHOOKS) await publishPending(env as WebhookEnv);
+  env.METRICS?.writeDataPoint({
+    blobs: [receipt.tenantId, receipt.agentId, receipt.model ?? "local/fake"],
+    doubles: [receipt.costMicros],
+    indexes: [receipt.tenantId],
+  });
+  return result;
+}
+export async function releaseTurn(
+  env: PostgresEnv,
+  tenantId: string,
+  agentId: string,
+  requestId: string,
+): Promise<void> {
+  const id = await stableUuid(`turn:${tenantId}:${agentId}:${requestId}`);
+  await withSql(env, (sql) =>
+    sql.query("delete from credit_holds where id=$1 and tenant=$2", [
+      id,
+      tenantId,
+    ]),
+  );
+}
+
+/** Team accounts transfer existing credit in one transaction with ordered row locks. */
+export async function transfer(
+  env: PostgresEnv,
+  from: string,
+  to: string,
+  amount: number,
+  key: string,
+) {
+  if (
+    from === to ||
+    !Number.isSafeInteger(amount) ||
+    amount <= 0 ||
+    !key ||
+    key.length > 160
+  )
+    throw new ApiError(400, "Invalid transfer");
+  const fingerprint = await digest(JSON.stringify([from, to, amount]));
+  return transaction(env, async (sql) => {
+    for (const tenant of [from, to].sort()) await lockAccount(sql, tenant);
+    const previous = (
+      await sql.query(
+        "select fingerprint from idempotency_keys where tenant=$1 and key=$2",
+        [from, `transfer:${key}`],
+      )
+    ).rows[0];
+    if (previous) {
+      if (previous.fingerprint !== fingerprint)
+        throw new ApiError(409, "Transfer changed", "IDEMPOTENCY_CONFLICT");
+      return { transferred: amount, replayed: true };
+    }
+    const held = Number(
+      (
+        await sql.query(
+          "select coalesce(sum(amount),0) held from credit_holds where tenant=$1",
+          [from],
+        )
+      ).rows[0].held,
+    );
+    const balance = Number(
+      (
+        await sql.query("select balance from credit_accounts where tenant=$1", [
+          from,
+        ])
+      ).rows[0].balance,
+    );
+    if (balance - held < amount)
+      throw new ApiError(
+        402,
+        "Insufficient unreserved credit",
+        "INSUFFICIENT_CREDIT",
+      );
+    await postLedger(sql, [
+      {
+        tenant: from,
+        kind: "adjustment",
+        amount: -amount,
+        key: `transfer:${from}:${key}:out`,
+        metadata: { to },
+      },
+      {
+        tenant: to,
+        kind: "adjustment",
+        amount,
+        key: `transfer:${from}:${key}:in`,
+        metadata: { from },
+      },
+    ]);
+    await sql.query(
+      "insert into idempotency_keys(tenant,key,fingerprint,status,body,created_at) values($1,$2,$3,200,'{}',$4)",
+      [from, `transfer:${key}`, fingerprint, Date.now()],
+    );
+    return { transferred: amount, replayed: false };
+  });
+}
+
+export async function controlRoutes(
+  request: Request,
+  env: ControlEnv,
+  auth: AuthContext,
+): Promise<Response | null> {
+  const url = new URL(request.url),
+    path = url.pathname,
+    tenant = auth.tenantId;
+  const json = (value: unknown, status = 200) =>
+    Response.json(value, { status });
+  const input = async () => (await request.json()) as Record<string, unknown>;
+  if (path === "/v1/api-keys" || path === "/v1/tokens") {
+    if (request.method === "GET")
+      return json(
+        (
+          await withSql(env, (sql) =>
+            sql.query(
+              'select id,name,prefix,created_at as "createdAt" from api_tokens where tenant=$1 order by created_at',
+              [tenant],
+            ),
+          )
+        ).rows,
+      );
+    if (request.method === "POST") {
+      const body = await input(),
+        name = body.name;
+      if (typeof name !== "string" || !name.trim() || name.length > 80)
+        throw new ApiError(400, "name must contain 1–80 characters");
+      const token = `art_${Array.from(crypto.getRandomValues(new Uint8Array(32)), (x) => x.toString(16).padStart(2, "0")).join("")}`,
+        hash = await digest(token),
+        id = crypto.randomUUID(),
+        createdAt = Date.now();
+      await transaction(env, async (sql) => {
+        await lockAccount(sql, tenant);
+        const count = Number(
+          (
+            await sql.query(
+              "select count(*) count from api_tokens where tenant=$1",
+              [tenant],
+            )
+          ).rows[0].count,
+        );
+        if (count >= 50) throw new ApiError(409, "At most 50 API keys");
+        await sql.query(
+          "insert into api_tokens(sha256,id,tenant,name,prefix,created_at) values($1,$2,$3,$4,$5,$6)",
+          [hash, id, tenant, name.trim(), token.slice(0, 8), createdAt],
+        );
+      });
+      return json(
+        { id, token, name: name.trim(), prefix: token.slice(0, 8), createdAt },
+        201,
+      );
+    }
+  }
+  const tokenMatch = /^\/v1\/(?:api-keys|tokens)\/([^/]+)$/.exec(path);
+  if (tokenMatch && request.method === "DELETE")
+    return json({
+      deleted: !!(
+        await withSql(env, (sql) =>
+          sql.query("delete from api_tokens where tenant=$1 and id::text=$2", [
+            tenant,
+            tokenMatch[1],
+          ]),
+        )
+      ).rowCount,
+    });
+  if (
+    path === "/v1/account" ||
+    path === "/v1/credits" ||
+    path === "/v1/billing"
+  )
+    return json(
+      (
+        await withSql(env, (sql) =>
+          sql.query(
+            "select t.id,t.billing,t.limits,a.balance,a.purchased,(select coalesce(sum(amount),0) from credit_holds h where h.tenant=t.id) as held from tenants t join credit_accounts a on a.tenant=t.id where t.id=$1",
+            [tenant],
+          ),
+        )
+      ).rows[0],
+    );
+  if (path === "/v1/credits/ledger")
+    return json(
+      (
+        await withSql(env, (sql) =>
+          sql.query(
+            "select id,kind,amount,metadata,created_at from credit_ledger where tenant=$1 order by id desc limit 100",
+            [tenant],
+          ),
+        )
+      ).rows,
+    );
+  if (path === "/v1/credits/holds")
+    return json(
+      (
+        await withSql(env, (sql) =>
+          sql.query(
+            "select id,amount,expires_at from credit_holds where tenant=$1 order by created_at",
+            [tenant],
+          ),
+        )
+      ).rows,
+    );
+  if (path === "/v1/credits/transfer" && request.method === "POST") {
+    if (auth.kind !== "operator")
+      throw new ApiError(403, "Team account operator required", "FORBIDDEN");
+    const body = await input();
+    return json(
+      await transfer(
+        env,
+        tenant,
+        String(body.to ?? ""),
+        Number(body.amount),
+        String(body.key ?? request.headers.get("Idempotency-Key") ?? ""),
+      ),
+    );
+  }
+  if (path === "/v1/usage")
+    return json(
+      (
+        await withSql(env, (sql) =>
+          sql.query(
+            "select * from usage where tenant=$1 order by day desc limit 100",
+            [tenant],
+          ),
+        )
+      ).rows,
+    );
+  if (path === "/v1/webhooks") {
+    if (request.method === "POST")
+      return json(await createEndpoint(env, tenant, await input()), 201);
+    if (request.method === "GET")
+      return json(
+        (
+          await withSql(env, (sql) =>
+            sql.query(
+              "select id,url,events,description,created_at from webhook_endpoints where tenant=$1",
+              [tenant],
+            ),
+          )
+        ).rows,
+      );
+  }
+  if (path === "/v1/webhooks/deliveries")
+    return json(
+      (
+        await withSql(env, (sql) =>
+          sql.query(
+            "select id,endpoint,attempts,due,last_error from webhook_deliveries where tenant=$1",
+            [tenant],
+          ),
+        )
+      ).rows,
+    );
+  const webhookMatch = /^\/v1\/webhooks\/([^/]+)$/.exec(path);
+  if (webhookMatch && request.method === "DELETE")
+    return json({
+      deleted: !!(
+        await withSql(env, (sql) =>
+          sql.query("delete from webhook_endpoints where id=$1 and tenant=$2", [
+            webhookMatch[1],
+            tenant,
+          ]),
+        )
+      ).rowCount,
+    });
+  if (path === "/v1/tenants" && auth.kind === "operator") {
+    if (request.method === "GET")
+      return json(
+        (
+          await withSql(env, (sql) =>
+            sql.query(
+              "select id,billing,created_at from tenants order by id limit 100",
+            ),
+          )
+        ).rows,
+      );
+    if (request.method === "POST") {
+      const body = await input();
+      if (
+        typeof body.id !== "string" ||
+        !/^camelrun-proto-[a-z0-9-]{1,40}$/.test(body.id)
+      )
+        throw new ApiError(
+          400,
+          "Experiment tenant id must begin camelrun-proto-",
+        );
+      await transaction(env, async (sql) => {
+        await sql.query(
+          "insert into tenants(id,created_at,billing) values($1,$2,'prepaid') on conflict(id) do nothing",
+          [body.id, Date.now()],
+        );
+        await sql.query(
+          "insert into credit_accounts(tenant) values($1) on conflict do nothing",
+          [body.id],
+        );
+      });
+      return json({ id: body.id }, 201);
+    }
+  }
+  if (path === "/v1/account/email" && request.method === "POST") {
+    if (env.TEST_MODE !== "1" && (!env.MAIL || !env.ACCOUNT_EMAIL_FROM))
+      throw new ApiError(
+        501,
+        "Account mail transport is not configured",
+        "UNSUPPORTED_FEATURE",
+      );
+    const body = await input(),
+      email = String(body.email ?? "")
+        .trim()
+        .toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254)
+      throw new ApiError(400, "Invalid email");
+    const token = Array.from(crypto.getRandomValues(new Uint8Array(32)), (x) =>
+        x.toString(16).padStart(2, "0"),
+      ).join(""),
+      hash = await digest(token),
+      id = crypto.randomUUID(),
+      now = Date.now();
+    const envelope = await seal(
+      JSON.stringify({ email, token, purpose: "verify_account_email" }),
+      env,
+    );
+    await transaction(env, async (sql) => {
+      await lockAccount(sql, tenant);
+      await sql.query(
+        "delete from account_email_links where tenant=$1 and purpose='add'",
+        [tenant],
+      );
+      await sql.query(
+        "insert into account_email_links(sha256,purpose,email,tenant,hash,created_at,expires_at) values($1,'add',$2,$3,'mailbox-verification-only',$4,$5)",
+        [hash, email, tenant, now, now + 3600000],
+      );
+      await sql.query(
+        "insert into billing_recipients(id,tenant,email,confirmation_hash,confirmation_expires,created_at) values($1,$2,$3,$4,$5,$6) on conflict(tenant,email) do update set status='pending',confirmation_hash=excluded.confirmation_hash,confirmation_expires=excluded.confirmation_expires",
+        [id, tenant, email, hash, now + 3600000, now],
+      );
+      await sql.query(
+        "insert into idempotency_keys(tenant,key,fingerprint,status,body,created_at) values($1,$2,$3,102,$4,$5)",
+        [tenant, `workers:email:${id}`, hash, JSON.stringify(envelope), now],
+      );
+    });
+    await env.WEBHOOKS?.send({ id, kind: "email" });
+    return json({ sent: true });
+  }
+  if (path === "/v1/account/email/verify" && request.method === "POST") {
+    const hash = await digest(String((await input()).token ?? ""));
+    await transaction(env, async (sql) => {
+      const row = (
+        await sql.query(
+          "delete from account_email_links where sha256=$1 and tenant=$2 and purpose='add' and expires_at>$3 returning email",
+          [hash, tenant, Date.now()],
+        )
+      ).rows[0];
+      if (!row)
+        throw new ApiError(400, "Link expired or already used", "LINK_GONE");
+      await sql.query(
+        "update billing_recipients set status='verified' where tenant=$1 and email=$2 and confirmation_hash=$3",
+        [tenant, row.email, hash],
+      );
+    });
+    return json({ verified: true });
+  }
+  if (
+    path === "/experimental/account-emails" &&
+    env.TEST_MODE === "1" &&
+    auth.kind === "operator"
+  ) {
+    const rows = (
+      await withSql(env, (sql) =>
+        sql.query(
+          "select body,status from idempotency_keys where tenant=$1 and key like 'workers:email:%' order by created_at",
+          [tenant],
+        ),
+      )
+    ).rows;
+    return json(
+      await Promise.all(
+        rows.map(async (row) => ({
+          ...JSON.parse(await unseal(JSON.parse(row.body), env)),
+          delivered: row.status === 200,
+        })),
+      ),
+    );
+  }
+  if (path === "/v1/admin/summary" && auth.kind === "operator")
+    return json(
+      (
+        await withSql(env, (sql) =>
+          sql.query(
+            "select (select count(*) from tenants) tenants,(select count(*) from agents where not revoked) agents,(select sum(balance) from credit_accounts) balance,(select count(*) from credit_holds) holds",
+          ),
+        )
+      ).rows[0],
+    );
+  const credits = new EndUserCredits(database(env));
+  if (path === "/v1/end-users/settings")
+    return json(
+      request.method === "GET"
+        ? await credits.settings(tenant)
+        : await credits.setSettings(tenant, await input(), {
+            merge: request.method === "PATCH",
+          }),
+    );
+  if (path === "/v1/end-users") return json(await credits.list(tenant));
+  const userMatch =
+    /^\/v1\/end-users\/([^/]+)(?:\/(ledger|lots|usage|days))?$/.exec(path);
+  if (userMatch) {
+    const id = decodeURIComponent(userMatch[1]),
+      part = userMatch[2];
+    if (part === "ledger")
+      return json(
+        request.method === "GET"
+          ? await credits.ledger(tenant, id)
+          : await credits.post(tenant, id, await input()),
+      );
+    if (part === "lots" && request.method === "POST")
+      return json(await credits.markLot(tenant, id, await input()));
+    if (part === "usage") return json(await credits.usage(tenant, id));
+    if (part === "days") return json(await credits.days(tenant, id));
+    return json(
+      request.method === "GET"
+        ? await credits.get(tenant, id)
+        : await credits.update(tenant, id, await input()),
+    );
+  }
+  return null;
+}
+
+export async function maintenance(env: ControlEnv) {
+  await new EndUserCredits(database(env)).expireDue(100);
+  await withSql(env, (sql) =>
+    sql.query("delete from account_email_links where expires_at < $1", [
+      Date.now(),
+    ]),
+  );
+  return publishPending(env);
+}

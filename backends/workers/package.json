@@ -1,0 +1,39 @@
+{
+  "name": "@camelai/run-workers-experiment",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "WRANGLER_LOG_PATH=.wrangler/logs wrangler dev --local -c wrangler.jsonc -c codemode/wrangler.jsonc",
+    "typecheck": "tsc --noEmit",
+    "types": "WRANGLER_LOG_PATH=.wrangler/logs wrangler types --include-runtime=false",
+    "build": "WRANGLER_LOG_PATH=.wrangler/logs wrangler deploy --dry-run --outdir dist && WRANGLER_LOG_PATH=.wrangler/logs wrangler deploy --dry-run -c codemode/wrangler.jsonc --outdir dist-codemode",
+    "test": "node --import ./test/sdk-deps.mjs --experimental-strip-types --test --test-concurrency=1 test/*.test.ts",
+    "test:integration": "node --import ./test/sdk-deps.mjs --experimental-strip-types --test --test-concurrency=1 test/*.integration.ts",
+    "test:compat": "node scripts/compatibility.mjs",
+    "measure": "node scripts/measure.mjs",
+    "test:python": "python3 scripts/python-compat.py"
+  },
+  "dependencies": {
+    "@cloudflare/computer": "0.9.0",
+    "@cloudflare/sandbox": "1.0.3",
+    "@earendil-works/chord": "1.5.0",
+    "@earendil-works/pi-ai": "1.5.0",
+    "@earendil-works/pi-codemode": "1.5.0",
+    "@earendil-works/pi-durable": "1.5.0",
+    "@earendil-works/pi-schema": "1.5.0",
+    "agents": "0.33.0",
+    "zod": "4.6.7",
+    "pg": "8.16.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "latest",
+    "@types/node": "^22",
+    "just-bash": "3.0.1",
+    "typebox": "1.1.38",
+    "typescript": "^5.9.3",
+    "wrangler": "4.157.0",
+    "ws": "8.21.0",
+    "@types/pg": "8.15.6"
+  }
+}
