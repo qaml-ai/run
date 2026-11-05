@@ -3,6 +3,8 @@ import { agentToken, ApiError, configuration, digest } from "./api-contract.ts";
 import { body, boundedText, object } from "./validation.ts";
 import { withSql } from "./postgres.ts";
 import { claimAgentWorkspace, claimFork, copyAgentWorkspace, forkWorkspaceMounts, readForkClaim, releaseForkClaim } from "./agent-workspace.ts";
+import { Workspaces } from "./workspaces.ts";
+import { database } from "./postgres.ts";
 import type { FileBindings } from "./files.ts";
 import { provisionDefinition, visibleConfiguration } from "./definitions.ts";
 import { canonical } from "../../../shared/durable-json.ts";
@@ -130,6 +132,9 @@ export async function agentLifecycleRoutes(request: Request, env: ControlEnv & F
     const fail = env.TEST_MODE === "1" ? request.headers.get("x-camel-test-fork-failure") : null;
     if (fail === "claimed") throw new ApiError(503, "Injected fork interruption before creation");
     const created = result(await directory.upsert(claim.config, key, claim.origin, { sourceId: claim.sourceId, fingerprint: claim.fingerprint }));
+    const workspaces = new Workspaces(database(env));
+    const inherited = await workspaces.current(entry.tenantId, "agent", entry.id);
+    await workspaces.assign(entry.tenantId, "agent", created.id, inherited?.workspace ?? null, true, true);
     if (fail === "created") throw new ApiError(503, "Injected fork interruption after creation");
     if (claim.copyPrivate) await copyAgentWorkspace(env, entry.tenantId, claim.sourceId, targetId, captured, fail === "copied" ? 1 : undefined);
     if (claim.model) {

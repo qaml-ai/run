@@ -90,7 +90,7 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEn
       throw new Error(`No azure deployment is configured for ${model.provider}/${model.id} on this runtime; move the agent to a model you can use (GET /v1/models?available=true)`);
     if (!credential && !getModels(model.provider).length && !["test", "camel-test", "cloudflare"].includes(model.provider) && !hooks.endpoints?.[model.provider])
       throw new Error(`${model.provider} provider is gone; set it again with PUT /v1/providers/${model.provider}`);
-    if (!credential && !options.apiKey && !["test", "camel-test", "cloudflare"].includes(model.provider))
+    if (!credential && !["test", "camel-test", "cloudflare"].includes(model.provider))
       throw new Error(missingModelKey(model.provider, model.id, env));
     if (model.provider === "amazon-bedrock" && !credential?.apiKey && !options.apiKey)
       throw Object.assign(new Error("Bedrock requires an API key"), { code: "model_key_missing" });

@@ -280,6 +280,10 @@ export class Directory {
       }
     }
     if (config.workspaceId !== undefined) await workspaces.assign(this.tenantId, "agent", id, config.workspaceId);
+    else if (config.definition) {
+      const inherited = await workspaces.current(this.tenantId, "definition", config.definition);
+      if (inherited) await workspaces.assign(this.tenantId, "agent", id, inherited.workspace, true);
+    }
     return previousEntry ? { ...entry, reconfigured: true } : entry;
   }
   async remove(id: string): Promise<boolean | DirectoryFailure> {
