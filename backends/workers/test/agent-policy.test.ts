@@ -218,6 +218,31 @@ test('background child result and lifecycle events retain their public identity'
     assert.equal(event.requestId, child.requestId);
   }
 });
+test('a paused background child produces one new completion notice after its human resume', async () => {
+  const f = fixture(), notified: string[] = [], retries: number[] = [];
+  let resumed = false;
+  f.values.set('delegation:paused', { id: 'child', key: 'paused', requestId: 'child-run', parentRequestId: 'parent-run', toolCallId: 'spawn', task: 'ask', name: 'helper', depth: 1, createdAt: Date.now(), status: 'input_required', background: true, made: true, accepted: true, notified: true });
+  const original = f.host.fetch;
+  f.host.fetch = async (id, request) => new URL(request.url).pathname.startsWith('/requests/resume_') && !resumed ? new Response('', { status: 404 }) : original(id, request);
+  f.host.notify = async child => { notified.push(child.key); };
+  f.host.retry = async after => { retries.push(after!); };
+  await f.delegation.recover();
+  assert.equal(retries[0], 15_000);
+  resumed = true;
+  await f.delegation.recover();
+  await Promise.all(f.tasks);
+  await f.delegation.recover();
+  await Promise.all(f.tasks);
+  assert.deepEqual(notified, ['paused:resume']);
+});
+test('a trusted tool starts an existing tenant worker without exposing a model spawn tool', async () => {
+  const f = fixture();
+  f.host.target = async ({ agent }) => ({ id: agent!, config: { name: 'prepared' } });
+  const result = await f.delegation.toolSpawn('app__work', { agent: 'prepared-worker', task: 'do it', output: { type: 'object' } }, { callId: 'source-call', taskId: 1, getTask: async () => undefined } as unknown as ToolExecutionApi, { abortSignal: signal() } as never);
+  assert.equal(JSON.parse((result.content![0] as { text: string }).text).agentId, 'prepared-worker');
+  assert.deepEqual(f.submitted[0].params.output, { schema: { type: 'object' } });
+  await Promise.all(f.tasks);
+});
 test('parent cancellation aborts made children and only its actively running named child', async () => {
   const f = fixture(), aborted: string[] = [];
   const base = { requestId: 'child-run', parentRequestId: 'parent-run', toolCallId: 'call', task: 'go', name: 'helper', depth: 1, createdAt: 1, status: 'running', accepted: true };

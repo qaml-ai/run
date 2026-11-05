@@ -9,6 +9,9 @@ import { holdBudget, type DelegateResponse, type Session as BudgetSession } from
 import { toolCallSite } from './tool-call-context.ts';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 import { escapeMarkers } from './sender.ts';
+import { outputInput } from './output-validation.ts';
+import type { Context } from '@earendil-works/chord';
+import type { McpResult } from './attached-tools.ts';
 
 type Configuration = { model?: string | object; systemPrompt?: string; delegate?: DelegateSettings; builtins?: string[]; spendLimit?: { usd: number }; [key: string]: unknown };
 export type ParentRun = { id: string; piId?: string; startedAt?: number; params?: { spendLimit?: { usd: number }; bucket?: string; actor?: string }; metadata?: unknown };
@@ -36,7 +39,7 @@ export interface DelegationHost {
   waitUntil(promise: Promise<unknown>): void;
   /** Journal a runtime-authored child notification so recovery cannot lose it. */
   notify?(child: DelegatedChild): Promise<void>;
-  retry?(): Promise<void>;
+  retry?(afterMs?: number): Promise<void>;
   sendMessage?(targetId: string, request: NoticeRequest, notice: RuntimeNotice): Promise<unknown>;
   reportProgress?(parentId: string, report: ChildProgressReport): Promise<unknown>;
 }
@@ -262,6 +265,7 @@ export class Delegation {
           if (latest) await tx.put(prefix + child.key, { ...latest, notified: true });
         });
       }
+      if (finished?.background && finished.status === 'input_required') await this.resumePaused(finished);
     })().catch(async () => { await this.host.retry?.(); }).finally(() => { relay?.abort(); this.following.delete(child.key); }));
   }
   async wait(child: DelegatedChild, signal?: AbortSignal): Promise<DelegatedChild> {
@@ -398,6 +402,7 @@ export class Delegation {
   }
   async recover() {
     for (const child of await this.children()) {
+      if (child.background && child.status === 'input_required') await this.resumePaused(child);
       if (child.cancelRequested && child.status === 'running') {
         await this.cancelRemote(child);
         if (!child.accepted) {
@@ -409,6 +414,21 @@ export class Delegation {
       if (child.accepted) this.follow(child);
     }
   }
+  private async resumePaused(child: DelegatedChild) {
+    if (child.cancelRequested) return;
+    const key = `${child.key}:resume`;
+    if (await this.host.storage.get(prefix + key)) return;
+    const requestId = `resume_${(await digest(child.requestId)).slice(0, 40)}`;
+    const response = await this.host.fetch(child.id, new Request(`https://agent/requests/${requestId}`));
+    if (response.status === 404) {
+      if (Date.now() - child.createdAt < MULTI_AGENT_LIMITS.childTtlSeconds * 1000) await this.host.retry?.(MULTI_AGENT_LIMITS.sweepMs);
+      return;
+    }
+    if (!response.ok) return;
+    const resumed: DelegatedChild = { ...child, key, requestId, createdAt: Date.now(), status: 'running', endedAt: undefined, outcome: undefined, error: undefined, spent: undefined, held: undefined, notified: undefined, landedBy: undefined, progress: undefined, progressCalls: undefined, progressShown: undefined };
+    await this.host.storage.put(prefix + key, resumed);
+    this.follow(resumed);
+  }
   async targetDescriptions(settings: DelegateSettings) {
     const descriptions = new Map<string, string>();
     await Promise.all((settings.agents ?? []).filter(target => target.definition && !target.description).map(async target => {
@@ -416,6 +436,24 @@ export class Delegation {
       if (resolved?.description) descriptions.set(target.definition!, resolved.description);
     }));
     return (target: NonNullable<DelegateSettings['agents']>[number]) => target.definition ? descriptions.get(target.definition) : undefined;
+  }
+  /** Only the trusted runtime-auth source registration exposes this callback. */
+  async toolSpawn(tool: string, directive: unknown, api: ToolExecutionApi, context: Context): Promise<McpResult> {
+    if ((await toolCallSite(api, context)).innerCallId) throw new Error(`${tool} starts a sub-agent: call it directly, not from code`);
+    const invalid = () => new Error(`${tool} answered with an invalid camelrun/spawn: { agent: "<agent id>", task, name?, output? }`);
+    if (!directive || typeof directive !== 'object' || Array.isArray(directive)) throw invalid();
+    const { agent, task, name, output, ...rest } = directive as Record<string, unknown>;
+    if (Object.keys(rest).length || typeof agent !== 'string' || !/^[A-Za-z0-9_-]{1,200}$/.test(agent) || typeof task !== 'string' || !task.trim() || task.length > MULTI_AGENT_LIMITS.taskChars || (name !== undefined && (typeof name !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(name)))) throw invalid();
+    if (output !== undefined) outputInput({ schema: output });
+    const { config } = await this.host.context(api);
+    const target = await this.host.target({ agent }).catch(() => undefined);
+    if (!target?.id) throw new Error(`${tool} asked to start an agent this account does not have`);
+    const base = typeof name === 'string' ? name : String(target.config.name ?? '').replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 56) || 'worker';
+    const running = (await this.children()).filter(child => child.status === 'running');
+    let chosen = base, n = 1;
+    while (running.some(child => child.name === chosen)) chosen = `${base.slice(0, 56)}-${n++}`;
+    const child = await this.start({ agent, task, name: chosen, ...(output !== undefined ? { output } : {}) }, api.callId, context.abortSignal ?? new AbortController().signal, true, api, { ...config.delegate, agents: [{ name: agent, agent }] });
+    return { content: [{ type: 'text', text: JSON.stringify({ agentId: child.id, name: child.name }) }] };
   }
   async toolsFor(settings: DelegateSettings, builtins: readonly string[], subagent = false): Promise<ToolRegistration[]> {
     return this.tools(settings, builtins, subagent, await this.targetDescriptions(settings));

@@ -405,7 +405,7 @@ export class CamelAgent extends DurableObject<Env> {
       this.env.AGENTS.getByName(id).receiveAgentMessage(request, notice),
     reportProgress: (id, report) =>
       this.env.AGENTS.getByName(id).receiveAgentProgress(report),
-    retry: () => this.arm(Date.now() + 1000),
+    retry: (afterMs = 1000) => this.arm(Date.now() + afterMs),
   });
   private decisions = decisionService(
     this.env,
@@ -585,6 +585,7 @@ export class CamelAgent extends DurableObject<Env> {
     return {
       issuer,
       ...(call ? { call } : {}),
+      spawn: (tool: string, directive: unknown, currentApi: import('@earendil-works/pi-durable').ToolExecutionApi, context: import('@earendil-works/chord').Context) => this.delegation.toolSpawn(tool, directive, currentApi, context),
       progress: async (event: unknown) => {
         if (run.id !== "background") await this.emit({ type: "event", requestId: run.id, event });
       },
