@@ -18,7 +18,9 @@ export async function forkSnapshot(root: Conversation, history: AgentHistory, at
   if (imported && count >= imported.cut) return { through, messages: messages.slice(0, count), model: [
     ...view.head!.model!.slice(0, 1), ...messages.slice(imported.cut, count),
   ] };
-  const upper = next ? next.entry - 1 : undefined;
+  // Entry IDs share a sequence with tasks and documents; subtracting one from
+  // the next ID can name no entry. Use the last message's actual journal ID.
+  const upper = next ? cursor?.entry : undefined;
   // A cut within an entry or before the retained head can only use raw history.
   if (!cursor || (next && next.entry === cursor.entry) || (upper !== undefined && view.head && upper < Number(view.head.head ?? view.head.id)))
     return { through, messages: messages.slice(0, count), model: messages.slice(0, count) };

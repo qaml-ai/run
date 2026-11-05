@@ -1,4 +1,6 @@
 import { withMoneyMetrics } from "./money-metrics.ts";
+import { serveAgentMcp, agentMcpPreflight, agentMcpSignIn } from "./agent-mcp.ts";
+import { resolveDefinition } from "./definitions.ts";
 import { sweepComputers } from './computers/service.ts';
 import { CamelAgent, json, type Env } from "./agent.ts";
 import {
@@ -120,7 +122,7 @@ function scopedConfiguration(input: unknown) {
       );
 }
 
-export default {
+const worker = {
   async fetch(
     request: Request,
     env: Env,
@@ -129,6 +131,7 @@ export default {
     return withMoneyMetrics(env, async () => corsResponse(request, await (async () => {
     try {
       request = websocketAuthorization(request);
+      if (request.method === "OPTIONS" && /^\/v1\/agents\/client_[a-f0-9]{40}\/mcp$/.test(new URL(request.url).pathname)) return agentMcpPreflight();
       const preflight = corsPreflight(request);
       if (preflight) return preflight;
       const signed = await handleSignedFileRequest(request, env);
@@ -189,6 +192,8 @@ export default {
             }))[0] ?? null;
         }
       }
+      if (!auth && !entry && match?.[1] === "v1/agents" && match[3] === "/mcp")
+        return agentMcpSignIn(request, env.AGENT_PUBLIC_URL || url.origin, match[2]);
       if (!auth && !entry)
         throw new ApiError(401, "Unauthorized", "UNAUTHORIZED");
       if (auth) {
@@ -303,6 +308,18 @@ export default {
           "Agent initialization is pending; retry creation",
           "INITIALIZATION_PENDING",
         );
+      if (tail === "/mcp" && match[1] === "v1/agents") {
+        const definition = entry.config.definition
+          ? await resolveDefinition(env, entry.tenantId, entry.config.definition).catch(() => undefined)
+          : undefined;
+        return serveAgentMcp(request, {
+          agent: { id: entry.id, name: entry.config.name, own: !auth },
+          description: definition?.spec.description,
+          publicOrigin: env.AGENT_PUBLIC_URL || url.origin,
+          base: `${url.origin}${auth ? "/v1/agents/" : "/clients/"}${entry.id}`,
+          fetch: (input, init) => worker.fetch(new Request(input, init), env, ctx),
+        });
+      }
       if (tail === "/browser-tokens" && request.method === "POST") {
         if (!auth || auth.kind === "oauth") throw new ApiError(403, "Account key required", "FORBIDDEN");
         return json({ ...browserTokens.mint(entry.tenantId, entry.id, await body(request, 16 * 1024)), agentId: entry.id }, 201);
@@ -456,3 +473,4 @@ export default {
     });
   },
 } satisfies ExportedHandler<Env, DeliveryMessage>;
+export default worker;

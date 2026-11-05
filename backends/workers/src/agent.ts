@@ -536,7 +536,6 @@ export class CamelAgent extends DurableObject<Env> {
           ? Object.assign(new Error(limited), { status: 402 })
           : limited;
       const { limit } = await accounts.billing.busyLimit(conf.tenantId);
-      await runAdmission(this.env, conf.tenantId);
       acquired = await this.env.TENANTS.getByName(conf.tenantId).acquire(
         `${conf.id}:${id}`,
         Math.min(
@@ -547,7 +546,9 @@ export class CamelAgent extends DurableObject<Env> {
       if (!acquired)
         throw Object.assign(new Error("Tenant concurrency limit"), {
           status: 429,
+          code: "BUSY_AGENT_LIMIT",
         });
+      await runAdmission(this.env, conf.tenantId);
       await reserveTurn(this.env, conf.tenantId, conf.id, id);
     } catch (error) {
       if (acquired)
@@ -2645,8 +2646,15 @@ export class CamelAgent extends DurableObject<Env> {
           ),
         );
       }
-      if (path === "/history" && request.method === "GET")
+      if (path === "/history" && request.method === "GET") {
+        const run = url.searchParams.get("run");
+        if (run) {
+          const record = await this.ctx.storage.get<RequestRecord>(reqKey(run));
+          if (!record || record.endedAt && record.endedAt + Number(url.searchParams.get("retentionMs")) <= Date.now())
+            return json({ error: "Run retention expired", code: "NOT_FOUND" }, 404);
+        }
         return json(await this.history(url));
+      }
       if (path === "/fork-snapshot" && request.method === "POST") {
         const input = object(await body(request), ["atMessage"]);
         const pi = await this.harness.pi();

@@ -3,9 +3,10 @@ import type { Message } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { importedHistory } from "./history-policy.ts";
 import { COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "./reset-policy.ts";
+import { attachmentMessages } from "./attachment-markers.ts";
 
 export async function writeModelContext(root: Conversation, model: readonly Message[], data?: Record<string, any>) {
-  const write = await root.submit({ type: "write", entry: { kind: "camel.context", head: "self", model, ...(data ? { data } : {}) } }, BACKGROUND_CONTEXT);
+  const write = await root.submit({ type: "write", entry: { kind: "camel.context", head: "self", model: attachmentMessages(model) as Message[], ...(data ? { data } : {}) } }, BACKGROUND_CONTEXT);
   await write.wait(BACKGROUND_CONTEXT);
 }
 

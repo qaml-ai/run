@@ -63,7 +63,7 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
     tenant: "alice",
     tenants: [],
     entrypoint: fileURLToPath(new URL("../../../backends/workers/test/contract-entry.ts", import.meta.url)),
-    modelURL: env.AGENT_BASE_URL ?? model.url,
+    modelURL: env.AGENT_BASE_URL || model.url,
     vars: {
       ...env,
       API_TOKEN: internalOperator,

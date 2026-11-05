@@ -19,6 +19,7 @@ import { EndUserCredits, lastCallMin, settleUsage, utcDay } from "./end-user-cre
 import { CreditHolds } from "./credit-holds.ts";
 import { keyServices, type KeyEnv } from "./security-services.ts";
 import { defaultModelFor, validateAgentModel } from "./default-model.ts";
+import { resolveAgentKey } from "./agent-key.ts";
 import { createAdmission } from "./admission.ts";
 import { applyUsageRows } from "./accounts.ts";
 import { applyWorkspaceUsage, Workspaces } from "./workspaces.ts";
@@ -112,9 +113,7 @@ export class Directory {
     this.tenantId = tenantId;
   }
   async id(key: string) {
-    return /^client_[a-f0-9]{40}$/.test(key)
-      ? key
-      : `client_${(await digest(`${this.tenantId}:${key}`)).slice(0, 40)}`;
+    return resolveAgentKey(this.env, this.tenantId, key);
   }
   async get(key: string): Promise<DirectoryEntry | null> {
     const id = await this.id(key);
@@ -190,7 +189,8 @@ export class Directory {
       if(old?.config.mounts&&requested!==undefined&&JSON.stringify(old.config.mounts)!==JSON.stringify(config.mounts)&&(input as {remount?:boolean}).remount!==true)
         throw new ApiError(409,"Agent mounts differ; set remount: true to change them");
       const configHash=await digest(JSON.stringify(config));
-      await createAdmission(this.env, this.tenantId, !(old?.initialized && old.configHash === configHash));
+      if (config.type !== "run")
+        await createAdmission(this.env, this.tenantId, !(old?.initialized && old.configHash === configHash));
       if (old?.initialized && old.configHash === configHash) return old;
       const next: DirectoryEntry = {
         id,

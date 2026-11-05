@@ -72,10 +72,10 @@ export async function statelessRoutes(request: Request, env: ControlEnv, auth: A
   if (!runId) throw new ApiError(405, "Method not allowed");
   entry = await directory.get(`client_${runId.slice(4)}`) as typeof entry;
   if (!entry || !entry.run || entry.deleted) throw new ApiError(404, "Unknown run", "NOT_FOUND");
+  if (match[2] === "/messages" && request.method === "GET") return call(env, entry.id, `/history?run=${encodeURIComponent(runId)}&retentionMs=${entry.run.retentionMs}`);
   const record = await payload(await call(env, entry.id, `/requests/${runId}?wait=${Math.min(25,Number(url.searchParams.get("wait") ?? 0))}`)) as Record;
   if (record.endedAt && record.endedAt + entry.run.retentionMs <= Date.now()) throw new ApiError(404, "Run retention expired", "NOT_FOUND");
   if (match[2] === "/events" && request.method === "GET") return env.AGENTS.getByName(entry.id).fetch(new Request(`https://agent/events?watch=1&runId=${encodeURIComponent(runId)}`, {headers:request.headers}));
-  if (match[2] === "/messages" && request.method === "GET") { const history = await payload(await call(env, entry.id, "/history")); return json({messages:history.messages.filter((message: {role:string}) => message.role !== "system")}); }
   if (match[2] === "/abort" && request.method === "POST") return call(env, entry.id, "/abort", {});
   if (!match[2] && request.method === "DELETE") { await directory.remove(entry.id); return json({deleted:true}); }
   if (!match[2] && request.method === "GET") return json(runView(record, entry.run.retentionMs));
