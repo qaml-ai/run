@@ -2074,7 +2074,7 @@ export class CamelAgent extends DurableObject<Env> {
     if (refusal)
       throw Object.assign(new Error(refusal.error), {
         status: 402,
-        code: refusal.code,
+        code: "SPEND_LIMIT",
       });
     const running = (await this.harness.pending()).find(
       (item) => item.status === "running",

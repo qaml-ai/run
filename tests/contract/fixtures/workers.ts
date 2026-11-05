@@ -235,7 +235,7 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
     setModel(next) { respond = next; replyStart = model.bodies.length; },
     async imageResizeFailureCount() { throw new Error("Unsupported fixture state: Workers has no parse-job resize boundary"); },
     async restartWithLegacyModel(agent, legacyModel) {
-      const token = `cat_${createHmac("sha256", internalOperator).update(`camelrun-cloudflare:${agent}`).digest("hex")}`;
+      const token = `cat_${createHmac("sha256", internalOperator).update(`camelrun-cloudflare:agent:${agent}`).digest("hex")}`;
       const result = await call(`/clients/${agent}/__test/contract-legacy-model`, { token, body: { model: { ...legacyModel, baseUrl: model.url } } });
       if (result.status !== 200) throw new Error(`Legacy model fixture: ${result.status} ${result.text}`);
       await server.restart();

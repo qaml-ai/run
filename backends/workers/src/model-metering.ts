@@ -6,7 +6,7 @@ import { attemptStream } from './model-attempt-stream.ts';
 import { callFetch, FETCH_APIS } from './model-call-fetch.ts';
 import { estimateModelAttempt } from './model-estimate.ts';
 import { modelSpendLimit } from './agent-spend.ts';
-import type { ModelAttemptEvent, ModelAttemptHook } from './model-attempt.ts';
+import type { CreditStop, ModelAttemptEvent, ModelAttemptHook } from './model-attempt.ts';
 import { keyServices, providerCredentials, type KeyEnv } from './security-services.ts';
 import { PREPARED_MODEL_CREDENTIALS } from './model-request-auth.ts';
 import { accountingModel, modelCallKind } from './model-call-context.ts';
@@ -30,6 +30,7 @@ export async function applyModelReceipt(env: KeyEnv, receipt: ModelReceipt) {
 export function meterProvider<P extends Provider<any>>(
   provider: P, env: KeyEnv, context: () => Promise<ModelBillingContext>,
   commit: (receipt: ModelReceipt) => Promise<void>,
+  onRefused?: (stop: CreditStop) => Promise<void>,
 ): P {
   const wrap = (stream: P['stream']) => ((model: Model<any>, transcript: any, options: any = {}) => {
     const output = createAssistantMessageEventStream();
@@ -79,14 +80,18 @@ export function meterProvider<P extends Provider<any>>(
       const estimate = estimateModelAttempt(model, transcript, options);
       const gateway = !platform && (model.provider === 'cloudflare-ai-gateway' || !!credentials?.baseUrl && model.provider === 'openrouter');
       const billedModel = accountingModel(model, options.endpointIdentity);
+      let refusal: Promise<void> | undefined;
       const source = await attemptStream(billedModel, typeof key === 'string' ? key : '', options.modelCallKind ?? modelCallKind(transcript), hook,
         (sink, halt, affordable) => stream(model, transcript, {
           ...options,
           signal: options.signal ? AbortSignal.any([options.signal, halt]) : halt,
           ...(affordable !== undefined && affordable < (options.maxTokens ?? model.maxTokens) ? { maxTokens: affordable } : {}),
           ...(FETCH_APIS.includes(model.api) ? { fetch: callFetch(sink, { ...(options.fetch ? { base: options.fetch } : {}) }) } : {}),
-        }), estimate, undefined, gateway, options.supersede);
-      for await (const event of source) output.push(event);
+        }), estimate, stop => { refusal = onRefused?.(stop); }, gateway, options.supersede);
+      for await (const event of source) {
+        if (event.type === 'done' || event.type === 'error') await refusal;
+        output.push(event);
+      }
     })().catch(error => {
       output.push({ type: 'error', reason: 'error', error: { role: 'assistant', api: model.api, provider: model.provider, model: model.id,
         content: [], timestamp: Date.now(), stopReason: 'error', errorMessage: error instanceof Error ? error.message : 'Accounting failed',
