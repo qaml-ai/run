@@ -13,6 +13,7 @@ import type { Outbound, UsageRecord, WebFiles } from './web-policy-host.ts';
 import { agentScheduleTools, type ScheduleToolsHost } from './agent-schedules.ts';
 import { admitWebUsage, recordWebUsage } from './web-billing.ts';
 import type { KeyEnv } from './security-services.ts';
+import { toolResult } from './attached-tools.ts';
 
 export type BuiltinScope = { tenant: string; agent: string; requestId?: string; spendLimit?: number; callId?: string; startedAt?: number; builtins?: string[]; webSearch?: { providers: string[] }; keyScope?: string; files?: WebFiles };
 export type BuiltinEnv = ProviderKeyEnv & KeyEnv & { TEST_MODEL?: string; AGENT_OUTBOUND_ALLOW_HTTP?: string; AGENT_OUTBOUND_ALLOW_CIDRS?: string; AGENT_OUTBOUND_BLOCK_CIDRS?: string; AGENT_EXA_SEARCH_URL?: string; AGENT_BRAVE_SEARCH_URL?: string; AGENT_PARALLEL_SEARCH_URL?: string; AGENT_WEB_SEARCH_PROVIDERS?: string; AGENT_XAI_RESPONSES_URL?: string; AGENT_X_SEARCH_URL?: string; AGENT_FIRECRAWL_SCRAPE_URL?: string };
@@ -44,7 +45,7 @@ export async function agentBuiltins(env: BuiltinEnv, context: (api?: ToolExecuti
         if (definition.name === 'web_fetch') {
           const render = new WebRender({ outbound, key, price: pricing.webRender, ...(testMode && env.AGENT_FIRECRAWL_SCRAPE_URL ? { endpoint: env.AGENT_FIRECRAWL_SCRAPE_URL } : {}), onRender: record });
           const result = await webFetch({ outbound, render }, scope, String(args.url), args.maxCharacters as number ?? 20_000, signal);
-          return { output: result.content, details: result.structuredContent as never, structuredOutput: result.structuredContent as never };
+          return toolResult(result);
         }
         const value = definition.name === 'web_search'
           ? await new WebSearch({ outbound, ...providers, key, price: provider => pricing.webSearch[provider], onSearch: record }).search({ ...scope, providers: scope.webSearch?.providers }, args, signal)
