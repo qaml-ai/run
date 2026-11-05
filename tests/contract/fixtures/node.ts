@@ -109,6 +109,9 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
     await stop(settings.crash);
     priorModels.push(previous.model);
     Object.assign(runtimeEnv, settings.env);
+    // A restart keeps the original data plane as well as its database. The
+    // runtime helper's fresh root is only for the replacement process config.
+    runtimeEnv.AGENT_DATA_DIR ??= previous.root;
     index = 0;
     r = await runtime({ after: fn => cleanups.push(fn) }, body => respond(body, index++), runtimeEnv,
       tenants, { databaseUrl: previous.databaseUrl });

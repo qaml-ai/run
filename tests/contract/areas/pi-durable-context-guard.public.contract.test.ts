@@ -33,7 +33,7 @@ portedTest("history", "tests/pi-durable-context-guard.test.ts:90")("a live range
 
 portedTest("history", "tests/pi-durable-context-guard.test.ts:107")("an oversized resumed range fails once, clears pending work, and remains readable and abortable", { timeout: 90_000 }, async t => {
   const pending = Promise.withResolvers<void>();
-  const r = await runtime(t, () => ({ wait: pending.promise }), { AGENT_HOSTING: "inline", AGENT_LEASE_TTL_MS: "1500" });
+  const r = await runtime(t, () => ({ wait: pending.promise }), { AGENT_HOSTING: "inline", AGENT_STORAGE: "shared-file", AGENT_LEASE_TTL_MS: "1500" });
   const model = r.model;
   const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
   const created = await fetch(`${r.base}/v1/agents`, { method: "POST", headers, body: "{}" });
