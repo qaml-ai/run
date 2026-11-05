@@ -601,6 +601,10 @@ export class CamelAgent extends DurableObject<Env> {
     async () => (await this.config()).tenantId,
     {
       agentId: async () => (await this.config()).id,
+      onStall: async (stall) => {
+        const run = await this.currentRun();
+        await this.emit({ type: "event", requestId: run.id, event: { type: "model_stream_stalled", ...stall } });
+      },
       beforeRequest: async () => {
         const stopped = await this.limits.check();
         if (stopped) throw new Error(stopped.error);

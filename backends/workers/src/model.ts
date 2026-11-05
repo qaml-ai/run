@@ -33,7 +33,8 @@ import { boundedModel } from "./model-context.ts";
 import type { AgentConfiguration } from "./api-contract.ts";
 import { sourceUrl } from "./tool-sources.ts";
 import { listModels } from "./catalog-policy.ts";
-import { streamTimeouts, watchedStream, isStalled } from "./model-stream.ts";
+import { streamTimeouts, watchedStream, isStalled, type Stall } from "./model-stream.ts";
+import { runtimeStreamTimeouts, type ModelTimeoutEnv } from "./model-runtime-options.ts";
 import { contentFilterFallbacks } from "./default-model-policy.ts";
 import { isContentFilterBlock, isModelUnavailable } from "./model-errors.ts";
 
@@ -42,6 +43,7 @@ export type ModelCredentials = { apiKey?: string; baseUrl?: string; headers?: Re
 export type ModelHooks = {
   agentId?: () => Promise<string>;
   beforeRequest?: () => Promise<void>;
+  onStall?: (stall: Stall & { provider: string; model: string }) => void | Promise<void>;
   wrapProvider?: (provider: Provider) => Provider;
   settings?: () => Promise<ModelRequestSettings>;
   credentials?: (provider: string) => Promise<ModelCredentials | undefined>;
@@ -49,7 +51,8 @@ export type ModelHooks = {
   customProviders?: CustomProviders;
 };
 
-function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: string; TEST_MODEL?: string; AGENT_CONTENT_FILTER_FALLBACKS?: string }): Provider {
+function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEnv & { TEST_MODE?: string; TEST_MODEL?: string; AGENT_CONTENT_FILTER_FALLBACKS?: string }): Provider {
+  const timeouts = runtimeStreamTimeouts(env);
   let routing: { user: string; previous?: Model<Api>; failed?: Model<Api> } | undefined;
   let forcing: { request: string; count: number; refused: boolean } | undefined;
   const filterFallbacks = contentFilterFallbacks(env.AGENT_CONTENT_FILTER_FALLBACKS);
@@ -130,12 +133,15 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: 
         let retry = false;
         do {
         retry = false;
+        let stalled: Promise<void> | undefined;
         const stream = watchedStream(prepared.model, (signal, activity) => {
           const onProviderStreamEvent = prepared.options.onProviderStreamEvent;
           const options = { ...prepared.options, signal, onProviderStreamEvent: (event: unknown) => { activity(event); onProviderStreamEvent?.(event, prepared.model); } };
           return simple ? provider.streamSimple(prepared.model, prepared.context, options as SimpleStreamOptions) : provider.stream(prepared.model, prepared.context, options);
-        }, streamTimeouts(prepared.model, prepared.config.thinkingLevel, prepared.config.runLimits), options?.signal);
+        }, streamTimeouts(prepared.model, prepared.config.thinkingLevel, prepared.config.runLimits, timeouts), options?.signal,
+        stall => { stalled = Promise.resolve(hooks.onStall?.({ ...stall, provider: prepared.model.provider, model: prepared.model.id })); });
         for await (const event of stream) {
+          if (event.type === "error" || event.type === "done") await stalled;
           if (event.type === "error" && event.reason !== "aborted" && !isStalled(event.error.errorMessage) && prepared.transportError()) event.error.errorMessage = prepared.transportError();
           if (event.type === "error" && event.reason !== "aborted" && prepared.virtualNext && !event.error.content.length && isModelUnavailable(event.error) && !options?.signal?.aborted) {
             routing!.failed = prepared.model;
@@ -206,7 +212,7 @@ export function modelRuntime(
     TEST_MODEL?: string;
     TEST_MODEL_BASE_URL?: string;
     TEST_MODE?: string;
-  } & ImageBindings & { VOLUMES?: FileBindings["VOLUMES"] },
+  } & ImageBindings & ModelTimeoutEnv & { VOLUMES?: FileBindings["VOLUMES"] },
   getTenant: () => Promise<string>,
   hooks: ModelHooks = {},
 ) {
