@@ -62,7 +62,7 @@ export type ModelHooks = {
   customProviders?: CustomProviders;
 };
 
-function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEnv & { TEST_MODE?: string; TEST_MODEL?: string; AGENT_CONTENT_FILTER_FALLBACKS?: string; AGENT_TENANT?: string }): Provider {
+function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEnv & { TEST_MODE?: string; TEST_MODEL?: string; TEST_MODEL_BASE_URL?: string; TEST_MODEL_API?: Api; AGENT_CONTENT_FILTER_FALLBACKS?: string; AGENT_TENANT?: string }): Provider {
   const timeouts = runtimeStreamTimeouts(env);
   let routing: { user: string; previous?: Model<Api>; failed?: Model<Api> } | undefined;
   const outputRequest = new OutputRequest();
@@ -84,7 +84,11 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEn
       throw new Error(`No ${model.provider} API key is configured for key scope ${config.keyScope} or this tenant; set one with PUT /v1/key-scopes/${config.keyScope}/providers/${model.provider}`);
     if (credential?.baseUrl) {
       const catalog = getModel(model.provider, model.id);
-      model = { ...model, api: (model as Model<Api> & { runtimeApi?: Api }).runtimeApi ?? catalog?.api ?? model.api };
+      // A scope may point back to the scripted test provider, whose wire API
+      // stays the fixture's API even when the logical model uses another one.
+      const scripted = env.TEST_MODEL === "1" && credential.baseUrl === env.TEST_MODEL_BASE_URL;
+      model = { ...model, api: scripted ? env.TEST_MODEL_API ?? "openai-completions"
+        : (model as Model<Api> & { runtimeApi?: Api }).runtimeApi ?? catalog?.api ?? model.api };
       if (FETCH_APIS.includes(model.api) && catalog) model = { ...model, baseUrl: catalog.baseUrl };
     }
     let fallback = filterFallbacks.get(`${model.provider}/${model.id}`);
