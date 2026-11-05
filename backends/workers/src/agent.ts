@@ -643,7 +643,6 @@ export class CamelAgent extends DurableObject<Env> {
                 (params?.bucket as string | undefined) ?? conf.config.bucket,
               actor: params?.actor as string | undefined,
               keyScope: conf.config.keyScope,
-            files: await toolResultFiles(this.env, { tenant: conf.tenantId, agent: conf.id, mounts: conf.config.mounts ?? [], tool: "web_fetch", call: String(api?.taskId ?? run.id) }),
               spendLimit: (params?.spendLimit as { usd?: number } | undefined)
                 ?.usd,
               platform: this.env.TEST_MODEL !== "1",
@@ -873,6 +872,7 @@ export class CamelAgent extends DurableObject<Env> {
             builtins: conf.config.builtins,
             webSearch: conf.config.webSearch,
             keyScope: conf.config.keyScope,
+            files: await toolResultFiles(this.env, { tenant: conf.tenantId, agent: conf.id, mounts: (conf.config.mounts ?? []) as Mount[], tool: "web_fetch", call: String(api?.taskId ?? run.id) }),
           };
         }),
       });
@@ -1485,7 +1485,7 @@ export class CamelAgent extends DurableObject<Env> {
                 "Model operation failed",
               last: usage.last,
             }) ?? { error: "Model operation failed" });
-      if ("result" in outcome) Object.assign(outcome.result, { usage: runUsage });
+      if ("result" in outcome && outcome.result) Object.assign(outcome.result, { usage: runUsage });
       let changed = false;
       const terminal = await this.ctx.storage.transaction(async (tx) => {
         const latest = await tx.get<RequestRecord>(reqKey(id));
@@ -2472,7 +2472,7 @@ export class CamelAgent extends DurableObject<Env> {
                 builtins: conf.config.builtins,
                 webSearch: conf.config.webSearch,
                 keyScope: conf.config.keyScope,
-                files: await toolResultFiles(this.env, { tenant: conf.tenantId, agent: conf.id, mounts: conf.config.mounts ?? [], tool: "web_fetch", call: String(api?.taskId ?? run.id) }),
+                files: await toolResultFiles(this.env, { tenant: conf.tenantId, agent: conf.id, mounts: (conf.config.mounts ?? []) as Mount[], tool: "web_fetch", call: String(api?.taskId ?? run.id) }),
               };
             }),
           });
