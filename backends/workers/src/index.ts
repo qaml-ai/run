@@ -95,7 +95,6 @@ function credentials(entry: DirectoryEntry, token?: string) {
     ...(token === undefined ? {} : { token }),
     expiresAt: entry.expiresAt,
     configHash: entry.configHash,
-    ...(entry.reconfigured ? { reconfigured: true } : {}),
   };
 }
 function summary(entry: DirectoryEntry) {
@@ -375,7 +374,7 @@ const worker = {
               const journey = createJourney(env, accounts, env.AGENT_PUBLIC_URL || url.origin);
               if (journey) {
                 // A reused key has a configuration update, not another creation.
-                if (!created.reconfigured) {
+                if (!created.existingAgent && !created.reconfigured) {
                   await journey.agentCreated({ tenant: auth.tenantId, via: auth.kind === 'console' ? 'console' : auth.kind === 'oauth' ? 'mcp' : 'api', ...(auth.kind === 'console' ? { browser: journey.browser(request) } : {}) });
                 }
                 ctx.waitUntil(journey.send());

@@ -75,12 +75,14 @@ export interface DirectoryEntry {
   expiresAt: number | null;
   revision: number;
   initialized: boolean;
-  reconfigured?: Record<string, unknown> | true;
+  reconfigured?: Record<string, unknown>;
   deleted?: true;
   cleanupPending?: boolean;
   pendingFork?: { sourceId: string; fingerprint: string };
   parentAgentId?: string;
   parentRunId?: string;
+  /** Returned for an upsert of an existing agent; never persisted in its header. */
+  existingAgent?: true;
 }
 const creationRates = new WeakMap<DirectoryEntry, RateLimitState>();
 export const creationRate = (entry: DirectoryEntry) => creationRates.get(entry);
@@ -340,7 +342,7 @@ export class Directory {
       const inherited = await workspaces.current(this.tenantId, "definition", config.definition);
       if (inherited) await workspaces.assign(this.tenantId, "agent", id, inherited.workspace, true);
     }
-    const result: DirectoryEntry = createdHere ? entry : { ...entry, reconfigured: true };
+    const result: DirectoryEntry = createdHere ? entry : { ...entry, existingAgent: true };
     if (rate) creationRates.set(result, rate);
     return result;
     } finally { await release(); }
