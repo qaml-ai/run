@@ -27,7 +27,6 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
   };
   t.after(close);
   try {
-  if (options.failImageResizeOnce) throw new Error("Unsupported fixture state: Workers has no parse-job resize boundary to fail and retry");
   const model = await fakeModel({ after: fn => cleanups.push(fn) }, (body, index) => respond(body, index - replyStart));
   // Dynamic import keeps workerd's binding types out of the Node TypeScript project.
   const fixtureModule = new URL("../../../backends/workers/test/fixture.ts", import.meta.url).href;
@@ -76,6 +75,7 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
       // invents EmailTags, ConfigurationSetName, or sender formatting for it.
       ...(env.AWS_ENDPOINT_URL_SESV2 && !env.MAIL_TEST_URL ? { MAIL_TEST_URL: new URL("/v2/email/outbound-emails", env.AWS_ENDPOINT_URL_SESV2).href } : {}),
       TEST_MODE: "1", TEST_MODEL: "1", MODEL: modelReference(configuredModel(env)),
+      ...(options.failImageResizeOnce ? { TEST_IMAGE_RESIZE_FAILURE_ONCE: "1" } : {}),
       // An explicitly supplied gateway speaks the configured provider API.
       // The default fake responder speaks OpenAI completions for every model.
       TEST_MODEL_API: options.env?.AGENT_BASE_URL ? configuredModel(env).api : "openai-completions",
@@ -233,7 +233,11 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
     async setAgentRecovery(_agent, _state) { throw new Error("Unsupported fixture state: Workers agents have no Postgres resume_failures or resume_after"); },
     async failNextAdmissionWrite(_agent) { throw new Error("Unsupported fixture state: Workers request admission does not update Postgres pending_runs"); },
     setModel(next) { respond = next; replyStart = model.bodies.length; },
-    async imageResizeFailureCount() { throw new Error("Unsupported fixture state: Workers has no parse-job resize boundary"); },
+    async imageResizeFailureCount() {
+      const response = await call("/__test/image-resize-failures");
+      if (response.status !== 200) throw new Error(`Image resize fixture: ${response.status} ${response.text}`);
+      return response.json.count;
+    },
     async restartWithLegacyModel(agent, legacyModel) {
       const token = `cat_${createHmac("sha256", internalOperator).update(`camelrun-cloudflare:agent:${agent}`).digest("hex")}`;
       const result = await call(`/clients/${agent}/__test/contract-legacy-model`, { token, body: { model: { ...legacyModel, baseUrl: model.url } } });

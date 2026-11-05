@@ -9,7 +9,7 @@ import type { FileBindings } from "./files.ts";
 function signer(env: FileBindings, base: string) {
   if (!env.FILE_SIGNING_SECRET || env.FILE_SIGNING_SECRET.length < 32)
     throw new FileError("File signing secret is not configured", 503);
-  return new FileLinks(env.FILE_SIGNING_SECRET, env.PUBLIC_BASE_URL ?? base);
+  return new FileLinks(env.FILE_SIGNING_SECRET, (env as FileBindings & { AGENT_PUBLIC_URL?: string }).AGENT_PUBLIC_URL || env.PUBLIC_BASE_URL || base);
 }
 export function signVolumeLink(
   env: FileBindings,

@@ -13,6 +13,10 @@ import { modelEndUserRoutes } from './model-end-user-routes.ts';
 import type { AuthContext } from './control.ts';
 import { sweepAdmission } from './admission.ts';
 import { withMoneyIdempotency, expireMoneyIdempotency } from './money-idempotency.ts';
+import { z } from 'zod';
+const workspaceName = z.string().trim().min(1).max(120);
+const workspaceInput = z.object({ name: workspaceName });
+const workspacePatch = z.object({ name: workspaceName.optional(), archived: z.boolean().optional() });
 export type MoneyEnv = KeyEnv & AccountEnv;
 async function services(env: MoneyEnv, request?: Request) {
   const keys = await keyServices(env);
@@ -54,7 +58,13 @@ async function routeMoney(request: Request, env: MoneyEnv, auth: AuthContext, ct
     if (managed) return managed;
   } finally { if (s.account.mail) ctx.waitUntil(s.account.mail.stop()); }
   const keys = await keyRoutes(request, env, auth, s.keys);
-  if (keys) return keys;
+  if (keys) {
+    if (keys.ok && request.method === 'POST' && ['/v1/tokens', '/v1/api-keys'].includes(path) && s.account.journey) {
+      await s.account.journey.tokenCreated({ tenant, ...(principal.via === 'console' ? { browser: s.account.journey.browser(request) } : {}) });
+      ctx.waitUntil(s.account.journey.send());
+    }
+    return keys;
+  }
   const billed = await billingRoutes(request, env, auth, s.billing);
   if (billed) return billed;
   const endUser = await modelEndUserRoutes(request, new EndUserCredits(s.keys.accounts.db), tenant);
@@ -93,9 +103,9 @@ async function routeMoney(request: Request, env: MoneyEnv, auth: AuthContext, ct
     if (path === '/v1/workspaces') {
       if (request.method === 'GET') return json(await spaces.list(tenant));
       if (request.method === 'POST') {
-        const value = await request.json() as {name?: unknown};
-        if (typeof value.name !== 'string' || !value.name.trim() || value.name.length > 100) throw new HttpError(400, 'Invalid workspace name');
-        return json(await spaces.create(tenant, value.name), 201);
+        const value = workspaceInput.safeParse(await request.json());
+        if (!value.success) throw new HttpError(400, value.error.issues[0].message);
+        return json(await spaces.create(tenant, value.data.name), 201);
       }
     }
     if (path === '/v1/workspace-memberships') return json(await spaces.memberships(tenant));
@@ -110,7 +120,11 @@ async function routeMoney(request: Request, env: MoneyEnv, auth: AuthContext, ct
     const workspace = /^\/v1\/workspaces\/([^/]+)(\/members)?$/.exec(path);
     if (workspace) {
       if (request.method === 'GET') return json(workspace[2] ? await spaces.members(tenant, workspace[1]) : await spaces.get(tenant, workspace[1]));
-      if (request.method === 'PATCH') return json(await spaces.update(tenant, workspace[1], await request.json()));
+      if (request.method === 'PATCH') {
+        const value = workspacePatch.safeParse(await request.json());
+        if (!value.success) throw new HttpError(400, value.error.issues[0].message);
+        return json(await spaces.update(tenant, workspace[1], value.data));
+      }
     }
   }
 }

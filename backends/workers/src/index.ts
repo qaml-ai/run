@@ -1,5 +1,7 @@
+import { serveToolFile } from './tool-files.ts';
 import { withMoneyMetrics } from "./money-metrics.ts";
 import { firstPrompt } from "./first-prompt.ts";
+import { builtinWarnings } from "./builtin-warnings.ts";
 import { serveAgentMcp, agentMcpPreflight, agentMcpSignIn } from "./agent-mcp.ts";
 import { publicOrigins } from "./account-origins.ts";
 import { serveHostedMcp } from "./hosted-mcp.ts";
@@ -39,6 +41,9 @@ import { BrowserTokens, type BrowserClaims } from "./browser-tokens.ts";
 import { apiRequest, admissionError, errorFields, errorHeaders } from "./admission.ts";
 import { BROWSER_READS, corsPreflight, corsResponse } from "./cors.ts";
 import { browserResponse } from "./browser-response.ts";
+import { browserUrl } from "./selfhost-policy.ts";
+import { createJourney, sendJourney } from "./journey.ts";
+import { keyServices } from "./security-services.ts";
 import { decisionService, type DecisionEnv } from "./decision-service.ts";
 import { decisionRoute } from "./decision-runtime.ts";
 import {
@@ -80,6 +85,7 @@ function credentials(entry: DirectoryEntry, token?: string) {
     ...(token === undefined ? {} : { token }),
     expiresAt: entry.expiresAt,
     configHash: entry.configHash,
+    ...(entry.reconfigured ? { reconfigured: true } : {}),
   };
 }
 function summary(entry: DirectoryEntry) {
@@ -143,6 +149,8 @@ const worker = {
       if (request.method === "OPTIONS" && (/^\/v1\/agents\/client_[a-f0-9]{40}\/mcp$/.test(new URL(request.url).pathname) || new URL(request.url).pathname === "/mcp")) return agentMcpPreflight();
       const preflight = corsPreflight(request);
       if (preflight) return preflight;
+      const callFile = await serveToolFile(request, env);
+      if (callFile) return callFile;
       const signed = await handleSignedFileRequest(request, env);
       if (signed) return signed;
       const url = new URL(request.url),
@@ -307,11 +315,22 @@ const worker = {
             const key = request.headers.get("Idempotency-Key") ?? undefined;
             const upsert = await upsertAgent(env, auth.tenantId, input, key, url.origin);
             const created = result(upsert.entry);
+            if (env.AGENT_JOURNEY_URL) {
+              const { accounts } = await keyServices(env);
+              const journey = createJourney(env, accounts, env.AGENT_PUBLIC_URL || url.origin);
+              if (journey) {
+                // A reused key has a configuration update, not another creation.
+                if (!upsert.reconfigured && !created.reconfigured) {
+                  await journey.agentCreated({ tenant: auth.tenantId, via: auth.kind === 'console' ? 'console' : auth.kind === 'oauth' ? 'mcp' : 'api', ...(auth.kind === 'console' ? { browser: journey.browser(request) } : {}) });
+                }
+                ctx.waitUntil(journey.send());
+              }
+            }
             if (Object.hasOwn(raw, "spendLimit"))
               await setAgentSpendLimit(
                 env, auth.tenantId, created.id, (raw as { spendLimit: unknown }).spendLimit,
               );
-            const answer = { ...credentials(created, auth.kind === "oauth" ? undefined : await agentToken(env.API_TOKEN, created.id)), ...(upsert.reconfigured ? { reconfigured: upsert.reconfigured } : {}) };
+            const answer = { ...credentials(created, auth.kind === "oauth" ? undefined : await agentToken(env.API_TOKEN, created.id)), ...(upsert.reconfigured ? { reconfigured: upsert.reconfigured } : {}), ...await builtinWarnings(env, auth.tenantId, created.config) };
             if (!first) return json(answer, 201);
             const submitted = await env.AGENTS.getByName(created.id).fetch(new Request("https://agent/requests", {
               method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(first),
@@ -360,7 +379,8 @@ const worker = {
       }
       if (tail === "/browser-tokens" && request.method === "POST") {
         if (!auth || auth.kind === "oauth") throw new ApiError(403, "Account key required", "FORBIDDEN");
-        return json({ ...browserTokens.mint(entry.tenantId, entry.id, await body(request, 16 * 1024)), agentId: entry.id }, 201);
+        const publicBrowser = browserUrl(env, url.origin);
+        return json({ ...browserTokens.mint(entry.tenantId, entry.id, await body(request, 16 * 1024)), agentId: entry.id, ...(publicBrowser ? { url: publicBrowser } : {}) }, 201);
       }
       if (tail === "/credentials" && request.method === "GET") {
         if (!auth) throw new ApiError(401, "Account key required", "UNAUTHORIZED");
@@ -426,14 +446,15 @@ const worker = {
         const next = await body(request);
         if (!next || typeof next !== "object" || Array.isArray(next))
           throw new BadRequest("Expected configuration object");
-        if (!auth) scopedConfiguration(next);
-        const patched = configuration({ ...entry.config, ...next }, entry.config.model ?? env.MODEL).config;
-        const modelError = (Object.hasOwn(next, "model") || Object.hasOwn(next, "keyScope"))
+        const { requestId, ...changes } = next as Record<string, unknown>;
+        if (!auth) scopedConfiguration(changes);
+        const patched = configuration({ ...entry.config, ...changes }, entry.config.model ?? env.MODEL).config;
+        const modelError = (Object.hasOwn(changes, "model") || Object.hasOwn(changes, "keyScope"))
           ? await configurationModelError(env, entry.tenantId, patched) : undefined;
         if (modelError) throw new ApiError(400, modelError);
         return forward(new Request(request.url, {
           method: "POST", headers: { "content-type": "application/json" },
-          body: JSON.stringify({ id: crypto.randomUUID(), method: "configure", params: next }),
+          body: JSON.stringify({ id: requestId ?? crypto.randomUUID(), method: "configure", params: changes }),
         }), env, entry.id, "/requests");
       }
       if (tail === "/mounts") {
@@ -517,6 +538,7 @@ const worker = {
       await moneyMaintenance(env);
       await publishScheduleEmails(env);
       await sweepComputers(env);
+      await sendJourney(env);
       metric(env, "maintenance", { MaintenanceRuns: 1 });
     } catch (error) { failure(env, "maintenance_failed", error); throw error; }
     });

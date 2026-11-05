@@ -7,6 +7,7 @@ import { discoverSources, sourceDefinitionViews, prepareSources, sourceView, typ
 import { keyServices } from "./security-services.ts";
 import { modelSettingsRefusal, resolveModel } from "./model-policy.ts";
 import { HttpError } from "./errors.ts";
+import { builtinWarnings } from "./builtin-warnings.ts";
 
 export type Definition = { id: string; tenant: string; name: string; revision: number; spec: AgentConfiguration & { description?: string; applyOnUpdate?: boolean; limits?: { ttlSeconds?: number | null; idleTtlSeconds?: number | null }; webSearch?: { providers: string[] } }; createdAt: number; updatedAt: number };
 const OVERRIDES = ["model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "runLimits"] as const;
@@ -155,5 +156,5 @@ export async function definitionRoutes(request: Request, env: ControlEnv, auth: 
     const result = await directory.upsert(merged, agent.key ?? agent.id, url.origin);
     applied.push({ agent: agent.id, status: typeof result === "object" && "failed" in result ? "failed" : "updated", ...(typeof result === "object" && "failed" in result ? { error: result.error } : {}) });
   }
-  return reply({ ...view(saved), ...(applied.length || input.apply === "all" ? { applied } : {}) }, request.method === "POST" ? 201 : 200);
+  return reply({ ...view(saved), ...await builtinWarnings(env, auth.tenantId, saved.spec), ...(applied.length || input.apply === "all" ? { applied } : {}) }, request.method === "POST" ? 201 : 200);
 }

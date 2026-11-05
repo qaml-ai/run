@@ -1,3 +1,5 @@
+import { ATTACHMENT_MARKER } from './attachment-markers.ts';
+import { savedContent, type ToolFiles } from './tool-files.ts';
 import type { ToolRegistration, ToolExecutionResult, ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
 import { HttpError } from "./errors.ts";
@@ -165,7 +167,7 @@ export class AttachedTools {
     return await this.request(connection, "tools/call", { name, arguments: args, ...params, ...(meta ? { _meta: meta } : {}) }, timeoutMs, signal, onProgress) as McpResult;
   }
 
-  tools(definitions: ToolDefinition[], identity?: (api: ToolExecutionApi) => Promise<{ claims: RuntimeIdentity; call?: ToolCallSite; progress?: (event: ToolProgressEvent) => Promise<void> }>): ToolRegistration[] {
+  tools(definitions: ToolDefinition[], identity?: (api: ToolExecutionApi) => Promise<{ claims: RuntimeIdentity; call?: ToolCallSite; toolFiles?: (name: string, refuse?: string) => ToolFiles; progress?: (event: ToolProgressEvent) => Promise<void> }>): ToolRegistration[] {
     return definitions.map(definition => {
       const timeoutMs = definition.timeoutMs ?? declaredTimeout(definition._meta) ?? TOOL_DEADLINES.attachedMs;
       return registration(definition, async (args, api, context) => {
@@ -175,14 +177,14 @@ export class AttachedTools {
       const site = value?.call ?? await toolCallSite(api, context);
       const meta = toolCallMeta(claims?.agent ?? String(api.conversationId), site, claims?.origin, claims?.act);
       const progress = pacedProgress(update => value?.progress?.(progressEvent(definition.name, site, update)));
-      try { return await withToolInputs(reply => this.call(definition.name, args, timeoutMs, context?.abortSignal, { ...reply, onProgress: progress.update, meta: {
+      try { return await savedContent(await withToolInputs(reply => this.call(definition.name, args, timeoutMs, context?.abortSignal, { ...reply, onProgress: progress.update, meta: {
         ...meta,
         "io.modelcontextprotocol/clientCapabilities": { elicitation: { form: {}, url: {} } },
         ...(claims ? { "agent-runtime/identity": { ...claims, ...(reply.approval ? { approval: reply.approval } : {}) } } : {}),
         ...(claims?.origin ? { "agent-runtime/origin": claims.origin } : {}),
         ...(claims?.act ? { "agent-runtime/actor": claims.act } : {}),
         ...(reply.approval ? { "agent-runtime/approval": reply.approval } : {}),
-      } }), api, context, { name: definition.name, args }); }
+      } }), api, context, { name: definition.name, args }), value?.toolFiles?.(definition.name)); }
       catch (error) {
         const failure = error as { code?: string; message?: string; outcomeUnknown?: boolean };
         if (!failure.code) throw error;
@@ -198,6 +200,9 @@ export function toolResult(result: McpResult): ToolExecutionResult {
   const output = (result.content ?? []).flatMap<NonNullable<ToolExecutionResult["output"]>[number]>(part => {
     if (!part || typeof part !== "object") return [];
     const block = part as Record<string, unknown>;
+    if (block.type === "file" && typeof block.path === "string") return [{ type: "text" as const, text: ATTACHMENT_MARKER + JSON.stringify(block) }];
+    if (block.type === "resource_link") return [{ type: "text" as const, text: `Resource: ${block.name ?? ''} ${block.uri ?? ''}` }];
+    if (block.type === "resource" && typeof (block.resource as any)?.text === "string") return [{ type: "text" as const, text: String((block.resource as any).text) }];
     if (block.type === "text" && typeof block.text === "string") return [{ type: "text" as const, text: block.text }];
     if (block.type === "image" && typeof block.data === "string" && typeof block.mimeType === "string")
       return [{ type: "image" as const, data: block.data, mimeType: block.mimeType }];
@@ -209,7 +214,7 @@ export function toolResult(result: McpResult): ToolExecutionResult {
   if (structuredOutput === undefined && output.length === 1 && output[0].type === "text") {
     try { structuredOutput = JSON.parse(output[0].text); } catch { structuredOutput = output[0].text; }
   }
-  if (structuredOutput === undefined) structuredOutput = output.length ? output : "";
+  if (structuredOutput === undefined) structuredOutput = (result.content?.some((part: any) => part?.type === "file") ? result.content : output.length ? output : "");
   return { output, ...(details !== undefined ? { details: details as never } : {}), ...(result.isError ? { isError: true } : structuredOutput !== undefined ? { structuredOutput: structuredOutput as never } : {}) };
 }
 

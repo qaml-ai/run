@@ -15,6 +15,7 @@ import { ARCHIVE_LIMITS, READ_ALL_LIMITS } from "./volume-policy.ts";
 import { defineTool } from "@earendil-works/pi-durable";
 import { obj, opt, str, arr, bool, int } from "@earendil-works/pi-schema";
 import { withSql } from "./postgres.ts";
+import { withMoneyIdempotency } from "./money-idempotency.ts";
 import { digest, FileError, normalizePath, type Volume, type FileEntry } from "./volume.ts";
 import {
   boundedBytes,
@@ -248,6 +249,19 @@ export async function handleFileRequest(
     tenantId: string;
   },
   path = new URL(request.url).pathname,
+): Promise<Response | null> {
+  if (path.startsWith("/v1/volumes") && request.method === "POST" && request.headers.has("Idempotency-Key")) {
+    return await withMoneyIdempotency(request, env, principal.tenantId, async request =>
+      await fileRoute(request, env, principal, path) ?? undefined) ?? null;
+  }
+  return fileRoute(request, env, principal, path);
+}
+
+async function fileRoute(
+  request: Request,
+  env: FileBindings,
+  principal: { tenantId: string },
+  path: string,
 ): Promise<Response | null> {
   const tenant = principal.tenantId,
     url = new URL(request.url);

@@ -74,6 +74,8 @@ export interface DirectoryEntry {
   pendingFork?: { sourceId: string; fingerprint: string };
   parentAgentId?: string;
   parentRunId?: string;
+  /** Returned for an upsert of an existing agent; never persisted in its header. */
+  reconfigured?: true;
 }
 export interface DirectoryFailure {
   failed: true;
@@ -167,6 +169,7 @@ export class Directory {
     // Volume initialization uses its own SQL and DO calls. Keep those outside
     // the directory transaction; preserve the latest mounts under its lock.
     config.mounts=await (await import('./file-mounts.ts')).prepareMounts(this.env,this.tenantId,id,requested===undefined?before?.config.mounts:requested);
+    let createdHere = false;
     const entry = await transaction(this.env, async (sql) => {
       // A transaction-scoped lock covers the absent row as well as concurrent creates.
       await sql.query("select pg_advisory_xact_lock(hashtextextended($1,0))", [
@@ -183,6 +186,7 @@ export class Directory {
       if (previous?.revoked)
         throw new ApiError(410, "Agent is deleted", "AGENT_GONE");
       const old = previous?.header as DirectoryEntry | undefined;
+      createdHere = !old;
       if (old && fields.subject !== undefined && fields.subject !== old.config.subject)
         throw new ApiError(409, "An agent's subject cannot change");
       if (old?.config.subject && fields.subject === undefined) config.subject = old.config.subject;
@@ -192,7 +196,7 @@ export class Directory {
         throw new ApiError(409, "Key belongs to another agent", "FORK_CONFLICT");
       if (requested===undefined && old?.config.mounts) config.mounts=old.config.mounts;
       if(old?.config.mounts&&requested!==undefined&&JSON.stringify(old.config.mounts)!==JSON.stringify(config.mounts)&&(input as {remount?:boolean}).remount!==true)
-        throw new ApiError(409,"Agent mounts differ; set remount: true to change them");
+        throw new ApiError(409,`An existing agent's mounts cannot change; delete it (DELETE /v1/agents/${id}) or use another idempotency key, or send remount: true to change its mounts`);
       const configHash=await digest(JSON.stringify(config));
       const sameModel = JSON.stringify(old?.resolvedModel) === JSON.stringify(resolvedModel);
       if (config.type !== "run")
@@ -278,7 +282,11 @@ export class Directory {
       }
     }
     if (config.workspaceId !== undefined) await workspaces.assign(this.tenantId, "agent", id, config.workspaceId);
-    return entry;
+    else if (config.definition) {
+      const inherited = await workspaces.current(this.tenantId, "definition", config.definition);
+      if (inherited) await workspaces.assign(this.tenantId, "agent", id, inherited.workspace, true);
+    }
+    return createdHere ? entry : { ...entry, reconfigured: true };
   }
   async remove(id: string): Promise<boolean | DirectoryFailure> {
     const entry = await this.get(id);

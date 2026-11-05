@@ -10,6 +10,8 @@ import {
 } from "@earendil-works/pi-ai";
 import type { Provider } from "@earendil-works/pi-ai/models";
 import { digest, FileError } from "./volume.ts";
+import { imageHeader, imageIntact, IMAGE_DAMAGED } from "../../../src/image-header.ts";
+import { requestImageLimit } from "../../../src/request-images.ts";
 export interface ImageBindings {
   BUCKET: R2Bucket;
   IMAGES: ImagesBinding;
@@ -302,14 +304,15 @@ export function withImageReferences<A extends Api>(
   getTenant: () => Promise<string>,
   authorizeFile?: (key: string) => Promise<boolean>,
 ): Provider<A> {
-  const hydrate = async (context: TranscriptContext) => {
+  const hydrate = async (model: Model<A>, context: TranscriptContext) => {
     const locations: {
       message: number;
       part: number;
-      ref: ImageRef;
+      ref?: ImageRef;
+      inline?: { type: "image"; data: string; mimeType: string };
     }[] = [];
     context.messages.forEach((m, message) => {
-      if (m.role === "user" && Array.isArray(m.content))
+      if (Array.isArray(m.content))
         m.content.forEach((p, part) => {
           if (p.type === "text" && p.text.startsWith(MARKER))
             locations.push({
@@ -317,6 +320,8 @@ export function withImageReferences<A extends Api>(
               part,
               ref: JSON.parse(p.text.slice(MARKER.length)),
             });
+          else if (p.type === "image" && p.mimeType !== "application/pdf")
+            locations.push({ message, part, inline: p });
         });
     });
     if (!locations.length) return context;
@@ -325,23 +330,37 @@ export function withImageReferences<A extends Api>(
     let bytes = 0,
       count = 0;
     for (const location of locations.reverse()) {
-      const ref = location.ref,
-        size = 4 * Math.ceil(ref.size / 3);
-      if (ref.key.startsWith("files/") && !await authorizeFile?.(ref.key)) continue;
+      if (count >= requestImageLimit(model)) continue;
+      const ref = location.ref;
+      if (ref && bytes + 4 * Math.ceil(ref.size / 3) > IMAGE_LIMITS.requestBase64Bytes) continue;
+      let block: any;
+      if (location.inline) {
+        const inline = location.inline;
+        const data = Buffer.from(inline.data, "base64");
+        const header = imageHeader(data);
+        if (!header || !imageIntact(data, inline.mimeType)) {
+          selected.set(`${location.message}:${location.part}`, { type: "text", text: `[image omitted: ${IMAGE_DAMAGED}]` });
+          continue;
+        }
+        if (Math.max(header.width, header.height) <= 1568 && data.length <= IMAGE_LIMITS.derivativeBytes) block = inline;
+        else {
+          try {
+            block = (await imageInputs(env, tenant, [await storeImage(env, tenant, data)], env.PUBLIC_BASE_URL ?? "https://localhost.invalid", false))[0];
+          } catch {
+            selected.set(`${location.message}:${location.part}`, { type: "text", text: `[image omitted: ${header.width}×${header.height} px, could not be resized]` });
+            continue;
+          }
+        }
+      } else if (ref) {
+        if (ref.key.startsWith("files/") && !await authorizeFile?.(ref.key)) continue;
+        block = (await imageInputs(env, tenant, [ref], env.PUBLIC_BASE_URL ?? "https://localhost.invalid", false))[0];
+      }
+      const size = block?.data?.length ?? 0;
       if (
-        count >= IMAGE_LIMITS.requestImages ||
+        count >= requestImageLimit(model) ||
         bytes + size > IMAGE_LIMITS.requestBase64Bytes
       )
         continue;
-      const block = (
-        await imageInputs(
-          env,
-          tenant,
-          [ref],
-          env.PUBLIC_BASE_URL ?? "https://localhost.invalid",
-          false,
-        )
-      )[0];
       selected.set(`${location.message}:${location.part}`, block);
       count++;
       bytes += size;
@@ -349,12 +368,12 @@ export function withImageReferences<A extends Api>(
     return {
       ...context,
       messages: context.messages.map((m, message) =>
-        m.role !== "user" || !Array.isArray(m.content)
+        !Array.isArray(m.content)
           ? m
           : {
               ...m,
               content: m.content.map((p, part) =>
-                p.type === "text" && p.text.startsWith(MARKER)
+                (p.type === "text" && p.text.startsWith(MARKER)) || (p.type === "image" && p.mimeType !== "application/pdf")
                   ? (selected.get(`${message}:${part}`) ?? {
                       type: "text",
                       text: "[Older image omitted by request budget]",
@@ -373,7 +392,7 @@ export function withImageReferences<A extends Api>(
     const output = createAssistantMessageEventStream();
     void (async () => {
       try {
-        const prepared = await hydrate(context);
+        const prepared = await hydrate(model, context);
         const source = open(prepared);
         for await (const event of source) output.push(event);
       } catch (error) {

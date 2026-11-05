@@ -141,6 +141,7 @@ export async function startFixture(
   );
   config.main = options.entrypoint ?? join(root, "src/index.ts");
   if (config.assets?.directory) config.assets.directory = join(root, config.assets.directory);
+  if (options.vars?.AGENT_CONSOLE_DIR) config.assets = { directory: options.vars.AGENT_CONSOLE_DIR, binding: "ASSETS", run_worker_first: true, not_found_handling: "single-page-application" };
   config.$schema = join(root, "node_modules/wrangler/config-schema.json");
   for (const container of config.containers ?? [])
     for (const image of Object.values(container.images ?? {}) as {

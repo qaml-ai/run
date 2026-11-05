@@ -1,0 +1,138 @@
+{
+  "backend": "node",
+  "area": "files,volumes,images,search,schedules,workspaces,selfhost,cli,journey",
+  "nodeKey": "1ff65be69bdb97687bb551ad863a1ab48c42d7c4726928e25ab5efd896fabdfc",
+  "suiteHash": "fabe683775fe343cc1c227f56f728a869eff7d15d2552fd4ee40db9c2129e413",
+  "revision": "3e2d2e618e8ee4b4eb4d047d905544d486e7e35b",
+  "shard": {
+    "index": 1,
+    "total": 4
+  },
+  "durationMs": 24634.089396,
+  "runtime": {
+    "node": "v24.22.1",
+    "platform": "linux",
+    "arch": "x64"
+  },
+  "recordedAt": "2026-11-05T22:41:52.066Z",
+  "expectedCases": 13,
+  "rows": [
+    {
+      "area": "cli",
+      "source": "tests/cli.test.ts",
+      "name": "a manifest's delegate settings bring their builtin",
+      "status": "pass",
+      "durationMs": 0.266279,
+      "reason": "",
+      "backend": "sdk-unit"
+    },
+    {
+      "area": "cli",
+      "source": "tests/cli.test.ts",
+      "name": "a run waiting on a person exits 2 and resumes once answered",
+      "status": "pass",
+      "durationMs": 3790.414221,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "cli",
+      "source": "tests/cli.test.ts",
+      "name": "login saves a checked key readable only by its owner",
+      "status": "pass",
+      "durationMs": 2295.476007,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "cli",
+      "source": "tests/cli.test.ts",
+      "name": "run --stateless answers in one call and leaves no agent; runs get reads it back",
+      "status": "pass",
+      "durationMs": 3415.403299,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "cli",
+      "source": "tests/cli.test.ts",
+      "name": "the CLI deploys a manifest, runs its agent, and manages agents and definitions",
+      "status": "pass",
+      "durationMs": 9743.577961,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "cli",
+      "source": "tests/cli.test.ts",
+      "name": "the CLI reads the runtime's URL from CAMELAI_BASE_URL, as the SDKs do, or CAMELAI_URL",
+      "status": "pass",
+      "durationMs": 0.802022,
+      "reason": "",
+      "backend": "sdk-unit"
+    },
+    {
+      "area": "cli",
+      "source": "tests/cli.test.ts",
+      "name": "the MCP server deploys and runs agents for a coding agent",
+      "status": "pass",
+      "durationMs": 4728.0093,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "files",
+      "source": "tests/agent-links.test.ts:5",
+      "name": "a tenant signs links to its agent's files with its own token, as for its volumes",
+      "status": "pass",
+      "durationMs": 5914.206492,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "images",
+      "source": "tests/images.test.ts:187",
+      "name": "an image whose scaling failed for now (its parse job crashed) is tried again on the next request, not held as omitted",
+      "status": "pass",
+      "durationMs": 6870.709878,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "search",
+      "source": "tests/web-render.test.ts",
+      "name": "web_fetch has Firecrawl render JavaScript shells, and only those, charging a platform render",
+      "status": "pass",
+      "durationMs": 6634.261483,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "volumes",
+      "source": "tests/projects.test.ts",
+      "name": "a project is a keyed volume seeded once, mounted with the workspace beside it, and published as checked snapshots",
+      "status": "pass",
+      "durationMs": 5718.098166,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "volumes",
+      "source": "tests/projects.test.ts",
+      "name": "a project is restored in place to a published version, and a check hands what it computed to store and the result",
+      "status": "pass",
+      "durationMs": 2552.261373,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "volumes",
+      "source": "tests/projects.test.ts",
+      "name": "pinned versions outlast keep and the snapshot cap, carry labels, and a snapshot can be made from contents",
+      "status": "pass",
+      "durationMs": 2946.365581,
+      "reason": "",
+      "backend": "node"
+    }
+  ]
+}

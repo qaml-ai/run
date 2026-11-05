@@ -22,6 +22,9 @@ import type { AuthContext } from './control.ts';
 export type MediaBindings = Omit<FileBindings, 'HYPERDRIVE'> & WebhookEnv & Omit<AdmissionEnv, 'HYPERDRIVE'> & MediaAzureEnv & {
   PLATFORM_OPENAI_KEY?: string;
   MEDIA_BASE_URL?: string;
+  AGENT_IMAGES_URL?: string;
+  AGENT_TRANSCRIPTION_URL?: string;
+  AGENT_SPEECH_URL?: string;
   MEDIA_PRICING?: string;
   MEDIA_ALLOWED_HOSTS?: string;
   AGENT_SPEECH_PRICES?: string;
@@ -120,7 +123,7 @@ async function admit(env: MediaBindings, tenant: string, services: KeyServices) 
   if (refused) throw typeof refused === 'string' ? new HttpError(402, refused, 'SPEND_LIMIT') : refused;
   await runAdmission(env, tenant);
   // Compatibility for pre-money-track synthetic fixture settings only.
-  if (env.TEST_MODE !== '1') return;
+  if (env.TEST_MODE !== '1' || !env.TEST_MEDIA_TENANTS) return;
   const configured = testConfig(env).tenants?.[tenant];
   const row = (await withSql(env, sql => sql.query('select t.billing,t.limits,a.balance,coalesce((select sum(amount) from credit_holds where tenant=t.id),0) held from tenants t left join credit_accounts a on a.tenant=t.id where t.id=$1', [tenant]))).rows[0];
   if (!row) throw new HttpError(401, 'Unknown account');
@@ -155,6 +158,8 @@ export async function handleMediaRequest(request: Request, env: MediaBindings, a
   if (path === '/v1/images' && !/^(application\/json|multipart\/form-data)/i.test(request.headers.get('content-type') ?? '')) return null;
   if (!['/v1/images','/v1/transcriptions','/v1/speech'].includes(path) || request.method !== 'POST') return null;
   const kind = path.slice(4), multipart = /^multipart\/form-data(;|$)/i.test(request.headers.get('content-type')??'');
+  const sourceUrl = kind === 'images' ? env.AGENT_IMAGES_URL : kind === 'transcriptions' ? env.AGENT_TRANSCRIPTION_URL : env.AGENT_SPEECH_URL;
+  if (sourceUrl) env = { ...env, MEDIA_BASE_URL: sourceUrl };
   const bytes = await boundedBytes(request.body, kind === 'images' ? 68*1024*1024 : kind === 'speech' ? 64*1024 : 34*1024*1024);
   let input: any, images: ImageSource[] = [], mask: ImageSource | undefined, audio: any;
   if (multipart) {

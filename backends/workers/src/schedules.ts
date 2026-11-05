@@ -6,17 +6,20 @@ import { markdownEmail } from '../../../src/markdown-email.ts';
 import { readableText } from '../../../src/html-text.ts';
 import { failure, metric } from './observability.ts';
 import type { WebhookEnv } from './webhooks.ts';
+import { createTenants } from './security-services.ts';
 
 export interface ScheduleEnv extends WebhookEnv {
   AGENTS: { getByName(id:string): {fetch(request:Request):Promise<Response>} };
   SCHEDULE_EMAIL_FROM?: string;
   SCHEDULE_OPERATOR_TENANTS?: string;
+  AGENT_ACCOUNT_EMAIL_FROM?: string;
+  AGENT_TENANTS_JSON?: string;
 }
 export type StoredSchedule = Schedule & { retryAt?: number; attempts?: number };
 /** Same recipient rules as src/node.ts, checked both when scheduling and sending. */
 export async function canScheduleEmail(env: ScheduleEnv, tenant: string, to: string) {
   const email=to.toLowerCase();
-  const operator=(env.SCHEDULE_OPERATOR_TENANTS??'').split(',').includes(tenant);
+  const operator=(env.SCHEDULE_OPERATOR_TENANTS??'').split(',').includes(tenant) || (await createTenants(env)).has(tenant);
   const allowed=operator || !!(await withSql(env,sql=>sql.query(`select 1 from tenants where id=$1 and lower(google_email)=$2
     union all select 1 from tenant_passwords where tenant=$1 and lower(email)=$2
     union all select 1 from billing_recipients where tenant=$1 and email=$2 and status='verified' limit 1`,[tenant,email]))).rowCount;
@@ -31,7 +34,7 @@ export async function newSchedule(env:ScheduleEnv,tenant:string,agent:string,raw
   if(input.everySeconds!==undefined&&(!Number.isInteger(input.everySeconds)||input.everySeconds<MIN_REPEAT_SECONDS))throw new HttpError(400,`everySeconds must be an integer of at least ${MIN_REPEAT_SECONDS}`);
   if(input.history!==undefined&&!['full','none'].includes(input.history))throw new HttpError(400,'history must be full or none');
   if(input.email) {
-    if(!env.SCHEDULE_EMAIL_FROM)throw new HttpError(400,'Scheduled email is not enabled on this runtime');
+    if(!(env.SCHEDULE_EMAIL_FROM || env.AGENT_ACCOUNT_EMAIL_FROM))throw new HttpError(400,'Scheduled email is not enabled on this runtime');
     if(input.code!==undefined)throw new HttpError(400,'Email delivery requires a text schedule');
     if(!await canScheduleEmail(env,tenant,input.email.to))throw new HttpError(403,'Use your sign-in email or a verified billing recipient for scheduled reports');
   }
@@ -82,7 +85,8 @@ export async function deliverScheduleEmail(env:ScheduleEnv,id:string) {
   const reply=String(result.reply),format=row.email.format??'markdown';
   let messageId:string|undefined;
   if(env.TEST_MODE!=='1') {
-   if(!env.MAIL||!env.SCHEDULE_EMAIL_FROM)throw Error('Schedule mail transport is not configured');
+   const from=env.SCHEDULE_EMAIL_FROM||env.AGENT_ACCOUNT_EMAIL_FROM;
+   if(!env.MAIL||!from)throw Error('Schedule mail transport is not configured');
    // SendEmail has no AbortSignal. Renew only while the send is active; never
    // start it after another consumer has acquired the expired lease.
    const renew=async()=>{
@@ -96,7 +100,7 @@ export async function deliverScheduleEmail(env:ScheduleEnv,id:string) {
     renewing=renew().then(owned=>{if(!owned)clearInterval(timer);}).catch(error=>failure(env,'schedule_mail_lease_failed',error)).finally(()=>{renewing=undefined;});
    },20000);
    try {
-    messageId=(await env.MAIL.send({from:env.SCHEDULE_EMAIL_FROM,to:row.email.to,subject:row.email.subject,headers:{'X-CamelRun-Delivery':id},text:format==='html'?readableText(reply).text:reply,...(format==='text'?{}:{html:format==='html'?reply:markdownEmail(reply)})})).messageId;
+    messageId=(await env.MAIL.send({from,to:row.email.to,subject:row.email.subject,headers:{'X-CamelRun-Delivery':id},text:format==='html'?readableText(reply).text:reply,...(format==='text'?{}:{html:format==='html'?reply:markdownEmail(reply)})})).messageId;
    } finally {clearInterval(timer);await renewing;}
   }
   if(!(await finish('sent',undefined,messageId)).rowCount)return false;

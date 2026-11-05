@@ -1,3 +1,7 @@
+import { TOOL_FILE_LIMITS } from '../../../src/limits.ts';
+import { acceptFiles, resolveFiles, takesFiles, hasFileArgument } from './tool-file-schema.ts';
+import { savedContent, multipartBody, type ToolFiles } from './tool-files.ts';
+import { textual } from './file-policy.ts';
 import { legacyMcpRequest } from "./legacy-mcp.ts";
 import { pacedProgress, progressEvent, silenceDeadline, type Progress, type ToolProgressEvent } from "./mcp-progress.ts";
 import { Outbound } from "./security-outbound.ts";
@@ -19,6 +23,7 @@ import { openProviderSecret } from "./model-credentials.ts";
 import { credentialExchange, CredentialExchangeError, type ExchangeAuth } from "./exchange-auth.ts";
 import { COMPUTER_TOOLS } from "./computers/policy.ts";
 import { fileToolsFor } from "./file-tool-policy.ts";
+import { network } from "./account-network.ts";
 
 type Env = { API_TOKEN: string; TEST_MODE?: string } & Partial<IdentityEnv>;
 type Approval = { default?: "never" | "always" | "destructive" | "judged"; tools?: Record<string, "never" | "always" | "judged">; methods?: string[] };
@@ -27,7 +32,7 @@ export type RemoteSource = {
   name: string; url?: string; baseUrl?: string; spec?: string; operations?: Operation[];
   headerNames?: string[]; auth?: { type: "bearer" | "runtime" } | ExchangeAuth; sealed?: Sealed; audience?: string;
   allowTools?: string[]; denyTools?: string[]; timeoutMs?: number;
-  exposure?: "direct" | "codemode" | "both"; approval?: Approval;
+  exposure?: "direct" | "codemode" | "both"; approval?: Approval; fileArguments?: "on" | "off";
   discovery?: { tools?: ToolDefinition[]; error?: string };
 };
 const MAX_BYTES = 1024 * 1024;
@@ -128,6 +133,8 @@ export async function prepareSources(env: Env, tenant: string, definition: strin
     if (typeof name !== "string" || name.length > 32 || !NAME.test(name) || used.has(name)) throw bad("Source names must be unique, 1–32 letters and digits with single underscores");
     used.add(name);
     if (!definition && (value.headers !== undefined || value.auth !== undefined && (value.auth?.type !== "runtime" || Object.keys(value.auth).length !== 1))) throw bad("An agent's or run's own MCP servers carry no credentials; put credentials in a definition");
+    if (value.fileArguments !== undefined && !['on', 'off'].includes(value.fileArguments)) throw bad('fileArguments must be "on" or "off"');
+    if (!definition && value.fileArguments !== undefined) throw bad('fileArguments belongs in a definition');
     const kept = previous.find(x => x.name === name);
     const url = kind === "mcpServers" ? sourceUrl(value.url, env).href : undefined;
     if (value.timeoutMs !== undefined && (!Number.isInteger(value.timeoutMs) || value.timeoutMs < 1000 || value.timeoutMs > 1_200_000)) throw bad("timeoutMs must be 1000..1200000");
@@ -158,6 +165,7 @@ export async function prepareSources(env: Env, tenant: string, definition: strin
     }
     const source: RemoteSource = {
       name, ...(url ? { url } : {}),
+      ...(value.fileArguments !== undefined ? { fileArguments: value.fileArguments } : {}),
       ...(value.exposure ? { exposure: value.exposure } : {}),
       ...(value.timeoutMs ? { timeoutMs: value.timeoutMs } : {}),
       ...(value.allowTools !== undefined ? { allowTools: names(value.allowTools, "allowTools") } : {}),
@@ -221,7 +229,7 @@ export function sourceView(source: RemoteSource) {
   return { name, ...(url ? { url } : {}), ...(baseUrl ? { baseUrl } : {}), ...(spec ? { spec } : {}),
     ...(headerNames ? { headerNames } : {}), ...(auth ? { auth } : {}), ...(audience ? { audience } : {}),
     ...(allowTools ? { allowTools } : {}), ...(denyTools ? { denyTools } : {}), ...(timeoutMs ? { timeoutMs } : {}),
-    ...(exposure ? { exposure } : {}), ...(approval ? { approval } : {}),
+    ...(exposure ? { exposure } : {}), ...(approval ? { approval } : {}), ...(source.fileArguments !== undefined ? { fileArguments: source.fileArguments } : {}),
     ...(operations ? { tools: operations.map(operation => operation.name) } : {}) };
 }
 
@@ -361,14 +369,14 @@ class RemoteMcp {
     }
     throw new Error("MCP tool list exceeds 64 pages");
   }
-  async call(name: string, args: unknown, signal?: AbortSignal, api?: ToolExecutionApi, reply: ToolInputReply = {}): Promise<McpResult> {
+  async call(name: string, args: unknown, signal?: AbortSignal, api?: ToolExecutionApi, reply: ToolInputReply = {}, fileMeta?: Record<string, unknown>): Promise<McpResult> {
     await this.init();
     const { approval, note: _note, ...responses } = reply;
     const identity = api ? await this.identity?.(api) : undefined;
     const site = api ? identity?.call ?? await toolCallSite(api) : undefined;
     const meta = site ? { ...toolCallMeta(identity?.claims.agent ?? String(api!.conversationId), site, identity?.claims.origin, identity?.claims.act), ...(identity?.elicit ? { "io.modelcontextprotocol/clientCapabilities": { elicitation: { form: {}, url: {} } } } : {}) } : undefined;
     const progress = pacedProgress(value => site ? identity?.progress?.(progressEvent(mcpToolName(this.source.name, name), site, value)) : undefined);
-    try { return await this.rpc("tools/call", { name, arguments: args, ...responses, ...(meta ? { _meta: { ...meta, ...(approval ? { "agent-runtime/approval": approval } : {}) } } : {}) }, false, signal, api, approval, progress.update); }
+    try { return await this.rpc("tools/call", { name, arguments: args, ...responses, ...(meta ? { _meta: { ...meta, ...fileMeta, ...(approval ? { "agent-runtime/approval": approval } : {}) } } : {}) }, false, signal, api, approval, progress.update); }
     finally { await progress.flush(); }
   }
 }
@@ -412,7 +420,7 @@ export function sourceDefinitionViews(config: { mcpServers?: RemoteSource[]; ope
 }
 
 export type SourceApproval = (input: { name: string; args: unknown; kind: "approval"; message: string; detail: Record<string, unknown> }) => Promise<void>;
-export type SourceIdentity = (api?: ToolExecutionApi) => Promise<{ issuer: string; claims: RuntimeIdentity; call?: ToolCallSite; elicit?: boolean; intent?: string; progress?: (event: ToolProgressEvent) => Promise<void>; spawn?: ToolSpawn }>;
+export type SourceIdentity = (api?: ToolExecutionApi) => Promise<{ issuer: string; claims: RuntimeIdentity; call?: ToolCallSite; elicit?: boolean; intent?: string; toolFiles?: (name: string, refuse?: string) => ToolFiles; progress?: (event: ToolProgressEvent) => Promise<void>; spawn?: ToolSpawn }>;
 
 /** Resolve only this agent's configured sources; credentials never enter model context. */
 export async function sourceTools(env: Env, tenant: string, definition: string | undefined, config: { mcpServers?: RemoteSource[]; openApi?: RemoteSource[] }, approve?: SourceApproval, identity?: SourceIdentity, report?: (failures: SourceFailure[]) => void, judge?: (input: JudgeInput, api: ToolExecutionApi, context: Context) => Promise<Judged>): Promise<ToolRegistration[]> {
@@ -459,10 +467,15 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
         if (source.allowTools && !source.allowTools.includes(tool.name) || source.denyTools?.includes(tool.name)) continue;
         const { name } = tool;
         const mode = approvalFor(source.approval, name, (tool as any).annotations?.destructiveHint === true);
-        result.push(markListed(registration({ ...tool, description: (tool.description ?? name).slice(0, 4000), needsApproval: mode === "always", judged: mode === "judged", name: mcpToolName(source.name, name), exposure: tool.exposure ?? tool._meta?.["agent-runtime/exposure"] as ToolDefinition["exposure"] ?? source.exposure }, async (args, api, context) => {
+        result.push(markListed(registration({ ...tool, description: (tool.description ?? name).slice(0, 4000), needsApproval: mode === "always", judged: mode === "judged", name: mcpToolName(source.name, name), inputSchema: takesFiles(source) ? acceptFiles(tool.inputSchema ?? tool.parameters) : tool.inputSchema ?? tool.parameters, parameters: undefined, exposure: tool.exposure ?? tool._meta?.["agent-runtime/exposure"] as ToolDefinition["exposure"] ?? source.exposure }, async (args, api, context) => {
           const approval = await needsApproval(name, args, (tool as any).annotations?.destructiveHint === true, api, context, undefined, tool.description);
           if ("result" in approval) return approval.result;
-          return api ? withToolInputs(reply => client.call(name, args, context?.abortSignal, api, reply), api, context, { name: `${source.name}__${name}`, args }, approval.reply) : client.call(name, args, context?.abortSignal);
+          const files = (await identity?.(api))?.toolFiles?.(`${source.name}__${name}`, takesFiles(source) ? undefined : `${source.name} is not sent files: $file needs fileArguments "on" in its definition`);
+          const sent = { at: '', values: {} };
+          const resolved = await resolveFiles(args, tool.inputSchema ?? tool.parameters, files, undefined, sent);
+          const meta = Object.keys(sent.values).length ? { 'camelrun/files': sent.values } : undefined;
+          const answer = api ? await withToolInputs(reply => client.call(name, resolved, context?.abortSignal, api, reply, meta), api, context, { name: `${source.name}__${name}`, args }, approval.reply) : await client.call(name, resolved, context?.abortSignal);
+          return savedContent(answer, files, takesFiles(source) ? url => outbound(env).fetch(url, { timeoutMs: 20_000, maxBytes: TOOL_FILE_LIMITS.responseBytes, maxRedirects: 5, signal: context?.abortSignal }) : undefined);
         }, source.auth?.type === "runtime" ? async (...args) => {
           const spawn = (await identity?.(args[2]))?.spawn;
           if (!spawn) throw new Error("Sub-agents are not enabled on this runtime");
@@ -470,10 +483,15 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
         } : undefined)));
       }
     } else {
-      for (const operation of source.operations ?? []) result.push(markListed(registration({ name: `${source.name}__${operation.name}`, description: operation.description, inputSchema: operation.inputSchema, needsApproval: approvalFor(source.approval, operation.name, !operation.readOnly, operation.method) === "always", judged: approvalFor(source.approval, operation.name, !operation.readOnly, operation.method) === "judged", exposure: source.exposure, executionMode: operation.readOnly ? "parallel" : "sequential" }, async (input, api, context) => {
-        const args = input as Record<string, unknown>;
-        const approval = await needsApproval(operation.name, args, !operation.readOnly, api, context, operation.method, operation.description);
+      for (const operation of source.operations ?? []) result.push(markListed(registration({ name: `${source.name}__${operation.name}`, description: operation.description, inputSchema: takesFiles(source) ? acceptFiles(operation.inputSchema, undefined, true) : operation.inputSchema, needsApproval: approvalFor(source.approval, operation.name, !operation.readOnly, operation.method) === "always", judged: approvalFor(source.approval, operation.name, !operation.readOnly, operation.method) === "judged", exposure: source.exposure, executionMode: operation.readOnly ? "parallel" : "sequential" }, async (input, api, context) => {
+        const files = (await identity?.(api))?.toolFiles?.(`${source.name}__${operation.name}`, takesFiles(source) ? undefined : `${source.name} is not sent files: $file needs fileArguments "on" in its definition`);
+        const approval = await needsApproval(operation.name, input, !operation.readOnly, api, context, operation.method, operation.description);
         if ("result" in approval) return approval.result;
+        if (!takesFiles(source) && hasFileArgument(input)) throw new Error(`${source.name} is not sent files: $file needs fileArguments "on" in its definition`);
+        const { body: originalBody, ...rest } = input as Record<string, unknown>;
+        const rawBody = operation.body === 'multipart' || operation.body === 'binary';
+        const args = await resolveFiles(rawBody ? rest : input, operation.inputSchema, files) as Record<string, unknown>;
+        if (rawBody) args.body = originalBody;
         const text = (value: unknown) => typeof value === "string" ? value : JSON.stringify(value);
         const path = operation.path.replace(/\{([^}]+)\}/g, (_, name: string) => {
           if (args[name] === undefined) throw new Error(`Missing path parameter ${name}`);
@@ -495,10 +513,27 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
         if (args.body !== undefined && operation.body) {
           if (operation.body === "json") { sent["Content-Type"] = "application/json"; body = JSON.stringify(args.body); }
           else if (operation.body === "form") { sent["Content-Type"] = "application/x-www-form-urlencoded"; body = formEncode(args.body); }
-          else throw new Error("Binary and multipart OpenAPI request bodies require file transport");
+          else if (operation.body === 'multipart') {
+            if (!files) throw new Error('This agent has no files to send: it has no volumes mounted');
+            const form = await multipartBody(args.body, files, (operation.inputSchema.properties as any)?.body); body = form.body.pipeThrough(new FixedLengthStream(form.length)); sent['Content-Type'] = form.contentType; sent['Content-Length'] = String(form.length);
+          } else {
+            if (hasFileArgument(args.body)) {
+              if (!files) throw new Error('This agent has no files to send: it has no volumes mounted');
+              const file = await files.bodyFile(args.body); body = file.stream.pipeThrough(new FixedLengthStream(file.size)); sent['Content-Type'] = operation.bodyType?.includes('*') ? file.contentType : operation.bodyType ?? file.contentType; sent['Content-Length'] = String(file.size);
+            } else { body = typeof args.body === 'string' ? args.body : JSON.stringify(args.body); sent['Content-Type'] = operation.bodyType?.includes('*') ? 'application/octet-stream' : operation.bodyType ?? 'application/octet-stream'; }
+          }
         }
-        const response = await fetchSource(env, url, { method: operation.method, headers: sent, body, signal: AbortSignal.any([AbortSignal.timeout(source.timeoutMs ?? 30_000), ...(context?.abortSignal ? [context.abortSignal] : [])]) });
-        return withInputNote({ content: [{ type: "text", text: response.response.ok ? response.text : `${operation.method} ${operation.path} answered HTTP ${response.response.status}: ${response.text}` }], ...(!response.response.ok ? { isError: true } : {}) }, approval.reply);
+        await outbound(env).reachable(url);
+        const response = await network().fetch(url, { method: operation.method, headers: sent, body, redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(source.timeoutMs ?? 30_000), ...(context?.abortSignal ? [context.abortSignal] : [])]) });
+        const contentType = response.headers.get('content-type')?.split(';')[0] ?? '';
+        if (response.ok && contentType && !textual(contentType) && files) {
+          const name = /filename\*?=(?:UTF-8''|"?)([^";]+)/i.exec(response.headers.get('content-disposition') ?? '')?.[1] ?? url.pathname.split('/').pop() ?? 'output';
+          const file = await files.save(decodeURIComponent(name), response.body as any, contentType);
+          return withInputNote({ content: [file], structuredContent: file }, approval.reply);
+        }
+        let responseText: string;
+        try { responseText = await readText(response, MAX_BYTES); } catch { throw new Error(`Response larger than ${MAX_BYTES} bytes`); }
+        return withInputNote({ content: [{ type: 'text', text: response.ok ? responseText : `${operation.method} ${operation.path} answered HTTP ${response.status}: ${responseText}` }], ...(!response.ok ? { isError: true } : {}) }, approval.reply);
       })));
     }
   }

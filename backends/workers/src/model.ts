@@ -42,6 +42,7 @@ import { modelCallKind } from "./model-call-context.ts";
 import { contentFilterFallbacks } from "./default-model-policy.ts";
 import { isContentFilterBlock, isModelUnavailable } from "./model-errors.ts";
 import { ModelReplayRetry, type ModelRetryEvent } from "./model-replay-retry.ts";
+import { missingModelKey } from "./selfhost-policy.ts";
 
 export type ModelRequestSettings = AgentConfiguration & { requestId?: string; outputReminded?: boolean; output?: { schema?: Record<string, unknown>; [key: string]: unknown } };
 export type ModelCredentials = { apiKey?: string; baseUrl?: string; headers?: Record<string, string>; region?: string; bearer?: true; identity?: true; deployments?: Record<string, string> };
@@ -59,7 +60,7 @@ export type ModelHooks = {
   customProviders?: CustomProviders;
 };
 
-function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEnv & { TEST_MODE?: string; TEST_MODEL?: string; AGENT_CONTENT_FILTER_FALLBACKS?: string }): Provider {
+function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEnv & { TEST_MODE?: string; TEST_MODEL?: string; AGENT_CONTENT_FILTER_FALLBACKS?: string; AGENT_TENANT?: string }): Provider {
   const timeouts = runtimeStreamTimeouts(env);
   let routing: { user: string; previous?: Model<Api>; failed?: Model<Api> } | undefined;
   const outputRequest = new OutputRequest();
@@ -89,6 +90,8 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEn
       throw new Error(`No azure deployment is configured for ${model.provider}/${model.id} on this runtime; move the agent to a model you can use (GET /v1/models?available=true)`);
     if (!credential && !getModels(model.provider).length && !["test", "camel-test", "cloudflare"].includes(model.provider) && !hooks.endpoints?.[model.provider])
       throw new Error(`${model.provider} provider is gone; set it again with PUT /v1/providers/${model.provider}`);
+    if (!credential && !["test", "camel-test", "cloudflare"].includes(model.provider))
+      throw new Error(missingModelKey(model.provider, model.id, env));
     if (model.provider === "amazon-bedrock" && !credential?.apiKey && !options.apiKey)
       throw Object.assign(new Error("Bedrock requires an API key"), { code: "model_key_missing" });
     const onPayload = options.onPayload;

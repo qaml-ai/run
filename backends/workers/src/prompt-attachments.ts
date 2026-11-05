@@ -19,7 +19,8 @@ import {
   describeFile,
   documentPayload,
   firstLines,
-  supportsDocuments,
+  nativeBlock,
+  unseen,
   textual,
   type FileRef,
 } from "./attachment-policy.ts";
@@ -41,6 +42,7 @@ import {
   type AttachmentAudioScope,
 } from "./attachment-transcription.ts";
 import type { MediaBindings } from "./media-api.ts";
+import { inspectDocument } from "./document-inspection.ts";
 
 import {
   ATTACHMENT_MARKER as MARKER,
@@ -69,6 +71,9 @@ export class PromptAttachments {
     private storage: DurableObjectStorage,
     private env: AttachmentEnv,
   ) {}
+  async reference(identity: Identity, path: string): Promise<AttachedFile> {
+    return (await this.stage(identity, [{ path }]))[0];
+  }
   async attach(identity: Identity, inputs: unknown): Promise<AttachedFile[]> {
     const fingerprint = await digest(JSON.stringify(inputs));
     const key = `prompt-attachments:${identity.requestId}`;
@@ -250,13 +255,12 @@ export class PromptAttachments {
                   size: entry.size,
                   version: 1,
                 }
-              : await storeImage(this.env, identity.tenant, bytes);
+              : undefined;
         }
-      } else if (entry.contentType === "application/pdf")
-        ref.media = {
-          kind: "none",
-          reason: "PDF inspection is unavailable on Workers",
-        };
+      } else if (entry.contentType === "application/pdf" && entry.size <= FILE_LIMITS.documentBytes) {
+        const object = await this.env.BUCKET.get(entry.key);
+        if (object) ref.media = await inspectDocument(await boundedBytes(object.body, FILE_LIMITS.documentBytes));
+      }
       files.push(ref);
     }
     return transcribeAttachments(this.env, this.storage, identity, files);
@@ -276,16 +280,14 @@ export function withAttachmentReferences<A extends Api>(
     const documents = new Set<string>();
     for (let m = context.messages.length - 1; m >= 0; m--) {
       const message = context.messages[m];
-      if (message.role !== "user" || !Array.isArray(message.content)) continue;
+      if (!Array.isArray(message.content)) continue;
       for (let p = message.content.length - 1; p >= 0; p--) {
         const part = message.content[p];
         if (part.type !== "text" || !part.text.startsWith(MARKER)) continue;
         const ref = attachmentMarker(part.text);
         if (!ref) continue;
         if (
-          ref.contentType === "application/pdf" &&
-          supportsDocuments(model) &&
-          ref.size <= FILE_LIMITS.documentBytes &&
+          nativeBlock(ref, model) === "document" &&
           documentBytes + ref.size <= FILE_LIMITS.requestFileBytes
         ) {
           documents.add(`${m}:${p}`);
@@ -295,7 +297,7 @@ export function withAttachmentReferences<A extends Api>(
     }
     const messages = [];
     for (const [m, message] of context.messages.entries()) {
-      if (message.role !== "user" || !Array.isArray(message.content)) {
+      if (!Array.isArray(message.content)) {
         messages.push(message);
         continue;
       }
@@ -330,11 +332,7 @@ export function withAttachmentReferences<A extends Api>(
           type: "text",
           text: describeFile(
             ref,
-            ref.contentType === "application/pdf"
-              ? undefined
-              : ref.media?.kind === "none"
-                ? ref.media.reason
-                : undefined,
+            unseen(ref, model),
           ),
         });
         let image = ref.image;
@@ -359,12 +357,15 @@ export function withAttachmentReferences<A extends Api>(
               : undefined;
           if (!image) {
             const object = await env.BUCKET.get(ref.key);
-            if (object)
-              image = await storeImage(
+            if (object) {
+              try { image = await storeImage(
                 env,
                 tenant,
                 await boundedBytes(object.body, FILE_LIMITS.imageBytes),
-              );
+              ); } catch {
+                content.push({ type: "text", text: `[image omitted: ${ref.media.width}×${ref.media.height} px, could not be resized]` });
+              }
+            }
           }
         }
         if (image && model.input.includes("image"))

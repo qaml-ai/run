@@ -1,6 +1,9 @@
 import { retriesModelError } from "./model-errors.ts";
 import { modelCompactionSettings } from "./model-context.ts";
 import { withCompactionPrompt } from "./model-compaction.ts";
+import { takesFiles } from './tool-file-schema.ts';
+import { ToolFiles } from './tool-files.ts';
+import { TOOL_FILE_LIMITS } from '../../../src/limits.ts';
 import { toolOutputExtension } from "./tool-output.ts";
 import { refreshIdleLifetime } from "./idle-lifetime.ts";
 import { forkSnapshot } from "./fork-snapshot.ts";
@@ -130,7 +133,6 @@ import { PromptPreparations } from "./prompt-admission.ts";
 import { actorInput, bucketInput } from "./security-policy.ts";
 import { MessageProjection } from "./message-projection.ts";
 import { runtimePromptSections } from "./prompt-sections.ts";
-import { toolResultFiles } from "./tool-output-files.ts";
 import { projectRunFailure } from "./run-failure.ts";
 import { RunProjection } from "./run-projection.ts";
 import { requestView } from "./request-view.ts";
@@ -138,6 +140,7 @@ import { AgentHistory } from "./history.ts";
 import type { AgentConfiguration } from "./api-contract.ts";
 import { digest, configuration } from "./api-contract.ts";
 import { configurationModelError } from "./default-model.ts";
+import { journeyRunEnded } from "./journey.ts";
 import { MAX_OPEN_REQUESTS } from "./access-policy.ts";
 import { follow as followLiveTurn, replay as replayEvents, type LiveTurn } from "./live-event-policy.ts";
 import { AttachedTools } from "./attached-tools.ts";
@@ -584,6 +587,7 @@ export class CamelAgent extends DurableObject<Env> {
       throw error;
     }
   }
+  private toolFileBudgets = new Map<string, { left: number }>();
   private async sourceIdentity(api?: ToolExecutionApi) {
     const conf = await this.config(),
       run = await this.currentRun(api),
@@ -599,6 +603,16 @@ export class CamelAgent extends DurableObject<Env> {
     }
     return {
       issuer,
+      toolFiles: (tool: string, refuse?: string) => {
+        let budget = this.toolFileBudgets.get(run.id);
+        if (!budget) { budget = { left: TOOL_FILE_LIMITS.runBytes }; this.toolFileBudgets.set(run.id, budget); }
+        const requestId = run.id;
+        const scope = { tenant: conf.tenantId, agent: conf.id, mounts: (conf.config.mounts ?? []) as Mount[], requestId };
+        return new ToolFiles(this.env, { ...scope, tool, call: call?.toolCallId ?? String(api?.taskId ?? run.id), origin: issuer, refuse, budget,
+          reference: path => new PromptAttachments(this.ctx.storage, this.env).reference(scope, path),
+          onWrite: file => writtenFile(this.ctx.storage, requestId, file),
+        });
+      },
       ...(call ? { call } : {}),
       spawn: (tool: string, directive: unknown, currentApi: import('@earendil-works/pi-durable').ToolExecutionApi, context: import('@earendil-works/chord').Context) => this.delegation.toolSpawn(tool, directive, currentApi, context),
       progress: async (event: unknown) => {
@@ -818,7 +832,7 @@ export class CamelAgent extends DurableObject<Env> {
           await this.historyIndex.sync(await pi.root(BACKGROUND_CONTEXT));
           site.messageIndex = this.historyIndex.messageIndex(site.assistant);
         }
-        return { tenant: conf.tenantId, agent: conf.id, mounts: (conf.config.mounts ?? []) as Mount[], fileTools: conf.config.fileTools, codeMode: conf.config.codeMode, call: site };
+        return { tenant: conf.tenantId, agent: conf.id, mounts: (conf.config.mounts ?? []) as Mount[], fileTools: conf.config.fileTools, codeMode: conf.config.codeMode, fileArguments: Object.fromEntries([...(conf.config.mcpServers ?? []), ...(conf.config.openApi ?? [])].map(source => [source.name, takesFiles(source)])), call: site };
       }));
       registry.install(this.limits.extension());
       registry.install(contextRangeExtension(
@@ -929,7 +943,7 @@ export class CamelAgent extends DurableObject<Env> {
             builtins: conf.config.builtins,
             webSearch: conf.config.webSearch,
             keyScope: conf.config.keyScope,
-            files: await toolResultFiles(this.env, { tenant: conf.tenantId, agent: conf.id, mounts: (conf.config.mounts ?? []) as Mount[], tool: "web_fetch", call: String(api?.taskId ?? run.id) }),
+            files: (await this.sourceIdentity(api)).toolFiles('web_fetch'),
           };
         }, { schedules: this.scheduleTools() }),
       });
@@ -1436,6 +1450,7 @@ export class CamelAgent extends DurableObject<Env> {
         return completed;
       });
       await this.flushTerminalEvents();
+      this.toolFileBudgets.delete(id);
       return terminal;
     }
     try {
@@ -1559,6 +1574,8 @@ export class CamelAgent extends DurableObject<Env> {
       // only replays this immutable receipt; money remains one PG transaction.
       await this.flushBilling();
       if (changed) {
+        const conf = await this.ctx.storage.get<Config>("configuration");
+        if (conf) await journeyRunEnded(this.env, conf.tenantId, { completed: terminal.status === 'completed', at: terminal.endedAt });
         metric(
           this.env,
           "turn_metrics",
@@ -1577,6 +1594,7 @@ export class CamelAgent extends DurableObject<Env> {
         await this.flushTerminalEvents();
         if (id.startsWith("schedule-")) await publishScheduleEmails(this.env);
       }
+      this.toolFileBudgets.delete(id);
       return terminal;
     } catch (error) {
       if (
@@ -2504,7 +2522,7 @@ export class CamelAgent extends DurableObject<Env> {
                 builtins: conf.config.builtins,
                 webSearch: conf.config.webSearch,
                 keyScope: conf.config.keyScope,
-                files: await toolResultFiles(this.env, { tenant: conf.tenantId, agent: conf.id, mounts: (conf.config.mounts ?? []) as Mount[], tool: "web_fetch", call: String(api?.taskId ?? run.id) }),
+                files: (await this.sourceIdentity(api)).toolFiles('web_fetch'),
               };
             }, { schedules: this.scheduleTools() }),
           });

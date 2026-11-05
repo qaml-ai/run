@@ -83,6 +83,7 @@ export class Volume extends DurableObject<VolumeBindings> {
     ctx.storage.sql.exec(
       "CREATE TABLE IF NOT EXISTS snapshot_options(id TEXT PRIMARY KEY, pinned INTEGER NOT NULL DEFAULT 0, labels TEXT NOT NULL DEFAULT '{}')",
     );
+    ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS temporary_snapshots(id TEXT PRIMARY KEY, expiresAt INTEGER NOT NULL)");
     const columns = [
       ...ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(files)"),
     ];
@@ -338,7 +339,7 @@ export class Volume extends DurableObject<VolumeBindings> {
         expectedVersion !== undefined &&
         expectedVersion !== (previous?.version ?? 0)
       )
-        throw new FileError("File version changed", 412);
+        throw new FileError(expectedVersion === 0 ? `${path} already exists (version ${previous?.version ?? 0})` : !previous ? `${path} no longer exists (expected version ${expectedVersion})` : `${path} is at version ${previous.version}, not ${expectedVersion}`, 412);
       if (!previous && this.info().files >= VOLUME_LIMITS.files)
         throw new FileError("Volume file limit reached", 507);
       const file = {
@@ -395,7 +396,7 @@ export class Volume extends DurableObject<VolumeBindings> {
         expectedVersion !== undefined &&
         expectedVersion !== (previous?.version ?? 0)
       )
-        throw new FileError("File version changed", 412);
+        throw new FileError(expectedVersion === 0 ? `${path} already exists (version ${previous?.version ?? 0})` : !previous ? `${path} no longer exists (expected version ${expectedVersion})` : `${path} is at version ${previous.version}, not ${expectedVersion}`, 412);
       if (!previous && this.info().files >= VOLUME_LIMITS.files)
         throw new FileError("Volume file limit reached", 507);
       const file = {
@@ -445,7 +446,7 @@ export class Volume extends DurableObject<VolumeBindings> {
     return this.ctx.storage.transactionSync(() => {
       const previous = this.stat(path);
       if (expectedVersion !== undefined && expectedVersion !== previous.version)
-        throw new FileError("File version changed", 412);
+        throw new FileError(expectedVersion === 0 ? `${path} already exists (version ${previous?.version ?? 0})` : !previous ? `${path} no longer exists (expected version ${expectedVersion})` : `${path} is at version ${previous.version}, not ${expectedVersion}`, 412);
       this.sql().exec("DELETE FROM files WHERE path=?", previous.path);
       this.record(previous.path, "delete");
       return { path: previous.path, deleted: true, seq: this.sequence() };
@@ -475,16 +476,17 @@ export class Volume extends DurableObject<VolumeBindings> {
       ...(since < oldest - 1 ? { gap: true } : {}),
     };
   }
-  snapshot(
+  async snapshot(
     name?: string,
     options: {
       pinned?: boolean;
       labels?: Record<string, string>;
       given?: FileEntry[];
+      expiresAt?: number;
     } = {},
   ) {
     this.alive();
-    return this.ctx.storage.transactionSync(() => {
+    const snapshot = this.ctx.storage.transactionSync(() => {
       name = name === undefined ? `seq ${this.sequence()}` : name;
       if (typeof name !== "string" || !name.trim() || name.length > 120)
         throw new FileError("name must be 1–120 characters");
@@ -494,7 +496,7 @@ export class Volume extends DurableObject<VolumeBindings> {
         labels =
           options.labels === undefined ? {} : labelsInput(options.labels),
         cap = pinned ? VOLUME_LIMITS.pinnedSnapshots : VOLUME_LIMITS.snapshots;
-      if (this.snapshots().filter((s) => s.pinned === pinned).length >= cap)
+      if (this.snapshots(undefined, true).filter((s) => s.pinned === pinned).length >= cap)
         throw new FileError(
           `A volume keeps at most ${cap} ${pinned ? "pinned " : ""}snapshots`,
           409,
@@ -520,8 +522,14 @@ export class Volume extends DurableObject<VolumeBindings> {
         pinned ? 1 : 0,
         JSON.stringify(labels),
       );
+      if (options.expiresAt) this.sql().exec("INSERT INTO temporary_snapshots VALUES(?,?)", id, options.expiresAt);
       return this.snapshotSummary(id);
     });
+    if (options.expiresAt) {
+      const alarm = await this.ctx.storage.getAlarm();
+      if (alarm === null || alarm > options.expiresAt) await this.ctx.storage.setAlarm(options.expiresAt);
+    }
+    return snapshot;
   }
   private snapshotSummary(id: string): Snapshot {
     const row = [
@@ -552,7 +560,7 @@ export class Volume extends DurableObject<VolumeBindings> {
       labels: JSON.parse(row.labels),
     };
   }
-  snapshots(labels?: Record<string, string>) {
+  snapshots(labels?: Record<string, string>, includeTemporary = false) {
     this.alive();
     if (labels) labels = labelsInput(labels);
     return [
@@ -561,6 +569,7 @@ export class Volume extends DurableObject<VolumeBindings> {
       ),
     ]
       .map((s) => this.snapshotSummary(s.id))
+      .filter(s => includeTemporary || !s.name.startsWith("[tool-call]"))
       .filter(
         (s) =>
           !labels ||
@@ -781,6 +790,11 @@ export class Volume extends DurableObject<VolumeBindings> {
     };
   }
   async alarm() {
+    for (const { id } of this.sql().exec<{id:string}>("SELECT id FROM temporary_snapshots WHERE expiresAt<=?", Date.now())) {
+      this.sql().exec("DELETE FROM snapshots WHERE id=?", id);
+      this.sql().exec("DELETE FROM snapshot_options WHERE id=?", id);
+      this.sql().exec("DELETE FROM temporary_snapshots WHERE id=?", id);
+    }
     await this.collectGarbage();
     if (
       this.sql().exec<{ n: number }>("SELECT count(*) n FROM objects").one().n
