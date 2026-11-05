@@ -1,7 +1,6 @@
 import { defineTool, type ToolRegistration } from '@earendil-works/pi-durable';
 import { compile } from '@earendil-works/pi-schema';
 import { HttpError } from './errors.ts';
-import { safeError } from './observability.ts';
 import type { Schedule } from './schedule-policy.ts';
 
 export type ScheduleToolsHost = {
@@ -53,5 +52,6 @@ export function agentScheduleTools(builtins: string[] | undefined, host?: Schedu
 
 export function scheduleError(error: unknown): string {
   const status = (error as { status?: number } | null)?.status;
-  return status === undefined ? safeError(error) : `HTTP ${status}: ${safeError(error)}`;
+  const message = error instanceof Error ? error.message : String(error);
+  return `${status === undefined ? '' : `HTTP ${status}: `}${message}`.slice(0, 1000);
 }
