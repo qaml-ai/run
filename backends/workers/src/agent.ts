@@ -1280,8 +1280,7 @@ export class CamelAgent extends DurableObject<Env> {
     const joined = await root.commit(async tx => {
       const current = await tx.submissionByRequest(root.id, record.piId ?? record.id);
       const previous = await tx.submissionByRequest(root.id, parent?.piId ?? record.steeredInto!);
-      const active = await Promise.all(inputs.map(id => tx.submission(id as never)));
-      return steeringJoined(current, previous, active);
+      return steeringJoined(current, previous, inputs.map(id => ({ id })));
     }, BACKGROUND_CONTEXT);
     if (joined === false) {
       delete record.steeredInto;

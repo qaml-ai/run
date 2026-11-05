@@ -4,11 +4,11 @@ type Submission = { id: number; status: string; answer?: number };
 export function steeringJoined(
   current: Submission | undefined,
   previous: Submission | undefined,
-  active: readonly (Submission | undefined)[],
+  active: readonly { id: number }[],
 ): boolean | undefined {
   if (!current || !previous) return undefined;
-  if (active.some(input => input?.id === current.id))
-    return active.some(input => input?.id === previous.id);
+  if (active.some(input => input.id === current.id))
+    return active.some(input => input.id === previous.id);
   // An observer can receive the placement after the new run already finished.
   // The shared answer is durable evidence that two inputs belonged to one run.
   if (current.answer !== undefined && previous.answer !== undefined)
