@@ -1,3 +1,4 @@
+import { TOOL_FILE_LIMITS } from '../../../src/limits.ts';
 import { acceptFiles, resolveFiles, takesFiles, hasFileArgument } from './tool-file-schema.ts';
 import { savedContent, multipartBody, type ToolFiles } from './tool-files.ts';
 import { textual } from './file-policy.ts';
@@ -473,7 +474,7 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
           const resolved = await resolveFiles(args, tool.inputSchema ?? tool.parameters, files, undefined, sent);
           const meta = Object.keys(sent.values).length ? { 'camelrun/files': sent.values } : undefined;
           const answer = api ? await withToolInputs(reply => client.call(name, resolved, context?.abortSignal, api, reply, meta), api, context, { name: `${source.name}__${name}`, args }, approval.reply) : await client.call(name, resolved, context?.abortSignal);
-          return savedContent(answer, files, takesFiles(source) ? async url => { await outbound(env).reachable(url); return fetch(url); } : undefined);
+          return savedContent(answer, files, takesFiles(source) ? url => outbound(env).fetch(url, { timeoutMs: 20_000, maxBytes: TOOL_FILE_LIMITS.responseBytes, maxRedirects: 5, signal: context?.abortSignal }) : undefined);
         }, source.auth?.type === "runtime" ? async (...args) => {
           const spawn = (await identity?.(args[2]))?.spawn;
           if (!spawn) throw new Error("Sub-agents are not enabled on this runtime");
