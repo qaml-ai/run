@@ -1,12 +1,14 @@
 import { createAssistantMessageEventStream, type Model } from '@earendil-works/pi-ai';
 import type { Provider } from '@earendil-works/pi-ai/models';
 import { ModelAttempts } from './model-attempts.ts';
-import { EndUserCredits } from './end-user-credits.ts';
+import { EndUserCredits, creditError } from './end-user-credits.ts';
 import { attemptStream } from './model-attempt-stream.ts';
 import { callFetch, FETCH_APIS } from './model-call-fetch.ts';
 import { estimateModelAttempt } from './model-estimate.ts';
 import { modelSpendLimit } from './agent-spend.ts';
-import type { CreditStop, ModelAttemptEvent, ModelAttemptHook } from './model-attempt.ts';
+import { attemptAck } from './model-attempt.ts';
+import { billingRunStop, creditRunStop, type BillingRunStop } from './billing-run-stop.ts';
+import type { ModelAttemptEvent, ModelAttemptHook } from './model-attempt.ts';
 import { keyServices, providerCredentials, type KeyEnv } from './security-services.ts';
 import { PREPARED_MODEL_CREDENTIALS } from './model-request-auth.ts';
 import { accountingModel, modelCallKind } from './model-call-context.ts';
@@ -31,7 +33,7 @@ export async function applyModelReceipt(env: KeyEnv, receipt: ModelReceipt) {
 export function meterProvider<P extends Provider<any>>(
   provider: P, env: KeyEnv, context: () => Promise<ModelBillingContext>,
   commit: (receipt: ModelReceipt) => Promise<void>,
-  onRefused?: (stop: CreditStop) => Promise<void>,
+  stopped?: (context: ModelBillingContext, stop: BillingRunStop) => Promise<void>,
 ): P {
   const wrap = (stream: P['stream']) => ((model: Model<any>, transcript: any, options: any = {}) => {
     const output = createAssistantMessageEventStream();
@@ -53,8 +55,18 @@ export function meterProvider<P extends Provider<any>>(
         };
         if ('baseUrl' in credentials && credentials.baseUrl) model = { ...model, baseUrl: credentials.baseUrl };
       }
-      const limit = await modelSpendLimit(service.db, identity) ?? await service.accounts.runLimit(identity.tenant);
-      if (limit) throw typeof limit === 'string' ? new Error(limit) : limit;
+      let limit = await modelSpendLimit(service.db, identity) ?? await service.accounts.runLimit(identity.tenant);
+      if (!limit && identity.subject) {
+        const refused = await new EndUserCredits(service.db).refusal(identity.tenant, identity.subject, identity.bucket ?? 'default');
+        if (refused) limit = creditError(refused);
+      }
+      if (limit) {
+        const stop = typeof limit === 'string'
+          ? { error: limit, code: 'spend_limit' as const, stopped: 'spend_limit' as const, limit: 'tenant' as const }
+          : billingRunStop(limit);
+        if (stop) await stopped?.(identity, stop);
+        throw typeof limit === 'string' ? new Error(limit) : limit;
+      }
       const platform = options.endpointIdentity ? false : credentials ? credentials.platform : identity.platform !== false;
       // Provider generation observations, renewal and settlement share the same
       // mutable holds. Finish must follow every preceding accounting write.
@@ -74,7 +86,10 @@ export function meterProvider<P extends Provider<any>>(
               } } : {}) },
             ...(identity.subject ? { endUser: { id: identity.subject, bucket: identity.bucket ?? 'default' } } : {}),
           } : event;
-          return service.event(identity.tenant, identity.agent, platform, platform, attributed);
+          const answer = await service.event(identity.tenant, identity.agent, platform, platform, attributed);
+          const refused = attemptAck(answer).refused;
+          if (refused) await stopped?.(identity, creditRunStop(refused));
+          return answer;
         });
         pending = next.catch(() => {});
         return next;
@@ -89,7 +104,7 @@ export function meterProvider<P extends Provider<any>>(
           signal: options.signal ? AbortSignal.any([options.signal, halt]) : halt,
           ...(affordable !== undefined && affordable < (options.maxTokens ?? model.maxTokens) ? { maxTokens: affordable } : {}),
           ...(FETCH_APIS.includes(model.api) ? { fetch: callFetch(sink, { ...(options.fetch ? { base: options.fetch } : {}) }) } : {}),
-        }), estimate, stop => { refusal = onRefused?.(stop); }, gateway, options.supersede);
+        }), estimate, stop => { refusal = stopped?.(identity, creditRunStop(stop)); }, gateway, options.supersede);
       for await (const event of source) {
         if (event.type === 'done' || event.type === 'error') await refusal;
         output.push(event);

@@ -134,7 +134,7 @@ import {
 } from "./model-metering.ts";
 import { keyServices, type KeyEnv } from "./security-services.ts";
 import type { AccountEnv } from "./account-services.ts";
-import { runAdmission } from "./admission.ts";
+import { runAdmission, admissionHeaders, type RateLimitState } from "./admission.ts";
 import { PromptPreparations } from "./prompt-admission.ts";
 import { actorInput, bucketInput } from "./security-policy.ts";
 import { MessageProjection } from "./message-projection.ts";
@@ -187,6 +187,7 @@ import { senderExtension } from "./sender-extension.ts";
 import { metadataInput, senderInput } from "./sender.ts";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { AgentRunLimits, type RuntimeLimit } from "./run-limits.ts";
+import { EndUserCredits, creditError } from "./end-user-credits.ts";
 import {
   DurableEventLog,
   runEventStream,
@@ -579,6 +580,8 @@ export class CamelAgent extends DurableObject<Env> {
   private async admitRequest(conf: Config, id: string) {
     let acquired = false;
     try {
+      const rate = await runAdmission(this.env, conf.tenantId);
+      if (rate) this.runRates.set(id, rate);
       const refusal = agentSpendRefusal(conf.id, await this.agentSpend(conf));
       if (refusal)
         throw Object.assign(new Error(refusal.error), {
@@ -604,7 +607,6 @@ export class CamelAgent extends DurableObject<Env> {
           status: 429,
           code: "BUSY_AGENT_LIMIT",
         });
-      await runAdmission(this.env, conf.tenantId);
       await reserveTurn(this.env, conf.tenantId, conf.id, id);
     } catch (error) {
       if (acquired)
@@ -612,10 +614,26 @@ export class CamelAgent extends DurableObject<Env> {
           `${conf.id}:${id}`,
         );
       await this.ctx.storage.delete(reqKey(id));
+      this.runRates.delete(id);
       throw error;
     }
   }
   private toolFileBudgets = new Map<string, { left: number }>();
+  private runRates = new Map<string, RateLimitState>();
+  private requestResponse(record: RequestRecord) {
+    const headers = admissionHeaders(this.runRates.get(record.id));
+    this.runRates.delete(record.id);
+    return requestView(record).then(value => Response.json(value, { status: 202, headers }));
+  }
+  private async endUserLimit(conf: Config, bucket?: string) {
+    if (!conf.config.subject) return;
+    const { accounts } = await keyServices(this.env);
+    const refusal = await new EndUserCredits(accounts.db).refusal(
+      conf.tenantId, conf.config.subject,
+      bucket ?? conf.config.bucket ?? await this.ctx.storage.get<string>("run-bucket") ?? "default",
+    );
+    return refusal ? creditError(refusal) : undefined;
+  }
   private async sourceIdentity(api?: ToolExecutionApi) {
     const conf = await this.config(),
       run = await this.currentRun(api),
@@ -740,13 +758,11 @@ export class CamelAgent extends DurableObject<Env> {
             await applyModelReceipt(this.env, receipt);
             await this.ctx.storage.delete(key);
           },
-          async (refused) => {
-            const { id } = await this.currentRun();
-            const limit: RuntimeLimit = refused.endUser
-              ? { stopped: "spend_limit", error: refused.message, code: "end_user_credit", limit: "end_user", reason: refused.reason, bucket: refused.bucket, endUser: refused.endUser }
-              : { stopped: "spend_limit", error: refused.message, code: "spend_limit", limit: "credit" };
-            await this.ctx.storage.put(`run-limit:${id}`, limit);
-            await this.emit({ type: "event", requestId: id, event: { type: "spend_limit_reached", message: refused.message } });
+          async (context, stop) => {
+            if (context.requestId) {
+              await this.ctx.storage.put(`run-limit:${context.requestId}`, stop);
+              await this.emit({ type: "event", requestId: context.requestId, event: { type: "spend_limit_reached", message: stop.error } });
+            }
           },
         ),
       settings: async () => {
@@ -1912,6 +1928,12 @@ export class CamelAgent extends DurableObject<Env> {
       await this.emit({ type: "event", requestId: owner, event: { type: "input_resolved", id: key, state: "cancelled" } });
   }
   private async startHostRequest(intent: RequestRecord) {
+    if (!intent.accepted) {
+      const conf = await this.config();
+      const { accounts } = await keyServices(this.env);
+      const limit = await accounts.runLimit(conf.tenantId);
+      if (limit) throw typeof limit === "string" ? Object.assign(new Error(limit), { status: 402, code: "SPEND_LIMIT" }) : limit;
+    }
     if (await this.ctx.storage.get(`cancelled-request:${intent.id}`)) {
       await abortHostExecution(await this.harness.pi(), intent.id);
       await this.cancelHostIntent(intent);
@@ -2186,6 +2208,9 @@ export class CamelAgent extends DurableObject<Env> {
     if (!old && request.method !== "steer" && (await this.records()).filter(record => record.state !== "completed").length >= MAX_OPEN_REQUESTS)
       throw Object.assign(new Error("Too many requests queued for this agent"), { status: 429 });
     const conf = await this.config();
+    const requestedBucket = params.bucket as string | undefined;
+    const effectiveBucket = requestedBucket ?? conf.config.bucket ?? await this.ctx.storage.get<string>("run-bucket") ?? "default";
+    params.bucket = effectiveBucket;
     if (!old) await refreshIdleLifetime(this.env, this.ctx.storage, conf);
     if (conf.config.spendLimit) await this.flushBilling(true);
     if (notice) await this.delegation.landNotice(id, notice.costUsd);
@@ -2196,6 +2221,8 @@ export class CamelAgent extends DurableObject<Env> {
         status: 402,
         code: "SPEND_LIMIT",
       });
+    const endUserRefusal = await this.endUserLimit(conf, effectiveBucket);
+    if (endUserRefusal) throw endUserRefusal;
     const pending = (await this.harness.pending()).find(
       (item) => item.status === "running",
     );
@@ -2399,6 +2426,7 @@ export class CamelAgent extends DurableObject<Env> {
       const latest = (await tx.get<RequestRecord>(reqKey(id))) ?? record;
       const accepted = { ...latest, accepted: true };
       await tx.put(reqKey(id), accepted);
+      if (requestedBucket !== undefined) await tx.put("run-bucket", requestedBucket);
       return accepted;
     });
     this.track(id);
@@ -2870,21 +2898,19 @@ export class CamelAgent extends DurableObject<Env> {
           "output",
           "spendLimit",
           "runLimits",
+          "bucket",
           "actor",
           "images",
           "attachments",
           "files",
         ]);
         const { idempotencyKey, requestId, ...params } = input;
-        return json(
-          await requestView(
+        return this.requestResponse(
             await this.submit({
               id: requestId ?? idempotencyKey ?? crypto.randomUUID(),
               method: "prompt",
               params,
             }),
-          ),
-          202,
         );
       }
       if (path === "/configuration" && request.method === "GET")
@@ -2930,12 +2956,7 @@ export class CamelAgent extends DurableObject<Env> {
       if (path === "/state" && request.method === "GET")
         return json(await this.state());
       if (path === "/requests" && request.method === "POST")
-        return json(
-          await requestView(
-            await this.submit(await body(request, 6 * 1024 * 1024)),
-          ),
-          202,
-        );
+        return this.requestResponse(await this.submit(await body(request, 6 * 1024 * 1024)));
       if (path.startsWith("/requests/") && request.method === "GET") {
         const seconds = Number(url.searchParams.get("wait") ?? 0);
         if (!Number.isFinite(seconds) || seconds < 0) throw new BadRequest("wait is a number of seconds");

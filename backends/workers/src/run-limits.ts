@@ -7,6 +7,7 @@ import type { AgentConfiguration } from "./api-contract.ts";
 import { dollars } from "./agent-spend-policy.ts";
 import { agentSpendRefusal, type SpendLimit } from "./agent-spend.ts";
 import { RUN_LIMITS, duration } from "./run-caps-policy.ts";
+import type { BillingRunStop } from "./billing-run-stop.ts";
 
 type Run = {
   id: string;
@@ -17,7 +18,7 @@ type Run = {
   agentSpendAt?: number | null;
 };
 type Usage = { responses: number; costUsd: number };
-export type RuntimeLimit = {
+export type RuntimeLimit = BillingRunStop | {
   error: string;
   code: "turn_limit" | "spend_limit" | "end_user_credit";
   stopped: "turn_limit" | "spend_limit";

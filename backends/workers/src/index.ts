@@ -14,6 +14,7 @@ import {
   authenticate,
   controlRoutes,
   maintenance,
+  creationRate,
   type DirectoryEntry,
   type DirectoryFailure,
 } from "./control.ts";
@@ -38,7 +39,7 @@ import {
 import { handleFileRequest, handleSignedFileRequest } from "./files.ts";
 import { publicMoneyRoutes, authenticateMoney, moneyRoutes, moneyMaintenance, sendMoneyWebhooks } from "./money-api.ts";
 import { BrowserTokens, type BrowserClaims } from "./browser-tokens.ts";
-import { apiRequest, admissionError, errorFields, errorHeaders } from "./admission.ts";
+import { apiRequest, admissionError, admissionHeaders, errorFields, errorHeaders } from "./admission.ts";
 import { BROWSER_READS, corsPreflight, corsResponse } from "./cors.ts";
 import { browserResponse } from "./browser-response.ts";
 import { browserUrl } from "./selfhost-policy.ts";
@@ -335,12 +336,13 @@ const worker = {
                 env, auth.tenantId, created.id, (raw as { spendLimit: unknown }).spendLimit,
               );
             const answer = { ...credentials(created, auth.kind === "oauth" ? undefined : await agentToken(env.API_TOKEN, created.id)), ...(upsert.reconfigured ? { reconfigured: upsert.reconfigured } : {}), ...await builtinWarnings(env, auth.tenantId, created.config) };
-            if (!first) return json(answer, 201);
+            const headers = admissionHeaders(creationRate(created));
+            if (!first) return Response.json(answer, { status: 201, headers });
             const submitted = await env.AGENTS.getByName(created.id).fetch(new Request("https://agent/requests", {
               method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(first),
             }));
             const sent = await submitted.json() as { error?: string; code?: string };
-            return json({ ...answer, prompt: submitted.ok ? sent : { error: { status: submitted.status, code: sent.code ?? "INVALID_REQUEST", message: sent.error } } }, 201);
+            return Response.json({ ...answer, prompt: submitted.ok ? sent : { error: { status: submitted.status, code: sent.code ?? "INVALID_REQUEST", message: sent.error } } }, { status: 201, headers });
           }
         }
         throw new ApiError(404, "Unknown API route", "NOT_FOUND");
@@ -521,7 +523,7 @@ const worker = {
         request = new Request(eventUrl, { method: request.method, headers, signal: request.signal });
       }
       const response = tail === "/events"
-        ? await eventRead(request, env, entry.tenantId, request => forward(request, env, entry!.id, tail))
+        ? await eventRead(request, env, entry.tenantId, entry.id, request => forward(request, env, entry!.id, tail))
         : await forward(request, env, entry.id, tail);
       return browser ? browserResponse(response, browser, tail) : response;
     } catch (error) {
