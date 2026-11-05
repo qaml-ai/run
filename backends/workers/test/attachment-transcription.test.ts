@@ -178,3 +178,68 @@ test("a known transcript survives failed billing and resumes settlement without 
     0,
   );
 });
+
+test("end-user settlement replays its durable reservation before a cached transcript returns", async () => {
+  const h = setup();
+  let fail = true,
+    charged = 0;
+  const reserved: string[] = [],
+    settled = new Set<string>();
+  const credits = {
+    async reserve(
+      _tenant: string,
+      _person: string,
+      _bucket: string,
+      call: { id: string },
+    ) {
+      reserved.push(call.id);
+      return { hold: { id: call.id, raw: 50_000, allowance: 0, paid: 50_000 } };
+    },
+    async settleHold(
+      _tenant: string,
+      _person: string,
+      _bucket: string,
+      id: string,
+      raw: number,
+    ) {
+      if (fail) throw new Error("credit store unavailable");
+      if (!settled.has(id)) {
+        settled.add(id);
+        charged += raw;
+      }
+    },
+    async release() {
+      throw new Error("a completed transcription reservation must be settled");
+    },
+  };
+  const subject = {
+    ...scope,
+    identity: { subject: "person" },
+    bucket: "audio",
+  };
+  await assert.rejects(
+    transcribeAttachments({} as never, h.storage, subject, [file], {
+      ...h.host,
+      credits,
+    }),
+    /credit store unavailable/,
+  );
+  assert.equal(h.calls(), 1);
+  assert.equal(
+    [...h.rows.keys()].filter((key) => key.startsWith("transcription-billing:"))
+      .length,
+    1,
+  );
+  fail = false;
+  const retried = await transcribeAttachments(
+    {} as never,
+    h.storage,
+    subject,
+    [file],
+    { ...h.host, credits },
+  );
+  assert.equal(retried[0].transcript?.text, "A transcript");
+  assert.equal(h.calls(), 1);
+  assert.equal(reserved.length, 1);
+  assert.equal(charged, 50_000);
+});

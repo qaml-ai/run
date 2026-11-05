@@ -14,7 +14,12 @@ import {
   type KeyServices,
 } from "./security-services.ts";
 import { database, transaction, withSql } from "./postgres.ts";
-import { EndUserCredits } from "./end-user-credits.ts";
+import {
+  EndUserCredits,
+  MICROS,
+  creditError,
+  lastCallMin,
+} from "./end-user-credits.ts";
 import {
   readAgentSpendLimit,
   remainingAgentSpend,
@@ -34,6 +39,7 @@ export type AttachmentAudioScope = {
   agent: string;
   requestId: string;
   spendLimit?: number;
+  budget?: number;
   keyScope?: string;
   identity?: AgentIdentity;
   actor?: string;
@@ -41,7 +47,9 @@ export type AttachmentAudioScope = {
 };
 type Env = MediaBindings & KeyEnv;
 type Scope = AttachmentAudioScope & { callId: string; startedAt: number };
-type Receipt = { scope: Scope; usage: UsageRecord };
+type CreditReservation = { id: string; endUser: string; bucket: string };
+type CreditService = Pick<EndUserCredits, "reserve" | "settleHold" | "release">;
+type Receipt = { scope: Scope; usage: UsageRecord; hold?: CreditReservation };
 type Cached = {
   fingerprint: string;
   state: "pending" | "complete";
@@ -55,11 +63,7 @@ type Host = {
   budget?: () => Promise<number>;
   admit?: () => Promise<void>;
   record?: (receipt: Receipt) => Promise<void>;
-  hold?: (
-    usd: number,
-  ) => Promise<
-    { settle(usd: number): Promise<void>; release(): Promise<void> } | undefined
-  >;
+  credits?: CreditService;
 };
 
 async function recordAudio(
@@ -96,6 +100,7 @@ export async function flushAttachmentTranscriptions(
   env: Env,
   storage: DurableObjectStorage,
   record?: Host["record"],
+  credits?: CreditService,
 ) {
   const receipts = await storage.list<Receipt>({
     prefix: "transcription-billing:",
@@ -105,6 +110,23 @@ export async function flushAttachmentTranscriptions(
   for (const [key, receipt] of receipts) {
     if (record) await record(receipt);
     else await recordAudio(env, services!, receipt);
+    if (receipt.hold) {
+      const credit = credits ?? new EndUserCredits(database(env));
+      const { id, endUser, bucket } = receipt.hold;
+      await credit.settleHold(
+        receipt.scope.tenant,
+        endUser,
+        bucket,
+        id,
+        Math.round(receipt.usage.usage.cost.total * MICROS),
+        `transcription:${id}`,
+        {
+          call: "transcription",
+          agent: receipt.scope.agent,
+          requestId: receipt.scope.requestId,
+        },
+      );
+    }
     await storage.delete(key);
   }
 }
@@ -124,12 +146,13 @@ export async function transcribeAttachments(
       : [],
   );
   if (!chosen.length) return plain;
-  await flushAttachmentTranscriptions(env, storage, host.record);
+  await flushAttachmentTranscriptions(env, storage, host.record, host.credits);
   const services =
     host.transcriber && host.record && host.admit && host.budget
       ? undefined
       : await keyServices(env);
-  const media = host.transcriber && host.admit ? undefined : await import("./media-api.ts");
+  const media =
+    host.transcriber && host.admit ? undefined : await import("./media-api.ts");
   const transcriber =
     host.transcriber ??
     new Transcriber({
@@ -258,6 +281,7 @@ export async function transcribeAttachments(
   const budget = host.budget
     ? await host.budget()
     : Math.min(
+        scope.budget ?? Infinity,
         remainingAgentSpend(
           await readAgentSpendLimit(env, scope.tenant, scope.agent),
         ),
@@ -278,20 +302,43 @@ export async function transcribeAttachments(
       `Transcribing this message's audio costs about $${estimate.toFixed(4)}, more than the $${Math.max(0, budget).toFixed(4)} left of this run's spend limit`,
       "SPEND_LIMIT",
     );
-  const held = host.hold
-    ? await host.hold(estimate)
-    : scope.identity?.subject
-      ? await new EndUserCredits(database(env)).hold(
-          scope.tenant,
-          scope.identity.subject,
-          scope.bucket ?? "default",
-          estimate,
-          "transcription",
-          { agent: scope.agent, requestId: scope.requestId },
-        )
-      : undefined;
-  let total = 0;
+  const credits =
+    host.credits ??
+    (scope.identity?.subject ? new EndUserCredits(database(env)) : undefined);
+  const holds = new Map<number, CreditReservation>();
   try {
+    // Reserve every file before sending any. The deterministic IDs survive a
+    // restart; a completed receipt owns its reservation until settleHold succeeds.
+    if (credits && scope.identity?.subject)
+      for (const item of audio) {
+        const hash = Array.from(
+          new Uint8Array(
+            await crypto.subtle.digest(
+              "SHA-256",
+              new TextEncoder().encode(
+                JSON.stringify([
+                  scope.tenant,
+                  scope.agent,
+                  scope.requestId,
+                  item.index,
+                ]),
+              ),
+            ),
+          ),
+          (byte) => byte.toString(16).padStart(2, "0"),
+        ).join("");
+        const id = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-a${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
+        const bucket = scope.bucket ?? "default",
+          endUser = scope.identity.subject;
+        const want = Math.ceil(transcriber.cost(item.header.seconds) * MICROS);
+        const reserved = await credits.reserve(scope.tenant, endUser, bucket, {
+          id,
+          want,
+          min: lastCallMin(want),
+        });
+        if (reserved?.refused) throw creditError(reserved.refused);
+        if (reserved?.hold) holds.set(item.index, { id, endUser, bucket });
+      }
     for (const item of audio) {
       const { index, cacheKey, fingerprint, header } = item;
       const call = {
@@ -303,7 +350,6 @@ export async function transcribeAttachments(
         if (host.admit) await host.admit();
         else {
           await admitAuxiliaryUsage(env, scope);
-          await media!.admitMedia(env, scope.tenant, services!);
         }
         const bytes = await read(files[index]);
         await storage.put(cacheKey, { fingerprint, state: "pending" });
@@ -330,7 +376,6 @@ export async function transcribeAttachments(
           });
           throw error;
         }
-        total += made.usage.usage.cost.total;
         await storage.transaction(async (tx) => {
           await tx.put(cacheKey, {
             fingerprint,
@@ -340,18 +385,20 @@ export async function transcribeAttachments(
           await tx.put(`transcription-billing:${call.callId}`, {
             scope: call,
             usage: made.usage,
+            ...(holds.has(index) ? { hold: holds.get(index) } : {}),
           });
         });
+        holds.delete(index);
         plain[index] = { ...plain[index], transcript: made.transcript };
         // Leave a receipt in place if settling fails. A retry reuses its transcript.
-        await flushAttachmentTranscriptions(env, storage, host.record);
+        await flushAttachmentTranscriptions(env, storage, host.record, credits);
       } catch (error) {
         if (plain[index].transcript) throw error;
         failed(index, error);
       }
     }
   } finally {
-    await held?.settle(total);
+    for (const hold of holds.values()) await credits!.release(hold.id);
   }
   return plain;
 }
