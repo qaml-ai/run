@@ -1,0 +1,1213 @@
+{
+  "at": "2026-11-05T12:04:17.845Z",
+  "scope": "Whole-isolate periodic samples; matched object identifiers do not imply per-object allocation attribution.",
+  "runs": [
+    {
+      "name": "camelrun-proto-hybrid-images",
+      "namespaceId": "67cdad82aa7d41e58b5d52f9099d3a4f",
+      "since": "2026-11-05T11:44:33.581Z",
+      "until": "2026-11-05T12:04:17.470Z",
+      "status": 200,
+      "errors": null,
+      "rows": [
+        {
+          "dimensions": {
+            "datetime": "2026-11-05T11:57:46Z",
+            "name": "cached-100",
+            "namespaceId": "67cdad82aa7d41e58b5d52f9099d3a4f",
+            "objectId": "8dd140b007c2ae4f17d38a8f5d75dacb8f704360c91ef0b13fe2095024ea1b98"
+          },
+          "max": {
+            "memoryUsageBytes": 37071441
+          },
+          "sum": {
+            "activeTime": 60000038,
+            "cpuTime": 0,
+            "duration": 7.680004864,
+            "exceededCpuErrors": 0,
+            "exceededMemoryErrors": 0
+          }
+        },
+        {
+          "dimensions": {
+            "datetime": "2026-11-05T11:54:56Z",
+            "name": "cached-20",
+            "namespaceId": "67cdad82aa7d41e58b5d52f9099d3a4f",
+            "objectId": "614055168fb0478c8c71cdf98d9348a56a210f64bbadc1f3b6c7579c379556a6"
+          },
+          "max": {
+            "memoryUsageBytes": 35756470
+          },
+          "sum": {
+            "activeTime": 60000062,
+            "cpuTime": 0,
+            "duration": 7.680007936,
+            "exceededCpuErrors": 0,
+            "exceededMemoryErrors": 0
+          }
+        },
+        {
+          "dimensions": {
+            "datetime": "2026-11-05T11:48:17Z",
+            "name": "inline-100",
+            "namespaceId": "67cdad82aa7d41e58b5d52f9099d3a4f",
+            "objectId": "be51e2389b3cfdbce79a107ffa400acad29e0421ffd418e707c83deb36c316e5"
+          },
+          "max": {
+            "memoryUsageBytes": 149345278
+          },
+          "sum": {
+            "activeTime": 662778,
+            "cpuTime": 5670,
+            "duration": 0.084835584,
+            "exceededCpuErrors": 0,
+            "exceededMemoryErrors": 1
+          }
+        },
+        {
+          "dimensions": {
+            "datetime": "2026-11-05T11:56:46Z",
+            "name": "cached-100",
+            "namespaceId": "67cdad82aa7d41e58b5d52f9099d3a4f",
+            "objectId": "8dd140b007c2ae4f17d38a8f5d75dacb8f704360c91ef0b13fe2095024ea1b98"
+          },
+          "max": {
+            "memoryUsageBytes": 37071441
+          },
+          "sum": {
+            "activeTime": 60000026,
+            "cpuTime": 0,
+            "duration": 7.680003328,
+            "exceededCpuErrors": 0,
+            "exceededMemoryErrors": 0
+          }
+        },
+        {
+          "dimensions": {
+            "datetime": "2026-11-05T11:52:56Z",
+            "name": "cached-20",
+            "namespaceId": "67cdad82aa7d41e58b5d52f9099d3a4f",
+            "objectId": "614055168fb0478c8c71cdf98d9348a56a210f64bbadc1f3b6c7579c379556a6"
+          },
+          "max": {
+            "memoryUsageBytes": 35756470
+          },
+          "sum": {
+            "activeTime": 60000081,
+            "cpuTime": 0,
+            "duration": 7.680010368,
+            "exceededCpuErrors": 0,
+            "exceededMemoryErrors": 0
+          }
+        },
+        {
+          "dimensions": {
+            "datetime": "2026-11-05T11:53:46Z",
+            "name": "cached-100",
+            "namespaceId": "67cdad82aa7d41e58b5d52f9099d3a4f",
+            "objectId": "8dd140b007c2ae4f17d38a8f5d75dacb8f704360c91ef0b13fe2095024ea1b98"
+          },
+          "max": {
+            "memoryUsageBytes": 37083744
+          },
+          "sum": {
+            "activeTime": 59852679,
+            "cpuTime": 3909406,
+            "duration": 7.661142912,
+            "exceededCpuErrors": 0,
+            "exceededMemoryErrors": 0
+          }
+        },
+        {
+          "dimensions": {
+            "datetime": "2026-11-05T11:50:56Z",
+            "name": "cached-20",
+            "namespaceId": "67cdad82aa7d41e58b5d52f9099d3a4f",
+            "objectId": "614055168fb0478c8c71cdf98d9348a56a210f64bbadc1f3b6c7579c379556a6"
+          },
+          "max": {
+            "memoryUsageBytes": 35756470
+          },
+          "sum": {
+            "activeTime": 59754221,
+            "cpuTime": 2482980,
+            "duration": 7.648540288,
+            "exceededCpuErrors": 0,
+            "exceededMemoryErrors": 0
+          }
+        },
+        {
+          "dimensions": {
+            "datetime": "2026-11-05T11:47:35Z",
+            "name": "inline-20",
+            "namespaceId": "67cdad82aa7d41e58b5d52f9099d3a4f",
+            "objectId": "571ee6777e3efb09a49fb7bc49f411b72fbd2569f6f7098fa739e4c80f43fc11"
+          },
+          "max": {
+            "memoryUsageBytes": 136431774
+          },
+          "sum": {
+            "activeTime": 36176780,
+            "cpuTime": 234199,
+            "duration": 4.63062784,
+            "exceededCpuErrors": 0,
+            "exceededMemoryErrors": 0
+          }
+        },
+        {
+          "dimensions": {
+            "datetime": "2026-11-05T11:50:23Z",
+            "name": "reference-100",
+            "namespaceId": "67cdad82aa7d41e58b5d52f9099d3a4f",
+            "objectId": "26e4cb2a80fd9556716aec13fedcea50bf66f3fbceee2877992754bd5ec7324a"
+          },
+          "max": {
+            "memoryUsageBytes": 285553107
+          },
+          "sum": {
+            "activeTime": 1708870,
+            "cpuTime": 792702,
+            "duration": 0.21873536,
+            "exceededCpuErrors": 0,
+            "exceededMemoryErrors": 1
+          }
+        },
+        {
+          "dimensions": {
+            "datetime": "2026-11-05T11:58:46Z",
+            "name": "cached-100",
+            "namespaceId": "67cdad82aa7d41e58b5d52f9099d3a4f",
+            "objectId": "8dd140b007c2ae4f17d38a8f5d75dacb8f704360c91ef0b13fe2095024ea1b98"
+          },
+          "max": {
+            "memoryUsageBytes": 37071441
+          },
+          "sum": {
+            "activeTime": 34343046,
+            "cpuTime": 0,
+            "duration": 4.395909888,
+            "exceededCpuErrors": 0,
+            "exceededMemoryErrors": 0
+          }
+        },
+        {
+          "dimensions": {
+            "datetime": "2026-11-05T11:50:25Z",
+            "name": "reference-100",
+            "namespaceId": "67cdad82aa7d41e58b5d52f9099d3a4f",
+            "objectId": "26e4cb2a80fd9556716aec13fedcea50bf66f3fbceee2877992754bd5ec7324a"
+          },
+          "max": {
+            "memoryUsageBytes": 18372620
+          },
+          "sum": {
+            "activeTime": 30043405,
+            "cpuTime": 5639,
+            "duration": 3.84555584,
+            "exceededCpuErrors": 0,
+            "exceededMemoryErrors": 0
+          }
+        },
+        {
+          "dimensions": {
+            "datetime": "2026-11-05T11:59:21Z",
+            "name": "cached-20",
+            "namespaceId": "67cdad82aa7d41e58b5d52f9099d3a4f",
+            "objectId": "614055168fb0478c8c71cdf98d9348a56a210f64bbadc1f3b6c7579c379556a6"
+          },
+          "max": {
+            "memoryUsageBytes": 35756470
+          },
+          "sum": {
+            "activeTime": 42,
+            "cpuTime": 0,
+            "duration": 0.000005376,
+            "exceededCpuErrors": 0,
+            "exceededMemoryErrors": 0
+          }
+        },
+        {
+          "dimensions": {
+            "datetime": "2026-11-05T11:55:46Z",
+            "name": "cached-100",
+            "namespaceId": "67cdad82aa7d41e58b5d52f9099d3a4f",
+            "objectId": "8dd140b007c2ae4f17d38a8f5d75dacb8f704360c91ef0b13fe2095024ea1b98"
+          },
+          "max": {
+            "memoryUsageBytes": 37071441
+          },
+          "sum": {
+            "activeTime": 60000029,
+            "cpuTime": 4677,
+            "duration": 7.680003712,
+            "exceededCpuErrors": 0,
+            "exceededMemoryErrors": 0
+          }
+        },
+        {
+          "dimensions": {
+            "datetime": "2026-11-05T11:48:21Z",
+            "name": "inline-100",
+            "namespaceId": "67cdad82aa7d41e58b5d52f9099d3a4f",
+            "objectId": "be51e2389b3cfdbce79a107ffa400acad29e0421ffd418e707c83deb36c316e5"
+          },
+          "max": {
+            "memoryUsageBytes": 299860329
+          },
+          "sum": {
+            "activeTime": 12002004,
+            "cpuTime": 157483,
+            "duration": 1.536256512,
+            "exceededCpuErrors": 0,
+            "exceededMemoryErrors": 1
+          }
+        },
+        {
+          "dimensions": {
+            "datetime": "2026-11-05T11:59:21Z",
+            "name": "cached-100",
+            "namespaceId": "67cdad82aa7d41e58b5d52f9099d3a4f",
+            "objectId": "8dd140b007c2ae4f17d38a8f5d75dacb8f704360c91ef0b13fe2095024ea1b98"
+          },
+          "max": {
+            "memoryUsageBytes": 37071441
+          },
+          "sum": {
+            "activeTime": 64,
+            "cpuTime": 0,
+            "duration": 0.000008192,
+            "exceededCpuErrors": 0,
+            "exceededMemoryErrors": 0
+          }
+        },
+        {
+          "dimensions": {
+            "datetime": "2026-11-05T11:49:40Z",
+            "name": "reference-100",
+            "namespaceId": "67cdad82aa7d41e58b5d52f9099d3a4f",
+            "objectId": "26e4cb2a80fd9556716aec13fedcea50bf66f3fbceee2877992754bd5ec7324a"
+          },
+          "max": {
+            "memoryUsageBytes": 148307818
+          },
+          "sum": {
+            "activeTime": 42529446,
+            "cpuTime": 7230211,
+            "duration": 5.443769088,
+            "exceededCpuErrors": 0,
+            "exceededMemoryErrors": 1
+          }
+        },
+        {
+          "dimensions": {
+            "datetime": "2026-11-05T11:58:56Z",
+            "name": "cached-20",
+            "namespaceId": "67cdad82aa7d41e58b5d52f9099d3a4f",
+            "objectId": "614055168fb0478c8c71cdf98d9348a56a210f64bbadc1f3b6c7579c379556a6"
+          },
+          "max": {
+            "memoryUsageBytes": 35756470
+          },
+          "sum": {
+            "activeTime": 25112250,
+            "cpuTime": 0,
+            "duration": 3.214368,
+            "exceededCpuErrors": 0,
+            "exceededMemoryErrors": 0
+          }
+        },
+        {
+          "dimensions": {
+            "datetime": "2026-11-05T11:53:56Z",
+            "name": "cached-20",
+            "namespaceId": "67cdad82aa7d41e58b5d52f9099d3a4f",
+            "objectId": "614055168fb0478c8c71cdf98d9348a56a210f64bbadc1f3b6c7579c379556a6"
+          },
+          "max": {
+            "memoryUsageBytes": 35756470
+          },
+          "sum": {
+            "activeTime": 60000059,
+            "cpuTime": 0,
+            "duration": 7.680007552,
+            "exceededCpuErrors": 0,
+            "exceededMemoryErrors": 0
+          }
+        },
+        {
+          "dimensions": {
+            "datetime": "2026-11-05T11:54:46Z",
+            "name": "cached-100",
+            "namespaceId": "67cdad82aa7d41e58b5d52f9099d3a4f",
+            "objectId": "8dd140b007c2ae4f17d38a8f5d75dacb8f704360c91ef0b13fe2095024ea1b98"
+          },
+          "max": {
+            "memoryUsageBytes": 36997713
+          },
+          "sum": {
+            "activeTime": 60000040,
+            "cpuTime": 1202255,
+            "duration": 7.68000512,
+            "exceededCpuErrors": 0,
+            "exceededMemoryErrors": 0
+          }
+        },
+        {
+          "dimensions": {
+            "datetime": "2026-11-05T11:47:22Z",
+            "name": "inline-20",
+            "namespaceId": "67cdad82aa7d41e58b5d52f9099d3a4f",
+            "objectId": "571ee6777e3efb09a49fb7bc49f411b72fbd2569f6f7098fa739e4c80f43fc11"
+          },
+          "max": {
+            "memoryUsageBytes": 285489164
+          },
+          "sum": {
+            "activeTime": 12456135,
+            "cpuTime": 2164957,
+            "duration": 1.59438528,
+            "exceededCpuErrors": 0,
+            "exceededMemoryErrors": 1
+          }
+        },
+        {
+          "dimensions": {
+            "datetime": "2026-11-05T11:48:18Z",
+            "name": "inline-100",
+            "namespaceId": "67cdad82aa7d41e58b5d52f9099d3a4f",
+            "objectId": "be51e2389b3cfdbce79a107ffa400acad29e0421ffd418e707c83deb36c316e5"
+          },
+          "max": {
+            "memoryUsageBytes": 148042750
+          },
+          "sum": {
+            "activeTime": 3273875,
+            "cpuTime": 233443,
+            "duration": 0.419056,
+            "exceededCpuErrors": 0,
+            "exceededMemoryErrors": 1
+          }
+        },
+        {
+          "dimensions": {
+            "datetime": "2026-11-05T11:49:04Z",
+            "name": "reference-20",
+            "namespaceId": "67cdad82aa7d41e58b5d52f9099d3a4f",
+            "objectId": "2228def5b0fa699d51eaa61c6869b94bf4d9d081cb94ab106261e654d222e861"
+          },
+          "max": {
+            "memoryUsageBytes": 80251318
+          },
+          "sum": {
+            "activeTime": 35257322,
+            "cpuTime": 1240710,
+            "duration": 4.512937216,
+            "exceededCpuErrors": 0,
+            "exceededMemoryErrors": 0
+          }
+        },
+        {
+          "dimensions": {
+            "datetime": "2026-11-05T11:56:56Z",
+            "name": "cached-20",
+            "namespaceId": "67cdad82aa7d41e58b5d52f9099d3a4f",
+            "objectId": "614055168fb0478c8c71cdf98d9348a56a210f64bbadc1f3b6c7579c379556a6"
+          },
+          "max": {
+            "memoryUsageBytes": 35756470
+          },
+          "sum": {
+            "activeTime": 60000111,
+            "cpuTime": 0,
+            "duration": 7.680014208,
+            "exceededCpuErrors": 0,
+            "exceededMemoryErrors": 0
+          }
+        },
+        {
+          "dimensions": {
+            "datetime": "2026-11-05T11:51:56Z",
+            "name": "cached-20",
+            "namespaceId": "67cdad82aa7d41e58b5d52f9099d3a4f",
+            "objectId": "614055168fb0478c8c71cdf98d9348a56a210f64bbadc1f3b6c7579c379556a6"
+          },
+          "max": {
+            "memoryUsageBytes": 35756470
+          },
+          "sum": {
+            "activeTime": 60000051,
+            "cpuTime": 0,
+            "duration": 7.680006528,
+            "exceededCpuErrors": 0,
+            "exceededMemoryErrors": 0
+          }
+        },
+        {
+          "dimensions": {
+            "datetime": "2026-11-05T11:48:12Z",
+            "name": "inline-100",
+            "namespaceId": "67cdad82aa7d41e58b5d52f9099d3a4f",
+            "objectId": "be51e2389b3cfdbce79a107ffa400acad29e0421ffd418e707c83deb36c316e5"
+          },
+          "max": {
+            "memoryUsageBytes": 144881676
+          },
+          "sum": {
+            "activeTime": 4756668,
+            "cpuTime": 979447,
+            "duration": 0.608853504,
+            "exceededCpuErrors": 0,
+            "exceededMemoryErrors": 1
+          }
+        },
+        {
+          "dimensions": {
+            "datetime": "2026-11-05T11:48:34Z",
+            "name": "inline-100",
+            "namespaceId": "67cdad82aa7d41e58b5d52f9099d3a4f",
+            "objectId": "be51e2389b3cfdbce79a107ffa400acad29e0421ffd418e707c83deb36c316e5"
+          },
+          "max": {
+            "memoryUsageBytes": 18372620
+          },
+          "sum": {
+            "activeTime": 30007679,
+            "cpuTime": 5889,
+            "duration": 3.840982912,
+            "exceededCpuErrors": 0,
+            "exceededMemoryErrors": 0
+          }
+        },
+        {
+          "dimensions": {
+            "datetime": "2026-11-05T11:46:52Z",
+            "name": "baseline-0",
+            "namespaceId": "67cdad82aa7d41e58b5d52f9099d3a4f",
+            "objectId": "b81f316a4fc37d8717b4f1a38c441432c7f80208b1265886babbdf49d5669fea"
+          },
+          "max": {
+            "memoryUsageBytes": 19945500
+          },
+          "sum": {
+            "activeTime": 30086217,
+            "cpuTime": 46183,
+            "duration": 3.851035776,
+            "exceededCpuErrors": 0,
+            "exceededMemoryErrors": 0
+          }
+        },
+        {
+          "dimensions": {
+            "datetime": "2026-11-05T11:57:56Z",
+            "name": "cached-20",
+            "namespaceId": "67cdad82aa7d41e58b5d52f9099d3a4f",
+            "objectId": "614055168fb0478c8c71cdf98d9348a56a210f64bbadc1f3b6c7579c379556a6"
+          },
+          "max": {
+            "memoryUsageBytes": 35756470
+          },
+          "sum": {
+            "activeTime": 60000087,
+            "cpuTime": 0,
+            "duration": 7.680011136,
+            "exceededCpuErrors": 0,
+            "exceededMemoryErrors": 0
+          }
+        },
+        {
+          "dimensions": {
+            "datetime": "2026-11-05T11:55:56Z",
+            "name": "cached-20",
+            "namespaceId": "67cdad82aa7d41e58b5d52f9099d3a4f",
+            "objectId": "614055168fb0478c8c71cdf98d9348a56a210f64bbadc1f3b6c7579c379556a6"
+          },
+          "max": {
+            "memoryUsageBytes": 35756470
+          },
+          "sum": {
+            "activeTime": 60000048,
+            "cpuTime": 0,
+            "duration": 7.680006144,
+            "exceededCpuErrors": 0,
+            "exceededMemoryErrors": 0
+          }
+        }
+      ],
+      "contexts": [
+        {
+          "id": "baseline-0",
+          "count": 0,
+          "mode": "baseline",
+          "prepare": {
+            "startedAt": 1793879212171,
+            "endedAt": 1793879212551,
+            "status": 200,
+            "data": {
+              "instance": "4d0c2bbe-f48a-4142-b790-d91bd6f6cae5",
+              "objectId": "b81f316a4fc37d8717b4f1a38c441432c7f80208b1265886babbdf49d5669fea",
+              "at": 1793879212433,
+              "databaseBytes": 278528,
+              "messages": 0,
+              "payloadImages": 0,
+              "serializedBytes": 0
+            }
+          },
+          "hold": {
+            "startedAt": 1793879212552,
+            "endedAt": 1793879242539,
+            "status": 200,
+            "data": {
+              "instance": "4d0c2bbe-f48a-4142-b790-d91bd6f6cae5",
+              "objectId": "b81f316a4fc37d8717b4f1a38c441432c7f80208b1265886babbdf49d5669fea",
+              "at": 1793879242532,
+              "databaseBytes": 278528,
+              "messages": 0,
+              "payloadImages": 0,
+              "serializedBytes": 0
+            }
+          },
+          "after": {
+            "startedAt": 1793879242540,
+            "endedAt": 1793879242572,
+            "status": 200,
+            "data": {
+              "instance": "4d0c2bbe-f48a-4142-b790-d91bd6f6cae5",
+              "objectId": "b81f316a4fc37d8717b4f1a38c441432c7f80208b1265886babbdf49d5669fea",
+              "at": 1793879242563,
+              "databaseBytes": 278528,
+              "messages": 0,
+              "payloadImages": 0,
+              "serializedBytes": 0
+            }
+          }
+        },
+        {
+          "id": "inline-20",
+          "count": 20,
+          "mode": "inline",
+          "prepare": {
+            "startedAt": 1793879242573,
+            "endedAt": 1793879243041,
+            "status": 200,
+            "data": {
+              "instance": "3de57c97-6d34-4611-9443-14a351ac670c",
+              "objectId": "571ee6777e3efb09a49fb7bc49f411b72fbd2569f6f7098fa739e4c80f43fc11",
+              "at": 1793879242871,
+              "databaseBytes": 278528,
+              "messages": 0,
+              "payloadImages": 0,
+              "serializedBytes": 0
+            }
+          },
+          "seed": {
+            "startedAt": 1793879243042,
+            "endedAt": 1793879255355,
+            "status": 500,
+            "data": {
+              "error": "Error: Durable Object's isolate exceeded its memory limit and was reset."
+            }
+          },
+          "hold": {
+            "startedAt": 1793879262041,
+            "endedAt": 1793879292260,
+            "status": 200,
+            "data": {
+              "instance": "05a86062-e72a-4432-b8d6-6695d4c7995b",
+              "objectId": "571ee6777e3efb09a49fb7bc49f411b72fbd2569f6f7098fa739e4c80f43fc11",
+              "at": 1793879292251,
+              "databaseBytes": 112779264,
+              "messages": 20,
+              "payloadImages": 0,
+              "serializedBytes": 0
+            }
+          },
+          "after": {
+            "startedAt": 1793879292261,
+            "endedAt": 1793879292468,
+            "status": 200,
+            "data": {
+              "instance": "05a86062-e72a-4432-b8d6-6695d4c7995b",
+              "objectId": "571ee6777e3efb09a49fb7bc49f411b72fbd2569f6f7098fa739e4c80f43fc11",
+              "at": 1793879292459,
+              "databaseBytes": 112779264,
+              "messages": 20,
+              "payloadImages": 0,
+              "serializedBytes": 0
+            }
+          }
+        },
+        {
+          "id": "inline-100",
+          "count": 100,
+          "mode": "inline",
+          "prepare": {
+            "startedAt": 1793879292469,
+            "endedAt": 1793879292816,
+            "status": 200,
+            "data": {
+              "instance": "9b490367-2925-4293-ad88-e452a1b1e656",
+              "objectId": "be51e2389b3cfdbce79a107ffa400acad29e0421ffd418e707c83deb36c316e5",
+              "at": 1793879292703,
+              "databaseBytes": 278528,
+              "messages": 0,
+              "payloadImages": 0,
+              "serializedBytes": 0
+            }
+          },
+          "seed": {
+            "startedAt": 1793879292816,
+            "endedAt": 1793879298199,
+            "status": 500,
+            "data": {
+              "error": "Error: Durable Object's isolate exceeded its memory limit and was reset."
+            }
+          },
+          "hold": {
+            "startedAt": 1793879313839,
+            "endedAt": 1793879344332,
+            "status": 200,
+            "data": {
+              "instance": "01b471d3-5c99-483f-9fad-3e80be2b1ab8",
+              "objectId": "be51e2389b3cfdbce79a107ffa400acad29e0421ffd418e707c83deb36c316e5",
+              "at": 1793879344320,
+              "databaseBytes": 124026880,
+              "messages": 0,
+              "payloadImages": 0,
+              "serializedBytes": 0
+            }
+          },
+          "after": {
+            "startedAt": 1793879344333,
+            "endedAt": 1793879344423,
+            "status": 200,
+            "data": {
+              "instance": "01b471d3-5c99-483f-9fad-3e80be2b1ab8",
+              "objectId": "be51e2389b3cfdbce79a107ffa400acad29e0421ffd418e707c83deb36c316e5",
+              "at": 1793879344414,
+              "databaseBytes": 124026880,
+              "messages": 0,
+              "payloadImages": 0,
+              "serializedBytes": 0
+            }
+          }
+        },
+        {
+          "id": "reference-20",
+          "count": 20,
+          "mode": "reference",
+          "prepare": {
+            "startedAt": 1793879344424,
+            "endedAt": 1793879344951,
+            "status": 200,
+            "data": {
+              "instance": "ed80996b-3a1a-487e-9b00-91e099e137e6",
+              "objectId": "2228def5b0fa699d51eaa61c6869b94bf4d9d081cb94ab106261e654d222e861",
+              "at": 1793879344801,
+              "databaseBytes": 278528,
+              "messages": 0,
+              "payloadImages": 0,
+              "serializedBytes": 0
+            }
+          },
+          "seed": {
+            "startedAt": 1793879344952,
+            "endedAt": 1793879345123,
+            "status": 200,
+            "data": {
+              "instance": "ed80996b-3a1a-487e-9b00-91e099e137e6",
+              "objectId": "2228def5b0fa699d51eaa61c6869b94bf4d9d081cb94ab106261e654d222e861",
+              "at": 1793879345008,
+              "databaseBytes": 286720,
+              "messages": 20,
+              "payloadImages": 0,
+              "serializedBytes": 0,
+              "completed": 20
+            }
+          },
+          "request": {
+            "startedAt": 1793879345124,
+            "endedAt": 1793879350605,
+            "status": 200,
+            "data": {
+              "instance": "ed80996b-3a1a-487e-9b00-91e099e137e6",
+              "objectId": "2228def5b0fa699d51eaa61c6869b94bf4d9d081cb94ab106261e654d222e861",
+              "at": 1793879350209,
+              "databaseBytes": 286720,
+              "messages": 20,
+              "payloadImages": 20,
+              "serializedBytes": 24847502,
+              "transformed": 20,
+              "totalBytes": 18634413,
+              "elapsedMs": 5029,
+              "note": "Unbounded image batch for memory measurement; production must impose count/byte budgets"
+            }
+          },
+          "hold": {
+            "startedAt": 1793879350607,
+            "endedAt": 1793879380410,
+            "status": 200,
+            "data": {
+              "instance": "ed80996b-3a1a-487e-9b00-91e099e137e6",
+              "objectId": "2228def5b0fa699d51eaa61c6869b94bf4d9d081cb94ab106261e654d222e861",
+              "at": 1793879380345,
+              "databaseBytes": 286720,
+              "messages": 20,
+              "payloadImages": 20,
+              "serializedBytes": 24847502
+            }
+          },
+          "after": {
+            "startedAt": 1793879380412,
+            "endedAt": 1793879380439,
+            "status": 200,
+            "data": {
+              "instance": "ed80996b-3a1a-487e-9b00-91e099e137e6",
+              "objectId": "2228def5b0fa699d51eaa61c6869b94bf4d9d081cb94ab106261e654d222e861",
+              "at": 1793879380430,
+              "databaseBytes": 286720,
+              "messages": 20,
+              "payloadImages": 20,
+              "serializedBytes": 24847502
+            }
+          }
+        },
+        {
+          "id": "reference-100",
+          "count": 100,
+          "mode": "reference",
+          "prepare": {
+            "startedAt": 1793879380442,
+            "endedAt": 1793879381025,
+            "status": 200,
+            "data": {
+              "instance": "2871b0d0-db5b-4f66-b941-a6546b627f18",
+              "objectId": "26e4cb2a80fd9556716aec13fedcea50bf66f3fbceee2877992754bd5ec7324a",
+              "at": 1793879380811,
+              "databaseBytes": 278528,
+              "messages": 0,
+              "payloadImages": 0,
+              "serializedBytes": 0
+            }
+          },
+          "seed": {
+            "startedAt": 1793879381026,
+            "endedAt": 1793879381225,
+            "status": 200,
+            "data": {
+              "instance": "2871b0d0-db5b-4f66-b941-a6546b627f18",
+              "objectId": "26e4cb2a80fd9556716aec13fedcea50bf66f3fbceee2877992754bd5ec7324a",
+              "at": 1793879381007,
+              "databaseBytes": 307200,
+              "messages": 100,
+              "payloadImages": 0,
+              "serializedBytes": 0,
+              "completed": 100
+            }
+          },
+          "request": {
+            "startedAt": 1793879381225,
+            "endedAt": 1793879425243,
+            "status": 200,
+            "data": {
+              "instance": "2871b0d0-db5b-4f66-b941-a6546b627f18",
+              "objectId": "26e4cb2a80fd9556716aec13fedcea50bf66f3fbceee2877992754bd5ec7324a",
+              "at": 1793879424332,
+              "databaseBytes": 307200,
+              "messages": 100,
+              "payloadImages": 100,
+              "serializedBytes": 124237886,
+              "transformed": 100,
+              "totalBytes": 93172383,
+              "elapsedMs": 43087,
+              "note": "Unbounded image batch for memory measurement; production must impose count/byte budgets"
+            }
+          },
+          "hold": {
+            "startedAt": 1793879425243,
+            "endedAt": 1793879455515,
+            "status": 200,
+            "data": {
+              "instance": "97096f4f-dd22-4c19-afd5-951039b6e9c2",
+              "objectId": "26e4cb2a80fd9556716aec13fedcea50bf66f3fbceee2877992754bd5ec7324a",
+              "at": 1793879455507,
+              "databaseBytes": 307200,
+              "messages": 0,
+              "payloadImages": 0,
+              "serializedBytes": 0
+            }
+          },
+          "after": {
+            "startedAt": 1793879455516,
+            "endedAt": 1793879455556,
+            "status": 200,
+            "data": {
+              "instance": "97096f4f-dd22-4c19-afd5-951039b6e9c2",
+              "objectId": "26e4cb2a80fd9556716aec13fedcea50bf66f3fbceee2877992754bd5ec7324a",
+              "at": 1793879455547,
+              "databaseBytes": 307200,
+              "messages": 0,
+              "payloadImages": 0,
+              "serializedBytes": 0
+            }
+          }
+        },
+        {
+          "id": "cached-20",
+          "count": 20,
+          "mode": "cached",
+          "prepare": {
+            "startedAt": 1793879455557,
+            "endedAt": 1793879456193,
+            "status": 200,
+            "data": {
+              "instance": "481cca3c-2d0f-400d-bc48-cf3b80c3668a",
+              "objectId": "614055168fb0478c8c71cdf98d9348a56a210f64bbadc1f3b6c7579c379556a6",
+              "at": 1793879456065,
+              "databaseBytes": 278528,
+              "messages": 0,
+              "payloadImages": 0,
+              "serializedBytes": 0
+            }
+          },
+          "seed": {
+            "startedAt": 1793879456194,
+            "endedAt": 1793879456267,
+            "status": 200,
+            "data": {
+              "instance": "481cca3c-2d0f-400d-bc48-cf3b80c3668a",
+              "objectId": "614055168fb0478c8c71cdf98d9348a56a210f64bbadc1f3b6c7579c379556a6",
+              "at": 1793879456147,
+              "databaseBytes": 286720,
+              "messages": 20,
+              "payloadImages": 0,
+              "serializedBytes": 0,
+              "completed": 20
+            }
+          },
+          "request": {
+            "startedAt": 1793879456267,
+            "endedAt": 1793879476292,
+            "status": 200,
+            "data": {
+              "instance": "481cca3c-2d0f-400d-bc48-cf3b80c3668a",
+              "objectId": "614055168fb0478c8c71cdf98d9348a56a210f64bbadc1f3b6c7579c379556a6",
+              "at": 1793879476169,
+              "databaseBytes": 286720,
+              "messages": 20,
+              "payloadImages": 20,
+              "serializedBytes": 2244,
+              "transformed": 20,
+              "totalBytes": 18634413,
+              "elapsedMs": 19971,
+              "note": "URL-shaped payload only; no provider request or publicly exposed image"
+            }
+          },
+          "hold": {
+            "startedAt": 1793879476292,
+            "endedAt": 1793879506260,
+            "status": 200,
+            "data": {
+              "instance": "481cca3c-2d0f-400d-bc48-cf3b80c3668a",
+              "objectId": "614055168fb0478c8c71cdf98d9348a56a210f64bbadc1f3b6c7579c379556a6",
+              "at": 1793879506206,
+              "databaseBytes": 286720,
+              "messages": 20,
+              "payloadImages": 20,
+              "serializedBytes": 2244
+            }
+          },
+          "reuse": {
+            "startedAt": 1793879506297,
+            "endedAt": 1793879626300,
+            "error": "The operation was aborted due to timeout"
+          },
+          "after": {
+            "startedAt": 1793879506261,
+            "endedAt": 1793879506296,
+            "status": 200,
+            "data": {
+              "instance": "481cca3c-2d0f-400d-bc48-cf3b80c3668a",
+              "objectId": "614055168fb0478c8c71cdf98d9348a56a210f64bbadc1f3b6c7579c379556a6",
+              "at": 1793879506284,
+              "databaseBytes": 286720,
+              "messages": 20,
+              "payloadImages": 20,
+              "serializedBytes": 2244
+            }
+          }
+        },
+        {
+          "id": "cached-100",
+          "count": 100,
+          "mode": "cached",
+          "prepare": {
+            "startedAt": 1793879626303,
+            "endedAt": 1793879626881,
+            "status": 200,
+            "data": {
+              "instance": "79b4e393-64d0-410e-8a05-9f8aa8364a3d",
+              "objectId": "8dd140b007c2ae4f17d38a8f5d75dacb8f704360c91ef0b13fe2095024ea1b98",
+              "at": 1793879626775,
+              "databaseBytes": 278528,
+              "messages": 0,
+              "payloadImages": 0,
+              "serializedBytes": 0
+            }
+          },
+          "seed": {
+            "startedAt": 1793879626883,
+            "endedAt": 1793879627044,
+            "status": 200,
+            "data": {
+              "instance": "79b4e393-64d0-410e-8a05-9f8aa8364a3d",
+              "objectId": "8dd140b007c2ae4f17d38a8f5d75dacb8f704360c91ef0b13fe2095024ea1b98",
+              "at": 1793879626903,
+              "databaseBytes": 307200,
+              "messages": 100,
+              "payloadImages": 0,
+              "serializedBytes": 0,
+              "completed": 100
+            }
+          },
+          "request": {
+            "startedAt": 1793879627045,
+            "endedAt": 1793879747048,
+            "error": "The operation was aborted due to timeout"
+          },
+          "hold": {
+            "startedAt": 1793879747049,
+            "endedAt": 1793879777280,
+            "status": 200,
+            "data": {
+              "instance": "79b4e393-64d0-410e-8a05-9f8aa8364a3d",
+              "objectId": "8dd140b007c2ae4f17d38a8f5d75dacb8f704360c91ef0b13fe2095024ea1b98",
+              "at": 1793879777270,
+              "databaseBytes": 307200,
+              "messages": 100,
+              "payloadImages": 0,
+              "serializedBytes": 0
+            }
+          },
+          "reuse": {
+            "startedAt": 1793879777622,
+            "endedAt": 1793879897623,
+            "error": "The operation was aborted due to timeout"
+          },
+          "after": {
+            "startedAt": 1793879777281,
+            "endedAt": 1793879777622,
+            "status": 200,
+            "data": {
+              "instance": "79b4e393-64d0-410e-8a05-9f8aa8364a3d",
+              "objectId": "8dd140b007c2ae4f17d38a8f5d75dacb8f704360c91ef0b13fe2095024ea1b98",
+              "at": 1793879777578,
+              "databaseBytes": 307200,
+              "messages": 100,
+              "payloadImages": 0,
+              "serializedBytes": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "camelrun-proto-hybrid-images-retry",
+      "namespaceId": "ff9c40e605c54c4e9a1617d894ddda7e",
+      "since": "2026-11-05T11:55:17.876Z",
+      "until": "2026-11-05T12:04:17.709Z",
+      "status": 200,
+      "errors": null,
+      "rows": [],
+      "contexts": [
+        {
+          "id": "fixed-cached-20",
+          "count": 20,
+          "prepare": {
+            "began": 1793879725800,
+            "ended": 1793879726094,
+            "status": 401,
+            "data": {
+              "error": "Unauthorized"
+            }
+          },
+          "seed": {
+            "began": 1793879726095,
+            "ended": 1793879726756,
+            "status": 200,
+            "data": {
+              "instance": "d1b4c589-0ef4-4bad-8b04-0389e2c917d4",
+              "objectId": "9b7414ac8f6a7af3a8bdbfbbe39617d8da771d38ad9c5c9811829f4e226ba97c",
+              "at": 1793879726615,
+              "databaseBytes": 282624,
+              "messages": 20,
+              "payloadImages": 0,
+              "serializedBytes": 0,
+              "completed": 20
+            }
+          },
+          "request": {
+            "began": 1793879726758,
+            "ended": 1793879728510,
+            "status": 200,
+            "data": {
+              "instance": "d1b4c589-0ef4-4bad-8b04-0389e2c917d4",
+              "objectId": "9b7414ac8f6a7af3a8bdbfbbe39617d8da771d38ad9c5c9811829f4e226ba97c",
+              "at": 1793879728477,
+              "databaseBytes": 282624,
+              "messages": 20,
+              "payloadImages": 20,
+              "serializedBytes": 2244,
+              "transformed": 0,
+              "totalBytes": 18634413,
+              "elapsedMs": 1489,
+              "note": "URL-shaped payload only; no provider request or publicly exposed image"
+            }
+          },
+          "hold": {
+            "began": 1793879728513,
+            "ended": 1793879758569,
+            "status": 200,
+            "data": {
+              "instance": "d1b4c589-0ef4-4bad-8b04-0389e2c917d4",
+              "objectId": "9b7414ac8f6a7af3a8bdbfbbe39617d8da771d38ad9c5c9811829f4e226ba97c",
+              "at": 1793879758513,
+              "databaseBytes": 282624,
+              "messages": 20,
+              "payloadImages": 20,
+              "serializedBytes": 2244
+            }
+          },
+          "reuse": {
+            "began": 1793879758570,
+            "ended": 1793879760117,
+            "status": 200,
+            "data": {
+              "instance": "d1b4c589-0ef4-4bad-8b04-0389e2c917d4",
+              "objectId": "9b7414ac8f6a7af3a8bdbfbbe39617d8da771d38ad9c5c9811829f4e226ba97c",
+              "at": 1793879760097,
+              "databaseBytes": 282624,
+              "messages": 20,
+              "payloadImages": 20,
+              "serializedBytes": 2244,
+              "transformed": 0,
+              "totalBytes": 18634413,
+              "elapsedMs": 1461,
+              "note": "URL-shaped payload only; no provider request or publicly exposed image"
+            }
+          },
+          "after": {
+            "began": 1793879760118,
+            "ended": 1793879760146,
+            "status": 200,
+            "data": {
+              "instance": "d1b4c589-0ef4-4bad-8b04-0389e2c917d4",
+              "objectId": "9b7414ac8f6a7af3a8bdbfbbe39617d8da771d38ad9c5c9811829f4e226ba97c",
+              "at": 1793879760129,
+              "databaseBytes": 282624,
+              "messages": 20,
+              "payloadImages": 20,
+              "serializedBytes": 2244
+            }
+          }
+        },
+        {
+          "id": "fixed-cached-100",
+          "count": 100,
+          "prepare": {
+            "began": 1793879760149,
+            "ended": 1793879760727,
+            "status": 200,
+            "data": {
+              "instance": "09505d90-65c8-4be0-99af-ba9c751d240a",
+              "objectId": "5249ccd3e417a73f362ad27bb5c3c361a726184ce1471bedfe55245960878685",
+              "at": 1793879760598,
+              "databaseBytes": 278528,
+              "messages": 0,
+              "payloadImages": 0,
+              "serializedBytes": 0
+            }
+          },
+          "seed": {
+            "began": 1793879760729,
+            "ended": 1793879760864,
+            "status": 200,
+            "data": {
+              "instance": "09505d90-65c8-4be0-99af-ba9c751d240a",
+              "objectId": "5249ccd3e417a73f362ad27bb5c3c361a726184ce1471bedfe55245960878685",
+              "at": 1793879760691,
+              "databaseBytes": 307200,
+              "messages": 100,
+              "payloadImages": 0,
+              "serializedBytes": 0,
+              "completed": 100
+            }
+          },
+          "request": {
+            "began": 1793879760867,
+            "ended": 1793879768409,
+            "status": 200,
+            "data": {
+              "instance": "09505d90-65c8-4be0-99af-ba9c751d240a",
+              "objectId": "5249ccd3e417a73f362ad27bb5c3c361a726184ce1471bedfe55245960878685",
+              "at": 1793879768383,
+              "databaseBytes": 307200,
+              "messages": 100,
+              "payloadImages": 100,
+              "serializedBytes": 11204,
+              "transformed": 0,
+              "totalBytes": 93172383,
+              "elapsedMs": 7622,
+              "note": "URL-shaped payload only; no provider request or publicly exposed image"
+            }
+          },
+          "hold": {
+            "began": 1793879768412,
+            "ended": 1793879798426,
+            "status": 200,
+            "data": {
+              "instance": "09505d90-65c8-4be0-99af-ba9c751d240a",
+              "objectId": "5249ccd3e417a73f362ad27bb5c3c361a726184ce1471bedfe55245960878685",
+              "at": 1793879798417,
+              "databaseBytes": 307200,
+              "messages": 100,
+              "payloadImages": 100,
+              "serializedBytes": 11204
+            }
+          },
+          "reuse": {
+            "began": 1793879798427,
+            "ended": 1793879805886,
+            "status": 200,
+            "data": {
+              "instance": "09505d90-65c8-4be0-99af-ba9c751d240a",
+              "objectId": "5249ccd3e417a73f362ad27bb5c3c361a726184ce1471bedfe55245960878685",
+              "at": 1793879805812,
+              "databaseBytes": 307200,
+              "messages": 100,
+              "payloadImages": 100,
+              "serializedBytes": 11204,
+              "transformed": 0,
+              "totalBytes": 93172383,
+              "elapsedMs": 7279,
+              "note": "URL-shaped payload only; no provider request or publicly exposed image"
+            }
+          },
+          "after": {
+            "began": 1793879805888,
+            "ended": 1793879805987,
+            "status": 200,
+            "data": {
+              "instance": "09505d90-65c8-4be0-99af-ba9c751d240a",
+              "objectId": "5249ccd3e417a73f362ad27bb5c3c361a726184ce1471bedfe55245960878685",
+              "at": 1793879805967,
+              "databaseBytes": 307200,
+              "messages": 100,
+              "payloadImages": 100,
+              "serializedBytes": 11204
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,343 @@
+{
+  "at": "2026-11-05T11:46:42.177Z",
+  "kind": "local workerd CDP",
+  "cases": [
+    {
+      "mode": "reference",
+      "count": 20,
+      "prepare": {
+        "status": 200,
+        "ms": 25.066624999999476,
+        "data": {
+          "instance": "718fc163-4a32-4f82-a907-707c9168c903",
+          "objectId": "59f61cbde1e05aff31faadf3257d53e96657352c09ce52c447525e49a442aea2",
+          "at": 1793879220369,
+          "databaseBytes": 278528,
+          "messages": 0,
+          "payloadImages": 0,
+          "serializedBytes": 0
+        }
+      },
+      "baseline": {
+        "usedSize": 16604020,
+        "totalSize": 19988480,
+        "embedderHeapUsedSize": 386904,
+        "backingStorageSize": 1064115
+      },
+      "seed": {
+        "status": 200,
+        "ms": 11.492167000000336,
+        "data": {
+          "instance": "718fc163-4a32-4f82-a907-707c9168c903",
+          "objectId": "59f61cbde1e05aff31faadf3257d53e96657352c09ce52c447525e49a442aea2",
+          "at": 1793879220389,
+          "databaseBytes": 286720,
+          "messages": 20,
+          "payloadImages": 0,
+          "serializedBytes": 0,
+          "completed": 20
+        }
+      },
+      "afterSeed": {
+        "usedSize": 17629624,
+        "totalSize": 20250624,
+        "embedderHeapUsedSize": 386904,
+        "backingStorageSize": 1064267
+      },
+      "request": {
+        "status": 200,
+        "ms": 906.7659590000003,
+        "data": {
+          "instance": "718fc163-4a32-4f82-a907-707c9168c903",
+          "objectId": "59f61cbde1e05aff31faadf3257d53e96657352c09ce52c447525e49a442aea2",
+          "at": 1793879221299,
+          "databaseBytes": 286720,
+          "messages": 20,
+          "payloadImages": 20,
+          "serializedBytes": 23339258,
+          "transformed": 20,
+          "totalBytes": 17503227,
+          "elapsedMs": 903,
+          "note": "Unbounded image batch for memory measurement; production must impose count/byte budgets"
+        }
+      },
+      "afterRequest": {
+        "usedSize": 72536324,
+        "totalSize": 86065152,
+        "embedderHeapUsedSize": 5415752,
+        "backingStorageSize": 3085589
+      },
+      "status": {
+        "status": 200,
+        "ms": 2.425583000000188,
+        "data": {
+          "instance": "718fc163-4a32-4f82-a907-707c9168c903",
+          "objectId": "59f61cbde1e05aff31faadf3257d53e96657352c09ce52c447525e49a442aea2",
+          "at": 1793879221305,
+          "databaseBytes": 286720,
+          "messages": 20,
+          "payloadImages": 20,
+          "serializedBytes": 23339258
+        }
+      }
+    },
+    {
+      "mode": "reference",
+      "count": 100,
+      "prepare": {
+        "status": 200,
+        "ms": 26.092917000001762,
+        "data": {
+          "instance": "08b80c25-280a-42ae-97fb-38f90a259776",
+          "objectId": "b1418d330461ce560c9dd7d4cde53af7107eb623eb7a685e90c00b6269b2cf43",
+          "at": 1793879222192,
+          "databaseBytes": 278528,
+          "messages": 0,
+          "payloadImages": 0,
+          "serializedBytes": 0
+        }
+      },
+      "baseline": {
+        "usedSize": 16604020,
+        "totalSize": 19988480,
+        "embedderHeapUsedSize": 386904,
+        "backingStorageSize": 1064115
+      },
+      "seed": {
+        "status": 200,
+        "ms": 37.47599999999875,
+        "data": {
+          "instance": "08b80c25-280a-42ae-97fb-38f90a259776",
+          "objectId": "b1418d330461ce560c9dd7d4cde53af7107eb623eb7a685e90c00b6269b2cf43",
+          "at": 1793879222228,
+          "databaseBytes": 307200,
+          "messages": 100,
+          "payloadImages": 0,
+          "serializedBytes": 0,
+          "completed": 100
+        }
+      },
+      "afterSeed": {
+        "usedSize": 18056228,
+        "totalSize": 22347776,
+        "embedderHeapUsedSize": 386904,
+        "backingStorageSize": 1055606
+      },
+      "request": {
+        "status": 200,
+        "ms": 4263.401458,
+        "data": {
+          "instance": "08b80c25-280a-42ae-97fb-38f90a259776",
+          "objectId": "b1418d330461ce560c9dd7d4cde53af7107eb623eb7a685e90c00b6269b2cf43",
+          "at": 1793879226495,
+          "databaseBytes": 307200,
+          "messages": 100,
+          "payloadImages": 100,
+          "serializedBytes": 116690018,
+          "transformed": 100,
+          "totalBytes": 87511473,
+          "elapsedMs": 4255,
+          "note": "Unbounded image batch for memory measurement; production must impose count/byte budgets"
+        }
+      },
+      "afterRequest": {
+        "usedSize": 249501956,
+        "totalSize": 288473088,
+        "embedderHeapUsedSize": 583488,
+        "backingStorageSize": 3047399
+      },
+      "status": {
+        "status": 200,
+        "ms": 2.559666000001016,
+        "data": {
+          "instance": "08b80c25-280a-42ae-97fb-38f90a259776",
+          "objectId": "b1418d330461ce560c9dd7d4cde53af7107eb623eb7a685e90c00b6269b2cf43",
+          "at": 1793879226506,
+          "databaseBytes": 307200,
+          "messages": 100,
+          "payloadImages": 100,
+          "serializedBytes": 116690018
+        }
+      }
+    },
+    {
+      "mode": "cached",
+      "count": 20,
+      "prepare": {
+        "status": 200,
+        "ms": 24.803915999997116,
+        "data": {
+          "instance": "c9339e4f-1de5-40c9-8bbd-09812bba1c6d",
+          "objectId": "18c14366aca163d4ddab04ff1300b5d0b35841df1c9cf1316d0a3075a82d6853",
+          "at": 1793879227367,
+          "databaseBytes": 278528,
+          "messages": 0,
+          "payloadImages": 0,
+          "serializedBytes": 0
+        }
+      },
+      "baseline": {
+        "usedSize": 16604260,
+        "totalSize": 19988480,
+        "embedderHeapUsedSize": 386904,
+        "backingStorageSize": 1064115
+      },
+      "seed": {
+        "status": 200,
+        "ms": 11.414082999999664,
+        "data": {
+          "instance": "c9339e4f-1de5-40c9-8bbd-09812bba1c6d",
+          "objectId": "18c14366aca163d4ddab04ff1300b5d0b35841df1c9cf1316d0a3075a82d6853",
+          "at": 1793879227382,
+          "databaseBytes": 286720,
+          "messages": 20,
+          "payloadImages": 0,
+          "serializedBytes": 0,
+          "completed": 20
+        }
+      },
+      "afterSeed": {
+        "usedSize": 17629864,
+        "totalSize": 20250624,
+        "embedderHeapUsedSize": 386904,
+        "backingStorageSize": 1064267
+      },
+      "request": {
+        "status": 500,
+        "ms": 86.34345799999937,
+        "data": {
+          "error": "TypeError: Provided readable stream must have a known length (request/response body or readable half of FixedLengthStream)"
+        }
+      },
+      "afterRequest": {
+        "usedSize": 19989556,
+        "totalSize": 22544384,
+        "embedderHeapUsedSize": 902736,
+        "backingStorageSize": 5443793
+      },
+      "status": {
+        "status": 200,
+        "ms": 2.733124999998836,
+        "data": {
+          "instance": "c9339e4f-1de5-40c9-8bbd-09812bba1c6d",
+          "objectId": "18c14366aca163d4ddab04ff1300b5d0b35841df1c9cf1316d0a3075a82d6853",
+          "at": 1793879227478,
+          "databaseBytes": 286720,
+          "messages": 20,
+          "payloadImages": 0,
+          "serializedBytes": 0
+        }
+      },
+      "reuse": {
+        "status": 500,
+        "ms": 126.4757090000021,
+        "data": {
+          "error": "TypeError: Provided readable stream must have a known length (request/response body or readable half of FixedLengthStream)"
+        }
+      },
+      "afterReuse": {
+        "usedSize": 19555760,
+        "totalSize": 24379392,
+        "embedderHeapUsedSize": 1418592,
+        "backingStorageSize": 5366098
+      }
+    },
+    {
+      "mode": "cached",
+      "count": 100,
+      "prepare": {
+        "status": 200,
+        "ms": 24.574667000000773,
+        "data": {
+          "instance": "3a082197-d7de-4e8e-9845-60c1d6fbf8af",
+          "objectId": "a20ba48a8f0d702e9bcfdcbad84e1b097227827bc763e5e169569db650f4ea03",
+          "at": 1793879228553,
+          "databaseBytes": 278528,
+          "messages": 0,
+          "payloadImages": 0,
+          "serializedBytes": 0
+        }
+      },
+      "baseline": {
+        "usedSize": 16604060,
+        "totalSize": 19988480,
+        "embedderHeapUsedSize": 386904,
+        "backingStorageSize": 1064115
+      },
+      "seed": {
+        "status": 200,
+        "ms": 39.373333999999886,
+        "data": {
+          "instance": "3a082197-d7de-4e8e-9845-60c1d6fbf8af",
+          "objectId": "a20ba48a8f0d702e9bcfdcbad84e1b097227827bc763e5e169569db650f4ea03",
+          "at": 1793879228591,
+          "databaseBytes": 307200,
+          "messages": 100,
+          "payloadImages": 0,
+          "serializedBytes": 0,
+          "completed": 100
+        }
+      },
+      "afterSeed": {
+        "usedSize": 18053336,
+        "totalSize": 22347776,
+        "embedderHeapUsedSize": 386904,
+        "backingStorageSize": 1055606
+      },
+      "request": {
+        "status": 500,
+        "ms": 83.08566699999938,
+        "data": {
+          "error": "TypeError: Provided readable stream must have a known length (request/response body or readable half of FixedLengthStream)"
+        }
+      },
+      "afterRequest": {
+        "usedSize": 20412916,
+        "totalSize": 24379392,
+        "embedderHeapUsedSize": 902736,
+        "backingStorageSize": 5435132
+      },
+      "status": {
+        "status": 200,
+        "ms": 2.6137500000004366,
+        "data": {
+          "instance": "3a082197-d7de-4e8e-9845-60c1d6fbf8af",
+          "objectId": "a20ba48a8f0d702e9bcfdcbad84e1b097227827bc763e5e169569db650f4ea03",
+          "at": 1793879228688,
+          "databaseBytes": 307200,
+          "messages": 100,
+          "payloadImages": 0,
+          "serializedBytes": 0
+        }
+      },
+      "reuse": {
+        "status": 500,
+        "ms": 126.98487499999828,
+        "data": {
+          "error": "TypeError: Provided readable stream must have a known length (request/response body or readable half of FixedLengthStream)"
+        }
+      },
+      "afterReuse": {
+        "usedSize": 19616368,
+        "totalSize": 26214400,
+        "embedderHeapUsedSize": 1418592,
+        "backingStorageSize": 5366098
+      }
+    }
+  ],
+  "fixture": {
+    "count": 100,
+    "width": 1600,
+    "height": 1200,
+    "minBytes": 4205813,
+    "maxBytes": 4211856,
+    "totalBytes": 420881096,
+    "description": "Indexed grayscale-noise fixture; v1 seed mapping pairs adjacent seeds, 51 unique byte contents among 100 keys",
+    "distinctContents": 51
+  },
+  "limitations": [
+    "CDP JS heap plus embedder/backing-store fields, not a production isolate memory sample.",
+    "Fresh process per case; original R2 objects shared through local persisted storage.",
+    "Image requests deliberately unbounded to show the ceiling; no model provider is called."
+  ]
+}
