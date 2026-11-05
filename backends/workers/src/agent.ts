@@ -713,7 +713,7 @@ export class CamelAgent extends DurableObject<Env> {
           await this.historyIndex.sync(await pi.root(BACKGROUND_CONTEXT));
           site.messageIndex = this.historyIndex.messageIndex(site.assistant);
         }
-        return { tenant: conf.tenantId, agent: conf.id, mounts: conf.config.mounts ?? [], fileTools: conf.config.fileTools, codeMode: conf.config.codeMode, call: site };
+        return { tenant: conf.tenantId, agent: conf.id, mounts: (conf.config.mounts ?? []) as Mount[], fileTools: conf.config.fileTools, codeMode: conf.config.codeMode, call: site };
       }));
       registry.install(this.limits.extension());
       // User files live in the volume DO/R2; code runs in the separate sandbox.

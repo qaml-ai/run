@@ -1,5 +1,5 @@
 import { Buffer } from 'node:buffer';
-import { hook, ToolTask, type Extension, type HookApi } from '@earendil-works/pi-durable';
+import { hook, ToolTask, type Extension, type HookApi, type ToolExecutionResult } from '@earendil-works/pi-durable';
 import { FILE_LIMITS } from '../../../src/limits.ts';
 import { handleAgentFileRequest, type FileBindings, type Mount } from './files.ts';
 import { workspaceId } from './file-mounts.ts';
@@ -33,7 +33,7 @@ export function toolOutputExtension(env: FileBindings, scope: (api: HookApi, cal
       const policy = toolOutputPolicy({ ...current, id: current.agent }, save);
       const output = await policy.capped(call.id, result.output ?? []);
       const details = await policy.cappedDetails(call.id, call.name, result.details);
-      return { ...result, output, ...(details === undefined ? {} : { details }) };
+      return { ...result, output, ...(details === undefined ? {} : { details: details as ToolExecutionResult["details"] }) };
     },
   })] };
 }

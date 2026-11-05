@@ -10,7 +10,7 @@ export type ToolDefinition = {
   name: string; description?: string; inputSchema?: Record<string, unknown>;
   parameters?: Record<string, unknown>; timeoutMs?: number;
   executionMode?: "parallel" | "sequential"; exposure?: "direct" | "codemode" | "both";
-  _meta?: Record<string, unknown>;
+  _meta?: Record<string, unknown>; needsApproval?: boolean; judged?: boolean;
 };
 export type McpResult = { content?: unknown[]; structuredContent?: unknown; isError?: boolean; inputRequests?: unknown; resultType?: string; requestState?: string; [key: string]: unknown };
 type Pending = { resolve: (result: unknown) => void; reject: (error: Error) => void; progress: () => void };
@@ -208,6 +208,8 @@ export function registration(definition: ToolDefinition, call: (args: unknown, a
     name: definition.name, description: definition.description ?? definition.name,
     parameters: definition.parameters ?? definition.inputSchema ?? { type: "object", properties: {}, additionalProperties: true },
     structuredOutputSchema: {},
+    ...(definition.needsApproval || definition._meta?.["agent-runtime/needsApproval"] === true ? { needsApproval: true } : {}),
+    ...(definition.judged ? { judged: true } : {}),
     replay: "unsafe", ...(definition.executionMode ? { executionMode: definition.executionMode } : {}),
     ...(exposure === "codemode" ? { callers: ["tools"] as const } : exposure === "direct" ? { callers: ["model"] as const } : {}),
     execute: async (args, api, context) => toolResult(await call(args, api, context)),

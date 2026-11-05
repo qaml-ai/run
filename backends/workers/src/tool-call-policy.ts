@@ -48,3 +48,14 @@ export function declaredTimeout(meta: Record<string, unknown> | undefined): numb
   return value as number;
 }
 
+
+type ApprovalMode = 'never' | 'always' | 'destructive' | 'judged';
+type ApprovalPolicy = { default?: ApprovalMode; tools?: Record<string, 'never' | 'always' | 'judged'>; methods?: string[] };
+export function approvalFor(policy: ApprovalPolicy | undefined, tool: string, destructive: boolean, method?: string): Exclude<ApprovalMode, "destructive"> {
+  const named = policy?.tools?.[tool];
+  if (named) return named;
+  if (method && policy?.methods?.includes(method.toUpperCase())) return "always";
+  if (policy?.default === "always") return "always";
+  if (policy?.default === "judged") return "judged";
+  return policy?.default === "destructive" && destructive ? "always" : "never";
+}

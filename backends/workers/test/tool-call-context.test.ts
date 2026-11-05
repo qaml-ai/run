@@ -62,3 +62,12 @@ test('attached timeout reports a source-class unknown outcome', async () => {
   });
   attached.close();
 });
+
+test('approval prompt lists exactly the source-gated tools', async () => {
+  const { approvalPrompt } = await import('../src/tool-approval-prompt.ts');
+  const { approvalFor } = await import('../src/tool-call-policy.ts');
+  assert.equal(approvalFor({ default: 'destructive' }, 'read', false), 'never');
+  assert.equal(approvalFor({ default: 'destructive' }, 'delete', true), 'always');
+  assert.equal(approvalFor({ default: 'always', tools: { read: 'never' } }, 'read', false), 'never');
+  assert.deepEqual(approvalPrompt([{ name: 'read' }, { name: 'delete', needsApproval: true }]), ['- The user approves each call of these tools before it runs, which pauses your turn until they answer: delete.']);
+});

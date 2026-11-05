@@ -1,3 +1,4 @@
+import { approvalFor } from "./tool-call-policy.ts";
 import { toolCallMeta, toolCallSite, type ToolCallSite } from "./tool-call-context.ts";
 import type { ToolRegistration, ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
@@ -332,8 +333,8 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
       return { Authorization: `Bearer ${await signRuntimeIdentity(env as IdentityEnv, value.issuer, source.audience ?? source.url ?? source.baseUrl!, { ...value.claims, ...(approval ? { approval } : {}) })}` };
     };
     const needsApproval = async (tool: string, args: unknown, destructive: boolean, api: ToolExecutionApi, context: Context, method?: string): Promise<{ result: McpResult } | { reply: ToolInputReply }> => {
-      const mode = source.approval?.tools?.[tool] ?? source.approval?.default ?? "never";
-      if (mode === "always" || mode === "judged" || mode === "destructive" && destructive || !!method && source.approval?.methods?.includes(method)) {
+      const mode = approvalFor(source.approval, tool, destructive, method);
+      if (mode !== "never") {
         if ((await toolCallSite(api, context)).innerCallId) throw new Error(`${source.name}__${tool} needs the user's approval: call ${source.name}__${tool} directly`);
         const input = { name: `${source.name}__${tool}`, args, kind: "approval" as const, message: `Allow ${source.name}__${tool} to run?`, detail: { tool: `${source.name}__${tool}`, source: source.name, arguments: args } };
         if (approve) await approve(input);
@@ -353,14 +354,15 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
       for (const tool of listed) {
         if (source.allowTools && !source.allowTools.includes(tool.name) || source.denyTools?.includes(tool.name)) continue;
         const { name } = tool;
-        result.push(registration({ ...tool, name: `${source.name}__${name}`, exposure: tool.exposure ?? tool._meta?.["agent-runtime/exposure"] as ToolDefinition["exposure"] ?? source.exposure }, async (args, api, context) => {
-          const approval = await needsApproval(name, args, !(tool as any).annotations?.readOnlyHint, api, context);
+        const mode = approvalFor(source.approval, name, (tool as any).annotations?.destructiveHint === true);
+        result.push(registration({ ...tool, needsApproval: mode === "always", judged: mode === "judged", name: `${source.name}__${name}`, exposure: tool.exposure ?? tool._meta?.["agent-runtime/exposure"] as ToolDefinition["exposure"] ?? source.exposure }, async (args, api, context) => {
+          const approval = await needsApproval(name, args, (tool as any).annotations?.destructiveHint === true, api, context);
           if ("result" in approval) return approval.result;
           return api ? withToolInputs(reply => client.call(name, args, context?.abortSignal, api, reply), api, context, { name: `${source.name}__${name}`, args }, approval.reply) : client.call(name, args, context?.abortSignal);
         }));
       }
     } else {
-      for (const operation of source.operations ?? []) result.push(registration({ name: `${source.name}__${operation.name}`, description: operation.description, inputSchema: operation.inputSchema, exposure: source.exposure, executionMode: operation.readOnly ? "parallel" : "sequential" }, async (input, api, context) => {
+      for (const operation of source.operations ?? []) result.push(registration({ name: `${source.name}__${operation.name}`, description: operation.description, inputSchema: operation.inputSchema, needsApproval: approvalFor(source.approval, operation.name, !operation.readOnly, operation.method) === "always", judged: approvalFor(source.approval, operation.name, !operation.readOnly, operation.method) === "judged", exposure: source.exposure, executionMode: operation.readOnly ? "parallel" : "sequential" }, async (input, api, context) => {
         const args = input as Record<string, unknown>;
         const approval = await needsApproval(operation.name, args, !operation.readOnly, api, context, operation.method);
         if ("result" in approval) return approval.result;
