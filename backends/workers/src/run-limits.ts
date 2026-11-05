@@ -82,12 +82,15 @@ export class AgentRunLimits {
     childCost?: number;
     most?: typeof defaults;
   }>;
+  private billing?: () => Promise<BillingRunStop | undefined>;
   constructor(
     storage: DurableObjectStorage,
     current: AgentRunLimits["current"],
+    billing?: () => Promise<BillingRunStop | undefined>,
   ) {
     this.storage = storage;
     this.current = current;
+    this.billing = billing;
   }
   async check(now = Date.now()) {
     const { config, run, agentId, spend, most, childCost = 0 } = await this.current();
@@ -98,7 +101,8 @@ export class AgentRunLimits {
     };
     const stopped =
       runLimit(config, run, { ...usage, costUsd: usage.costUsd + childCost }, now, most) ??
-      (agentId ? agentSpendRefusal(agentId, spend ?? null) : undefined);
+      (agentId ? agentSpendRefusal(agentId, spend ?? null) : undefined) ??
+      await this.billing?.();
     if (stopped) await this.storage.put(`run-limit:${run.id}`, stopped);
     return stopped;
   }

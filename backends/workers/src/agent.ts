@@ -134,7 +134,11 @@ import {
 } from "./model-metering.ts";
 import { keyServices, type KeyEnv } from "./security-services.ts";
 import type { AccountEnv } from "./account-services.ts";
-import { runAdmission, admissionHeaders, type RateLimitState } from "./admission.ts";
+import { runAdmission, admissionHeaders, admissionError, errorFields, type RateLimitState } from "./admission.ts";
+import { billingRunStop } from "./billing-run-stop.ts";
+import { enqueueRunWebhook } from "./run-webhooks.ts";
+import { sendMoneyWebhooks } from "./money-api.ts";
+import { usageCost } from "./webhook-policy.ts";
 import { PromptPreparations } from "./prompt-admission.ts";
 import { actorInput, bucketInput } from "./security-policy.ts";
 import { MessageProjection } from "./message-projection.ts";
@@ -306,6 +310,17 @@ type Child = {
 const reqKey = (id: string) => `request:${id}`;
 
 export class CamelAgent extends DurableObject<Env> {
+  /** Erase a revoked account's journal only after the normal shutdown completed. */
+  async purgeAccountData(tenant: string, id: string) {
+    await this.admission;
+    const config = await this.ctx.storage.get<Config>("configuration");
+    const deleted = await this.ctx.storage.get<boolean>("deleted");
+    if (!deleted || config && (config.tenantId !== tenant || config.id !== id))
+      throw new Error("Account purge requires the owned, deleted agent");
+    await this.ctx.storage.deleteAlarm();
+    await this.ctx.storage.deleteAll();
+    await this.ctx.storage.put("deleted", true);
+  }
   private instanceId = crypto.randomUUID();
   private historyIndex = new AgentHistory(this.ctx.storage.sql, (fn) =>
     this.ctx.storage.transactionSync(fn),
@@ -494,6 +509,12 @@ export class CamelAgent extends DurableObject<Env> {
       childCost: await this.delegation.cost(run.id),
       most: await tenantRunCaps(this.env, conf.tenantId),
     };
+  }, async () => {
+    const conf = await this.config(), run = await this.currentRun();
+    const { accounts } = await keyServices(this.env);
+    const refusal = await accounts.runLimit(conf.tenantId);
+    if (typeof refusal === "string") return { error: refusal, code: "spend_limit", stopped: "spend_limit", limit: "tenant" };
+    return billingRunStop(refusal ?? await this.endUserLimit(conf, "params" in run ? run.params?.bucket as string | undefined : undefined));
   });
   private async currentRun(api?: ToolExecutionApi) {
     if (api) {
@@ -1163,8 +1184,18 @@ export class CamelAgent extends DurableObject<Env> {
       prefix: TERMINAL_EVENTS_PREFIX,
       limit: 100,
     }))
-      for (let index = pending.next; index < pending.events.length; index++)
+      for (let index = pending.next; index < pending.events.length; index++) {
+        const event = pending.events[index] as { type?: string; id?: string };
+        if (event.type === "response" && event.id) {
+          const record = await this.ctx.storage.get<RequestRecord>(reqKey(event.id));
+          if (record) {
+            const conf = await this.config();
+            await enqueueRunWebhook(this.env, conf.tenantId, conf.id, record);
+            this.ctx.waitUntil(sendMoneyWebhooks(this.env));
+          }
+        }
         await this.emit(pending.events[index], { key, index });
+      }
   }
   private lastEntry = 0;
   private messageProjection = new MessageProjection();
@@ -1586,6 +1617,9 @@ export class CamelAgent extends DurableObject<Env> {
         await enqueueTerminalEvents(tx, id, completed.outcome, false);
         return completed;
       });
+      const conf = await this.config();
+      await releaseTurn(this.env, conf.tenantId, conf.id, id);
+      await this.env.TENANTS.getByName(conf.tenantId).release(`${conf.id}:${id}`);
       await this.flushTerminalEvents();
       this.toolFileBudgets.delete(id);
       return terminal;
@@ -1933,6 +1967,10 @@ export class CamelAgent extends DurableObject<Env> {
       const { accounts } = await keyServices(this.env);
       const limit = await accounts.runLimit(conf.tenantId);
       if (limit) throw typeof limit === "string" ? Object.assign(new Error(limit), { status: 402, code: "SPEND_LIMIT" }) : limit;
+      if (!intent.admitted) {
+        await this.admitRequest(conf, intent.id);
+        intent.admitted = true;
+      }
     }
     if (await this.ctx.storage.get(`cancelled-request:${intent.id}`)) {
       await abortHostExecution(await this.harness.pi(), intent.id);
@@ -3131,6 +3169,8 @@ export class CamelAgent extends DurableObject<Env> {
       }
       return json({ error: "Unsupported backend operation" }, 404);
     } catch (error) {
+      const limited = admissionError(error);
+      if (limited) return limited;
       const status =
         error instanceof BadRequest
           ? 400
@@ -3138,6 +3178,7 @@ export class CamelAgent extends DurableObject<Env> {
             ((error as { code?: string }).code === "ENOENT" ? 404 : 500));
       return json(
         {
+          ...errorFields(error),
           ...(typeof (error as { code?: unknown }).code === "string"
             ? { code: (error as { code: string }).code }
             : {}),
@@ -3217,7 +3258,7 @@ export class CamelAgent extends DurableObject<Env> {
             cacheRead += message.usage.cacheRead;
             cacheWrite += message.usage.cacheWrite;
             outputTokens += message.usage.output;
-            cost += message.usage.cost.total;
+            cost += usageCost(message.usage).usd;
           }
       }
       cursor = page.next;

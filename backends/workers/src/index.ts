@@ -24,6 +24,7 @@ import { configurationModelError } from "./default-model.ts";
 import { authorized, agentId, BadRequest, body } from "./validation.ts";
 import { HttpError, errorCode, errorStatus } from "./errors.ts";
 import { handleAdminRequest } from "./admin-api.ts";
+import { publicAdminSite } from "./admin-site.ts";
 import { handleServiceRequest } from "./service-api.ts";
 import { handleMediaRequest } from "./media-api.ts";
 import { handleComputerRequest } from "./computers/api.ts";
@@ -157,6 +158,8 @@ const worker = {
       if (signed) return signed;
       const url = new URL(request.url),
         path = url.pathname;
+      const adminSite = await publicAdminSite(request, env);
+      if (adminSite) return adminSite;
       if (path === "/.well-known/openai-apps-challenge" && request.method === "GET") {
         const challenge = (env as Env & { AGENT_OPENAI_APPS_CHALLENGE?: string }).AGENT_OPENAI_APPS_CHALLENGE?.trim();
         return new Response(challenge || null, { status: challenge ? 200 : 404, headers: { "Content-Type": "text/plain; charset=UTF-8", "Cache-Control": "no-store" } });
@@ -171,6 +174,8 @@ const worker = {
       if (docs) return docs;
       const publicMoney = await publicMoneyRoutes(request, env, ctx);
       if (publicMoney) return publicMoney;
+      if (path === "/console" || path.startsWith("/console/"))
+        return new Response("The console is not built on this host", { status: 404, headers: { "Content-Type": "text/plain; charset=UTF-8" } });
       await apiRequest(request, env);
       const bearer = request.headers.get("authorization") ?? undefined;
       const browserTokens = new BrowserTokens(env.AGENT_SESSION_SECRET ?? env.API_TOKEN);
@@ -213,6 +218,7 @@ const worker = {
           entry = candidate;
         }
         else if (
+          (match[1] !== "v1/agents" || match[3] === "/mcp") &&
           /^client_[a-f0-9]{40}$/.test(idOrKey) &&
           (await authorized(request, await agentToken(env.API_TOKEN, idOrKey)))
         ) {
@@ -357,7 +363,7 @@ const worker = {
         throw new ApiError(404, "Not found", "NOT_FOUND");
       const directory = new Directory(env, entry.tenantId);
       if (entry.deleted) {
-        if (["/", "/credentials"].includes(tail) && request.method === "GET")
+        if ((auth || browser || ["/", "/credentials"].includes(tail)) && request.method === "GET")
           throw new ApiError(404, "Unknown agent", "AGENT_NOT_FOUND");
         if (auth && tail === "/" && request.method === "DELETE") {
           result(await directory.remove(entry.id));
