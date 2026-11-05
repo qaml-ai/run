@@ -4,6 +4,29 @@ import { AgentRuntime } from "../../../clients/node.ts";
 import { PNG, pdfBytes } from "../../../tests/file-fixtures.ts";
 import { OPERATOR } from "../../../tests/runtime-server.ts";
 import { compatibilityRuntime } from "./compat-runtime.ts";
+import { createServer } from "node:http";
+
+test("a custom vision provider receives attached images only when declared", {timeout:90000}, async t => {
+  const bodies: any[] = [];
+  const server = createServer(async (request,response) => {
+    let raw = ""; for await (const part of request) raw += part;
+    const body = JSON.parse(raw); bodies.push(body);
+    response.writeHead(200,{"Content-Type":"text/event-stream"});
+    response.end(`data: ${JSON.stringify({id:"custom-images",object:"chat.completion.chunk",choices:[{index:0,delta:{role:"assistant",content:"seen"},finish_reason:"stop"}]})}\n\ndata: [DONE]\n\n`);
+  });
+  await new Promise<void>(resolve => server.listen(0,"127.0.0.1",resolve));
+  t.after(() => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); }));
+  const r = await compatibilityRuntime(t, () => ({role:"assistant",content:"unused"}));
+  const configured = await r.call("/v1/providers/local-images", {method:"PUT",body:{type:"openai-completions",baseUrl:`http://127.0.0.1:${(server.address() as {port:number}).port}/v1`,models:[{id:"text",contextWindow:32768},{id:"vision",contextWindow:32768,input:["text","image"]}]}});
+  assert.equal(configured.status,200);
+  for (const model of ["text","vision"]) {
+    const made = await r.call("/v1/agents",{body:{model:`local-images/${model}`}});
+    assert.equal(made.status,201,JSON.stringify(made.json));
+    const result = await r.prompt(made.json.id,"Look",undefined,{files:[{name:"dot.png",data:PNG.toString("base64")}]});
+    assert.equal(result.outcome.result.reply,"seen",JSON.stringify(result));
+    assert.equal(JSON.stringify(bodies.at(-1).messages).includes("image_url"),model === "vision",JSON.stringify(bodies.at(-1)));
+  }
+});
 
 test(
   "prompt attachments keep immutable references and use the existing image transport",
