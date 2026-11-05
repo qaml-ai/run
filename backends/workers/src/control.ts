@@ -206,7 +206,8 @@ export class Directory {
       }));
       const reconfigured = await response.json() as Record<string, unknown>;
       if (!response.ok) return { failed: true, status: response.status, error: String(reconfigured.error ?? 'Agent configuration was refused'), code: String(reconfigured.code ?? 'CONFIGURATION_FAILED') };
-      return { ...previousEntry, reconfigured };
+      const updated = reconfigured.state === 'completed' ? await this.get(id) : previousEntry;
+      return { ...(updated ?? previousEntry), reconfigured };
     }
     const release = config.type !== "run" && !previousEntry?.initialized
       ? await reserveAgentCreation(this.env as import("./agent.ts").Env, this.tenantId, id)

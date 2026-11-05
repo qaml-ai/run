@@ -119,7 +119,7 @@ test('queued upserts preserve omitted model and language from the preceding conf
   assert.equal((await fixture.call(`/v1/agents/${agent.id}/prompt`, { body: { text: 'hold' } })).status, 202);
   await until(() => fixture.model.bodies.length === 1, 'held turn');
   const model = 'openrouter/openai/gpt-4.1';
-  await upsert({ model, language: 'fr', systemPrompt: 'first queued configuration' });
+  await upsert({ model, language: 'fr', systemPrompt: 'first queued configuration', fileTools: false, codeMode: false, systemPromptAppend: 'temporary' });
   const last = await upsert({ systemPrompt: 'last queued configuration' });
   gate.resolve();
   await until(async () => (await fixture.call(`/v1/agents/${agent.id}/requests/${last.reconfigured.id}`)).json.state === 'completed', 'last queued configuration');
@@ -127,6 +127,7 @@ test('queued upserts preserve omitted model and language from the preceding conf
   assert.equal(saved.model, model);
   assert.equal(saved.language, 'fr');
   assert.equal(saved.systemPrompt, 'last queued configuration');
+  assert.deepEqual([saved.fileTools, saved.codeMode, saved.systemPromptAppend], [true, true, '']);
   await fixture.prompt(agent.id, 'after');
   assert.equal(fixture.model.bodies.at(-1).model, 'openai/gpt-4.1');
 });

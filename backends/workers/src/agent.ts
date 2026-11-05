@@ -148,6 +148,7 @@ import { AgentHistory } from "./history.ts";
 import type { AgentConfiguration } from "./api-contract.ts";
 import { recordAgentActivity } from "./agent-activity.ts";
 import { ConfigurationQueue } from "./configuration-queue.ts";
+import { replacementConfiguration } from "./replacement-configuration.ts";
 import { digest, configuration } from "./api-contract.ts";
 import { configurationModelError } from "./default-model.ts";
 import { journeyRunEnded } from "./journey.ts";
@@ -2167,7 +2168,8 @@ export class CamelAgent extends DurableObject<Env> {
     const params = request.params as Record<string, unknown>;
     const conf = await this.config();
     const replacement = (await this.ctx.storage.get<RequestRecord>(reqKey(id)))?.replaceConfiguration === true;
-    const patched = configuration(replacement ? params : { ...conf.config, ...params }, conf.config.model ?? this.env.MODEL).config;
+    const replacementParams = replacement ? replacementConfiguration(conf.config, params) : params;
+    const patched = configuration(replacement ? replacementParams : { ...conf.config, ...params }, conf.config.model ?? this.env.MODEL).config;
     const modelError = (params.model !== undefined || params.keyScope !== undefined)
       ? await configurationModelError(this.env, conf.tenantId, patched) : undefined;
     const fingerprint = canonical(request);
@@ -2200,7 +2202,7 @@ export class CamelAgent extends DurableObject<Env> {
     if (!current)
       throw Object.assign(new Error("Unknown agent"), { status: 404 });
     const updated = await directory.upsert(
-      previous?.replaceConfiguration ? params : await configurationPatch(this.env, conf.tenantId, current.config, params),
+      previous?.replaceConfiguration ? replacementParams : await configurationPatch(this.env, conf.tenantId, current.config, params),
       current.key ?? current.id,
       origin ?? conf.runtimeOrigin,
     );
@@ -2873,16 +2875,20 @@ export class CamelAgent extends DurableObject<Env> {
         path = url.pathname;
       // Public configuration edits become /requests; POST is the directory's
       // already-provisioned replacement for an existing keyed agent.
-      if (path === "/configuration" && request.method === "POST")
-        return json(await requestView(await this.configureRequest(await body(request, 17 * 1024 * 1024), true)), 202);
-      if (path === "/configuration-target" && request.method === "POST") {
-        const target = await body(request) as { id: string; config: AgentConfiguration; origin?: string };
-        configuration(target.config, this.env.MODEL);
-        const record = await this.configureRequest({ id: target.id, method: 'configure', params: target.config }, true, target.origin);
-        return json(await requestView(record), 202);
+      if ((path === "/configuration" || path === "/configuration-target" || path === "/upsert") && request.method === "POST") {
+        let record: RequestRecord;
+        if (path === "/configuration-target") {
+          const target = await body(request) as { id: string; config: AgentConfiguration; origin?: string };
+          configuration(target.config, this.env.MODEL);
+          record = await this.configureRequest({ id: target.id, method: 'configure', params: target.config }, true, target.origin);
+        } else {
+          record = await this.configureRequest(await body(request, (path === "/configuration" ? 17 : 6) * 1024 * 1024), true);
+        }
+        // Acceptance releases admission before application calls back into this DO.
+        // A running turn leaves the queue pending and returns without waiting for it.
+        await this.configurationQueue.settled();
+        return json(await requestView(await this.ctx.storage.get<RequestRecord>(reqKey(record.id)) ?? record), 202);
       }
-      if (path === '/upsert' && request.method === 'POST')
-        return json(await requestView(await this.configureRequest(await body(request, 6 * 1024 * 1024), true)), 202);
       if (path === "/configuration" && request.method === "PUT") {
         const incoming = (await body(request, 17 * 1024 * 1024)) as Config;
         const mutation = this.admission.then(async () => {
