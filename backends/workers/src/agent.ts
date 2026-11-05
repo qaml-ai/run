@@ -2,7 +2,10 @@ import { toolOutputExtension } from "./tool-output.ts";
 import { refreshIdleLifetime } from "./idle-lifetime.ts";
 import { forkSnapshot } from "./fork-snapshot.ts";
 import { seedHistory, writeModelContext } from "./history-seed.ts";
-import { contextRangeExtension, contextRangeLimit } from "./context-range.ts";
+import { assertContextRange, contextRangeExtension, contextRangeLimit } from "./context-range.ts";
+import { workflowTools } from "./workflow.ts";
+import { RecentEvents } from "./recent-events.ts";
+import { tenantRunCaps } from "./tenant-run-caps.ts";
 import { toolCallSite } from "./tool-call-context.ts";
 import { withMoneyMetrics } from "./money-metrics.ts";
 import { DurableObject } from "cloudflare:workers";
@@ -202,6 +205,7 @@ type Config = {
   revision: number;
   expiresAt: number | null;
   config: AgentConfiguration;
+  resolvedModel?: import("@earendil-works/pi-ai").Model<import("@earendil-works/pi-ai").Api>;
   runtimeOrigin?: string;
 };
 type RequestRecord = {
@@ -282,6 +286,7 @@ export class CamelAgent extends DurableObject<Env> {
     this.ctx.storage.transactionSync(fn),
   );
   private eventLog = new DurableEventLog(this.ctx.storage.sql);
+  private recentEvents = new RecentEvents(this.ctx.storage.sql);
   private registry = createRegistry();
   private codeExtension?: Extension;
   private attached = new AttachedTools();
@@ -428,6 +433,7 @@ export class CamelAgent extends DurableObject<Env> {
       run: await this.currentRun(),
       agentId: conf.id,
       spend: await this.agentSpend(conf),
+      most: await tenantRunCaps(this.env, conf.tenantId),
     };
   });
   private async currentRun(api?: ToolExecutionApi) {
@@ -557,6 +563,7 @@ export class CamelAgent extends DurableObject<Env> {
     const issuer = this.env.AGENT_PUBLIC_URL || conf.runtimeOrigin;
     if (!issuer) throw new Error("Runtime public URL is not configured");
     const call = api ? await toolCallSite(api) : undefined;
+    const lineage = await this.delegation.lineage(conf.id, run);
     if (call?.assistant !== undefined) {
       const pi = await this.harness.pi();
       await this.historyIndex.sync(await pi.root(BACKGROUND_CONTEXT));
@@ -565,6 +572,9 @@ export class CamelAgent extends DurableObject<Env> {
     return {
       issuer,
       ...(call ? { call } : {}),
+      progress: async (event: unknown) => {
+        if (run.id !== "background") await this.emit({ type: "event", requestId: run.id, event });
+      },
       intent: typeof params?.text === "string" ? params.text : undefined,
       elicit: !!(conf.config.humanInput || conf.config.builtins?.includes("ask_user") || this.attached.connected),
       claims: {
@@ -577,8 +587,9 @@ export class CamelAgent extends DurableObject<Env> {
           (params?.from as { id?: string } | undefined)?.id) as
           | string
           | undefined,
-        req: run.id,
+        req: run.id === "background" ? undefined : run.id,
         tcid: call?.toolCallId,
+        ...(lineage ? { par: lineage.parent, root: lineage.root } : {}),
       },
     };
   }
@@ -587,6 +598,15 @@ export class CamelAgent extends DurableObject<Env> {
     async () => (await this.config()).tenantId,
     {
       agentId: async () => (await this.config()).id,
+      beforeRequest: async () => {
+        const stopped = await this.limits.check();
+        if (stopped) throw new Error(stopped.error);
+        await assertContextRange(
+          contextRangeLimit((this.env as Env & { AGENT_CONTEXT_RANGE_MAX_BYTES?: string }).AGENT_CONTEXT_RANGE_MAX_BYTES),
+          await (await this.harness.pi()).root(BACKGROUND_CONTEXT),
+          async failure => { await this.ctx.storage.put(`run-limit:${(await this.currentRun()).id}`, failure); },
+        );
+      },
       wrapProvider: (provider) =>
         meterProvider(
           provider,
@@ -624,6 +644,8 @@ export class CamelAgent extends DurableObject<Env> {
         return {
           ...conf.config,
           ...params,
+          requestId: run.id,
+          outputReminded: !!(await this.ctx.storage.get(`output-reminded:${run.id}`)),
           runLimits: {
             ...conf.config.runLimits,
             ...(params?.runLimits as object),
@@ -705,6 +727,7 @@ export class CamelAgent extends DurableObject<Env> {
           conf.config.keyScope,
         ),
         (await keyServices(this.env)).tenants.modelEndpoints(conf.tenantId),
+        conf.resolvedModel,
       );
       registry.install(
         runtimePromptSections(
@@ -905,6 +928,11 @@ export class CamelAgent extends DurableObject<Env> {
         remote: this.sandboxRemote,
         workflow: conf.config.type === "workflow",
       });
+      registry.install({ name: "camel.workflow", tools: await workflowTools({
+        sandbox: new SessionCodemodeSandbox({ remote: this.sandboxRemote, workflow: true }),
+        delegation: this.delegation, settings: conf.config.workflow,
+        context: api => this.currentRun(api), emit: event => this.emit(event),
+      }) });
       registry.install({
         name: "camel.host-execute",
         tools: [hostExecutionTool(sandbox)],
@@ -970,6 +998,7 @@ export class CamelAgent extends DurableObject<Env> {
         const next = ((await tx.get<number>("cursor")) ?? 1) + 1;
         await tx.put("cursor", next);
         this.eventLog.append(next, event);
+        this.recentEvents.append(next, event);
         return next;
       });
       if (cursor === undefined) return;
@@ -1149,14 +1178,15 @@ export class CamelAgent extends DurableObject<Env> {
         const record = await this.ctx.storage.get<RequestRecord>(reqKey(id));
         if (record?.steeredInto && record.state !== "completed") {
           record.state = "completed";
+          record.status = "completed";
           record.endedAt = Date.now();
           record.outcome = {
-            result: { steered: true, steeredInto: record.steeredInto },
+            result: { steeredInto: record.steeredInto },
           };
           await this.ctx.storage.put(reqKey(id), record);
           await this.emit({
             type: "event",
-            requestId: record.steeredInto,
+            requestId: id,
             event: { type: "steer_taken", id, steeredInto: record.steeredInto },
           });
           await this.emit({ type: "response", id, outcome: record.outcome });
@@ -1443,7 +1473,7 @@ export class CamelAgent extends DurableObject<Env> {
               ? "completed"
               : "failed",
           ...(result.status !== "done"
-            ? { error: result.reason ?? "Model operation failed" }
+            ? { error: usage.last?.errorMessage ?? result.reason ?? "Model operation failed" }
             : {}),
         };
         const conf = await tx.get<Config>("configuration");
@@ -1835,11 +1865,8 @@ export class CamelAgent extends DurableObject<Env> {
           result:
             request.method === "status"
               ? {
-                  busy: await this.harness.session().busy(),
+                  ...(await this.activity()),
                   connected: this.attached.connected,
-                  queuedRuns: (await this.harness.pending()).filter(
-                    (item) => item.status === "queued",
-                  ).length,
                 }
               : { compacted: true },
         },
@@ -2094,6 +2121,11 @@ export class CamelAgent extends DurableObject<Env> {
     await this.arm();
     return accepted;
   }
+  private async activity() {
+    const records = (await this.records()).filter(record => ["prompt", "continue", "resume"].includes(record.method) && record.state !== "completed");
+    const active = records.find(record => record.state === "running" && !record.steeredInto);
+    return { busy: records.length > 0, activeRun: active?.id ?? null, queuedRuns: records.filter(record => record !== active).length };
+  }
   private async state() {
     const records = await this.records();
     for (const record of records)
@@ -2107,9 +2139,14 @@ export class CamelAgent extends DurableObject<Env> {
         .slice(0, 100)
         .map((record) => this.settle(record.id, 1)),
     );
+    const activity = await this.activity();
+    const lastActive = Math.max(this.recentEvents.lastActivity() ?? 0, (await this.ctx.storage.get<number>("last-active")) ?? 0);
     return {
       cursor: (await this.ctx.storage.get<number>("cursor")) ?? 1,
       connected: this.attached.connected,
+      ...activity,
+      running: activity.busy || Date.now() - lastActive < Number((this.env as Env & { AGENT_IDLE_MS?: string }).AGENT_IDLE_MS ?? 60_000),
+      events: this.recentEvents.read(),
       requests: await Promise.all((await this.records()).map(requestView)),
       ...(this.env.TEST_MODEL === "1"
         ? { localInstanceId: this.instanceId }
@@ -2256,6 +2293,7 @@ export class CamelAgent extends DurableObject<Env> {
             incoming.config.runLimits?.contextTokens,
             providers,
             (await keyServices(this.env)).tenants.modelEndpoints(incoming.tenantId),
+            incoming.resolvedModel,
           );
           const refusal = modelSettingsRefusal(model, incoming.config as never);
           if (refusal) throw new BadRequest(refusal);
@@ -2276,6 +2314,7 @@ export class CamelAgent extends DurableObject<Env> {
               incoming.config.spendLimit ?? null,
             );
           await this.ctx.storage.put("configuration", incoming);
+          await this.ctx.storage.put("last-active", Date.now());
           const pi = await this.harness.pi(),
             root = await pi.root(BACKGROUND_CONTEXT);
           if (!old && incoming.config.initialMessages?.length) {
@@ -2339,6 +2378,11 @@ export class CamelAgent extends DurableObject<Env> {
               incoming.config.type === "subagent",
             ),
           });
+          this.registry.install({ name: "camel.workflow", tools: await workflowTools({
+            sandbox: new SessionCodemodeSandbox({ remote: this.sandboxRemote, workflow: true }),
+            delegation: this.delegation, settings: incoming.config.workflow,
+            context: api => this.currentRun(api), emit: event => this.emit(event),
+          }) });
           this.availableTools = this.registry
             .snapshot()
             .tools()
@@ -2347,13 +2391,8 @@ export class CamelAgent extends DurableObject<Env> {
           await root.configure(
             {
               model: { provider: model.provider, modelId: model.id },
-              instructions: [
-                incoming.config.systemPrompt,
-                incoming.config.systemPromptAppend,
-              ]
-                .filter(Boolean)
-                .join("\n\n"),
-              maxTurns: incoming.config.runLimits?.maxResponses ?? 1000,
+              instructions: null,
+              maxTurns: null,
               extensions:
                 incoming.config.codeMode === false
                   ? { remove: [this.codeExtension!] }

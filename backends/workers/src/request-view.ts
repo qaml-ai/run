@@ -17,6 +17,7 @@ export async function requestView<
   } = record as T & Record<string, unknown>;
   return {
     ...visible,
+    ...((visible.outcome as { result?: { stopped?: string } } | undefined)?.result?.stopped ? { stopped: (visible.outcome as { result: { stopped: string } }).result.stopped } : {}),
     state: record.state === "queued" ? "running" : record.state,
     fingerprint: await digest(fingerprint),
   };

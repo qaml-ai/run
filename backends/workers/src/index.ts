@@ -77,6 +77,7 @@ function credentials(entry: DirectoryEntry, token: string) {
 function summary(entry: DirectoryEntry) {
   return {
     ...visibleConfiguration(entry.config),
+    ...(entry.config.definition ? { definition: { id: entry.config.definition, revision: entry.config.definitionRevision } } : {}),
     ...("forkedFrom" in entry ? { forkedFrom: entry.forkedFrom } : {}),
     id: entry.id,
     key: entry.key,
@@ -328,11 +329,10 @@ export default {
           new Request(request.url, { headers: request.headers }), env, entry.id, "/state",
         );
         if (!stateResponse.ok) return stateResponse;
-        const state = await stateResponse.json() as { requests: { state: string }[]; cursor: number };
+        const state = await stateResponse.json() as { requests: { state: string }[]; cursor: number; running: boolean };
         return json({
           ...summary(entry),
           ...state,
-          running: state.requests.some(record => record.state !== "completed"),
           spendLimit: agentSpendView(
             await readAgentSpendLimit(env, entry.tenantId, entry.id),
           ),
@@ -371,18 +371,10 @@ export default {
         if (!next || typeof next !== "object" || Array.isArray(next))
           throw new BadRequest("Expected configuration object");
         if (!auth) scopedConfiguration(next);
-        const updated = result(
-          await directory.upsert(
-            await configurationPatch(env, entry.tenantId, entry.config, next),
-            entry.key ?? entry.id,
-            url.origin,
-          ),
-        );
-        if (Object.hasOwn(next, "spendLimit"))
-          await setAgentSpendLimit(
-            env, entry.tenantId, entry.id, (next as { spendLimit: unknown }).spendLimit,
-          );
-        return json({ id: updated.id, configHash: updated.configHash }, 202);
+        return forward(new Request(request.url, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ id: crypto.randomUUID(), method: "configure", params: next }),
+        }), env, entry.id, "/requests");
       }
       if (tail === "/mounts") {
         if (request.method === "GET")

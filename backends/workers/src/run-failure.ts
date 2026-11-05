@@ -4,7 +4,7 @@ import { modelFailure, type FailureContext, type ModelFailure } from './model-er
 import { modelKeyFailure } from './model-key-failure.ts';
 import { isStalled } from './model-stream-failure.ts';
 
-export type RunFailure = { result: { error: string; code?: string; stopped?: string; modelError?: ModelFailure } };
+export type RunFailure = { result: { error: string; code?: string; stopped?: string; modelError?: ModelFailure; servedModel?: string } };
 export interface RunFailureOptions {
   reason?: string;
   last?: AssistantMessage;
@@ -33,6 +33,7 @@ export function projectRunFailure(options: RunFailureOptions): RunFailure | unde
     const key = modelKeyFailure(error, { provider: last.provider, id: last.model });
     if (key) Object.assign(result, key);
     result.modelError = modelFailure({ ...last, errorMessage: error }, options.context ?? { ownEndpoint: false });
+    result.servedModel = `${last.provider}/${last.model}`;
   }
   return { result };
 }

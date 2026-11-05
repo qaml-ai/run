@@ -5,6 +5,7 @@ import {
 } from "@earendil-works/pi-durable";
 import type { AgentConfiguration } from "./api-contract.ts";
 import { agentSpendRefusal, type SpendLimit } from "./agent-spend.ts";
+import { RUN_LIMITS, duration } from "./run-caps-policy.ts";
 
 type Run = {
   id: string;
@@ -20,21 +21,21 @@ export type RuntimeLimit = {
   code: "turn_limit" | "spend_limit";
   stopped: "turn_limit" | "spend_limit";
 };
-const defaults = { maxResponses: 1000, maxSeconds: 7200 };
+const defaults = RUN_LIMITS;
 
 /** Agent and request caps can lower the runtime's cap; neither can raise it. */
-export function runCaps(config: AgentConfiguration, run: Run) {
+export function runCaps(config: AgentConfiguration, run: Run, most = defaults) {
   const own = config.runLimits ?? {},
     per = run.params?.runLimits as typeof own | undefined;
   const spend = run.params?.spendLimit as { usd: number } | undefined;
   return {
     maxResponses: Math.min(
-      defaults.maxResponses,
+      most.maxResponses,
       own.maxResponses ?? Infinity,
       per?.maxResponses ?? Infinity,
     ),
     maxSeconds: Math.min(
-      defaults.maxSeconds,
+      most.maxSeconds,
       own.maxSeconds ?? Infinity,
       per?.maxSeconds ?? Infinity,
     ),
@@ -46,13 +47,14 @@ export function runLimit(
   run: Run,
   usage: Usage,
   now = Date.now(),
+  most = defaults,
 ): RuntimeLimit | undefined {
-  const caps = runCaps(config, run);
+  const caps = runCaps(config, run, most);
   const error =
     usage.responses >= caps.maxResponses
       ? `This run stopped at its limit of ${caps.maxResponses} model responses. Send another message to continue`
       : run.began !== undefined && now - run.began >= caps.maxSeconds * 1000
-        ? `This run stopped at its time limit of ${caps.maxSeconds} seconds. Send another message to continue`
+        ? `This run stopped at its time limit of ${duration(caps.maxSeconds)}. Send another message to continue`
         : undefined;
   if (error) return { error, code: "turn_limit", stopped: "turn_limit" };
   if (usage.costUsd >= caps.spendUsd)
@@ -70,6 +72,7 @@ export class AgentRunLimits {
     run: Run;
     agentId?: string;
     spend?: SpendLimit | null;
+    most?: typeof defaults;
   }>;
   constructor(
     storage: DurableObjectStorage,
@@ -79,22 +82,22 @@ export class AgentRunLimits {
     this.current = current;
   }
   async check(now = Date.now()) {
-    const { config, run, agentId, spend } = await this.current();
+    const { config, run, agentId, spend, most } = await this.current();
     if (!run.state || run.state === "completed") return;
     const usage = (await this.storage.get<Usage>(`run-usage:${run.id}`)) ?? {
       responses: 0,
       costUsd: 0,
     };
     const stopped =
-      runLimit(config, run, usage, now) ??
+      runLimit(config, run, usage, now, most) ??
       (agentId ? agentSpendRefusal(agentId, spend ?? null) : undefined);
     if (stopped) await this.storage.put(`run-limit:${run.id}`, stopped);
     return stopped;
   }
   async deadline() {
-    const { config, run } = await this.current();
+    const { config, run, most } = await this.current();
     return run.state === "running" && run.began !== undefined
-      ? run.began + runCaps(config, run).maxSeconds * 1000
+      ? run.began + runCaps(config, run, most).maxSeconds * 1000
       : Infinity;
   }
   extension(): Extension {

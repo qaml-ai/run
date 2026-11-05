@@ -37,6 +37,7 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
     AGENT_SECRETS_KEY: randomBytes(32).toString("hex"),
     AGENT_PUBLIC_URL: "https://agents.example.test",
     AGENT_PROVIDER: "openrouter", AGENT_MODEL: "openai/gpt-4o-mini", AGENT_BASE_URL: model.url,
+    AGENT_OUTBOUND_ALLOW_HTTP: "false", AGENT_OUTBOUND_ALLOW_CIDRS: "",
     ...options.env,
   };
   let configuredTenants = options.tenants;
