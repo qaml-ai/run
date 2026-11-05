@@ -2,7 +2,7 @@ TAP version 13
 # Subtest: the default fetch keeps the global receiver for JSON and text requests
 ok 1 - the default fetch keeps the global receiver for JSON and text requests
   ---
-  duration_ms: 9.913416
+  duration_ms: 9.92175
   type: 'test'
   ...
 1..1
@@ -13,4 +13,4 @@ ok 1 - the default fetch keeps the global receiver for JSON and text requests
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 86.786083
+# duration_ms 84.009458

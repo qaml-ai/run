@@ -2,22 +2,22 @@ TAP version 13
 # Subtest: POST /v1/images makes images on the platform's OpenAI key for a prepaid tenant, edits images given as base64, multipart or a URL, and is billed per token
 not ok 1 - POST /v1/images makes images on the platform's OpenAI key for a prepaid tenant, edits images given as base64, multipart or a URL, and is billed per token
   ---
-  duration_ms: 1451.426167
+  duration_ms: 1568.282875
   type: 'test'
-  location: '/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/image-generation-api.test.ts:6:1'
+  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/image-generation-api.test.ts:6:1'
   failureType: 'testCodeFailure'
   error: |-
-    Expected values to be strictly equal:
+    {"error":"File operation failed"}
 
-    404 !== 201
+    500 !== 200
 
   code: 'ERR_ASSERTION'
   name: 'AssertionError'
-  expected: 201
-  actual: 404
+  expected: 200
+  actual: 500
   operator: 'strictEqual'
   stack: |-
-    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-native/tests/image-generation-api.test.ts:8:10)
+    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/image-generation-api.test.ts:13:10)
     process.processTicksAndRejections (node:internal/process/task_queues:105:5)
     async Test.run (node:internal/test_runner/test:1054:7)
     async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
@@ -25,22 +25,22 @@ not ok 1 - POST /v1/images makes images on the platform's OpenAI key for a prepa
 # Subtest: POST /v1/images with volumeId saves the images to the volume and answers their paths
 not ok 2 - POST /v1/images with volumeId saves the images to the volume and answers their paths
   ---
-  duration_ms: 1375.278666
+  duration_ms: 1512.942458
   type: 'test'
-  location: '/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/image-generation-api.test.ts:98:1'
+  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/image-generation-api.test.ts:98:1'
   failureType: 'testCodeFailure'
   error: |-
-    Expected values to be strictly equal:
+    {"error":"File operation failed"}
 
-    404 !== 201
+    500 !== 200
 
   code: 'ERR_ASSERTION'
   name: 'AssertionError'
-  expected: 201
-  actual: 404
+  expected: 200
+  actual: 500
   operator: 'strictEqual'
   stack: |-
-    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-native/tests/image-generation-api.test.ts:100:10)
+    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/image-generation-api.test.ts:104:10)
     process.processTicksAndRejections (node:internal/process/task_queues:105:5)
     async Test.run (node:internal/test_runner/test:1054:7)
     async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
@@ -48,9 +48,9 @@ not ok 2 - POST /v1/images with volumeId saves the images to the volume and answ
 # Subtest: POST /v1/images needs an OpenAI key, and a monthly cap refuses it
 not ok 3 - POST /v1/images needs an OpenAI key, and a monthly cap refuses it
   ---
-  duration_ms: 1482.529084
+  duration_ms: 1475.2725
   type: 'test'
-  location: '/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/image-generation-api.test.ts:123:1'
+  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/image-generation-api.test.ts:123:1'
   failureType: 'testCodeFailure'
   error: |-
     Expected values to be strictly equal:
@@ -63,7 +63,7 @@ not ok 3 - POST /v1/images needs an OpenAI key, and a monthly cap refuses it
   actual: 500
   operator: 'strictEqual'
   stack: |-
-    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-native/tests/image-generation-api.test.ts:126:10)
+    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/image-generation-api.test.ts:126:10)
     process.processTicksAndRejections (node:internal/process/task_queues:105:5)
     async Test.run (node:internal/test_runner/test:1054:7)
     async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
@@ -76,4 +76,4 @@ not ok 3 - POST /v1/images needs an OpenAI key, and a monthly cap refuses it
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 7420.953625
+# duration_ms 7527.556291

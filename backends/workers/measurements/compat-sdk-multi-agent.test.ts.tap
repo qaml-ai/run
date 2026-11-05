@@ -2,19 +2,19 @@ TAP version 13
 # Subtest: SDK: delegate settings on upsert bring their builtin; a run lists its child's id, and a stream with subagents shows it start and end
 not ok 1 - SDK: delegate settings on upsert bring their builtin; a run lists its child's id, and a stream with subagents shows it start and end
   ---
-  duration_ms: 1750.432917
+  duration_ms: 1458.678417
   type: 'test'
-  location: '/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/sdk-multi-agent.test.ts:13:1'
+  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/sdk-multi-agent.test.ts:13:1'
   failureType: 'testCodeFailure'
   error: 'Unsupported field: instructions'
   code: 'INVALID_REQUEST'
   name: 'AgentError'
   stack: |-
-    Transport.json (file:///Users/miguelsalinas/agent-runtime-wt/workers-native/clients/typescript.ts:993:47)
+    Transport.json (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-money/clients/typescript.ts:993:47)
     process.processTicksAndRejections (node:internal/process/task_queues:105:5)
-    async AgentRuntime.upsertAgent (file:///Users/miguelsalinas/agent-runtime-wt/workers-native/clients/typescript.ts:1657:20)
-    async Agents.upsert (file:///Users/miguelsalinas/agent-runtime-wt/workers-native/clients/agents.ts:338:37)
-    async TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-native/tests/sdk-multi-agent.test.ts:20:17)
+    async AgentRuntime.upsertAgent (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-money/clients/typescript.ts:1657:20)
+    async Agents.upsert (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-money/clients/agents.ts:338:37)
+    async TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/sdk-multi-agent.test.ts:20:17)
     async Test.run (node:internal/test_runner/test:1054:7)
     async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
   ...
@@ -26,4 +26,4 @@ not ok 1 - SDK: delegate settings on upsert bring their builtin; a run lists its
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 4882.776
+# duration_ms 4610.076458

@@ -2,9 +2,9 @@ TAP version 13
 # Subtest: native daytona computer API is tenant scoped and tools refresh on an existing agent
 not ok 1 - native daytona computer API is tenant scoped and tools refresh on an existing agent
   ---
-  duration_ms: 1547.605708
+  duration_ms: 1504.3055
   type: 'test'
-  location: '/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/computers-api.test.ts:5:48'
+  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/computers-api.test.ts:5:48'
   failureType: 'testCodeFailure'
   error: |-
     Expected values to be strictly equal:
@@ -17,7 +17,7 @@ not ok 1 - native daytona computer API is tenant scoped and tools refresh on an 
   actual: 404
   operator: 'strictEqual'
   stack: |-
-    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-native/tests/computers-api.test.ts:17:10)
+    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/computers-api.test.ts:17:10)
     process.processTicksAndRejections (node:internal/process/task_queues:105:5)
     async Test.run (node:internal/test_runner/test:1054:7)
     async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
@@ -25,9 +25,9 @@ not ok 1 - native daytona computer API is tenant scoped and tools refresh on an 
 # Subtest: native sprites computer API is tenant scoped and tools refresh on an existing agent
 not ok 2 - native sprites computer API is tenant scoped and tools refresh on an existing agent
   ---
-  duration_ms: 1580.97425
+  duration_ms: 1748.079125
   type: 'test'
-  location: '/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/computers-api.test.ts:5:48'
+  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/computers-api.test.ts:5:48'
   failureType: 'testCodeFailure'
   error: |-
     Expected values to be strictly equal:
@@ -40,7 +40,7 @@ not ok 2 - native sprites computer API is tenant scoped and tools refresh on an 
   actual: 404
   operator: 'strictEqual'
   stack: |-
-    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-native/tests/computers-api.test.ts:17:10)
+    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/computers-api.test.ts:17:10)
     process.processTicksAndRejections (node:internal/process/task_queues:105:5)
     async Test.run (node:internal/test_runner/test:1054:7)
     async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
@@ -48,9 +48,9 @@ not ok 2 - native sprites computer API is tenant scoped and tools refresh on an 
 # Subtest: a computer connected during eager startup is available on the first turn
 not ok 3 - a computer connected during eager startup is available on the first turn
   ---
-  duration_ms: 1567.345625
+  duration_ms: 1645.851375
   type: 'test'
-  location: '/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/computers-api.test.ts:36:1'
+  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/computers-api.test.ts:36:1'
   failureType: 'testCodeFailure'
   error: |-
     Expected values to be strictly equal:
@@ -63,7 +63,7 @@ not ok 3 - a computer connected during eager startup is available on the first t
   actual: 404
   operator: 'strictEqual'
   stack: |-
-    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-native/tests/computers-api.test.ts:39:10)
+    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/computers-api.test.ts:39:10)
     process.processTicksAndRejections (node:internal/process/task_queues:105:5)
     async Test.run (node:internal/test_runner/test:1054:7)
     async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
@@ -71,9 +71,9 @@ not ok 3 - a computer connected during eager startup is available on the first t
 # Subtest: delegate child creation inherits computer attachments: true
 not ok 4 - delegate child creation inherits computer attachments: true
   ---
-  duration_ms: 1545.062
+  duration_ms: 1570.861333
   type: 'test'
-  location: '/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/computers-api.test.ts:47:86'
+  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/computers-api.test.ts:47:86'
   failureType: 'testCodeFailure'
   error: |-
     {"error":"Unknown API route","code":"NOT_FOUND"}
@@ -86,7 +86,7 @@ not ok 4 - delegate child creation inherits computer attachments: true
   actual: 404
   operator: 'strictEqual'
   stack: |-
-    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-native/tests/computers-api.test.ts:56:10)
+    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/computers-api.test.ts:56:10)
     process.processTicksAndRejections (node:internal/process/task_queues:105:5)
     async Test.run (node:internal/test_runner/test:1054:7)
     async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
@@ -94,9 +94,9 @@ not ok 4 - delegate child creation inherits computer attachments: true
 # Subtest: delegate child creation inherits computer attachments: false
 not ok 5 - delegate child creation inherits computer attachments: false
   ---
-  duration_ms: 1419.63425
+  duration_ms: 1563.160042
   type: 'test'
-  location: '/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/computers-api.test.ts:47:86'
+  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/computers-api.test.ts:47:86'
   failureType: 'testCodeFailure'
   error: |-
     {"error":"Unknown API route","code":"NOT_FOUND"}
@@ -109,7 +109,7 @@ not ok 5 - delegate child creation inherits computer attachments: false
   actual: 404
   operator: 'strictEqual'
   stack: |-
-    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-native/tests/computers-api.test.ts:56:10)
+    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/computers-api.test.ts:56:10)
     process.processTicksAndRejections (node:internal/process/task_queues:105:5)
     async Test.run (node:internal/test_runner/test:1054:7)
     async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
@@ -117,9 +117,9 @@ not ok 5 - delegate child creation inherits computer attachments: false
 # Subtest: agents child creation inherits computer attachments: true
 not ok 6 - agents child creation inherits computer attachments: true
   ---
-  duration_ms: 1407.85575
+  duration_ms: 1723.280542
   type: 'test'
-  location: '/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/computers-api.test.ts:47:86'
+  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/computers-api.test.ts:47:86'
   failureType: 'testCodeFailure'
   error: |-
     {"error":"Unknown API route","code":"NOT_FOUND"}
@@ -132,7 +132,7 @@ not ok 6 - agents child creation inherits computer attachments: true
   actual: 404
   operator: 'strictEqual'
   stack: |-
-    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-native/tests/computers-api.test.ts:56:10)
+    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/computers-api.test.ts:56:10)
     process.processTicksAndRejections (node:internal/process/task_queues:105:5)
     async Test.run (node:internal/test_runner/test:1054:7)
     async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
@@ -140,9 +140,9 @@ not ok 6 - agents child creation inherits computer attachments: true
 # Subtest: agents child creation inherits computer attachments: false
 not ok 7 - agents child creation inherits computer attachments: false
   ---
-  duration_ms: 1494.780791
+  duration_ms: 1647.202167
   type: 'test'
-  location: '/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/computers-api.test.ts:47:86'
+  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/computers-api.test.ts:47:86'
   failureType: 'testCodeFailure'
   error: |-
     {"error":"Unknown API route","code":"NOT_FOUND"}
@@ -155,7 +155,7 @@ not ok 7 - agents child creation inherits computer attachments: false
   actual: 404
   operator: 'strictEqual'
   stack: |-
-    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-native/tests/computers-api.test.ts:56:10)
+    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/computers-api.test.ts:56:10)
     process.processTicksAndRejections (node:internal/process/task_queues:105:5)
     async Test.run (node:internal/test_runner/test:1054:7)
     async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
@@ -168,4 +168,4 @@ not ok 7 - agents child creation inherits computer attachments: false
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 13545.971042
+# duration_ms 14363.708792

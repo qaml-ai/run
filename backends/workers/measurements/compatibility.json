@@ -116,7 +116,8 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 0,
+        "signal": null
       }
     },
     {
@@ -126,7 +127,8 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -136,7 +138,8 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -146,7 +149,8 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -156,7 +160,8 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -166,7 +171,8 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -176,7 +182,8 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -186,7 +193,8 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -196,7 +204,8 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -206,7 +215,8 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -216,7 +226,8 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -226,7 +237,8 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -236,7 +248,8 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -246,7 +259,8 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -256,7 +270,8 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -266,7 +281,8 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -276,7 +292,8 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -286,7 +303,8 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -296,7 +314,8 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -312,7 +331,8 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -334,7 +354,8 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -344,7 +365,8 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -354,7 +376,8 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -364,7 +387,8 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -374,7 +398,8 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -384,7 +409,8 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 0,
+        "signal": null
       }
     },
     {
@@ -394,7 +420,8 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 0,
+        "signal": null
       }
     },
     {
@@ -404,7 +431,8 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 0,
+        "signal": null
       }
     },
     {
@@ -414,7 +442,8 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 0,
+        "signal": null
       }
     },
     {
@@ -424,7 +453,8 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 0,
+        "signal": null
       }
     },
     {
@@ -434,7 +464,8 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 0,
+        "signal": null
       }
     },
     {
@@ -444,7 +475,8 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 0,
+        "signal": null
       }
     },
     {
@@ -454,7 +486,8 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 0,
+        "signal": null
       }
     },
     {
@@ -464,7 +497,8 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 0,
+        "signal": null
       }
     },
     {
@@ -474,7 +508,8 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 0,
+        "signal": null
       }
     },
     {
@@ -484,7 +519,8 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -494,7 +530,8 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -504,7 +541,8 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -514,7 +552,8 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -524,7 +563,8 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -534,7 +574,8 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -544,7 +585,8 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -554,7 +596,8 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -564,7 +607,8 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -634,7 +678,8 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -644,7 +689,8 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -654,7 +700,8 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -664,7 +711,8 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {
@@ -674,7 +722,8 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 1,
+        "signal": null
       }
     },
     {

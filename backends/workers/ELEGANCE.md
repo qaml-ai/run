@@ -15,8 +15,9 @@ Built on the work from [#635](https://github.com/qaml-ai/run/pull/635) and
 [#644](https://github.com/qaml-ai/run/pull/644). Read the earlier
 [feasibility measurements](../cloudflare/docs/FEASIBILITY.md) and
 [hybrid study](../cloudflare/docs/HYBRID.md) for the cloud evidence this
-experiment builds on. This run uses local fake providers only. It makes no new
-cloud performance, reliability or production-cost claim.
+experiment builds on. Model and payment tests use local fake providers. The money track also ran a
+bounded deployed crypto/DO crash probe; [MONEY.md](MONEY.md) records its scope and
+cleanup. There is no new production performance or cost claim.
 
 ## Architecture actually implemented
 
@@ -64,13 +65,13 @@ is portable.
 <!-- SIZE_TABLE -->
 | Area | ECS lines / files | Workers lines / files |
 | --- | ---: | ---: |
-| Accounts, money, webhooks | 10,422 / 40 | 2,504 / 5 |
-| Hosting, admission, tenancy | 4,374 / 14 | 61 / 1 |
-| Agents, history, schedules | 15,107 / 33 | 1,606 / 3 |
-| HTTP, contracts, remaining policy | 13,677 / 69 | 758 / 6 |
+| Accounts, money, webhooks | 10,422 / 40 | 8,803 / 39 |
+| Hosting, admission, tenancy | 4,374 / 14 | 369 / 2 |
+| Agents, history, schedules | 15,107 / 33 | 1,899 / 4 |
+| HTTP, contracts, remaining policy | 13,677 / 69 | 2,923 / 37 |
 | Code execution | 797 / 6 | 38 / 2 |
-| Files, images, computers | 5,579 / 27 | 1,662 / 6 |
-| Total | 49,956 / 189 | 6,629 / 23 |
+| Files, images, computers | 5,579 / 27 | 1,839 / 7 |
+| Total | 49,956 / 189 | 15,871 / 91 |
 <!-- /SIZE_TABLE -->
 
 Reproduce with `npm run measure`; inspect every path and count in
@@ -126,7 +127,7 @@ disappeared would make the diagram shorter and the accounting incorrect.
 
 The focused suite starts actual workerd, not an in-memory imitation of a DO. API
 fixtures have fresh local Postgres databases with all 112 migrations. The
-computer smoke uses only the shared synthetic prototype database. SQLite, R2,
+computer smoke also uses its own migrated, funded local fixture. SQLite, R2,
 alarms, remote codemode and queue consumers run locally. The deterministic
 provider exercises real Pi conversations and tools without a model credential.
 
@@ -213,25 +214,18 @@ Supplied fixture token hashes are seeded into local tenants, and loopback
 streaming-provider URLs are honored. The adapter does not reproduce every Node
 tenant-policy setting, so failure details can also expose fixture limitations.
 
-The main gaps are real work, not a hidden percentage of compatibility: attached
-SDK/MCP tools, general remote MCP/OpenAPI source management, definitions,
-stateless runs, fork/import/export parity, structured output and complete model
-options, public computer-provider APIs, complete file/archive/mount semantics,
-OAuth/password/signup, scoped API-key policy, and all financial product rules.
-Account email here verifies an authenticated account's mailbox; it is not the
-whole signup/login system. Existing end-user SQL runs, but per-turn subject
-charging and workspace attribution are not wired through every agent path.
-Stripe funding/refunds and custom model-provider secrets remain unimplemented.
-Model-based image generation/editing and scheduled email delivery are also
-unimplemented in the source; stored image derivatives do not provide those
-APIs. The newly attempted schedule case rejects the email option. Three image
-cases stop at the missing `/v1/billing/adjustments` prerequisite (404), before
-generation; the other reaches `/v1/images` and receives 500 rather than the
-expected 400. The five UI cases receive no assembled assistant message; their
-TAP logs preserve the first failing assertions without assigning a root cause.
-Existing hourly free-credit spendability and dispute checks are reused at
-admission. These are within the broader core and prevent a claim of complete
-camelRun parity. Channels and voice are deliberately excluded.
+The remaining gaps include attached SDK/MCP tools, remote MCP/OpenAPI source
+management, definitions, stateless runs, fork/import/export, structured output,
+complete model options, public computer-provider APIs and complete file/archive
+semantics. Channels and voice are deliberately excluded.
+
+The [money track](MONEY.md) adds source account/authentication, key/secret,
+credit-hold, model-attempt, subject/workspace, Stripe test-mode and outbox policy.
+Its independent money scorecard and explicit remaining gaps are in that report.
+The original compatibility total above is unchanged: billing adjustments now
+pass, but the four image cases still fail at the upload/generation route. The
+five UI cases receive no assembled assistant message. Full paid-runtime parity
+is not established by these narrower passing service tests.
 
 ## Platform choices
 
@@ -260,16 +254,15 @@ receipts are also tested. This does not simulate every network failure during
 COMMIT, a whole region outage, or an external provider accepting a request
 before returning its receipt. Unknown provider outcomes need reconciliation; an
 expired hold alone cannot justify a refund. Pricing/reservation ceilings and all
-policy interactions need qualification before paid production work. The initial
-reservation is 10,000 micro-USD ($0.01). A real turn beyond that hold cannot
-settle under the current bound and needs reconciliation; a fixed reservation is
-not a production spend policy. Test-only fixed pricing is not a provider pricing
-engine.
+policy interactions need qualification before paid production work. Provider
+attempts now use the source's real estimates, mutable holds and stream policy;
+there is no fixed $0.01 turn reservation. Active-runtime metering, every tool
+path and exact budget-reset attribution still need the work listed in MONEY.md.
 
-**Webhook destinations are an explicit operator allowlist.** Unlisted hosts, IP
-literals and private host suffixes are refused; loopback is allowed only for
-local tests. DNS rebinding, production egress controls and tenant self-service
-endpoint policy still require review.
+**Native fetch cannot pin the approved DNS result.** The money adapter retains
+source address, redirect, deadline and response-size checks, but the Worker
+transport resolves separately. A deployment needs a compatible egress boundary
+before allowing untrusted tenant endpoints.
 
 **Many DOs can overwhelm one database.** Local Hyperdrive is a direct
 connection, not its production pool/cache. See
@@ -346,9 +339,13 @@ Finish the API and policy gaps, then measure real Hyperdrive fan-out,
 idle-stream economics and a fenced migration before deciding whether the
 operational savings justify lock-in.
 
-## Reproduction and cleanup record
+## Original prototype reproduction and cleanup record
 
-From `backends/workers/`, the final checks were:
+This is the record before the money track. The current account/money checks,
+cloud probe, cleanup and remaining differences are in [MONEY.md](MONEY.md) and
+[money-validation.json](measurements/money-validation.json).
+
+From `backends/workers/`, the original checks were:
 
 | Command                                                          | Result                                                                                    |
 | ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
