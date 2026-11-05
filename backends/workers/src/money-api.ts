@@ -23,7 +23,7 @@ async function services(env: MoneyEnv, request?: Request) {
   const account = accountServices(env, keys.accounts, request ? new URL(request.url).origin : env.PUBLIC_URL ?? 'https://localhost');
   const alerts = new BillingAlerts(keys.accounts.db, keys.accounts);
   const namespace = (env as MoneyEnv & { TENANTS?: { getByName(name: string): {status(): Promise<{active: unknown}>} } }).TENANTS;
-  const billing = { billing: keys.accounts.billing, alerts, emailEnabled: !!account.mail, rateLimits: account.limits, exists: (tenant: string) => keys.accounts.exists(tenant),
+  const billing = { billing: keys.accounts.billing, alerts, emailEnabled: !!((env.EMAIL || (env.TEST_MODE === '1' && env.MAIL_TEST_URL)) && (env.AGENT_BILLING_EMAIL_FROM || env.EMAIL_FROM)), rateLimits: account.limits, exists: (tenant: string) => keys.accounts.exists(tenant),
     ...(namespace ? { busy: async (tenant: string) => Number((await namespace.getByName(tenant).status()).active) } : {}) };
   const webhooks = new Webhooks({ db: keys.accounts.db, accounts: keys.accounts, outbound: keys.outbound });
   return { keys, account, billing, webhooks };
