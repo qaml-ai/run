@@ -93,9 +93,10 @@ test("cancelling a host execution whose acceptance was interrupted still bills i
   assert.equal(charged.length, 1);
   assert.equal(charged[0].metadata.activeMs, activeMs);
   assert.equal(Number(charged[0].amount), -activeMs * 1000);
-  await Promise.all([
-    call(`/v1/agents/${agent}/requests`, request),
+  const [retry] = await Promise.all([
+    call(`/v1/agents/${agent}/requests`, request, 409),
     call(`${experimental}/__test/flush-billing`, {}),
   ]);
+  assert.equal(retry.code, "aborted", "a cancelled request cannot be dispatched again");
   assert.deepEqual(await ledger(), charged, "replaying an interrupted admission cannot add or drop its charge");
 });
