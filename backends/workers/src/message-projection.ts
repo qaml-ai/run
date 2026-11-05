@@ -1,10 +1,11 @@
 import type { Message, AssistantMessage } from "@earendil-works/pi-ai";
+import { modelFailure, type FailureContext } from "./model-errors.ts";
 
 /** Project durable snapshots into the same deltas that the public SDK consumes. */
 export class MessageProjection {
   private seen = new Map<number, AssistantMessage | true>();
 
-  events(message: Message, ended: boolean): object[] {
+  events(message: Message, ended: boolean, context: FailureContext = { ownEndpoint: false }): object[] {
     const before = this.seen.get(message.timestamp);
     const events: object[] = [];
     if (!before) events.push({ type: "message_start", message });
@@ -37,7 +38,9 @@ export class MessageProjection {
       });
       this.seen.set(message.timestamp, ended ? true : structuredClone(message));
     } else this.seen.set(message.timestamp, true);
-    if (ended && message.role !== "toolResult") events.push({ type: "message_end", message });
+    if (ended && message.role !== "toolResult") events.push({ type: "message_end", message,
+      ...(message.role === "assistant" && message.stopReason === "error" ? { failure: modelFailure(message, context) } : {}),
+    });
     if (ended && message.role === "assistant")
       for (const call of message.content)
         if (call.type === "toolCall")

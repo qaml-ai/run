@@ -1403,6 +1403,7 @@ export class CamelAgent extends DurableObject<Env> {
           ? {
               result: {
                 reply: result.text ?? "",
+                error: null,
                 usage: {
                   responses: usage.responses,
                   input: usage.inputTokens,
@@ -1554,21 +1555,36 @@ export class CamelAgent extends DurableObject<Env> {
     this.admission = result.catch(() => {});
     return result;
   }
-  private async abortRequests() {
-    await this.promptPreparations.cancel();
-    await this.markCancelledRequests();
+  private async abortRequests(queued: 'cancel' | 'keep' = 'cancel') {
+    if (queued === 'cancel') {
+      await this.promptPreparations.cancel();
+      const held = await this.ctx.storage.list({ prefix: 'held-steer:' });
+      await this.ctx.storage.delete([...held.keys()]);
+    }
     const pending = await this.harness.pending();
-    const cancelled = pending
+    const cancelled = queued === 'keep' ? [] : pending
       .filter((item) => item.status === "queued")
       .map((item) => item.operationId);
-    await this.delegation.cancel();
-    await this.cancelHumanInputs();
-    await this.abortExecutions();
-    await this.harness.session().abort();
+    const running = pending.filter(item => item.status === 'running').map(item => item.operationId);
+    if (queued === 'cancel') await this.markCancelledRequests();
+    else for (const id of running) await this.ctx.storage.put(`cancelled-request:${id}`, true);
+    if (queued === 'cancel') {
+      await this.delegation.cancel();
+      await this.cancelHumanInputs();
+      await this.abortExecutions();
+      await this.harness.session().abort();
+    } else {
+      for (const id of running) {
+        await this.cancelHumanInputs(id);
+        await this.delegation.cancel(id);
+      }
+      const live = (await this.harness.session().watch()).value.docs['pi.live'] as LiveState | undefined;
+      if (live?.run?.taskId !== undefined) await (await this.harness.pi()).abortTask(live.run.taskId, BACKGROUND_CONTEXT);
+    }
     const conf = await this.config();
     for (const id of cancelled) {
       const record = await this.ctx.storage.get<RequestRecord>(reqKey(id));
-      if (!record || record.state === "completed") continue;
+      if (!record) continue;
       record.state = "completed";
       record.status = "failed";
       record.endedAt = Date.now();
@@ -1580,6 +1596,7 @@ export class CamelAgent extends DurableObject<Env> {
       await this.env.TENANTS.getByName(conf.tenantId).release(
         `${conf.id}:${id}`,
       );
+      await this.emit({ type: 'event', requestId: id, event: { type: 'run_cancelled', reason: 'stopped' } });
       await this.emit({ type: "response", id, outcome: record.outcome });
     }
     return { aborted: true, cancelled };
@@ -1816,8 +1833,8 @@ export class CamelAgent extends DurableObject<Env> {
     }
     if (request.method === "abort") {
       const params = object(request.params ?? {}, ["queued"]);
-      if (params.queued !== undefined && params.queued !== "cancel")
-        throw new BadRequest("Only queued cancel is supported");
+      if (params.queued !== undefined && !['cancel', 'keep'].includes(String(params.queued)))
+        throw new BadRequest('queued is cancel or keep');
       const fingerprint = canonical({ method: "abort", params });
       const previous = await this.ctx.storage.get<RequestRecord>(reqKey(id));
       if (previous && previous.fingerprint !== fingerprint)
@@ -1826,7 +1843,7 @@ export class CamelAgent extends DurableObject<Env> {
           { status: 409 },
         );
       if (previous?.state === "completed") return previous;
-      const stopped = await this.abortRequests();
+      const stopped = await this.abortRequests(params.queued === 'keep' ? 'keep' : 'cancel');
       await this.state();
       const record: RequestRecord = {
         id,
@@ -1875,7 +1892,7 @@ export class CamelAgent extends DurableObject<Env> {
       await this.emit({ type: "response", id, outcome: record.outcome });
       return record;
     }
-    if (request.method !== "prompt" && request.method !== "continue")
+    if (request.method !== "prompt" && request.method !== "continue" && request.method !== 'steer')
       throw new BadRequest("Unsupported request method");
     const params = object(request.params, [
       "text",
@@ -1954,6 +1971,7 @@ export class CamelAgent extends DurableObject<Env> {
       throw new BadRequest(
         "Use file upload before prompting; attachment hydration is not implemented",
       );
+    if (request.method === 'steer') params.whileRunning = 'steer';
     const fingerprint =
       params.files === undefined
         ? canonical({ method: request.method, params })
@@ -2053,6 +2071,16 @@ export class CamelAgent extends DurableObject<Env> {
       : params.images
         ? imageReferenceInput(text, params.images as ImageRef[], conf.tenantId)
         : text;
+    if (request.method === 'steer' && !running) {
+      record.state = 'completed';
+      record.status = 'completed';
+      record.endedAt = Date.now();
+      record.outcome = { result: { queued: true } };
+      await this.ctx.storage.put(`held-steer:${id}`, { id, prompt, startedAt: record.startedAt });
+      await this.ctx.storage.put(reqKey(id), record);
+      await this.emit({ type: 'response', id, outcome: record.outcome });
+      return record;
+    }
     if (preparing) record.admitted = true;
     await this.ctx.storage.put(reqKey(id), record);
     if (preparing) await this.promptPreparations.finish(id);
@@ -2095,10 +2123,11 @@ export class CamelAgent extends DurableObject<Env> {
     // No successful acceptance response until Pi has durably recorded the input.
     if (request.method === "continue")
       await this.harness.continue({ operationId: id });
-    else
-      await this.harness.submit(prompt, {
+    else {
+      const held = !running ? await this.ctx.storage.list<{ id: string; prompt: typeof prompt; startedAt: number }>({ prefix: 'held-steer:' }) : new Map();
+      const submission = {
         operationId: id,
-        whenBusy: params.whileRunning === "steer" ? "steer" : "followUp",
+        whenBusy: params.whileRunning === "steer" ? "steer" as const : "followUp" as const,
         entry: {
           kind: record.steeredInto ? "camel.steer" : "camel.prompt",
           data: {
@@ -2110,7 +2139,19 @@ export class CamelAgent extends DurableObject<Env> {
             ...(notice ? { source: notice.source } : {}),
           } as never,
         },
-      });
+      };
+      if (!held.size) await this.harness.submit(prompt, submission);
+      else {
+        const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
+        await root.commit(async tx => {
+          if (await tx.submissionByRequest(root.id, id)) return;
+          await root.submit(tx, { type: 'input', requestId: id, content: prompt, whenBusy: submission.whenBusy, entry: submission.entry });
+          for (const value of [...held.values()].sort((a, b) => a.startedAt - b.startedAt))
+            await tx.appendEntry(root.id, { kind: 'camel.steer', data: { requestId: value.id }, model: [{ role: 'user', content: value.prompt, timestamp: Date.now() }] });
+        }, BACKGROUND_CONTEXT);
+        await this.ctx.storage.delete([...held.keys()]);
+      }
+    }
     const accepted = await this.ctx.storage.transaction(async (tx) => {
       const latest = (await tx.get<RequestRecord>(reqKey(id))) ?? record;
       const accepted = { ...latest, accepted: true };
@@ -2716,8 +2757,10 @@ export class CamelAgent extends DurableObject<Env> {
         return json(batch ? { inputs: answered.inputs, requests: answered.requests } : { input: answered.inputs[0], request: answered.requests[0] ?? null }, answered.status);
       }
       if (path === "/abort" && request.method === "POST") {
+        const params = object(await body(request), ['queued']);
+        if (params.queued !== undefined && !['cancel', 'keep'].includes(String(params.queued))) throw new BadRequest('queued is cancel or keep');
         const aborting = this.admission.then(async () => {
-          const stopped = await this.abortRequests();
+          const stopped = await this.abortRequests(params.queued === 'keep' ? 'keep' : 'cancel');
           await this.state();
           return json(stopped);
         });
