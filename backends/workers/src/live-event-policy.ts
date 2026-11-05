@@ -41,13 +41,13 @@ export function turnSnapshot(ctx: EventContext, session: Session): TurnSnapshot 
   return snapshot;
 }
 
-export function replay(session: Session, raw = "0", snapshot = false): { cursor: number; snapshot?: TurnSnapshot; events: BufferedEvent[] } {
+export function replay(session: Session, raw = "0", snapshot = false, snapshotBytes?: number): { cursor: number; snapshot?: TurnSnapshot; events: BufferedEvent[] } {
     if (!/^\d+$/.test(raw)) throw new HttpError(400, "Invalid event cursor");
     const cursor = Number(raw);
     if (!Number.isSafeInteger(cursor)) throw new HttpError(400, "Invalid event cursor");
     const first = session.events[0]?.id ?? session.cursor + 1;
     const gap = cursor > session.cursor || cursor < first - 1;
-    if (snapshot && (cursor === 0 || gap)) return { cursor: session.cursor, snapshot: turnSnapshot({ options: {} }, session), events: [] };
+    if (snapshot && (cursor === 0 || gap)) return { cursor: session.cursor, snapshot: turnSnapshot({ options: { snapshotBytes } }, session), events: [] };
     if (cursor !== 0 && gap) throw new HttpError(409, "REPLAY_GAP: recover from session state");
     return { cursor, events: session.events.filter(event => event.id > cursor) };
   }

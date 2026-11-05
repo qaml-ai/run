@@ -616,6 +616,16 @@ export class CamelAgent extends DurableObject<Env> {
     async () => (await this.config()).tenantId,
     {
       agentId: async () => (await this.config()).id,
+      // Pi batches its live document. Project the provider's individual deltas
+      // through the same projection so short chunks remain observable.
+      onStreamEvent: async (event) => {
+        if (!("partial" in event)) return;
+        await this.eventsProcessed;
+        const run = await this.currentRun();
+        await this.markBegan(run.id);
+        this.partial = event.partial;
+        await this.projectMessage(run.id, event.partial, false);
+      },
       onStall: async (stall) => {
         const run = await this.currentRun();
         await this.emit({ type: "event", requestId: run.id, event: { type: "model_stream_stalled", ...stall } });
@@ -1241,7 +1251,7 @@ export class CamelAgent extends DurableObject<Env> {
     if (id) {
       this.active = id;
       await this.markBegan(id);
-      if (this.partial) await this.projectMessage(id, this.partial, false);
+      // Provider deltas are projected before Pi batches this live document.
     } else if (this.active) {
       const record = await this.ctx.storage.get<RequestRecord>(
         reqKey(this.active),
@@ -1313,8 +1323,12 @@ export class CamelAgent extends DurableObject<Env> {
         record.state = "completed";
         record.status = "input_required";
         record.endedAt = Date.now();
+        const usage = await this.usageForRequest(record.piId ?? id);
         record.outcome = {
-          result: { stopped: "input_required", inputs, reply: "" },
+          result: { stopped: "input_required", inputs, reply: "", usage: this.usageView(usage),
+            ...(usage.toolCalls?.length ? { toolCalls: usage.toolCalls.map(call => waiting.has(call.toolCallId) ? { ...call, ok: false, code: "input_required" } : call) } : {}),
+            ...(usage.toolErrors?.length ? { toolErrors: usage.toolErrors } : {}),
+          },
         };
         await this.ctx.storage.transaction(async (tx) => {
           await tx.put(reqKey(id), record);
@@ -1430,29 +1444,7 @@ export class CamelAgent extends DurableObject<Env> {
       const outputValue = await this.ctx.storage.get(`output:${id}`);
       const outputInvalid = await this.ctx.storage.get(`output-invalid:${id}`);
       const limit = await this.ctx.storage.get<RuntimeLimit>(`run-limit:${id}`);
-      const runUsage = {
-                  responses: usage.responses,
-                  input: usage.inputTokens,
-                  output: usage.outputTokens,
-                  cacheRead: usage.cacheRead,
-                  cacheWrite: usage.cacheWrite,
-                  costUsd: usage.costMicros / 1_000_000,
-                  ...(usage.imageCostUsd > 0
-                    ? { imageCostUsd: usage.imageCostUsd }
-                    : {}),
-                  ...(usage.transcriptionCostUsd > 0
-                    ? { transcriptionCostUsd: usage.transcriptionCostUsd }
-                    : {}),
-                  ...(usage.decisionCostUsd > 0
-                    ? { decisionCostUsd: usage.decisionCostUsd }
-                    : {}),
-                  ...(usage.webCostUsd > 0
-                    ? { webCostUsd: usage.webCostUsd }
-                    : {}),
-                  ...(usage.subagentCostUsd > 0
-                    ? { subagentCostUsd: usage.subagentCostUsd }
-                    : {}),
-                };
+      const runUsage = this.usageView(usage);
       const outcome = limit
         ? { result: { ...limit, usage: runUsage } }
         : result.status === "done"
@@ -2951,6 +2943,31 @@ export class CamelAgent extends DurableObject<Env> {
       );
     }
   }
+  private usageView(usage: Awaited<ReturnType<CamelAgent["usageForRequest"]>>) {
+    return {
+                  responses: usage.responses,
+                  input: usage.inputTokens,
+                  output: usage.outputTokens,
+                  cacheRead: usage.cacheRead,
+                  cacheWrite: usage.cacheWrite,
+                  costUsd: usage.costMicros / 1_000_000,
+                  ...(usage.imageCostUsd > 0
+                    ? { imageCostUsd: usage.imageCostUsd }
+                    : {}),
+                  ...(usage.transcriptionCostUsd > 0
+                    ? { transcriptionCostUsd: usage.transcriptionCostUsd }
+                    : {}),
+                  ...(usage.decisionCostUsd > 0
+                    ? { decisionCostUsd: usage.decisionCostUsd }
+                    : {}),
+                  ...(usage.webCostUsd > 0
+                    ? { webCostUsd: usage.webCostUsd }
+                    : {}),
+                  ...(usage.subagentCostUsd > 0
+                    ? { subagentCostUsd: usage.subagentCostUsd }
+                    : {}),
+                };
+  }
   private async usageForRequest(id: string) {
     const pi = await this.harness.pi(),
       root = await pi.root(BACKGROUND_CONTEXT);
@@ -3489,7 +3506,8 @@ export class CamelAgent extends DurableObject<Env> {
     const asked = new URL(request.url).searchParams.get("snapshot");
     return replayEvents({ cursor: state.cursor, events: state.events,
       turn: await this.ctx.storage.get<LiveTurn>("live-turn"), partial: this.partial },
-      request.headers.get("Last-Event-ID") ?? "0", watch ? asked !== "0" : asked === "1");
+      request.headers.get("Last-Event-ID") ?? "0", watch ? asked !== "0" : asked === "1",
+      Number((this.env as Env & { AGENT_SNAPSHOT_BYTES?: string }).AGENT_SNAPSHOT_BYTES) || undefined);
   }
   private async events(request: Request): Promise<Response> {
     const runId = new URL(request.url).searchParams.get("runId");

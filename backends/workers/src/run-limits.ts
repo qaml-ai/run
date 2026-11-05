@@ -4,6 +4,7 @@ import {
   type Extension,
 } from "@earendil-works/pi-durable";
 import type { AgentConfiguration } from "./api-contract.ts";
+import { dollars } from "./agent-spend-policy.ts";
 import { agentSpendRefusal, type SpendLimit } from "./agent-spend.ts";
 import { RUN_LIMITS, duration } from "./run-caps-policy.ts";
 
@@ -20,6 +21,7 @@ export type RuntimeLimit = {
   error: string;
   code: "turn_limit" | "spend_limit";
   stopped: "turn_limit" | "spend_limit";
+  limit?: "run" | "agent";
 };
 const defaults = RUN_LIMITS;
 
@@ -59,7 +61,8 @@ export function runLimit(
   if (error) return { error, code: "turn_limit", stopped: "turn_limit" };
   if (usage.costUsd >= caps.spendUsd)
     return {
-      error: `This run stopped at its spend limit of $${caps.spendUsd}. Send another message to continue`,
+      error: `This run has reached its spend limit of ${dollars(caps.spendUsd)} (${dollars(usage.costUsd)} spent)`,
+      limit: "run",
       code: "spend_limit",
       stopped: "spend_limit",
     };
