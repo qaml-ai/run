@@ -15,23 +15,24 @@ test('prompts submitted between upserts use their preceding configuration', { ti
     return response.json;
   };
   const agent = await upsert('configuration A.');
-  const prompt = async (text: string) => {
-    const response = await fixture.call(`/v1/agents/${agent.id}/prompt`, { body: { text } });
+  const prompt = async (text: string, requestId = text) => {
+    const response = await fixture.call(`/v1/agents/${agent.id}/prompt`, { body: { text, requestId } });
     assert.equal(response.status, 202, response.text);
     return response.json.id as string;
   };
   const held = await prompt('hold');
   await until(() => fixture.model.bodies.length === 1, 'held turn');
   await upsert('configuration B.');
-  const middle = await prompt('middle');
+  const middle = await prompt('middle', 'z_middle');
+  const nextMiddle = await prompt('next-middle', 'a_middle');
   await upsert('configuration C.');
   const last = await prompt('last');
   gate.resolve();
-  for (const id of [held, middle, last]) {
+  for (const id of [held, middle, nextMiddle, last]) {
     await until(async () => (await fixture.call(`/v1/agents/${agent.id}/requests/${id}`)).json.state === 'completed', `request ${id}`);
   }
-  assert.deepEqual(fixture.model.bodies.map(lastUser), ['hold', 'middle', 'last']);
-  for (const [index, label] of ['A', 'B', 'C'].entries()) {
+  assert.deepEqual(fixture.model.bodies.map(lastUser), ['hold', 'middle', 'next-middle', 'last']);
+  for (const [index, label] of ['A', 'B', 'B', 'C'].entries()) {
     const system = fixture.model.bodies[index].messages.find((message: { role: string }) => ['system', 'developer'].includes(message.role))?.content;
     assert.ok(String(system).includes(`configuration ${label}.`), String(system));
   }

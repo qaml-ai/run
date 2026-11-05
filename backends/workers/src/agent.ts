@@ -2555,13 +2555,15 @@ export class CamelAgent extends DurableObject<Env> {
       if (preparing) { record.admitted = true; await this.promptPreparations.finish(id); }
       record.configurationWait = configurationWait;
       record.state = 'queued';
-      await this.ctx.storage.transaction(async tx => {
-        if (record.configurationWaitSequence === undefined) {
-          record.configurationWaitSequence = (await tx.get<RequestRecord>(reqKey(id)))?.configurationWaitSequence
-            ?? (await tx.get<number>('configuration-wait-order') ?? 0) + 1;
-          await tx.put('configuration-wait-order', record.configurationWaitSequence);
+      record.configurationWaitSequence = await this.ctx.storage.transaction(async tx => {
+        let sequence = record.configurationWaitSequence ?? (await tx.get<RequestRecord>(reqKey(id)))?.configurationWaitSequence;
+        if (sequence === undefined) {
+          sequence = (await tx.get<number>('configuration-wait-order') ?? 0) + 1;
+          await tx.put('configuration-wait-order', sequence);
         }
-        await tx.put(reqKey(id), record);
+        const saved = { ...record, configurationWaitSequence: sequence };
+        await tx.put(reqKey(id), saved);
+        return sequence;
       });
       await this.arm(Date.now() + 1000);
       return record;
