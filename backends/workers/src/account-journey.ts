@@ -1,1 +1,1 @@
-export type { Journey, JourneyMethod } from "../../../src/journey.ts";
+export type { Journey, JourneyMethod } from "../../../src/core/journey.ts";

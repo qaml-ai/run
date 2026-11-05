@@ -12,7 +12,7 @@ import type { Webhooks } from "./webhook-policy.ts";
 import { RuntimeSigner } from "./runtime-identity.ts";
 import { defaultModelFor, type DefaultModelEnv } from "./default-model.ts";
 import { createJourney, publicJourneyRoutes, type JourneyEnv } from "./journey.ts";
-import type { Journey } from "../../../src/journey.ts";
+import type { Journey } from "../../../src/core/journey.ts";
 export { oauthAllows } from "./account-access.ts";
 
 export type AccountEnv = MailEnv & JourneyEnv & {
@@ -125,7 +125,7 @@ export async function publicAccountRoutes(request: Request, service: AccountServ
   if (["GET", "HEAD"].includes(request.method) && /^\/(?:$|console(?:\/|$)|oauth\/authorize$)/.test(path) && service.origins.alias(request.headers)) {
     return Response.redirect(`${service.origins.canonical}${path}${url.search}`, 302);
   }
-  const page = await publicJourneyRoutes(request, service.environment as AccountEnv, service.journey, service.auth);
+  const page = await publicJourneyRoutes(request, service.environment as unknown as AccountEnv, service.journey, service.auth);
   if (page) {
     if (service.journey) ctx?.waitUntil(service.journey.send());
     return page;

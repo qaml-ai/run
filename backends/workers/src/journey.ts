@@ -1,7 +1,11 @@
-import { Journey, journeyConfig, journeyApp, emailAt, JOURNEY_META } from "../../../src/journey.ts";
+import { Journey, journeyConfig, journeyApp, emailAt, JOURNEY_META } from "../../../src/core/journey.ts";
 import type { Accounts } from "./accounts.ts";
 import { keyServices, type KeyEnv } from "./security-services.ts";
 import type { ConsoleAuth } from "./account-console-auth.ts";
+import { transaction, type Db } from "./postgres.ts";
+import { readText } from "./account-http.ts";
+import { safeError } from "./metrics-policy.ts";
+import { signedHeaders } from "./webhook-policy.ts";
 
 export type JourneyEnv = {
   AGENT_JOURNEY_URL?: string;
@@ -19,9 +23,10 @@ export type JourneyEnv = {
 
 /** The source owns consent, event schemas, deduplication and the durable outbox. */
 export function createJourney(env: JourneyEnv, accounts: Accounts, publicUrl: string) {
-  const config = journeyConfig(env as NodeJS.ProcessEnv, env.AGENT_JOURNEY_SECRET);
+  const config = journeyConfig(env as unknown as NodeJS.ProcessEnv, env.AGENT_JOURNEY_SECRET);
   return config && new Journey({
     ...config, db: accounts.db, publicUrl,
+    host: { transaction: (db, work) => transaction(db as Db, work), readText, safeError, signedHeaders },
     internal: (tenant, email) => accounts.tenants.has(tenant) || emailAt(config.internalEmailDomains, email),
   });
 }
