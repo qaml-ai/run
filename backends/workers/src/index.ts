@@ -461,9 +461,12 @@ const worker = {
         if (requestId !== undefined && (typeof requestId !== "string" || !requestId.length))
           throw new BadRequest("requestId must be a nonempty string");
         const patched = configuration({ ...entry.config, ...params }, entry.config.model ?? env.MODEL).config;
-        const modelError = (Object.hasOwn(params, "model") || Object.hasOwn(params, "keyScope"))
-          ? await configurationModelError(env, entry.tenantId, patched) : undefined;
-        if (modelError) throw new ApiError(400, modelError);
+        if (Object.hasOwn(params, "model") || Object.hasOwn(params, "keyScope")) {
+          try {
+            const modelError = await configurationModelError(env, entry.tenantId, patched);
+            if (modelError) throw new Error(modelError);
+          } catch (error) { throw new ApiError(400, (error as Error).message); }
+        }
         return forward(new Request(request.url, {
           method: "POST", headers: { "content-type": "application/json" },
           body: JSON.stringify({ id: requestId ?? request.headers.get("Idempotency-Key") ?? crypto.randomUUID(), method: "configure", params }),
