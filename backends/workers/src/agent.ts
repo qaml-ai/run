@@ -1,4 +1,5 @@
 import { toolOutputExtension } from "./tool-output.ts";
+import { refreshIdleLifetime } from "./idle-lifetime.ts";
 import { toolCallSite } from "./tool-call-context.ts";
 import { withMoneyMetrics } from "./money-metrics.ts";
 import { DurableObject } from "cloudflare:workers";
@@ -1756,6 +1757,7 @@ export class CamelAgent extends DurableObject<Env> {
           { status: 409 },
         );
       if (old) return old.accepted || old.state === "completed" ? old : this.startHostRequest(old);
+      await refreshIdleLifetime(this.env, this.ctx.storage, await this.config());
       const record: RequestRecord = {
         id,
         method: "execute",
@@ -1921,6 +1923,7 @@ export class CamelAgent extends DurableObject<Env> {
       });
     if (old?.state === "completed") return old;
     const conf = await this.config();
+    if (!old) await refreshIdleLifetime(this.env, this.ctx.storage, conf);
     if (conf.config.spendLimit) await this.flushBilling(true);
     const spend = await this.agentSpend(conf);
     const refusal = agentSpendRefusal(conf.id, spend);
