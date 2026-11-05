@@ -1,0 +1,978 @@
+{
+  "backend": "workers",
+  "area": "all",
+  "group": "lifecycle",
+  "nodeKey": "37fe8ceacf3bc0cd00210c288964a3d85119933e53516aa4392d3f40854b56dc",
+  "suiteHash": "9a746c5b99cd24d2ebb25ffbfb6c1c61fc9c21576e77a30c6c5ca62938f684d9",
+  "revision": "41a5e3b7582cff8a33267a59c973e3720400f0c4",
+  "durationMs": 202139.362493,
+  "runtime": {
+    "node": "v24.22.1",
+    "platform": "linux",
+    "arch": "x64"
+  },
+  "recordedAt": "2026-11-05T22:45:45.478Z",
+  "expectedCases": 102,
+  "rows": [
+    {
+      "area": "agents",
+      "source": "tests/agent-lifetime.test.ts:108",
+      "name": "the same key with a changed configuration reconfigures the agent instead of refusing; what cannot change says so",
+      "status": "pass",
+      "durationMs": 6834.863574,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agent-lifetime.test.ts:11",
+      "name": "an agent made with an idempotency key lives until deleted by default; one made without lives a day",
+      "status": "pass",
+      "durationMs": 13273.187631,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agent-lifetime.test.ts:142",
+      "name": "the last upsert wins: back to an earlier configuration, and upserts queued behind a running turn",
+      "status": "pass",
+      "durationMs": 6902.895965,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agent-lifetime.test.ts:23",
+      "name": "an agent with an idle lifetime lives on from each run it is sent",
+      "status": "pass",
+      "durationMs": 5006.056793,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agent-lifetime.test.ts:37",
+      "name": "agents are listed with the key they were made with, and their name",
+      "status": "pass",
+      "durationMs": 4635.505687,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agent-lifetime.test.ts:50",
+      "name": "an agent is made without a model key; its first run says which key to set",
+      "status": "pass",
+      "durationMs": 5666.193724,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agent-lifetime.test.ts:83",
+      "name": "a key whose agent was deleted or expired makes a fresh agent, with a new token; the old one stays gone",
+      "status": "pass",
+      "durationMs": 65500.38643,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agents-list.test.ts:17",
+      "name": "GET /v1/agents pages by cursor, filters by workspace, status and search, and lists activity and the last failure",
+      "status": "pass",
+      "durationMs": 17379.22193,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agents.test.ts:102",
+      "name": "an agent's credentials are for the account's own tokens: a browser token gets 403, an agent's token 401, and no browser origin is allowed",
+      "status": "pass",
+      "durationMs": 5436.234441,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agents.test.ts:124",
+      "name": "a tool that returns nothing succeeds with null; its context has a stable idempotency key and reports progress",
+      "status": "pass",
+      "durationMs": 6702.978095,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agents.test.ts:142",
+      "name": "a slow onEvent never holds up the agent's tool calls",
+      "status": "pass",
+      "durationMs": 9719.800222,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agents.test.ts:165",
+      "name": "an onEvent that throws is reported to onError, and the connection goes on",
+      "status": "pass",
+      "durationMs": 5816.261048,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agents.test.ts:174",
+      "name": "an approval: the run waits with its input, and answering it resolves with the resumed run",
+      "status": "pass",
+      "durationMs": 5874.292742,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agents.test.ts:195",
+      "name": "a run's wait has no timeout, and an AbortSignal stops the wait without stopping the run",
+      "status": "pass",
+      "durationMs": 6871.140995,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agents.test.ts:203",
+      "name": "the same key sent again while its run goes on joins that run, and one caller's timeout leaves the other waiting",
+      "status": "pass",
+      "durationMs": 6635.117069,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agents.test.ts:24",
+      "name": "run() resolves with a typed Run; the agent's id is public and its token stays out of logs",
+      "status": "pass",
+      "durationMs": 18772.588452,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agents.test.ts:42",
+      "name": "a key the provider refuses fails the run as model_key_invalid, with where to set a working one",
+      "status": "pass",
+      "durationMs": 5952.172471,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agents.test.ts:50",
+      "name": "a failed run throws a RunError with the run, or resolves with it given throwOnError: false",
+      "status": "pass",
+      "durationMs": 5985.270888,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agents.test.ts:63",
+      "name": "stream() yields tool calls, results and text, then done with the run",
+      "status": "pass",
+      "durationMs": 6135.952398,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agents.test.ts:83",
+      "name": "get() takes an existing agent by key or id without changing it; 404 for none, 409 for one made without a key",
+      "status": "pass",
+      "durationMs": 7050.564284,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "agents",
+      "source": "tests/idempotency.test.ts:35",
+      "name": "a response carrying a secret shown once is never kept or replayed: its key's retry is a conflict",
+      "status": "pass",
+      "durationMs": 6095.096951,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "agents",
+      "source": "tests/idempotency.test.ts:58",
+      "name": "a key whose request died mid-way is taken over after a while, and a body past the limit is refused before it is read whole",
+      "status": "pass",
+      "durationMs": 5338.099037,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "agents",
+      "source": "tests/idempotency.test.ts:7",
+      "name": "an Idempotency-Key header on any POST replays its first success, refuses other parameters, and names a prompt's request",
+      "status": "pass",
+      "durationMs": 7137.260028,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "agents",
+      "source": "tests/service-api.test.ts:102",
+      "name": "tenants provision and see only their own agents, billed to their own provider keys",
+      "status": "pass",
+      "durationMs": 5992.486518,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "agents",
+      "source": "tests/service-api.test.ts:43",
+      "name": "operator provisioning imports native history once; scoped reads do not journal transcript copies",
+      "status": "pass",
+      "durationMs": 4919.241043,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "agents",
+      "source": "tests/service-api.test.ts:62",
+      "name": "scoped configuration persists allowed fields and rejects provider credentials or endpoints",
+      "status": "pass",
+      "durationMs": 5853.544606,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "agents",
+      "source": "tests/service-api.test.ts:88",
+      "name": "provisioning takes models by name only, never an endpoint or credentials",
+      "status": "pass",
+      "durationMs": 4387.635655,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "history",
+      "source": "tests/agent-fork.test.ts:132",
+      "name": "a fork of an agent mid-turn ends before the running turn: no partial turn, and the fork loads idle",
+      "status": "pass",
+      "durationMs": 9386.255622,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "history",
+      "source": "tests/agent-fork.test.ts:160",
+      "name": "a fork of a compacted agent keeps its summary: the model sees the summary and what follows, history keeps every message",
+      "status": "pass",
+      "durationMs": 7591.198542,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "history",
+      "source": "tests/agent-fork.test.ts:18",
+      "name": "a fork has the source's configuration, history and workspace, and from then on each goes its own way",
+      "status": "pass",
+      "durationMs": 14276.337237,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "history",
+      "source": "tests/agent-fork.test.ts:196",
+      "name": "a fork's key makes it idempotent: a retry returns the same fork, another source's fork with it is refused",
+      "status": "pass",
+      "durationMs": 10074.90191,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "history",
+      "source": "tests/agent-fork.test.ts:225",
+      "name": "only the source's tenant forks it, and never with a browser token",
+      "status": "pass",
+      "durationMs": 5043.192035,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "history",
+      "source": "tests/agent-fork.test.ts:235",
+      "name": "a fork pins the files its history refers to: they stay stored after the source, its workspace and the fork's copy are gone",
+      "status": "pass",
+      "durationMs": 8091.810642,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "history",
+      "source": "tests/agent-fork.test.ts:256",
+      "name": "the SDK's fork() makes a new agent from this one: its history, configuration and files; a key returns the same fork",
+      "status": "pass",
+      "durationMs": 7498.178516,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "history",
+      "source": "tests/agent-fork.test.ts:279",
+      "name": "a fork is cut from the source's journal: its history, and Pi's context as of the cut",
+      "status": "pass",
+      "durationMs": 6596.050672,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "history",
+      "source": "tests/agent-fork.test.ts:295",
+      "name": "a fork after a context reset starts from the context the reset left, where the source stood and at a cut after the reset",
+      "status": "pass",
+      "durationMs": 8865.047603,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "history",
+      "source": "tests/agent-fork.test.ts:76",
+      "name": "a fork may act for someone else and carry its own prompt addition and model headers: what a create fixes, the fork's create sets",
+      "status": "pass",
+      "durationMs": 6683.631306,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "history",
+      "source": "tests/agent-fork.test.ts:95",
+      "name": "a fork ends at a message: that message and the tool results answering it, or a request's whole turn",
+      "status": "pass",
+      "durationMs": 9601.502978,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "history",
+      "source": "tests/context-reset.test.ts:118",
+      "name": "a context too large to load resets over the API, and the next prompt runs from the new context",
+      "status": "pass",
+      "durationMs": 23454.51287,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "history",
+      "source": "tests/history-formats.test.ts:88",
+      "name": "an agent made with importMessages begins with the conversation, and a refused import makes no agent",
+      "status": "pass",
+      "durationMs": 11460.948767,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "history",
+      "source": "tests/history-import.test.ts:33",
+      "name": "a refused import answers 400 INVALID_HISTORY, or 413 HISTORY_TOO_LARGE, and makes no agent",
+      "status": "pass",
+      "durationMs": 6054.742015,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "history",
+      "source": "tests/history-import.test.ts:46",
+      "name": "a compactionSummary in imported history stands for everything before it: history keeps every message, the model sees the summary and what follows",
+      "status": "pass",
+      "durationMs": 5653.608047,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "history",
+      "source": "tests/history-import.test.ts:66",
+      "name": "imported messages need only their role and content: usage, stopReason, timestamps and isError are filled in",
+      "status": "pass",
+      "durationMs": 6561.885153,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "history",
+      "source": "tests/history-none-ignored.test.ts:12",
+      "name": "a prompt's history: \"none\" is accepted and ignored: the run sees the agent's history, logged once per agent",
+      "status": "pass",
+      "durationMs": 4654.896528,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "history",
+      "source": "tests/history-none-ignored.test.ts:32",
+      "name": "the SDK still takes history: \"none\" (ignored), codeMode and configHash",
+      "status": "pass",
+      "durationMs": 4747.386309,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "history",
+      "source": "tests/history-none-ignored.test.ts:51",
+      "name": "a schedule's history: \"none\", sent or stored, is accepted and ignored: its wake-up sees the agent's history",
+      "status": "pass",
+      "durationMs": 4351.280642,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "history",
+      "source": "tests/history-pages.test.ts:266",
+      "name": "history comes in pages of whole turns, newest first, from Pi storage wherever the agent runs or not",
+      "status": "pass",
+      "durationMs": 16286.619105,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "history",
+      "source": "tests/history-pages.test.ts:321",
+      "name": "history maxBytes works alone on the API and through the SDK, with validated bounds",
+      "status": "pass",
+      "durationMs": 7768.793538,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "history",
+      "source": "tests/history-pages.test.ts:346",
+      "name": "history after pages forward on the API and through the SDK; after with before is a 400",
+      "status": "pass",
+      "durationMs": 7265.899511,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "history",
+      "source": "tests/history-pages.test.ts:400",
+      "name": "the newest page has the running turn's finished messages, at their indexes; purging removes the agent's history",
+      "status": "pass",
+      "durationMs": 7905.188953,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "history",
+      "source": "tests/pi-durable-context-guard.test.ts:107",
+      "name": "an oversized resumed range fails once, clears pending work, and remains readable and abortable",
+      "status": "fail",
+      "durationMs": 9954.307706,
+      "reason": "Unsupported fixture state: Workers agents have no Postgres resume_failures or resume_after",
+      "error": {
+        "message": "Unsupported fixture state: Workers agents have no Postgres resume_failures or resume_after",
+        "stack": "Error: Unsupported fixture state: Workers agents have no Postgres resume_failures or resume_after\n    at Object.agentRecovery (file:///home/sprite/rt/tests/contract/fixtures/workers.ts:232:41)\n    at file:///home/sprite/rt/tests/contract/areas/pi-durable-context-guard.public.contract.test.ts:51:28\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/ported.ts:13:13\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "history",
+      "source": "tests/pi-durable-context-guard.test.ts:79",
+      "name": "a newly seeded oversized range fails startup with a coded outcome",
+      "status": "pass",
+      "durationMs": 4382.936083,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "history",
+      "source": "tests/pi-durable-context-guard.test.ts:90",
+      "name": "a live range stops with context_too_large and does not retry the model",
+      "status": "pass",
+      "durationMs": 7667.568117,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "messages",
+      "source": "tests/prompt-options.test.ts:109",
+      "name": "the legacy /clients steer holds a message sent while idle for the next run, which a prompt sent in the same tick starts: one turn, in order",
+      "status": "pass",
+      "durationMs": 5509.634057,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "messages",
+      "source": "tests/prompt-options.test.ts:49",
+      "name": "a message sent just after a first prompt joins its turn, though the agent is still starting",
+      "status": "pass",
+      "durationMs": 6721.918784,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "messages",
+      "source": "tests/prompt-options.test.ts:60",
+      "name": "whileRunning: steer hands a running turn the message; with no turn running it starts one; retries are idempotent",
+      "status": "pass",
+      "durationMs": 7782.642737,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "messages",
+      "source": "tests/prompt-options.test.ts:7",
+      "name": "a prompt's requestId and metadata are kept on its user message and its request: in history, the stream and snapshots, never shown to the model",
+      "status": "pass",
+      "durationMs": 8867.721273,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "messages",
+      "source": "tests/prompt-options.test.ts:94",
+      "name": "a steered message the running turn did not take (it was aborted, keeping the queue) runs once, as a turn of its own",
+      "status": "pass",
+      "durationMs": 5789.93536,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "messages",
+      "source": "tests/request-wait.test.ts:36",
+      "name": "the SDK's requestStatus takes wait: one call that waits for a request sent without waiting",
+      "status": "pass",
+      "durationMs": 7189.072066,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "messages",
+      "source": "tests/request-wait.test.ts:6",
+      "name": "a request read with ?wait answers as soon as it settles, or when the wait ends, still running",
+      "status": "pass",
+      "durationMs": 14243.657659,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "messages",
+      "source": "tests/sender.test.ts:8",
+      "name": "a message's sender reaches the model in a block only the runtime can write, and acts in the turn",
+      "status": "pass",
+      "durationMs": 7091.952751,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "runs",
+      "source": "tests/loop-reliability.test.ts:118",
+      "name": "stopping an agent ends its turn and cancels the runs queued behind it, so nothing runs after the stop; queued: keep stops the turn only",
+      "status": "pass",
+      "durationMs": 8730.181863,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "runs",
+      "source": "tests/loop-reliability.test.ts:151",
+      "name": "a stop drops the messages the agent holds for its next turn (the legacy steer): the next prompt never reads them",
+      "status": "pass",
+      "durationMs": 6063.892613,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "runs",
+      "source": "tests/loop-reliability.test.ts:167",
+      "name": "every view of an agent agrees whether it is busy: during a stall, and after a stop",
+      "status": "pass",
+      "durationMs": 6403.438444,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "runs",
+      "source": "tests/loop-reliability.test.ts:179",
+      "name": "a steer is acknowledged at once and completes when the running turn takes it: a turn fed steers forever never fills the queue",
+      "status": "pass",
+      "durationMs": 25513.757577,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "runs",
+      "source": "tests/loop-reliability.test.ts:67",
+      "name": "a run past its agent's own maxSeconds is aborted inside a hung model request, and ends as its time limit's",
+      "status": "pass",
+      "durationMs": 6991.542568,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "runs",
+      "source": "tests/loop-reliability.test.ts:83",
+      "name": "a stalled model is retried, watchers see the stall, and a model that never answers fails its run with model_stream_stalled",
+      "status": "pass",
+      "durationMs": 11858.864912,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "runs",
+      "source": "tests/run-limits.test.ts:111",
+      "name": "a run stops at its time limit before its next model request",
+      "status": "pass",
+      "durationMs": 28814.717408,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "runs",
+      "source": "tests/run-limits.test.ts:12",
+      "name": "a run stops at its agent's limit of model responses with stopped turn_limit, and the next message continues",
+      "status": "pass",
+      "durationMs": 8477.955998,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "runs",
+      "source": "tests/run-limits.test.ts:42",
+      "name": "self-serve tenants get the runtime's maximums (or the operator's per tenant); admin tenants the admin backstop unless their entry sets one",
+      "status": "pass",
+      "durationMs": 14646.179975,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "runs",
+      "source": "tests/run-limits.test.ts:85",
+      "name": "an admin tenant's runaway run stops at the admin backstop",
+      "status": "pass",
+      "durationMs": 6749.790572,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "runs",
+      "source": "tests/run-limits.test.ts:94",
+      "name": "a definition's run limits reach its agents, and an agent's own stay when the definition is applied",
+      "status": "pass",
+      "durationMs": 6871.262774,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs-busy-limit.test.ts:12",
+      "name": "at a busy limit of 1, the next run starts as soon as one is seen to end: 40 stateless runs, then agent prompts alternating between two agents",
+      "status": "pass",
+      "durationMs": 42434.087735,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs-messages-at-end.test.ts:8",
+      "name": "a run's messages read as it ends are its messages, though its agent stops while answering",
+      "status": "pass",
+      "durationMs": 33584.44562,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs-stall.test.ts:8",
+      "name": "a run whose model stalls ends failed with model_stream_stalled, never hanging busy",
+      "status": "pass",
+      "durationMs": 10077.715798,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs.test.ts:109",
+      "name": "two runs with the same configuration share nothing: each model call has only its own input",
+      "status": "pass",
+      "durationMs": 5875.427154,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs.test.ts:121",
+      "name": "a run with output answers with an object that fits its schema",
+      "status": "pass",
+      "durationMs": 4991.305089,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs.test.ts:130",
+      "name": "an Idempotency-Key names one run: again with the same body it is that run, with another body a 409",
+      "status": "pass",
+      "durationMs": 6339.912287,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs.test.ts:151",
+      "name": "abort ends a running run as failed, code aborted",
+      "status": "pass",
+      "durationMs": 5204.470235,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs.test.ts:161",
+      "name": "runs count against busy agents and runs per minute, as agent runs do, and not against agent creates",
+      "status": "pass",
+      "durationMs": 15457.280285,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs.test.ts:195",
+      "name": "a run's event stream follows it to its end, and picks up after Last-Event-ID without a gap or a repeat",
+      "status": "pass",
+      "durationMs": 7129.45336,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs.test.ts:216",
+      "name": "an ended run is kept for its retention, then everything it stored is deleted",
+      "status": "pass",
+      "durationMs": 7230.002502,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs.test.ts:236",
+      "name": "a run's configuration is checked before anything is made",
+      "status": "pass",
+      "durationMs": 4596.247862,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs.test.ts:254",
+      "name": "the TypeScript SDK: agents.run in one call, runs.stream as it happens, runs.get, abort and messages",
+      "status": "pass",
+      "durationMs": 7715.005244,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs.test.ts:290",
+      "name": "a run with no tools gets none: no codemode and no file tools, only its instructions; one with tools, or that asks, has codemode",
+      "status": "pass",
+      "durationMs": 6323.496537,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs.test.ts:38",
+      "name": "a stateless run takes its configuration and input and answers with its result, in one call; it is no agent",
+      "status": "pass",
+      "durationMs": 6812.892588,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs.test.ts:76",
+      "name": "a run a model call failed says how in its error, beside code and message, and in its events",
+      "status": "pass",
+      "durationMs": 6826.139357,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "runs",
+      "source": "tests/runs.test.ts:98",
+      "name": "without wait a run answers 202 at once; GET with wait has it end",
+      "status": "pass",
+      "durationMs": 6039.581115,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "schedules",
+      "source": "tests/schedule-api.test.ts:21",
+      "name": "public accounts can email their verified address and cannot email strangers or suppressed recipients",
+      "status": "fail",
+      "durationMs": 4462.815154,
+      "reason": "Expected values to be strictly equal: 400 !== 403",
+      "error": {
+        "message": "Expected values to be strictly equal:\n\n400 !== 403\n",
+        "stack": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\n400 !== 403\n\n    at contractTest.env.AGENT_ACCOUNT_EMAIL_FROM (file:///home/sprite/rt/tests/contract/areas/schedule-api.contract.test.ts:31:9)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)",
+        "expected": 403,
+        "actual": 400,
+        "operator": "strictEqual"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "schedules",
+      "source": "tests/schedule-api.test.ts:37",
+      "name": "a calendar wake-up tells the model its fixed local edition date",
+      "status": "pass",
+      "durationMs": 4817.83756,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "schedules",
+      "source": "tests/schedule-api.test.ts:7",
+      "name": "calendar schedules and owner-configured email round trip through the API without crossing accounts",
+      "status": "fail",
+      "durationMs": 4765.49567,
+      "reason": "{\"code\":\"INVALID_REQUEST\",\"error\":\"Scheduled email is not enabled on this runtime\"} 400 !== 201",
+      "error": {
+        "message": "{\"code\":\"INVALID_REQUEST\",\"error\":\"Scheduled email is not enabled on this runtime\"}\n\n400 !== 201\n",
+        "stack": "AssertionError [ERR_ASSERTION]: {\"code\":\"INVALID_REQUEST\",\"error\":\"Scheduled email is not enabled on this runtime\"}\n\n400 !== 201\n\n    at contractTest.env.AGENT_ACCOUNT_EMAIL_FROM (file:///home/sprite/rt/tests/contract/areas/schedule-api.contract.test.ts:15:9)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)",
+        "expected": 201,
+        "actual": 400,
+        "operator": "strictEqual"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "streaming",
+      "source": "tests/stream-deltas.test.ts:110",
+      "name": "a snapshot too large for one frame drops the turn's finished messages first, keeping the message still streaming",
+      "status": "pass",
+      "durationMs": 4966.78673,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "streaming",
+      "source": "tests/stream-deltas.test.ts:132",
+      "name": "a tool call's updates are Pi's, less the message: toolcall_start names the call, toolcall_end carries it",
+      "status": "pass",
+      "durationMs": 6111.295589,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "streaming",
+      "source": "tests/stream-deltas.test.ts:29",
+      "name": "message_update carries its delta alone; a subscriber that asks gets a snapshot of the running turn where it cannot replay, and one that does not a replay gap",
+      "status": "pass",
+      "durationMs": 6395.578753,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "streaming",
+      "source": "tests/stream-deltas.test.ts:91",
+      "name": "the SDK's events carry no partial message, and it starts from a snapshot",
+      "status": "pass",
+      "durationMs": 5259.287152,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "transport",
+      "source": "tests/deploy-drain.test.ts:117",
+      "name": "close() waits for no call the runtime gave up on, nor when there is nothing to finish",
+      "status": "pass",
+      "durationMs": 4995.459194,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "transport",
+      "source": "tests/deploy-drain.test.ts:130",
+      "name": "a tool process that dies mid-run: the run goes on, the restarted process serves its next calls, and the same idempotencyKey fetches its result",
+      "status": "pass",
+      "durationMs": 5214.680597,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "transport",
+      "source": "tests/deploy-drain.test.ts:26",
+      "name": "a rolling deploy loses no tool call: the new process takes over, and the old one finishes its call as it closes",
+      "status": "pass",
+      "durationMs": 7897.094472,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "transport",
+      "source": "tests/deploy-drain.test.ts:55",
+      "name": "a stop-then-start deploy loses no tool call: close() finishes the call, and the next process connects without a takeover even while it drains",
+      "status": "pass",
+      "durationMs": 6254.056793,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "transport",
+      "source": "tests/deploy-drain.test.ts:78",
+      "name": "a call cut off with its connection tells the model, in plain words, that it may or may not have run",
+      "status": "pass",
+      "durationMs": 14247.746878,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "transport",
+      "source": "tests/deploy-drain.test.ts:97",
+      "name": "a takeover while a call runs lets the replaced process answer it, then tells it it was replaced",
+      "status": "pass",
+      "durationMs": 5214.423786,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "transport",
+      "source": "tests/http-drain.test.ts:15",
+      "name": "idle sockets outlive the load balancer's 360 s; a drain answers a long poll under way in full, with Connection: close",
+      "status": "fail",
+      "durationMs": 5748.538393,
+      "reason": "The input did not match the regular expression /timeout=365/. Input: 'undefined'",
+      "error": {
+        "message": "The input did not match the regular expression /timeout=365/. Input:\n\n'undefined'\n",
+        "stack": "AssertionError [ERR_ASSERTION]: The input did not match the regular expression /timeout=365/. Input:\n\n'undefined'\n\n    at file:///home/sprite/rt/tests/contract/areas/http-drain.public.contract.test.ts:17:10\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/ported.ts:13:13\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)",
+        "expected": {},
+        "actual": "undefined",
+        "operator": "match"
+      },
+      "backend": "sdk-unit"
+    }
+  ],
+  "shards": [
+    {
+      "index": 1,
+      "total": 3,
+      "durationMs": 132760.269251
+    },
+    {
+      "index": 2,
+      "total": 3,
+      "durationMs": 202139.362493
+    },
+    {
+      "index": 3,
+      "total": 3,
+      "durationMs": 160725.585101
+    }
+  ]
+}
