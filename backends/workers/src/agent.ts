@@ -202,6 +202,7 @@ import {
   type TerminalEvents,
   type TerminalDelivery,
 } from "./event-log.ts";
+import { EVENT_CONNECTION_HEADER } from "./event-relay.ts";
 import { agentBuiltins } from "./agent-builtins.ts";
 import { scheduleError, type ScheduleToolsHost } from "./agent-schedules.ts";
 import { auxiliaryRunCosts } from "./auxiliary-usage.ts";
@@ -1150,6 +1151,12 @@ export class CamelAgent extends DurableObject<Env> {
   private admission: Promise<unknown> = Promise.resolve();
   private eventsProcessed: Promise<void> = Promise.resolve();
   private readonly closeEventStreams = new Set<() => void>();
+  private readonly attachedEventStreams = new Map<string, () => void>();
+
+  /** Called only by the public Worker for the SSE connection it forwarded. */
+  async detachEventConnection(connection: string): Promise<void> {
+    this.attachedEventStreams.get(connection)?.();
+  }
 
   private async records() {
     return [
@@ -2098,6 +2105,9 @@ export class CamelAgent extends DurableObject<Env> {
       catch (error) {
         const completed = { ...record, state: 'completed' as const, endedAt: Date.now(), outcome: { error: error instanceof Error ? error.message : String(error) } };
         await this.ctx.storage.put(reqKey(record.id), completed);
+        const conf = await this.config();
+        await releaseTurn(this.env, conf.tenantId, conf.id, record.id);
+        await this.env.TENANTS.getByName(conf.tenantId).release(`${conf.id}:${record.id}`);
         await this.emit({ type: 'response', id: record.id, outcome: completed.outcome });
       }
     }
@@ -4088,6 +4098,7 @@ export class CamelAgent extends DurableObject<Env> {
     if (!watch) await this.attached.prepareAttach(previous, takeover);
     let heartbeat: ReturnType<typeof setInterval>;
     let cleanup = () => {};
+    let connectionId: string | undefined;
     const stream = new ReadableStream<Uint8Array>(
       {
         start: (controller) => {
@@ -4149,8 +4160,13 @@ export class CamelAgent extends DurableObject<Env> {
             request.signal.removeEventListener("abort", abort);
             this.listeners.delete(send);
             this.closeEventStreams.delete(retire);
+            if (connection) this.attachedEventStreams.delete(connection.id);
             connection?.close();
           };
+          if (connection) {
+            connectionId = connection.id;
+            this.attachedEventStreams.set(connection.id, abort);
+          }
           request.signal.addEventListener("abort", abort, { once: true });
           if (request.signal.aborted) { abort(); return; }
           this.closeEventStreams.add(retire);
@@ -4183,6 +4199,7 @@ export class CamelAgent extends DurableObject<Env> {
       headers: {
         "content-type": "text/event-stream",
         "cache-control": "no-store",
+        ...(connectionId ? { [EVENT_CONNECTION_HEADER]: connectionId } : {}),
       },
     });
   }

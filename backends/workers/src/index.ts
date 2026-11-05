@@ -118,11 +118,12 @@ function summary(entry: DirectoryEntry) {
     resume: null,
   };
 }
-async function forward(request: Request, env: Env, id: string, path: string) {
+async function forward(request: Request, env: Env, id: string, path: string, ctx: ExecutionContext) {
   const url = new URL(request.url);
   url.pathname = path;
-  const response = await env.AGENTS.getByName(id).fetch(new Request(url, request));
-  return relayEvents(response, request.signal);
+  const agent = env.AGENTS.getByName(id);
+  const response = await agent.fetch(new Request(url, request));
+  return relayEvents(response, request.signal, connection => agent.detachEventConnection(connection), task => ctx.waitUntil(task));
 }
 function scopedConfiguration(input: unknown) {
   if (!input || typeof input !== "object" || Array.isArray(input))
@@ -328,7 +329,7 @@ const worker = {
           const entries = await new Directory(env, auth.tenantId).list();
           const inputs = [];
           for (const entry of entries) {
-            const response = await forward(request, env, entry.id, "/inputs");
+            const response = await forward(request, env, entry.id, "/inputs", ctx);
             if (!response.ok) return response;
             inputs.push(...await response.json() as Array<{ id: string; createdAt: number }>);
           }
@@ -456,10 +457,11 @@ const worker = {
           env,
           entry.id,
           "/tool-sources",
+          ctx,
         );
         if (!response.ok) return response;
         const stateResponse = await forward(
-          new Request(request.url, { headers: request.headers }), env, entry.id, "/state",
+          new Request(request.url, { headers: request.headers }), env, entry.id, "/state", ctx,
         );
         if (!stateResponse.ok) return stateResponse;
         const state = await stateResponse.json() as { requests: { state: string }[]; cursor: number; running: boolean; spendLimit?: unknown };
@@ -523,7 +525,7 @@ const worker = {
         return forward(new Request(request.url, {
           method: "POST", headers: { "content-type": "application/json" },
           body: JSON.stringify({ id: requestId ?? request.headers.get("Idempotency-Key") ?? crypto.randomUUID(), method: "configure", params }),
-        }), env, entry.id, "/requests");
+        }), env, entry.id, "/requests", ctx);
       }
       if (tail === "/mounts") {
         if (request.method === "GET")
@@ -582,8 +584,8 @@ const worker = {
         request = new Request(request.url, { method: 'POST', headers: request.headers, body: JSON.stringify({ ...input, requestId: request.headers.get('idempotency-key') }) });
       }
       const response = tail === "/events"
-        ? await eventRead(request, env, entry.tenantId, entry.id, request => forward(request, env, entry!.id, tail))
-        : await forward(request, env, entry.id, tail);
+        ? await eventRead(request, env, entry.tenantId, entry.id, request => forward(request, env, entry!.id, tail, ctx))
+        : await forward(request, env, entry.id, tail, ctx);
       return browser ? browserResponse(response, browser, tail) : response;
     } catch (error) {
       return httpFailure(error, env);
