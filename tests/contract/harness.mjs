@@ -7,6 +7,7 @@ import { groups, groupFor } from "./groups.mjs";
 export const caseKey = row => `${row.area}\0${row.source}\0${row.name}`;
 const excludedDirectories = new Set(["node_modules", "dist", "target", ".wrangler", ".git", "__pycache__", ".venv", "build"]);
 const workerOnly = file => file.startsWith("backends/workers/") || file === "tests/contract/fixtures/workers.ts";
+const generatedInput = file => file.split("/").some(part => excludedDirectories.has(part));
 
 export async function walk(root, directory) {
   const entries = await readdir(path.join(root, directory), { withFileTypes: true }).catch(error => {
@@ -67,7 +68,7 @@ export async function sourceKeys(root, { details = false } = {}) {
       const packageName = match[1].startsWith("@") ? match[1].split("/").slice(0, 2).join("/") : match[1].split("/")[0];
       const directory = localPackages.get(packageName);
       if (!directory) continue;
-      for (const dependency of await walk(root, directory)) if (!nodeFiles.has(dependency)) {
+      for (const dependency of await walk(root, directory)) if (!generatedInput(dependency) && !nodeFiles.has(dependency)) {
         nodeFiles.add(dependency); pending.push(dependency);
       }
     }
@@ -78,7 +79,7 @@ export async function sourceKeys(root, { details = false } = {}) {
       // Runner root-directory constants are not imported inputs. Expanding one
       // would pull unrelated worktrees, measurements and Workers code into the
       // Node key (and make the cache self-referential).
-      if (relative === "." || relative.startsWith("../") || workerOnly(relative)) continue;
+      if (relative === "." || relative.startsWith("../") || workerOnly(relative) || generatedInput(relative)) continue;
       const info = await stat(path.join(root, relative)).catch(error => {
         if (error.code === "ENOENT" || error.code === "ENOTDIR") return null;
         throw error;
@@ -90,7 +91,7 @@ export async function sourceKeys(root, { details = false } = {}) {
       // directory containing the referring file into unrelated test suites.
       if (info.isDirectory() && (parent === relative || parent.startsWith(`${relative}/`))) continue;
       const found = info.isDirectory() ? await walk(root, relative) : [relative];
-      for (const dependency of found) if (!workerOnly(dependency) && !nodeFiles.has(dependency)) {
+      for (const dependency of found) if (!workerOnly(dependency) && !generatedInput(dependency) && !nodeFiles.has(dependency)) {
         nodeFiles.add(dependency); pending.push(dependency);
       }
     }

@@ -18,7 +18,7 @@ test("Node baseline key follows data/imports but excludes Worker-only changes", 
     await mkdir(path.dirname(path.join(root, file)), { recursive: true });
     await writeFile(path.join(root, file), "initial");
   }
-  await writeFile(path.join(root, "tests/runtime-server.ts"), 'import "../test-helper.ts";');
+  await writeFile(path.join(root, "tests/runtime-server.ts"), 'import "../test-helper.ts"; new URL("../sandbox/v8-exec/target/release/v8-exec", import.meta.url);');
   await writeFile(path.join(root, "tests/contract/fixture.ts"), 'new URL("../../", import.meta.url);');
   await writeFile(path.join(root, "tests/contract/scopes.mjs"), 'new URL("../", import.meta.url);');
   await writeFile(path.join(root, "tests/contract/python_runner_test.py"), "harness meta-test");
@@ -26,6 +26,12 @@ test("Node baseline key follows data/imports but excludes Worker-only changes", 
   await writeFile(path.join(root, "unrelated.txt"), "unrelated repository root file");
   await writeFile(path.join(root, "test-helper.ts"), "helper");
   const initial = await sourceKeys(root);
+  const binary = path.join(root, "sandbox/v8-exec/target/release/v8-exec");
+  await mkdir(path.dirname(binary), { recursive: true });
+  await writeFile(binary, "built binary exists only on the Sprite");
+  assert.equal((await sourceKeys(root)).nodeKey, initial.nodeKey);
+  await writeFile(binary, "rebuilt binary");
+  assert.equal((await sourceKeys(root)).nodeKey, initial.nodeKey);
   await writeFile(path.join(root, "tests/unrelated.test.ts"), "unrelated test changed");
   await writeFile(path.join(root, "tests/contract/python_runner_test.py"), "harness meta-test changed");
   await writeFile(path.join(root, "unrelated.txt"), "unrelated repository root file changed");
@@ -45,6 +51,7 @@ test("Node baseline key follows data/imports but excludes Worker-only changes", 
   assert.ok(!details.nodeFiles.includes("tests/unrelated.test.ts"));
   assert.ok(!details.nodeFiles.includes("tests/contract/python_runner_test.py"));
   assert.ok(!details.nodeFiles.includes("unrelated.txt"));
+  assert.ok(!details.nodeFiles.includes("sandbox/v8-exec/target/release/v8-exec"));
 });
 
 test("bare workspace imports add only the imported local package", async t => {
