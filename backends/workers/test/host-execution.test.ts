@@ -93,7 +93,9 @@ test("attached tools keep identity and the stable call key across a durable appr
       const request = (await tx.doc(HumanInputs)).requests[pending!];
       Object.assign(request, answerHuman(request, { action: "accept", actor: "operator" }));
     }, context);
-    assert.deepEqual((await result).output, ['{"approved":true}']);
+    const outcome = await result;
+    assert.equal(outcome.error, undefined, JSON.stringify(outcome));
+    assert.deepEqual(outcome.output, ['{"approved":true}']);
     assert.equal(frames.length, 2);
     assert.match(frames[0].params._meta["agent-runtime/idempotencyKey"], /^[0-9a-f]{32}$/);
     assert.equal(frames[0].params._meta["agent-runtime/idempotencyKey"], frames[1].params._meta["agent-runtime/idempotencyKey"]);
