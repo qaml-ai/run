@@ -4,7 +4,8 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 const here = fileURLToPath(new URL("../", import.meta.url)),
-  root = path.resolve(here, "../..");
+  root = path.resolve(here, "../.."),
+  resultsDir = process.env.COMPAT_RESULTS_DIR ?? path.join(here, "measurements");
 // These suites exercise the public platform APIs through the same runtime()
 // fixture as the API/SDK suites. Direct Node service tests below stay excluded.
 const platformFiles = new Set(["projects.test.ts", "files.test.ts"]);
@@ -54,6 +55,29 @@ for (const file of candidates) {
   const ast = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
   const names = [];
   const kinds = new Map();
+  // API suites often wrap runtime() in a local start() helper. Follow those
+  // calls so passing HTTP assertions are not reported as SDK-only evidence.
+  const helpers = new Map();
+  const collectHelpers = (node) => {
+    if (ts.isFunctionDeclaration(node) && node.name && node.body)
+      helpers.set(node.name.text, node.body);
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer &&
+      (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer)))
+      helpers.set(node.name.text, node.initializer.body);
+    ts.forEachChild(node, collectHelpers);
+  };
+  collectHelpers(ast);
+  const callsRuntime = (node, visiting = new Set()) => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+      const name = node.expression.text;
+      if (name === "runtime") return true;
+      if (helpers.has(name) && !visiting.has(name)) {
+        const next = new Set(visiting).add(name);
+        if (callsRuntime(helpers.get(name), next)) return true;
+      }
+    }
+    return ts.forEachChild(node, (child) => callsRuntime(child, visiting)) === true;
+  };
   const evaluate = (node, env) => {
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
       return node.text;
@@ -90,7 +114,7 @@ for (const file of candidates) {
       names.push(name);
       kinds.set(
         name,
-        /\bruntime\s*\(/.test(node.getText(ast)) ? "worker" : "sdk-unit",
+        callsRuntime(node) ? "worker" : "sdk-unit",
       );
       return;
     }
@@ -143,7 +167,7 @@ for (const file of candidates) {
   if (process.env.COMPAT_REUSE_RESULTS === "1") {
     try {
       reused = await readFile(
-        path.join(here, "measurements", `compat-${file}.tap`),
+        path.join(resultsDir, `compat-${file}.tap`),
         "utf8",
       );
       result = { reused: true };
@@ -167,7 +191,7 @@ for (const file of candidates) {
     });
   const output = (reused ?? log.join("")).replace(/[ \t]+$/gm, "");
   await writeFile(
-    path.join(here, "measurements", `compat-${file}.tap`),
+    path.join(resultsDir, `compat-${file}.tap`),
     output,
   );
   for (const test of names) {
@@ -212,7 +236,7 @@ if (only) {
   try {
     const previous = JSON.parse(
       await readFile(
-        path.join(here, "measurements/compatibility.json"),
+        path.join(resultsDir, "compatibility.json"),
         "utf8",
       ),
     ).rows;
@@ -227,12 +251,12 @@ if (only) {
 }
 try {
   const python = JSON.parse(
-    await readFile(path.join(here, "measurements/python-compat.json"), "utf8"),
+    await readFile(path.join(resultsDir, "python-compat.json"), "utf8"),
   );
   rows.push(...python.map((r) => ({ file: "tests/python_sdk.py", ...r })));
 } catch {}
 await writeFile(
-  path.join(here, "measurements/compatibility.json"),
+  path.join(resultsDir, "compatibility.json"),
   JSON.stringify(
     {
       method:
