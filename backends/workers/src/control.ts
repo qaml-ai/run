@@ -332,7 +332,7 @@ export class Directory {
 async function lockAccount(sql: Sql, tenantId: string) {
   const row = (
     await sql.query(
-      "select a.balance,a.purchased,t.billing from credit_accounts a join tenants t on t.id=a.tenant where a.tenant=$1 for update of a",
+      "select a.balance,a.purchased from credit_accounts a where a.tenant=$1 for update of a",
       [tenantId],
     )
   ).rows[0];
