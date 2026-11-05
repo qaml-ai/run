@@ -9,7 +9,7 @@ interface Channels { list(tenant: string): Promise<unknown[]> }
 interface Definitions { list(tenant: string): Promise<unknown[]> }
 import { HttpError } from "./errors.ts";
 import { journeyKept } from "./account-journey-state.ts";
-interface Journey { stored(account: string, kind: string): AsyncIterable<{ status: string; account: unknown; consent: unknown; records: unknown[]; googleCopies: unknown[] }> }
+import type { Journey } from "../../../src/core/journey.ts";
 import type { OAuth } from "./account-oauth.ts";
 interface VolumeService {
   list(tenant: string): Promise<{ id: string }[]>;
@@ -35,7 +35,7 @@ export interface ExportOptions {
   webhooks?: Webhooks;
   oauth?: OAuth;
   /** Journey events (src/journey.ts), where the operator configured them: the store is asked for what it holds of the account. */
-  journey?: Journey;
+  journey?: Pick<Journey, "stored">;
 }
 
 const README = `This archive holds everything camelRun stores for your account, as of the time it was made.

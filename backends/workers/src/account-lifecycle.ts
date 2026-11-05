@@ -83,7 +83,7 @@ export function accountDeletions(env: AccountLifecycleEnv, service: AccountServi
 async function exportResponse(env: AccountLifecycleEnv, service: AccountServices, webhooks: Webhooks, tenant: string) {
   const db = service.accounts.db;
   const chunks = exportAccount({
-    accounts: service.accounts, oauth: service.oauth, webhooks,
+    accounts: service.accounts, oauth: service.oauth, webhooks, journey: service.journey,
     clients: {
       async historyPageFor(id, _tenant, query) {
         const response = await env.AGENTS.getByName(id).fetch(new Request(`https://agent/history?${new URLSearchParams(query as Record<string, string>)}`));

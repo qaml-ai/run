@@ -62,6 +62,11 @@ test("deleting an account removes agent spend limits and keeps its credit ledger
   const ledger = (await r.db.query("select * from credit_ledger where tenant=$1 order by id", [tenant])).rows;
   const balance = (await r.db.query("select balance from credit_accounts where tenant=$1", [tenant])).rows[0].balance;
   assert.ok(ledger.length > 0);
+  const accountRef = crypto.randomUUID(), visitor = crypto.randomUUID(), now = Date.now();
+  await r.db.query("insert into journey_accounts(tenant,account_ref,signup_visitor,since_signup,consent,created_at) values($1,$2,$3,true,'granted',$4)", [tenant, accountRef, visitor, now]);
+  await r.db.query("insert into journey_milestones(account_ref,name,at) values($1,'run_token_created',$2)", [accountRef, now]);
+  await r.db.query("insert into journey_lost_signups(tenant,consent,visitor,method,surface,at) values($1,'granted',$2,'password','console',$3)", [tenant, visitor, now]);
+  await r.db.query("insert into journey_outbox(id,account_ref,body,due,created_at) values($1,$2,$3,$4,$4)", [crypto.randomUUID(), accountRef, { name: "run_token_created", visitor_id: visitor }, now]);
 
   assert.equal((await call(`/v1/tenants/${tenant}`, "DELETE", undefined, operator)).status, 202);
   let deleted = false;
@@ -76,6 +81,17 @@ test("deleting an account removes agent spend limits and keeps its credit ledger
   assert.equal((await r.db.query("select count(*)::int n from agent_spend_limits where agent=$1", [id])).rows[0].n, 0);
   assert.deepEqual((await r.db.query("select * from credit_ledger where tenant=$1 order by id", [tenant])).rows, ledger);
   assert.equal((await r.db.query("select balance from credit_accounts where tenant=$1", [tenant])).rows[0].balance, balance);
+  assert.equal((await r.db.query("select count(*)::int n from journey_accounts where tenant=$1", [tenant])).rows[0].n, 0);
+  assert.equal((await r.db.query("select count(*)::int n from journey_lost_signups where tenant=$1", [tenant])).rows[0].n, 0);
+  assert.equal((await r.db.query("select count(*)::int n from journey_milestones where account_ref=$1", [accountRef])).rows[0].n, 0);
+  const events = (await r.db.query("select body from journey_outbox where account_ref=$1", [accountRef])).rows;
+  assert.equal(events.length, 1, "only the anonymous deletion notification remains while Journey is off");
+  assert.equal(events[0].body.name, "run_account_deleted");
+  assert.equal(events[0].body.account_ref, accountRef);
+  assert.equal(events[0].body.visitor_id, null);
+  assert.ok(!JSON.stringify(events[0].body).includes(tenant));
+  assert.ok(!JSON.stringify(events[0].body).includes(visitor));
   assert.equal((await call(`/v1/tenants/${tenant}`, "DELETE", undefined, operator)).status, 202, "repeated deletion remains idempotent");
   assert.deepEqual((await r.db.query("select * from credit_ledger where tenant=$1 order by id", [tenant])).rows, ledger);
+  assert.deepEqual((await r.db.query("select body from journey_outbox where account_ref=$1", [accountRef])).rows, events);
 });
