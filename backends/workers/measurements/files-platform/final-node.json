@@ -1,57 +1,24 @@
 {
   "backend": "node",
-  "suiteHash": "3a3056b0e7be9ca9594ea0079378a7b11261cbd645eb7e731782b2a7ae59b39e",
-  "revision": "b65f6aebdb4546e2f499a1913bfe45db50f66a28",
+  "area": "files,volumes,images,search,schedules,workspaces,selfhost,cli,journey",
+  "nodeKey": "1ff65be69bdb97687bb551ad863a1ab48c42d7c4726928e25ab5efd896fabdfc",
+  "suiteHash": "fabe683775fe343cc1c227f56f728a869eff7d15d2552fd4ee40db9c2129e413",
+  "revision": "3e2d2e618e8ee4b4eb4d047d905544d486e7e35b",
+  "durationMs": 27867.362084,
   "runtime": {
     "node": "v24.22.1",
     "platform": "linux",
     "arch": "x64"
   },
-  "area": "images,files,volumes,search,schedules,workspaces,selfhost,cli,journey",
-  "recordedAt": "2026-11-05T22:35:36.374Z",
+  "recordedAt": "2026-11-05T22:41:57.130Z",
   "expectedCases": 51,
-  "aggregation": "Disjoint area reports from four Sprites at one revision and suite hash. No cases are filtered or relabeled.",
-  "sources": [
-    {
-      "report": "images-node.json",
-      "area": "images",
-      "sprite": "rt-pool-20",
-      "run": "20261105-163347-15607-1",
-      "recordedAt": "2026-11-05T22:34:51.248Z",
-      "expectedCases": 6
-    },
-    {
-      "report": "files-node.json",
-      "area": "files,volumes",
-      "sprite": "rt-pool-22",
-      "run": "20261105-163347-15674-1",
-      "recordedAt": "2026-11-05T22:35:36.374Z",
-      "expectedCases": 19
-    },
-    {
-      "report": "search-node.json",
-      "area": "search",
-      "sprite": "rt-pool-5",
-      "run": "20261105-163346-15567-1",
-      "recordedAt": "2026-11-05T22:34:59.747Z",
-      "expectedCases": 7
-    },
-    {
-      "report": "misc-node.json",
-      "area": "schedules,workspaces,selfhost,cli,journey",
-      "sprite": "rt-pool-21",
-      "run": "20261105-163347-15684-1",
-      "recordedAt": "2026-11-05T22:35:23.318Z",
-      "expectedCases": 19
-    }
-  ],
   "rows": [
     {
       "area": "cli",
       "source": "tests/cli.test.ts",
       "name": "a manifest's delegate settings bring their builtin",
       "status": "pass",
-      "durationMs": 0.285291,
+      "durationMs": 0.266279,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -60,7 +27,7 @@
       "source": "tests/cli.test.ts",
       "name": "a run waiting on a person exits 2 and resumes once answered",
       "status": "pass",
-      "durationMs": 3842.646633,
+      "durationMs": 3790.414221,
       "reason": "",
       "backend": "node"
     },
@@ -69,7 +36,7 @@
       "source": "tests/cli.test.ts",
       "name": "login saves a checked key readable only by its owner",
       "status": "pass",
-      "durationMs": 2200.491689,
+      "durationMs": 2295.476007,
       "reason": "",
       "backend": "node"
     },
@@ -78,7 +45,7 @@
       "source": "tests/cli.test.ts",
       "name": "run --stateless answers in one call and leaves no agent; runs get reads it back",
       "status": "pass",
-      "durationMs": 3433.614893,
+      "durationMs": 3415.403299,
       "reason": "",
       "backend": "node"
     },
@@ -87,7 +54,7 @@
       "source": "tests/cli.test.ts",
       "name": "the CLI deploys a manifest, runs its agent, and manages agents and definitions",
       "status": "pass",
-      "durationMs": 8686.743937,
+      "durationMs": 9743.577961,
       "reason": "",
       "backend": "node"
     },
@@ -96,7 +63,7 @@
       "source": "tests/cli.test.ts",
       "name": "the CLI reads the runtime's URL from CAMELAI_BASE_URL, as the SDKs do, or CAMELAI_URL",
       "status": "pass",
-      "durationMs": 0.81488,
+      "durationMs": 0.802022,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -105,7 +72,7 @@
       "source": "tests/cli.test.ts",
       "name": "the MCP server deploys and runs agents for a coding agent",
       "status": "pass",
-      "durationMs": 4747.662418,
+      "durationMs": 4728.0093,
       "reason": "",
       "backend": "node"
     },
@@ -114,7 +81,7 @@
       "source": "tests/agent-links.test.ts:5",
       "name": "a tenant signs links to its agent's files with its own token, as for its volumes",
       "status": "pass",
-      "durationMs": 4470.836186,
+      "durationMs": 5914.206492,
       "reason": "",
       "backend": "node"
     },
@@ -123,7 +90,7 @@
       "source": "tests/file-arguments.test.ts",
       "name": "fileArguments: other parties' servers are not offered or sent files unless a definition turns it on",
       "status": "pass",
-      "durationMs": 7223.964795,
+      "durationMs": 10068.2898,
       "reason": "",
       "backend": "node"
     },
@@ -132,34 +99,7 @@
       "source": "tests/file-arguments.test.ts",
       "name": "files reach a tool as URLs bound to the call: a file at its version, a directory as a snapshot, small ones inline",
       "status": "pass",
-      "durationMs": 4484.155152,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "files",
-      "source": "tests/files.test.ts",
-      "name": "a run's outcome lists the files it wrote and presented, and a presented file is an event with a download link",
-      "status": "pass",
-      "durationMs": 3917.805054,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "files",
-      "source": "tests/files.test.ts",
-      "name": "an upload streams to storage a chunk at a time: the source is never more than a few chunks ahead of storage",
-      "status": "pass",
-      "durationMs": 3072.593722,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "files",
-      "source": "tests/files.test.ts",
-      "name": "attachments over REST land in the workspace, the transcript keeps references, and the model sees them natively",
-      "status": "pass",
-      "durationMs": 3611.485007,
+      "durationMs": 4869.4389,
       "reason": "",
       "backend": "node"
     },
@@ -168,7 +108,7 @@
       "source": "tests/files.test.ts:261",
       "name": "the TypeScript SDK attaches bytes, Blobs, local paths and workspace files; a file deleted or replaced after attaching still reads as attached",
       "status": "pass",
-      "durationMs": 3673.223917,
+      "durationMs": 4277.88339,
       "reason": "",
       "backend": "node"
     },
@@ -177,7 +117,7 @@
       "source": "tests/files.test.ts:76",
       "name": "the REST API stores the upload's type and serves downloads with safe headers",
       "status": "pass",
-      "durationMs": 2650.628672,
+      "durationMs": 5748.50148,
       "reason": "",
       "backend": "node"
     },
@@ -186,34 +126,34 @@
       "source": "tests/files.test.ts:98",
       "name": "signed links: bound to tenant, volume, path, method, expiry, size and content type; tampering fails",
       "status": "pass",
-      "durationMs": 3404.247167,
+      "durationMs": 3748.93388,
       "reason": "",
       "backend": "node"
     },
     {
       "area": "files",
-      "source": "tests/tool-files.test.ts",
-      "name": "MCP images, audio, blobs and long text are saved to the workspace, under sanitized names",
+      "source": "tests/files.test.ts",
+      "name": "a run's outcome lists the files it wrote and presented, and a presented file is an event with a download link",
       "status": "pass",
-      "durationMs": 4183.35224,
+      "durationMs": 4632.216279,
       "reason": "",
       "backend": "node"
     },
     {
       "area": "files",
-      "source": "tests/tool-files.test.ts",
-      "name": "MCP tools take files by {$file}: base64 or a call-bound URL, only from the agent's mounts",
+      "source": "tests/files.test.ts",
+      "name": "an upload streams to storage a chunk at a time: the source is never more than a few chunks ahead of storage",
       "status": "pass",
-      "durationMs": 4331.264197,
+      "durationMs": 4838.627728,
       "reason": "",
       "backend": "node"
     },
     {
       "area": "files",
-      "source": "tests/tool-files.test.ts",
-      "name": "OpenAPI operations upload files (multipart, raw bytes, base64) and save binary responses",
+      "source": "tests/files.test.ts",
+      "name": "attachments over REST land in the workspace, the transcript keeps references, and the model sees them natively",
       "status": "pass",
-      "durationMs": 3755.609456,
+      "durationMs": 3991.575419,
       "reason": "",
       "backend": "node"
     },
@@ -222,7 +162,34 @@
       "source": "tests/tool-files.test.ts",
       "name": "application-attached MCP files are saved to the workspace like a server's",
       "status": "pass",
-      "durationMs": 3866.341749,
+      "durationMs": 3830.96304,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "files",
+      "source": "tests/tool-files.test.ts",
+      "name": "MCP images, audio, blobs and long text are saved to the workspace, under sanitized names",
+      "status": "pass",
+      "durationMs": 4881.13778,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "files",
+      "source": "tests/tool-files.test.ts",
+      "name": "MCP tools take files by {$file}: base64 or a call-bound URL, only from the agent's mounts",
+      "status": "pass",
+      "durationMs": 8709.24157,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "files",
+      "source": "tests/tool-files.test.ts",
+      "name": "OpenAPI operations upload files (multipart, raw bytes, base64) and save binary responses",
+      "status": "pass",
+      "durationMs": 4568.0144,
       "reason": "",
       "backend": "node"
     },
@@ -231,7 +198,7 @@
       "source": "tests/tool-files.test.ts",
       "name": "web_fetch saves PDFs and images to the workspace and shows them to the model",
       "status": "pass",
-      "durationMs": 3733.202226,
+      "durationMs": 3820.05143,
       "reason": "",
       "backend": "node"
     },
@@ -240,7 +207,7 @@
       "source": "tests/image-generation-api.test.ts",
       "name": "POST /v1/images makes images on the platform's OpenAI key for a prepaid tenant, edits images given as base64, multipart or a URL, and is billed per token",
       "status": "pass",
-      "durationMs": 3121.248473,
+      "durationMs": 4125.280261,
       "reason": "",
       "backend": "node"
     },
@@ -249,7 +216,7 @@
       "source": "tests/image-generation-api.test.ts",
       "name": "POST /v1/images needs an OpenAI key, and a monthly cap refuses it",
       "status": "pass",
-      "durationMs": 2205.69357,
+      "durationMs": 2335.267511,
       "reason": "",
       "backend": "node"
     },
@@ -258,7 +225,7 @@
       "source": "tests/image-generation-api.test.ts",
       "name": "POST /v1/images with volumeId saves the images to the volume and answers their paths",
       "status": "pass",
-      "durationMs": 2401.973237,
+      "durationMs": 2596.126314,
       "reason": "",
       "backend": "node"
     },
@@ -267,16 +234,7 @@
       "source": "tests/image-generation-sdk.test.ts:7",
       "name": "the TypeScript SDK: images.generate and images.edit from bytes, a Blob or a URL, answered as base64 or saved to a volume",
       "status": "pass",
-      "durationMs": 2423.300501,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "images",
-      "source": "tests/images.test.ts",
-      "name": "a thread with over 20 images, one of them 2,400 px, gets a request where every image is at most 1,568 px; the stored history is unchanged",
-      "status": "pass",
-      "durationMs": 6442.868447,
+      "durationMs": 2568.977332,
       "reason": "",
       "backend": "node"
     },
@@ -285,7 +243,16 @@
       "source": "tests/images.test.ts:187",
       "name": "an image whose scaling failed for now (its parse job crashed) is tried again on the next request, not held as omitted",
       "status": "pass",
-      "durationMs": 5658.42792,
+      "durationMs": 6870.709878,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "images",
+      "source": "tests/images.test.ts",
+      "name": "a thread with over 20 images, one of them 2,400 px, gets a request where every image is at most 1,568 px; the stored history is unchanged",
+      "status": "pass",
+      "durationMs": 9581.42949,
       "reason": "",
       "backend": "node"
     },
@@ -294,7 +261,7 @@
       "source": "tests/journey-server.test.ts:120",
       "name": "an account's export holds its journey: what this runtime kept and what the store holds; an account journey never knew has none",
       "status": "pass",
-      "durationMs": 2518.996676,
+      "durationMs": 2516.316226,
       "reason": "",
       "backend": "node"
     },
@@ -303,7 +270,7 @@
       "source": "tests/journey-server.test.ts:148",
       "name": "an email sign-up is an account made when its mailed link is finished, in the browser that finishes it",
       "status": "pass",
-      "durationMs": 2581.350506,
+      "durationMs": 3189.038656,
       "reason": "",
       "backend": "node"
     },
@@ -312,7 +279,7 @@
       "source": "tests/journey-server.test.ts:46",
       "name": "a runtime with journey events off serves the console as ever: no tag, no cookie, no endpoint",
       "status": "pass",
-      "durationMs": 3693.705891,
+      "durationMs": 3983.583754,
       "reason": "",
       "backend": "node"
     },
@@ -321,7 +288,7 @@
       "source": "tests/journey-server.test.ts:57",
       "name": "with journey events on, an arrival is noted through the redirect, the browser gets its visitor id, and the console's pages reach the store",
       "status": "pass",
-      "durationMs": 2622.039434,
+      "durationMs": 2649.91018,
       "reason": "",
       "backend": "node"
     },
@@ -330,7 +297,7 @@
       "source": "tests/journey-server.test.ts:88",
       "name": "with journey events on, making an agent and running it tells the store of the agent, the day's activity and the account's first run",
       "status": "pass",
-      "durationMs": 4733.040078,
+      "durationMs": 4580.446558,
       "reason": "",
       "backend": "node"
     },
@@ -339,7 +306,7 @@
       "source": "tests/schedule-api.test.ts:21",
       "name": "public accounts can email their verified address and cannot email strangers or suppressed recipients",
       "status": "pass",
-      "durationMs": 3278.569712,
+      "durationMs": 3652.852549,
       "reason": "",
       "backend": "node"
     },
@@ -348,7 +315,7 @@
       "source": "tests/schedule-api.test.ts:37",
       "name": "a calendar wake-up tells the model its fixed local edition date",
       "status": "pass",
-      "durationMs": 3475.692959,
+      "durationMs": 3791.9173,
       "reason": "",
       "backend": "node"
     },
@@ -357,7 +324,7 @@
       "source": "tests/schedule-api.test.ts:7",
       "name": "calendar schedules and owner-configured email round trip through the API without crossing accounts",
       "status": "pass",
-      "durationMs": 3750.074192,
+      "durationMs": 5897.340684,
       "reason": "",
       "backend": "node"
     },
@@ -366,7 +333,7 @@
       "source": "tests/web-render.test.ts",
       "name": "web_fetch has Firecrawl render JavaScript shells, and only those, charging a platform render",
       "status": "pass",
-      "durationMs": 5443.389719,
+      "durationMs": 6634.261483,
       "reason": "",
       "backend": "node"
     },
@@ -375,7 +342,7 @@
       "source": "tests/web-search.test.ts",
       "name": "a definition pins web_search's providers; a platform search is charged at the answering provider's price and counted in the hour's ledger entry",
       "status": "pass",
-      "durationMs": 3506.209099,
+      "durationMs": 3899.910005,
       "reason": "",
       "backend": "node"
     },
@@ -384,7 +351,7 @@
       "source": "tests/web-search.test.ts",
       "name": "a search key the operator set for a tenant (its apiKeys) is used, and is not counted as the platform's",
       "status": "pass",
-      "durationMs": 3493.86124,
+      "durationMs": 3522.165917,
       "reason": "",
       "backend": "node"
     },
@@ -393,7 +360,7 @@
       "source": "tests/web-search.test.ts",
       "name": "an operator's tenant without a key of its own searches on the platform's, recorded as platform usage and never charged; its own key wins; platformKeys: false keeps the refusal",
       "status": "pass",
-      "durationMs": 4665.86637,
+      "durationMs": 5282.92936,
       "reason": "",
       "backend": "node"
     },
@@ -402,7 +369,7 @@
       "source": "tests/web-search.test.ts",
       "name": "codemode's searches on the platform's key stop once the tenant's credit is spent, without waiting for the next model request",
       "status": "pass",
-      "durationMs": 3454.976344,
+      "durationMs": 3843.733517,
       "reason": "",
       "backend": "node"
     },
@@ -411,7 +378,7 @@
       "source": "tests/web-search.test.ts",
       "name": "web_search uses the tenant's own search key, else the platform's billed to credit, and pairs with web_fetch",
       "status": "pass",
-      "durationMs": 6871.83368,
+      "durationMs": 11021.597653,
       "reason": "",
       "backend": "node"
     },
@@ -420,7 +387,7 @@
       "source": "tests/x-search.test.ts",
       "name": "X search works in agents and stateless runs, uses tenant keys first and bills only platform requests",
       "status": "pass",
-      "durationMs": 7548.44874,
+      "durationMs": 13060.73953,
       "reason": "",
       "backend": "node"
     },
@@ -429,7 +396,7 @@
       "source": "tests/selfhost.test.ts:39",
       "name": "a runtime bootstrapped from AGENT_TENANT and AGENT_OPERATOR_TOKEN serves that tenant",
       "status": "pass",
-      "durationMs": 4123.558621,
+      "durationMs": 5451.803793,
       "reason": "",
       "backend": "node"
     },
@@ -438,7 +405,7 @@
       "source": "tests/selfhost.test.ts:48",
       "name": "on a runtime configured by AGENT_TENANT, a run without a model key also names AGENT_TENANT_API_KEYS",
       "status": "pass",
-      "durationMs": 3442.533778,
+      "durationMs": 3360.839058,
       "reason": "",
       "backend": "node"
     },
@@ -447,7 +414,7 @@
       "source": "tests/selfhost.test.ts:57",
       "name": "a private runtime names no URL to browsers: AGENT_BROWSER_URL overrides the browser token's url, or empty leaves it out, and links carry their path on the runtime",
       "status": "pass",
-      "durationMs": 5208.96032,
+      "durationMs": 5616.64778,
       "reason": "",
       "backend": "node"
     },
@@ -456,7 +423,7 @@
       "source": "tests/projects.test.ts",
       "name": "a project is a keyed volume seeded once, mounted with the workspace beside it, and published as checked snapshots",
       "status": "pass",
-      "durationMs": 3650.934314,
+      "durationMs": 5718.098166,
       "reason": "",
       "backend": "node"
     },
@@ -465,7 +432,7 @@
       "source": "tests/projects.test.ts",
       "name": "a project is restored in place to a published version, and a check hands what it computed to store and the result",
       "status": "pass",
-      "durationMs": 2362.773185,
+      "durationMs": 2552.261373,
       "reason": "",
       "backend": "node"
     },
@@ -474,7 +441,7 @@
       "source": "tests/projects.test.ts",
       "name": "pinned versions outlast keep and the snapshot cap, carry labels, and a snapshot can be made from contents",
       "status": "pass",
-      "durationMs": 2992.280701,
+      "durationMs": 2946.365581,
       "reason": "",
       "backend": "node"
     },
@@ -483,7 +450,7 @@
       "source": "tests/projects.test.ts",
       "name": "publishTool finds the project from the call's identity, never its arguments, and tells the model what to fix",
       "status": "pass",
-      "durationMs": 2767.185864,
+      "durationMs": 4883.965914,
       "reason": "",
       "backend": "node"
     },
@@ -492,7 +459,7 @@
       "source": "tests/volumes.test.ts:538",
       "name": "the REST API and SDK manage volumes within a tenant, and nothing crosses tenants",
       "status": "pass",
-      "durationMs": 10497.321878,
+      "durationMs": 10763.57832,
       "reason": "",
       "backend": "node"
     },
@@ -501,9 +468,31 @@
       "source": "tests/workspaces.test.ts:48",
       "name": "workspaces API validates ownership, inherits definitions, and accounts agent and stateless model calls",
       "status": "pass",
-      "durationMs": 6173.636176,
+      "durationMs": 7742.304692,
       "reason": "",
       "backend": "node"
+    }
+  ],
+  "shards": [
+    {
+      "index": 1,
+      "total": 4,
+      "durationMs": 24634.089396
+    },
+    {
+      "index": 2,
+      "total": 4,
+      "durationMs": 17226.834182
+    },
+    {
+      "index": 3,
+      "total": 4,
+      "durationMs": 26631.86794
+    },
+    {
+      "index": 4,
+      "total": 4,
+      "durationMs": 27867.362084
     }
   ]
 }

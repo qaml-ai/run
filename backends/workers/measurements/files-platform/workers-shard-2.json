@@ -1,0 +1,145 @@
+{
+  "backend": "workers",
+  "area": "files,volumes,images,search,schedules,workspaces,selfhost,cli,journey",
+  "nodeKey": "1ff65be69bdb97687bb551ad863a1ab48c42d7c4726928e25ab5efd896fabdfc",
+  "suiteHash": "fabe683775fe343cc1c227f56f728a869eff7d15d2552fd4ee40db9c2129e413",
+  "revision": "3e2d2e618e8ee4b4eb4d047d905544d486e7e35b",
+  "shard": {
+    "index": 2,
+    "total": 4
+  },
+  "durationMs": 61742.2543,
+  "runtime": {
+    "node": "v24.22.1",
+    "platform": "linux",
+    "arch": "x64"
+  },
+  "recordedAt": "2026-11-05T22:44:23.665Z",
+  "expectedCases": 13,
+  "rows": [
+    {
+      "area": "images",
+      "source": "tests/image-generation-api.test.ts",
+      "name": "POST /v1/images makes images on the platform's OpenAI key for a prepaid tenant, edits images given as base64, multipart or a URL, and is billed per token",
+      "status": "pass",
+      "durationMs": 14266.761974,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "images",
+      "source": "tests/image-generation-api.test.ts",
+      "name": "POST /v1/images needs an OpenAI key, and a monthly cap refuses it",
+      "status": "pass",
+      "durationMs": 5532.563042,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "images",
+      "source": "tests/image-generation-api.test.ts",
+      "name": "POST /v1/images with volumeId saves the images to the volume and answers their paths",
+      "status": "pass",
+      "durationMs": 6995.699577,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "images",
+      "source": "tests/image-generation-sdk.test.ts:7",
+      "name": "the TypeScript SDK: images.generate and images.edit from bytes, a Blob or a URL, answered as base64 or saved to a volume",
+      "status": "pass",
+      "durationMs": 6479.161959,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "journey",
+      "source": "tests/journey-server.test.ts:120",
+      "name": "an account's export holds its journey: what this runtime kept and what the store holds; an account journey never knew has none",
+      "status": "fail",
+      "durationMs": 5122.828374,
+      "reason": "Expected values to be strictly equal: 404 !== 200",
+      "error": {
+        "message": "Expected values to be strictly equal:\n\n404 !== 200\n",
+        "stack": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\n404 !== 200\n\n    at file:///home/sprite/rt/tests/contract/areas/journey.public.contract.test.ts:125:10\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/ported.ts:13:13\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)",
+        "expected": 200,
+        "actual": 404,
+        "operator": "strictEqual"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "journey",
+      "source": "tests/journey-server.test.ts:148",
+      "name": "an email sign-up is an account made when its mailed link is finished, in the browser that finishes it",
+      "status": "pass",
+      "durationMs": 5224.626254,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "journey",
+      "source": "tests/journey-server.test.ts:46",
+      "name": "a runtime with journey events off serves the console as ever: no tag, no cookie, no endpoint",
+      "status": "pass",
+      "durationMs": 8072.816579,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "journey",
+      "source": "tests/journey-server.test.ts:57",
+      "name": "with journey events on, an arrival is noted through the redirect, the browser gets its visitor id, and the console's pages reach the store",
+      "status": "pass",
+      "durationMs": 8054.008,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "journey",
+      "source": "tests/journey-server.test.ts:88",
+      "name": "with journey events on, making an agent and running it tells the store of the agent, the day's activity and the account's first run",
+      "status": "pass",
+      "durationMs": 8521.977245,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "selfhost",
+      "source": "tests/selfhost.test.ts:39",
+      "name": "a runtime bootstrapped from AGENT_TENANT and AGENT_OPERATOR_TOKEN serves that tenant",
+      "status": "pass",
+      "durationMs": 11562.303169,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "selfhost",
+      "source": "tests/selfhost.test.ts:48",
+      "name": "on a runtime configured by AGENT_TENANT, a run without a model key also names AGENT_TENANT_API_KEYS",
+      "status": "pass",
+      "durationMs": 6051.125359,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "selfhost",
+      "source": "tests/selfhost.test.ts:57",
+      "name": "a private runtime names no URL to browsers: AGENT_BROWSER_URL overrides the browser token's url, or empty leaves it out, and links carry their path on the runtime",
+      "status": "pass",
+      "durationMs": 10034.785629,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "workspaces",
+      "source": "tests/workspaces.test.ts:48",
+      "name": "workspaces API validates ownership, inherits definitions, and accounts agent and stateless model calls",
+      "status": "pass",
+      "durationMs": 15209.804856,
+      "reason": "",
+      "backend": "workers"
+    }
+  ]
+}
