@@ -37,8 +37,8 @@ export async function withSql<T>(
     query_timeout: 10_000,
     application_name: new URL(env.HYPERDRIVE.connectionString).searchParams.get("application_name") ?? "camelrun-proto-workers",
   });
-  await client.connect();
   try {
+    await client.connect();
     return await run(client);
   } finally {
     await client.end();
@@ -55,7 +55,12 @@ export function database(env: PostgresEnv): Db {
         connectionTimeoutMillis: 5_000,
         query_timeout: 10_000,
       });
-      await client.connect();
+      try {
+        await client.connect();
+      } catch (error) {
+        await client.end().catch(() => {});
+        throw error;
+      }
       return Object.assign(client, {
         close: () => client.end(),
         release: () => {
