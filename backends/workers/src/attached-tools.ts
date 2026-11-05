@@ -17,8 +17,8 @@ export type ToolDefinition = {
   _meta?: Record<string, unknown>; needsApproval?: boolean; judged?: boolean;
 };
 export type McpResult = { content?: unknown[]; structuredContent?: unknown; isError?: boolean; inputRequests?: unknown; resultType?: string; requestState?: string; [key: string]: unknown };
-type Pending = { resolve: (result: unknown) => void; reject: (error: Error) => void; progress: (value?: Progress) => void };
-type Connection = { id: string; send: (event: unknown) => void; pending: Map<string, Pending>; ready: Promise<unknown>; initialized: boolean; draining: boolean; retired?: () => void };
+type Pending = { resolve: (result: unknown) => void; reject: (error: Error) => void; progress: (value?: Progress) => void; toolCall: boolean };
+type Connection = { id: string; send: (event: unknown) => void; pending: Map<string, Pending>; ready: Promise<unknown>; initialized: boolean; draining: boolean; retired?: () => void; probeTimer?: ReturnType<typeof setTimeout>; probe?: AbortController };
 const CONNECTION_LOST = "The server running this tool disconnected during the call (it restarted or lost its connection), so the call may or may not have " +
   "taken effect. Check whether it did before trying it again; if you cannot check, tell the user it is unknown whether it went through.";
 
@@ -109,16 +109,44 @@ export class AttachedTools {
   }
 
   private retireIfIdle(connection: Connection) {
+    this.monitor(connection);
     if (connection !== this.current && !connection.pending.size) {
       this.connections.delete(connection.id);
       connection.retired?.();
     }
   }
 
+  /** SSE cancellation can arrive late across the Worker/DO boundary. A peer
+   * serving a call must still answer the protocol's independent ping. */
+  private monitor(connection: Connection) {
+    if (!this.connections.has(connection.id) || ![...connection.pending.values()].some(pending => pending.toolCall)) {
+      clearTimeout(connection.probeTimer);
+      connection.probeTimer = undefined;
+      const probe = connection.probe;
+      connection.probe = undefined;
+      probe?.abort();
+      return;
+    }
+    if (connection.probeTimer || connection.probe) return;
+    connection.probeTimer = setTimeout(() => {
+      connection.probeTimer = undefined;
+      const probe = new AbortController();
+      connection.probe = probe;
+      void this.request(connection, "ping", {}, 2_000, probe.signal).then(() => {
+        if (connection.probe === probe) connection.probe = undefined;
+        this.monitor(connection);
+      }, () => {
+        if (connection.probe === probe) connection.probe = undefined;
+        if (!probe.signal.aborted) this.close(connection.id);
+      });
+    }, 1_000);
+  }
+
   close(id?: string) {
     for (const connection of id ? [this.connections.get(id)].filter((value): value is Connection => !!value) : this.connections.values()) {
       if (this.current === connection) this.current = undefined;
       this.connections.delete(connection.id);
+      this.monitor(connection);
       for (const pending of connection.pending.values())
         pending.reject(Object.assign(new Error(CONNECTION_LOST), { code: "connection_lost", outcomeUnknown: true }));
       connection.pending.clear();
@@ -152,12 +180,13 @@ export class AttachedTools {
       progress();
       signal?.addEventListener("abort", cancelled, { once: true });
       const cleanup = () => { clearTimeout(timeout); signal?.removeEventListener("abort", cancelled); };
-      connection.pending.set(id, { progress, resolve: result => { cleanup(); resolve(result); }, reject: error => { cleanup(); reject(error); } });
+      connection.pending.set(id, { progress, toolCall: method === "tools/call", resolve: result => { cleanup(); resolve(result); }, reject: error => { cleanup(); reject(error); } });
+      if (method === "tools/call") this.monitor(connection);
       try {
         const requestParams = method === "tools/call" ? { ...params as object, _meta: { ...(params as { _meta?: object })._meta, progressToken: id } } : params;
         connection.send({ type: "mcp", message: { jsonrpc: "2.0", id, method, params: requestParams } });
       }
-      catch (error) { connection.pending.get(id)?.reject(error as Error); connection.pending.delete(id); }
+      catch (error) { connection.pending.get(id)?.reject(error as Error); connection.pending.delete(id); this.retireIfIdle(connection); }
     });
   }
 
