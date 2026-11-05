@@ -44,6 +44,7 @@ import { browserResponse } from "./browser-response.ts";
 import { browserUrl } from "./selfhost-policy.ts";
 import { createJourney, sendJourney } from "./journey.ts";
 import { keyServices } from "./security-services.ts";
+import { eventRead } from "./event-reads.ts";
 import { decisionService, type DecisionEnv } from "./decision-service.ts";
 import { decisionRoute } from "./decision-runtime.ts";
 import {
@@ -519,7 +520,9 @@ const worker = {
         if (match[1] === "v1/agents" || browser) eventUrl.searchParams.set("watch", "1");
         request = new Request(eventUrl, { method: request.method, headers, signal: request.signal });
       }
-      const response = await forward(request, env, entry.id, tail);
+      const response = tail === "/events"
+        ? await eventRead(request, env, entry.tenantId, request => forward(request, env, entry!.id, tail))
+        : await forward(request, env, entry.id, tail);
       return browser ? browserResponse(response, browser, tail) : response;
     } catch (error) {
       const limited = admissionError(error);

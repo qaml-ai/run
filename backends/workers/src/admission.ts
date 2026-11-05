@@ -55,5 +55,5 @@ export async function sweepAdmission(env: AdmissionEnv): Promise<void> {
 /** Preserve src's error fields and Retry-After / per-tenant rate-limit headers. */
 export function admissionError(error: unknown): Response | undefined {
   if (!(error instanceof RateLimited)) return undefined;
-  return Response.json({ error: error.message, code: error.code, ...errorFields(error) }, { status: error.status, headers: errorHeaders(error) });
+  return Response.json({ type: "error", error: error.message, code: error.code, ...errorFields(error) }, { status: error.status, headers: errorHeaders(error) });
 }

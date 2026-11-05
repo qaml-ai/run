@@ -5,7 +5,8 @@ import { EmailAccounts } from "./account-email-accounts.ts";
 import { Passwords, checkPassword, checkNewPassword, normalizeEmail } from "./account-passwords.ts";
 import { OAuth } from "./account-oauth.ts";
 import { publicOrigins, type PublicOrigins } from "./account-origins.ts";
-import { RateLimits, rateLimitConfig, RateLimited } from "./account-rate-limits.ts";
+import { RateLimits, RateLimited } from "./account-rate-limits.ts";
+import { accountRateLimits } from "./account-rate-service.ts";
 import { AccountMail, type MailEnv } from "./account-mail.ts";
 import { HttpError, readText } from "./account-http.ts";
 import type { Webhooks } from "./webhook-policy.ts";
@@ -71,16 +72,7 @@ export function accountServices(env: AccountEnv, accounts: Accounts, fallbackOri
   const passwords = new Passwords(accounts.db);
   const mail = (env.EMAIL || (env.TEST_MODE === "1" && env.MAIL_TEST_URL)) && (env.AGENT_ACCOUNT_EMAIL_FROM || env.EMAIL_FROM)
     ? new AccountMail(env, origin) : undefined;
-  const limits = new RateLimits({
-    db: accounts.db,
-    config: rateLimitConfig({ ...env, AGENT_TRUST_CF_CONNECTING_IP: "true" } as unknown as NodeJS.ProcessEnv),
-    hashKey: secret,
-    nodes: () => 1,
-    free: tenant => accounts.billing.onFreeCredit(tenant),
-    override: (tenant, limit) => accounts.tenants.has(tenant) ? accounts.tenants.rateLimit(tenant, limit) : accounts.billing.rateLimit(tenant, limit),
-    tier: (tenant, limit) => accounts.billing.tierRateLimit(tenant, limit),
-    exempt: tenant => accounts.tenants.has(tenant),
-  });
+  const limits = accountRateLimits(env as AccountEnv & import("./postgres.ts").PostgresEnv & Record<string, unknown>, accounts, secret);
   const client = (c: Context) => limits.client(name => c.req.header(name), undefined).key;
   const test = env.TEST_MODE === "1";
   const journey = createJourney(env, accounts, origin);

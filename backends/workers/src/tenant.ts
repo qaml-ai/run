@@ -8,9 +8,26 @@ export class TenantAdmission extends DurableObject<Record<string, unknown>> {
     ctx.storage.sql.exec(
       "CREATE TABLE IF NOT EXISTS admitted (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL)",
     );
+    ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS creations (token TEXT PRIMARY KEY, id TEXT NOT NULL, expires_at INTEGER NOT NULL)");
     ctx.storage.sql.exec(
       "CREATE TABLE IF NOT EXISTS counters (key TEXT NOT NULL, window INTEGER NOT NULL, count INTEGER NOT NULL, PRIMARY KEY (key,window))",
     );
+  }
+  /** Short startup reservations fence concurrent creates without retaining idle agents. */
+  async reserveCreation(id: string, token: string, limit: number): Promise<boolean> {
+    this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS creations (token TEXT PRIMARY KEY, id TEXT NOT NULL, expires_at INTEGER NOT NULL)");
+    return this.ctx.storage.transactionSync(() => {
+      const sql = this.ctx.storage.sql;
+      sql.exec("DELETE FROM creations WHERE expires_at <= ?", Date.now());
+      const busy = sql.exec<{ count: number }>(`SELECT count(*) AS count FROM (SELECT ${agentOf} AS agent FROM admitted UNION SELECT id AS agent FROM creations) WHERE agent <> ?`, id).one().count;
+      if (busy >= limit) return false;
+      sql.exec("INSERT INTO creations VALUES (?,?,?)", token, id, Date.now() + 60_000);
+      return true;
+    });
+  }
+  async releaseCreation(token: string): Promise<void> {
+    this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS creations (token TEXT PRIMARY KEY, id TEXT NOT NULL, expires_at INTEGER NOT NULL)");
+    this.ctx.storage.sql.exec("DELETE FROM creations WHERE token=?", token);
   }
   async acquire(id: string, limit = 1000): Promise<boolean> {
     return this.ctx.storage.transactionSync(() => {
@@ -19,7 +36,7 @@ export class TenantAdmission extends DurableObject<Record<string, unknown>> {
       if (
         Number(
           sql
-            .exec<{ count: number }>(`SELECT count(DISTINCT ${agentOf}) AS count FROM admitted`)
+            .exec<{ count: number }>(`SELECT count(*) AS count FROM (SELECT ${agentOf} AS agent FROM admitted UNION SELECT id AS agent FROM creations WHERE expires_at > ?) WHERE agent <> ?`, Date.now(), id.split(":")[0])
             .one().count,
         ) >= limit && !alreadyBusy
       )
