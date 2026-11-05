@@ -30,7 +30,7 @@ export async function configurationModelError(env: DefaultModelEnv, tenant: stri
   const custom = await modelProviders.resolvable(tenant, config.keyScope);
   const endpoints = tenants.modelEndpoints(tenant);
   const model = resolveModel(reference, endpoints, custom);
-  if (endpoints?.[model.provider] || Object.hasOwn(custom, model.provider) ||
+  if (endpoints?.[model.provider] || Object.hasOwn(custom ?? {}, model.provider) ||
       config.keyScope && await keyScopes.entry(tenant, config.keyScope, model.provider) ||
       await accounts.hasKey(tenant, model.provider, model.id)) return;
   return model.provider === "azure"
