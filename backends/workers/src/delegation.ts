@@ -10,7 +10,7 @@ import { toolCallSite } from './tool-call-context.ts';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 
 type Configuration = { model?: string | object; systemPrompt?: string; delegate?: DelegateSettings; builtins?: string[]; spendLimit?: { usd: number }; [key: string]: unknown };
-export type ParentRun = { id: string; piId?: string; params?: { spendLimit?: { usd: number }; bucket?: string; actor?: string }; metadata?: Record<string, string> };
+export type ParentRun = { id: string; piId?: string; startedAt?: number; params?: { spendLimit?: { usd: number }; bucket?: string; actor?: string }; metadata?: unknown };
 export type ChildUsage = { costUsd?: number; subagentCostUsd?: number; imageCostUsd?: number; decisionCostUsd?: number; webCostUsd?: number; transcriptionCostUsd?: number };
 export type ChildRun = { state: string; status?: string; error?: string; outcome?: { result?: { reply?: string; output?: unknown; usage?: ChildUsage }; error?: string } };
 export function childUsageCost(usage?: ChildUsage) {
@@ -79,7 +79,9 @@ export class Delegation {
   }
   /** Verified ancestry only; public prompt metadata cannot mint parent identity. */
   async lineage(id: string, run: ParentRun) {
-    const metadata = run.metadata ?? {}, depth = metadata[PARENT_KEYS.depth], max = metadata[PARENT_KEYS.maxDepth], chain = metadata[PARENT_KEYS.chain] ?? '';
+    const metadata = run.metadata && typeof run.metadata === 'object' ? run.metadata as Record<string, unknown> : {};
+    const depth = metadata[PARENT_KEYS.depth], max = metadata[PARENT_KEYS.maxDepth], chain = metadata[PARENT_KEYS.chain] ?? '';
+    if (typeof depth !== 'string' || typeof max !== 'string' || typeof chain !== 'string') return;
     if (depth === undefined || max === undefined || metadata[PARENT_KEYS.signature] !== await signature(this.host.secret, id, run.piId ?? run.id, depth, max, chain)) return;
     const parents = chain.split(',').filter(Boolean);
     return { depth: Number(depth), maxDepth: Number(max), chain: parents, parent: parents.at(-1)!, root: parents[0]! };

@@ -1,7 +1,7 @@
 import { defineDoc, defineTool, type ToolExecutionApi, type ToolRegistration, type ToolTaskInput } from '@earendil-works/pi-durable';
 import { createCodemodeTool } from '@earendil-works/pi-durable/codemode';
 import { CodemodeSandboxBase, type CodemodeRunOptions } from '@earendil-works/pi-codemode/portable';
-import type { Context } from '@earendil-works/chord';
+import type { Context, JsonRepresentation } from '@earendil-works/chord';
 import { Delegation, type ParentRun } from './delegation.ts';
 import { WORKFLOW_LIMITS, workflowTool, scriptCode, fnv1a, workflowAgentSummary, type WorkflowSettings } from './workflow-policy.ts';
 import type { DelegateSettings } from './multi-agent-policy.ts';
@@ -9,7 +9,7 @@ import { toolCallSite } from './tool-call-context.ts';
 import { SANDBOX_LIMITS } from '../../../src/limits.ts';
 
 type Child = { index: number; label?: string; agent?: string; phase?: string; status: 'running' | 'completed' | 'failed'; error?: string; agentId?: string; requestId?: string; value?: any };
-type State = { settings?: WorkflowSettings; runId?: string; callId?: string; createdAt?: number; children: Record<string, Child>; returned?: { value: any }; transferred: number; phases: number; lines: number };
+type State = JsonRepresentation<{ settings?: WorkflowSettings; runId?: string; callId?: string; createdAt?: number; children: Record<string, Child>; returned?: { value: any }; transferred: number; phases: number; lines: number }>;
 const Workflow = defineDoc<State>({ kind: 'camel.workflow', version: 1, scope: 'task', initial: () => ({ children: {}, transferred: 0, phases: 0, lines: 0 }), checkpointWhen: () => true });
 const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value ?? null)).byteLength;
 const textResult = (value: any, error = false) => ({ output: [{ type: 'text' as const, text: JSON.stringify(value) }], structuredOutput: value, ...(error ? { isError: true } : {}) });
@@ -104,7 +104,7 @@ export async function workflowTools(options: WorkflowOptions): Promise<ToolRegis
       if (bytes(args) > WORKFLOW_LIMITS.argsBytes) throw new Error(`A workflow's args are at most ${WORKFLOW_LIMITS.argsBytes} bytes`);
       if (/\bimport\s*\(/.test(script)) throw new Error("A workflow script cannot import modules: put library work in an agent's task");
       const request = await options.context(api);
-      await api.commit(async tx => { const state = await tx.doc(Workflow, api.taskId); if (!state.settings) Object.assign(state, { settings, runId: request.id, callId: api.callId, createdAt: api.now() }); }, context);
+      await api.commit(async tx => { const state = await tx.doc(Workflow, api.taskId); if (!state.settings) Object.assign(state, { settings, runId: request.id, callId: api.callId, createdAt: request.startedAt ?? api.now() }); }, context);
       const event = (value: object) => options.emit({ type: 'event', requestId: request.id, event: { toolCallId: api.callId, ...value } });
       await event({ type: 'workflow_start' });
       // Restrict this VM to the one workflow bridge; Pi still journals every call.
