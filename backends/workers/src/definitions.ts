@@ -59,6 +59,19 @@ export async function provisionDefinition(env: ControlEnv, tenant: string, input
   const lifetime = input.ttlSeconds !== undefined || input.idleTtlSeconds !== undefined;
   return { ...(lifetime ? {} : limits), ...spec, name: definition.name, ...input, definition: definition.id, definitionRevision: definition.revision, definitionOverrides: OVERRIDES.filter(field => Object.hasOwn(input, field)) };
 }
+/** Upserting a definition's agent changes its own settings; only apply advances the definition. */
+export function definitionUpsert(config: Record<string, unknown>, previous?: AgentConfiguration) {
+  if (!previous) return config;
+  if (previous.definition !== config.definition)
+    throw new ApiError(409, "An existing agent's definition cannot change");
+  const kept = { ...config };
+  for (const field of ["systemPrompt", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "workflow", "decide", "definitionRevision", "mcp"] as const) {
+    if (previous[field] === undefined) delete kept[field];
+    else kept[field] = previous[field];
+  }
+  return kept;
+}
+
 export async function definitionRoutes(request: Request, env: ControlEnv, auth: AuthContext): Promise<Response | undefined> {
   const url = new URL(request.url), match = /^\/v1\/definitions(?:\/([^/]+)(\/agents)?)?$/.exec(url.pathname);
   if (!match) return;

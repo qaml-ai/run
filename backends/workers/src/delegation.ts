@@ -176,7 +176,7 @@ export class Delegation {
         if (args.name && running.some(child => child.name === args.name)) throw new HttpError(400, 'A sub-agent with this name is already running');
         if (available !== undefined) {
           const reserved = this.host.remainingBudget
-            ? all.filter(child => child.status === 'running').reduce((sum, child) => sum + (child.held ?? 0), 0)
+            ? all.filter(child => !child.charged && !child.folded).reduce((sum, child) => sum + (child.status === 'running' ? child.held ?? 0 : child.spent ?? 0), 0)
             : children.reduce((sum, child) => sum + (child.spent ?? child.held ?? 0), 0);
           const remaining = available - reserved;
           if (remaining <= 0) throw new HttpError(402, 'This run has no budget left for a sub-agent', 'SPEND_LIMIT');

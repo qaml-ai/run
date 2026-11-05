@@ -6,7 +6,7 @@ import { serveAgentMcp, agentMcpPreflight, agentMcpSignIn } from "./agent-mcp.ts
 import { publicOrigins } from "./account-origins.ts";
 import { serveHostedMcp } from "./hosted-mcp.ts";
 import { publicDocs } from "./public-docs.ts";
-import { resolveDefinition } from "./definitions.ts";
+import { resolveDefinition, definitionUpsert } from "./definitions.ts";
 import { sweepComputers } from './computers/service.ts';
 import { CamelAgent, json, type Env } from "./agent.ts";
 import {
@@ -306,13 +306,16 @@ const worker = {
               throw new BadRequest("Expected configuration object");
             const first = firstPrompt((raw as { prompt?: unknown }).prompt);
             const { prompt: _prompt, ...settings } = raw as Record<string, unknown>;
-            const input = await provisionDefinition(
+            const provisioned = await provisionDefinition(
               env,
               auth.tenantId,
               settings,
             );
-            configuration(input, env.MODEL);
             const key = request.headers.get("Idempotency-Key") ?? undefined;
+            const input = key && typeof provisioned.definition === "string"
+              ? definitionUpsert(provisioned, (await directory.get(key))?.config)
+              : provisioned;
+            configuration(input, env.MODEL);
             const upsert = await upsertAgent(env, auth.tenantId, input, key, url.origin);
             const created = result(upsert.entry);
             if (env.AGENT_JOURNEY_URL) {
@@ -343,6 +346,8 @@ const worker = {
       }
       if (!entry || entry.config.type === "run") throw new ApiError(404, "Unknown agent", "AGENT_NOT_FOUND");
       const tail = match[3] || "/";
+      if (tail === "/configuration-target")
+        throw new ApiError(404, "Not found", "NOT_FOUND");
       // Internal computer operations are reachable only through the service
       // binding. Public cleanup must use the account-scoped confirmation route.
       if (tail === "/__computer" && env.TEST_MODE !== "1")

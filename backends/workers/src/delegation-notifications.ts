@@ -86,11 +86,15 @@ export class DelegationNotifications {
       // expose the answer. A durable outbox owns a notice claim through retry.
       const claimed = await this.host.storage.transaction(async tx => {
         const child = pending.childKey ? await tx.get<DelegatedChild>(`delegation:${pending.childKey}`) : undefined;
-        if (child?.landedBy === 'wait') { await tx.put(key, { ...pending, delivered: true }); return false; }
+        if (child?.landedBy === 'wait') return false;
         if (child && !child.landedBy) await tx.put(`delegation:${pending.childKey}`, { ...child, landedBy: 'notice' });
         return true;
       });
-      if (!claimed) { await this.host.discard?.(pending.request); return; }
+      if (!claimed) {
+        await this.host.discard?.(pending.request);
+        await this.host.storage.put(key, { ...pending, delivered: true });
+        return;
+      }
       if (!pending.delivery && !pending.wake) {
         // A message steered into existing work starts no turn and takes no wake.
         pending.wake = pending.notice.metadata.kind === 'message' && await this.host.isBusy?.()

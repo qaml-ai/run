@@ -1151,6 +1151,13 @@ export class CamelAgent extends DurableObject<Env> {
       const record = await tx.get<RequestRecord>(reqKey(id));
       if (!record || record.began) return false;
       record.began = Date.now();
+      // Pi can start the next queued turn before the previous public outcome
+      // finishes projection. Preserve that boundary instead of dating its end
+      // after the next turn has already begun.
+      if (!record.steeredInto && record.method !== 'execute') for (const previous of (await tx.list<RequestRecord>({ prefix: 'request:' })).values()) {
+        if (previous.id !== id && previous.method !== 'execute' && previous.began && !previous.steeredInto && previous.state !== 'completed' && previous.startedAt <= record.startedAt)
+          await tx.put(`turn-ended:${previous.id}`, record.began);
+      }
       record.state = "running";
       await tx.put(reqKey(id), record);
       return true;
@@ -1566,7 +1573,11 @@ export class CamelAgent extends DurableObject<Env> {
                 "Model operation failed",
               last: usage.last,
             }) ?? { error: "Model operation failed" });
-      if ("result" in outcome && outcome.result) Object.assign(outcome.result, { usage: runUsage });
+      if ("result" in outcome && outcome.result) Object.assign(outcome.result, {
+        usage: runUsage,
+        ...(usage.toolCalls?.length ? { toolCalls: usage.toolCalls } : {}),
+        ...(usage.toolErrors?.length ? { toolErrors: usage.toolErrors } : {}),
+      });
       let changed = false;
       const terminal = await this.ctx.storage.transaction(async (tx) => {
         const latest = await tx.get<RequestRecord>(reqKey(id));
@@ -1576,7 +1587,7 @@ export class CamelAgent extends DurableObject<Env> {
         const completed: RequestRecord = {
           ...(latest ?? current ?? record),
           state: "completed",
-          endedAt: Date.now(),
+          endedAt: await tx.get<number>(`turn-ended:${id}`) ?? Date.now(),
           outcome,
           status:
             !limit &&
@@ -1784,6 +1795,10 @@ export class CamelAgent extends DurableObject<Env> {
     for (const record of await this.records()) {
       if (record.state === "completed" && record.status !== "input_required") continue;
       const cancelled = await this.ctx.storage.get(`cancelled-request:${record.id}`);
+      if (cancelled && record.noticeQueued) {
+        await this.notifications.abortPending();
+        continue;
+      }
       if (cancelled === 'keep-queue') this.track(record.id);
       else if (cancelled) this.resumeCancellation(record);
     }

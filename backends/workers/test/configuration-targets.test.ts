@@ -77,3 +77,23 @@ test("replacement targets retain their mode across restart and differ from patch
   await new ConfigurationTargets(storage, host).drain();
   assert.deepEqual(applied, [target]);
 });
+
+test("a turn admitted during model resolution leaves the configuration queued for retry", async () => {
+  const storage = memoryStorage();
+  let attempts = 0;
+  const queue = new ConfigurationTargets(storage, {
+    busy: async () => false,
+    apply: async () => {
+      if (++attempts === 1) throw Object.assign(new Error("Agent is busy"), { status: 409 });
+      return { changed: true, configHash: "updated" };
+    },
+    emit: async () => {},
+  });
+  await queue.enqueue({ id: "configure", params: { systemPrompt: "After" } });
+  await queue.drain();
+  assert.equal(await queue.pending(), true);
+  assert.equal((await storage.get<any>("request:configure")).state, "running");
+  await queue.drain();
+  assert.equal(await queue.pending(), false);
+  assert.equal((await storage.get<any>("request:configure")).outcome.result.configured, true);
+});
