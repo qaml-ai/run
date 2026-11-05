@@ -5,6 +5,7 @@ import { takesFiles } from './tool-file-schema.ts';
 import { ToolFiles } from './tool-files.ts';
 import { TOOL_FILE_LIMITS } from '../../../src/limits.ts';
 import { steeringCanJoin, steeringJoined } from "./steering-placement.ts";
+import { admitAgentMessage } from "./message-admission.ts";
 import { MULTI_AGENT_LIMITS } from "./multi-agent-policy.ts";
 import { ConfigurationTargets } from "./configuration-targets.ts";
 import { visibleEvent, visibleReplay } from "./event-visibility.ts";
@@ -28,7 +29,6 @@ import {
   type ConversationView,
   type LiveState,
   LiveDoc,
-  InboxDoc,
   type Extension,
   defineTool,
   hook,
@@ -2368,37 +2368,15 @@ export class CamelAgent extends DurableObject<Env> {
       };
       if (notice?.metadata.kind === 'message') {
         const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
-        const admitMessage = (owner: string | null, nativeRequest?: string, joinOnly = false) => root.commit(async tx => {
-          const existing = await tx.submissionByRequest(root.id, id);
-          if (existing) {
-            const entry = existing.entry === undefined
-              ? (await tx.doc(InboxDoc, root.id)).items.find(item => item.id === existing.id)?.entry
-              : await tx.entry(existing.entry);
-            const data = entry?.data as { logicalOwner?: string | null } | undefined;
-            return { submitted: true as const, owner: data && Object.hasOwn(data, 'logicalOwner') ? data.logicalOwner ?? null : record.steerCommitted ? record.steeredInto : undefined };
-          }
-          if (joinOnly && !nativeRequest) return { submitted: false as const };
-          if (nativeRequest) {
-            const live = await tx.doc(LiveDoc, root.id);
-            const native = await tx.submissionByRequest(root.id, nativeRequest);
-            if (!steeringCanJoin(native) || !native || !live.run?.inputs.includes(native.id)) return { submitted: false as const };
-            const entry = native.entry === undefined ? undefined : await tx.entry(native.entry);
-            const data = entry?.data as { logicalOwner?: string | null } | undefined;
-            if (data && Object.hasOwn(data, 'logicalOwner')) owner = data.logicalOwner ?? candidate?.resumeOwner ?? nativeRequest;
-          }
-          await root.submit(tx, { type: 'input', requestId: id, content: prompt, whenBusy: owner ? 'steer' : 'followUp',
-            entry: { kind: owner ? 'camel.steer' : 'camel.prompt', data: { ...(submission.entry.data as Record<string, unknown>), logicalOwner: owner } as never } });
-          for (const value of [...held.values()].sort((a, b) => a.startedAt - b.startedAt))
-            await tx.appendEntry(root.id, { kind: 'camel.steer', data: { requestId: value.id }, model: [{ role: 'user', content: value.prompt, timestamp: Date.now() }] });
-          return { submitted: true as const, owner };
-        }, BACKGROUND_CONTEXT);
+        const input = { requestId: id, content: prompt, entry: submission.entry, candidate, held: [...held.values()],
+          ...(record.steerCommitted ? { legacyOwner: record.steeredInto } : {}) };
         // The candidate is only a hint until this transaction queues its input.
         // If its turn ended meanwhile, take a wake before exposing an own turn.
-        let admitted = await admitMessage(candidate?.owner ?? null, candidate?.nativeRequest, true);
+        let admitted = await admitAgentMessage(root, input, 'join');
         if (!admitted.submitted) {
           const refusal = await messageWake();
           if (refusal) return landWithoutTurn(refusal);
-          admitted = await admitMessage(null);
+          admitted = await admitAgentMessage(root, input, 'own');
         }
         if (admitted.submitted && admitted.owner !== undefined) {
           const latest = (await this.ctx.storage.get<RequestRecord>(reqKey(id))) ?? record;
