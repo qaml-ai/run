@@ -21,7 +21,7 @@ npm --prefix backends/workers run typecheck
     test/keyed-tool-sources.integration.ts
 )
 contract_status=0
-CONTRACT_CONCURRENCY=${CONTRACT_CONCURRENCY:-4} npm run parity -- --area=definitions,delegation || contract_status=$?
+CONTRACT_CONCURRENCY=${CONTRACT_CONCURRENCY:-4} npm run parity -- --local --area=definitions,delegation || contract_status=$?
 # A released pool checkout can be replaced immediately by another task.
 contract_reports="$HOME/runs/delegation-config-${CONTRACT_REVISION:-latest}"
 mkdir -p "$contract_reports"
