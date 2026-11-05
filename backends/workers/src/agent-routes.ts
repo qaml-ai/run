@@ -2,7 +2,7 @@ import { Directory, type AuthContext, type ControlEnv, type DirectoryEntry, type
 import { agentToken, ApiError, digest } from "./api-contract.ts";
 import { body, object } from "./validation.ts";
 import { withSql } from "./postgres.ts";
-import { copyAgentWorkspace } from "./agent-workspace.ts";
+import { copyAgentWorkspace, forkWorkspaceMounts } from "./agent-workspace.ts";
 import type { FileBindings } from "./files.ts";
 import { provisionDefinition, visibleConfiguration } from "./definitions.ts";
 import { canonical } from "../../../shared/durable-json.ts";
@@ -78,8 +78,9 @@ export async function agentLifecycleRoutes(request: Request, env: ControlEnv & F
   if (tail === "/export" && request.method === "GET") return json({ config: visibleConfiguration(entry.config), ...(await payload(await call(env, entry.id, "/history"))) });
   if (tail !== "/fork" || request.method !== "POST") return;
   const input = object(await body(request), ["key", "name", "atMessage", "ttlSeconds", "subject", "context", "systemPromptAppend", "modelHeaders"]);
-  const key = input.key ?? request.headers.get("Idempotency-Key") ?? undefined;
-  if (key !== undefined && typeof key !== "string") throw new ApiError(400, "Invalid fork key");
+  const suppliedKey = input.key ?? request.headers.get("Idempotency-Key") ?? undefined;
+  if (suppliedKey !== undefined && typeof suppliedKey !== "string") throw new ApiError(400, "Invalid fork key");
+  const key = suppliedKey ?? crypto.randomUUID();
   const directory = new Directory(env, entry.tenantId), existing = key ? await directory.get(key as string) : null;
   const saved = existing as (DirectoryEntry & { forkedFrom?: {agentId:string;atMessage:number} }) | null;
   if (saved) { if (saved.forkedFrom?.agentId !== entry.id) throw new ApiError(409, "Key belongs to another agent"); return json({id:saved.id,token:await agentToken(env.API_TOKEN,saved.id),expiresAt:saved.expiresAt,forkedFrom:saved.forkedFrom},201); }
@@ -88,8 +89,11 @@ export async function agentLifecycleRoutes(request: Request, env: ControlEnv & F
   if (!Number.isInteger(at) || at < -1 || at >= history.messages.length) throw new ApiError(400, "Invalid fork point");
   const initialMessages = history.messages.slice(0, at + 1);
   const { key: _key, atMessage: _at, ...settings } = input;
-  const created = result(await directory.upsert({ ...entry.config, ...settings, initialMessages, ttlSeconds: input.ttlSeconds === undefined ? (key ? null : 86400) : input.ttlSeconds }, key as string | undefined, new URL(request.url).origin));
-  await copyAgentWorkspace(env, entry.tenantId, entry.id, created.id);
+  // Allocate the same identity as Directory before resolving private mounts.
+  const targetId = await directory.id(key);
+  const workspace = await forkWorkspaceMounts(entry.config.mounts, entry.id, targetId);
+  const created = result(await directory.upsert({ ...entry.config, ...settings, mounts:workspace.mounts, initialMessages, ttlSeconds: input.ttlSeconds === undefined ? (suppliedKey ? null : 86400) : input.ttlSeconds }, key, new URL(request.url).origin));
+  if (workspace.copyPrivate) await copyAgentWorkspace(env, entry.tenantId, entry.id, created.id);
   const forkedFrom = {agentId:entry.id,atMessage:at};
   await withSql(env, sql => sql.query("update agents set header=$3 where tenant=$1 and id=$2", [entry.tenantId,created.id,JSON.stringify({...created,forkedFrom})]));
   return json({id:created.id,token:await agentToken(env.API_TOKEN,created.id),expiresAt:created.expiresAt,forkedFrom},201);
