@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
+import { legacyMcpRequest } from '../src/legacy-mcp.ts';
 import { sourceTools } from '../src/tool-sources.ts';
 import type { ToolExecutionApi } from '@earendil-works/pi-durable';
 import type { Context } from '@earendil-works/chord';
@@ -62,4 +63,9 @@ test('a legacy SSE-only source is called and each stream closes after its operat
   assert.match(JSON.stringify((await tools[0].execute({}, api, context)).output), /pong/);
   await new Promise(resolve => setTimeout(resolve, 20));
   assert.equal(streams.size, 0);
+});
+
+test('legacy MCP refusal closes its unused endpoint wait without an unhandled rejection', async () => {
+  await assert.rejects(legacyMcpRequest('https://mcp.test/sse', { jsonrpc: '2.0', id: '1', method: 'initialize' }, {}, async () => new Response(null, { status: 503 }), new AbortController().signal, false, () => {}), /HTTP 503/);
+  await new Promise(resolve => setTimeout(resolve, 0));
 });

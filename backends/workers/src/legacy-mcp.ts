@@ -6,6 +6,7 @@ export async function legacyMcpRequest(url: string, message: RpcMessage, headers
   const pending = new Map<string, { resolve(value: any): void; reject(error: unknown): void }>();
   let endpointResolve!: (endpoint: string) => void, endpointReject!: (error: unknown) => void;
   const endpoint = new Promise<string>((resolve, reject) => { endpointResolve = resolve; endpointReject = reject; });
+  void endpoint.catch(() => {});
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   const fail = (error: unknown) => { endpointReject(error); for (const waiter of pending.values()) waiter.reject(error); pending.clear(); };
   const cancel = () => fail(aborted.reason ?? new Error('MCP stream closed'));
