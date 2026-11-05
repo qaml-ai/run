@@ -1,3 +1,4 @@
+import { toolOutputExtension } from "./tool-output.ts";
 import { toolCallSite } from "./tool-call-context.ts";
 import { withMoneyMetrics } from "./money-metrics.ts";
 import { DurableObject } from "cloudflare:workers";
@@ -705,6 +706,15 @@ export class CamelAgent extends DurableObject<Env> {
         ),
       );
       registry.install(senderExtension());
+      registry.install(toolOutputExtension(this.env, async (api, callId) => {
+        const conf = await this.config(), pi = await this.harness.pi();
+        const site = await toolCallSite({ taskId: api.taskId, callId, getTask: pi.getTask.bind(pi) } as ToolExecutionApi);
+        if (site.assistant !== undefined) {
+          await this.historyIndex.sync(await pi.root(BACKGROUND_CONTEXT));
+          site.messageIndex = this.historyIndex.messageIndex(site.assistant);
+        }
+        return { tenant: conf.tenantId, agent: conf.id, mounts: conf.config.mounts ?? [], fileTools: conf.config.fileTools, codeMode: conf.config.codeMode, call: site };
+      }));
       registry.install(this.limits.extension());
       // User files live in the volume DO/R2; code runs in the separate sandbox.
       const templates = volumeTools(
@@ -1361,8 +1371,8 @@ export class CamelAgent extends DurableObject<Env> {
                 servedModel: usage.last
                   ? `${usage.last.provider}/${usage.last.model}`
                   : (record.billing?.model ?? stored?.config.model),
-                toolCalls: usage.toolCalls ?? [],
-                toolErrors: usage.toolErrors ?? [],
+                ...(usage.toolCalls?.length ? { toolCalls: usage.toolCalls } : {}),
+                ...(usage.toolErrors?.length ? { toolErrors: usage.toolErrors } : {}),
                 replyIndex: usage.replyIndex,
                 ...(await fileOutputs(this.ctx.storage, id)),
                 ...(outputValue !== undefined

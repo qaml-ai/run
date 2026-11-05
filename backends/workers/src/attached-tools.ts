@@ -193,11 +193,13 @@ export function toolResult(result: McpResult): ToolExecutionResult {
       return [{ type: "image" as const, data: block.data, mimeType: block.mimeType }];
     return [{ type: "text" as const, text: JSON.stringify(block) }];
   });
-  let structuredOutput = result.structuredContent;
+  const details = result.structuredContent ?? result.toolResult;
+  if (!output.length && details !== undefined) output.push({ type: "text", text: JSON.stringify(details) });
+  let structuredOutput = details;
   if (structuredOutput === undefined && output.length === 1 && output[0].type === "text") {
     try { structuredOutput = JSON.parse(output[0].text); } catch { structuredOutput = output[0].text; }
   }
-  return { output, ...(result.isError ? { isError: true } : structuredOutput !== undefined ? { structuredOutput: structuredOutput as never } : {}) };
+  return { output, ...(details !== undefined ? { details: details as never } : {}), ...(result.isError ? { isError: true } : structuredOutput !== undefined ? { structuredOutput: structuredOutput as never } : {}) };
 }
 
 export function registration(definition: ToolDefinition, call: (args: unknown, api: ToolExecutionApi, context: Context) => Promise<McpResult>): ToolRegistration {
