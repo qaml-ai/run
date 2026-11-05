@@ -27,6 +27,7 @@ import type { RateLimitState } from "./admission.ts";
 import { applyUsageRows } from "./accounts.ts";
 import { applyWorkspaceUsage, Workspaces } from "./workspaces.ts";
 import { activeCharge } from "../../../src/pricing.ts";
+import { canonical } from "../../../shared/durable-json.ts";
 import {
   enqueueEvents,
   webhookEvent,
@@ -233,7 +234,7 @@ export class Directory {
       if (requested===undefined && old?.config.mounts) config.mounts=old.config.mounts;
       if(old?.config.mounts&&requested!==undefined&&mountIdentity(old.config.mounts)!==mountIdentity(config.mounts)&&(input as {remount?:boolean}).remount!==true)
         throw new ApiError(409,`An existing agent's mounts cannot change; delete it (DELETE /v1/agents/${id}) or use another idempotency key, or send remount: true to change its mounts`);
-      const configHash=await digest(JSON.stringify(config));
+      const configHash=await digest(canonical(config));
       const sameModel = JSON.stringify(old?.resolvedModel) === JSON.stringify(resolvedModel);
       if (config.type !== "run")
         rate = await createAdmission(this.env, this.tenantId, !(old?.initialized && old.configHash === configHash));

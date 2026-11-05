@@ -15,6 +15,9 @@ test('prompts submitted between upserts use their preceding configuration', { ti
     return response.json;
   };
   const agent = await upsert('configuration A.');
+  const unchanged = await upsert('configuration A.');
+  await until(async () => (await fixture.call(`/v1/agents/${agent.id}/requests/${unchanged.reconfigured.id}`)).json.state === 'completed', 'unchanged configuration');
+  assert.equal((await fixture.call(`/v1/agents/${agent.id}`)).json.configHash, agent.configHash);
   const prompt = async (text: string, requestId = text) => {
     const response = await fixture.call(`/v1/agents/${agent.id}/prompt`, { body: { text, requestId } });
     assert.equal(response.status, 202, response.text);
