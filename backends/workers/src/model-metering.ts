@@ -53,7 +53,7 @@ export function meterProvider<P extends Provider<any>>(
           apiKey: preparedKey === 'runtime-bearer' ? preparedKey : credentials.apiKey ?? preparedKey,
           headers: { ...('headers' in credentials ? credentials.headers : {}), ...options.headers },
         };
-        if ('baseUrl' in credentials && credentials.baseUrl) model = { ...model, baseUrl: credentials.baseUrl };
+        if ('baseUrl' in credentials && credentials.baseUrl && !FETCH_APIS.includes(model.api)) model = { ...model, baseUrl: credentials.baseUrl };
       }
       let limit = await modelSpendLimit(service.db, identity) ?? await service.accounts.runLimit(identity.tenant);
       if (!limit && identity.subject) {

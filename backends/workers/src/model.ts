@@ -33,7 +33,9 @@ import { OutputRequest } from "./output-request.ts";
 import { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
 import { boundedModel } from "./model-context.ts";
 import type { AgentConfiguration } from "./api-contract.ts";
-import { sourceUrl } from "./tool-sources.ts";
+import { modelOutbound } from "./security-outbound.ts";
+import { gatewayUrl } from "./model-gateway.ts";
+import { FETCH_APIS } from "./model-call-fetch.ts";
 import { listModels } from "./catalog-policy.ts";
 import { streamTimeouts, watchedStream, isStalled, type Stall } from "./model-stream.ts";
 import { runtimeStreamTimeouts, type ModelTimeoutEnv } from "./model-runtime-options.ts";
@@ -78,7 +80,11 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEn
       model = { ...boundedModel(selected, config.runLimits?.contextTokens), ...(env.TEST_MODEL === "1" ? { baseUrl: model.baseUrl, api: model.api, runtimeApi: selected.api } : {}) };
     }
     const credential = await hooks.credentials?.(model.provider);
-    if (credential?.baseUrl) model = { ...model, api: (model as Model<Api> & { runtimeApi?: Api }).runtimeApi ?? getModel(model.provider, model.id)?.api ?? model.api };
+    if (credential?.baseUrl) {
+      const catalog = getModel(model.provider, model.id);
+      model = { ...model, api: (model as Model<Api> & { runtimeApi?: Api }).runtimeApi ?? catalog?.api ?? model.api };
+      if (FETCH_APIS.includes(model.api) && catalog) model = { ...model, baseUrl: catalog.baseUrl };
+    }
     let fallback = filterFallbacks.get(`${model.provider}/${model.id}`);
     if (fallback && (credential?.identity || credential?.baseUrl && !credential.deployments || !(await hooks.credentials?.(fallback.provider))?.apiKey)) fallback = undefined;
     const virtualNext = config.model?.startsWith("camelrun/") ? routeModel(resolveModel(config.model), { reason: "retry", failed: model }) : undefined;
@@ -99,13 +105,15 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEn
     let transportError: string | undefined;
     const tenantFetch: typeof fetch | undefined = credential?.baseUrl ? async (input, init) => {
       try {
-        const target = sourceUrl(input instanceof Request ? input.url : String(input), env);
-        if (target.origin !== new URL(credential.baseUrl!).origin) throw new Error("Custom provider request changed origin");
+        const original = input instanceof Request ? input.url : String(input);
+        const target = FETCH_APIS.includes(model.api) ? gatewayUrl(model, original, credential.baseUrl!) : original;
+        const outbound = modelOutbound(env as unknown as Record<string, unknown>);
+        await outbound.reachable(target);
         const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
         if (!credential.apiKey) { headers.delete("authorization"); headers.delete("x-api-key"); }
         if (credential.deployments) { headers.delete("authorization"); headers.delete("x-api-key"); headers.set("api-key", credential.apiKey!); }
         if (credential.bearer && credential.apiKey) { headers.set("authorization", `Bearer ${credential.apiKey}`); headers.delete("x-api-key"); }
-        const response = await (options.fetch ?? fetch)(input, { ...init, headers, redirect:"manual" });
+        const response = await (options.fetch ?? fetch)(target, { ...init, headers, redirect:"manual" });
         if (response.status >= 300 && response.status < 400) { await response.body?.cancel(); throw new Error("Custom provider redirects are not allowed"); }
         return response;
       } catch (error) { transportError = error instanceof Error ? error.message : String(error); throw error; }
@@ -128,7 +136,7 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEn
         return await onPayload?.(adjusted, target) ?? adjusted;
       },
     };
-    return { model: credential?.baseUrl ? { ...model, baseUrl: credential.baseUrl } : model, context: normalizeContext(deepseekContext(model, context)), options: prepared, config, fallback, virtualNext, callKind, transportError: () => transportError };
+    return { model: credential?.baseUrl && !FETCH_APIS.includes(model.api) ? { ...model, baseUrl: credential.baseUrl } : model, context: normalizeContext(deepseekContext(model, context)), options: prepared, config, fallback, virtualNext, callKind, transportError: () => transportError };
   };
   const wrap = (simple: boolean) => (model: Model<Api>, context: TranscriptContext, options?: StreamOptions) => {
     const output = createAssistantMessageEventStream();
