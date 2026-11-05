@@ -126,7 +126,7 @@ test('sequential delegates share the same assistant response budget before eithe
   f.host.fetch = async (id, request) => request.method === 'GET' && new URL(request.url).pathname.startsWith('/requests/')
     ? Response.json({ state: 'completed', status: 'completed', outcome: { result: { usage: { costUsd: 0.05 } } } }) : fetch(id, request);
   const api = { taskId: 1, callId: 'first', getTask: async () => ({ input: { kind: 'model', callId: 'first', assistant: 2 } }),
-    entry: async () => ({ model: [{ role: 'assistant', content: [{ type: 'toolCall', name: 'delegate' }, { type: 'toolCall', name: 'delegate' }] }] }) } as unknown as ToolExecutionApi;
+    commit: async (read: (tx: unknown) => unknown) => read({ entry: async () => ({ model: [{ role: 'assistant', content: [{ type: 'toolCall', name: 'delegate' }, { type: 'toolCall', name: 'delegate' }] }] }) }) } as unknown as ToolExecutionApi;
   const first = await f.delegation.start({ instructions: 'worker', task: 'first' }, 'first', signal(), false, api);
   await f.delegation.wait(first);
   const second = await f.delegation.start({ instructions: 'worker', task: 'second' }, 'second', signal(), false, api);
@@ -163,6 +163,10 @@ test('signed lineage cannot exceed its inherited depth ceiling', async () => {
   await Promise.all(parent.tasks);
   const middle = fixture();
   middle.setId(child.id); middle.setRun({ id: child.requestId, metadata: parent.submitted[0].params.metadata });
+  assert.deepEqual(await middle.delegation.lineage(child.id, { id: 'resumed', piId: child.requestId, metadata: parent.submitted[0].params.metadata }), {
+    depth: 1, maxDepth: 2, chain: ['parent'], parent: 'parent', root: 'parent',
+  });
+  assert.equal(await middle.delegation.lineage(child.id, { id: child.requestId, metadata: { ...parent.submitted[0].params.metadata, delegationChain: 'forged' } }), undefined);
   const grandchild = await middle.delegation.start({ instructions: 'helper', task: 'help' }, 'second', signal());
   assert.equal(grandchild.depth, 2);
   await Promise.all(middle.tasks);

@@ -10,7 +10,7 @@ import { toolCallSite } from './tool-call-context.ts';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 
 type Configuration = { model?: string | object; systemPrompt?: string; delegate?: DelegateSettings; builtins?: string[]; spendLimit?: { usd: number }; [key: string]: unknown };
-export type ParentRun = { id: string; params?: { spendLimit?: { usd: number }; bucket?: string; actor?: string }; metadata?: Record<string, string> };
+export type ParentRun = { id: string; piId?: string; params?: { spendLimit?: { usd: number }; bucket?: string; actor?: string }; metadata?: Record<string, string> };
 export type ChildUsage = { costUsd?: number; subagentCostUsd?: number; imageCostUsd?: number; decisionCostUsd?: number; webCostUsd?: number; transcriptionCostUsd?: number };
 export type ChildRun = { state: string; status?: string; error?: string; outcome?: { result?: { reply?: string; output?: unknown; usage?: ChildUsage }; error?: string } };
 export function childUsageCost(usage?: ChildUsage) {
@@ -77,9 +77,10 @@ export class Delegation {
     if ((await this.host.storage.get<DelegatedChild>(prefix + child.key))?.cancelRequested)
       throw new DOMException('Delegation cancelled', 'AbortError');
   }
-  private async lineage(id: string, run: ParentRun) {
+  /** Verified ancestry only; public prompt metadata cannot mint parent identity. */
+  async lineage(id: string, run: ParentRun) {
     const metadata = run.metadata ?? {}, depth = metadata[PARENT_KEYS.depth], max = metadata[PARENT_KEYS.maxDepth], chain = metadata[PARENT_KEYS.chain] ?? '';
-    if (depth === undefined || max === undefined || metadata[PARENT_KEYS.signature] !== await signature(this.host.secret, id, run.id, depth, max, chain)) return;
+    if (depth === undefined || max === undefined || metadata[PARENT_KEYS.signature] !== await signature(this.host.secret, id, run.piId ?? run.id, depth, max, chain)) return;
     const parents = chain.split(',').filter(Boolean);
     return { depth: Number(depth), maxDepth: Number(max), chain: parents, parent: parents.at(-1)!, root: parents[0]! };
   }
@@ -119,10 +120,10 @@ export class Delegation {
     const place = await this.place(id, run, settings);
     const maxParallel = settings.maxParallel ?? MULTI_AGENT_LIMITS.maxParallel;
     let group: { messageIndex: number; delegates: number } | undefined;
-    if (!background && api?.getTask && api.entry) {
+    if (!background && api?.getTask && api.commit) {
       const site = await toolCallSite(api);
       if (site.assistant !== undefined) {
-        const entry = await api.entry(site.assistant as never, BACKGROUND_CONTEXT);
+        const entry = await api.commit(tx => tx.entry(site.assistant as never), BACKGROUND_CONTEXT);
         const delegates = (entry?.model ?? []).flatMap(message => Array.isArray(message.content) ? message.content : [])
           .filter(part => part.type === 'toolCall' && part.name === 'delegate').length;
         group = { messageIndex: site.assistant, delegates: Math.max(1, delegates) };
