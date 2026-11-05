@@ -1,0 +1,18 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "camelrun-proto-platform-container",
+  "main": "worker.ts",
+  "compatibility_date": "2026-11-05",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "durable_objects": { "bindings": [{ "name": "COMPUTERS", "class_name": "ContainerComputer" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ContainerComputer"] }],
+  "containers": [{
+    "name": "camelrun-proto-platform-container",
+    "class_name": "ContainerComputer",
+    "scheduling_policy": "durable_object",
+    "images": { "workspace": { "dockerfile": "../../computers/Dockerfile" } }
+  }],
+  "observability": { "enabled": false }
+}

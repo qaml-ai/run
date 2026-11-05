@@ -2,9 +2,9 @@ TAP version 13
 # Subtest: an OpenAPI spec's operations are tools: requests built from the spec, data back, errors as tool errors
 not ok 1 - an OpenAPI spec's operations are tools: requests built from the spec, data back, errors as tool errors
   ---
-  duration_ms: 1454.6245
+  duration_ms: 1901.535333
   type: 'test'
-  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/openapi-sources.test.ts:58:1'
+  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/openapi-sources.test.ts:58:1'
   failureType: 'testCodeFailure'
   error: |-
     {"error":"Unknown API route","code":"NOT_FOUND"}
@@ -17,7 +17,7 @@ not ok 1 - an OpenAPI spec's operations are tools: requests built from the spec,
   actual: 404
   operator: 'strictEqual'
   stack: |-
-    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/openapi-sources.test.ts:68:10)
+    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/openapi-sources.test.ts:68:10)
     process.processTicksAndRejections (node:internal/process/task_queues:105:5)
     async Test.run (node:internal/test_runner/test:1054:7)
     async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
@@ -25,9 +25,9 @@ not ok 1 - an OpenAPI spec's operations are tools: requests built from the spec,
 # Subtest: OpenAPI sources are checked when the definition is saved
 not ok 2 - OpenAPI sources are checked when the definition is saved
   ---
-  duration_ms: 1530.398
+  duration_ms: 1957.063208
   type: 'test'
-  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/openapi-sources.test.ts:94:1'
+  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/openapi-sources.test.ts:94:1'
   failureType: 'testCodeFailure'
   error: |-
     {"error":"Unknown API route","code":"NOT_FOUND"}
@@ -40,7 +40,7 @@ not ok 2 - OpenAPI sources are checked when the definition is saved
   actual: 404
   operator: 'strictEqual'
   stack: |-
-    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/openapi-sources.test.ts:99:10)
+    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/openapi-sources.test.ts:99:10)
     process.processTicksAndRejections (node:internal/process/task_queues:105:5)
     async Test.run (node:internal/test_runner/test:1054:7)
     async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
@@ -53,4 +53,4 @@ not ok 2 - OpenAPI sources are checked when the definition is saved
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 6030.768458
+# duration_ms 6869.858791

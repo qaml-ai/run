@@ -24,6 +24,7 @@ from urllib.parse import quote, urlencode, urlparse
 import uuid
 
 import httpx
+from .event_transport import event_stream
 
 # pyproject.toml's version; tests/python_sdk.py checks they match.
 __version__ = "0.18.1"
@@ -980,7 +981,7 @@ class AgentRuntime(_RuntimeCalls):
         while True:
             headers = {"Authorization": f"Bearer {self._operator()}", "Accept": "text/event-stream", **({"Last-Event-ID": str(cursor)} if cursor else {})}
             try:
-                async with self.http.stream("GET", f"{self.base}/v1/runs/{quote(run_id, safe='')}/events", headers=headers, timeout=httpx.Timeout(10, read=60)) as response:
+                async with event_stream(self.http, f"{self.base}/v1/runs/{quote(run_id, safe='')}/events", headers=headers, timeout=httpx.Timeout(10, read=60)) as response:
                     if not response.is_success:
                         await response.aread()
                         error = AgentError(_error(response), response.status_code, retry_after=_retry_after(response))
@@ -1867,7 +1868,7 @@ class AgentClient(_AgentCalls):
             try:
                 # One application serves an agent's tools at a time: a reconnect names the connection it held; takeover replaces another's, once.
                 mode = ("&watch=1" if not self.attach else "&takeover=true" if self.takeover and not self.connection else "") + ("&subagents=1" if self.subagents else "")
-                async with self.http.stream("GET", self.base + self.path + "/events?snapshot=1" + mode, headers={
+                async with event_stream(self.http, self.base + self.path + "/events?snapshot=1" + mode, headers={
                     "Authorization": f"Bearer {self.session['token']}", "Accept": "text/event-stream", "Last-Event-ID": str(self.cursor),
                     **({"X-Agent-Connection": self.connection} if self.attach and self.connection else {})}, timeout=20) as response:
                     if response.status_code == 409:

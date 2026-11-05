@@ -1,0 +1,88 @@
+{
+  "name": "camelrun-proto-platform-files",
+  "startedAt": "2026-11-05T18:28:58.887Z",
+  "operations": [
+    {
+      "command": "deploy -c probes/files/wrangler.jsonc",
+      "exitCode": 0
+    },
+    {
+      "command": "secret put API_TOKEN -c probes/files/wrangler.jsonc",
+      "exitCode": 0
+    },
+    {
+      "command": "deploy -c /var/folders/2w/ghgmsg856n52r27w6r4slplw0000gn/T/camelrun-platform-files-Pr5hsF/teardown.json",
+      "exitCode": 0
+    }
+  ],
+  "cleanup": {
+    "objects": {
+      "removed": 2,
+      "remaining": 0
+    },
+    "workers": [],
+    "namespaces": [],
+    "bucketExists": false,
+    "errors": []
+  },
+  "preflight": {
+    "worker": false,
+    "namespace": false,
+    "bucket": false
+  },
+  "status": 200,
+  "result": {
+    "startedAt": 1793903348960,
+    "endedAt": 1793903353743,
+    "cas": {
+      "success": 1,
+      "conflicts": 1
+    },
+    "snapshot": {
+      "read": "first",
+      "pinned": true,
+      "labels": {
+        "fixture": "cloud"
+      }
+    },
+    "gc": {
+      "mark": {
+        "removed": 0,
+        "held": 2,
+        "candidates": 1
+      },
+      "sweep": {
+        "removed": 1,
+        "held": 2,
+        "candidates": 0
+      },
+      "unpinned": {
+        "removed": 1,
+        "held": 1,
+        "candidates": 0
+      },
+      "pinRetained": true,
+      "pinReleased": true
+    },
+    "multipart": {
+      "size": 6291463,
+      "sha256": "9244e14b0ec16d46d83d93f91ab9ca5ab52cad10367bd1f7394efb3715d56104",
+      "verified": true,
+      "lastByte": 42,
+      "elapsedMs": 2262
+    }
+  },
+  "endedAt": "2026-11-05T18:29:20.329Z",
+  "independentAudit": {
+    "at": "2026-11-05T18:30:44.911705+00:00",
+    "via": "Cloudflare connector inventory",
+    "workers": [],
+    "namespaces": [],
+    "buckets": []
+  },
+  "cost": {
+    "observedBilledUsd": null,
+    "estimatedUpperBoundUsd": 0.01,
+    "scope": "synthetic Worker requests, DO operations and 6 MiB R2 upload; not an account invoice"
+  }
+}

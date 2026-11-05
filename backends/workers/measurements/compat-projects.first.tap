@@ -1,0 +1,48 @@
+TAP version 13
+# Subtest: a project is a keyed volume seeded once, mounted with the workspace beside it, and published as checked snapshots
+ok 1 - a project is a keyed volume seeded once, mounted with the workspace beside it, and published as checked snapshots
+  ---
+  duration_ms: 1762.423417
+  type: 'test'
+  ...
+# Subtest: publishTool finds the project from the call's identity, never its arguments, and tells the model what to fix
+ok 2 - publishTool finds the project from the call's identity, never its arguments, and tells the model what to fix
+  ---
+  duration_ms: 2238.692333
+  type: 'test'
+  ...
+# Subtest: a project is restored in place to a published version, and a check hands what it computed to store and the result
+ok 3 - a project is restored in place to a published version, and a check hands what it computed to store and the result
+  ---
+  duration_ms: 1748.653542
+  type: 'test'
+  ...
+# Subtest: pinned versions outlast keep and the snapshot cap, carry labels, and a snapshot can be made from contents
+not ok 4 - pinned versions outlast keep and the snapshot cap, carry labels, and a snapshot can be made from contents
+  ---
+  duration_ms: 2902.880833
+  type: 'test'
+  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/projects.test.ts:162:1'
+  failureType: 'uncaughtException'
+  error: 'terminating connection due to administrator command'
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    parseErrorMessage (/Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/backends/workers/node_modules/pg-protocol/dist/parser.js:306:11)
+    Parser.handlePacket (/Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/backends/workers/node_modules/pg-protocol/dist/parser.js:143:27)
+    Parser.parse (/Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/backends/workers/node_modules/pg-protocol/dist/parser.js:37:38)
+    Socket.<anonymous> (/Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/backends/workers/node_modules/pg-protocol/dist/index.js:12:42)
+    Socket.emit (node:events:519:28)
+    addChunk (node:internal/streams/readable:561:12)
+    readableAddChunkPushByteMode (node:internal/streams/readable:512:3)
+    Readable.push (node:internal/streams/readable:392:5)
+    TCP.onStreamRead (node:internal/stream_base_commons:189:23)
+  ...
+1..4
+# tests 4
+# suites 0
+# pass 3
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 37616.25125

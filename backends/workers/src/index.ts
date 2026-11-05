@@ -1,3 +1,5 @@
+import { withMoneyMetrics } from "./money-metrics.ts";
+import { sweepComputers } from './computers/service.ts';
 import { CamelAgent, json, type Env } from "./agent.ts";
 import {
   Directory,
@@ -10,6 +12,13 @@ import {
 import { ApiError, agentToken, configuration } from "./api-contract.ts";
 import { authorized, agentId, BadRequest, body } from "./validation.ts";
 import { HttpError, errorCode, errorStatus } from "./errors.ts";
+import { handleAdminRequest } from "./admin-api.ts";
+import { handleServiceRequest } from "./service-api.ts";
+import { handleMediaRequest } from "./media-api.ts";
+import { handleComputerRequest } from "./computers/api.ts";
+import { websocketAuthorization, negotiateEvents } from "./live-transport.ts";
+import { publishScheduleEmails, deliverScheduleEmail } from "./schedules.ts";
+import { metric, failure } from "./observability.ts";
 import { withSql } from "./postgres.ts";
 import {
   consumeWebhooks,
@@ -74,8 +83,9 @@ export default {
     env: Env,
     ctx: ExecutionContext,
   ): Promise<Response> {
-    return corsResponse(request, await (async () => {
+    return withMoneyMetrics(env, async () => corsResponse(request, await (async () => {
     try {
+      request = websocketAuthorization(request);
       const preflight = corsPreflight(request);
       if (preflight) return preflight;
       const signed = await handleSignedFileRequest(request, env);
@@ -102,6 +112,8 @@ export default {
       }
       let auth = browser ? null : await authenticateMoney(request, env)
         ?? (((env.TEST_MODE === "1" && !bearer?.startsWith("Bearer art_")) || await authorized(request, env.API_TOKEN)) ? await authenticate(request, env) : null);
+      const service = await handleServiceRequest(request, env, auth);
+      if (service) return service;
       const match =
         /^\/(clients|v1\/agents|experimental\/agents)\/([^/]+)(\/.*)?$/.exec(
           path,
@@ -136,6 +148,10 @@ export default {
       }
       if (!auth && !entry)
         throw new ApiError(401, "Unauthorized", "UNAUTHORIZED");
+      if (auth) {
+        const computers = await handleComputerRequest(request, env, auth);
+        if (computers) return computers;
+      }
       if (!match) {
         if (!auth) throw new ApiError(403, "Account key required", "FORBIDDEN");
         if (
@@ -152,8 +168,12 @@ export default {
           return json({ queued: await publishPending(env) });
         const money = await moneyRoutes(request, env, auth, ctx);
         if (money) return money;
+        const admin = await handleAdminRequest(request, env, auth);
+        if (admin) return admin;
         const control = await controlRoutes(request, env, auth);
         if (control) return control;
+        const media = await handleMediaRequest(request, env, auth);
+        if (media) return media;
         const files = await handleFileRequest(request, env, auth);
         if (files) return files;
         if (path === "/v1/models" && request.method === "GET")
@@ -184,6 +204,10 @@ export default {
       }
       if (!entry) throw new ApiError(404, "Unknown agent", "AGENT_NOT_FOUND");
       const tail = match[3] || "/";
+      // Internal computer operations are reachable only through the service
+      // binding. Public cleanup must use the account-scoped confirmation route.
+      if (tail === "/__computer" && env.TEST_MODE !== "1")
+        throw new ApiError(404, "Not found", "NOT_FOUND");
       const directory = new Directory(env, entry.tenantId);
       if (entry.deleted) {
         if (auth && tail === "/" && request.method === "DELETE") {
@@ -233,15 +257,12 @@ export default {
       }
       if (tail === "/mounts") {
         if (request.method === "GET")
-          return json([
-            { path: "/workspace", mode: "rw", workspace: true },
-            ...(entry.config.mounts ?? []),
-          ]);
+          return json(entry.config.mounts ?? []);
         if (request.method === "PUT") {
           const input = (await body(request)) as { mounts?: unknown[] };
           const updated = result(
             await directory.upsert(
-              { ...entry.config, mounts: input.mounts },
+              { ...entry.config, mounts: input.mounts, remount: true },
               entry.key ?? entry.id,
             ),
           );
@@ -254,28 +275,53 @@ export default {
         env.TEST_MODEL !== "1"
       )
         throw new ApiError(404, "Not found");
+      if (!browser && tail === "/events" && request.method === "GET" && request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+        const selected = negotiateEvents(request);
+        if (selected) return selected;
+      }
+      // Browser grants retain Node's read-only SSE policy. The internal agent
+      // endpoint also negotiates transports, so strip the WebSocket offer here.
+      if (browser && tail === "/events") {
+        const headers = new Headers(request.headers);
+        headers.set("accept", "text/event-stream");
+        request = new Request(request, { headers });
+      }
       const response = await forward(request, env, entry.id, tail);
       return browser ? browserResponse(response, browser, tail) : response;
     } catch (error) {
       const limited = admissionError(error);
       if (limited) return limited;
       if (error instanceof ApiError || error instanceof HttpError)
-        return Response.json({ error: error.message, code: error.code, ...errorFields(error) }, { status: error.status, headers: { 'cache-control': 'no-store', ...errorHeaders(error) } });
+        return Response.json({ error: error.message, code: error.code, ...errorFields(error), ...("details" in error ? error.details : {}) }, { status: error.status, headers: { 'cache-control': 'no-store', ...errorHeaders(error) } });
       if (error instanceof BadRequest || error instanceof URIError)
         return json({ error: error.message, code: "INVALID_REQUEST" }, 400);
+      failure(env, "http_failed", error);
       const status = errorStatus(error, 500);
       return Response.json({ error: "Backend operation failed", code: errorCode(error, status) },
         { status, headers: { 'cache-control': 'no-store', ...errorHeaders(error) } });
     }
-    })());
+    })()));
   },
   async queue(batch: MessageBatch<DeliveryMessage>, env: Env) {
+    return withMoneyMetrics(env, async () => {
     await sendMoneyWebhooks(env);
-    await consumeWebhooks({ ...batch, messages: batch.messages.filter(message => message.body.kind === 'email') } as MessageBatch<DeliveryMessage>, env);
-    for (const message of batch.messages) if (message.body.kind !== 'email') message.ack();
+    for (const message of batch.messages.filter(message => message.body.kind === "schedule")) {
+      try { if (await deliverScheduleEmail(env, message.body.id)) message.ack(); else message.retry({ delaySeconds: 10 }); }
+      catch { message.retry({ delaySeconds: 30 }); }
+    }
+    await consumeWebhooks({ ...batch, messages: batch.messages.filter(message => message.body.kind === "email") } as MessageBatch<DeliveryMessage>, env);
+    for (const message of batch.messages) if (message.body.kind !== "email" && message.body.kind !== "schedule") message.ack();
+    });
   },
   async scheduled(_controller: ScheduledController, env: Env) {
-    await maintenance(env);
-    await moneyMaintenance(env);
+    return withMoneyMetrics(env, async () => {
+    try {
+      await maintenance(env);
+      await moneyMaintenance(env);
+      await publishScheduleEmails(env);
+      await sweepComputers(env);
+      metric(env, "maintenance", { MaintenanceRuns: 1 });
+    } catch (error) { failure(env, "maintenance_failed", error); throw error; }
+    });
   },
 } satisfies ExportedHandler<Env, DeliveryMessage>;

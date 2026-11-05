@@ -1,33 +1,16 @@
 TAP version 13
 # Subtest: calendar schedules and owner-configured email round trip through the API without crossing accounts
-not ok 1 - calendar schedules and owner-configured email round trip through the API without crossing accounts
+ok 1 - calendar schedules and owner-configured email round trip through the API without crossing accounts
   ---
-  duration_ms: 1561.080125
+  duration_ms: 1766.153708
   type: 'test'
-  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/schedule-api.test.ts:7:1'
-  failureType: 'testCodeFailure'
-  error: |-
-    {"error":"Unsupported field: email"}
-
-    400 !== 201
-
-  code: 'ERR_ASSERTION'
-  name: 'AssertionError'
-  expected: 201
-  actual: 400
-  operator: 'strictEqual'
-  stack: |-
-    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/schedule-api.test.ts:12:9)
-    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
-    async Test.run (node:internal/test_runner/test:1054:7)
-    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
   ...
 1..1
 # tests 1
 # suites 0
-# pass 0
-# fail 1
+# pass 1
+# fail 0
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 4820.126916
+# duration_ms 5203.876375

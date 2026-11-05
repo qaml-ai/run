@@ -1,3 +1,4 @@
+import { withMoneyMetrics } from "./money-metrics.ts";
 import { DurableObject } from "cloudflare:workers";
 import { type Message, type AssistantMessage } from "@earendil-works/pi-ai";
 import {
@@ -41,6 +42,7 @@ import {
 import {
   volumeTools,
   handleAgentFileRequest,
+  handleAgentFilesRoute,
   type FileBindings,
 } from "./files.ts";
 import {
@@ -51,6 +53,14 @@ import {
 } from "../../../src/calendar.ts";
 import type { TenantAdmission } from "./tenant.ts";
 import { imageReferenceInput, type ImageRef } from "./images.ts";
+import { eventFrame, negotiateEvents, EVENT_PROTOCOL } from "./live-transport.ts";
+import { attachedComputerTools } from "./computers/agent-tools.ts";
+import { ComputerService, inheritComputer, type ComputerEnv } from "./computers/service.ts";
+import type { AdminEnv } from "./admin-api.ts";
+import type { MediaBindings } from "./media-api.ts";
+import { newSchedule, scheduleDeliveries, queueScheduleEmail, publishScheduleEmails, type StoredSchedule as Schedule } from "./schedules.ts";
+import { nextOccurrence, retryable, RETRY_DELAYS_MS } from "./schedule-policy.ts";
+import { metric, safeError, errorClass } from "./observability.ts";
 import { modelRuntime } from "./model.ts";
 import { meterProvider, applyModelReceipt, type ModelReceipt } from "./model-metering.ts";
 import { keyServices, type KeyEnv } from "./security-services.ts";
@@ -58,6 +68,8 @@ import type { AccountEnv } from "./account-services.ts";
 import type { BillingEnv } from "./billing-routes.ts";
 import { runAdmission } from "./admission.ts";
 import { actorInput, bucketInput, spendInput } from "./security-policy.ts";
+import { writtenFile, presentedFile, fileOutputs, releasePresentedFiles } from "./file-output.ts";
+import { DurableFileVersions } from "./file-versions.ts";
 
 type Config = {
   id: string;
@@ -97,7 +109,7 @@ type RequestRecord = {
   status?: string;
   error?: string;
 };
-export interface Env extends ComputerBindings, ControlEnv, FileBindings, KeyEnv, AccountEnv, BillingEnv {
+export interface Env extends ComputerBindings, ControlEnv, FileBindings, KeyEnv, AccountEnv, BillingEnv, ComputerEnv, MediaBindings, AdminEnv {
   TENANTS: DurableObjectNamespace<TenantAdmission>;
   RATE_LIMITER?: RateLimit;
   CODEMODE_SANDBOX: DurableObjectNamespace<CodemodeSandboxDurableObject>;
@@ -109,6 +121,8 @@ export interface Env extends ComputerBindings, ControlEnv, FileBindings, KeyEnv,
   TEST_MODEL_BASE_URL?: string;
   TEST_TURN_COST_MICROS?: string;
   TENANT_MAX_ACTIVE?: string;
+  SCHEDULE_EMAIL_FROM?: string;
+  SCHEDULE_OPERATOR_TENANTS?: string;
 }
 export const json = (value: unknown, status = 200) =>
   Response.json(value, { status, headers: { "cache-control": "no-store" } });
@@ -125,17 +139,6 @@ const canonical = (value: unknown): string =>
       : value,
   );
 type BillingReceipt = TurnReceipt;
-type Schedule = {
-  id: string;
-  text: string;
-  dueAt: number;
-  createdAt: number;
-  everySeconds?: number;
-  calendar?: Calendar;
-  failures?: number;
-  retryAt?: number;
-  lastError?: string;
-};
 type Child = {
   id: string;
   key: string;
@@ -165,7 +168,30 @@ export class CamelAgent extends DurableObject<Env> {
     }),
   );
   private availableTools: ToolRegistration[] = [];
+  private computerSerial: Promise<unknown> = Promise.resolve();
+  private serializeComputer<T>(run: () => Promise<T>): Promise<T> {
+    const next = this.computerSerial.then(run);
+    this.computerSerial = next.catch(() => {});
+    return next;
+  }
+  private async computerNames() {
+    if (!this.env.HYPERDRIVE) return new Set<string>();
+    const conf = await this.config();
+    return new Set((await new ComputerService(this.env, conf.tenantId).tools(conf.id)).map(tool => tool.name));
+  }
+  private async refreshComputerTools() {
+    const conf = await this.config();
+    const names = await this.computerNames();
+    const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
+    const enabled = this.availableTools.filter(tool => {
+      if (/^(computer_|browser_)/.test(tool.name)) return names.has(tool.name);
+      if (conf.config.codeMode === false && ["exec","codemode"].includes(tool.name)) return false;
+      return conf.config.fileTools !== false || !this.workspaceToolNames.includes(tool.name);
+    });
+    await root.configure({ tools: enabled, modelTools: enabled }, BACKGROUND_CONTEXT);
+  }
   private workspaceToolNames: string[] = [];
+  private fileVersions = new DurableFileVersions(this.ctx.storage);
   // Pi can reopen its Harness after a storage failure without replacing this
   // agent. Keep admission here so old remote work still occupies its slots.
   private readonly sandboxRemote = isolatedSandboxRemote({
@@ -192,6 +218,15 @@ export class CamelAgent extends DurableObject<Env> {
             config.tenantId,
             config.id,
             async () => (config.config.mounts as never) ?? [],
+            async (file, volumePath) => {
+              const requestId = await this.fileRequestId();
+              await presentedFile(this.ctx.storage, this.env, {
+                requestId, callId: api.callId, tenant: config.tenantId,
+                origin: await this.ctx.storage.get<string>("file-origin"),
+              }, file, volumePath, event => this.emit(event));
+            },
+            async file => writtenFile(this.ctx.storage, await this.fileRequestId(), file),
+            this.fileVersions,
           )[index];
           return impl.execute(args as never, api, context);
         },
@@ -210,6 +245,7 @@ export class CamelAgent extends DurableObject<Env> {
         ],
       });
       registry.install({ name: "camel.human", tools: [askHuman] });
+      registry.install({ name: "camel.computers", tools: attachedComputerTools(this.env, () => this.config(), run => this.serializeComputer(async () => { try { return await run(); } finally { await this.arm(); } })) });
       registry.install({
         name: "camel.delegation",
         tools: [
@@ -299,7 +335,7 @@ export class CamelAgent extends DurableObject<Env> {
       ...(
         await this.ctx.storage.list<RequestRecord>({ prefix: "request:" })
       ).values(),
-    ];
+    ].sort((a, b) => a.startedAt - b.startedAt);
   }
   private async config() {
     if (await this.ctx.storage.get("deleted"))
@@ -318,7 +354,7 @@ export class CamelAgent extends DurableObject<Env> {
       for (const listener of this.listeners) listener(cursor, event);
       for (const socket of this.ctx.getWebSockets()) {
         try {
-          socket.send(JSON.stringify({ cursor, ...(event as object) }));
+          socket.send(eventFrame(event, cursor));
         } catch {
           socket.close(1011, "Send failed");
         }
@@ -362,6 +398,13 @@ export class CamelAgent extends DurableObject<Env> {
       const status = await submission?.status(BACKGROUND_CONTEXT);
       if (status?.requestId) return status.requestId;
     }
+  }
+  private async fileRequestId() {
+    const watch = await this.harness.session().watch();
+    const live = watch.value.docs["pi.live"] as LiveState | undefined;
+    const id = await this.requestForInputs(live?.run?.inputs ?? []) ?? this.active;
+    if (!id) throw new Error("Files can be presented only during a run");
+    return id;
   }
   private async projectMessage(id: string, message: Message, ended: boolean) {
     if (message.role === "assistant") {
@@ -469,6 +512,7 @@ export class CamelAgent extends DurableObject<Env> {
                   costUsd: usage.costMicros / 1_000_000,
                 },
                 servedModel: record.billing?.model ?? stored?.config.model,
+                ...await fileOutputs(this.ctx.storage, id),
               },
             }
           : { error: result.reason ?? "Model operation failed" };
@@ -509,7 +553,11 @@ export class CamelAgent extends DurableObject<Env> {
       // Receipt and terminal state commit together. A lost PG acknowledgement
       // only replays this immutable receipt; money remains one PG transaction.
       await this.flushBilling();
-      if (changed) await this.emit({ type: "response", id, outcome });
+      if (changed) {
+        metric(this.env, "turn_metrics", { Turns: 1, TurnDurationMs: terminal.endedAt! - terminal.startedAt, ModelResponses: usage.responses }, { Outcome: terminal.status ?? "completed", ErrorClass: errorClass(terminal.error), Model: terminal.billing?.model ?? "unknown", Provider: (terminal.billing?.model ?? "unknown").split("/")[0] });
+        await this.emit({ type: "response", id, outcome });
+        if (id.startsWith("schedule-")) await publishScheduleEmails(this.env);
+      }
       return terminal;
     } catch (error) {
       if (
@@ -654,6 +702,8 @@ export class CamelAgent extends DurableObject<Env> {
     }
     await this.ctx.storage.put(reqKey(id), record);
     await this.observe();
+    // Attachment changes take effect on the next turn, including inherited ones.
+    await this.refreshComputerTools();
     // No successful acceptance response until Pi has durably recorded the input.
     await this.harness.submit(prompt, {
       operationId: id,
@@ -736,6 +786,9 @@ export class CamelAgent extends DurableObject<Env> {
     };
   }
   async fetch(request: Request): Promise<Response> {
+    return withMoneyMetrics(this.env, () => this.fetchRequest(request));
+  }
+  private async fetchRequest(request: Request): Promise<Response> {
     try {
       const url = new URL(request.url),
         path = url.pathname;
@@ -762,8 +815,9 @@ export class CamelAgent extends DurableObject<Env> {
               ? this.workspaceToolNames
               : []),
           ];
+          const names = await this.computerNames();
           const enabled = this.availableTools.filter(
-            (tool) => !disabled.includes(tool.name),
+            (tool) => !disabled.includes(tool.name) && (!/^(computer_|browser_)/.test(tool.name) || names.has(tool.name)),
           );
           await root.configure(
             {
@@ -785,15 +839,39 @@ export class CamelAgent extends DurableObject<Env> {
       }
       if (request.method === "DELETE" && path === "/") {
         const deletion = this.admission.then(async () => {
+          const conf = await this.ctx.storage.get<Config>("configuration");
+          if (conf) await this.serializeComputer(() => new ComputerService(this.env, conf.tenantId).removeAgent(conf.id));
           await this.ctx.storage.put("deleted", true);
           await this.harness.session().abort();
+          if (conf) await releasePresentedFiles(this.ctx.storage, this.env, conf.tenantId, conf.id);
           for (const listener of this.listeners) listener(0, null);
           return json({ deleted: true });
         });
         this.admission = deletion.catch(() => {});
         return deletion;
       }
+      if (path === "/__computer" && request.method === "POST") {
+        const input = await body(request) as any;
+        const conf = input.operation === "sweep" ? await this.ctx.storage.get<Config>("configuration") : await this.config();
+        if (!conf) return json({ error: "Agent not found" }, 404);
+        if (input.tenant !== conf.tenantId) return json({error:"Forbidden"},403);
+        return await this.serializeComputer(async () => {
+          const service = new ComputerService(this.env, conf.tenantId);
+          if (input.operation === "sweep") { await service.sweepAgent(conf.id); await this.arm(); return json({ swept: true }); }
+          if (input.operation === "refresh") { await this.refreshComputerTools(); return json({ refreshed: true }); }
+          if (input.operation === "remove") { const removed = await service.remove(conf.id); await this.refreshComputerTools(); return json(removed); }
+          if (input.operation === "confirm-cleanup") return json(await service.confirmCleanup(conf.id));
+          try { return json(await service.call(conf.id,input.operation,input.args??{},input.key)); }
+          finally { await this.arm(); }
+        });
+      }
       await this.config();
+      if (request.method === "POST" && ["/prompt", "/requests"].includes(path))
+        await this.ctx.storage.put("file-origin", url.origin);
+      if (path === "/schedule-deliveries" && request.method === "GET") {
+        const conf = await this.config();
+        return json(await scheduleDeliveries(this.env, conf.tenantId, conf.id));
+      }
       if (
         path === "/__test/flush-billing" &&
         this.env.TEST_MODEL === "1" &&
@@ -827,7 +905,7 @@ export class CamelAgent extends DurableObject<Env> {
         return json([
           ...(await this.ctx.storage
             .list<Schedule>({ prefix: "schedule:" })
-            .then((x) => x.values())),
+            .then((x) => [...x.values()].sort((a,b)=>a.dueAt-b.dueAt || a.id.localeCompare(b.id)))),
         ]);
       if (path === "/schedules" && request.method === "POST")
         return json(await this.createSchedule(await body(request)), 201);
@@ -923,10 +1001,10 @@ export class CamelAgent extends DurableObject<Env> {
         await this.state();
         return json({ aborted: true });
       }
-      if (path === "/events" && request.method === "GET")
-        return request.headers.get("upgrade")?.toLowerCase() === "websocket"
-          ? this.webSocketEvents()
-          : this.events();
+      if (path === "/events" && request.method === "GET") {
+        const selected = negotiateEvents(request); if (selected) return selected;
+        return request.headers.get("upgrade")?.toLowerCase() === "websocket" ? this.webSocketEvents(request) : this.events();
+      }
       if (path === "/computer" && request.method === "POST") {
         const inputBody = await body(request, 1100 * 1024);
         if (!compile(computerParameters).check(inputBody))
@@ -941,6 +1019,10 @@ export class CamelAgent extends DurableObject<Env> {
         return json(
           await namespace.getByName(this.ctx.id.toString()).operate(input),
         );
+      }
+      if(path==="/files"||path==="/links"||path.startsWith("/uploads/")) {
+        const conf=await this.config();
+        return (await handleAgentFilesRoute(request,this.env,conf.tenantId,conf.id,(conf.config.mounts??[]) as never,path))!;
       }
       if (path.startsWith("/files/")) {
         const conf = await this.config();
@@ -1076,6 +1158,7 @@ export class CamelAgent extends DurableObject<Env> {
     );
     if ("failed" in entry)
       throw Object.assign(new Error(entry.error), { status: entry.status });
+    await inheritComputer(this.env, conf.tenantId, conf.id, entry.id);
     const child: Child = {
       id: entry.id,
       key: childKey,
@@ -1102,49 +1185,9 @@ export class CamelAgent extends DurableObject<Env> {
     return child;
   }
   private async createSchedule(raw: unknown): Promise<Schedule> {
-    const input = object(raw, [
-      "text",
-      "inSeconds",
-      "at",
-      "dueAt",
-      "everySeconds",
-      "calendar",
-      "history",
-    ]);
-    if (
-      (await this.ctx.storage.list({ prefix: "schedule:", limit: 100 })).size >=
-      100
-    )
-      throw new BadRequest("At most 100 schedules per agent");
-    const text = boundedText(input.text, "text", 24000);
-    const calendar =
-      input.calendar === undefined ? undefined : calendarInput(input.calendar);
-    const everySeconds =
-      input.everySeconds === undefined ? undefined : Number(input.everySeconds);
-    if (
-      everySeconds !== undefined &&
-      (!Number.isInteger(everySeconds) || everySeconds < 1)
-    )
-      throw new BadRequest("everySeconds must be a positive integer");
-    if (calendar && everySeconds !== undefined)
-      throw new BadRequest("Use calendar or everySeconds");
-    let dueAt = calendar
-      ? nextCalendar(calendar, Date.now())
-      : input.at !== undefined
-        ? Date.parse(String(input.at))
-        : input.dueAt !== undefined
-          ? Number(input.dueAt)
-          : Date.now() + Number(input.inSeconds ?? everySeconds ?? 0) * 1000;
-    if (!Number.isFinite(dueAt) || dueAt < Date.now() - 1000)
-      throw new BadRequest("Invalid schedule due time");
-    const schedule: Schedule = {
-      id: crypto.randomUUID(),
-      text,
-      dueAt: Math.round(dueAt),
-      createdAt: Date.now(),
-      ...(calendar ? { calendar } : {}),
-      ...(everySeconds ? { everySeconds } : {}),
-    };
+    if ((await this.ctx.storage.list({prefix:"schedule:",limit:100})).size >= 100) throw new BadRequest("At most 100 schedules per agent");
+    const conf=await this.config();
+    const schedule=await newSchedule(this.env,conf.tenantId,conf.id,raw);
     await this.ctx.storage.put(`schedule:${schedule.id}`, schedule);
     await this.arm();
     return schedule;
@@ -1160,6 +1203,7 @@ export class CamelAgent extends DurableObject<Env> {
     const config = await this.ctx.storage.get<Config>("configuration");
     const next = Math.min(
       config?.expiresAt ?? Infinity,
+      config ? await new ComputerService(this.env, config.tenantId).nextDeadline(config.id) ?? Infinity : Infinity,
       ...[...schedules.values()].map((item) => item.retryAt ?? item.dueAt),
       retry ?? Infinity,
       pendingBilling ? Date.now() + 5000 : Infinity,
@@ -1172,6 +1216,9 @@ export class CamelAgent extends DurableObject<Env> {
       });
   }
   async onStart() {
+    return withMoneyMetrics(this.env, () => this.restorePending());
+  }
+  private async restorePending() {
     // Pi restores its own work on startup. Restore the adapter's result/receipt
     // waiters too, so completion is billed without requiring a client poll.
     for (const record of await this.records())
@@ -1181,10 +1228,13 @@ export class CamelAgent extends DurableObject<Env> {
       this.ctx.waitUntil(this.flushBilling());
   }
   async onJob(context: { job: { fn: string } }) {
-    if (context.job.fn === "camel-wake") await this.wake();
+    return withMoneyMetrics(this.env, async () => {
+      if (context.job.fn === "camel-wake") await this.wake();
+    });
   }
   private async wake() {
     const conf = await this.ctx.storage.get<Config>("configuration");
+    if (conf) await this.serializeComputer(() => new ComputerService(this.env, conf.tenantId).sweepAgent(conf.id)).catch(() => console.error(JSON.stringify({ type: "computer_cleanup_failed", agent: conf.id })));
     if (conf?.expiresAt && conf.expiresAt <= Date.now()) {
       await this.ctx.storage.put("deleted", true);
       await this.harness.session().abort();
@@ -1213,45 +1263,53 @@ export class CamelAgent extends DurableObject<Env> {
     })) {
       if ((schedule.retryAt ?? schedule.dueAt) > now) continue;
       try {
-        await this.submit({
-          id: `schedule-${schedule.id}-${schedule.dueAt}`,
-          method: "prompt",
-          params: {
-            text: schedule.calendar
-              ? calendarPrompt(schedule.text, schedule.calendar, schedule.dueAt)
-              : schedule.text,
-          },
-        });
+        const occurrence = `schedule-${schedule.id}-${schedule.dueAt}`;
+        await queueScheduleEmail(this.env,schedule,occurrence);
+        await this.submit({ id: occurrence, method: schedule.code === undefined ? "prompt" : "execute", params: schedule.code === undefined ? {
+          text: schedule.calendar ? calendarPrompt(schedule.text!,schedule.calendar,schedule.dueAt) : schedule.text,
+          allowDisconnected: true,
+        } : { code: schedule.code, allowDisconnected: true } });
+        if (schedule.email) await publishScheduleEmails(this.env);
         if (schedule.calendar || schedule.everySeconds) {
           delete schedule.retryAt;
           schedule.failures = 0;
           delete schedule.lastError;
-          schedule.dueAt = schedule.calendar
-            ? nextCalendar(schedule.calendar, schedule.dueAt)
-            : schedule.dueAt + schedule.everySeconds! * 1000;
+          schedule.dueAt = nextOccurrence(schedule);
           await this.ctx.storage.put(key, schedule);
         } else await this.ctx.storage.delete(key);
       } catch (error) {
-        schedule.failures = (schedule.failures ?? 0) + 1;
-        schedule.retryAt =
-          Date.now() + Math.min(60_000, 1000 * 2 ** schedule.failures);
-        schedule.lastError =
-          error instanceof Error ? error.message : "Wake failed";
-        await this.ctx.storage.put(key, schedule);
-        await this.arm(Date.now() + 5000);
+        const status = (error as {status?:number}).status;
+        const attempt = (schedule.attempts ?? 0) + 1;
+        const delay = retryable(status) ? RETRY_DELAYS_MS[attempt-1] : undefined;
+        const next = schedule.calendar || schedule.everySeconds ? nextOccurrence(schedule) : undefined;
+        schedule.lastError = safeError(error);
+        schedule.lastErrorAt = Date.now();
+        if (status === 404 || status === 410) await this.ctx.storage.delete(key);
+        else if (delay !== undefined && (next === undefined || Date.now()+delay < next)) {
+          schedule.attempts = attempt; schedule.retryAt = Date.now()+delay;
+          await this.ctx.storage.put(key,schedule);
+        } else if (next !== undefined) {
+          schedule.failures = (schedule.failures??0)+1;
+          schedule.attempts = 0; delete schedule.retryAt; schedule.dueAt = next;
+          await this.ctx.storage.put(key,schedule);
+        } else await this.ctx.storage.delete(key);
+        metric(this.env,"schedule_delivery_failed",{ScheduleDeliveryFailures:1},{ErrorClass:errorClass(error instanceof Error?error.message:"")});
       }
     }
     await this.arm();
   }
-  private async webSocketEvents(): Promise<Response> {
+  private async webSocketEvents(request: Request): Promise<Response> {
+    await this.observe();
+    const state = await this.state();
     const pair = new WebSocketPair();
     this.ctx.acceptWebSocket(pair[1]);
-    pair[1].send(JSON.stringify({ type: "snapshot", ...(await this.state()) }));
-    return new Response(null, { status: 101, webSocket: pair[0] });
+    this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
+    pair[1].send(eventFrame({}, undefined, "ready"));
+    pair[1].send(eventFrame({ type: "snapshot", cursor: state.cursor, requestId: this.active ?? null, turn: this.active ? { start:null,count:0,messages:[],partial:this.partial } : null },state.cursor));
+    const selected = request.headers.get("sec-websocket-protocol")?.split(",").map(x=>x.trim()).includes(EVENT_PROTOCOL);
+    return new Response(null, { status: 101, webSocket: pair[0], headers: selected ? {"Sec-WebSocket-Protocol": EVENT_PROTOCOL} : {} });
   }
-  async webSocketMessage(socket: WebSocket, data: string | ArrayBuffer) {
-    if (data === "ping") socket.send("pong");
-  }
+  async webSocketMessage(socket: WebSocket, _data: string | ArrayBuffer) { socket.close(1008,"Read-only event stream"); }
   async webSocketClose(socket: WebSocket, code: number) {
     socket.close(code, "Closed");
   }

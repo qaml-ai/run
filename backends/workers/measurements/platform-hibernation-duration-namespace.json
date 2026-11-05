@@ -1,0 +1,15 @@
+{
+  "queriedAt": "2026-11-05T18:34:20.172Z",
+  "query": "{ viewer { accounts(filter:{accountTag:\"85bbd288051330fb51ee1c86031a299b\"}) { durableObjectsPeriodicGroups(limit:100,filter:{datetime_geq:\"2026-11-05T18:24:00Z\",datetime_leq:\"2026-11-05T18:30:00Z\",namespaceId:\"e0654af451934176b782e1ed7c0831a7\"},orderBy:[datetimeMinute_ASC]) { dimensions {datetimeMinute objectId namespaceId} sum {duration activeTime cpuTime inboundWebsocketMsgCount outboundWebsocketMsgCount}} durableObjectsInvocationsAdaptiveGroups(limit:100,filter:{datetime_geq:\"2026-11-05T18:24:00Z\",datetime_leq:\"2026-11-05T18:30:00Z\",namespaceId:\"e0654af451934176b782e1ed7c0831a7\"}){dimensions{datetimeMinute objectId scriptName type}sum{requests wallTime errors}} } } }",
+  "data": {
+    "viewer": {
+      "accounts": [
+        {
+          "durableObjectsInvocationsAdaptiveGroups": [],
+          "durableObjectsPeriodicGroups": []
+        }
+      ]
+    }
+  },
+  "errors": null
+}

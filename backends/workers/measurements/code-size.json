@@ -5,10 +5,10 @@
       "lines": 79
     }
   ],
-  "sourceCommit": "bbc6262e25cbfc9c26eee6e9906f80b5922c4fc4",
+  "sourceCommit": "7d5a5160208a47c488c877d2e1a626325d56c300",
+  "worktreeDirty": true,
   "method": "Physical TypeScript lines, comments and blanks included; declarations, tests, dependencies and generated bindings excluded. Whole mixed-purpose source files counted. Not feature-equivalent.",
   "excluded": [
-    "src/audio-header.ts",
     "src/channel-filter.ts",
     "src/channels-api.ts",
     "src/channels-discord.ts",
@@ -20,18 +20,12 @@
     "src/channels.ts",
     "src/discord-managed.ts",
     "src/opus.ts",
-    "src/speech-api.ts",
-    "src/speech.ts",
-    "src/transcription.ts",
     "src/voice-api.ts",
     "src/voice-audio.ts",
     "src/voice-browser.ts",
     "src/voice-discord.ts",
     "src/voice-library.ts",
-    "src/voice-providers/prices.ts",
     "src/voice-providers/socket.ts",
-    "src/voice-providers/tts-chain.ts",
-    "src/voice-providers/tts.ts",
     "src/voice-sessions.ts",
     "src/voice-speech.ts",
     "src/voice/audio-decode.ts",
@@ -68,9 +62,9 @@
         "nonblank": 9823
       },
       "workers": {
-        "files": 39,
-        "lines": 8803,
-        "nonblank": 8321
+        "files": 51,
+        "lines": 10565,
+        "nonblank": 10003
       }
     },
     {
@@ -94,9 +88,9 @@
         "nonblank": 14317
       },
       "workers": {
-        "files": 4,
-        "lines": 1899,
-        "nonblank": 1877
+        "files": 7,
+        "lines": 2365,
+        "nonblank": 2322
       }
     },
     {
@@ -107,9 +101,22 @@
         "nonblank": 12864
       },
       "workers": {
-        "files": 37,
-        "lines": 2923,
-        "nonblank": 2759
+        "files": 53,
+        "lines": 4057,
+        "nonblank": 3806
+      }
+    },
+    {
+      "area": "Files, images, computers",
+      "ecs": {
+        "files": 34,
+        "lines": 6667,
+        "nonblank": 6281
+      },
+      "workers": {
+        "files": 34,
+        "lines": 6033,
+        "nonblank": 5854
       }
     },
     {
@@ -123,19 +130,6 @@
         "files": 2,
         "lines": 38,
         "nonblank": 37
-      }
-    },
-    {
-      "area": "Files, images, computers",
-      "ecs": {
-        "files": 27,
-        "lines": 5579,
-        "nonblank": 5277
-      },
-      "workers": {
-        "files": 7,
-        "lines": 1839,
-        "nonblank": 1821
       }
     }
   ],
@@ -307,6 +301,13 @@
       "file": "src/attached.ts",
       "lines": 96,
       "nonblank": 86
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/audio-header.ts",
+      "lines": 178,
+      "nonblank": 168
     },
     {
       "backend": "ecs",
@@ -1277,6 +1278,20 @@
     {
       "backend": "ecs",
       "area": "Files, images, computers",
+      "file": "src/speech-api.ts",
+      "lines": 194,
+      "nonblank": 182
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/speech.ts",
+      "lines": 182,
+      "nonblank": 163
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
       "file": "src/storage-gc.ts",
       "lines": 115,
       "nonblank": 108
@@ -1374,6 +1389,13 @@
     },
     {
       "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/transcription.ts",
+      "lines": 233,
+      "nonblank": 213
+    },
+    {
+      "backend": "ecs",
       "area": "Code execution",
       "file": "src/v8-exec.ts",
       "lines": 156,
@@ -1385,6 +1407,27 @@
       "file": "src/virtual-models.ts",
       "lines": 69,
       "nonblank": 62
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/voice-providers/prices.ts",
+      "lines": 53,
+      "nonblank": 47
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/voice-providers/tts-chain.ts",
+      "lines": 117,
+      "nonblank": 111
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/voice-providers/tts.ts",
+      "lines": 131,
+      "nonblank": 120
     },
     {
       "backend": "ecs",
@@ -1577,6 +1620,76 @@
     },
     {
       "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/admin-api.ts",
+      "lines": 98,
+      "nonblank": 95
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/admin/admin-accounts.ts",
+      "lines": 126,
+      "nonblank": 106
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/admin/admin-acquisition.ts",
+      "lines": 98,
+      "nonblank": 93
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/admin/admin-growth.ts",
+      "lines": 153,
+      "nonblank": 145
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/admin/admin-health.ts",
+      "lines": 175,
+      "nonblank": 168
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/admin/admin-mcp.ts",
+      "lines": 83,
+      "nonblank": 80
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/admin/admin-revenue.ts",
+      "lines": 193,
+      "nonblank": 187
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/admin/admin-signals.ts",
+      "lines": 201,
+      "nonblank": 189
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/admin/admin-stats.ts",
+      "lines": 90,
+      "nonblank": 87
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/admin/admin-usage.ts",
+      "lines": 363,
+      "nonblank": 352
+    },
+    {
+      "backend": "workers",
       "area": "HTTP, contracts, remaining policy",
       "file": "backends/workers/src/admission-errors.ts",
       "lines": 18,
@@ -1600,15 +1713,22 @@
       "backend": "workers",
       "area": "Agents, history, schedules",
       "file": "backends/workers/src/agent.ts",
-      "lines": 1320,
-      "nonblank": 1317
+      "lines": 1378,
+      "nonblank": 1375
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/alarm-policy.ts",
+      "lines": 113,
+      "nonblank": 107
     },
     {
       "backend": "workers",
       "area": "HTTP, contracts, remaining policy",
       "file": "backends/workers/src/api-contract.ts",
-      "lines": 187,
-      "nonblank": 183
+      "lines": 181,
+      "nonblank": 177
     },
     {
       "backend": "workers",
@@ -1697,6 +1817,34 @@
     {
       "backend": "workers",
       "area": "Files, images, computers",
+      "file": "backends/workers/src/computers/agent-tools.ts",
+      "lines": 16,
+      "nonblank": 16
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/computers/api.ts",
+      "lines": 44,
+      "nonblank": 44
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/computers/microvm-policy.ts",
+      "lines": 29,
+      "nonblank": 29
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/computers/microvm.ts",
+      "lines": 115,
+      "nonblank": 113
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
       "file": "backends/workers/src/computers/objects.ts",
       "lines": 53,
       "nonblank": 52
@@ -1704,9 +1852,30 @@
     {
       "backend": "workers",
       "area": "Files, images, computers",
+      "file": "backends/workers/src/computers/policy.ts",
+      "lines": 44,
+      "nonblank": 41
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
       "file": "backends/workers/src/computers/provider.ts",
       "lines": 323,
       "nonblank": 318
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/computers/remote.ts",
+      "lines": 134,
+      "nonblank": 132
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/computers/service.ts",
+      "lines": 193,
+      "nonblank": 191
     },
     {
       "backend": "workers",
@@ -1719,8 +1888,8 @@
       "backend": "workers",
       "area": "Accounts, money, webhooks",
       "file": "backends/workers/src/control.ts",
-      "lines": 855,
-      "nonblank": 849
+      "lines": 868,
+      "nonblank": 862
     },
     {
       "backend": "workers",
@@ -1753,9 +1922,51 @@
     {
       "backend": "workers",
       "area": "Files, images, computers",
+      "file": "backends/workers/src/file-links.ts",
+      "lines": 80,
+      "nonblank": 80
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/file-mounts.ts",
+      "lines": 202,
+      "nonblank": 202
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/file-output.ts",
+      "lines": 67,
+      "nonblank": 62
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/file-policy.ts",
+      "lines": 137,
+      "nonblank": 124
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/file-upload.ts",
+      "lines": 78,
+      "nonblank": 78
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/file-versions.ts",
+      "lines": 27,
+      "nonblank": 24
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
       "file": "backends/workers/src/files.ts",
-      "lines": 443,
-      "nonblank": 443
+      "lines": 1123,
+      "nonblank": 1123
     },
     {
       "backend": "workers",
@@ -1796,8 +2007,8 @@
       "backend": "workers",
       "area": "HTTP, contracts, remaining policy",
       "file": "backends/workers/src/index.ts",
-      "lines": 281,
-      "nonblank": 279
+      "lines": 327,
+      "nonblank": 325
     },
     {
       "backend": "workers",
@@ -1826,6 +2037,83 @@
       "file": "backends/workers/src/key-scopes.ts",
       "lines": 163,
       "nonblank": 149
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/live-transport.ts",
+      "lines": 33,
+      "nonblank": 30
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/media-api.ts",
+      "lines": 210,
+      "nonblank": 204
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/media-azure.ts",
+      "lines": 31,
+      "nonblank": 28
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/media/images.ts",
+      "lines": 419,
+      "nonblank": 394
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/media/speech-api.ts",
+      "lines": 195,
+      "nonblank": 183
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/media/speech.ts",
+      "lines": 183,
+      "nonblank": 164
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/media/transcription.ts",
+      "lines": 234,
+      "nonblank": 214
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/media/types.ts",
+      "lines": 7,
+      "nonblank": 7
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/media/voice-providers/tts-chain.ts",
+      "lines": 118,
+      "nonblank": 112
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/media/voice-providers/tts.ts",
+      "lines": 132,
+      "nonblank": 121
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/metrics-policy.ts",
+      "lines": 131,
+      "nonblank": 121
     },
     {
       "backend": "workers",
@@ -1893,9 +2181,16 @@
     {
       "backend": "workers",
       "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/money-event-metrics.ts",
+      "lines": 73,
+      "nonblank": 65
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
       "file": "backends/workers/src/money-host.ts",
-      "lines": 22,
-      "nonblank": 22
+      "lines": 19,
+      "nonblank": 19
     },
     {
       "backend": "workers",
@@ -1907,9 +2202,30 @@
     {
       "backend": "workers",
       "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/money-limit-metrics.ts",
+      "lines": 61,
+      "nonblank": 51
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/money-metrics.ts",
+      "lines": 49,
+      "nonblank": 45
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
       "file": "backends/workers/src/money-tokens.ts",
       "lines": 90,
       "nonblank": 82
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/observability.ts",
+      "lines": 15,
+      "nonblank": 15
     },
     {
       "backend": "workers",
@@ -1945,6 +2261,20 @@
       "file": "backends/workers/src/runtime-identity.ts",
       "lines": 175,
       "nonblank": 160
+    },
+    {
+      "backend": "workers",
+      "area": "Agents, history, schedules",
+      "file": "backends/workers/src/schedule-policy.ts",
+      "lines": 40,
+      "nonblank": 36
+    },
+    {
+      "backend": "workers",
+      "area": "Agents, history, schedules",
+      "file": "backends/workers/src/schedules.ts",
+      "lines": 111,
+      "nonblank": 110
     },
     {
       "backend": "workers",
@@ -2011,6 +2341,13 @@
     },
     {
       "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/service-api.ts",
+      "lines": 65,
+      "nonblank": 62
+    },
+    {
+      "backend": "workers",
       "area": "Files, images, computers",
       "file": "backends/workers/src/storage-usage.ts",
       "lines": 177,
@@ -2047,9 +2384,16 @@
     {
       "backend": "workers",
       "area": "Files, images, computers",
+      "file": "backends/workers/src/volume-policy.ts",
+      "lines": 56,
+      "nonblank": 54
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
       "file": "backends/workers/src/volume.ts",
-      "lines": 362,
-      "nonblank": 362
+      "lines": 729,
+      "nonblank": 729
     },
     {
       "backend": "workers",
@@ -2062,8 +2406,8 @@
       "backend": "workers",
       "area": "Accounts, money, webhooks",
       "file": "backends/workers/src/webhooks.ts",
-      "lines": 273,
-      "nonblank": 268
+      "lines": 279,
+      "nonblank": 274
     },
     {
       "backend": "workers",
@@ -2088,10 +2432,10 @@
     },
     {
       "backend": "workers",
-      "area": "HTTP, contracts, remaining policy",
-      "file": "src/calendar.ts",
-      "lines": 34,
-      "nonblank": 33
+      "area": "Accounts, money, webhooks",
+      "file": "src/account-emails.ts",
+      "lines": 72,
+      "nonblank": 70
     },
     {
       "backend": "workers",
@@ -2099,6 +2443,111 @@
       "file": "src/pricing.ts",
       "lines": 190,
       "nonblank": 181
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/mcp-client-kind.ts",
+      "lines": 32,
+      "nonblank": 30
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/signup-source.ts",
+      "lines": 42,
+      "nonblank": 37
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/calendar.ts",
+      "lines": 34,
+      "nonblank": 33
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "src/billing-emails.ts",
+      "lines": 91,
+      "nonblank": 91
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/limits.ts",
+      "lines": 180,
+      "nonblank": 169
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "src/tar.ts",
+      "lines": 79,
+      "nonblank": 72
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "src/voice-providers/prices.ts",
+      "lines": 53,
+      "nonblank": 47
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/azure-openai.ts",
+      "lines": 134,
+      "nonblank": 123
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "src/image-header.ts",
+      "lines": 86,
+      "nonblank": 82
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "src/audio-header.ts",
+      "lines": 178,
+      "nonblank": 168
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/language.ts",
+      "lines": 98,
+      "nonblank": 86
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/markdown-email.ts",
+      "lines": 37,
+      "nonblank": 36
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/html-text.ts",
+      "lines": 24,
+      "nonblank": 23
+    },
+    {
+      "backend": "workers",
+      "area": "Agents, history, schedules",
+      "file": "src/pi-catalog.ts",
+      "lines": 257,
+      "nonblank": 241
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/http-error.ts",
+      "lines": 10,
+      "nonblank": 10
     }
   ]
 }

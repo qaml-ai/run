@@ -1,0 +1,136 @@
+{
+  "name": "camelrun-proto-platform-container",
+  "account": "85bbd288051330fb51ee1c86031a299b",
+  "startedAt": "2026-11-05T19:16:56.026Z",
+  "budgetUsd": 5,
+  "operations": [
+    {
+      "phase": "preflight",
+      "at": "2026-11-05T19:16:56.027Z"
+    },
+    {
+      "command": "containers images list --filter camelrun-proto-platform-container --json -c probes/computers/wrangler.jsonc",
+      "exitCode": 0
+    },
+    {
+      "phase": "deploying",
+      "at": "2026-11-05T19:17:21.825Z"
+    },
+    {
+      "command": "deploy -c probes/computers/wrangler.jsonc",
+      "exitCode": 0
+    },
+    {
+      "command": "secret put PROBE_TOKEN -c probes/computers/wrangler.jsonc",
+      "exitCode": 0
+    },
+    {
+      "phase": "executing",
+      "at": "2026-11-05T19:17:36.369Z"
+    },
+    {
+      "phase": "verified",
+      "at": "2026-11-05T19:17:45.963Z"
+    },
+    {
+      "phase": "cleanup",
+      "at": "2026-11-05T19:17:45.963Z"
+    },
+    {
+      "command": "deploy -c /var/folders/2w/ghgmsg856n52r27w6r4slplw0000gn/T/camelrun-platform-container-JeNdxN/teardown.json",
+      "exitCode": 0
+    },
+    {
+      "command": "containers images list --filter camelrun-proto-platform-container --json -c probes/computers/wrangler.jsonc",
+      "exitCode": 0
+    },
+    {
+      "command": "containers images delete camelrun-proto-platform-container-containercomputer-workspace:wrangler-mw3xgk3p -y -c probes/computers/wrangler.jsonc",
+      "exitCode": 0
+    },
+    {
+      "command": "containers images list --filter camelrun-proto-platform-container --json -c probes/computers/wrangler.jsonc",
+      "exitCode": 0
+    }
+  ],
+  "cleanup": {
+    "stopStatus": 200,
+    "deletedImages": [
+      "camelrun-proto-platform-container-containercomputer-workspace:wrangler-mw3xgk3p"
+    ],
+    "workers": [],
+    "namespaces": [],
+    "applications": [],
+    "images": [],
+    "errors": [],
+    "verifiedAbsent": true,
+    "deletedApplicationChecks": [
+      {
+        "id": "768de9470edc4ce5b7825f3d60d2f94b",
+        "status": 404,
+        "codes": [
+          1609
+        ]
+      }
+    ]
+  },
+  "preflight": {
+    "worker": false,
+    "namespace": false,
+    "application": false,
+    "images": []
+  },
+  "status": 200,
+  "result": {
+    "command": {
+      "stdout": "container-probe-ready",
+      "stderr": "",
+      "exitCode": 0
+    },
+    "read": {
+      "content": "synthetic-container-file"
+    },
+    "elapsedMs": 7090
+  },
+  "applications": [
+    {
+      "id": "768de9470edc4ce5b7825f3d60d2f94b",
+      "name": "camelrun-proto-platform-container"
+    }
+  ],
+  "instancesAfterStop": [
+    {
+      "id": "2e566904ae306db61fba89be489c5153fd67b6a15a0d781a4c4e13e5cd3fd287",
+      "started_at": "2026-11-05T19:17:39.347Z",
+      "status": {
+        "state": "provisioning",
+        "updated_at": "2026-11-05T19:17:44.191Z"
+      },
+      "location": {
+        "name": "dfw14",
+        "region": "WNAM"
+      },
+      "application_id": "768de9470edc4ce5b7825f3d60d2f94b",
+      "name": "single-bounded-probe",
+      "image": "registry.cloudflare.com/85bbd288051330fb51ee1c86031a299b/camelrun-proto-platform-container-containercomputer-workspace@sha256:08275a48714e522d731b49c05823c021c21ee220831b80e02be1f4ff59946dd6",
+      "configuration": {
+        "vcpu": 0.0625,
+        "memory": 256,
+        "disk": 2000
+      }
+    }
+  ],
+  "endedAt": "2026-11-05T19:18:34.471Z",
+  "cost": {
+    "kind": "conservative provisioned-container estimate, not invoice",
+    "maximumRuntimeSeconds": 55.124,
+    "provisioned": {
+      "vcpu": 0.0625,
+      "memory": 256,
+      "disk": 2000
+    },
+    "estimatedContainerUsdUpperBound": 0.00011107486000000002,
+    "excludes": "Worker/DO/image registry charges; no subscription changes",
+    "pricingSource": "https://developers.cloudflare.com/containers/platform/pricing/"
+  }
+}

@@ -116,41 +116,37 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "code": 0,
-        "signal": null
+        "reused": true
       }
     },
     {
       "file": "tests/computers-api.test.ts",
       "test": "native daytona computer API is tenant scoped and tools refresh on an existing agent",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
       "file": "tests/computers-api.test.ts",
       "test": "native sprites computer API is tenant scoped and tools refresh on an existing agent",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
       "file": "tests/computers-api.test.ts",
       "test": "a computer connected during eager startup is available on the first turn",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -160,8 +156,7 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -171,8 +166,7 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -182,8 +176,7 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -193,8 +186,7 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -204,8 +196,7 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -215,8 +206,7 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -226,8 +216,7 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -237,8 +226,7 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -248,52 +236,139 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
+      }
+    },
+    {
+      "file": "tests/files.test.ts",
+      "test": "content types come from the upload, else magic bytes, the name, or whether it reads as text",
+      "status": "not-applicable",
+      "reason": "Direct Node service/unit test; cannot target a base URL unchanged"
+    },
+    {
+      "file": "tests/files.test.ts",
+      "test": "downloads never run as the runtime's origin: nosniff, and active types are sandboxed attachments",
+      "status": "not-applicable",
+      "reason": "Direct Node service/unit test; cannot target a base URL unchanged"
+    },
+    {
+      "file": "tests/files.test.ts",
+      "test": "files record their content type; files from before types were recorded are sniffed when downloaded",
+      "status": "not-applicable",
+      "reason": "Direct Node service/unit test; cannot target a base URL unchanged"
+    },
+    {
+      "file": "tests/files.test.ts",
+      "test": "the REST API stores the upload's type and serves downloads with safe headers",
+      "status": "pass",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
+      }
+    },
+    {
+      "file": "tests/files.test.ts",
+      "test": "signed links: bound to tenant, volume, path, method, expiry, size and content type; tampering fails",
+      "status": "pass",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
+      }
+    },
+    {
+      "file": "tests/files.test.ts",
+      "test": "an upload streams to storage a chunk at a time: the source is never more than a few chunks ahead of storage",
+      "status": "not-applicable",
+      "reason": "Includes direct Node VolumeService/storage instrumentation; cannot target a base URL unchanged"
+    },
+    {
+      "file": "tests/files.test.ts",
+      "test": "attachments over REST land in the workspace, the transcript keeps references, and the model sees them natively",
+      "status": "fail",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
+      }
+    },
+    {
+      "file": "tests/files.test.ts",
+      "test": "context estimates count what file references stand for, not their JSON",
+      "status": "not-applicable",
+      "reason": "Direct Node service/unit test; cannot target a base URL unchanged"
+    },
+    {
+      "file": "tests/files.test.ts",
+      "test": "the TypeScript SDK attaches bytes, Blobs, local paths and workspace files; a file deleted or replaced after attaching still reads as attached",
+      "status": "fail",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
+      }
+    },
+    {
+      "file": "tests/files.test.ts",
+      "test": "parsing a hostile file stops at its limits on a worker: the runtime's thread neither crashes nor stalls",
+      "status": "not-applicable",
+      "reason": "Direct Node service/unit test; cannot target a base URL unchanged"
+    },
+    {
+      "file": "tests/files.test.ts",
+      "test": "only the runtime's own file tools may return file references: anyone else's are described, never hydrated",
+      "status": "not-applicable",
+      "reason": "Direct Node service/unit test; cannot target a base URL unchanged"
+    },
+    {
+      "file": "tests/files.test.ts",
+      "test": "a run's outcome lists the files it wrote and presented, and a presented file is an event with a download link",
+      "status": "fail",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
       }
     },
     {
       "file": "tests/image-generation-api.test.ts",
       "test": "POST /v1/images makes images on the platform's OpenAI key for a prepaid tenant, edits images given as base64, multipart or a URL, and is billed per token",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
       "file": "tests/image-generation-api.test.ts",
       "test": "POST /v1/images with volumeId saves the images to the volume and answers their paths",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
       "file": "tests/image-generation-api.test.ts",
       "test": "POST /v1/images needs an OpenAI key, and a monthly cap refuses it",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
       "file": "tests/image-generation-sdk.test.ts",
       "test": "the TypeScript SDK: images.generate and images.edit from bytes, a Blob or a URL, answered as base64 or saved to a volume",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -303,8 +378,7 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -314,8 +388,7 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -325,14 +398,53 @@
       "reason": "Source-generated Node API schema test; does not accept a base URL"
     },
     {
-      "file": "tests/schedule-api.test.ts",
-      "test": "calendar schedules and owner-configured email round trip through the API without crossing accounts",
-      "status": "fail",
+      "file": "tests/projects.test.ts",
+      "test": "a project is a keyed volume seeded once, mounted with the workspace beside it, and published as checked snapshots",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
+      }
+    },
+    {
+      "file": "tests/projects.test.ts",
+      "test": "publishTool finds the project from the call's identity, never its arguments, and tells the model what to fix",
+      "status": "pass",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
+      }
+    },
+    {
+      "file": "tests/projects.test.ts",
+      "test": "a project is restored in place to a published version, and a check hands what it computed to store and the result",
+      "status": "pass",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
+      }
+    },
+    {
+      "file": "tests/projects.test.ts",
+      "test": "pinned versions outlast keep and the snapshot cap, carry labels, and a snapshot can be made from contents",
+      "status": "pass",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
+      }
+    },
+    {
+      "file": "tests/schedule-api.test.ts",
+      "test": "calendar schedules and owner-configured email round trip through the API without crossing accounts",
+      "status": "pass",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
       }
     },
     {
@@ -354,19 +466,17 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
       "file": "tests/sdk-lazy-connections.test.ts",
       "test": "a lazy handle's stream() connects for the run, yields it from its start, and lets the stream go after",
-      "status": "pass",
+      "status": "fail",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -376,8 +486,7 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -387,8 +496,7 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -398,8 +506,7 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -409,8 +516,7 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "code": 0,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -420,8 +526,7 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "code": 0,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -431,8 +536,7 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "code": 0,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -442,8 +546,7 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "code": 0,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -453,8 +556,7 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "code": 0,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -464,8 +566,7 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "code": 0,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -475,8 +576,7 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "code": 0,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -486,8 +586,7 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "code": 0,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -497,8 +596,7 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "code": 0,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -508,8 +606,7 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "code": 0,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -519,8 +616,7 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -530,8 +626,7 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -541,8 +636,7 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -552,8 +646,7 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -563,8 +656,7 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -574,8 +666,7 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -585,8 +676,7 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -596,8 +686,7 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -607,8 +696,7 @@
       "kind": "sdk-unit",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -639,37 +727,53 @@
       "file": "tests/speech-api.test.ts",
       "test": "POST /v1/speech: OpenAI by default, streamed as made (pcm or wav), billed per second made",
       "status": "not-applicable",
-      "reason": "Voice/audio excluded by requested scope"
+      "reason": "Fixture directly constructs Node runtime or services; cannot target a base URL unchanged"
     },
     {
       "file": "tests/speech-api.test.ts",
       "test": "POST /v1/speech through a chain of providers it names (or whose voices it names): the first with a key serves, and says so",
       "status": "not-applicable",
-      "reason": "Voice/audio excluded by requested scope"
+      "reason": "Fixture directly constructs Node runtime or services; cannot target a base URL unchanged"
     },
     {
       "file": "tests/transcription-api.test.ts",
       "test": "POST /v1/transcriptions takes audio as base64, multipart or a URL, runs on the platform's OpenAI key for a prepaid tenant, and is billed per second",
-      "status": "not-applicable",
-      "reason": "Voice/audio excluded by requested scope"
+      "status": "pass",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
+      }
     },
     {
       "file": "tests/transcription-api.test.ts",
       "test": "audio attached to a message is transcribed before the request is accepted: the model reads the transcript, history keeps it with the audio, and it is billed to the run's agent and budget",
-      "status": "not-applicable",
-      "reason": "Voice/audio excluded by requested scope"
+      "status": "fail",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
+      }
     },
     {
       "file": "tests/transcription-api.test.ts",
       "test": "audio a message sends by default reaches the agent untranscribed, with why, when the tenant has no OpenAI key; one it asks to transcribe is refused; a monthly cap refuses transcriptions",
-      "status": "not-applicable",
-      "reason": "Voice/audio excluded by requested scope"
+      "status": "fail",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
+      }
     },
     {
       "file": "tests/transcription-sdk.test.ts",
       "test": "the TypeScript SDK: transcriptions.create from bytes, a Blob or a URL; audio attached to agent and stateless runs, by URL too",
-      "status": "not-applicable",
-      "reason": "Voice/audio excluded by requested scope"
+      "status": "fail",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
+      }
     },
     {
       "file": "tests/ui-ai-sdk.test.ts",
@@ -678,8 +782,7 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -689,8 +792,7 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -700,8 +802,7 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -711,8 +812,7 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
@@ -722,45 +822,44 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "code": 1,
-        "signal": null
+        "reused": true
       }
     },
     {
       "file": "tests/voice-api.test.ts",
       "test": "/v1/voice/sessions: create, read, list, update and end a session over HTTP",
       "status": "not-applicable",
-      "reason": "Voice/audio excluded by requested scope"
+      "reason": "Voice sessions excluded by requested scope"
     },
     {
       "file": "tests/voice-api.test.ts",
       "test": "a tenant's maxVoiceSessions in the tenants file overrides AGENT_VOICE_SESSIONS_PER_TENANT",
       "status": "not-applicable",
-      "reason": "Voice/audio excluded by requested scope"
+      "reason": "Voice sessions excluded by requested scope"
     },
     {
       "file": "tests/voice-api.test.ts",
       "test": "a call over HTTP: the realtime brain answers on OpenAI with the tenant's key, on the node holding the call; DELETE …/speak from any node reaches it",
       "status": "not-applicable",
-      "reason": "Voice/audio excluded by requested scope"
+      "reason": "Voice sessions excluded by requested scope"
     },
     {
       "file": "tests/voice-api.test.ts",
       "test": "ask_agent across nodes: the agent's run (on another node) streams back, and goes to the model as the tool's result",
       "status": "not-applicable",
-      "reason": "Voice/audio excluded by requested scope"
+      "reason": "Voice sessions excluded by requested scope"
     },
     {
       "file": "tests/voice-api.test.ts",
       "test": "a session on the platform's OpenAI key talks to the platform's Azure deployment; the tenant's own key stays on OpenAI",
       "status": "not-applicable",
-      "reason": "Voice/audio excluded by requested scope"
+      "reason": "Voice sessions excluded by requested scope"
     },
     {
       "file": "tests/voice-api.test.ts",
       "test": "say, prompt and audio over HTTP from a node that doesn't hold the call reach the one that does; an upload goes as the body",
       "status": "not-applicable",
-      "reason": "Voice/audio excluded by requested scope"
+      "reason": "Voice sessions excluded by requested scope"
     },
     {
       "file": "tests/python_sdk.py",

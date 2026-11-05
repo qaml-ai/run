@@ -15,8 +15,12 @@ async function files(dir) {
   }
   return result.sort();
 }
-const excluded =
-  /(?:^src\/(?:channels|channel-filter|discord-managed|voice|speech|transcription|opus|audio-header)|^src\/voice[/-])/;
+const excluded = {
+  test(file) {
+    if (/^src\/voice-providers\/(tts|tts-chain|prices)\.ts$/.test(file)) return false;
+    return /^src\/(?:channels|channel-filter|discord-managed|voice|opus)/.test(file);
+  },
+};
 function category(file) {
   const name = file.replace(/^backends\/workers\//, "").replace(/^src\//, "");
   if (/^(?:codemode\/|codemode|v8-exec|sandbox)/.test(name))
@@ -34,7 +38,7 @@ function category(file) {
   )
     return "Accounts, money, webhooks";
   if (
-    /^(?:image|request-images|file|volume|storage|gc-|pin-|tar|zip|parse-job|inspect|computers\/|computer-|tool-files)/.test(
+    /^(?:image|media|speech|transcription|audio-header|voice-providers\/(?:tts|prices)|request-images|file|volume|storage|gc-|pin-|tar|zip|parse-job|inspect|computers\/|computer-|tool-files)/.test(
       name,
     )
   )
@@ -48,16 +52,24 @@ function category(file) {
   return "HTTP, contracts, remaining policy";
 }
 const source = (await files("src")).filter((x) => !excluded.test(x));
-const worker = [
+const worker = new Set([
   ...(await files("backends/workers/src")),
   ...(await files("backends/workers/codemode")),
-  "src/calendar.ts",
-  "src/pricing.ts",
-];
+]);
+// Count unchanged portable source imported at runtime too. Generated policy
+// copies already count at their Workers paths; type-only imports add no code.
+for (const file of worker) {
+  const text = await readFile(path.join(root,file),'utf8');
+  for (const match of text.matchAll(/import\s+(?!type\b)[\s\S]*?\sfrom\s+["']([^"']+)["']/g)) {
+    if (!match[1].startsWith('.')) continue;
+    const dependency = path.relative(root,path.resolve(root,path.dirname(file),match[1]));
+    if (dependency.startsWith('src/') && dependency.endsWith('.ts')) worker.add(dependency);
+  }
+}
 const records = [];
 for (const [backend, all] of [
   ["ecs", source],
-  ["workers", worker],
+  ["workers", [...worker]],
 ])
   for (const file of all) {
     const text = await readFile(path.join(root, file), "utf8");
@@ -99,6 +111,7 @@ const report = {
     cwd: root,
     encoding: "utf8",
   }).trim(),
+  worktreeDirty: execFileSync("git", ["status", "--porcelain"], {cwd:root,encoding:"utf8"}).trim().length > 0,
   method:
     "Physical TypeScript lines, comments and blanks included; declarations, tests, dependencies and generated bindings excluded. Whole mixed-purpose source files counted. Not feature-equivalent.",
   excluded: (await files("src")).filter((x) => excluded.test(x)),

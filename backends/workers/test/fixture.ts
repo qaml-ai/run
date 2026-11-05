@@ -7,14 +7,36 @@ import pg from "pg";
 import { LocalWorker, unusedPort } from "./local-worker.ts";
 import { migrate } from "../scripts/migrate.mjs";
 const root = fileURLToPath(new URL("../", import.meta.url));
+/** pg-pool removes idle clients from its count before their socket-end callback.
+ * Wait for those callbacks too before DROP DATABASE can terminate the sockets. */
+async function closePool(db: pg.Pool) {
+  let remaining = db.totalCount;
+  if (!remaining) return db.end();
+  let closed!: () => void;
+  const socketsClosed = new Promise<void>(resolve => { closed = resolve; });
+  const removed = () => { if (--remaining === 0) closed(); };
+  db.on("remove", removed);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      Promise.all([db.end(), socketsClosed]),
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error(`Local test pool did not close ${remaining} connection(s); its database was not dropped`)), 5000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+    db.off("remove", removed);
+  }
+}
 export async function startFixture(
   options: {
     token?: string;
     tenant?: string;
     modelURL?: string;
-    schema?: string;
     config?: string;
-    tenants?: { id: string; token?: string; tokenSha256?: string }[];
+    schema?: string;
+    tenants?: { id: string; token?: string; tokenSha256?: string; billing?: 'prepaid' | 'none'; seedCredit?: boolean }[];
     vars?: Record<string, string>;
   } = {},
 ) {
@@ -42,12 +64,12 @@ export async function startFixture(
   await migrate(db);
   for (const item of options.tenants ?? [{ id: tenant, token }]) {
     await db.query(
-      "insert into tenants(id,created_at,billing) values($1,$2,'prepaid') on conflict do nothing",
-      [item.id, Date.now()],
+      "insert into tenants(id,created_at,billing) values($1,$2,$3) on conflict do nothing",
+      [item.id, Date.now(), item.billing ?? 'prepaid'],
     );
-    await db.query(
-      "with input as (insert into credit_ledger(tenant,kind,amount,idempotency_key,created_at) values($1,'purchase',100000000,'workers:fixture:seed',$2) on conflict do nothing returning tenant,amount) insert into credit_accounts(tenant,balance,purchased) select tenant,amount,amount from input on conflict(tenant) do update set balance=credit_accounts.balance+excluded.balance,purchased=credit_accounts.purchased+excluded.purchased",
-      [item.id, Date.now()],
+    if (item.seedCredit !== false) await db.query(
+      "with input as (insert into credit_ledger(tenant,kind,amount,idempotency_key,created_at) values($1,'purchase',100000000,$3,$2) on conflict do nothing returning tenant,amount) insert into credit_accounts(tenant,balance,purchased) select tenant,amount,amount from input on conflict(tenant) do update set balance=credit_accounts.balance+excluded.balance,purchased=credit_accounts.purchased+excluded.purchased",
+      [item.id, Date.now(), `workers:fixture:seed:${item.id}`],
     );
     await db.query(
       "insert into api_tokens(sha256,id,tenant,name,prefix,created_at) values($1,$2,$3,'fixture','fixture',$4) on conflict do nothing",
@@ -90,7 +112,7 @@ export async function startFixture(
   try {
     await worker.start();
   } catch (error) {
-    await db.end();
+    await closePool(db);
     await admin.query(`drop database ${schema} with (force)`);
     await admin.end();
     await rm(storage, { recursive: true, force: true });
@@ -107,7 +129,7 @@ export async function startFixture(
       if (stopped) return;
       stopped = true;
       await worker.stop();
-      await db.end();
+      await closePool(db);
       await admin.query(`drop database ${schema} with (force)`);
       await admin.end();
       await rm(storage, { recursive: true, force: true });

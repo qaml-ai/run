@@ -1,0 +1,30 @@
+TAP version 13
+# Subtest: the TypeScript SDK: transcriptions.create from bytes, a Blob or a URL; audio attached to agent and stateless runs, by URL too
+not ok 1 - the TypeScript SDK: transcriptions.create from bytes, a Blob or a URL; audio attached to agent and stateless runs, by URL too
+  ---
+  duration_ms: 2100.108084
+  type: 'test'
+  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/transcription-sdk.test.ts:6:1'
+  failureType: 'testCodeFailure'
+  error: 'Unsupported field: files'
+  code: 'ERR_TEST_FAILURE'
+  name: 'AgentError'
+  stack: |-
+    Transport.json (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/clients/typescript.ts:994:47)
+    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    async AgentClient.request (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/clients/typescript.ts:2403:22)
+    async AgentClient.prompt (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/clients/typescript.ts:2466:20)
+    async Agent.settle (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/clients/agents.ts:638:41)
+    async TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/transcription-sdk.test.ts:22:17)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 0
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 5332.790583
