@@ -2081,6 +2081,10 @@ export class CamelAgent extends DurableObject<Env> {
     const params = request.params as Record<string, unknown>;
     if (!replace && !Object.keys(params).length) throw new BadRequest("Give at least one configuration field");
     const conf = await this.config();
+    // Identity cannot change even while a valid configuration waits for a turn.
+    // Match Directory.upsert before acknowledging a queued target.
+    if (params.subject !== undefined && params.subject !== conf.config.subject)
+      throw Object.assign(new Error("An agent's subject cannot change"), { status: 409 });
     const patched = replace ? configuration(params, conf.config.model ?? this.env.MODEL).config : await configurationPatch(this.env, conf.tenantId, conf.config, params);
     configuration(patched, conf.config.model ?? this.env.MODEL);
     if (params.model !== undefined || params.keyScope !== undefined) {
