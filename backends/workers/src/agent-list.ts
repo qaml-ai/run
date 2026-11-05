@@ -30,13 +30,14 @@ export async function listAgents(request: Request, env: ControlEnv, tenant: stri
     const row = metadata.get(entry.id), workspaceId = row?.workspace_id ?? null;
     const workspace = query.get('workspaceId');
     if (workspace && (workspace === 'unassigned' ? workspaceId !== null : workspaceId !== workspace)) continue;
-    if (search && !`${entry.id} ${entry.key ?? ''} ${entry.config.name ?? ''}`.toLowerCase().includes(search.toLowerCase())) continue;
+    if (search && !`${entry.id} ${entry.key ?? ''} ${entry.config.name ?? ''}`.toLowerCase().includes(search.trim().toLowerCase())) continue;
     const stateResponse = await env.AGENTS.getByName(entry.id).fetch(new Request('https://agent/state'));
     if (!stateResponse.ok) continue;
     const state = await stateResponse.json() as { running: boolean; connected?: boolean };
     const lastError = row?.last_error_class ? { at: Number(row.last_error_at), class: row.last_error_class } : null;
     if (status === 'running' && !state.running || status === 'failed' && (!lastError || lastError.at <= Date.now() - 86400_000) || status === 'expiring' && entry.expiresAt === null) continue;
-    list.push({ ...summary(entry), ...state, workspaceId, lastActiveAt: row?.last_active_at == null ? null : Number(row.last_active_at), lastError });
+    const { id, key, name, type, model, configHash, expiresAt, resume, parentAgentId } = summary(entry);
+    list.push({ id, key, name, type, model, configHash, expiresAt, resume, ...(parentAgentId ? { parentAgentId } : {}), running: state.running, connected: state.connected ?? false, workspaceId, lastActiveAt: row?.last_active_at == null ? null : Number(row.last_active_at), lastError });
     if (limit && list.length > limit) break;
   }
   const next = limit && list.length > limit ? Buffer.from(String(list[limit - 1].id)).toString('base64url') : undefined;

@@ -1,4 +1,5 @@
 import { BadRequest } from './validation.ts';
+import { MAX_OPEN_REQUESTS } from './access-policy.ts';
 const canonical = (value: unknown): string => JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item);
 
 type Record = { id: string; method: string; params?: { [key: string]: unknown }; fingerprint: string; state: 'queued' | 'running' | 'completed'; startedAt: number; configurationOrder?: number; replaceConfiguration?: boolean };
@@ -23,6 +24,9 @@ export class ConfigurationQueue<T extends Record> {
         if (old.fingerprint !== fingerprint) throw Object.assign(new Error('Request id reused with different input'), { status: 409 });
         return old;
       }
+      const requests = await tx.list<T>({ prefix: 'request:' });
+      if ([...requests.values()].filter(record => record.state !== 'completed').length >= MAX_OPEN_REQUESTS)
+        throw Object.assign(new Error('Too many requests queued for this agent'), { status: 429 });
       const sequence = (await tx.get<number>('configuration-order') ?? 0) + 1;
       await tx.put('configuration-order', sequence);
       const record = { ...input, fingerprint, state: 'queued', startedAt: Date.now(), configurationOrder: sequence, replaceConfiguration, ...(configurationOrigin !== undefined ? { configurationOrigin } : {}) } as T;

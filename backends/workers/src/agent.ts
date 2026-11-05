@@ -345,7 +345,7 @@ export class CamelAgent extends DurableObject<Env> {
       await this.emit({ type: 'response', id: record.id, outcome: completed.outcome });
     },
     background: work => this.ctx.waitUntil(work),
-    wake: () => this.arm(Date.now() + 100),
+    wake: () => this.arm(Date.now() + 1000),
   });
   private historyIndex = new AgentHistory(this.ctx.storage.sql, (fn) =>
     this.ctx.storage.transactionSync(fn),

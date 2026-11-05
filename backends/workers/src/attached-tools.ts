@@ -19,6 +19,8 @@ export type ToolDefinition = {
 export type McpResult = { content?: unknown[]; structuredContent?: unknown; isError?: boolean; inputRequests?: unknown; resultType?: string; requestState?: string; [key: string]: unknown };
 type Pending = { resolve: (result: unknown) => void; reject: (error: Error) => void; progress: (value?: Progress) => void };
 type Connection = { id: string; send: (event: unknown) => void; pending: Map<string, Pending>; ready: Promise<unknown>; initialized: boolean; draining: boolean; retired?: () => void };
+const CONNECTION_LOST = "The server running this tool disconnected during the call (it restarted or lost its connection), so the call may or may not have " +
+  "taken effect. Check whether it did before trying it again; if you cannot check, tell the user it is unknown whether it went through.";
 
 /** Attached MCP runs over the SDK's event stream, with replies on /mcp. */
 export class AttachedTools {
@@ -118,7 +120,7 @@ export class AttachedTools {
       if (this.current === connection) this.current = undefined;
       this.connections.delete(connection.id);
       for (const pending of connection.pending.values())
-        pending.reject(Object.assign(new Error("Application connection lost; this tool call may or may not have taken effect"), { code: "connection_lost", outcomeUnknown: true }));
+        pending.reject(Object.assign(new Error(CONNECTION_LOST), { code: "connection_lost", outcomeUnknown: true }));
       connection.pending.clear();
     }
   }

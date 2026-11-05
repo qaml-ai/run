@@ -236,7 +236,7 @@ export class Directory {
       const next: DirectoryEntry = {
         id,
         tenantId: this.tenantId,
-        key,
+        key: old ? old.key : key,
         config,
         ...(resolvedModel ? { resolvedModel } : {}),
         configHash,
