@@ -101,6 +101,8 @@ async function forward(request: Request, env: Env, id: string, path: string) {
 function scopedConfiguration(input: unknown) {
   if (!input || typeof input !== "object" || Array.isArray(input))
     throw new BadRequest("Expected configuration object");
+  if (Object.hasOwn(input, "initialMessages") || Object.hasOwn(input, "importMessages"))
+    throw new BadRequest("History can only be imported at creation");
   for (const key of [
     ...TENANT_CONFIGURATION_KEYS,
     "definition",
@@ -165,6 +167,8 @@ const worker = {
           path,
         );
       let entry: DirectoryEntry | null = null;
+      if (match?.[1] === "clients" && auth)
+        throw new ApiError(401, "An agent token is required", "UNAUTHORIZED");
       if (match) {
         const idOrKey = agentId(decodeURIComponent(match[2]));
         if (auth) entry = await new Directory(env, auth.tenantId).get(idOrKey);

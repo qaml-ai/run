@@ -31,7 +31,9 @@ export async function authenticateMoney(request: Request, env: MoneyEnv): Promis
   const s = await services(env, request);
   const principal = await s.keys.accounts.authenticate(request.headers.get('authorization') ?? undefined)
     ?? await accountPrincipal(request, s.account);
-  if (principal?.via === 'oauth' && new URL(request.url).pathname.startsWith('/v1/') && !oauthAllows(request.method, new URL(request.url).pathname))
+  // Agent MCP is mounted beside the REST API in src and accepts the same tenant credential.
+  const agentMcp = /^\/v1\/agents\/client_[a-f0-9]{40}\/mcp$/.test(new URL(request.url).pathname);
+  if (principal?.via === 'oauth' && new URL(request.url).pathname.startsWith('/v1/') && !agentMcp && !oauthAllows(request.method, new URL(request.url).pathname))
     throw new HttpError(403, 'An OAuth access token works with agents only: it cannot get agent tokens or make API tokens, links, webhooks, channels or provider keys. Use an API token or the console');
   return principal ? { tenantId: principal.tenant, kind: principal.via === 'operator' ? 'operator' : principal.via === 'oauth' ? 'oauth' : principal.via === 'console' ? 'console' : 'api',
     scopes: ['*'], principal } : null;

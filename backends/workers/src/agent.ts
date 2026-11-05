@@ -131,7 +131,7 @@ import { RunProjection } from "./run-projection.ts";
 import { requestView } from "./request-view.ts";
 import { AgentHistory } from "./history.ts";
 import type { AgentConfiguration } from "./api-contract.ts";
-import { digest } from "./api-contract.ts";
+import { digest, configuration } from "./api-contract.ts";
 import { AttachedTools } from "./attached-tools.ts";
 import { prioritizedTools } from "./tool-priority.ts";
 import { compatibleFileTools } from "./fs-tools.ts";
@@ -1745,6 +1745,11 @@ export class CamelAgent extends DurableObject<Env> {
         status: 409,
         code: "aborted",
       });
+    if (!request.params || typeof request.params !== "object" || Array.isArray(request.params))
+      throw new BadRequest("Expected configuration object");
+    const conf = await this.config();
+    const params = request.params as Record<string, unknown>;
+    configuration({ ...conf.config, ...params }, conf.config.model);
     const fingerprint = canonical(request);
     const previous = await this.ctx.storage.transaction(async (tx) => {
       const old = await tx.get<RequestRecord>(reqKey(id));
@@ -1764,14 +1769,6 @@ export class CamelAgent extends DurableObject<Env> {
       return old;
     });
     if (previous?.state === "completed") return previous;
-    const conf = await this.config();
-    if (
-      !request.params ||
-      typeof request.params !== "object" ||
-      Array.isArray(request.params)
-    )
-      throw new BadRequest("Expected configuration object");
-    const params = request.params as Record<string, unknown>;
     const directory = new Directory(this.env, conf.tenantId);
     const current = await directory.get(conf.id);
     if (!current)
