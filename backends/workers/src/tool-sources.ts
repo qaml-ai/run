@@ -226,7 +226,7 @@ export function sourceView(source: RemoteSource) {
 }
 
 const listedAt = new WeakMap<ToolRegistration, number>();
-const listed = (tool: ToolRegistration) => { listedAt.set(tool, Date.now()); return tool; };
+const markListed = (tool: ToolRegistration) => { listedAt.set(tool, Date.now()); return tool; };
 
 /** Public catalog preserves source priority and makes duplicate exclusions explicit. */
 export function toolSourceViews(config: { mcp?: { tools?: ToolDefinition[] }; mcpServers?: RemoteSource[]; openApi?: RemoteSource[]; fileTools?: boolean; codeMode?: boolean; builtins?: string[] }, tools: ToolRegistration[], connected: boolean, failures: SourceFailure[] = []) {
@@ -455,14 +455,14 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
         if (source.allowTools && !source.allowTools.includes(tool.name) || source.denyTools?.includes(tool.name)) continue;
         const { name } = tool;
         const mode = approvalFor(source.approval, name, (tool as any).annotations?.destructiveHint === true);
-        result.push(listed(registration({ ...tool, description: (tool.description ?? name).slice(0, 4000), needsApproval: mode === "always", judged: mode === "judged", name: mcpToolName(source.name, name), exposure: tool.exposure ?? tool._meta?.["agent-runtime/exposure"] as ToolDefinition["exposure"] ?? source.exposure }, async (args, api, context) => {
+        result.push(markListed(registration({ ...tool, description: (tool.description ?? name).slice(0, 4000), needsApproval: mode === "always", judged: mode === "judged", name: mcpToolName(source.name, name), exposure: tool.exposure ?? tool._meta?.["agent-runtime/exposure"] as ToolDefinition["exposure"] ?? source.exposure }, async (args, api, context) => {
           const approval = await needsApproval(name, args, (tool as any).annotations?.destructiveHint === true, api, context, undefined, tool.description);
           if ("result" in approval) return approval.result;
           return api ? withToolInputs(reply => client.call(name, args, context?.abortSignal, api, reply), api, context, { name: `${source.name}__${name}`, args }, approval.reply) : client.call(name, args, context?.abortSignal);
         })));
       }
     } else {
-      for (const operation of source.operations ?? []) result.push(listed(registration({ name: `${source.name}__${operation.name}`, description: operation.description, inputSchema: operation.inputSchema, needsApproval: approvalFor(source.approval, operation.name, !operation.readOnly, operation.method) === "always", judged: approvalFor(source.approval, operation.name, !operation.readOnly, operation.method) === "judged", exposure: source.exposure, executionMode: operation.readOnly ? "parallel" : "sequential" }, async (input, api, context) => {
+      for (const operation of source.operations ?? []) result.push(markListed(registration({ name: `${source.name}__${operation.name}`, description: operation.description, inputSchema: operation.inputSchema, needsApproval: approvalFor(source.approval, operation.name, !operation.readOnly, operation.method) === "always", judged: approvalFor(source.approval, operation.name, !operation.readOnly, operation.method) === "judged", exposure: source.exposure, executionMode: operation.readOnly ? "parallel" : "sequential" }, async (input, api, context) => {
         const args = input as Record<string, unknown>;
         const approval = await needsApproval(operation.name, args, !operation.readOnly, api, context, operation.method, operation.description);
         if ("result" in approval) return approval.result;
