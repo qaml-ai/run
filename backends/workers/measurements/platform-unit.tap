@@ -3,122 +3,1685 @@
 > node --import ./test/sdk-deps.mjs --experimental-strip-types --test --test-concurrency=1 test/*.test.ts
 
 TAP version 13
+# Subtest: OAuth authorization-server discovery advertises the source endpoints and public response headers
+ok 1 - OAuth authorization-server discovery advertises the source endpoints and public response headers
+  ---
+  duration_ms: 725.7255
+  type: 'test'
+  ...
+# Subtest: account initialization preserves source secret length and public-origin configuration guards
+ok 2 - account initialization preserves source secret length and public-origin configuration guards
+  ---
+  duration_ms: 481.55525
+  type: 'test'
+  ...
+# Subtest: sign-in and consent pages reached through a configured alias move to the canonical origin
+ok 3 - sign-in and consent pages reached through a configured alias move to the canonical origin
+  ---
+  duration_ms: 1210.40575
+  type: 'test'
+  ...
+# Subtest: OAuth can read the provider catalog while credential-management routes remain forbidden
+ok 4 - OAuth can read the provider catalog while credential-management routes remain forbidden
+  ---
+  duration_ms: 339.421041
+  type: 'test'
+  ...
+# Subtest: account-management rejects malformed JSON and marks account facts private
+ok 5 - account-management rejects malformed JSON and marks account facts private
+  ---
+  duration_ms: 248.703584
+  type: 'test'
+  ...
+# Subtest: token revocation rejects itself and unknown ids, and lists the webhooks it leaves sending
+ok 6 - token revocation rejects itself and unknown ids, and lists the webhooks it leaves sending
+  ---
+  duration_ms: 278.339458
+  type: 'test'
+  ...
+# Subtest: grant revocation returns the source response and keeps attributed webhooks available for review
+ok 7 - grant revocation returns the source response and keeps attributed webhooks available for review
+  ---
+  duration_ms: 446.202334
+  type: 'test'
+  ...
 # {"type":"admin_viewed","viewer":"administrator","path":"/api/me"}
 # {"type":"admin_viewed","viewer":"administrator","path":"/api/me"}
 # Subtest: admin API is disabled by default and scoped keys cannot read it
-ok 1 - admin API is disabled by default and scoped keys cannot read it
+ok 8 - admin API is disabled by default and scoped keys cannot read it
   ---
-  duration_ms: 9.801459
+  duration_ms: 9.99625
   type: 'test'
   ...
 # Subtest: admin path is bounded and does not shadow the public API
-ok 2 - admin path is bounded and does not shadow the public API
+ok 9 - admin path is bounded and does not shadow the public API
   ---
-  duration_ms: 0.36025
+  duration_ms: 0.339958
+  type: 'test'
+  ...
+# Subtest: Workers API admission keeps source IP limits and authenticated admin exemptions
+ok 10 - Workers API admission keeps source IP limits and authenticated admin exemptions
+  ---
+  duration_ms: 281.477625
+  type: 'test'
+  ...
+# Subtest: Workers API admission groups source IPv6 /64 and identifies Worker zones
+ok 11 - Workers API admission groups source IPv6 /64 and identifies Worker zones
+  ---
+  duration_ms: 422.178875
+  type: 'test'
+  ...
+# Subtest: create and run counters are shared in Postgres, and replays consume nothing
+ok 12 - create and run counters are shared in Postgres, and replays consume nothing
+  ---
+  duration_ms: 667.758042
+  type: 'test'
+  ...
+# Subtest: rate errors preserve source body, retry headers, and bounded counter lifetime
+ok 13 - rate errors preserve source body, retry headers, and bounded counter lifetime
+  ---
+  duration_ms: 300.825958
+  type: 'test'
+  ...
+# Subtest: source pricing environment config reaches Accounts billing and its tier policy
+ok 14 - source pricing environment config reaches Accounts billing and its tier policy
+  ---
+  duration_ms: 389.183917
+  type: 'test'
+  ...
+# Subtest: agent budget resets from set_at, includes compaction and raw cost, and excludes other tenants
+ok 15 - agent budget resets from set_at, includes compaction and raw cost, and excludes other tenants
+  ---
+  duration_ms: 289.002208
+  type: 'test'
+  ...
+# Subtest: run budget is isolated by request; agent budget has priority and corrected attempts count once
+ok 16 - run budget is isolated by request; agent budget has priority and corrected attempts count once
+  ---
+  duration_ms: 703.514917
   type: 'test'
   ...
 # Subtest: platform alarm periods, thresholds, names and comparisons match Terraform
-ok 3 - platform alarm periods, thresholds, names and comparisons match Terraform
+ok 17 - platform alarm periods, thresholds, names and comparisons match Terraform
   ---
-  duration_ms: 5.28625
+  duration_ms: 5.84175
   type: 'test'
   ...
 # Subtest: turn failure alarm uses two complete windows, minimum traffic and a strict 40 percent threshold
-ok 4 - turn failure alarm uses two complete windows, minimum traffic and a strict 40 percent threshold
+ok 18 - turn failure alarm uses two complete windows, minimum traffic and a strict 40 percent threshold
   ---
-  duration_ms: 0.417791
+  duration_ms: 0.416375
   type: 'test'
   ...
 # Subtest: webhook lag uses the maximum and missing instrumentation cannot report healthy
-ok 5 - webhook lag uses the maximum and missing instrumentation cannot report healthy
+ok 19 - webhook lag uses the maximum and missing instrumentation cannot report healthy
   ---
-  duration_ms: 0.08675
+  duration_ms: 0.087417
   type: 'test'
   ...
 # Subtest: unwired policy can be tested with synthetic signals without claiming production instrumentation
-ok 6 - unwired policy can be tested with synthetic signals without claiming production instrumentation
+ok 20 - unwired policy can be tested with synthetic signals without claiming production instrumentation
   ---
-  duration_ms: 0.200167
+  duration_ms: 0.189833
+  type: 'test'
+  ...
+# Subtest: source usage metrics feed global and per-tenant spend alarm selectors
+ok 21 - source usage metrics feed global and per-tenant spend alarm selectors
+  ---
+  duration_ms: 0.494209
+  type: 'test'
+  ...
+# Subtest: auto top-up is off by default; quotes require current explicit consent and survive a card-setup round trip
+ok 22 - auto top-up is off by default; quotes require current explicit consent and survive a card-setup round trip
+  ---
+  duration_ms: 612.629083
+  type: 'test'
+  ...
+# Subtest: an immediate top-up reserves the all-in amount and posts credit only after verified Stripe payment
+ok 23 - an immediate top-up reserves the all-in amount and posts credit only after verified Stripe payment
+  ---
+  duration_ms: 806.476833
+  type: 'test'
+  ...
+# {"type":"auto_topup_step_failed","attempt":"a91ac4a9-6331-4df7-b2bc-239ca8b898fb","step":"create"}
+# Subtest: concurrent workers share one reservation and invoice; a lost create response resumes with its original key
+ok 24 - concurrent workers share one reservation and invoice; a lost create response resumes with its original key
+  ---
+  duration_ms: 854.230541
+  type: 'test'
+  ...
+# Subtest: monthly cap includes fees: nine $21.10 top-ups fit $200, refunds do not reopen the cap
+ok 25 - monthly cap includes fees: nine $21.10 top-ups fit $200, refunds do not reopen the cap
+  ---
+  duration_ms: 2772.005166
+  type: 'test'
+  ...
+# Subtest: declines keep the reservation across months; explicit retry pays the same invoice with the new default card
+ok 26 - declines keep the reservation across months; explicit retry pays the same invoice with the new default card
+  ---
+  duration_ms: 896.680917
+  type: 'test'
+  ...
+# {"type":"billing_reconciliation_required","kind":"auto_topup","attempt":"db83af93-d0f5-4cc4-b959-4a4f97ace287","step":"observe"}
+# Subtest: bank confirmation remains on the original invoice; invoice.paid without a successful payment cannot grant credit
+ok 27 - bank confirmation remains on the original invoice; invoice.paid without a successful payment cannot grant credit
+  ---
+  duration_ms: 1315.024666
+  type: 'test'
+  ...
+# Subtest: disable cancels unsubmitted reservations but an already submitted invoice can finish
+ok 28 - disable cancels unsubmitted reservations but an already submitted invoice can finish
+  ---
+  duration_ms: 638.057708
+  type: 'test'
+  ...
+# Subtest: a removed card pauses before payment and resumes the same invoice when a default card is restored
+ok 29 - a removed card pauses before payment and resumes the same invoice when a default card is restored
+  ---
+  duration_ms: 531.366916
+  type: 'test'
+  ...
+# {"type":"auto_topup_step_failed","attempt":"1ad273e1-050c-4526-b39f-0e862e5489d0","step":"create"}
+# {"type":"billing_reconciliation_required","kind":"auto_topup","attempt":"1ad273e1-050c-4526-b39f-0e862e5489d0","step":"create"}
+# {"type":"billing_reconciliation_required","kind":"auto_topup","attempt":"15fbf02f-6420-4fc5-9aa3-db9625181070","step":"finalize"}
+# Subtest: ambiguous old invoice creates retain the hold; invoice totals are checked before charging
+ok 30 - ambiguous old invoice creates retain the hold; invoice totals are checked before charging
+  ---
+  duration_ms: 991.665083
+  type: 'test'
+  ...
+# Subtest: payment emails include exact charges, the invoice link, and escaped text
+ok 31 - payment emails include exact charges, the invoice link, and escaped text
+  ---
+  duration_ms: 0.644542
+  type: 'test'
+  ...
+# {"type":"auto_topup_step_failed","attempt":"a496335b-fc2e-4753-b848-60c56f1f8c74","step":"create"}
+# Subtest: an old ambiguous pay is reconciled from its successful invoice without charging again
+ok 32 - an old ambiguous pay is reconciled from its successful invoice without charging again
+  ---
+  duration_ms: 482.149625
+  type: 'test'
+  ...
+# {"type":"auto_topup_step_failed","attempt":"dbbf6511-5cc1-42dc-8ccd-0c71d5a03dad","step":"create"}
+# Subtest: failed ledger writes roll back the paid marker and retry fulfillment without another payment
+ok 33 - failed ledger writes roll back the paid marker and retry fulfillment without another payment
+  ---
+  duration_ms: 599.870666
+  type: 'test'
+  ...
+# Subtest: healthy balances make no polling Stripe calls; nodes claim a low-balance scan only once
+ok 34 - healthy balances make no polling Stripe calls; nodes claim a low-balance scan only once
+  ---
+  duration_ms: 400.003583
+  type: 'test'
+  ...
+# Subtest: waiting attempts back off for an hour and portal returns wake card recovery
+ok 35 - waiting attempts back off for an hour and portal returns wake card recovery
+  ---
+  duration_ms: 403.867458
+  type: 'test'
+  ...
+# Subtest: disable voids a declined invoice and releases its hold before re-enabling
+ok 36 - disable voids a declined invoice and releases its hold before re-enabling
+  ---
+  duration_ms: 629.979708
+  type: 'test'
+  ...
+# Subtest: disable reconciles a concurrent completed payment rather than voiding it
+ok 37 - disable reconciles a concurrent completed payment rather than voiding it
+  ---
+  duration_ms: 376.615334
+  type: 'test'
+  ...
+# Subtest: bank confirmation can finish after disable, but an unpaid action expires after a day
+ok 38 - bank confirmation can finish after disable, but an unpaid action expires after a day
+  ---
+  duration_ms: 387.206417
+  type: 'test'
+  ...
+# Subtest: reconciliation mail explains the pause without assigning internal work to the customer
+ok 39 - reconciliation mail explains the pause without assigning internal work to the customer
+  ---
+  duration_ms: 0.163417
+  type: 'test'
+  ...
+# {"type":"auto_topup_step_failed","attempt":"5b999e50-f22e-46a8-9e8f-e3f511beacf0","step":"observe"}
+# Subtest: a lost void response retains the hold until Stripe confirms the invoice is void
+ok 40 - a lost void response retains the hold until Stripe confirms the invoice is void
+  ---
+  duration_ms: 425.607584
+  type: 'test'
+  ...
+# Subtest: capped accounts make no provider requests until reset or new consent raises the cap
+ok 41 - capped accounts make no provider requests until reset or new consent raises the cap
+  ---
+  duration_ms: 1746.135834
+  type: 'test'
+  ...
+# Subtest: an expired bank confirmation stays paused across scans, portal returns and months until fresh consent
+ok 42 - an expired bank confirmation stays paused across scans, portal returns and months until fresh consent
+  ---
+  duration_ms: 735.589041
+  type: 'test'
+  ...
+# {"type":"auto_topup_step_failed","attempt":"5af84b27-3dbd-4144-9e3a-d9753c954f0c","step":"observe"}
+# Subtest: confirmation expiry persists its pause intent across a lost void response
+ok 43 - confirmation expiry persists its pause intent across a lost void response
+  ---
+  duration_ms: 566.340833
+  type: 'test'
+  ...
+# Subtest: expiry never voids a settling payment and fulfills success without pausing
+ok 44 - expiry never voids a settling payment and fulfills success without pausing
+  ---
+  duration_ms: 436.630916
+  type: 'test'
+  ...
+# Subtest: balance crossings fan out atomically, dedupe retries and re-arm only after recovery
+ok 45 - balance crossings fan out atomically, dedupe retries and re-arm only after recovery
+  ---
+  duration_ms: 359.421875
+  type: 'test'
+  ...
+# Subtest: an unfunded signup stays quiet, including its confirmation; an opted-in funded empty account gets one notice
+ok 46 - an unfunded signup stays quiet, including its confirmation; an opted-in funded empty account gets one notice
+  ---
+  duration_ms: 700.90725
+  type: 'test'
+  ...
+# Subtest: concurrent usage flushes emit each crossing once and rollback includes all outboxes
+ok 47 - concurrent usage flushes emit each crossing once and rollback includes all outboxes
+  ---
+  duration_ms: 259.612958
+  type: 'test'
+  ...
+# Subtest: an outbox write failure rolls the balance and ledger back
+ok 48 - an outbox write failure rolls the balance and ledger back
+  ---
+  duration_ms: 247.876958
+  type: 'test'
+  ...
+# Subtest: raising the threshold issues one current notice; setting it again and lowering it stay quiet
+ok 49 - raising the threshold issues one current notice; setting it again and lowering it stay quiet
+  ---
+  duration_ms: 622.274875
+  type: 'test'
+  ...
+# Subtest: recipients are normalized, capped across concurrent adds, isolated by tenant and secrets stay private
+ok 50 - recipients are normalized, capped across concurrent adds, isolated by tenant and secrets stay private
+  ---
+  duration_ms: 302.726708
+  type: 'test'
+  ...
+# Subtest: confirmation requires the live unexpired token, and resend invalidates the previous one
+ok 51 - confirmation requires the live unexpired token, and resend invalidates the previous one
+  ---
+  duration_ms: 253.672334
+  type: 'test'
+  ...
+# Subtest: confirmation limits survive remove/re-add and apply across tenants
+ok 52 - confirmation limits survive remove/re-add and apply across tenants
+  ---
+  duration_ms: 290.080875
+  type: 'test'
+  ...
+# Subtest: per-recipient choices select notices and opting back in below threshold does not notify others
+ok 53 - per-recipient choices select notices and opting back in below threshold does not notify others
+  ---
+  duration_ms: 271.221292
+  type: 'test'
+  ...
+# Subtest: delivery leases fence stale acknowledgements, retry, and re-check preferences before sending
+ok 54 - delivery leases fence stale acknowledgements, retry, and re-check preferences before sending
+  ---
+  duration_ms: 425.309084
+  type: 'test'
+  ...
+# Subtest: confirmed bounces suppress queued mail and future re-adds
+ok 55 - confirmed bounces suppress queued mail and future re-adds
+  ---
+  duration_ms: 433.351833
+  type: 'test'
+  ...
+# Subtest: a confirmation delivery decrypts only while claimed and removes its secret after acknowledgement
+ok 56 - a confirmation delivery decrypts only while claimed and removes its secret after acknowledgement
+  ---
+  duration_ms: 189.982458
+  type: 'test'
+  ...
+# Subtest: pricing: defaults, environment overrides in USD, and the purchase fee in whole cents
+ok 57 - pricing: defaults, environment overrides in USD, and the purchase fee in whole cents
+  ---
+  duration_ms: 1.036834
+  type: 'test'
+  ...
+# Subtest: card-credit pricing follows the starting grant unless explicitly configured
+ok 58 - card-credit pricing follows the starting grant unless explicitly configured
+  ---
+  duration_ms: 0.181
+  type: 'test'
+  ...
+# Subtest: usage tiers: the defaults, AGENT_USAGE_TIERS, its validation, and which tier an amount paid is in
+ok 59 - usage tiers: the defaults, AGENT_USAGE_TIERS, its validation, and which tier an amount paid is in
+  ---
+  duration_ms: 0.543042
+  type: 'test'
+  ...
+# Subtest: provider-reported cost wins over the catalog, including zero; invalid amounts cannot poison billing
+ok 60 - provider-reported cost wins over the catalog, including zero; invalid amounts cannot poison billing
+  ---
+  duration_ms: 0.126708
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905648601,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":0,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"m","ModelCostUsd":0.419,"ModelUsageEvents":5}
+# {"_aws":{"Timestamp":1793905648601,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":0,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.02,"ModelUsageEvents":1}
+# Subtest: platform model usage passes through actual cost and funding, including compaction, without charging customer-owned keys
+ok 61 - platform model usage passes through actual cost and funding, including compaction, without charging customer-owned keys
+  ---
+  duration_ms: 226.483
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905648802,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":0,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"m","ModelCostUsd":0.0123,"ModelUsageEvents":1}
+# Subtest: a waived funding fee charges exactly the reported usage amount
+ok 62 - a waived funding fee charges exactly the reported usage amount
+  ---
+  duration_ms: 188.229875
+  type: 'test'
+  ...
+# Subtest: the ledger posts each idempotency key once and keeps the balance equal to its entries
+ok 63 - the ledger posts each idempotency key once and keeps the balance equal to its entries
+  ---
+  duration_ms: 180.664625
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905649177,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.501,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649180,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.502,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649190,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.501,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649193,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.502,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649204,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.501,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649207,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.502,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649217,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.501,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649221,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.502,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649232,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.501,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649236,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.502,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649247,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.501,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649251,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.502,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649261,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.501,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649265,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.502,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649275,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.501,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649277,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.502,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649287,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.501,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649290,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.502,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649300,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.501,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649302,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.502,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649312,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.501,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649314,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.502,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649324,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.501,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649327,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.502,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649336,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.501,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649339,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.502,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649349,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.501,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649351,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.502,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649361,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.501,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649363,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.502,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649373,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.501,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649376,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.502,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649385,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.501,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649388,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.502,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649398,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.501,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649401,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.502,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649411,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.501,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649414,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.502,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649425,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.501,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649428,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":20,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.502,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905649454,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":10,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":1,"ServiceName":"workers","Tenant":"ops","Provider":"anthropic","Model":"m","ModelCostUsd":1,"ModelUsageEvents":1}
+# Subtest: two nodes debiting one tenant at once lose no debit, and each flush posts once
+ok 64 - two nodes debiting one tenant at once lose no debit, and each flush posts once
+  ---
+  duration_ms: 466.000625
+  type: 'test'
+  ...
+# Subtest: usage accrues into one entry per tenant per UTC hour, updated in place until the hour ends, and the ledger still sums to the balance
+ok 65 - usage accrues into one entry per tenant per UTC hour, updated in place until the hour ends, and the ledger still sums to the balance
+  ---
+  duration_ms: 196.039084
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905649853,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":150,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":15,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.012,"ModelUsageEvents":15}
+# {"_aws":{"Timestamp":1793905649853,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":40,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":4,"ServiceName":"workers","Tenant":"t0","Provider":"anthropic","Model":"m","ModelCostUsd":0.004,"ModelUsageEvents":4}
+# {"_aws":{"Timestamp":1793905649853,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":40,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":4,"ServiceName":"workers","Tenant":"t1","Provider":"anthropic","Model":"m","ModelCostUsd":0.004,"ModelUsageEvents":4}
+# {"_aws":{"Timestamp":1793905649853,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":40,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":4,"ServiceName":"workers","Tenant":"t2","Provider":"anthropic","Model":"m","ModelCostUsd":0.004,"ModelUsageEvents":4}
+# {"_aws":{"Timestamp":1793905649853,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":30,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":3,"ServiceName":"workers","Tenant":"t3","Provider":"anthropic","Model":"m","ModelCostUsd":0.003,"ModelUsageEvents":3}
+# {"_aws":{"Timestamp":1793905649857,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":150,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":15,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.012,"ModelUsageEvents":15}
+# {"_aws":{"Timestamp":1793905649857,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":40,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":4,"ServiceName":"workers","Tenant":"t0","Provider":"anthropic","Model":"m","ModelCostUsd":0.004,"ModelUsageEvents":4}
+# {"_aws":{"Timestamp":1793905649857,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":40,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":4,"ServiceName":"workers","Tenant":"t1","Provider":"anthropic","Model":"m","ModelCostUsd":0.004,"ModelUsageEvents":4}
+# {"_aws":{"Timestamp":1793905649857,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":40,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":4,"ServiceName":"workers","Tenant":"t2","Provider":"anthropic","Model":"m","ModelCostUsd":0.004,"ModelUsageEvents":4}
+# {"_aws":{"Timestamp":1793905649857,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":30,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":3,"ServiceName":"workers","Tenant":"t3","Provider":"anthropic","Model":"m","ModelCostUsd":0.003,"ModelUsageEvents":3}
+# {"_aws":{"Timestamp":1793905649862,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":150,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":15,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.012,"ModelUsageEvents":15}
+# {"_aws":{"Timestamp":1793905649862,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":40,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":4,"ServiceName":"workers","Tenant":"t0","Provider":"anthropic","Model":"m","ModelCostUsd":0.004,"ModelUsageEvents":4}
+# {"_aws":{"Timestamp":1793905649862,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":40,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":4,"ServiceName":"workers","Tenant":"t1","Provider":"anthropic","Model":"m","ModelCostUsd":0.004,"ModelUsageEvents":4}
+# {"_aws":{"Timestamp":1793905649862,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":40,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":4,"ServiceName":"workers","Tenant":"t2","Provider":"anthropic","Model":"m","ModelCostUsd":0.004,"ModelUsageEvents":4}
+# {"_aws":{"Timestamp":1793905649862,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":30,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":3,"ServiceName":"workers","Tenant":"t3","Provider":"anthropic","Model":"m","ModelCostUsd":0.003,"ModelUsageEvents":3}
+# Subtest: the ledger sums to every balance under concurrent flushes, grants, purchases and refunds on several nodes
+ok 66 - the ledger sums to every balance under concurrent flushes, grants, purchases and refunds on several nodes
+  ---
+  duration_ms: 275.149875
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905650214,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":10,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":1,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.25,"ModelUsageEvents":1}
+# {"_aws":{"Timestamp":1793905650226,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":10,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":1,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.5,"ModelUsageEvents":1}
+# Subtest: a flush whose commit acknowledgement is lost is retried without counting twice
+ok 67 - a flush whose commit acknowledgement is lost is retried without counting twice
+  ---
+  duration_ms: 308.844042
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905650431,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":10,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":1,"ServiceName":"workers","Tenant":"payg","Provider":"anthropic","Model":"m","ModelCostUsd":0.1,"ModelUsageEvents":1}
+# Subtest: credit: prepaid tenants are refused at zero, others never; the balance counts this node's unwritten debits
+ok 68 - credit: prepaid tenants are refused at zero, others never; the balance counts this node's unwritten debits
+  ---
+  duration_ms: 5211.049333
+  type: 'test'
+  ...
+# Subtest: Stripe webhooks are verified by signature: a bad or stale signature is refused, and a well-signed replay is harmless
+ok 69 - Stripe webhooks are verified by signature: a bad or stale signature is refused, and a well-signed replay is harmless
+  ---
+  duration_ms: 0.813417
+  type: 'test'
+  ...
+# {"type":"credit_purchased","tenant":"alice","amount":10000000,"session":"cs_dispute"}
+# {"type":"billing_dispute_opened","tenant":"alice","dispute":"dp_dispute","status":"needs_response","amount":1055,"reason":"fraudulent"}
+# {"type":"billing_dispute_opened","tenant":"alice","dispute":"dp_dispute","status":"needs_response","amount":1055,"reason":"fraudulent"}
+# {"type":"billing_dispute_closed","tenant":"alice","dispute":"dp_dispute","status":"won","amount":1055,"reason":"fraudulent"}
+# {"type":"billing_dispute_closed","tenant":"alice","dispute":"dp_dispute","status":"won","amount":1055,"reason":"fraudulent"}
+# Subtest: a dispute debits the purchase's credit and stops runs until it closes; won, the credit comes back
+ok 70 - a dispute debits the purchase's credit and stops runs until it closes; won, the credit comes back
+  ---
+  duration_ms: 498.453875
+  type: 'test'
+  ...
+# {"type":"credit_purchased","tenant":"alice","amount":10000000,"session":"cs_dispute"}
+# {"type":"billing_dispute_opened","tenant":"alice","dispute":"dp_dispute","status":"needs_response","amount":1055,"reason":"fraudulent"}
+# {"type":"billing_dispute_closed","tenant":"alice","dispute":"dp_dispute","status":"lost","amount":1055,"reason":"fraudulent"}
+# Subtest: a lost dispute keeps the debit, so credit already spent leaves the account in debt
+ok 71 - a lost dispute keeps the debit, so credit already spent leaves the account in debt
+  ---
+  duration_ms: 279.968291
+  type: 'test'
+  ...
+# {"type":"billing_dispute_unmatched","dispute":"dp_dispute","paymentIntent":"pi_dispute","status":"needs_response"}
+# {"type":"credit_purchased","tenant":"alice","amount":10000000,"session":"cs_dispute"}
+# {"type":"credit_purchased","tenant":"alice","amount":10000000,"session":"cs_dispute"}
+# {"type":"billing_dispute_closed","tenant":"alice","dispute":"dp_dispute","status":"won","amount":1055,"reason":"fraudulent"}
+# {"type":"billing_dispute_opened","tenant":"alice","dispute":"dp_dispute","status":"needs_response","amount":1055,"reason":"fraudulent"}
+# Subtest: disputes arriving before their purchase, or closed before they open, apply once in the right state
+ok 72 - disputes arriving before their purchase, or closed before they open, apply once in the right state
+  ---
+  duration_ms: 755.476708
+  type: 'test'
+  ...
+# {"type":"credit_purchased","tenant":"alice","amount":10000000,"session":"cs_dispute"}
+# {"type":"billing_dispute_opened","tenant":"alice","dispute":"dp_dispute","status":"needs_response","amount":1055,"reason":"fraudulent"}
+# Subtest: a dispute after a partial refund removes only the credit still left
+ok 73 - a dispute after a partial refund removes only the credit still left
+  ---
+  duration_ms: 286.282458
+  type: 'test'
+  ...
+# Subtest: native mail adapter sends the unchanged billing template and acknowledges its fenced outbox
+ok 74 - native mail adapter sends the unchanged billing template and acknowledges its fenced outbox
+  ---
+  duration_ms: 431.278541
+  type: 'test'
+  ...
+# Subtest: deployed Stripe factory refuses live credentials and nonlocal fake endpoints
+ok 75 - deployed Stripe factory refuses live credentials and nonlocal fake endpoints
+  ---
+  duration_ms: 0.366208
+  type: 'test'
+  ...
+# Subtest: Checkout persists its quote, creates an invoice, and reuses one purchase through concurrency and a lost response
+ok 76 - Checkout persists its quote, creates an invoice, and reuses one purchase through concurrency and a lost response
+  ---
+  duration_ms: 507.415584
+  type: 'test'
+  ...
+# {"type":"credit_purchased","tenant":"alice","amount":10000000,"session":"cs_2"}
+# {"type":"credit_purchased","tenant":"alice","amount":10000000,"session":"cs_2"}
+# {"type":"credit_purchased","tenant":"alice","amount":10000000,"session":"cs_2"}
+# Subtest: fulfillment validates the stored terms and ownership, applies early refunds, and ignores invoice.paid
+ok 77 - fulfillment validates the stored terms and ownership, applies early refunds, and ignores invoice.paid
+  ---
+  duration_ms: 352.860583
+  type: 'test'
+  ...
+# {"type":"credit_purchased","tenant":"alice","amount":5000000,"session":"cs_2"}
+# Subtest: a webhook arriving before the create response binds the order atomically; a conflicting session cannot bind
+ok 78 - a webhook arriving before the create response binds the order atomically; a conflicting session cannot bind
+  ---
+  duration_ms: 289.963209
+  type: 'test'
+  ...
+# {"type":"billing_reconciliation_required","kind":"checkout","id":"e1b3af3f-8039-4c46-8ddc-ac51f0022fa1"}
+# Subtest: ambiguous creates older than the safe idempotency window fail closed without contacting Stripe
+ok 79 - ambiguous creates older than the safe idempotency window fail closed without contacting Stripe
+  ---
+  duration_ms: 460.762709
+  type: 'test'
+  ...
+# Subtest: portal scopes both flows to the tenant, validates product configuration, and only displays Stripe-owned card details
+ok 80 - portal scopes both flows to the tenant, validates product configuration, and only displays Stripe-owned card details
+  ---
+  duration_ms: 259.479333
+  type: 'test'
+  ...
+# Subtest: test/live customers are isolated; legacy customer adoption requires ownership and mode
+ok 81 - test/live customers are isolated; legacy customer adoption requires ownership and mode
+  ---
+  duration_ms: 313.166209
+  type: 'test'
+  ...
+# {"type":"credit_purchased","tenant":"alice","amount":5000000,"session":"cs_legacy"}
+# Subtest: unregistered sessions only use legacy fulfillment if created before cutover; provider errors retain code and request id
+ok 82 - unregistered sessions only use legacy fulfillment if created before cutover; provider errors retain code and request id
+  ---
+  duration_ms: 648.645333
+  type: 'test'
+  ...
+# {"type":"credit_purchased","tenant":"alice","amount":10000000,"session":"cs_refund"}
+# {"type":"credit_purchased","tenant":"alice","amount":10000000,"session":"cs_refund"}
+# Subtest: a full refund arriving first is retained and atomically offsets later purchase fulfillment
+ok 83 - a full refund arriving first is retained and atomically offsets later purchase fulfillment
+  ---
+  duration_ms: 459.425292
+  type: 'test'
+  ...
+# {"type":"credit_purchased","tenant":"alice","amount":10000000,"session":"cs_refund"}
+# Subtest: partial refunds reconcile monotonically across reordering, retries and restart
+ok 84 - partial refunds reconcile monotonically across reordering, retries and restart
+  ---
+  duration_ms: 292.103333
+  type: 'test'
+  ...
+# {"type":"credit_purchased","tenant":"alice","amount":10000000,"session":"cs_refund"}
+# {"type":"credit_purchased","tenant":"alice","amount":10000000,"session":"cs_refund"}
+# {"type":"credit_purchased","tenant":"alice","amount":10000000,"session":"cs_refund"}
+# {"type":"credit_purchased","tenant":"alice","amount":10000000,"session":"cs_refund"}
+# {"type":"credit_purchased","tenant":"alice","amount":10000000,"session":"cs_refund"}
+# {"type":"credit_purchased","tenant":"alice","amount":10000000,"session":"cs_refund"}
+# {"type":"credit_purchased","tenant":"alice","amount":10000000,"session":"cs_refund"}
+# {"type":"credit_purchased","tenant":"alice","amount":10000000,"session":"cs_refund"}
+# Subtest: concurrent purchase and refund delivery cannot lose or apply credit twice
+ok 85 - concurrent purchase and refund delivery cannot lose or apply credit twice
+  ---
+  duration_ms: 389.348542
+  type: 'test'
+  ...
+# {"type":"credit_purchased","tenant":"alice","amount":10000000,"session":"cs_refund"}
+# {"type":"billing_reconciliation_required","kind":"refund_mismatch","charge":"ch_refund","paymentIntent":"pi_refund"}
+# Subtest: conflicting and invalid refunds cannot mutate the stored payment or its balance
+ok 86 - conflicting and invalid refunds cannot mutate the stored payment or its balance
+  ---
+  duration_ms: 769.787125
+  type: 'test'
+  ...
+# {"type":"credit_purchased","tenant":"alice","amount":10000000,"session":"cs_refund"}
+# Subtest: a reconciliation failure rolls back both fulfillment and pending refunds for a safe retry
+ok 87 - a reconciliation failure rolls back both fulfillment and pending refunds for a safe retry
+  ---
+  duration_ms: 306.410375
   type: 'test'
   ...
 # Subtest: computer connection credentials, provider limits and managed admission match the API contract
-ok 7 - computer connection credentials, provider limits and managed admission match the API contract
+ok 88 - computer connection credentials, provider limits and managed admission match the API contract
   ---
-  duration_ms: 3.124583
+  duration_ms: 2.439709
   type: 'test'
   ...
 # Subtest: Lambda API signs every operation for lambda, bounds replies, and rejects unsafe fake endpoints
-ok 8 - Lambda API signs every operation for lambda, bounds replies, and rejects unsafe fake endpoints
+ok 89 - Lambda API signs every operation for lambda, bounds replies, and rejects unsafe fake endpoints
   ---
-  duration_ms: 19.608875
+  duration_ms: 18.890542
   type: 'test'
   ...
 # Subtest: managed Lambda fake endpoint executes lifecycle and stable command receipt without using AWS
-ok 9 - managed Lambda fake endpoint executes lifecycle and stable command receipt without using AWS
+ok 90 - managed Lambda fake endpoint executes lifecycle and stable command receipt without using AWS
   ---
-  duration_ms: 5.178875
+  duration_ms: 6.083791
   type: 'test'
   ...
 # Subtest: native Sprites and Tunnel adapters bound output and use the source provider protocols
-ok 10 - native Sprites and Tunnel adapters bound output and use the source provider protocols
+ok 91 - native Sprites and Tunnel adapters bound output and use the source provider protocols
   ---
-  duration_ms: 1.19875
+  duration_ms: 1.222125
   type: 'test'
   ...
 # Subtest: MicroVM state accounting reuses active and suspended intervals from the Node runtime
-ok 11 - MicroVM state accounting reuses active and suspended intervals from the Node runtime
+ok 92 - MicroVM state accounting reuses active and suspended intervals from the Node runtime
   ---
-  duration_ms: 0.125208
+  duration_ms: 0.129708
   type: 'test'
   ...
 # Subtest: Daytona REST transport waits for readiness and confirms deletion
-ok 12 - Daytona REST transport waits for readiness and confirms deletion
+ok 93 - Daytona REST transport waits for readiness and confirms deletion
   ---
-  duration_ms: 0.416125
+  duration_ms: 0.465125
   type: 'test'
   ...
 # Subtest: native lifecycle blocks egress; snapshots survive reopen; failed capture preserves prior handle
-ok 13 - native lifecycle blocks egress; snapshots survive reopen; failed capture preserves prior handle
+ok 94 - native lifecycle blocks egress; snapshots survive reopen; failed capture preserves prior handle
   ---
-  duration_ms: 2.854125
+  duration_ms: 2.73575
   type: 'test'
   ...
 # Subtest: native output is bounded and the process is killed on overflow
-ok 14 - native output is bounded and the process is killed on overflow
+ok 95 - native output is bounded and the process is killed on overflow
   ---
-  duration_ms: 0.243416
+  duration_ms: 0.946708
   type: 'test'
   ...
 # Subtest: SDK provider restores a durable R2 record and delegates files through the SDK interface
-ok 15 - SDK provider restores a durable R2 record and delegates files through the SDK interface
+ok 96 - SDK provider restores a durable R2 record and delegates files through the SDK interface
   ---
-  duration_ms: 10.398041
+  duration_ms: 10.611416
   type: 'test'
   ...
 # Subtest: invalid paths, snapshot names and commands are refused before starting a VM
-ok 16 - invalid paths, snapshot names and commands are refused before starting a VM
+ok 97 - invalid paths, snapshot names and commands are refused before starting a VM
   ---
-  duration_ms: 0.369708
+  duration_ms: 0.334
+  type: 'test'
+  ...
+# Subtest: a dear call a small balance cannot pay for is refused before it is made, and leaves no attempt
+ok 98 - a dear call a small balance cannot pay for is refused before it is made, and leaves no attempt
+  ---
+  duration_ms: 339.900708
+  type: 'test'
+  ...
+# Subtest: the long-context tier counts: $60 per million past 272k input, not $30
+ok 99 - the long-context tier counts: $60 per million past 272k input, not $30
+  ---
+  duration_ms: 295.139292
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905666561,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":100,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":10,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"openai/gpt-5.5-pro","ModelCostUsd":0.2,"ModelUsageEvents":1}
+# Subtest: max_tokens is sized to what is left, so reasoning that never streams is bounded; holds leave room for other calls
+ok 100 - max_tokens is sized to what is left, so reasoning that never streams is bounded; holds leave room for other calls
+  ---
+  duration_ms: 308.135084
+  type: 'test'
+  ...
+# Subtest: people can spend all they paid for: a last call starts within the shortfall, then nothing does
+ok 101 - people can spend all they paid for: a last call starts within the shortfall, then nothing does
+  ---
+  duration_ms: 275.3995
+  type: 'test'
+  ...
+# Subtest: an unknown price holds at a mid-range one; a router's zero is unknown; :free holds nothing; no estimate, own key and no billing hold nothing
+ok 102 - an unknown price holds at a mid-range one; a router's zero is unknown; :free holds nothing; no estimate, own key and no billing hold nothing
+  ---
+  duration_ms: 687.581208
+  type: 'test'
+  ...
+# Subtest: on free credit a call is held within the hour's allowance, not the whole balance
+ok 103 - on free credit a call is held within the hour's allowance, not the whole balance
+  ---
+  duration_ms: 291.2585
+  type: 'test'
+  ...
+# Subtest: a hold whose host went away lapses and stops counting
+ok 104 - a hold whose host went away lapses and stops counting
+  ---
+  duration_ms: 634.775166
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905669234,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":100,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":10,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"deepseek/deepseek-v4.1-flash-1017","ModelCostUsd":0.01,"ModelUsageEvents":1}
+# {"_aws":{"Timestamp":1793905669262,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":0,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"particle-ai/particle-1","ModelCostUsd":0,"ModelUsageEvents":1}
+# Subtest: a failed attempt's hold goes as it ends and costs nothing, on reconciliation too; only the attempt that answered is charged
+ok 105 - a failed attempt's hold goes as it ends and costs nothing, on reconciliation too; only the attempt that answered is charged
+  ---
+  duration_ms: 808.669084
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905670304,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":100,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":10,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"deepseek/deepseek-v4.1-flash-1017","ModelCostUsd":0.01,"ModelUsageEvents":1}
+# {"_aws":{"Timestamp":1793905670336,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":0,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"particle-ai/particle-1","ModelCostUsd":0,"ModelUsageEvents":1}
+# Subtest: a call an end user pays for on the platform's key holds both credits; a failed attempt releases both and costs neither, and only the attempt that answered is charged
+ok 106 - a call an end user pays for on the platform's key holds both credits; a failed attempt releases both and costs neither, and only the attempt that answered is charged
+  ---
+  duration_ms: 1081.006584
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905671024,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":10,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":1,"ServiceName":"workers","Tenant":"internal","Provider":"openrouter","Model":"openai/gpt-5.5-pro","ModelCostUsd":0.01,"ModelUsageEvents":1}
+# {"_aws":{"Timestamp":1793905671051,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":10,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":1,"ServiceName":"workers","Tenant":"unbilled","Provider":"openrouter","Model":"openai/gpt-5.5-pro","ModelCostUsd":0.01,"ModelUsageEvents":1}
+# Subtest: a tenants-file tenant with no billing, or none, is never held or refused, and takes no row lock: as camel-bots and chiridion-prod are
+ok 107 - a tenants-file tenant with no billing, or none, is never held or refused, and takes no row lock: as camel-bots and chiridion-prod are
+  ---
+  duration_ms: 697.48225
+  type: 'test'
+  ...
+# Subtest: below $10, add $5: balance.low fires on the crossing, and again on the first debit after a top-up that left it under
+ok 108 - below $10, add $5: balance.low fires on the crossing, and again on the first debit after a top-up that left it under
+  ---
+  duration_ms: 351.55275
+  type: 'test'
+  ...
+# Subtest: a person's own lowBalance overrides the tenant's, is shown under overrides, and a threshold set above the balance fires once
+ok 109 - a person's own lowBalance overrides the tenant's, is shown under overrides, and a threshold set above the balance fires once
+  ---
+  duration_ms: 482.166292
+  type: 'test'
+  ...
+# Subtest: cause says what moved the balance: a negative adjustment, a corrected cost, a refused call; a refund stays silent
+ok 110 - cause says what moved the balance: a negative adjustment, a corrected cost, a refused call; a refund stays silent
+  ---
+  duration_ms: 536.081667
+  type: 'test'
+  ...
+# {"type":"end_user_written_off","tenant":"t","endUser":"free","bucket":"bot:1","day":"2026-11-05","writtenOff":5000,"reason":"balance","key":"charge:1"}
+# Subtest: a person never credited (free allowances only) is never told their balance is low
+ok 111 - a person never credited (free allowances only) is never told their balance is low
+  ---
+  duration_ms: 466.894167
+  type: 'test'
+  ...
+# Subtest: each grant, refund and adjustment sends its event once; a replayed key sends nothing
+ok 112 - each grant, refund and adjustment sends its event once; a replayed key sends nothing
+  ---
+  duration_ms: 316.527
+  type: 'test'
+  ...
+# Subtest: allowance.low fires once per person, bucket and day past allowanceWarningPercent; off without it
+ok 113 - allowance.low fires once per person, bucket and day past allowanceWarningPercent; off without it
+  ---
+  duration_ms: 344.515375
+  type: 'test'
+  ...
+# Subtest: a bucket's allowance: its own key, else the longest prefix, else *, with the user's keys over the tenant's
+ok 114 - a bucket's allowance: its own key, else the longest prefix, else *, with the user's keys over the tenant's
+  ---
+  duration_ms: 0.425334
+  type: 'test'
+  ...
+# Subtest: markup rounds what the user is charged up and what it pays for down
+ok 115 - markup rounds what the user is charged up and what it pays for down
+  ---
+  duration_ms: 0.129333
+  type: 'test'
+  ...
+# Subtest: settings default to off, change field by field, and refuse what is not an amount
+ok 116 - settings default to off, change field by field, and refuse what is not an amount
+  ---
+  duration_ms: 458.096625
+  type: 'test'
+  ...
+# Subtest: grants, refunds and adjustments move the balance once per key, and the ledger pages newest first
+ok 117 - grants, refunds and adjustments move the balance once per key, and the ledger pages newest first
+  ---
+  duration_ms: 388.987583
+  type: 'test'
+  ...
+# Subtest: a spend takes credit for what the tenant sells, at most the balance calls in flight don't hold; descriptions are kept
+ok 118 - a spend takes credit for what the tenant sells, at most the balance calls in flight don't hold; descriptions are kept
+  ---
+  duration_ms: 302.738584
+  type: 'test'
+  ...
+# Subtest: a user's overrides merge key by key and never touch what they spent
+ok 119 - a user's overrides merge key by key and never touch what they spent
+  ---
+  duration_ms: 412.438541
+  type: 'test'
+  ...
+# Subtest: the ledger narrows by kind, time, bucket and moved, and pages with its filters
+ok 120 - the ledger narrows by kind, time, bucket and moved, and pages with its filters
+  ---
+  duration_ms: 354.056792
+  type: 'test'
+  ...
+# Subtest: a credit history among much usage is read from the entries index, not the usage
+ok 121 - a credit history among much usage is read from the entries index, not the usage
+  ---
+  duration_ms: 287.897583
+  type: 'test'
+  ...
+# Subtest: per-day totals equal the day's usage rows by bucket, with the tenant's entries, newest first and paged
+ok 122 - per-day totals equal the day's usage rows by bucket, with the tenant's entries, newest first and paged
+  ---
+  duration_ms: 313.532666
+  type: 'test'
+  ...
+# Subtest: a hold takes the bucket's allowance first, then the balance at the markup; settling posts what the call cost
+ok 123 - a hold takes the bucket's allowance first, then the balance at the markup; settling posts what the call cost
+  ---
+  duration_ms: 271.054375
+  type: 'test'
+  ...
+# Subtest: a call is refused when it cannot hold its minimum: for the balance, or for the daily limit
+ok 124 - a call is refused when it cannot hold its minimum: for the balance, or for the daily limit
+  ---
+  duration_ms: 286.741958
+  type: 'test'
+  ...
+# Subtest: a fixed hold takes what is left when it is near enough, and is refused with nothing left or far too little
+ok 125 - a fixed hold takes what is left when it is near enough, and is refused with nothing left or far too little
+  ---
+  duration_ms: 224.536792
+  type: 'test'
+  ...
+# Subtest: a bucket's own daily limit caps what it charges the balance, whatever the balance: a bot cannot spend past it
+ok 126 - a bucket's own daily limit caps what it charges the balance, whatever the balance: a bot cannot spend past it
+  ---
+  duration_ms: 305.7915
+  type: 'test'
+  ...
+# Subtest: changing an allowance mid-day keeps what was spent: only the cap moves
+ok 127 - changing an allowance mid-day keeps what was spent: only the cap moves
+  ---
+  duration_ms: 236.688917
+  type: 'test'
+  ...
+# Subtest: parallel calls never hold more than the user has: each sees the others' holds
+ok 128 - parallel calls never hold more than the user has: each sees the others' holds
+  ---
+  duration_ms: 387.885
+  type: 'test'
+  ...
+# Subtest: a concurrent workload of holds, extensions and settlements keeps every invariant
+ok 129 - a concurrent workload of holds, extensions and settlements keeps every invariant
+  ---
+  duration_ms: 809.977166
+  type: 'test'
+  ...
+# Subtest: a lowered cost refunds at the rate it was paid at, never more than was paid, whatever the markup is now
+ok 130 - a lowered cost refunds at the rate it was paid at, never more than was paid, whatever the markup is now
+  ---
+  duration_ms: 205.923583
+  type: 'test'
+  ...
+# {"type":"end_user_written_off","tenant":"t","endUser":"u","bucket":"b","day":"2026-11-05","writtenOff":500000,"reason":"balance","key":"attempt:o:1"}
+# Subtest: a refund returns at most the balance not held by calls in flight; an adjustment still corrects it
+ok 131 - a refund returns at most the balance not held by calls in flight; an adjustment still corrects it
+  ---
+  duration_ms: 246.748334
+  type: 'test'
+  ...
+# Subtest: a corrected cost refunds the balance first, then the allowance; holds of a dead call expire
+ok 132 - a corrected cost refunds the balance first, then the allowance; holds of a dead call expire
+  ---
+  duration_ms: 234.119209
+  type: 'test'
+  ...
+# {"type":"limit_hit","tenant":"payg","limit":"END_USER_CREDIT","status":402,"route":"model_stream","endUser":"person","bucket":"builder","reason":"balance"}
+# {"type":"model_usage_missing","tenant":"payg","agent":"agent","attempt":"913ccdcb-e825-4bfe-b8ae-e7c6781dac08","kind":"response","provider":"openrouter","model":"anthropic/claude-opus-4.1","host":null,"completed":false,"generation":false,"inputTokens":10000,"chars":18222,"platform":true,"billed":833325,"endUserRaw":833325,"held":833333}
+# {"_aws":{"Timestamp":1793905682149,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":10000,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":9111,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"anthropic/claude-opus-4.1","ModelCostUsd":0.833325,"ModelUsageEvents":1}
+# Subtest: a model call holds its estimate, holds more as it streams, is cut at the line, and posts its cost marked up
+ok 133 - a model call holds its estimate, holds more as it streams, is cut at the line, and posts its cost marked up
+  ---
+  duration_ms: 277.003167
+  type: 'test'
+  ...
+# {"type":"limit_hit","tenant":"payg","limit":"END_USER_CREDIT","status":402,"route":"model_call","endUser":"nobody","bucket":"builder","reason":"balance"}
+# Subtest: a model call its end user cannot pay for is refused before it is made, and leaves no attempt
+ok 134 - a model call its end user cannot pay for is refused before it is made, and leaves no attempt
+  ---
+  duration_ms: 199.065875
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905682701,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":100,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":10,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"anthropic/claude-opus-4.1","ModelCostUsd":0.01,"ModelUsageEvents":1}
+# Subtest: a begin delivered again holds once, and a request for more that lands after the call settled holds nothing
+ok 135 - a begin delivered again holds once, and a request for more that lands after the call settled holds nothing
+  ---
+  duration_ms: 365.635292
+  type: 'test'
+  ...
+# {"type":"limit_hit","tenant":"payg","limit":"END_USER_CREDIT","status":402,"route":"model_call","endUser":"person","bucket":"builder","reason":"balance"}
+# {"_aws":{"Timestamp":1793905683029,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":8000,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":256,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"anthropic/claude-opus-4.1","ModelCostUsd":0.14,"ModelUsageEvents":1}
+# Subtest: a call whose input alone is past what is left still starts: a short reply on what is left, the rest written off, then refused
+ok 136 - a call whose input alone is past what is left still starts: a short reply on what is left, the rest written off, then refused
+  ---
+  duration_ms: 338.539125
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905683321,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":100,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":10,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"anthropic/claude-opus-4.1","ModelCostUsd":0.1,"ModelUsageEvents":1}
+# Subtest: a failed call with no output releases its hold; one without an end user is the tenant's alone
+ok 137 - a failed call with no output releases its hold; one without an end user is the tenant's alone
+  ---
+  duration_ms: 263.42325
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905683760,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":1000,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":100,"ServiceName":"workers","Tenant":"payg","Provider":"openai-codex","Model":"gpt-6-luna","ModelCostUsd":0,"ModelUsageEvents":1}
+# {"_aws":{"Timestamp":1793905683789,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":1000,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":100,"ServiceName":"workers","Tenant":"payg","Provider":"openai-codex","Model":"gpt-6-luna","ModelCostUsd":0.1,"ModelUsageEvents":1}
+# {"type":"model_usage_missing","tenant":"payg","agent":"agent","attempt":"6ae9e150-1fc3-4df2-b86e-df6a1de1205a","kind":"response","provider":"openai-codex","model":"gpt-6-luna","host":null,"completed":true,"generation":false,"inputTokens":1000,"chars":20000,"platform":false,"billed":0}
+# {"_aws":{"Timestamp":1793905683816,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":0,"ServiceName":"workers","Tenant":"payg","Provider":"openai-codex","Model":"gpt-6-luna","ModelCostUsd":0,"ModelUsageEvents":1}
+# {"_aws":{"Timestamp":1793905683853,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":1000,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":100,"ServiceName":"workers","Tenant":"payg","Provider":"openai-codex","Model":"gpt-6-luna","ModelCostUsd":0,"ModelUsageEvents":1}
+# {"_aws":{"Timestamp":1793905683888,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":1000,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":100,"ServiceName":"workers","Tenant":"payg","Provider":"openai-codex","Model":"gpt-6-luna","ModelCostUsd":0.1,"ModelUsageEvents":1}
+# {"type":"model_usage_missing","tenant":"payg","agent":"agent","attempt":"ddd0206f-54b9-49e4-9ae8-6a73961bc618","kind":"compaction","provider":"openai-codex","model":"gpt-6-luna","host":null,"completed":true,"generation":false,"inputTokens":1000,"chars":20000,"platform":false,"billed":0}
+# {"_aws":{"Timestamp":1793905683918,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":0,"ServiceName":"workers","Tenant":"payg","Provider":"openai-codex","Model":"gpt-6-luna","ModelCostUsd":0,"ModelUsageEvents":1}
+# {"_aws":{"Timestamp":1793905683952,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":1000,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":100,"ServiceName":"workers","Tenant":"payg","Provider":"gateway","Model":"openai-codex/gpt-6-luna","ModelCostUsd":0,"ModelUsageEvents":1}
+# {"_aws":{"Timestamp":1793905683983,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":1000,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":100,"ServiceName":"workers","Tenant":"payg","Provider":"gateway","Model":"openai-codex/gpt-6-luna","ModelCostUsd":0.1,"ModelUsageEvents":1}
+# {"type":"model_usage_missing","tenant":"payg","agent":"agent","attempt":"28cd4c59-ebb6-47f7-9174-5b6bb0f5e3dd","kind":"response","provider":"gateway/openai-codex","model":"gpt-6-luna","host":null,"completed":true,"generation":false,"inputTokens":1000,"chars":20000,"platform":false,"billed":0}
+# {"_aws":{"Timestamp":1793905684014,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":0,"ServiceName":"workers","Tenant":"payg","Provider":"gateway","Model":"openai-codex/gpt-6-luna","ModelCostUsd":0,"ModelUsageEvents":1}
+# {"_aws":{"Timestamp":1793905684040,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":1000,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":100,"ServiceName":"workers","Tenant":"payg","Provider":"gateway","Model":"openai-codex/gpt-6-luna","ModelCostUsd":0,"ModelUsageEvents":1}
+# {"_aws":{"Timestamp":1793905684068,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":1000,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":100,"ServiceName":"workers","Tenant":"payg","Provider":"gateway","Model":"openai-codex/gpt-6-luna","ModelCostUsd":0.1,"ModelUsageEvents":1}
+# {"type":"model_usage_missing","tenant":"payg","agent":"agent","attempt":"10867e4b-7633-49a7-b875-6963281414c8","kind":"compaction","provider":"gateway/openai-codex","model":"gpt-6-luna","host":null,"completed":true,"generation":false,"inputTokens":1000,"chars":20000,"platform":false,"billed":0}
+# {"_aws":{"Timestamp":1793905684098,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":0,"ServiceName":"workers","Tenant":"payg","Provider":"gateway","Model":"openai-codex/gpt-6-luna","ModelCostUsd":0,"ModelUsageEvents":1}
+# Subtest: ChatGPT subscription attempts hold and charge no end-user credit, including through an endpoint
+ok 138 - ChatGPT subscription attempts hold and charge no end-user credit, including through an endpoint
+  ---
+  duration_ms: 820.172583
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905684444,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":1000,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":100,"ServiceName":"workers","Tenant":"payg","Provider":"gateway","Model":"openai-codex/gpt-6-luna","ModelCostUsd":0,"ModelUsageEvents":1}
+# Subtest: a subscription attempt begun before the exemption releases its hold and settles at zero
+ok 139 - a subscription attempt begun before the exemption releases its hold and settles at zero
+  ---
+  duration_ms: 317.012375
+  type: 'test'
+  ...
+# {"type":"end_user_unpriced_model","tenant":"payg","attempt":"2f2aff2d-e968-44e3-a0d0-7ae0c5b858e5","provider":"mine","model":"llama-local","stage":"hold"}
+# {"_aws":{"Timestamp":1793905684733,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":1000,"cacheReadTokens":2000,"cacheWriteTokens":0,"outputTokens":100,"ServiceName":"workers","Tenant":"payg","Provider":"mine","Model":"llama-local","ModelCostUsd":0,"ModelUsageEvents":1}
+# {"type":"end_user_unpriced_model","tenant":"payg","attempt":"1470bc95-8829-4622-80ea-c5eb37d3f924","provider":"mine","model":"llama-local","stage":"hold"}
+# {"type":"end_user_unpriced_model","tenant":"payg","attempt":"a82eaf8c-f081-469c-a9b7-5f7bd6c58833","provider":"openrouter","model":"newlab/brand-new-model","stage":"hold"}
+# {"type":"end_user_unpriced_model","tenant":"payg","attempt":"16325166-761a-40fe-83eb-bdf02c81c03b","provider":"mine","model":"llama-local","stage":"hold"}
+# {"type":"limit_hit","tenant":"payg","limit":"END_USER_CREDIT","status":402,"route":"model_call","endUser":"nobody","bucket":"b","reason":"balance"}
+# {"type":"end_user_unpriced_model","tenant":"payg","attempt":"2dff1897-2fc7-4f18-9574-231636740273","provider":"acme","model":"openrouter/anthropic/claude-opus-4.1","stage":"hold"}
+# {"type":"end_user_unpriced_model","tenant":"payg","agent":"agent","attempt":"2dff1897-2fc7-4f18-9574-231636740273","provider":"acme","model":"openrouter/anthropic/claude-opus-4.1","raw":22500}
+# {"_aws":{"Timestamp":1793905684852,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":1000,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":100,"ServiceName":"workers","Tenant":"payg","Provider":"acme","Model":"openrouter/anthropic/claude-opus-4.1","ModelCostUsd":0,"ModelUsageEvents":1}
+# {"_aws":{"Timestamp":1793905684877,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":1000,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":100,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"google/gemma-4-26b-a4b-it:free","ModelCostUsd":0,"ModelUsageEvents":1}
+# {"type":"end_user_unpriced_model","tenant":"payg","attempt":"3aebedf2-5e7b-4454-8c5a-e78a16339c4f","provider":"mine","model":"llama-local","stage":"hold"}
+# {"_aws":{"Timestamp":1793905684903,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":1000,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":100,"ServiceName":"workers","Tenant":"payg","Provider":"mine","Model":"llama-local","ModelCostUsd":0,"ModelUsageEvents":1}
+# Subtest: a model with no price is never free to its end user, nor refused for it: it holds and settles at the catalog's or a mid-range price, and is said
+ok 140 - a model with no price is never free to its end user, nor refused for it: it holds and settles at the catalog's or a mid-range price, and is said
+  ---
+  duration_ms: 448.915042
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905685403,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":1000,"cacheReadTokens":50000,"cacheWriteTokens":10000,"outputTokens":2000,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"anthropic/claude-opus-4.1","ModelCostUsd":0.4275,"ModelUsageEvents":1}
+# {"_aws":{"Timestamp":1793905685501,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":1000,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":2000,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"anthropic/claude-opus-4.1","ModelCostUsd":0.123456,"ModelUsageEvents":1}
+# Subtest: what a call costs its end user is what it costs the tenant: usage.recorded's cost (cache reads and writes, reasoning, the provider's own) and funding it
+ok 141 - what a call costs its end user is what it costs the tenant: usage.recorded's cost (cache reads and writes, reasoning, the provider's own) and funding it
+  ---
+  duration_ms: 610.750834
+  type: 'test'
+  ...
+# {"type":"limit_hit","tenant":"payg","limit":"END_USER_CREDIT","status":402,"route":"model_call","endUser":"person","bucket":"b","reason":"balance"}
+# Subtest: a call's hold prices the input its provider likely reads from cache at the cache's rate: a cheap cached reply is not refused
+ok 142 - a call's hold prices the input its provider likely reads from cache at the cache's rate: a cheap cached reply is not refused
+  ---
+  duration_ms: 278.32625
+  type: 'test'
+  ...
+# Subtest: a slow call that needs no more of its hold yet keeps it from lapsing as it reports
+ok 143 - a slow call that needs no more of its hold yet keeps it from lapsing as it reports
+  ---
+  duration_ms: 402.964
+  type: 'test'
+  ...
+# Subtest: a call begun before midnight holds more from its own day's allowance, never the next day's
+ok 144 - a call begun before midnight holds more from its own day's allowance, never the next day's
+  ---
+  duration_ms: 215.736
+  type: 'test'
+  ...
+# Subtest: a month's credit is a lot every bucket spends first, splitting into the credit that never expires
+ok 145 - a month's credit is a lot every bucket spends first, splitting into the credit that never expires
+  ---
+  duration_ms: 282.896084
+  type: 'test'
+  ...
+# Subtest: at its time a lot's unspent part expires: an expiry entry, the balance down, the day's expired, a webhook
+ok 146 - at its time a lot's unspent part expires: an expiry entry, the balance down, the day's expired, a webhook
+  ---
+  duration_ms: 269.781
+  type: 'test'
+  ...
+# Subtest: a hold open at expiry settles against the lot it reserved; what it leaves expires at the next lock
+ok 147 - a hold open at expiry settles against the lot it reserved; what it leaves expires at the next lock
+  ---
+  duration_ms: 385.6985
+  type: 'test'
+  ...
+# Subtest: refunds: a pack's takes credit that never expires first; one naming the month's grant takes its lot
+ok 148 - refunds: a pack's takes credit that never expires first; one naming the month's grant takes its lot
+  ---
+  duration_ms: 277.170916
+  type: 'test'
+  ...
+# Subtest: a debt is repaid before a month's credit counts; usage never takes lots past the balance
+ok 149 - a debt is repaid before a month's credit counts; usage never takes lots past the balance
+  ---
+  duration_ms: 340.151291
+  type: 'test'
+  ...
+# Subtest: credit granted before lots can be marked to expire, once per key; a sweep expires lots of people who do nothing
+ok 150 - credit granted before lots can be marked to expire, once per key; a sweep expires lots of people who do nothing
+  ---
+  duration_ms: 392.481958
+  type: 'test'
+  ...
+# Subtest: concurrent PATCHes adding their own keys all land
+ok 151 - concurrent PATCHes adding their own keys all land
+  ---
+  duration_ms: 445.745208
+  type: 'test'
+  ...
+# Subtest: a node's PUT at start never resets the markup and daily limit an operator PATCHes at the same time
+ok 152 - a node's PUT at start never resets the markup and daily limit an operator PATCHes at the same time
+  ---
+  duration_ms: 516.7845
+  type: 'test'
+  ...
+# Subtest: writers queued on the settings row each keep their own change (deterministic)
+ok 153 - writers queued on the settings row each keep their own change (deterministic)
+  ---
+  duration_ms: 623.371209
+  type: 'test'
+  ...
+# Subtest: two first writes for a tenant with no settings yet both land
+ok 154 - two first writes for a tenant with no settings yet both land
+  ---
+  duration_ms: 605.00625
+  type: 'test'
+  ...
+# Subtest: a PATCH past 100 keys is refused and changes nothing
+ok 155 - a PATCH past 100 keys is refused and changes nothing
+  ---
+  duration_ms: 357.36675
+  type: 'test'
+  ...
+# Subtest: holds and charges go through while a writer holds the settings row
+ok 156 - holds and charges go through while a writer holds the settings row
+  ---
+  duration_ms: 340.816042
+  type: 'test'
+  ...
+# {"type":"end_user_written_off","tenant":"a","endUser":"p","bucket":"builder","day":"2026-02-02","writtenOff":1480,"reason":"balance","key":"writeoff"}
+# {"type":"end_user_written_off","tenant":"a","endUser":"p","bucket":"builder","day":"2026-02-03","writtenOff":10,"reason":"balance","key":"end"}
+# Subtest: usage sums posting hours and UTC days across buckets, calls and agents
+ok 157 - usage sums posting hours and UTC days across buckets, calls and agents
+  ---
+  duration_ms: 343.935041
+  type: 'test'
+  ...
+# Subtest: usage corrections sum signed amounts at posting time
+ok 158 - usage corrections sum signed amounts at posting time
+  ---
+  duration_ms: 241.289334
+  type: 'test'
+  ...
+# Subtest: usage defaults and invalid ranges
+ok 159 - usage defaults and invalid ranges
+  ---
+  duration_ms: 197.305
+  type: 'test'
+  ...
+# GroupAggregate  (cost=8.34..8.40 rows=1 width=264) (actual time=0.028..0.029 rows=1 loops=1)
+#   Group Key: ((floor(((created_at)::numeric / '3600000'::numeric)) * '3600000'::numeric)), bucket, ((metadata ->> 'call'::text)), ((metadata ->> 'agent'::text))
+#   Buffers: shared hit=9
+#   ->  Sort  (cost=8.34..8.35 rows=1 width=160) (actual time=0.024..0.024 rows=1 loops=1)
+#         Sort Key: ((floor(((created_at)::numeric / '3600000'::numeric)) * '3600000'::numeric)), bucket, ((metadata ->> 'call'::text)), ((metadata ->> 'agent'::text))
+#         Sort Method: quicksort  Memory: 25kB
+#         Buffers: shared hit=9
+#         ->  Index Scan using end_user_ledger_usage_time on end_user_ledger  (cost=0.29..8.33 rows=1 width=160) (actual time=0.014..0.014 rows=1 loops=1)
+#               Index Cond: ((tenant = 'a'::text) AND (end_user = 'p'::text) AND (created_at >= '360000000'::bigint) AND (created_at < '363600000'::bigint))
+#               Buffers: shared hit=3
+# Planning:
+#   Buffers: shared hit=257
+# Planning Time: 0.372 ms
+# Execution Time: 0.063 ms
+# Subtest: usage time ranges use the user's time index, not their history or other users
+ok 160 - usage time ranges use the user's time index, not their history or other users
+  ---
+  duration_ms: 496.308458
+  type: 'test'
+  ...
+# Subtest: balance.low fires as the balance falls below the threshold, once until a grant lifts it back
+ok 161 - balance.low fires as the balance falls below the threshold, once until a grant lifts it back
+  ---
+  duration_ms: 307.34125
+  type: 'test'
+  ...
+# Subtest: a refund to zero is silent: no balance.low, no credit.exhausted (nothing to top up), until a grant re-arms them
+ok 162 - a refund to zero is silent: no balance.low, no credit.exhausted (nothing to top up), until a grant re-arms them
+  ---
+  duration_ms: 398.121458
+  type: 'test'
+  ...
+# Subtest: a spend is a debit: it fires balance.low and credit.exhausted as usage does, and end_user.credit.spent with its words
+ok 163 - a spend is a debit: it fires balance.low and credit.exhausted as usage does, and end_user.credit.spent with its words
+  ---
+  duration_ms: 255.528125
+  type: 'test'
+  ...
+# {"type":"end_user_written_off","tenant":"t","endUser":"u","bucket":"bot:1","day":"2026-11-05","writtenOff":80000,"reason":"balance","key":"call:4368203f-45c5-4053-8b72-bd670270fb15"}
+# {"type":"end_user_written_off","tenant":"t","endUser":"u","bucket":"other","day":"2026-11-05","writtenOff":100000,"reason":"daily_limit","key":"call:b8f46d82-906f-4acb-b593-7b0000b107a3"}
+# Subtest: credit.exhausted says why: a bucket's allowance used up (once a day), the balance at zero (once until credited), the daily limit (once a day)
+ok 164 - credit.exhausted says why: a bucket's allowance used up (once a day), the balance at zero (once until credited), the daily limit (once a day)
+  ---
+  duration_ms: 363.100459
+  type: 'test'
+  ...
+# Subtest: a bot at a bucket limit of 0: a call past its allowance never charges a balance of 0; the rest is written off, said once
+ok 165 - a bot at a bucket limit of 0: a call past its allowance never charges a balance of 0; the rest is written off, said once
+  ---
+  duration_ms: 362.955834
+  type: 'test'
+  ...
+# Subtest: a bucket limit with some room: an overflow charges what is left of it, and writes off the rest
+ok 166 - a bucket limit with some room: an overflow charges what is left of it, and writes off the rest
+  ---
+  duration_ms: 320.404417
+  type: 'test'
+  ...
+# Subtest: the daily limit: paid spend ends at exactly the limit, at the markup, and the rest is written off
+ok 167 - the daily limit: paid spend ends at exactly the limit, at the markup, and the rest is written off
+  ---
+  duration_ms: 262.719542
+  type: 'test'
+  ...
+# Subtest: the balance: an overflow takes it to zero, never below; the next call is refused; zero balance and no allowance charge nothing
+ok 168 - the balance: an overflow takes it to zero, never below; the next call is refused; zero balance and no allowance charge nothing
+  ---
+  duration_ms: 270.043625
+  type: 'test'
+  ...
+# Subtest: an overflow never takes credit another call in flight holds, however many settle at once
+ok 169 - an overflow never takes credit another call in flight holds, however many settle at once
+  ---
+  duration_ms: 393.39975
+  type: 'test'
+  ...
+# Subtest: corrections: an upward one with no hold is capped as a first settlement is; a downward one reduces the write-off first, then refunds
+ok 170 - corrections: an upward one with no hold is capped as a first settlement is; a downward one reduces the write-off first, then refunds
+  ---
+  duration_ms: 252.873083
+  type: 'test'
+  ...
+# Subtest: other spend obeys the same cap: a transcription's hold and a web search at a bucket limit of 0 with no allowance left
+ok 171 - other spend obeys the same cap: a transcription's hold and a web search at a bucket limit of 0 with no allowance left
+  ---
+  duration_ms: 234.673125
+  type: 'test'
+  ...
+# Subtest: a person spends down to nothing: the last call starts on what is left, overdraws nothing, is written off, and the next is refused
+ok 172 - a person spends down to nothing: the last call starts on what is left, overdraws nothing, is written off, and the next is refused
+  ---
+  duration_ms: 409.069083
+  type: 'test'
+  ...
+# Subtest: calls at once never overdraw: the first to ask holds what is left, the others are refused
+ok 173 - calls at once never overdraw: the first to ask holds what is left, the others are refused
+  ---
+  duration_ms: 227.751959
+  type: 'test'
+  ...
+# Subtest: the last call stays within the daily limit and the bucket's own: its overshoot is written off, not charged
+ok 174 - the last call stays within the daily limit and the bucket's own: its overshoot is written off, not charged
+  ---
+  duration_ms: 249.717
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905705195,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":1000,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":100,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"anthropic/claude-opus-4.1","ModelCostUsd":0.01,"ModelUsageEvents":1}
+# Subtest: a normal model call with enough balance runs and settles exactly: no write-off, nothing logged
+ok 175 - a normal model call with enough balance runs and settles exactly: no write-off, nothing logged
+  ---
+  duration_ms: 528.205416
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905705474,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":1000,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":100,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"anthropic/claude-opus-4.1","ModelCostUsd":0.4,"ModelUsageEvents":1}
+# {"_aws":{"Timestamp":1793905705492,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":0,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"anthropic/claude-opus-4.1","ModelCostUsd":-0.15,"ModelUsageEvents":1}
+# Subtest: a model call that costs more than its hold: capped at settlement, kept on the attempt, and corrected by the difference
+ok 176 - a model call that costs more than its hold: capped at settlement, kept on the attempt, and corrected by the difference
+  ---
+  duration_ms: 295.87725
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905705768,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":1000,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":100,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"anthropic/claude-opus-4.1","ModelCostUsd":0.3,"ModelUsageEvents":1}
+# {"_aws":{"Timestamp":1793905705793,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":0,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"anthropic/claude-opus-4.1","ModelCostUsd":0.2,"ModelUsageEvents":1}
+# Subtest: midnight: a call begun at 23:59:59 is capped by the day it posts to, and so is a correction made later
+ok 177 - midnight: a call begun at 23:59:59 is capped by the day it posts to, and so is a correction made later
+  ---
+  duration_ms: 289.926542
+  type: 'test'
+  ...
+# Subtest: source idempotency replays one normal response and rejects changed parameters; keys are tenant-scoped
+ok 178 - source idempotency replays one normal response and rejects changed parameters; keys are tenant-scoped
+  ---
+  duration_ms: 368.354125
+  type: 'test'
+  ...
+# Subtest: secret-bearing successes are never stored or replayed, including experimental route aliases
+ok 179 - secret-bearing successes are never stored or replayed, including experimental route aliases
+  ---
+  duration_ms: 355.960708
+  type: 'test'
+  ...
+# Subtest: returned failures and thrown errors release only their own lock so retries run
+ok 180 - returned failures and thrown errors release only their own lock so retries run
+  ---
+  duration_ms: 220.638084
+  type: 'test'
+  ...
+# Subtest: in-flight requests conflict, and stale-lock takeover fences the previous response
+ok 181 - in-flight requests conflict, and stale-lock takeover fences the previous response
+  ---
+  duration_ms: 315.875833
+  type: 'test'
+  ...
+# Subtest: completed keys expire after a day and body size is bounded before a handler runs
+ok 182 - completed keys expire after a day and body size is bounded before a handler runs
+  ---
+  duration_ms: 285.741666
+  type: 'test'
+  ...
+# Subtest: source-owned agent idempotency is skipped and an unmatched route stays unmatched
+ok 183 - source-owned agent idempotency is skipped and an unmatched route stays unmatched
+  ---
+  duration_ms: 202.178917
+  type: 'test'
+  ...
+# Subtest: HTTP error defaults and retry metadata use the unchanged source policy
+ok 184 - HTTP error defaults and retry metadata use the unchanged source policy
+  ---
+  duration_ms: 0.433042
+  type: 'test'
+  ...
+# Subtest: Azure standalone media reuses source defaults, deployment switches and credentials
+ok 185 - Azure standalone media reuses source defaults, deployment switches and credentials
+  ---
+  duration_ms: 0.633375
+  type: 'test'
+  ...
+# Subtest: Azure endpoint and deployment validation only permits configured loopback in TEST_MODE
+ok 186 - Azure endpoint and deployment validation only permits configured loopback in TEST_MODE
+  ---
+  duration_ms: 0.247375
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905709407,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":100,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":10,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"anthropic/claude-opus-4.1","ModelCostUsd":0.1,"ModelUsageEvents":1}
+# Subtest: one provider attempt charges once across duplicate delivery, concurrent owners and usage callbacks
+ok 187 - one provider attempt charges once across duplicate delivery, concurrent owners and usage callbacks
+  ---
+  duration_ms: 298.470917
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905709685,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":100,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":10,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"anthropic/claude-opus-4.1","ModelCostUsd":0.1,"ModelUsageEvents":1}
+# {"_aws":{"Timestamp":1793905709713,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":100,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":10,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"anthropic/claude-opus-4.1","ModelCostUsd":0.1,"ModelUsageEvents":1}
+# Subtest: a lost commit acknowledgement can be delivered again without a second debit
+ok 188 - a lost commit acknowledgement can be delivered again without a second debit
+  ---
+  duration_ms: 391.419333
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905710258,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":100,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":30,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"anthropic/claude-opus-4.1","ModelCostUsd":0.21,"ModelUsageEvents":1}
+# Subtest: reconciliation survives a lost host, includes BYOK cost, and runs concurrently without double billing
+ok 189 - reconciliation survives a lost host, includes BYOK cost, and runs concurrently without double billing
+  ---
+  duration_ms: 452.820167
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905710520,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":100,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":10,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"anthropic/claude-opus-4.1","ModelCostUsd":0.2,"ModelUsageEvents":1}
+# {"_aws":{"Timestamp":1793905710539,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":0,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"anthropic/claude-opus-4.1","ModelCostUsd":-0.1,"ModelUsageEvents":1}
+# {"_aws":{"Timestamp":1793905710577,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":0,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"anthropic/claude-opus-4.1","ModelCostUsd":0,"ModelUsageEvents":1}
+# Subtest: authoritative reconciliation posts only the difference, including a refund; stale failures without evidence settle
+ok 190 - authoritative reconciliation posts only the difference, including a refund; stale failures without evidence settle
+  ---
+  duration_ms: 309.725917
+  type: 'test'
+  ...
+# Subtest: a failed durable begin never dispatches a provider request
+ok 191 - a failed durable begin never dispatches a provider request
+  ---
+  duration_ms: 2.956334
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905710855,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":100,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":10,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"anthropic/claude-opus-4.1","ModelCostUsd":0.2,"ModelUsageEvents":1}
+# {"_aws":{"Timestamp":1793905710864,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":-100,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":-10,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"anthropic/claude-opus-4.1","ModelCostUsd":-0.2,"ModelUsageEvents":1}
+# {"_aws":{"Timestamp":1793905710893,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":100,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":10,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"anthropic/claude-opus-4.1","ModelCostUsd":0.1,"ModelUsageEvents":1}
+# Subtest: settlement rollback leaves the attempt pending, then replay and webhook corrections conserve cost
+ok 192 - settlement rollback leaves the attempt pending, then replay and webhook corrections conserve cost
+  ---
+  duration_ms: 309.835167
+  type: 'test'
+  ...
+# {"type":"model_attempt_unresolved","attempt":"5cbc7f21-b528-4459-a5d2-32329d19d010","tenant":"payg","reason":"Provider lookup HTTP 404"}
+# {"type":"model_attempt_unresolved","attempt":"5cbc7f21-b528-4459-a5d2-32329d19d010","tenant":"payg","reason":"Original provider credential is unavailable; awaiting reconciliation with its account"}
+# Subtest: missing provider records and rotated keys never finalize an unknown charge as zero
+ok 193 - missing provider records and rotated keys never finalize an unknown charge as zero
+  ---
+  duration_ms: 504.114458
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905711961,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":10,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":5,"ServiceName":"workers","Tenant":"own","Provider":"openrouter","Model":"openai/gpt-6-luna","ModelCostUsd":0.02,"ModelUsageEvents":1}
+# Subtest: tenant-owned OpenRouter usage reconciles with its original key without charging platform credits
+ok 194 - tenant-owned OpenRouter usage reconciles with its original key without charging platform credits
+  ---
+  duration_ms: 563.611542
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905712176,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":100,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":10,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"anthropic/claude-opus-4.1","ModelCostUsd":0.2,"ModelUsageEvents":1}
+# {"_aws":{"Timestamp":1793905712184,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":0,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"anthropic/claude-opus-4.1","ModelCostUsd":-0.1,"ModelUsageEvents":1}
+# Subtest: a late completed delivery upgrades an estimate once without counting a second response
+ok 195 - a late completed delivery upgrades an estimate once without counting a second response
+  ---
+  duration_ms: 231.614916
+  type: 'test'
+  ...
+# {"type":"model_attempt_unresolved","attempt":"b0e120ff-7ea9-4dcb-b69a-724856a99f17","tenant":"payg","reason":"Provider request has no terminal evidence"}
+# Subtest: HTTP success alone does not finalize a still-running generation
+ok 196 - HTTP success alone does not finalize a still-running generation
+  ---
+  duration_ms: 206.037667
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905712631,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":0,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"anthropic/claude-opus-4.1","ModelCostUsd":0.01,"ModelUsageEvents":1}
+# Subtest: scoped OpenRouter reconciliation selects only a fingerprint-matching key
+ok 197 - scoped OpenRouter reconciliation selects only a fingerprint-matching key
+  ---
+  duration_ms: 232.508042
+  type: 'test'
+  ...
+# Subtest: duplicate no-evidence finishes never bill or emit a correction webhook
+ok 198 - duplicate no-evidence finishes never bill or emit a correction webhook
+  ---
+  duration_ms: 356.13425
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905713789,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":0,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"anthropic/claude-opus-4.1","ModelCostUsd":0.01,"ModelUsageEvents":1}
+# Subtest: recoverable generations are not crowded out by unsupported provider records
+ok 199 - recoverable generations are not crowded out by unsupported provider records
+  ---
+  duration_ms: 800.377042
+  type: 'test'
+  ...
+# {"type":"model_usage_missing","tenant":"payg","agent":"agent","attempt":"f9425c49-8448-496a-89ff-7bb32d73d042","kind":"response","provider":"openrouter","model":"anthropic/claude-opus-4.1","host":null,"completed":true,"generation":true,"inputTokens":100,"chars":80,"platform":true,"billed":4747}
+# {"_aws":{"Timestamp":1793905713999,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":100,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":40,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"anthropic/claude-opus-4.1","ModelCostUsd":0.0045,"ModelUsageEvents":1}
+# {"type":"model_usage_missing","tenant":"payg","agent":"agent","attempt":"78449dca-c5f8-4d83-b5ee-086b0ed2bd0e","kind":"response","provider":"openrouter","model":"anthropic/claude-opus-4.1","host":null,"completed":true,"generation":true,"inputTokens":100,"chars":80,"platform":true,"billed":4747}
+# {"_aws":{"Timestamp":1793905714046,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":100,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":40,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"anthropic/claude-opus-4.1","ModelCostUsd":0.0045,"ModelUsageEvents":1}
+# {"type":"model_usage_missing","tenant":"payg","agent":"agent","attempt":"f68746f7-da21-467c-a46c-6532fd6f3243","kind":"response","provider":"openrouter","model":"anthropic/claude-opus-4.1","host":null,"completed":true,"generation":true,"inputTokens":100,"chars":80,"platform":true,"billed":4747}
+# {"_aws":{"Timestamp":1793905714103,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":100,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":40,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"anthropic/claude-opus-4.1","ModelCostUsd":0.0045,"ModelUsageEvents":1}
+# Subtest: gateway and empty-key attempts finalize estimates; existing gateway rows stop reconciliation
+ok 200 - gateway and empty-key attempts finalize estimates; existing gateway rows stop reconciliation
+  ---
+  duration_ms: 350.153125
+  type: 'test'
+  ...
+# Subtest: platform Azure Luna refusals never bill estimated input
+ok 201 - platform Azure Luna refusals never bill estimated input
+  ---
+  duration_ms: 259.239584
+  type: 'test'
+  ...
+# Subtest: a gateway refusal settles at zero and is never polled
+ok 202 - a gateway refusal settles at zero and is never polled
+  ---
+  duration_ms: 229.935583
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905714865,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":100,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":10,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"anthropic/claude-opus-4.1","ModelCostUsd":0.25,"ModelUsageEvents":1}
+# Subtest: reconciliation leaves an in-flight attempt for its real full-usage finish
+ok 203 - reconciliation leaves an in-flight attempt for its real full-usage finish
+  ---
+  duration_ms: 237.987709
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905715333,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":100,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":10,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"openai/gpt-6-luna","ModelCostUsd":0.01,"ModelUsageEvents":1}
+# {"_aws":{"Timestamp":1793905715396,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":0,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"openai/gpt-6-luna","ModelCostUsd":0.19,"ModelUsageEvents":1}
+# Subtest: real provider reconciliation can increase an end user's charge after the call
+ok 204 - real provider reconciliation can increase an end user's charge after the call
+  ---
+  duration_ms: 531.153709
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905715783,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":0,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"openai/gpt-6-luna","ModelCostUsd":0.01,"ModelUsageEvents":1}
+# Subtest: a recorded direct credential is not reclassified when its scope becomes a gateway
+ok 205 - a recorded direct credential is not reclassified when its scope becomes a gateway
+  ---
+  duration_ms: 385.692417
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905716004,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":0,"ServiceName":"workers","Tenant":"payg","Provider":"openrouter","Model":"anthropic/claude-opus-4.1","ModelCostUsd":0,"ModelUsageEvents":1}
+# Subtest: a stale direct OpenRouter failure without generation or usage settles at zero
+ok 206 - a stale direct OpenRouter failure without generation or usage settles at zero
+  ---
+  duration_ms: 224.967584
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905897477,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":1,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":4096,"ServiceName":"workers","Tenant":"meter-test","Provider":"openrouter","Model":"test-model","ModelCostUsd":0.73731,"ModelUsageEvents":1}
+# Subtest: model accounting serializes stream progress, heartbeat and terminal receipt
+ok 207 - model accounting serializes stream progress, heartbeat and terminal receipt
+  ---
+  duration_ms: 311.918458
+  type: 'test'
+  ...
+# Subtest: source money event metrics reach structured logs and Analytics Engine
+ok 208 - source money event metrics reach structured logs and Analytics Engine
+  ---
+  duration_ms: 1.744
+  type: 'test'
+  ...
+# Subtest: concurrent financial work keeps its Analytics binding across awaits
+ok 209 - concurrent financial work keeps its Analytics binding across awaits
+  ---
+  duration_ms: 6.184833
+  type: 'test'
+  ...
+# Subtest: delivery failures are private and credit refusals retain source structured logs
+ok 210 - delivery failures are private and credit refusals retain source structured logs
+  ---
+  duration_ms: 1.004125
+  type: 'test'
+  ...
+# Subtest: registering a confidential client's public metadata again never yields its secret
+ok 211 - registering a confidential client's public metadata again never yields its secret
+  ---
+  duration_ms: 14.021208
+  type: 'test'
+  ...
+# Subtest: the consent page shows where the code goes and that the name is unverified
+ok 212 - the consent page shows where the code goes and that the name is unverified
+  ---
+  duration_ms: 2.571083
+  type: 'test'
+  ...
+# Subtest: source transaction policy reruns only rolled-back serialization failures and deadlocks
+ok 213 - source transaction policy reruns only rolled-back serialization failures and deadlocks
+  ---
+  duration_ms: 66.908666
+  type: 'test'
+  ...
+# Subtest: source transaction policy limits retries and honors callers that cannot safely rerun
+ok 214 - source transaction policy limits retries and honors callers that cannot safely rerun
+  ---
+  duration_ms: 100.429167
+  type: 'test'
+  ...
+# Subtest: an uncertain commit is never rerun; a lost or rollback-broken connection is discarded
+ok 215 - an uncertain commit is never rerun; a lost or rollback-broken connection is discarded
+  ---
+  duration_ms: 0.204667
+  type: 'test'
+  ...
+# Subtest: database error classification matches source nested aggregates and connection messages
+ok 216 - database error classification matches source nested aggregates and connection messages
+  ---
+  duration_ms: 0.181209
+  type: 'test'
+  ...
+# Subtest: Postgres retry rolls back the first debit before committing exactly one debit
+ok 217 - Postgres retry rolls back the first debit before committing exactly one debit
+  ---
+  duration_ms: 546.263792
+  type: 'test'
+  ...
+# Subtest: source outbound caps the response body, including webhook replies
+ok 218 - source outbound caps the response body, including webhook replies
+  ---
+  duration_ms: 13.868708
+  type: 'test'
+  ...
+# Subtest: source outbound deadline bounds headers and body; stream opts out after headers
+ok 219 - source outbound deadline bounds headers and body; stream opts out after headers
+  ---
+  duration_ms: 247.071917
+  type: 'test'
+  ...
+# Subtest: source outbound refuses redirects by default and drops secrets across origins
+ok 220 - source outbound refuses redirects by default and drops secrets across origins
+  ---
+  duration_ms: 5.820792
+  type: 'test'
+  ...
+# Subtest: agent identity limits count UTF-8 JSON bytes like the source
+ok 221 - agent identity limits count UTF-8 JSON bytes like the source
+  ---
+  duration_ms: 0.97
+  type: 'test'
+  ...
+# Subtest: bucket and keyScope names use the source grammars
+ok 222 - bucket and keyScope names use the source grammars
+  ---
+  duration_ms: 0.259833
+  type: 'test'
+  ...
+# Subtest: spendLimit accepts source dollar objects and null, and rejects numeric or unbounded values
+ok 223 - spendLimit accepts source dollar objects and null, and rejects numeric or unbounded values
+  ---
+  duration_ms: 0.227167
+  type: 'test'
+  ...
+# Subtest: source tenant policy rejects reused tokens, bad keys and ambiguous billing
+ok 224 - source tenant policy rejects reused tokens, bad keys and ambiguous billing
+  ---
+  duration_ms: 1.382833
+  type: 'test'
+  ...
+# Subtest: provider endpoints reuse source CIDR policy and reject a private answer
+ok 225 - provider endpoints reuse source CIDR policy and reject a private answer
+  ---
+  duration_ms: 0.453875
+  type: 'test'
+  ...
+# Subtest: source browser-token scopes, expiry, redaction and CORS policy
+ok 226 - source browser-token scopes, expiry, redaction and CORS policy
+  ---
+  duration_ms: 12.905208
+  type: 'test'
+  ...
+# Subtest: Workers account keys use source AES-GCM, API token revocation, scope precedence and custom provider retention
+ok 227 - Workers account keys use source AES-GCM, API token revocation, scope precedence and custom provider retention
+  ---
+  duration_ms: 1000.097417
   type: 'test'
   ...
 # Subtest: registry bridge authenticates before checking ownership and rejects browsers
-ok 17 - registry bridge authenticates before checking ownership and rejects browsers
+ok 228 - registry bridge authenticates before checking ownership and rejects browsers
   ---
-  duration_ms: 11.900583
+  duration_ms: 11.270667
   type: 'test'
   ...
 # Subtest: registry lists, inspects supported configuration, and forwards durable requests
-ok 18 - registry lists, inspects supported configuration, and forwards durable requests
+ok 229 - registry lists, inspects supported configuration, and forwards durable requests
   ---
-  duration_ms: 2.4665
+  duration_ms: 2.34925
   type: 'test'
   ...
-1..18
-# tests 18
+# {"_aws":{"Timestamp":1793905721336,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":0,"ServiceName":"workers","Tenant":"receipt-test","Provider":"unknown","Model":"unknown","ModelCostUsd":0,"ModelUsageEvents":1}
+# Subtest: turn receipts reject changed response counts and invalid charge inputs before posting
+ok 230 - turn receipts reject changed response counts and invalid charge inputs before posting
+  ---
+  duration_ms: 293.888209
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905721964,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"]],"Metrics":[{"Name":"RunsStarted","Unit":"Count"},{"Name":"RunsCompleted","Unit":"Count"}]}]},"type":"run_events","ServiceName":"workers","Tenant":"alice","RunsStarted":1,"RunsCompleted":1}
+# {"_aws":{"Timestamp":1793905721968,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"]],"Metrics":[{"Name":"RunsStarted","Unit":"Count"},{"Name":"RunsCompleted","Unit":"Count"}]}]},"type":"run_events","ServiceName":"workers","Tenant":"alice","RunsStarted":1,"RunsCompleted":1}
+# {"_aws":{"Timestamp":1793905722001,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Kind"]],"Metrics":[{"Name":"WebhooksDelivered","Unit":"Count"},{"Name":"WebhookDeliveryLagMs","Unit":"Milliseconds"},{"Name":"WebhookAttempts","Unit":"Count"}]}]},"type":"webhook_delivered","tenant":"alice","event":"evt_04482f932ca9914df8634e8a","attempts":1,"ServiceName":"workers","Kind":"endpoint","WebhooksDelivered":1,"WebhookDeliveryLagMs":41,"WebhookAttempts":1}
+# {"_aws":{"Timestamp":1793905722001,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Kind"]],"Metrics":[{"Name":"WebhooksDelivered","Unit":"Count"},{"Name":"WebhookDeliveryLagMs","Unit":"Milliseconds"},{"Name":"WebhookAttempts","Unit":"Count"}]}]},"type":"webhook_delivered","tenant":"alice","event":"evt_eb5ee694afcc5c5303d72833","attempts":1,"ServiceName":"workers","Kind":"endpoint","WebhooksDelivered":1,"WebhookDeliveryLagMs":41,"WebhookAttempts":1}
+# Subtest: webhook endpoint policy preserves validation, tenant isolation, event selection and signed envelopes
+ok 231 - webhook endpoint policy preserves validation, tenant isolation, event selection and signed envelopes
+  ---
+  duration_ms: 352.711666
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905722254,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"]],"Metrics":[{"Name":"RunsStarted","Unit":"Count"},{"Name":"RunsFailed","Unit":"Count"}]}]},"type":"run_events","ServiceName":"workers","Tenant":"alice","RunsStarted":1,"RunsFailed":1}
+# {"_aws":{"Timestamp":1793905722254,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName","ErrorClass"],["ServiceName","Tenant","ErrorClass"]],"Metrics":[{"Name":"RunsFailedByClass","Unit":"Count"}]}]},"type":"run_failed","ServiceName":"workers","Tenant":"alice","ErrorClass":"other","RunsFailedByClass":1}
+# {"_aws":{"Timestamp":1793905722274,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Kind"]],"Metrics":[{"Name":"WebhooksDelivered","Unit":"Count"},{"Name":"WebhookDeliveryLagMs","Unit":"Milliseconds"},{"Name":"WebhookAttempts","Unit":"Count"}]}]},"type":"webhook_delivered","tenant":"alice","event":"evt_e6413b934e158369c02ecc14","attempts":1,"ServiceName":"workers","Kind":"endpoint","WebhooksDelivered":1,"WebhookDeliveryLagMs":27,"WebhookAttempts":1}
+# {"_aws":{"Timestamp":1793905722284,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"]],"Metrics":[{"Name":"RunsFailed","Unit":"Count"}]}]},"type":"run_events","ServiceName":"workers","Tenant":"alice","RunsFailed":1}
+# {"_aws":{"Timestamp":1793905722284,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName","ErrorClass"],["ServiceName","Tenant","ErrorClass"]],"Metrics":[{"Name":"RunsFailedByClass","Unit":"Count"}]}]},"type":"run_failed","ServiceName":"workers","Tenant":"alice","ErrorClass":"other","RunsFailedByClass":1}
+# {"_aws":{"Timestamp":1793905722306,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Kind"]],"Metrics":[{"Name":"WebhooksDelivered","Unit":"Count"},{"Name":"WebhookDeliveryLagMs","Unit":"Milliseconds"},{"Name":"WebhookAttempts","Unit":"Count"}]}]},"type":"webhook_delivered","tenant":"alice","event":"evt_1639b995736976ca02479229","attempts":1,"ServiceName":"workers","Kind":"endpoint","WebhooksDelivered":1,"WebhookDeliveryLagMs":28,"WebhookAttempts":1}
+# {"_aws":{"Timestamp":1793905722310,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"]],"Metrics":[{"Name":"RunsFailed","Unit":"Count"}]}]},"type":"run_events","ServiceName":"workers","Tenant":"alice","RunsFailed":1}
+# {"_aws":{"Timestamp":1793905722310,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName","ErrorClass"],["ServiceName","Tenant","ErrorClass"]],"Metrics":[{"Name":"RunsFailedByClass","Unit":"Count"}]}]},"type":"run_failed","ServiceName":"workers","Tenant":"alice","ErrorClass":"other","RunsFailedByClass":1}
+# Subtest: endpoint updates, rotation overlap, expiration and deletion preserve the source lifecycle
+ok 232 - endpoint updates, rotation overlap, expiration and deletion preserve the source lifecycle
+  ---
+  duration_ms: 337.278792
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905722569,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":1000,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":20,"ServiceName":"workers","Tenant":"alice","Provider":"openrouter","Model":"openai/gpt-4o-mini","ModelCostUsd":0.0123,"ModelUsageEvents":1}
+# {"_aws":{"Timestamp":1793905722585,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":1000,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":20,"ServiceName":"workers","Tenant":"alice","Provider":"openrouter","Model":"openai/gpt-4o-mini","ModelCostUsd":0.0123,"ModelUsageEvents":1}
+# {"_aws":{"Timestamp":1793905722604,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Kind"]],"Metrics":[{"Name":"WebhooksDelivered","Unit":"Count"},{"Name":"WebhookDeliveryLagMs","Unit":"Milliseconds"},{"Name":"WebhookAttempts","Unit":"Count"}]}]},"type":"webhook_delivered","tenant":"alice","event":"96aabe4c-f0a7-4de3-93fb-a442426c8730","attempts":1,"ServiceName":"workers","Kind":"usage","WebhooksDelivered":1,"WebhookDeliveryLagMs":20,"WebhookAttempts":1}
+# {"_aws":{"Timestamp":1793905722618,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Kind"]],"Metrics":[{"Name":"WebhooksDelivered","Unit":"Count"},{"Name":"WebhookDeliveryLagMs","Unit":"Milliseconds"},{"Name":"WebhookAttempts","Unit":"Count"}]}]},"type":"webhook_delivered","tenant":"alice","event":"evt_3309b4621ca675fb1da994c7","attempts":1,"ServiceName":"workers","Kind":"endpoint","WebhooksDelivered":1,"WebhookDeliveryLagMs":34,"WebhookAttempts":1}
+# Subtest: Accounts commits usage and both outbox formats atomically, preserving costs and attribution
+ok 233 - Accounts commits usage and both outbox formats atomically, preserving costs and attribution
+  ---
+  duration_ms: 279.410458
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905722872,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":2100,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":25,"ServiceName":"workers","Tenant":"alice","Provider":"openrouter","Model":"openai/gpt-4o-mini","ModelCostUsd":0.0131,"ModelUsageEvents":2}
+# {"_aws":{"Timestamp":1793905722884,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Kind"]],"Metrics":[{"Name":"WebhooksFailed","Unit":"Count"}]}]},"type":"webhook_failed","tenant":"alice","event":"90773ee8-eebf-4974-bcc3-70d2b4a5ca66","attempts":1,"error":"provider_5xx (8 chars)","ServiceName":"workers","Kind":"usage","WebhooksFailed":1}
+# {"_aws":{"Timestamp":1793905722884,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Kind"]],"Metrics":[{"Name":"WebhooksFailed","Unit":"Count"}]}]},"type":"webhook_failed","tenant":"alice","event":"a210b672-2243-417c-bfa8-7f40457b777e","attempts":1,"error":"provider_5xx (8 chars)","ServiceName":"workers","Kind":"usage","WebhooksFailed":1}
+# {"_aws":{"Timestamp":1793905722917,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Kind"]],"Metrics":[{"Name":"WebhooksDelivered","Unit":"Count"},{"Name":"WebhookDeliveryLagMs","Unit":"Milliseconds"},{"Name":"WebhookAttempts","Unit":"Count"}]}]},"type":"webhook_delivered","tenant":"alice","event":"90773ee8-eebf-4974-bcc3-70d2b4a5ca66","attempts":2,"ServiceName":"workers","Kind":"usage","WebhooksDelivered":1,"WebhookDeliveryLagMs":48,"WebhookAttempts":2}
+# {"_aws":{"Timestamp":1793905722917,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Kind"]],"Metrics":[{"Name":"WebhooksDelivered","Unit":"Count"},{"Name":"WebhookDeliveryLagMs","Unit":"Milliseconds"},{"Name":"WebhookAttempts","Unit":"Count"}]}]},"type":"webhook_delivered","tenant":"alice","event":"a210b672-2243-417c-bfa8-7f40457b777e","attempts":2,"ServiceName":"workers","Kind":"usage","WebhooksDelivered":1,"WebhookDeliveryLagMs":48,"WebhookAttempts":2}
+# Subtest: failed delivery survives service restart, keeps its event id and obeys retry backoff
+ok 234 - failed delivery survives service restart, keeps its event id and obeys retry backoff
+  ---
+  duration_ms: 303.544375
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905723115,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":30,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":4,"ServiceName":"workers","Tenant":"alice","Provider":"chiridion","Model":"anthropic/claude-opus-5","ModelCostUsd":0,"ModelUsageEvents":1}
+# {"_aws":{"Timestamp":1793905723125,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Kind"]],"Metrics":[{"Name":"WebhooksDelivered","Unit":"Count"},{"Name":"WebhookDeliveryLagMs","Unit":"Milliseconds"},{"Name":"WebhookAttempts","Unit":"Count"}]}]},"type":"webhook_delivered","tenant":"alice","event":"18d75ab3-156b-4593-8656-ef5b661c371e","attempts":1,"ServiceName":"workers","Kind":"usage","WebhooksDelivered":1,"WebhookDeliveryLagMs":13,"WebhookAttempts":1}
+# {"_aws":{"Timestamp":1793905723138,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":30,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":4,"ServiceName":"workers","Tenant":"alice","Provider":"chiridion","Model":"anthropic/claude-opus-5","ModelCostUsd":0,"ModelUsageEvents":1}
+# {"_aws":{"Timestamp":1793905723149,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Kind"]],"Metrics":[{"Name":"WebhooksDelivered","Unit":"Count"},{"Name":"WebhookDeliveryLagMs","Unit":"Milliseconds"},{"Name":"WebhookAttempts","Unit":"Count"}]}]},"type":"webhook_delivered","tenant":"alice","event":"da106d01-d4a9-42b0-a910-e5013e67e157","attempts":1,"ServiceName":"workers","Kind":"usage","WebhooksDelivered":1,"WebhookDeliveryLagMs":14,"WebhookAttempts":1}
+# {"_aws":{"Timestamp":1793905723160,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":30,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":4,"ServiceName":"workers","Tenant":"alice","Provider":"chiridion","Model":"anthropic/claude-opus-5","ModelCostUsd":0,"ModelUsageEvents":1}
+# {"_aws":{"Timestamp":1793905723173,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"],["ServiceName","Provider","Model"]],"Metrics":[{"Name":"ModelCostUsd","Unit":"None"},{"Name":"ModelUsageEvents","Unit":"Count"}]}]},"type":"model_cost","host":"unknown","inputTokens":30,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":4,"ServiceName":"workers","Tenant":"alice","Provider":"chiridion","Model":"anthropic/claude-opus-5","ModelCostUsd":0,"ModelUsageEvents":1}
+# Subtest: legacy usage rotation signs both secrets for a day; custom provider names and removal are preserved
+ok 235 - legacy usage rotation signs both secrets for a day; custom provider names and removal are preserved
+  ---
+  duration_ms: 249.757875
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905723360,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"]],"Metrics":[{"Name":"RunsCompleted","Unit":"Count"}]}]},"type":"run_events","ServiceName":"workers","Tenant":"alice","RunsCompleted":1}
+# {"_aws":{"Timestamp":1793905723388,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Kind"]],"Metrics":[{"Name":"WebhooksDelivered","Unit":"Count"},{"Name":"WebhookDeliveryLagMs","Unit":"Milliseconds"},{"Name":"WebhookAttempts","Unit":"Count"}]}]},"type":"webhook_delivered","tenant":"alice","event":"evt_7c2901a9a09da9e52f9feedc","attempts":1,"ServiceName":"workers","Kind":"endpoint","WebhooksDelivered":1,"WebhookDeliveryLagMs":32,"WebhookAttempts":1}
+# {"_aws":{"Timestamp":1793905723391,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"]],"Metrics":[{"Name":"RunsCompleted","Unit":"Count"}]}]},"type":"run_events","ServiceName":"workers","Tenant":"alice","RunsCompleted":1}
+# {"_aws":{"Timestamp":1793905723425,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Kind"]],"Metrics":[{"Name":"WebhooksDelivered","Unit":"Count"},{"Name":"WebhookDeliveryLagMs","Unit":"Milliseconds"},{"Name":"WebhookAttempts","Unit":"Count"}]}]},"type":"webhook_delivered","tenant":"alice","event":"evt_3406798fe0f86235cdca946e","attempts":2,"ServiceName":"workers","Kind":"endpoint","WebhooksDelivered":1,"WebhookDeliveryLagMs":37,"WebhookAttempts":2}
+# {"_aws":{"Timestamp":1793905723431,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Tenant"]],"Metrics":[{"Name":"RunsCompleted","Unit":"Count"}]}]},"type":"run_events","ServiceName":"workers","Tenant":"alice","RunsCompleted":1}
+# Subtest: concurrent senders claim a delivery once and a crashed sender's lease can be recovered
+ok 236 - concurrent senders claim a delivery once and a crashed sender's lease can be recovered
+  ---
+  duration_ms: 271.195083
+  type: 'test'
+  ...
+# {"_aws":{"Timestamp":1793905723693,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Kind"]],"Metrics":[{"Name":"WebhooksDelivered","Unit":"Count"},{"Name":"WebhookDeliveryLagMs","Unit":"Milliseconds"},{"Name":"WebhookAttempts","Unit":"Count"}]}]},"type":"webhook_delivered","tenant":"alice","event":"evt_7c9d30f0c65689749f562a52","attempts":1,"ServiceName":"workers","Kind":"endpoint","WebhooksDelivered":1,"WebhookDeliveryLagMs":23,"WebhookAttempts":1}
+# {"_aws":{"Timestamp":1793905723693,"CloudWatchMetrics":[{"Namespace":"AgentRuntime","Dimensions":[["ServiceName"],["ServiceName","Kind"]],"Metrics":[{"Name":"WebhooksDelivered","Unit":"Count"},{"Name":"WebhookDeliveryLagMs","Unit":"Milliseconds"},{"Name":"WebhookAttempts","Unit":"Count"}]}]},"type":"webhook_delivered","tenant":"alice","event":"evt_6478408044b9689fd80c6a72","attempts":1,"ServiceName":"workers","Kind":"endpoint","WebhooksDelivered":1,"WebhookDeliveryLagMs":22,"WebhookAttempts":1}
+# Subtest: end-user balance and exhaustion events are committed with the debit and delivered signed
+ok 237 - end-user balance and exhaustion events are committed with the debit and delivered signed
+  ---
+  duration_ms: 258.799334
+  type: 'test'
+  ...
+# Subtest: subscriber cache ignores usage-only endpoints, invalidates on local change and fails open
+ok 238 - subscriber cache ignores usage-only endpoints, invalidates on local change and fails open
+  ---
+  duration_ms: 216.068042
+  type: 'test'
+  ...
+1..238
+# tests 238
 # suites 0
-# pass 18
+# pass 238
 # fail 0
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 567.341375
+# duration_ms 108780.423917

@@ -2,34 +2,50 @@ TAP version 13
 # Subtest: lazy handles (the Agents default) hold no event stream while idle, and run without one
 ok 1 - lazy handles (the Agents default) hold no event stream while idle, and run without one
   ---
-  duration_ms: 3546.213042
+  duration_ms: 4221.207
   type: 'test'
   ...
 # Subtest: a lazy handle's stream() connects for the run, yields it from its start, and lets the stream go after
-ok 2 - a lazy handle's stream() connects for the run, yields it from its start, and lets the stream go after
+not ok 2 - a lazy handle's stream() connects for the run, yields it from its start, and lets the stream go after
   ---
-  duration_ms: 2637.113
+  duration_ms: 2074.393166
   type: 'test'
+  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/sdk-lazy-connections.test.ts:44:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    one stream while the run streams
+
+    0 !== 1
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 1
+  actual: 0
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/sdk-lazy-connections.test.ts:57:12)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
   ...
 # Subtest: handles that need the stream keep it: onEvent, served tools, or connection: eager
 not ok 3 - handles that need the stream keep it: onEvent, served tools, or connection: eager
   ---
-  duration_ms: 1822.472625
+  duration_ms: 2068.2205
   type: 'test'
-  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/sdk-lazy-connections.test.ts:66:1'
+  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/sdk-lazy-connections.test.ts:66:1'
   failureType: 'testCodeFailure'
   error: |-
-    The expression evaluated to a falsy value:
+    onEvent connects at once
 
-      assert.ok(events.includes("agent_end"))
+    0 !== 1
 
   code: 'ERR_ASSERTION'
   name: 'AssertionError'
-  expected: true
-  actual: false
-  operator: '=='
+  expected: 1
+  actual: 0
+  operator: 'strictEqual'
   stack: |-
-    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/sdk-lazy-connections.test.ts:77:10)
+    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/sdk-lazy-connections.test.ts:74:10)
     process.processTicksAndRejections (node:internal/process/task_queues:105:5)
     async Test.run (node:internal/test_runner/test:1054:7)
     async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
@@ -37,9 +53,9 @@ not ok 3 - handles that need the stream keep it: onEvent, served tools, or conne
 # Subtest: a lazy run whose agent is deleted mid-run settles, and close() stops its wait
 not ok 4 - a lazy run whose agent is deleted mid-run settles, and close() stops its wait
   ---
-  duration_ms: 1576.75275
+  duration_ms: 1966.321083
   type: 'test'
-  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/sdk-lazy-connections.test.ts:91:1'
+  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/sdk-lazy-connections.test.ts:91:1'
   failureType: 'testCodeFailure'
   error: 'RunError: aborted'
   code: 'ERR_ASSERTION'
@@ -48,7 +64,7 @@ not ok 4 - a lazy run whose agent is deleted mid-run settles, and close() stops 
   actual: false
   operator: '=='
   stack: |-
-    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-money/tests/sdk-lazy-connections.test.ts:102:10)
+    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/sdk-lazy-connections.test.ts:102:10)
     process.processTicksAndRejections (node:internal/process/task_queues:105:5)
     async Test.run (node:internal/test_runner/test:1054:7)
     async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
@@ -56,9 +72,9 @@ not ok 4 - a lazy run whose agent is deleted mid-run settles, and close() stops 
 1..4
 # tests 4
 # suites 0
-# pass 2
-# fail 2
+# pass 1
+# fail 3
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 12709.6935
+# duration_ms 13685.0875

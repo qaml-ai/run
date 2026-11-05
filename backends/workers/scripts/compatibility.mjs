@@ -191,6 +191,8 @@ for (const file of candidates) {
       kind: [
         "image-generation-api.test.ts",
         "image-generation-sdk.test.ts",
+        "transcription-api.test.ts",
+        "transcription-sdk.test.ts",
         "ui-ai-sdk.test.ts",
       ].includes(file)
         ? "worker"

@@ -67,13 +67,13 @@ is portable.
 <!-- SIZE_TABLE -->
 | Area | ECS lines / files | Workers lines / files |
 | --- | ---: | ---: |
-| Accounts, money, webhooks | 10,422 / 40 | 8,803 / 39 |
+| Accounts, money, webhooks | 10,422 / 40 | 10,565 / 51 |
 | Hosting, admission, tenancy | 4,374 / 14 | 369 / 2 |
-| Agents, history, schedules | 15,107 / 33 | 1,899 / 4 |
-| HTTP, contracts, remaining policy | 13,677 / 69 | 2,923 / 37 |
+| Agents, history, schedules | 15,107 / 33 | 2,365 / 7 |
+| HTTP, contracts, remaining policy | 13,677 / 69 | 4,057 / 53 |
+| Files, images, computers | 6,667 / 34 | 6,033 / 34 |
 | Code execution | 797 / 6 | 38 / 2 |
-| Files, images, computers | 5,579 / 27 | 1,839 / 7 |
-| Total | 49,956 / 189 | 15,871 / 91 |
+| Total | 51,044 / 196 | 23,427 / 149 |
 <!-- /SIZE_TABLE -->
 
 Reproduce with `npm run measure`; inspect every path and count in
@@ -169,7 +169,7 @@ a maximum for every list, snapshot or model-context path.
 ## Public API compatibility scorecard
 
 <!-- SCORECARD -->
-The current inventory has **162 cases: 59 pass, 61 fail, 42 not applicable**. Of the passes, **14 reach workerd** and **45 are SDK-only unit checks**.
+The current inventory has **162 cases: 64 pass, 56 fail, 42 not applicable**. Of the passes, **19 reach workerd** and **45 are SDK-only unit checks**.
 
 | Original test file | Worker pass | SDK-only pass | Fail | N/A |
 | --- | ---: | ---: | ---: | ---: |
@@ -178,8 +178,8 @@ The current inventory has **162 cases: 59 pass, 61 fail, 42 not applicable**. Of
 | `tests/computers-api.test.ts` | 3 | 0 | 4 | 0 |
 | `tests/decisions-api.test.ts` | 0 | 0 | 5 | 0 |
 | `tests/files.test.ts` | 2 | 0 | 3 | 7 |
-| `tests/image-generation-api.test.ts` | 0 | 0 | 3 | 0 |
-| `tests/image-generation-sdk.test.ts` | 0 | 0 | 1 | 0 |
+| `tests/image-generation-api.test.ts` | 3 | 0 | 0 | 0 |
+| `tests/image-generation-sdk.test.ts` | 1 | 0 | 0 | 0 |
 | `tests/openapi-sources.test.ts` | 0 | 0 | 2 | 0 |
 | `tests/openapi.test.ts` | 0 | 0 | 0 | 1 |
 | `tests/projects.test.ts` | 4 | 0 | 0 | 0 |
@@ -191,7 +191,7 @@ The current inventory has **162 cases: 59 pass, 61 fail, 42 not applicable**. Of
 | `tests/sdk-server.test.ts` | 0 | 8 | 1 | 0 |
 | `tests/service-api.test.ts` | 0 | 0 | 0 | 4 |
 | `tests/speech-api.test.ts` | 0 | 0 | 0 | 2 |
-| `tests/transcription-api.test.ts` | 0 | 0 | 3 | 0 |
+| `tests/transcription-api.test.ts` | 1 | 0 | 2 | 0 |
 | `tests/transcription-sdk.test.ts` | 0 | 0 | 1 | 0 |
 | `tests/ui-ai-sdk.test.ts` | 0 | 0 | 5 | 0 |
 | `tests/voice-api.test.ts` | 0 | 0 | 0 | 6 |
