@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-import { discoverSources, prepareSources, sourceDefinitionViews, sourceTools } from '../src/tool-sources.ts';
+import { discoverSources, prepareSources, sourceDefinitionViews, sourceTools, toolSourceViews } from '../src/tool-sources.ts';
 
 test('definition discovery rejects refused credentials and retains temporary source failures', async t => {
   const server = createServer(async (req, res) => {
@@ -42,4 +42,15 @@ test('source auth and audience validation keeps the source public contract', asy
   await assert.rejects(prepareSources(env, 'tenant', 'definition', 'mcpServers', [{ ...source, approval: { default: 'invalid' } }]), /Invalid option: expected one of/);
   const [prepared] = await prepareSources(env, 'tenant', 'definition', 'mcpServers', [{ ...source, auth: { type: 'bearer', token: 'secret' } }]);
   assert.equal(prepared.headerNames, undefined);
+});
+
+
+test('tool catalogs preserve source priority, duplicate exclusions and parameter schemas', () => {
+  const tool = (name: string) => ({ name, description: name, parameters: { type: 'object' }, execute: async () => ({ output: [] }) });
+  const tools = [tool('web_fetch'), tool('read'), tool('decide'), tool('kb__ping')];
+  const result = toolSourceViews({ mcp: { tools: [{ name: 'web_fetch', description: 'App fetch', inputSchema: { type: 'object' } }] }, builtins: ['web_fetch'], mcpServers: [{ name: 'kb', url: 'https://example.test/mcp' }] }, tools, false);
+  assert.deepEqual(result.map(source => `${source.kind}:${source.name}`), ['application:application', 'files:files', 'builtin:decide', 'builtin:web_fetch', 'mcp:kb']);
+  assert.equal(result[3].tools[0].excluded, 'an earlier source has a tool of this name');
+  assert.deepEqual(result[4].tools[0].parameters, { type: 'object' });
+  assert.equal(typeof result[4].listedAt, 'number');
 });

@@ -225,26 +225,34 @@ export function sourceView(source: RemoteSource) {
     ...(operations ? { tools: operations.map(operation => operation.name) } : {}) };
 }
 
-/** Public catalog from the installed tools, with no credentials or executable callbacks. */
+const listedAt = new WeakMap<ToolRegistration, number>();
+const listed = (tool: ToolRegistration) => { listedAt.set(tool, Date.now()); return tool; };
+
+/** Public catalog preserves source priority and makes duplicate exclusions explicit. */
 export function toolSourceViews(config: { mcp?: { tools?: ToolDefinition[] }; mcpServers?: RemoteSource[]; openApi?: RemoteSource[]; fileTools?: boolean; codeMode?: boolean; builtins?: string[] }, tools: ToolRegistration[], connected: boolean, failures: SourceFailure[] = []) {
-  const view = (tool: ToolRegistration) => ({ name: tool.name, description: tool.description, inputSchema: tool.parameters, exposure: tool.callers?.length === 1 ? tool.callers[0] === "model" ? "direct" : "codemode" : "both", ...(tool.executionMode ? { executionMode: tool.executionMode } : {}) });
-  const result: { kind: string; name: string; status: string; tools: unknown[]; connected?: boolean; url?: string; error?: string }[] = [];
+  const view = (tool: ToolRegistration) => ({ name: tool.name, description: tool.description, parameters: tool.parameters, exposure: tool.callers?.length === 1 ? tool.callers[0] === "model" ? "direct" : "codemode" : "both", ...(tool.executionMode ? { executionMode: tool.executionMode } : {}) });
+  const result: { kind: string; name: string; status: string; tools: any[]; connected?: boolean; url?: string; error?: string; listedAt?: number }[] = [];
+  if (config.mcp?.tools?.length) result.push({ kind: "application", name: "application", status: "listed", connected, tools: config.mcp.tools.map(tool => ({ name: tool.name, description: tool.description, parameters: tool.parameters ?? tool.inputSchema, exposure: tool.exposure ?? tool._meta?.["agent-runtime/exposure"] ?? "both" })) });
   const fileNames = new Set(["read", "write", "edit", "ls", "find", "glob", "grep", "stat", "mkdir", "rm", "rename", "cp", "mv", "present_file"]);
   const files = tools.filter(tool => fileNames.has(tool.name));
   const fileExposure = new Map(fileToolsFor(files, config.fileTools, config.codeMode).map(tool => [tool.name, tool.callers]));
   if (files.length) result.push({ kind: "files", name: "files", status: "listed", tools: files.map(tool => ({ ...view(tool), exposure: fileExposure.get(tool.name)?.includes("model") === false ? "codemode" : "both" })) });
   const computers = tools.filter(tool => COMPUTER_TOOLS.has(tool.name));
   if (computers.length) result.push({ kind: "builtin", name: "computer", status: "listed", tools: computers.map(view) });
-  if (config.mcp?.tools?.length) result.push({ kind: "application", name: "application", status: "listed", connected, tools: config.mcp.tools });
-  for (const [kind, sources] of [["mcp", config.mcpServers], ["openapi", config.openApi]] as const) for (const source of sources ?? []) {
-    const installed = tools.filter(tool => tool.name.startsWith(`${source.name}__`));
-    const failure = failures.find(failure => failure.kind === kind && failure.source === source.name);
-    result.push({ kind, name: source.name, url: source.url ?? source.baseUrl, status: failure ? "error" : "listed", tools: installed.map(view), ...(failure ? { error: failure.message } : {}) });
-  }
-  for (const name of new Set([...(config.builtins ?? []), ...(tools.some(tool => tool.name === "decide") ? ["decide"] : [])])) {
+  for (const name of new Set([...(tools.some(tool => tool.name === "decide") ? ["decide"] : []), ...(config.builtins ?? [])])) {
     const installed = tools.filter(tool => tool.name === name);
     if (installed.length) result.push({ kind: "builtin", name, status: "listed", tools: installed.map(view) });
   }
+  for (const [kind, sources] of [["mcp", config.mcpServers], ["openapi", config.openApi]] as const) for (const source of sources ?? []) {
+    const installed = tools.filter(tool => tool.name.startsWith(`${source.name}__`));
+    const failure = failures.find(failure => failure.kind === kind && failure.source === source.name);
+    result.push({ kind, name: source.name, url: source.url ?? source.baseUrl, status: failure ? "error" : "listed", tools: installed.map(view), ...(!failure ? { listedAt: Math.max(0, ...installed.map(tool => listedAt.get(tool) ?? Date.now())) } : { error: failure.message }) });
+  }
+  const claimed = new Set<string>();
+  for (const source of result) source.tools = source.tools.map(tool => {
+    if (claimed.has(tool.name)) return { ...tool, excluded: "an earlier source has a tool of this name" };
+    claimed.add(tool.name); return tool;
+  });
   return result;
 }
 
@@ -362,10 +370,11 @@ class RemoteMcp {
 }
 
 export type SourceFailure = { kind: "mcp" | "openapi"; source: string; message: string };
-const sourceError = (error: unknown, headers: Record<string, string>) => {
+const sourceError = (error: unknown, headers: Record<string, string>, url?: string) => {
   let message = error instanceof Error ? error.message : String(error);
   for (const value of Object.values(headers)) for (const secret of [value, value.replace(/^Bearer /i, "")])
     if (secret) message = message.split(secret).join("[redacted]");
+  if (url && !(error as { status?: number })?.status && !(error instanceof CredentialExchangeError)) message = `Could not connect to MCP server ${new URL(url).host}: ${message}`;
   return message.slice(0, 2000);
 };
 
@@ -380,7 +389,7 @@ export async function discoverSources(env: Env, tenant: string, definition: stri
       const client = new RemoteMcp(env, { ...source, timeoutMs: Math.min(source.timeoutMs ?? 20_000, 20_000) }, headers, runtimeHeaders, exchange?.refused);
       return { ...source, discovery: { tools: await client.list() } };
     } catch (error) {
-      const message = sourceError(error, headers);
+      const message = sourceError(error, headers, source.url);
       if ([401, 403].includes((error as { status?: number }).status ?? 0) || error instanceof CredentialExchangeError && !["unreachable", "unavailable"].includes(error.reason)) throw bad(message);
       return { ...source, discovery: { error: message } };
     }
@@ -441,19 +450,19 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
       const client = new RemoteMcp(env, source, headers, runtimeHeaders, exchange?.refused, identity);
       // An unavailable server cannot prevent loading or using the agent's other tools.
       let listed: ToolDefinition[];
-      try { listed = await client.list(); } catch (error) { failures.push({ kind: "mcp", source: source.name, message: sourceError(error, headers) }); continue; }
+      try { listed = await client.list(); } catch (error) { failures.push({ kind: "mcp", source: source.name, message: sourceError(error, headers, source.url) }); continue; }
       for (const tool of listed) {
         if (source.allowTools && !source.allowTools.includes(tool.name) || source.denyTools?.includes(tool.name)) continue;
         const { name } = tool;
         const mode = approvalFor(source.approval, name, (tool as any).annotations?.destructiveHint === true);
-        result.push(registration({ ...tool, description: (tool.description ?? name).slice(0, 4000), needsApproval: mode === "always", judged: mode === "judged", name: mcpToolName(source.name, name), exposure: tool.exposure ?? tool._meta?.["agent-runtime/exposure"] as ToolDefinition["exposure"] ?? source.exposure }, async (args, api, context) => {
+        result.push(listed(registration({ ...tool, description: (tool.description ?? name).slice(0, 4000), needsApproval: mode === "always", judged: mode === "judged", name: mcpToolName(source.name, name), exposure: tool.exposure ?? tool._meta?.["agent-runtime/exposure"] as ToolDefinition["exposure"] ?? source.exposure }, async (args, api, context) => {
           const approval = await needsApproval(name, args, (tool as any).annotations?.destructiveHint === true, api, context, undefined, tool.description);
           if ("result" in approval) return approval.result;
           return api ? withToolInputs(reply => client.call(name, args, context?.abortSignal, api, reply), api, context, { name: `${source.name}__${name}`, args }, approval.reply) : client.call(name, args, context?.abortSignal);
-        }));
+        })));
       }
     } else {
-      for (const operation of source.operations ?? []) result.push(registration({ name: `${source.name}__${operation.name}`, description: operation.description, inputSchema: operation.inputSchema, needsApproval: approvalFor(source.approval, operation.name, !operation.readOnly, operation.method) === "always", judged: approvalFor(source.approval, operation.name, !operation.readOnly, operation.method) === "judged", exposure: source.exposure, executionMode: operation.readOnly ? "parallel" : "sequential" }, async (input, api, context) => {
+      for (const operation of source.operations ?? []) result.push(listed(registration({ name: `${source.name}__${operation.name}`, description: operation.description, inputSchema: operation.inputSchema, needsApproval: approvalFor(source.approval, operation.name, !operation.readOnly, operation.method) === "always", judged: approvalFor(source.approval, operation.name, !operation.readOnly, operation.method) === "judged", exposure: source.exposure, executionMode: operation.readOnly ? "parallel" : "sequential" }, async (input, api, context) => {
         const args = input as Record<string, unknown>;
         const approval = await needsApproval(operation.name, args, !operation.readOnly, api, context, operation.method, operation.description);
         if ("result" in approval) return approval.result;
@@ -482,7 +491,7 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
         }
         const response = await fetchSource(env, url, { method: operation.method, headers: sent, body, signal: AbortSignal.any([AbortSignal.timeout(source.timeoutMs ?? 30_000), ...(context?.abortSignal ? [context.abortSignal] : [])]) });
         return withInputNote({ content: [{ type: "text", text: response.response.ok ? response.text : `${operation.method} ${operation.path} answered HTTP ${response.response.status}: ${response.text}` }], ...(!response.response.ok ? { isError: true } : {}) }, approval.reply);
-      }));
+      })));
     }
   }
   report?.(failures);
