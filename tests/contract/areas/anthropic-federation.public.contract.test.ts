@@ -43,7 +43,7 @@ portedTest("models", "tests/anthropic-federation.test.ts:170")("existing agents 
   fail = false;
   assert.equal((await r.prompt(created.json.id, "second")).outcome.result.reply, "Hello.");
   const request = api.requests.at(-1)!;
-  assert.equal(request.headers.authorization, `Bearer ${token(2)}`);
+  assert.equal(request.headers.authorization, `Bearer ${token(2)}`, JSON.stringify({ stsCalls, exchanges, federation: r.logs.filter(line => line.includes("anthropic_federation")) }));
   assert.equal(request.headers["x-api-key"], undefined);
   assert.equal(request.headers["x-app"], undefined);
   assert.doesNotMatch(String(request.headers["anthropic-beta"]), /oauth|claude-code/);
