@@ -11,6 +11,7 @@ export async function upsertAgent(env: ControlEnv, tenant: string, input: Record
   // The default model only applies at creation. Language is deliberately absent
   // from old SDKs' upserts, so only an explicit value (including null) changes it.
   const params: Record<string, unknown> = { ...configuration(input, existing.config.model ?? env.MODEL).config };
+  if (input.remount !== undefined) params.remount = input.remount;
   const defaults = { codeMode: true, fileTools: true, thinkingLevel: "off", systemPromptAppend: "", maxOutputTokens: null, temperature: null, dataCollection: null, runLimits: null, modelHeaders: null };
   for (const [field, value] of Object.entries(defaults)) {
     if (input[field] === undefined && existing.config[field as keyof typeof existing.config] !== undefined) params[field] = value;
