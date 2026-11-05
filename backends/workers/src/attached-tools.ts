@@ -14,7 +14,7 @@ export type McpResult = { content?: unknown[]; structuredContent?: unknown; isEr
 type Pending = { resolve: (result: unknown) => void; reject: (error: Error) => void };
 type Connection = { id: string; send: (event: unknown) => void; pending: Map<string, Pending>; ready: Promise<unknown>; initialized: boolean; draining: boolean; retired?: () => void };
 
-/** Attached MCP runs over the SDK's SSE stream, with replies on /mcp. */
+/** Attached MCP runs over the SDK's event stream, with replies on /mcp. */
 export class AttachedTools {
   private current?: Connection;
   private readonly connections = new Map<string, Connection>();
@@ -38,6 +38,15 @@ export class AttachedTools {
       throw new HttpError(409, "APPLICATION_CONNECTED: another connection serves this agent's tools", "APPLICATION_CONNECTED");
   }
 
+  /** Hibernation retains the socket and SDK, but recreates this in-memory pool.
+   * There are no pending RPCs when a Durable Object hibernates. */
+  restore(id: string, send: (event: unknown) => void, retired?: () => void) {
+    if (this.current) throw new Error("An attached connection is already restored");
+    const connection: Connection = { id, send, pending: new Map(), ready: Promise.resolve(), initialized: true, draining: false, retired };
+    this.current = connection;
+    this.connections.set(id, connection);
+  }
+
   attach(send: (event: unknown) => void, previous?: string, takeover = false, retired?: () => void) {
     if (this.connected && !takeover && previous !== this.current?.id)
       throw new HttpError(409, "APPLICATION_CONNECTED: another connection serves this agent's tools", "APPLICATION_CONNECTED");
@@ -59,6 +68,7 @@ export class AttachedTools {
         connection.send({ type: "mcp", message: { jsonrpc: "2.0", method: "notifications/initialized" } });
       });
       void connection.ready.catch(() => this.close(connection.id));
+      return connection.ready;
     };
     return { id: connection.id, start, close: () => this.close(connection.id) };
   }

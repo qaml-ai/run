@@ -43,6 +43,21 @@ test("closing an attached connection fails in-flight calls without retrying them
   assert.equal(calls, 1);
 });
 
+test("hibernation restores an initialized application connection with its existing SDK identity", async () => {
+  const attached = new AttachedTools();
+  const frames: any[] = [];
+  attached.restore("persisted-connection", frame => {
+    const message = (frame as any).message;
+    frames.push(message);
+    queueMicrotask(() => attached.receive({ id: message.id, result: { content: [{ type: "text", text: "restored" }] } }, "persisted-connection"));
+  });
+  assert.equal(await attached.waitUntilReady(), true);
+  assert.deepEqual(await attached.call("echo", {}), { content: [{ type: "text", text: "restored" }] });
+  assert.deepEqual(frames.map(message => message.method), ["tools/call"]);
+  attached.close("persisted-connection");
+  assert.equal(attached.connected, false);
+});
+
 test("takeover drains calls on the previous connection before retiring it", async () => {
   const attached = new AttachedTools(), oldCalls: any[] = [];
   let retired = false;
