@@ -38,10 +38,10 @@ function fixture() {
   const values = new Map<string, unknown>();
   const storage = { get: async (key: string) => values.get(key), put: async (key: string, value: unknown) => { values.set(key, structuredClone(value)); }, delete: async (key: string) => values.delete(key), list: async ({ prefix }: { prefix: string }) => new Map([...values].filter(([key]) => key.startsWith(prefix))), transaction: async (run: (tx: unknown) => unknown) => run(storage) };
   const events: any[] = [], submitted: any[] = [], tasks: Promise<unknown>[] = [];
-  let run: any = { id: 'parent-run' }, made = 0;
+  let run: any = { id: 'parent-run' }, made = 0, parentId = 'parent';
   const host: DelegationHost = {
     storage: storage as unknown as DurableObjectStorage, secret: 'test-only-delegation-secret',
-    context: async () => ({ id: 'parent', config: { model: 'test/echo', delegate: { instructions: true, maxDepth: 2, maxParallel: 2 }, spendLimit: { usd: 0.1 } }, run }),
+    context: async () => ({ id: parentId, config: { model: 'test/echo', delegate: { instructions: true, maxDepth: 2, maxParallel: 2 }, spendLimit: { usd: 0.1 } }, run }),
     create: async () => ({ id: `child-${++made}` }), target: async () => { throw new Error('unexpected target'); },
     fetch: async (_id, request) => {
       if (new URL(request.url).pathname === '/events') return new Response('');
@@ -50,7 +50,7 @@ function fixture() {
     },
     emit: async event => { events.push(event); }, waitUntil: promise => { tasks.push(promise); },
   };
-  return { delegation: new Delegation(host), host, events, submitted, tasks, setRun: (value: unknown) => { run = value; }, values };
+  return { delegation: new Delegation(host), host, events, submitted, tasks, setRun: (value: unknown) => { run = value; }, setId: (value: string) => { parentId = value; }, values };
 }
 test('delegation persists idempotent child, budget and result events', async () => {
   const f = fixture();
@@ -74,4 +74,25 @@ test('unsigned metadata cannot raise depth; genuine child metadata keeps the cei
   assert.equal(first.depth, 1);
   assert.equal(f.submitted[0].params.metadata.delegationMaxDepth, '2');
   await Promise.all(f.tasks);
+});
+
+test('signed lineage cannot exceed its inherited depth ceiling', async () => {
+  const parent = fixture();
+  const child = await parent.delegation.start({ instructions: 'helper', task: 'help' }, 'first', signal());
+  await Promise.all(parent.tasks);
+  const middle = fixture();
+  middle.setId(child.id); middle.setRun({ id: child.requestId, metadata: parent.submitted[0].params.metadata });
+  const grandchild = await middle.delegation.start({ instructions: 'helper', task: 'help' }, 'second', signal());
+  assert.equal(grandchild.depth, 2);
+  await Promise.all(middle.tasks);
+  const last = fixture();
+  last.setId(grandchild.id); last.setRun({ id: grandchild.requestId, metadata: middle.submitted[0].params.metadata });
+  await assert.rejects(last.delegation.start({ instructions: 'helper', task: 'help' }, 'third', signal()), /depth limit of 2/);
+  assert.equal(last.submitted.length, 0);
+});
+test('a depleted parent budget refuses a child before creation or submission', async () => {
+  const f = fixture(); f.setRun({ id: 'no-budget', params: { spendLimit: { usd: 0 } } });
+  await assert.rejects(f.delegation.start({ instructions: 'helper', task: 'help' }, 'a', signal()), /no budget left/);
+  assert.equal(f.submitted.length, 0);
+  assert.equal((await f.delegation.children()).length, 0);
 });
