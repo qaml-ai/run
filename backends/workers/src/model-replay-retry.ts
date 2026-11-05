@@ -11,7 +11,8 @@ export class ModelReplayRetry {
   private request?: string;
   private failed = 0;
   private pending = 0;
-  constructor(private emit?: (event: ModelRetryEvent) => void | Promise<void>) {}
+  private emit?: (event: ModelRetryEvent) => void | Promise<void>;
+  constructor(emit?: (event: ModelRetryEvent) => void | Promise<void>) { this.emit = emit; }
 
   begin(request: string) {
     if (request === this.request) return;
