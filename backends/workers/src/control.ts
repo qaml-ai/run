@@ -81,8 +81,6 @@ export interface DirectoryEntry {
 }
 const creationRates = new WeakMap<DirectoryEntry, RateLimitState>();
 export const creationRate = (entry: DirectoryEntry) => creationRates.get(entry);
-const changedConfigurations = new WeakSet<DirectoryEntry>();
-export const changedConfiguration = (entry: DirectoryEntry) => changedConfigurations.has(entry);
 export interface DirectoryFailure {
   failed: true;
   status: number;
@@ -183,7 +181,6 @@ export class Directory {
       ? await reserveAgentCreation(this.env as import("./agent.ts").Env, this.tenantId, id)
       : async () => {};
     let rate: RateLimitState | undefined;
-    let changed = false;
     try {
     const requested=(input as {mounts?:unknown;remount?:boolean}).mounts;
     const before = requested === undefined ? await this.get(id) : undefined;
@@ -223,7 +220,6 @@ export class Directory {
       if (config.type !== "run")
         rate = await createAdmission(this.env, this.tenantId, !(old?.initialized && old.configHash === configHash));
       if (old?.initialized && old.configHash === configHash && sameModel) return old;
-      changed = !!old?.initialized;
       const next: DirectoryEntry = {
         id,
         tenantId: this.tenantId,
@@ -312,7 +308,6 @@ export class Directory {
     }
     const result = createdHere ? entry : { ...entry, reconfigured: true };
     if (rate) creationRates.set(result, rate);
-    if (changed) changedConfigurations.add(result);
     return result;
     } finally { await release(); }
   }

@@ -15,7 +15,6 @@ import {
   controlRoutes,
   maintenance,
   creationRate,
-  changedConfiguration,
   type DirectoryEntry,
   type DirectoryFailure,
 } from "./control.ts";
@@ -41,7 +40,7 @@ import {
 import { handleFileRequest, handleSignedFileRequest } from "./files.ts";
 import { publicMoneyRoutes, authenticateMoney, moneyRoutes, moneyMaintenance, sendMoneyWebhooks } from "./money-api.ts";
 import { BrowserTokens, type BrowserClaims } from "./browser-tokens.ts";
-import { apiRequest, admissionError, admissionHeaders, errorFields, errorHeaders } from "./admission.ts";
+import { apiRequest, createAdmission, admissionError, admissionHeaders, errorFields, errorHeaders } from "./admission.ts";
 import { BROWSER_READS, corsPreflight, corsResponse } from "./cors.ts";
 import { browserResponse } from "./browser-response.ts";
 import { browserUrl } from "./selfhost-policy.ts";
@@ -359,7 +358,7 @@ const worker = {
                 env, auth.tenantId, created.id, (raw as { spendLimit: unknown }).spendLimit,
               );
             const answer = { ...credentials(created, auth.kind === "oauth" ? undefined : await agentToken(env.API_TOKEN, created.id)), ...(upsert.reconfigured ? { reconfigured: upsert.reconfigured } : {}), ...await builtinWarnings(env, auth.tenantId, created.config) };
-            const headers = admissionHeaders(creationRate(created));
+            const headers = admissionHeaders(creationRate(created) ?? await createAdmission(env, auth.tenantId, false));
             if (!first) return Response.json(answer, { status: 201, headers });
             const submitted = await env.AGENTS.getByName(created.id).fetch(new Request("https://agent/requests", {
               method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(first),

@@ -1610,7 +1610,11 @@ export class CamelAgent extends DurableObject<Env> {
           signal ? withAbortSignal(signal, BACKGROUND_CONTEXT) : BACKGROUND_CONTEXT,
         );
       } catch (error) {
-        if (signal?.aborted) return (await this.ctx.storage.get<RequestRecord>(reqKey(id))) ?? record;
+        if (signal?.aborted) {
+          const latest = (await this.ctx.storage.get<RequestRecord>(reqKey(id))) ?? record;
+          if (latest.state === "completed") await this.flushBilling(true);
+          return latest;
+        }
         throw error;
       }
       const current = await this.ctx.storage.get<RequestRecord>(reqKey(id));
