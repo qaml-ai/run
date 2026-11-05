@@ -5,6 +5,37 @@ import type { Env } from "../src/agent.ts";
 import { withSql } from "../src/postgres.ts";
 export * from "../src/index.ts";
 
+const resizeFailureKey = "contract-fixture/image-resize-failures";
+function imageFailureEnvironment(env: Env): Env {
+  if ((env as Env & { TEST_IMAGE_RESIZE_FAILURE_ONCE?: string }).TEST_IMAGE_RESIZE_FAILURE_ONCE !== "1") return env;
+  // Fail the real Images transform once, at its external-service boundary. The
+  // production request preparation decides whether to omit and retry it.
+  const images = env.IMAGES;
+  return { ...env, IMAGES: new Proxy(images, {
+    get(target, name) {
+      if (name !== "input") return Reflect.get(target, name);
+      return (...args: Parameters<ImagesBinding["input"]>) => {
+        let pipeline = images.input(...args);
+        const proxy: ImagesInput = new Proxy(pipeline, {
+          get(_target, key) {
+            if (key === "transform") return (...options: Parameters<ImagesInput["transform"]>) => { pipeline = pipeline.transform(...options); return proxy; };
+            if (key === "output") return async (...options: Parameters<ImagesInput["output"]>) => {
+              if (!await env.BUCKET.head(resizeFailureKey)) {
+                await env.BUCKET.put(resizeFailureKey, "1");
+                throw new Error("Image service interrupted");
+              }
+              return pipeline.output(...options);
+            };
+            const value = Reflect.get(pipeline, key);
+            return typeof value === "function" ? value.bind(pipeline) : value;
+          },
+        });
+        return proxy;
+      };
+    },
+  }) };
+}
+
 async function fixtureConfiguration(env: Env): Promise<string> {
   const config = await withSql(env, (sql) => sql.query(
     "select configuration from contract_fixture_configuration where singleton=true",
@@ -16,7 +47,7 @@ async function fixtureConfiguration(env: Env): Promise<string> {
 /** Clock preparation only: execution still runs through the original DO alarm/job. */
 export class CamelAgent extends RuntimeAgent {
   constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, { ...env });
+    super(ctx, imageFailureEnvironment({ ...env }));
     // Lifecycle installs its alarm handler during super(). Wrap that installed
     // handler, preserving Pi's job dispatch and re-arm behavior unchanged.
     const alarm = this.alarm?.bind(this);
@@ -59,6 +90,8 @@ export default {
   ...application,
   async fetch(request: Request, env: Env, context: ExecutionContext) {
     if (env.TEST_MODE !== "1") return new Response("Test fixture disabled", { status: 404 });
+    if (new URL(request.url).pathname === "/__test/image-resize-failures")
+      return Response.json({ count: await env.BUCKET.head(resizeFailureKey) ? 1 : 0 });
     if (new URL(request.url).pathname === "/healthz") return application.fetch(request, env, context);
     return application.fetch(request, {
       ...env, AGENT_TENANTS_JSON: await fixtureConfiguration(env),

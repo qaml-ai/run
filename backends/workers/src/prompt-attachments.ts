@@ -41,6 +41,7 @@ import {
   type AttachmentAudioScope,
 } from "./attachment-transcription.ts";
 import type { MediaBindings } from "./media-api.ts";
+import { inspectDocument } from "./document-inspection.ts";
 
 import {
   ATTACHMENT_MARKER as MARKER,
@@ -255,11 +256,10 @@ export class PromptAttachments {
                 }
               : undefined;
         }
-      } else if (entry.contentType === "application/pdf")
-        ref.media = {
-          kind: "none",
-          reason: "PDF inspection is unavailable on Workers",
-        };
+      } else if (entry.contentType === "application/pdf" && entry.size <= FILE_LIMITS.documentBytes) {
+        const object = await this.env.BUCKET.get(entry.key);
+        if (object) ref.media = await inspectDocument(await boundedBytes(object.body, FILE_LIMITS.documentBytes));
+      }
       files.push(ref);
     }
     return transcribeAttachments(this.env, this.storage, identity, files);
