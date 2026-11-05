@@ -2905,8 +2905,8 @@ export class CamelAgent extends DurableObject<Env> {
         const selected = await this.negotiateAgentEvents(request);
         if (selected) return selected;
         return request.headers.get("upgrade")?.toLowerCase() === "websocket"
-          ? this.webSocketEvents(request)
-          : this.events(request);
+          ? await this.webSocketEvents(request)
+          : await this.events(request);
       }
       if (path === "/computer" && request.method === "POST") {
         const inputBody = await body(request, 1100 * 1024);
