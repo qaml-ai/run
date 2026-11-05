@@ -44,7 +44,7 @@ export type ModelHooks = {
   customProviders?: CustomProviders;
 };
 
-function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: string }): Provider {
+function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: string; TEST_MODEL?: string }): Provider {
   let routing: { user: number; previous?: Model<Api>; failed?: Model<Api> } | undefined;
   const prepare = async (model: Model<Api>, context: TranscriptContext, options: StreamOptions = {}) => {
     const config = await hooks.settings?.() ?? {};
@@ -53,7 +53,7 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: 
       if (!routing || routing.user !== user) routing = { user };
       const selected = routeModel(resolveModel(config.model), { reason: routing.failed ? "retry" : routing.previous ? "continuation" : "user", failed: routing.failed, previous: routing.previous });
       if (!selected) throw new Error("Virtual model fallback chain is exhausted");
-      model = boundedModel(selected, config.runLimits?.contextTokens);
+      model = { ...boundedModel(selected, config.runLimits?.contextTokens), ...(env.TEST_MODEL === "1" ? { baseUrl: model.baseUrl } : {}) };
     }
     const outputSchema = config.output?.schema;
     const currentTools = getCurrentTools(context.messages).filter(tool => tool.name !== "final_output");
@@ -66,6 +66,8 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: 
       context = normalizeContext({ messages: [...context.messages, { role: "system", content: "", toolsRemoved: [{ name: "final_output" }], timestamp: Date.now() }] });
     }
     const credential = await hooks.credentials?.(model.provider);
+    if (!credential && !getModels(model.provider).length && !["test", "camel-test", "cloudflare"].includes(model.provider) && !hooks.endpoints?.[model.provider])
+      throw new Error(`${model.provider} provider is gone; set it again with PUT /v1/providers/${model.provider}`);
     if (model.provider === "amazon-bedrock" && !credential?.apiKey && !options.apiKey)
       throw Object.assign(new Error("Bedrock requires an API key"), { code: "model_key_missing" });
     const onPayload = options.onPayload;
@@ -122,6 +124,17 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: 
   return { ...provider, stream: wrap(false), streamSimple: wrap(true) };
 }
 
+function streamApi(model: Model<Api>, simple: boolean, context: TranscriptContext, options: StreamOptions | undefined) {
+  switch (model.api) {
+    case "openai-completions": { const target = model as Model<"openai-completions">; return simple ? streamOpenAISimple(target, context, options as SimpleStreamOptions) : streamOpenAI(target, context, options); }
+    case "openai-responses": { const target = model as Model<"openai-responses">; return simple ? simpleResponses(target, context, options as SimpleStreamOptions) : streamResponses(target, context, options); }
+    case "anthropic-messages": { const target = model as Model<"anthropic-messages">; return simple ? simpleAnthropic(target, context, options as SimpleStreamOptions) : streamAnthropic(target, context, options); }
+    case "google-generative-ai": { const target = model as Model<"google-generative-ai">; return simple ? simpleGoogle(target, context, options as SimpleStreamOptions) : streamGoogle(target, context, options); }
+    case "bedrock-converse-stream": { const target = model as Model<"bedrock-converse-stream">; return simple ? simpleBedrock(target, context, options as SimpleStreamOptions) : streamBedrock(target, context, options); }
+    default: throw new Error(`Unsupported provider API ${model.api}`);
+  }
+}
+
 /** The deterministic provider is opt-in deployment configuration, never a request field. */
 export function modelRuntime(
   env: {
@@ -159,16 +172,6 @@ export function modelRuntime(
     const ai = env.AI ? createAI({ binding: env.AI }) : undefined;
     if (ai) models.setProvider(decorate(ai.provider));
     const catalog = new Map<string, Map<string, Model<Api>>>();
-    const api = (model: Model<Api>, simple: boolean, context: TranscriptContext, options: StreamOptions | undefined) => {
-      switch (model.api) {
-        case "openai-completions": { const target = model as Model<"openai-completions">; return simple ? streamOpenAISimple(target, context, options as SimpleStreamOptions) : streamOpenAI(target, context, options); }
-        case "openai-responses": { const target = model as Model<"openai-responses">; return simple ? simpleResponses(target, context, options as SimpleStreamOptions) : streamResponses(target, context, options); }
-        case "anthropic-messages": { const target = model as Model<"anthropic-messages">; return simple ? simpleAnthropic(target, context, options as SimpleStreamOptions) : streamAnthropic(target, context, options); }
-        case "google-generative-ai": { const target = model as Model<"google-generative-ai">; return simple ? simpleGoogle(target, context, options as SimpleStreamOptions) : streamGoogle(target, context, options); }
-        case "bedrock-converse-stream": { const target = model as Model<"bedrock-converse-stream">; return simple ? simpleBedrock(target, context, options as SimpleStreamOptions) : streamBedrock(target, context, options); }
-        default: throw new Error(`Unsupported provider API ${model.api}`);
-      }
-    };
     const install = (providerId: string) => {
       if (catalog.has(providerId)) return;
       const entries = new Map(getModels(providerId).map(model => [model.id, model]));
@@ -180,8 +183,8 @@ export function modelRuntime(
           return credential ? { auth: { apiKey: credential.bearer ? "runtime-bearer" : credential.apiKey ?? "keyless", baseUrl: credential.baseUrl, headers: credential.headers } } : { auth: {} };
         } } },
         getModels: () => [...entries.values()],
-        stream: (model, context, options) => api(model, false, context, options),
-        streamSimple: (model, context, options) => api(model, true, context, options),
+        stream: (model, context, options) => streamApi(model, false, context, options),
+        streamSimple: (model, context, options) => streamApi(model, true, context, options),
       };
       models.setProvider(decorate(provider));
     };
@@ -215,32 +218,31 @@ export function modelRuntime(
       endpoint.protocol !== "http:"
     )
       throw new Error("Test model URL must be loopback HTTP");
-    const catalog = new Map<string, Model<"openai-completions">>();
-    const resolve = (name = "test/echo", contextTokens?: number, _customProviders?: CustomProviders) => {
-      let selected = catalog.get(name);
-      if (!selected) {
-        const logicalProvider = name.includes("/") ? name.slice(0, name.indexOf("/")) : model.provider;
-        selected = { ...model, provider: logicalProvider, id: name, baseUrl: endpoint.href };
-        catalog.set(name, selected);
-        if (!models.getProvider(logicalProvider)) models.setProvider(decorate({ ...provider, id: logicalProvider }));
-      }
-      return bounded(selected, contextTokens);
+    const catalog = new Map<string, Model<Api>>();
+    const install = (providerId: string) => {
+      if (models.getProvider(providerId)) return;
+      const serve = (target: Model<Api>, simple: boolean, context: TranscriptContext, options?: StreamOptions) =>
+        target.baseUrl === endpoint.href
+          ? streamApi({ ...target, api: "openai-completions" }, simple, context, options)
+          : streamApi(target, simple, context, options);
+      models.setProvider(decorate({
+        id: providerId, name: "Local compatibility fixture", baseUrl: endpoint.href,
+        auth: { apiKey: { name: "Local fixture", resolve: async () => ({ auth: { apiKey: "fixture-model-key" } }) } },
+        getModels: () => [...catalog.values()].filter(entry => entry.provider === providerId),
+        stream: (target, context, options) => serve(target, false, context, options),
+        streamSimple: (target, context, options) => serve(target, true, context, options),
+      }));
     };
-    const provider: Provider<"openai-completions"> = {
-      id: model.provider,
-      name: "Local compatibility fixture",
-      baseUrl: endpoint.href,
-      auth: {
-        apiKey: {
-          name: "Local fixture",
-          resolve: async () => ({ auth: { apiKey: "fixture-model-key" } }),
-        },
-      },
-      getModels: () => [...catalog.values()],
-      stream: streamOpenAI,
-      streamSimple: streamOpenAISimple,
+    const resolve = (name = "test/echo", contextTokens?: number, customProviders?: CustomProviders) => {
+      const custom = customProviders ?? hooks.customProviders;
+      const selected = name.startsWith("test/") || name.startsWith("camel-test/")
+        ? { ...model, provider: name.split("/")[0], id: name.slice(name.indexOf("/") + 1) }
+        : resolveModel(name, hooks.endpoints, custom);
+      const transported = { ...selected, baseUrl: custom?.[selected.provider] ? selected.baseUrl : endpoint.href };
+      catalog.set(name, transported);
+      install(transported.provider);
+      return bounded(transported, contextTokens);
     };
-    models.setProvider(decorate(provider));
     return { models, model: resolve(env.MODEL), resolve };
   }
   const stream = (

@@ -1,6 +1,7 @@
 import { withSql, type PostgresEnv } from "./postgres.ts";
 import type { CustomProviders } from "./model-policy.ts";
 import { HttpError } from "./errors.ts";
+import { keyServices, providerCredentials, type KeyEnv } from "./security-services.ts";
 
 export type ProviderKeyEnv = PostgresEnv & { AGENT_SECRETS_KEY?: string; API_TOKEN?: string; TEST_MODE?: string };
 export type ProviderKey = { apiKey?: string; headers?: Record<string, string>; baseUrl?: string; region?: string; bearer?: true; platform: boolean };
@@ -34,18 +35,7 @@ export async function openProviderSecret(env: ProviderKeyEnv, aad: string, value
 
 /** Scope credentials take precedence; the tenant key is the fallback. No ambient AWS credentials. */
 export async function resolveProviderKey(env: ProviderKeyEnv, tenant: string, provider: string, scope?: string): Promise<ProviderKey | undefined> {
-  if (!env.AGENT_SECRETS_KEY && !(env.TEST_MODE === "1" && env.API_TOKEN)) return undefined;
-  const own = (await withSql(env, sql => sql.query("select scope,config,sealed from model_providers where tenant=$1 and name=$2 and (scope='' or scope=$3) order by scope desc limit 1", [tenant, provider, scope ?? ""]))).rows[0];
-  if (own) {
-    const aad = own.scope ? `model-provider:${tenant}:scope:${own.scope}:${provider}` : `model-provider:${tenant}:${provider}`;
-    return { ...JSON.parse(await openProviderSecret(env, aad, own.sealed)), baseUrl: own.config.baseUrl, ...(own.config.auth === "bearer" && own.config.type === "anthropic-messages" ? { bearer:true as const } : {}), platform:false };
-  }
-  if (scope) {
-    const row = (await withSql(env, sql => sql.query("select sealed, settings from key_scope_providers where tenant=$1 and scope=$2 and provider=$3", [tenant, scope, provider]))).rows[0];
-    if (row) return { ...row.settings, ...JSON.parse(await openProviderSecret(env, `key-scope:${tenant}:${scope}:${provider}`, row.sealed)), platform: false };
-  }
-  const row = (await withSql(env, sql => sql.query("select sealed, region from provider_keys where tenant=$1 and provider=$2", [tenant, provider]))).rows[0];
-  return row ? { apiKey: await openProviderSecret(env, `${tenant}:${provider}`, row.sealed), ...(row.region ? { region: row.region } : {}), platform: false } : undefined;
+  return providerCredentials(await keyServices(env as KeyEnv), tenant, provider, scope);
 }
 
 /** Only public declarations enter the synchronous model resolver; keys stay in the request hook. */

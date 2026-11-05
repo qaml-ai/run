@@ -6,6 +6,7 @@ export type DefaultModelEnv = KeyEnv & { MODEL: string; AGENT_MODEL_FALLBACKS?: 
 
 /** Prefer a tenant's own credentials before borrowing any platform model key. */
 export async function defaultModelFor(env: DefaultModelEnv, tenant: string, keyScope?: string) {
+  if (env.MODEL.startsWith("test/") || env.MODEL.startsWith("camel-test/") || env.MODEL.startsWith("cloudflare/") || env.MODEL.startsWith("@cf/")) return env.MODEL;
   const { accounts, keyScopes } = await keyServices(env);
   const candidates = defaultModels(resolveModel(env.MODEL), env.AGENT_MODEL_FALLBACKS);
   const own = await accounts.ownProviders(tenant);

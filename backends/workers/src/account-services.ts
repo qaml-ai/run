@@ -106,7 +106,7 @@ export function accountServices(env: AccountEnv, accounts: Accounts, fallbackOri
     return c.json({ error: "Account operation failed", code: "BACKEND_ERROR" }, 500);
   });
   const signer = new RuntimeSigner({ db: accounts.db, accounts, issuer: origins.issuer });
-  const result = { environment: env as DefaultModelEnv, accounts, auth, oauth, passwords, mail, limits, origin, origins, signer,
+  const result = { environment: env as unknown as DefaultModelEnv, accounts, auth, oauth, passwords, mail, limits, origin, origins, signer,
     defaultModel: (env as AccountEnv & { MODEL?: string }).MODEL ?? "",
     billingAdmins: new Set((env.AGENT_BILLING_ADMINS ?? "").split(",").filter(Boolean)) };
   const originsCache = cache.get(env) ?? new Map();
