@@ -1,0 +1,13 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "camelrun-proto-agents-ws-1105",
+  "main": "worker.ts",
+  "compatibility_date": "2026-11-05",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "durable_objects": {"bindings": [{"name": "PROBE", "class_name": "AttachedWsProbe"}]},
+  "migrations": [{"tag": "v1", "new_sqlite_classes": ["AttachedWsProbe"]}],
+  "observability": {"enabled": false},
+  "limits": {"cpu_ms": 1000}
+}

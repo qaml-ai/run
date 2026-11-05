@@ -1,0 +1,375 @@
+{
+  "backend": "node",
+  "area": "tools,mcp",
+  "suiteHash": "c381b0d3b8ae18a68fce6a70d2ede906d1d7c63f723c494d012e3b91963a37b2",
+  "revision": "538f43af5f5d33c2d6e4f166c078d98085e04e8c",
+  "runtime": {
+    "node": "v24.22.1",
+    "platform": "linux",
+    "arch": "x64"
+  },
+  "recordedAt": "2026-11-05T22:19:36.192Z",
+  "expectedCases": 40,
+  "rows": [
+    {
+      "area": "mcp",
+      "source": "tests/hosted-mcp.test.ts",
+      "name": "a tool's result is cut at MAX_RESULT characters, saying so",
+      "status": "pass",
+      "durationMs": 32.08708,
+      "reason": "",
+      "backend": "sdk-unit"
+    },
+    {
+      "area": "mcp",
+      "source": "tests/hosted-mcp.test.ts",
+      "name": "AGENT_ISSUER must be one of the origins served",
+      "status": "pass",
+      "durationMs": 1.87096,
+      "reason": "",
+      "backend": "sdk-unit"
+    },
+    {
+      "area": "mcp",
+      "source": "tests/hosted-mcp.test.ts",
+      "name": "an alias serves everything, names MCP resources as reached, keeps the issuer, and sends browser pages to the public URL",
+      "status": "pass",
+      "durationMs": 1968.528113,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "mcp",
+      "source": "tests/hosted-mcp.test.ts",
+      "name": "MCP clients sign in with OAuth: registration, consent, PKCE, rotating refresh tokens, revocation",
+      "status": "pass",
+      "durationMs": 4275.448351,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "mcp",
+      "source": "tests/hosted-mcp.test.ts",
+      "name": "the hosted MCP endpoint runs the CLI's tools as the caller, and reads no files or environment",
+      "status": "pass",
+      "durationMs": 4051.164408,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "mcp",
+      "source": "tests/hosted-mcp.test.ts",
+      "name": "the OpenAI apps domain challenge is served as plain text from AGENT_OPENAI_APPS_CHALLENGE",
+      "status": "pass",
+      "durationMs": 1664.656608,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/attach.test.ts:31",
+      "name": "the application's own connection still answers a replay gap with 409 unless it asks for a snapshot, as relays that do not read snapshots expect",
+      "status": "pass",
+      "durationMs": 12757.514022,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/attach.test.ts:43",
+      "name": "a run for an agent whose tools need its application is refused while none is connected, after a short wait for one reconnecting",
+      "status": "pass",
+      "durationMs": 9475.803428,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/attach.test.ts:69",
+      "name": "the application's ready event carries the hash of the tools it last declared, so an SDK reconfigures only on a change; a run's outcome carries its usage",
+      "status": "pass",
+      "durationMs": 2927.052879,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/attach.test.ts:6",
+      "name": "one application serves an agent's tools at a time: another connection is refused unless it takes over, and the replaced one is told why",
+      "status": "pass",
+      "durationMs": 3596.826678,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/attach.test.ts:89",
+      "name": "a connection that holds an agent but no longer answers (half-open) is replaced without a takeover",
+      "status": "pass",
+      "durationMs": 3840.809034,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/builtins.test.ts:117",
+      "name": "an agent takes builtins without a definition: at creation, by upsert and by configuration, and only from its tenant",
+      "status": "pass",
+      "durationMs": 2822.900646,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/builtins.test.ts:18",
+      "name": "web_fetch reads public pages as text, from the model and codemode, and never reaches inside",
+      "status": "pass",
+      "durationMs": 4152.786868,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/builtins.test.ts:46",
+      "name": "web_fetch refuses internal addresses when nothing is allowed",
+      "status": "pass",
+      "durationMs": 3062.562691,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/builtins.test.ts:55",
+      "name": "an agent schedules, lists and cancels its own wake-ups, and wakes up",
+      "status": "pass",
+      "durationMs": 3951.584885,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/builtins.test.ts:85",
+      "name": "a schedule of an agent at its spend limit records the 402 and moves to its next occurrence instead of retrying",
+      "status": "pass",
+      "durationMs": 2501.110612,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/code-engine.test.ts:21",
+      "name": "codemode runs on V8 for every tenant, and the limits API refuses an engine",
+      "status": "pass",
+      "durationMs": 5795.280806,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/inline-mcp-servers.test.ts:131",
+      "name": "an upsert's mcpServers are part of its configuration and configHash",
+      "status": "pass",
+      "durationMs": 3008.863949,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/inline-mcp-servers.test.ts:158",
+      "name": "a stateless run calls its own MCP servers",
+      "status": "pass",
+      "durationMs": 2980.59154,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/inline-mcp-servers.test.ts:42",
+      "name": "an agent without a definition has MCP servers of its own, called with identity tokens that name it and no definition",
+      "status": "pass",
+      "durationMs": 4401.972433,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/inline-mcp-servers.test.ts:93",
+      "name": "an agent's or run's own MCP servers take no credentials, and an agent from a definition takes none of its own",
+      "status": "pass",
+      "durationMs": 2456.406261,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/mcp.test.ts:101",
+      "name": "tool lists refresh when the server says they changed, and edits keep sealed credentials",
+      "status": "pass",
+      "durationMs": 5102.790305,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/mcp.test.ts:130",
+      "name": "applying a definition lists its servers afresh: a tool added without a list_changed notice reaches the agent at once",
+      "status": "pass",
+      "durationMs": 2706.582316,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/mcp.test.ts:156",
+      "name": "an agent shows every tool source and what its model gets, connecting to MCP servers only when asked",
+      "status": "pass",
+      "durationMs": 4633.994277,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/mcp.test.ts:206",
+      "name": "MCP servers must be on public addresses, checked when saved and again when connecting",
+      "status": "pass",
+      "durationMs": 2963.391899,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/mcp.test.ts:224",
+      "name": "a server that only speaks the older SSE transport is reached through it",
+      "status": "pass",
+      "durationMs": 2559.873572,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/mcp.test.ts:270",
+      "name": "tool servers get the model's call id, codemode's too, and the actor; their progress reaches the event stream",
+      "status": "pass",
+      "durationMs": 2711.425366,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/mcp.test.ts:297",
+      "name": "a burst of progress is coalesced per call: the stream gets the first, then the latest of each window, and the last before the result",
+      "status": "pass",
+      "durationMs": 2700.107545,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/mcp.test.ts:312",
+      "name": "a call that keeps reporting progress outlasts its timeout, which limits only silence",
+      "status": "pass",
+      "durationMs": 4845.556341,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/mcp.test.ts:61",
+      "name": "an MCP server's tools reach the model and codemode; its credentials are sealed and go only to it",
+      "status": "pass",
+      "durationMs": 3599.530229,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/tool-calls.test.ts:121",
+      "name": "a tool source that cannot be listed is named in every run's outcome",
+      "status": "pass",
+      "durationMs": 2477.913081,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/tool-calls.test.ts:136",
+      "name": "an MCP server is listed when its definition is saved: refused credentials are a 400 then, and what it lists or why it could not is in the answer",
+      "status": "pass",
+      "durationMs": 1661.879768,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/tool-calls.test.ts:160",
+      "name": "a direct tool's large result is cut for the model, as codemode's output is, with the whole of it saved to the workspace",
+      "status": "pass",
+      "durationMs": 3526.607629,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/tool-calls.test.ts:187",
+      "name": "history and forks keep capped tool details and deduplicated prompts without changing model content",
+      "status": "pass",
+      "durationMs": 3659.97792,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/tool-calls.test.ts:28",
+      "name": "every tool call carries a stable idempotency key: MCP servers in _meta, OpenAPI operations as an Idempotency-Key header",
+      "status": "pass",
+      "durationMs": 3269.119625,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/tool-calls.test.ts:55",
+      "name": "calls whose ids repeat across turns (as providers that number calls per response give them) get keys of their own",
+      "status": "pass",
+      "durationMs": 2671.128014,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/tool-calls.test.ts:67",
+      "name": "a run's outcome lists its tool calls, those from code too, by name and id with how each went, the first 100 only",
+      "status": "pass",
+      "durationMs": 5585.720713,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/tool-calls.test.ts:96",
+      "name": "an attached tool's own timeoutMs bounds its call; progress extends it; a timeout is an unknown outcome, in the run's outcome too",
+      "status": "pass",
+      "durationMs": 7473.809965,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/webmcp.test.ts:38",
+      "name": "the console registers the tools with the browser, runs them as the signed-in tenant, and unregisters on sign-out",
+      "status": "pass",
+      "durationMs": 3515.785059,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "tools",
+      "source": "tests/webmcp.test.ts:63",
+      "name": "in the console, the tools authenticate with the session cookie and the console header, not a key",
+      "status": "pass",
+      "durationMs": 2681.490235,
+      "reason": "",
+      "backend": "node"
+    }
+  ]
+}

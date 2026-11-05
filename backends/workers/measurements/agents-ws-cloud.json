@@ -1,0 +1,96 @@
+{
+  "name": "camelrun-proto-agents-ws-1105",
+  "account": "camelAI",
+  "startedAt": "2026-11-05T20:06:05.984Z",
+  "operations": [
+    {
+      "command": "deploy --dry-run -c probes/agents-ws/wrangler.jsonc",
+      "exitCode": 0
+    },
+    {
+      "command": "deploy -c probes/agents-ws/wrangler.jsonc",
+      "exitCode": 0,
+      "version": "302adc63-3762-4ab2-9789-fc6999da2f38"
+    },
+    {
+      "command": "secret put API_TOKEN -c probes/agents-ws/wrangler.jsonc",
+      "exitCode": 0
+    },
+    {
+      "command": "deploy -c /var/folders/2w/ghgmsg856n52r27w6r4slplw0000gn/T/camelrun-agents-ws-rCxQa2/teardown.json",
+      "exitCode": 0,
+      "version": "9749dd2b-c5c9-453e-bca9-34ab5a552955"
+    }
+  ],
+  "result": {
+    "before": {
+      "boot": "9daf6ebc-df11-49f6-9cf2-710963623a6f",
+      "restored": 0,
+      "sockets": 1,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "synthetic probe"
+          }
+        ]
+      }
+    },
+    "after": {
+      "boot": "97c8fec4-2759-453c-868b-79f4447d23b5",
+      "restored": 1,
+      "sockets": 1,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "synthetic probe"
+          }
+        ]
+      }
+    },
+    "waits": [
+      {
+        "idleMs": 35000,
+        "changedBoot": true,
+        "restored": 1
+      }
+    ],
+    "opened": 1,
+    "initialized": 1,
+    "toolCalls": 2,
+    "sameConnection": true,
+    "evicted": true,
+    "passed": true
+  },
+  "cleanup": {
+    "workers": [],
+    "namespaces": [],
+    "errors": []
+  },
+  "previousAttempts": [
+    {
+      "startedAt": "2026-11-05T20:05:18.116Z",
+      "endedAt": "2026-11-05T20:05:32.471Z",
+      "error": "Error: Unexpected server response: 404",
+      "cleanup": {
+        "workers": [],
+        "namespaces": [],
+        "errors": []
+      }
+    }
+  ],
+  "preflight": {
+    "worker": false,
+    "namespace": false
+  },
+  "readiness": [
+    200
+  ],
+  "spend": {
+    "estimatedMarginalUsdLessThan": 0.01,
+    "observedInvoiceUsd": null,
+    "note": "One DO and one WebSocket, fixed synthetic calls, less than two minutes; excludes existing subscription. Invoice not yet settled."
+  },
+  "endedAt": "2026-11-05T20:06:53.736Z"
+}

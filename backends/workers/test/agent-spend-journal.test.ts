@@ -57,3 +57,14 @@ test('run budget is isolated by request; agent budget has priority and corrected
   await setAgentSpendLimit(db, 'agent', 0, 0);
   assert.equal((await modelSpendLimit(db, { tenant: 'tenant', agent: 'agent', requestId: 'first', spendLimit: 0 }))?.stopLimit, 'agent');
 });
+
+test('superseded model attempts remain recorded without consuming an agent or run budget', async () => {
+  const { db, record } = await setup();
+  await setAgentSpendLimit(db, 'agent', 1, 0);
+  const blocked = await record(10, 1, 'fallback');
+  await db.query("update model_attempts set context=context || '{\"superseded\":\"content_filter\"}'::jsonb where id=$1", [blocked]);
+  await record(0.1, 2, 'fallback');
+  assert.equal((await agentSpend(db, 'tenant', 'agent'))?.spent, 0.1);
+  assert.equal(await runSpend(db, 'tenant', 'agent', 'fallback'), 0.1);
+  assert.equal(Number((await db.query("select totals->>'cost' as cost from model_attempts where id=$1", [blocked])).rows[0].cost), 10);
+});

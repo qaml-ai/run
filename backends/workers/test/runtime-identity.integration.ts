@@ -6,13 +6,15 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createLocalJWKSet, jwtVerify } from "jose";
 import { RuntimeSigner } from "../src/runtime-identity.ts";
+import { signRuntimeIdentity } from "../src/tool-identity.ts";
 import { keyServices } from "../src/security-services.ts";
 import { startFixture } from "./fixture.ts";
 import { LocalWorker, unusedPort } from "./local-worker.ts";
 
 test("public JWKS and source Ed25519 signing roundtrip work in workerd and Node", { timeout: 120_000 }, async t => {
   const issuer = "https://runtime.example.test";
-  const r = await startFixture({ vars: { AGENT_PUBLIC_URL: issuer } });
+  const secret = "0".repeat(64);
+  const r = await startFixture({ vars: { AGENT_PUBLIC_URL: issuer, AGENT_SECRETS_KEY: secret } });
   t.after(() => r.stop());
   const published = await fetch(r.url + "/.well-known/jwks.json");
   assert.equal(published.status, 200);
@@ -23,7 +25,6 @@ test("public JWKS and source Ed25519 signing roundtrip work in workerd and Node"
     assert.deepEqual([key.kty, key.crv, key.alg, key.use, key.d], ["OKP", "Ed25519", "EdDSA", "sig", undefined]);
     assert.ok(key.kid && key.x);
   }
-  const secret = "0".repeat(64);
   const { accounts } = await keyServices({ HYPERDRIVE: { connectionString: r.databaseUrl }, AGENT_SECRETS_KEY: secret });
   const nodeSigner = new RuntimeSigner({ db: accounts.db, accounts, issuer });
   const audience = "https://tools.example.test/mcp", claims = { tenant: "camelrun-proto-local", agent: "client_fixture", identity: { subject: "end-user", context: { workspace: "ws_1" } }, actor: "assistant", request: "request_1", toolCall: "call_1" };
@@ -31,6 +32,10 @@ test("public JWKS and source Ed25519 signing roundtrip work in workerd and Node"
   const decoded = await jwtVerify(nodeToken, createLocalJWKSet(jwks), { issuer, audience, algorithms: ["EdDSA"] });
   assert.equal(decoded.payload.sub, "end-user");
   assert.equal(decoded.payload.exp! - decoded.payload.iat!, 120);
+  const compact = { tenant: claims.tenant, agent: claims.agent, sub: "end-user", ctx: { workspace: "ws_1" }, act: "assistant", req: "request_1", tcid: "call_1", par: "client_parent", root: "client_root", approval: { input: "approved", by: { via: "agent" }, at: 1000 } };
+  const toolToken = await signRuntimeIdentity({ HYPERDRIVE: { connectionString: r.databaseUrl }, AGENT_SECRETS_KEY: secret }, issuer, audience, compact);
+  const toolClaims = (await jwtVerify(toolToken, createLocalJWKSet(jwks), { issuer, audience, algorithms: ["EdDSA"] })).payload;
+  for (const [key, value] of Object.entries(compact)) assert.deepEqual(toolClaims[key], value);
   const storage = await mkdtemp(join(tmpdir(), "camelrun-proto-identity-test-"));
   t.after(() => rm(storage, { recursive: true, force: true }));
   const config = join(storage, "wrangler.json");

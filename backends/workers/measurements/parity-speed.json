@@ -117,5 +117,22 @@
     "The final Node phase includes one Sprite restart and the pool runner retrying that shard.",
     "All case status hashes include the 380 out-of-scope rows. No extra harness failures were present.",
     "Workers and delegation exit 1 because the unchanged expected implementation gaps still fail assertions."
-  ]
+  ],
+  "postBenchmarkIntegration": {
+    "baseRevision": "8db58007e6f6bf3759f1dd188eee14cad40b6296",
+    "nodeKeyUnchanged": true,
+    "harnessAndCancellationTests": 21,
+    "pythonRunnerTests": 6,
+    "typecheckPassed": true,
+    "workersSmoke": {
+      "group": "delegation",
+      "cases": 39,
+      "counts": {
+        "pass": 26,
+        "fail": 13
+      },
+      "harnessFailures": 0,
+      "cachedNode": true
+    }
+  }
 }

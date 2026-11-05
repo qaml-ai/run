@@ -133,6 +133,7 @@ async function admit(env: MediaBindings, tenant: string, services: KeyServices) 
   const rate = configured?.runsPerMinute ?? row.limits?.runsPerMinute;
   if (rate !== undefined && env.TENANTS && !await env.TENANTS.getByName(tenant).rate('runs',rate)) throw new HttpError(429,'Run rate limit reached','RATE_LIMIT');
 }
+export { admit as admitMedia };
 
 /** Known provider usage and its event are committed together. No prompt, image or transcript enters SQL. */
 async function record(env: MediaBindings, services: KeyServices, tenant: string, usage: any) {

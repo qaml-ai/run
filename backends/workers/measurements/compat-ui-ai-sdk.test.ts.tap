@@ -1,90 +1,40 @@
 TAP version 13
 # Subtest: useChat's transport sends the new message and streams the agent's reply, tool calls included
-not ok 1 - useChat's transport sends the new message and streams the agent's reply, tool calls included
+ok 1 - useChat's transport sends the new message and streams the agent's reply, tool calls included
   ---
-  duration_ms: 1695.991416
+  duration_ms: 2162.661166
   type: 'test'
-  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/ui-ai-sdk.test.ts:59:1'
-  failureType: 'testCodeFailure'
-  error: "Cannot read properties of undefined (reading 'role')"
-  code: 'ERR_TEST_FAILURE'
-  name: 'TypeError'
-  stack: |-
-    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/ui-ai-sdk.test.ts:63:24)
-    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
-    async Test.run (node:internal/test_runner/test:1054:7)
-    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
   ...
 # Subtest: an approval the agent waits on is a tool approval request; answering it in the chat resumes the run
-not ok 2 - an approval the agent waits on is a tool approval request; answering it in the chat resumes the run
+ok 2 - an approval the agent waits on is a tool approval request; answering it in the chat resumes the run
   ---
-  duration_ms: 1682.272959
+  duration_ms: 4238.910208
   type: 'test'
-  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/ui-ai-sdk.test.ts:78:1'
-  failureType: 'testCodeFailure'
-  error: "Cannot read properties of undefined (reading 'parts')"
-  code: 'ERR_TEST_FAILURE'
-  name: 'TypeError'
-  stack: |-
-    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/ui-ai-sdk.test.ts:94:22)
-    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
-    async Test.run (node:internal/test_runner/test:1054:7)
-    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
   ...
 # Subtest: a question the agent asks arrives as a data part; answering it for the chat, then resuming, streams the rest
-not ok 3 - a question the agent asks arrives as a data part; answering it for the chat, then resuming, streams the rest
+ok 3 - a question the agent asks arrives as a data part; answering it for the chat, then resuming, streams the rest
   ---
-  duration_ms: 1618.6865
+  duration_ms: 2387.774666
   type: 'test'
-  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/ui-ai-sdk.test.ts:105:1'
-  failureType: 'testCodeFailure'
-  error: "Cannot read properties of undefined (reading 'parts')"
-  code: 'ERR_TEST_FAILURE'
-  name: 'TypeError'
-  stack: |-
-    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/ui-ai-sdk.test.ts:113:23)
-    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
-    async Test.run (node:internal/test_runner/test:1054:7)
-    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
   ...
 # Subtest: resumeStream() after the resumed run already finished still ends, with what the run said
-not ok 4 - resumeStream() after the resumed run already finished still ends, with what the run said
+ok 4 - resumeStream() after the resumed run already finished still ends, with what the run said
   ---
-  duration_ms: 1616.186125
+  duration_ms: 5122.118541
   type: 'test'
-  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/ui-ai-sdk.test.ts:129:1'
-  failureType: 'testCodeFailure'
-  error: "Cannot read properties of undefined (reading 'parts')"
-  code: 'ERR_TEST_FAILURE'
-  name: 'TypeError'
-  stack: |-
-    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/ui-ai-sdk.test.ts:137:23)
-    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
-    async Test.run (node:internal/test_runner/test:1054:7)
-    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
   ...
 # Subtest: resumeStream() joining a run mid-answer shows each word once, whatever arrived while it looked
-not ok 5 - resumeStream() joining a run mid-answer shows each word once, whatever arrived while it looked
+ok 5 - resumeStream() joining a run mid-answer shows each word once, whatever arrived while it looked
   ---
-  duration_ms: 1685.909792
+  duration_ms: 2977.745292
   type: 'test'
-  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/ui-ai-sdk.test.ts:149:1'
-  failureType: 'testCodeFailure'
-  error: "Cannot read properties of undefined (reading 'parts')"
-  code: 'ERR_TEST_FAILURE'
-  name: 'TypeError'
-  stack: |-
-    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/ui-ai-sdk.test.ts:157:23)
-    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
-    async Test.run (node:internal/test_runner/test:1054:7)
-    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
   ...
 1..5
 # tests 5
 # suites 0
-# pass 0
-# fail 5
+# pass 5
+# fail 0
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 11572.829958
+# duration_ms 24159.020125

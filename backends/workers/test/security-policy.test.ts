@@ -20,8 +20,8 @@ test("bucket and keyScope names use the source grammars", () => {
 });
 
 test("spendLimit accepts source dollar objects and null, and rejects numeric or unbounded values", () => {
-  assert.equal(configuration({ spendLimit: { usd: 1.5 } }, "test/model").config.spendLimit, 1.5);
-  assert.equal(configuration({ spendLimit: { usd: 0 } }, "test/model").config.spendLimit, 0);
-  assert.equal(configuration({ spendLimit: null }, "test/model").config.spendLimit, undefined);
+  assert.deepEqual(configuration({ spendLimit: { usd: 1.5 } }, "test/model").config.spendLimit, { usd: 1.5 });
+  assert.deepEqual(configuration({ spendLimit: { usd: 0 } }, "test/model").config.spendLimit, { usd: 0 });
+  assert.equal(configuration({ spendLimit: null }, "test/model").config.spendLimit, null);
   for (const spendLimit of [1.5, {}, { usd: -1 }, { usd: 1_000_001 }, { usd: Infinity }, { usd: 1, extra: true }]) assert.throws(() => configuration({ spendLimit }, "test/model"), /spendLimit must be/);
 });

@@ -24,7 +24,7 @@ export type BillingEnv = PostgresEnv & {
   EMAIL_FROM?: string;
 };
 export type BillingPrincipal = { tenantId: string; kind: string };
-export type BillingServices = { billing?: Billing; alerts?: BillingAlerts; emailEnabled?: boolean; rateLimits?: Pick<RateLimits, "tenantLimit">; busy?: (tenant: string) => Promise<number> };
+export type BillingServices = { billing?: Billing; alerts?: BillingAlerts; emailEnabled?: boolean; rateLimits?: Pick<RateLimits, "tenantLimit">; busy?: (tenant: string) => Promise<number>; exists?: (tenant: string) => Promise<boolean> };
 const json = (value: unknown, status = 200) => Response.json(value, { status });
 
 /** This experiment can never make a live Stripe charge, even if given a live key. */
@@ -128,7 +128,7 @@ export async function billingRoutes(request: Request, env: BillingEnv, principal
   if (path === "/v1/billing/adjustments" && method === "POST") {
     operator(env, principal);
     const body = await input(request, schema.AdjustmentInput), key = `adjustment:${body.idempotencyKey ?? randomUUID()}`;
-    if (!(await billing.db.query("select 1 from tenants where id=$1", [body.tenant])).rowCount) throw new HttpError(404, `Unknown tenant ${body.tenant}`);
+    if (!(services.exists ? await services.exists(body.tenant) : (await billing.db.query("select 1 from tenants where id=$1", [body.tenant])).rowCount)) throw new HttpError(404, `Unknown tenant ${body.tenant}`);
     await billing.post([{ tenant: body.tenant, kind: "adjustment", amount: body.amount, key, metadata: { reason: body.reason, by: tenant } }]);
     const row = (await billing.db.query("select id, tenant, kind, amount, metadata, created_at from credit_ledger where idempotency_key = $1", [key])).rows[0];
     if (row.tenant !== body.tenant || row.amount !== body.amount) throw new HttpError(409, "Idempotency key reused with a different adjustment");

@@ -1,4 +1,10 @@
 import { withMoneyMetrics } from "./money-metrics.ts";
+import { firstPrompt } from "./first-prompt.ts";
+import { serveAgentMcp, agentMcpPreflight, agentMcpSignIn } from "./agent-mcp.ts";
+import { publicOrigins } from "./account-origins.ts";
+import { serveHostedMcp } from "./hosted-mcp.ts";
+import { publicDocs } from "./public-docs.ts";
+import { resolveDefinition } from "./definitions.ts";
 import { sweepComputers } from './computers/service.ts';
 import { CamelAgent, json, type Env } from "./agent.ts";
 import {
@@ -10,13 +16,15 @@ import {
   type DirectoryFailure,
 } from "./control.ts";
 import { ApiError, agentToken, configuration } from "./api-contract.ts";
+import { upsertAgent } from "./agent-upsert.ts";
+import { configurationModelError } from "./default-model.ts";
 import { authorized, agentId, BadRequest, body } from "./validation.ts";
 import { HttpError, errorCode, errorStatus } from "./errors.ts";
 import { handleAdminRequest } from "./admin-api.ts";
 import { handleServiceRequest } from "./service-api.ts";
 import { handleMediaRequest } from "./media-api.ts";
 import { handleComputerRequest } from "./computers/api.ts";
-import { websocketAuthorization, negotiateEvents } from "./live-transport.ts";
+import { websocketAuthorization } from "./live-transport.ts";
 import { publishScheduleEmails, deliverScheduleEmail } from "./schedules.ts";
 import { metric, failure } from "./observability.ts";
 import { withSql } from "./postgres.ts";
@@ -31,6 +39,23 @@ import { BrowserTokens, type BrowserClaims } from "./browser-tokens.ts";
 import { apiRequest, admissionError, errorFields, errorHeaders } from "./admission.ts";
 import { BROWSER_READS, corsPreflight, corsResponse } from "./cors.ts";
 import { browserResponse } from "./browser-response.ts";
+import { decisionService, type DecisionEnv } from "./decision-service.ts";
+import { decisionRoute } from "./decision-runtime.ts";
+import {
+  definitionRoutes,
+  provisionDefinition,
+  visibleConfiguration,
+  configurationPatch,
+} from "./definitions.ts";
+import { statelessRoutes, agentLifecycleRoutes } from "./agent-routes.ts";
+import { modelCatalog } from "./model.ts";
+import { providerRoutes } from "./provider-routes.ts";
+import { TENANT_CONFIGURATION_KEYS } from "./access-policy.ts";
+import {
+  readAgentSpendLimit,
+  setAgentSpendLimit,
+  agentSpendView,
+} from "./agent-spend.ts";
 export { CamelAgent };
 export { TenantAdmission } from "./tenant.ts";
 export { Volume } from "./volume.ts";
@@ -49,16 +74,20 @@ function result<T>(value: T | DirectoryFailure): T {
   }
   return value as T;
 }
-function credentials(entry: DirectoryEntry, token: string) {
+function credentials(entry: DirectoryEntry, token?: string) {
   return {
     id: entry.id,
-    token,
+    ...(token === undefined ? {} : { token }),
     expiresAt: entry.expiresAt,
     configHash: entry.configHash,
   };
 }
 function summary(entry: DirectoryEntry) {
   return {
+    ...visibleConfiguration(entry.config),
+    ...(entry.config.definition ? { definition: { id: entry.config.definition, revision: entry.config.definitionRevision } } : {}),
+    ...("forkedFrom" in entry ? { forkedFrom: entry.forkedFrom } : {}),
+    ...(entry.parentAgentId ? { parentAgentId: entry.parentAgentId, parentRunId: entry.parentRunId } : {}),
     id: entry.id,
     key: entry.key,
     name: entry.config.name ?? "",
@@ -76,8 +105,33 @@ async function forward(request: Request, env: Env, id: string, path: string) {
   url.pathname = path;
   return env.AGENTS.getByName(id).fetch(new Request(url, request));
 }
+function scopedConfiguration(input: unknown) {
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    throw new BadRequest("Expected configuration object");
+  if (Object.hasOwn(input, "initialMessages") || Object.hasOwn(input, "importMessages"))
+    throw new BadRequest("History can only be imported at creation");
+  for (const key of [
+    ...TENANT_CONFIGURATION_KEYS,
+    "definition",
+    "openApi",
+    "subject",
+    "context",
+    "humanInput",
+    "subagents",
+    "workspaceId",
+    "remount",
+    "initialMessages",
+    "importMessages",
+  ])
+    if (Object.hasOwn(input, key))
+      throw new ApiError(
+        403,
+        `Only the tenant can change an agent's ${key}`,
+        "FORBIDDEN",
+      );
+}
 
-export default {
+const worker = {
   async fetch(
     request: Request,
     env: Env,
@@ -86,18 +140,25 @@ export default {
     return withMoneyMetrics(env, async () => corsResponse(request, await (async () => {
     try {
       request = websocketAuthorization(request);
+      if (request.method === "OPTIONS" && (/^\/v1\/agents\/client_[a-f0-9]{40}\/mcp$/.test(new URL(request.url).pathname) || new URL(request.url).pathname === "/mcp")) return agentMcpPreflight();
       const preflight = corsPreflight(request);
       if (preflight) return preflight;
       const signed = await handleSignedFileRequest(request, env);
       if (signed) return signed;
       const url = new URL(request.url),
         path = url.pathname;
+      if (path === "/.well-known/openai-apps-challenge" && request.method === "GET") {
+        const challenge = (env as Env & { AGENT_OPENAI_APPS_CHALLENGE?: string }).AGENT_OPENAI_APPS_CHALLENGE?.trim();
+        return new Response(challenge || null, { status: challenge ? 200 : 404, headers: { "Content-Type": "text/plain; charset=UTF-8", "Cache-Control": "no-store" } });
+      }
       if (path === "/healthz" && request.method === "GET")
         return json({
           ok: true,
           backend: "workers-native",
           experimental: true,
         });
+      const docs = await publicDocs(request, env);
+      if (docs) return docs;
       const publicMoney = await publicMoneyRoutes(request, env, ctx);
       if (publicMoney) return publicMoney;
       await apiRequest(request, env);
@@ -112,6 +173,15 @@ export default {
       }
       let auth = browser ? null : await authenticateMoney(request, env)
         ?? (((env.TEST_MODE === "1" && !bearer?.startsWith("Bearer art_")) || await authorized(request, env.API_TOKEN)) ? await authenticate(request, env) : null);
+      if (path === "/mcp") {
+        if (!auth) return agentMcpSignIn(request, publicOrigins(env as unknown as NodeJS.ProcessEnv, url.origin).of(request.headers), "");
+        const publicOrigin = env.AGENT_PUBLIC_URL || url.origin;
+        return serveHostedMcp(request, { publicOrigin, fetch: (async (input, init) => {
+          const local = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+          if (local.origin === new URL(publicOrigin).origin) local.host = url.host, local.protocol = url.protocol;
+          return worker.fetch(new Request(local, input instanceof Request ? input : init), env, ctx);
+        }) as typeof fetch });
+      }
       const service = await handleServiceRequest(request, env, auth);
       if (service) return service;
       const match =
@@ -119,11 +189,19 @@ export default {
           path,
         );
       let entry: DirectoryEntry | null = null;
+      if (match?.[1] === "clients" && auth)
+        throw new ApiError(401, "An agent token is required", "UNAUTHORIZED");
       if (match) {
         const idOrKey = agentId(decodeURIComponent(match[2]));
         if (auth) entry = await new Directory(env, auth.tenantId).get(idOrKey);
         else if (browser && browser.agent === idOrKey)
           entry = await new Directory(env, browser.tenant).get(idOrKey);
+        else if (browser) {
+          const candidate = await new Directory(env, browser.tenant).get(idOrKey);
+          if (!candidate || !browser.scopes.includes('children') || !await env.AGENTS.getByName(browser.agent).hasBackgroundChild(candidate.id))
+            throw new ApiError(403, 'This browser token does not grant this agent', 'FORBIDDEN');
+          entry = candidate;
+        }
         else if (
           /^client_[a-f0-9]{40}$/.test(idOrKey) &&
           (await authorized(request, await agentToken(env.API_TOKEN, idOrKey)))
@@ -146,6 +224,8 @@ export default {
             }))[0] ?? null;
         }
       }
+      if (!auth && !entry && match?.[1] === "v1/agents" && match[3] === "/mcp")
+        return agentMcpSignIn(request, env.AGENT_PUBLIC_URL || url.origin, match[2]);
       if (!auth && !entry)
         throw new ApiError(401, "Unauthorized", "UNAUTHORIZED");
       if (auth) {
@@ -170,39 +250,79 @@ export default {
         if (money) return money;
         const admin = await handleAdminRequest(request, env, auth);
         if (admin) return admin;
+        if (path === "/v1/decisions") {
+          const decisions = decisionService(
+            env as Env & DecisionEnv,
+            async () => ({ tenant: auth!.tenantId }),
+          );
+          const response = await decisionRoute(request, decisions);
+          if (response) { ctx.waitUntil(sendMoneyWebhooks(env)); return response; }
+        }
         const control = await controlRoutes(request, env, auth);
         if (control) return control;
+        if (path === "/v1/inputs" && request.method === "GET") {
+          const entries = await new Directory(env, auth.tenantId).list();
+          const inputs = [];
+          for (const entry of entries) {
+            const response = await forward(request, env, entry.id, "/inputs");
+            if (!response.ok) return response;
+            inputs.push(...await response.json() as Array<{ id: string; createdAt: number }>);
+          }
+          return json(inputs.sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id)).slice(0, 100));
+        }
         const media = await handleMediaRequest(request, env, auth);
         if (media) return media;
         const files = await handleFileRequest(request, env, auth);
         if (files) return files;
+        const definition = await definitionRoutes(request, env, auth);
+        if (definition) return definition;
+        const provider = await providerRoutes(request, env, auth);
+        if (provider) return provider;
+        const run = await statelessRoutes(request, env, auth);
+        if (run) return run;
         if (path === "/v1/models" && request.method === "GET")
-          return json([
-            {
-              id: env.MODEL,
-              name: env.MODEL,
-              provider: env.TEST_MODEL === "1" ? "fixture" : "cloudflare",
-              input: ["text", "image"],
-            },
-          ]);
+          return json(
+            modelCatalog(env, url.searchParams.get("provider") ?? undefined),
+          );
         if (path === "/v1/agents") {
           const directory = new Directory(env, auth.tenantId);
           if (request.method === "GET")
-            return json((await directory.list()).map(summary));
+            return json(
+              (await directory.list())
+                .filter((entry) => entry.config.type !== "run")
+                .map(summary),
+            );
           if (request.method === "POST") {
-            const input = await body(request);
+            const raw = await body(request, 17 * 1024 * 1024);
+            if (!raw || typeof raw !== "object" || Array.isArray(raw))
+              throw new BadRequest("Expected configuration object");
+            const first = firstPrompt((raw as { prompt?: unknown }).prompt);
+            const { prompt: _prompt, ...settings } = raw as Record<string, unknown>;
+            const input = await provisionDefinition(
+              env,
+              auth.tenantId,
+              settings,
+            );
             configuration(input, env.MODEL);
             const key = request.headers.get("Idempotency-Key") ?? undefined;
-            const created = result(await directory.upsert(input, key));
-            return json(
-              credentials(created, await agentToken(env.API_TOKEN, created.id)),
-              201,
-            );
+            const upsert = await upsertAgent(env, auth.tenantId, input, key, url.origin);
+            const created = result(upsert.entry);
+            if (Object.hasOwn(raw, "spendLimit"))
+              await setAgentSpendLimit(
+                env, auth.tenantId, created.id, (raw as { spendLimit: unknown }).spendLimit,
+              );
+            const answer = { ...credentials(created, auth.kind === "oauth" ? undefined : await agentToken(env.API_TOKEN, created.id)), ...(upsert.reconfigured ? { reconfigured: upsert.reconfigured } : {}) };
+            if (!first) return json(answer, 201);
+            const submitted = await env.AGENTS.getByName(created.id).fetch(new Request("https://agent/requests", {
+              method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(first),
+            }));
+            const sent = await submitted.json() as { error?: string; code?: string };
+            return json({ ...answer, prompt: submitted.ok ? sent : { error: { status: submitted.status, code: sent.code ?? "INVALID_REQUEST", message: sent.error } } }, 201);
           }
         }
         throw new ApiError(404, "Unknown API route", "NOT_FOUND");
       }
-      if (!entry) throw new ApiError(404, "Unknown agent", "AGENT_NOT_FOUND");
+      if (!entry || entry.config.type === "run") throw new ApiError(404, "Unknown agent", "AGENT_NOT_FOUND");
       const tail = match[3] || "/";
       // Internal computer operations are reachable only through the service
       // binding. Public cleanup must use the account-scoped confirmation route.
@@ -210,6 +330,8 @@ export default {
         throw new ApiError(404, "Not found", "NOT_FOUND");
       const directory = new Directory(env, entry.tenantId);
       if (entry.deleted) {
+        if (["/", "/credentials"].includes(tail) && request.method === "GET")
+          throw new ApiError(404, "Unknown agent", "AGENT_NOT_FOUND");
         if (auth && tail === "/" && request.method === "DELETE") {
           result(await directory.remove(entry.id));
           return json({ deleted: true });
@@ -224,41 +346,101 @@ export default {
           "Agent initialization is pending; retry creation",
           "INITIALIZATION_PENDING",
         );
+      if (tail === "/mcp" && match[1] === "v1/agents") {
+        const definition = entry.config.definition
+          ? await resolveDefinition(env, entry.tenantId, entry.config.definition).catch(() => undefined)
+          : undefined;
+        return serveAgentMcp(request, {
+          agent: { id: entry.id, name: entry.config.name, own: !auth },
+          description: definition?.spec.description,
+          publicOrigin: env.AGENT_PUBLIC_URL || url.origin,
+          base: `${url.origin}${auth ? "/v1/agents/" : "/clients/"}${entry.id}`,
+          fetch: (input, init) => worker.fetch(new Request(input, init), env, ctx),
+        });
+      }
       if (tail === "/browser-tokens" && request.method === "POST") {
         if (!auth || auth.kind === "oauth") throw new ApiError(403, "Account key required", "FORBIDDEN");
         return json({ ...browserTokens.mint(entry.tenantId, entry.id, await body(request, 16 * 1024)), agentId: entry.id }, 201);
       }
       if (tail === "/credentials" && request.method === "GET") {
-        if (!auth) throw new ApiError(403, "Account key required", "FORBIDDEN");
+        if (!auth) throw new ApiError(401, "Account key required", "UNAUTHORIZED");
+        if (!entry.key) throw new ApiError(409, "AGENT_KEYLESS: this agent was made without a key, so its token is only what its create answered", "AGENT_KEYLESS");
         return json(
           credentials(entry, await agentToken(env.API_TOKEN, entry.id)),
         );
       }
       if (tail === "/" && request.method === "DELETE") {
-        if (!auth) throw new ApiError(403, "Account key required", "FORBIDDEN");
         result(await directory.remove(entry.id));
         return json({ deleted: true });
       }
-      if (tail === "/" && request.method === "GET") return json(summary(entry));
+      if (tail === "/" && request.method === "GET") {
+        const response = await forward(
+          new Request(request.url, { headers: request.headers }),
+          env,
+          entry.id,
+          "/tool-sources",
+        );
+        if (!response.ok) return response;
+        const stateResponse = await forward(
+          new Request(request.url, { headers: request.headers }), env, entry.id, "/state",
+        );
+        if (!stateResponse.ok) return stateResponse;
+        const state = await stateResponse.json() as { requests: { state: string }[]; cursor: number; running: boolean };
+        return json({
+          ...summary(entry),
+          ...state,
+          spendLimit: agentSpendView(
+            await readAgentSpendLimit(env, entry.tenantId, entry.id),
+          ),
+          toolSources: await response.json(),
+        });
+      }
+      if (tail === "/" && request.method === "PATCH") {
+        if (!auth) throw new ApiError(403, "Account key required", "FORBIDDEN");
+        const input = await body(request);
+        if (
+          !input || typeof input !== "object" || Array.isArray(input) ||
+          Object.keys(input).some((key) => !["name", "type"].includes(key))
+        )
+          throw new BadRequest("Only name and type may be patched here");
+        return json(summary(result(await directory.upsert(
+          { ...entry.config, ...input }, entry.key ?? entry.id, url.origin,
+        ))));
+      }
+      if (tail === "/metadata" && request.method === "POST") {
+        const input = await body(request, 4096);
+        if (
+          !input || typeof input !== "object" || Array.isArray(input) ||
+          Object.keys(input).some((key) => !["name", "type"].includes(key))
+        )
+          throw new BadRequest("Expected name and type");
+        const next = result(await directory.upsert(
+          { ...entry.config, ...input }, entry.key ?? entry.id, url.origin,
+        ));
+        return json({ name: next.config.name ?? "", type: next.config.type ?? "agent" });
+      }
       if (tail === "/configuration") {
-        if (request.method === "GET") return json(entry.config);
+        if (request.method === "GET") return json(visibleConfiguration(entry.config));
         if (!["PUT", "PATCH"].includes(request.method))
           throw new ApiError(405, "Method not allowed");
         const next = await body(request);
         if (!next || typeof next !== "object" || Array.isArray(next))
           throw new BadRequest("Expected configuration object");
-        const updated = result(
-          await directory.upsert(
-            { ...entry.config, ...next },
-            entry.key ?? entry.id,
-          ),
-        );
-        return json({ id: updated.id, configHash: updated.configHash });
+        if (!auth) scopedConfiguration(next);
+        const patched = configuration({ ...entry.config, ...next }, entry.config.model ?? env.MODEL).config;
+        const modelError = (Object.hasOwn(next, "model") || Object.hasOwn(next, "keyScope"))
+          ? await configurationModelError(env, entry.tenantId, patched) : undefined;
+        if (modelError) throw new ApiError(400, modelError);
+        return forward(new Request(request.url, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ id: crypto.randomUUID(), method: "configure", params: next }),
+        }), env, entry.id, "/requests");
       }
       if (tail === "/mounts") {
         if (request.method === "GET")
           return json(entry.config.mounts ?? []);
         if (request.method === "PUT") {
+          if (!auth) throw new ApiError(403, "Account key required", "FORBIDDEN");
           const input = (await body(request)) as { mounts?: unknown[] };
           const updated = result(
             await directory.upsert(
@@ -275,9 +457,13 @@ export default {
         env.TEST_MODEL !== "1"
       )
         throw new ApiError(404, "Not found");
-      if (!browser && tail === "/events" && request.method === "GET" && request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
-        const selected = negotiateEvents(request);
-        if (selected) return selected;
+      const lifecycle = !browser
+        ? await agentLifecycleRoutes(request, env, entry, tail, auth?.kind !== "oauth")
+        : undefined;
+      if (lifecycle) return lifecycle;
+      if (!auth && tail === "/requests" && request.method === "POST") {
+        const input = (await request.clone().json()) as { method?: string; params?: unknown };
+        if (input.method === "configure") scopedConfiguration(input.params);
       }
       // Browser grants retain Node's read-only SSE policy. The internal agent
       // endpoint also negotiates transports, so strip the WebSocket offer here.
@@ -285,6 +471,17 @@ export default {
         const headers = new Headers(request.headers);
         headers.set("accept", "text/event-stream");
         request = new Request(request, { headers });
+      }
+      if (tail === "/inputs" || tail.startsWith("/inputs/")) {
+        const headers = new Headers(request.headers);
+        headers.set("x-camel-input-via", match[1] === "clients" ? "agent" : "api");
+        request = new Request(request, { headers });
+      }
+      if (tail === "/events") {
+        const eventUrl = new URL(request.url), headers = new Headers(request.headers);
+        headers.set("x-camel-events-path", eventUrl.pathname);
+        if (match[1] === "v1/agents" || browser) eventUrl.searchParams.set("watch", "1");
+        request = new Request(eventUrl, { method: request.method, headers, signal: request.signal });
       }
       const response = await forward(request, env, entry.id, tail);
       return browser ? browserResponse(response, browser, tail) : response;
@@ -325,3 +522,4 @@ export default {
     });
   },
 } satisfies ExportedHandler<Env, DeliveryMessage>;
+export default worker;

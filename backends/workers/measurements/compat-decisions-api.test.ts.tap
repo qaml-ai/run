@@ -1,114 +1,40 @@
 TAP version 13
 # Subtest: POST /v1/decisions answers one state or a batch on the platform's OpenRouter key, bills what OpenRouter charged, and logs no state
-not ok 1 - POST /v1/decisions answers one state or a batch on the platform's OpenRouter key, bills what OpenRouter charged, and logs no state
+ok 1 - POST /v1/decisions answers one state or a batch on the platform's OpenRouter key, bills what OpenRouter charged, and logs no state
   ---
-  duration_ms: 2071.742625
+  duration_ms: 2077.364916
   type: 'test'
-  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/decisions-api.test.ts:60:1'
-  failureType: 'testCodeFailure'
-  error: |-
-    {"error":"Unknown API route","code":"NOT_FOUND"}
-
-    404 !== 200
-
-  code: 'ERR_ASSERTION'
-  name: 'AssertionError'
-  expected: 200
-  actual: 404
-  operator: 'strictEqual'
-  stack: |-
-    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/decisions-api.test.ts:66:10)
-    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
-    async Test.run (node:internal/test_runner/test:1054:7)
-    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
   ...
 # Subtest: a tenant's own OpenRouter key answers its decisions, and is not charged
-not ok 2 - a tenant's own OpenRouter key answers its decisions, and is not charged
+ok 2 - a tenant's own OpenRouter key answers its decisions, and is not charged
   ---
-  duration_ms: 1953.111417
+  duration_ms: 1886.091417
   type: 'test'
-  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/decisions-api.test.ts:104:1'
-  failureType: 'testCodeFailure'
-  error: |-
-    {"error":"Unknown API route","code":"NOT_FOUND"}
-
-    404 !== 200
-
-  code: 'ERR_ASSERTION'
-  name: 'AssertionError'
-  expected: 200
-  actual: 404
-  operator: 'strictEqual'
-  stack: |-
-    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/decisions-api.test.ts:107:10)
-    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
-    async Test.run (node:internal/test_runner/test:1054:7)
-    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
   ...
 # Subtest: the decide builtin answers from codemode in batches and directly, billed to the run and the agent
-not ok 3 - the decide builtin answers from codemode in batches and directly, billed to the run and the agent
+ok 3 - the decide builtin answers from codemode in batches and directly, billed to the run and the agent
   ---
-  duration_ms: 2646.078541
+  duration_ms: 2318.898375
   type: 'test'
-  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/decisions-api.test.ts:130:1'
-  failureType: 'testCodeFailure'
-  error: 'decide is a direct tool too'
-  code: 'ERR_ASSERTION'
-  name: 'AssertionError'
-  expected: true
-  actual: false
-  operator: '=='
-  stack: |-
-    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/decisions-api.test.ts:137:10)
-    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
-    async Test.run (node:internal/test_runner/test:1054:7)
-    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
   ...
 # Subtest: an agent that denies data collection has decide by default, its calls sent with that data policy
-not ok 4 - an agent that denies data collection has decide by default, its calls sent with that data policy
+ok 4 - an agent that denies data collection has decide by default, its calls sent with that data policy
   ---
-  duration_ms: 2005.172833
+  duration_ms: 1870.725709
   type: 'test'
-  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/decisions-api.test.ts:151:1'
-  failureType: 'testCodeFailure'
-  error: 'prompt: 404 {"error":"Unknown agent","code":"AGENT_NOT_FOUND"}'
-  code: 'ERR_TEST_FAILURE'
-  stack: |-
-    Object.prompt (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/backends/workers/test/compat-runtime.ts:86:13)
-    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
-    async TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/decisions-api.test.ts:155:18)
-    async Test.run (node:internal/test_runner/test:1054:7)
-    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
   ...
 # Subtest: decide is every agent's by default, and opts out with decide: false on the agent, its update or its definition; a toolless run and a tenant without an OpenRouter key have none
-not ok 5 - decide is every agent's by default, and opts out with decide: false on the agent, its update or its definition; a toolless run and a tenant without an OpenRouter key have none
+ok 5 - decide is every agent's by default, and opts out with decide: false on the agent, its update or its definition; a toolless run and a tenant without an OpenRouter key have none
   ---
-  duration_ms: 1993.83275
+  duration_ms: 3709.606959
   type: 'test'
-  location: '/Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/decisions-api.test.ts:164:1'
-  failureType: 'testCodeFailure'
-  error: |-
-    The expression evaluated to a falsy value:
-
-      assert.ok(offered(r).includes("decide"))
-
-  code: 'ERR_ASSERTION'
-  name: 'AssertionError'
-  expected: true
-  actual: false
-  operator: '=='
-  stack: |-
-    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-parity-platform/tests/decisions-api.test.ts:170:10)
-    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
-    async Test.run (node:internal/test_runner/test:1054:7)
-    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
   ...
 1..5
 # tests 5
 # suites 0
-# pass 0
-# fail 5
+# pass 5
+# fail 0
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 13590.377417
+# duration_ms 14727.032333

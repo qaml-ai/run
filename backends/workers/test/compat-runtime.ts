@@ -38,7 +38,8 @@ export async function compatibilityRuntime(
     vars: {
       ...env,
       ...(tenantsFile ? { AGENT_TENANTS_JSON: JSON.stringify(tenantsFile) } : {}),
-      MODEL: env.AGENT_MODEL ?? "openai/gpt-4o-mini",
+      ...(tenantsFile ? { TEST_DECISION_KEYS: JSON.stringify({ tenants: Object.fromEntries(Object.entries(tenantsFile.tenants ?? {}).map(([id, value]: [string, any]) => [id, { apiKeys: value.apiKeys, platformKeys: value.platformKeys }])), platformKeys: tenantsFile.platformKeys }) } : {}),
+      MODEL: `${env.AGENT_PROVIDER ?? "openrouter"}/${env.AGENT_MODEL ?? "openai/gpt-4o-mini"}`,
       PUBLIC_BASE_URL: env.AGENT_PUBLIC_URL ?? 'https://agents.example.test',
       ...(env.AGENT_IMAGES_URL || env.AGENT_TRANSCRIPTION_URL || env.AGENT_SPEECH_URL ? { MEDIA_BASE_URL: env.AGENT_IMAGES_URL ?? env.AGENT_TRANSCRIPTION_URL ?? env.AGENT_SPEECH_URL } : {}),
       ...(tenantsFile?.platformKeys?.openai ? {PLATFORM_OPENAI_KEY:tenantsFile.platformKeys.openai} : {}),

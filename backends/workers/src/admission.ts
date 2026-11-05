@@ -12,7 +12,7 @@ async function service(env: AdmissionEnv) {
   const { accounts } = await keyServices(env);
   // One rate-limit service per env/origin, shared with console authentication. Only
   // /v1 per-address buckets are isolate-local; tenant and sign-in counters are SQL.
-  return accountServices(env, accounts, env.AGENT_PUBLIC_URL ?? env.PUBLIC_URL ?? "https://runtime.invalid");
+  return accountServices(env, accounts, env.AGENT_PUBLIC_URL || env.PUBLIC_URL || "https://runtime.invalid");
 }
 
 /** Per-address /v1 admission. Public account routes already count their own auth requests. */

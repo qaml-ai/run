@@ -50,3 +50,9 @@ The untouched remote job saved both reports and its 2,602-second timing before
 exiting with the expected assertion failures. Its local driver then reported a
 shell parse error because that script had been edited while the run was active;
 the saved reports were complete and were used for the identity comparison.
+
+After this paired benchmark, the integration branch advanced to `8db58007` with
+Workers implementation changes. The draft incorporates that branch and resolves
+the runner/fixture conflicts. Its Node key is still exactly the key above, so
+the green Node cache remains valid. The paired results describe the fixed
+application revision used for the benchmark, not the newer Workers behavior.

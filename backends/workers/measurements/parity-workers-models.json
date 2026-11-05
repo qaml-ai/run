@@ -1,0 +1,474 @@
+{
+  "backend": "workers",
+  "area": "models",
+  "suiteHash": "9d702f187f303805ccd93f24968c4081eabd876ad133ec109995b889d8a5e108",
+  "revision": "d48c605cfc6810b89241e5e8eb1ccbfe7a822c37",
+  "runtime": {
+    "node": "v24.22.1",
+    "platform": "linux",
+    "arch": "x64"
+  },
+  "recordedAt": "2026-11-05T22:08:49.330Z",
+  "expectedCases": 51,
+  "rows": [
+    {
+      "area": "models",
+      "source": "tests/added-models.test.ts:62",
+      "name": "an agent on it calls OpenRouter's Chat Completions with the 1017 id and the reasoning it asks for",
+      "status": "pass",
+      "durationMs": 10365.21488,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/agent-language.test.ts:108",
+      "name": "a definition's language: its agents inherit it, an agent's own stays when it is applied, and a run takes its own or the definition's",
+      "status": "pass",
+      "durationMs": 11667.815471,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/agent-language.test.ts:145",
+      "name": "the TypeScript SDK sends language when it makes, configures and runs agents",
+      "status": "pass",
+      "durationMs": 7435.972726,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/agent-language.test.ts:29",
+      "name": "an agent's language: in its prompt once and the same every turn, shown, changed and cleared by PATCH, refused when junk",
+      "status": "pass",
+      "durationMs": 18917.729892,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/anthropic-federation.test.ts:170",
+      "name": "existing agents recover from static fallback on their next call; tenant and scope keys never exchange",
+      "status": "pass",
+      "durationMs": 11493.198671,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/api.test.ts:172",
+      "name": "agents can live until deleted, or for a chosen time",
+      "status": "pass",
+      "durationMs": 10370.469883,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/api.test.ts:188",
+      "name": "models are chosen by name over REST, at creation and mid-conversation",
+      "status": "pass",
+      "durationMs": 8649.446815,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/azure-models.test.ts:146",
+      "name": "an azure model without a deployment, a refused key, a missing deployment and a rate limit each end the run with Azure's reason",
+      "status": "pass",
+      "durationMs": 13261.161312,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/azure-models.test.ts:241",
+      "name": "Azure Flash uses platform credentials and catalog billing and replays reasoning with tool results",
+      "status": "pass",
+      "durationMs": 7247.881269,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/azure-models.test.ts:89",
+      "name": "a tenant on the platform's keys runs azure models the platform deploys, through the deployment, billed at the catalog's price",
+      "status": "pass",
+      "durationMs": 10785.212607,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/content-filter-fallback.test.ts:115",
+      "name": "an agent with no key for the fallback's provider ends as the content filter ended it",
+      "status": "pass",
+      "durationMs": 6274.087114,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/content-filter-fallback.test.ts:126",
+      "name": "billing: the blocked Azure call is the platform's cost, recorded but never charged; the account pays once, for the fallback's answer",
+      "status": "pass",
+      "durationMs": 10522.346636,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/content-filter-fallback.test.ts:69",
+      "name": "a response Azure's content filter blocks is asked once more on OpenRouter's DeepSeek, leaving only the answer in history",
+      "status": "pass",
+      "durationMs": 9394.257231,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/data-collection.test.ts:100",
+      "name": "Pi's compaction summaries carry the agent's data policy too",
+      "status": "pass",
+      "durationMs": 8793.385737,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/data-collection.test.ts:39",
+      "name": "agents, runs, definitions and configure: data_collection deny sent when set, on Chat Completions and Responses; nothing by default",
+      "status": "pass",
+      "durationMs": 13892.388599,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/deepseek-replay.test.ts:103",
+      "name": "if DeepSeek's endpoint refuses anyway, the same request is asked again: no host kept off, no order",
+      "status": "pass",
+      "durationMs": 9607.224303,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/deepseek-replay.test.ts:138",
+      "name": "DeepSeek's refusal as OpenRouter's Chat Completions gives it (127 characters) is classed and retried as it was; the answer names its host",
+      "status": "pass",
+      "durationMs": 10249.466103,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/deepseek-replay.test.ts:85",
+      "name": "a multi-turn tool conversation, then a turn on DeepSeek's own endpoint: never refused",
+      "status": "pass",
+      "durationMs": 6973.159451,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/default-model.test.ts:40",
+      "name": "an agent that names no model gets the first default its tenant or key scope has a key for, and /v1/me says which",
+      "status": "pass",
+      "durationMs": 9582.82863,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/default-model.test.ts:69",
+      "name": "a tenant's own key comes before the platform's: only an Anthropic key is Sonnet 5.5 on it, never DeepSeek on the platform's credit",
+      "status": "pass",
+      "durationMs": 6880.959028,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/default-model.test.ts:83",
+      "name": "the default is for agents being made: an upsert or a definition applied that names no model leaves an existing agent's",
+      "status": "pass",
+      "durationMs": 10062.562064,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/model-endpoints.test.ts:140",
+      "name": "a Codex model on a tenant's endpoint gets the ChatGPT backend's own request, with a placeholder account for the endpoint to replace",
+      "status": "pass",
+      "durationMs": 7785.952652,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/model-endpoints.test.ts:18",
+      "name": "an Anthropic model on a tenant's endpoint gets Anthropic's own request, signatures included, with identity tokens and at no token cost",
+      "status": "pass",
+      "durationMs": 8115.469859,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/model-endpoints.test.ts:192",
+      "name": "a tenant endpoint's errors end the turn with its message, without retries",
+      "status": "pass",
+      "durationMs": 6668.034936,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/model-endpoints.test.ts:61",
+      "name": "OpenRouter models on a tenant's endpoint use its Responses API, reasoning carried back, and compact through it",
+      "status": "pass",
+      "durationMs": 7984.873225,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/model-endpoints.test.ts:89",
+      "name": "a Bedrock model on a tenant's endpoint gets Converse's own request at its region's path, unsigned, with its signatures sent back",
+      "status": "pass",
+      "durationMs": 7886.193168,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/model-pricing-trust.test.ts:27",
+      "name": "a tenant cannot give its agent a model object: a free copy of a catalog model on the platform's key is refused",
+      "status": "pass",
+      "durationMs": 7536.250979,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/model-pricing-trust.test.ts:51",
+      "name": "on a platform key a response is billed at the catalog's price, whatever the agent's stored model says, and one without usage is charged an estimate",
+      "status": "pass",
+      "durationMs": 12511.909521,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/model-pricing-trust.test.ts:95",
+      "name": "an unbilled admin tenant's responses on platform or admin keys are as the provider reported them, never estimated",
+      "status": "pass",
+      "durationMs": 7364.558011,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/model-settings.test.ts:112",
+      "name": "a definition's maxOutputTokens and temperature: its agents take them, an agent's own stay when it is applied, and a stateless run takes them too",
+      "status": "pass",
+      "durationMs": 10684.521165,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/model-settings.test.ts:153",
+      "name": "the TypeScript SDK sends maxOutputTokens and temperature when it makes, configures and runs agents",
+      "status": "pass",
+      "durationMs": 7695.267254,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/model-settings.test.ts:39",
+      "name": "an agent's maxOutputTokens and temperature go on its model calls, are refused where its model takes none, and stay its own",
+      "status": "pass",
+      "durationMs": 11947.459659,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/openrouter-hosts.test.ts:37",
+      "name": "an agent's calls send their model's hosts: V4.1 Flash five, 1017 two ignored with at most 131,072 tokens; nothing else",
+      "status": "pass",
+      "durationMs": 7715.351662,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/openrouter-hosts.test.ts:57",
+      "name": "1017:nitro resolves as 1017 does (catalog, price, 131,072, Chat Completions, no hosts, two ignored) and is sent with its variant",
+      "status": "pass",
+      "durationMs": 5844.253421,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/openrouter-hosts.test.ts:77",
+      "name": "1017:morph is 1017 served by Morph alone: sent as 1017 with provider.only morph, priced and resolved as 1017",
+      "status": "pass",
+      "durationMs": 6438.911417,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/openrouter-model.test.ts:109",
+      "name": "over the API: the lookup's price reaches an end user's hold, so a dear model is refused where the mid-range price would have started",
+      "status": "pass",
+      "durationMs": 7641.438832,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/openrouter-model.test.ts:56",
+      "name": "over the API: an agent keeps what the lookup said, a move looks up too, and its calls name the id and add no routing",
+      "status": "pass",
+      "durationMs": 7047.244847,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/reasoning.test.ts:11",
+      "name": "a model that always reasons is called with its least reasoning when an agent asks for none, and as asked otherwise",
+      "status": "pass",
+      "durationMs": 9042.911253,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/reasoning.test.ts:51",
+      "name": "a run whose first model call is refused fails with the provider's error, on every API, before its stream or in it",
+      "status": "pass",
+      "durationMs": 13445.769945,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/structured-output.test.ts:138",
+      "name": "a structured run forces final_output from the first request when it is the model's only tool, and on the reminder when it has others",
+      "status": "pass",
+      "durationMs": 6571.178414,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/structured-output.test.ts:166",
+      "name": "a provider that refuses a forced tool_choice is asked again without it; forcing stops after three requests",
+      "status": "pass",
+      "durationMs": 13979.75248,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/structured-output.test.ts:185",
+      "name": "codeMode: false leaves out codemode and the runtime's code rules; with no tools at all, the prompt is the instructions and the sender note",
+      "status": "pass",
+      "durationMs": 8170.976612,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/structured-output.test.ts:24",
+      "name": "a prompt with output ends on a final_output call that fits its schema, which the outcome returns",
+      "status": "pass",
+      "durationMs": 6725.948521,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/structured-output.test.ts:45",
+      "name": "a structured run the model ends in text is reminded once, then fails with output_missing; a prompt without output takes the tool away",
+      "status": "pass",
+      "durationMs": 7717.521368,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/structured-output.test.ts:79",
+      "name": "output is refused unless it is a schema for an object, on a prompt that starts its own turn",
+      "status": "pass",
+      "durationMs": 5177.555286,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/structured-output.test.ts:97",
+      "name": "the SDK's run() takes a zod, TypeBox or JSON schema for output and types run.output by it",
+      "status": "pass",
+      "durationMs": 7895.96361,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/tool-streaming.test.ts:42",
+      "name": "GET /v1/models carries toolCallStreaming; a model on an operator's endpoint has its upstream model's",
+      "status": "pass",
+      "durationMs": 6092.949992,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/virtual-models.test.ts:117",
+      "name": "an agent naming no model stores the alias; Particle's outage moves that call to 1017, with history, routing and records on the model that ran",
+      "status": "pass",
+      "durationMs": 8599.563561,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/virtual-models.test.ts:164",
+      "name": "a request the model would refuse anywhere does not move; a real model never moves",
+      "status": "pass",
+      "durationMs": 6367.885643,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/virtual-models.test.ts:185",
+      "name": "a tenant with no OpenRouter key falls to what it holds; an upsert keeps the alias, and naming a model leaves it",
+      "status": "pass",
+      "durationMs": 6498.16993,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "models",
+      "source": "tests/virtual-models.test.ts:207",
+      "name": "over the API: Particle's failed attempt releases its end user's hold and costs nothing; only the model that answered is charged",
+      "status": "pass",
+      "durationMs": 5709.427123,
+      "reason": "",
+      "backend": "workers"
+    }
+  ]
+}

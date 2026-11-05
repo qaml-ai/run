@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { createServer } from "node:net";
+import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
@@ -30,6 +30,9 @@ export class LocalWorker {
   private config: string;
   private readyToken: string;
   private stopping = false;
+  private listener?: Server;
+  private sockets = new Set<Socket>();
+  private cancelListen?: () => void;
   constructor(
     port: number,
     storage: string,
@@ -50,6 +53,8 @@ export class LocalWorker {
       ...process.env,
       CI: "1",
       WRANGLER_SEND_METRICS: "false",
+      // Production returns early refusals without waiting for the upload.
+      WRANGLER_DISABLE_REQUEST_BODY_DRAINING: "true",
       WRANGLER_LOG_PATH: join(this.storage, "logs"),
       CLOUDFLARE_DEV_REGISTRY_PATH: join(this.storage, "registry"),
     };
@@ -60,38 +65,53 @@ export class LocalWorker {
       "CLOUDFLARE_ACCOUNT_ID",
     ])
       delete env[key];
+    const proxyPort = await unusedPort();
+    if (this.stopping) throw new Error("Local Worker startup was cancelled");
     const child = this.child = spawn(
       process.execPath,
-      [
-        "node_modules/wrangler/bin/wrangler.js",
-        "dev",
-        "--local",
-        "--config",
-        this.config,
-        "--config",
-        "codemode/wrangler.jsonc",
-        "--ip",
-        "127.0.0.1",
-        "--port",
-        String(this.port),
-        "--inspector-port",
-        String(this.inspectorPort),
-        "--persist-to",
-        this.storage,
-      ],
+      ["test/local-worker-process.mjs", this.config, String(proxyPort), String(this.inspectorPort), this.storage],
       {
         cwd: directory,
         env,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["ignore", "pipe", "pipe", "ipc"],
         detached: true,
       },
     );
     this.output = "";
+    let directPort: number | undefined;
+    child.on("message", (message: unknown) => {
+      const direct = message as { type?: string; port?: number };
+      if (direct.type === "workerd" && Number.isInteger(direct.port)) directPort = direct.port;
+    });
+    const listener = this.listener = createServer(socket => {
+      if (!directPort) { socket.destroy(); return; }
+      const upstream = createConnection(directPort, "127.0.0.1");
+      for (const connection of [socket, upstream]) {
+        this.sockets.add(connection);
+        connection.on("close", () => this.sockets.delete(connection));
+        connection.on("error", () => { socket.destroy(); upstream.destroy(); });
+      }
+      socket.pipe(upstream).pipe(socket);
+    });
     const save = (data: Buffer) => {
       this.output = (this.output + data.toString()).slice(-16_000);
     };
     child.stdout!.on("data", save);
     child.stderr!.on("data", save);
+    await new Promise<void>((resolve, reject) => {
+      const finish = (error?: Error) => {
+        listener.off("error", failed);
+        child.off("exit", exited);
+        this.cancelListen = undefined;
+        if (error) reject(error); else resolve();
+      };
+      const failed = (error: Error) => finish(error);
+      const exited = () => finish(new Error(`workerd exited: ${this.output}`));
+      this.cancelListen = () => finish(new Error("Local Worker startup was cancelled"));
+      listener.once("error", failed);
+      child.once("exit", exited);
+      listener.listen(this.port, "127.0.0.1", () => finish());
+    });
     for (let attempt = 0; attempt < 480; attempt++) {
       if (this.stopping) throw new Error("Local Worker startup was cancelled");
       if (child.exitCode !== null || child.signalCode !== null)
@@ -109,11 +129,25 @@ export class LocalWorker {
   }
   async stop(hard = false) {
     this.stopping = true;
+    this.cancelListen?.();
     const child = this.child;
     this.child = undefined;
-    if (!child?.pid) return;
+    const listener = this.listener;
+    this.listener = undefined;
+    for (const socket of this.sockets) socket.destroy();
+    const listenerClosed = new Promise<void>(resolve => {
+      if (!listener) return resolve();
+      const timer = setTimeout(resolve, 1000);
+      const close = () => listener.close(() => { clearTimeout(timer); resolve(); });
+      // A stop can race the asynchronous bind. Close again if it finishes
+      // after the first close reports that the server is not listening yet.
+      if (!listener.listening) listener.once("listening", close);
+      close();
+    });
+    if (!child?.pid) return listenerClosed;
     // The wrangler parent may have exited while its detached workerd/esbuild
-    // group remains. Always stop the owned group, including that case.
+    // group remains. Always stop the owned group, including that case. Do it
+    // before waiting on the listener so a stalled bind cannot delay cleanup.
     const alive = () => { try { process.kill(-child.pid!, 0); return true; } catch { return false; } };
     try {
       process.kill(-child.pid!, hard ? "SIGKILL" : "SIGTERM");
@@ -127,6 +161,7 @@ export class LocalWorker {
       const killedDeadline = Date.now() + 1000;
       while (alive() && Date.now() < killedDeadline) await delay(50);
     }
+    await listenerClosed;
   }
   async heap() {
     const targets = (await (

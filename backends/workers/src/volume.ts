@@ -65,6 +65,7 @@ const DAY = 86400_000;
 /** One volume orders metadata in SQLite. Unique immutable R2 keys mean collection
  * never races a later upload of the same bytes, and never sweeps another volume. */
 export class Volume extends DurableObject<VolumeBindings> {
+  private copies = new Map<string, Promise<VolumeInfo>>();
   constructor(ctx: DurableObjectState, env: VolumeBindings) {
     super(ctx, env);
     ctx.storage.sql.exec(
@@ -223,6 +224,75 @@ export class Volume extends DurableObject<VolumeBindings> {
       seq: snapshot ? this.snapshotSummary(snapshot).seq : this.sequence(),
       ...(snapshot ? { snapshot } : {}),
     };
+  }
+  /** A resumable copy owns one immutable read set until it is released. */
+  async claimReadSet(owner: string, expiresAt = Date.now() + DAY): Promise<{ files: FileEntry[]; seq: number }> {
+    this.alive();
+    if (!/^[A-Za-z0-9:_-]{1,200}$/.test(owner)) throw new FileError("Invalid read-set owner");
+    const result = this.ctx.storage.transactionSync(() => {
+      const key = `read-set:${owner}`, prior = this.meta(key);
+      if (prior === "released") throw new FileError("Read set was released", 409);
+      if (prior) return JSON.parse(prior) as { files: FileEntry[]; seq: number };
+      if (!Number.isSafeInteger(expiresAt) || expiresAt <= Date.now() || expiresAt > Date.now() + DAY)
+        throw new FileError("Invalid read-set expiry");
+      const captured = { ...this.readSet(), expiresAt }, serialized = JSON.stringify(captured);
+      if (new TextEncoder().encode(serialized).length > 16 * 1024 * 1024)
+        throw new FileError("Read-set metadata exceeds 16 MiB", 413);
+      this.sql().exec("INSERT INTO metadata VALUES(?,?)", key, serialized);
+      for (const file of captured.files)
+        this.sql().exec("INSERT OR IGNORE INTO pins VALUES(?,?,?)", key, file.key, expiresAt);
+      return captured;
+    });
+    await this.scheduleCollection();
+    return result;
+  }
+  releaseReadSet(owner: string) {
+    if (!/^[A-Za-z0-9:_-]{1,200}$/.test(owner)) throw new FileError("Invalid read-set owner");
+    this.ctx.storage.transactionSync(() => {
+      const key = `read-set:${owner}`;
+      this.sql().exec("DELETE FROM pins WHERE owner=?", key);
+      // A concurrent late retry must not capture newer files under this owner.
+      this.sql().exec("INSERT OR REPLACE INTO metadata VALUES(?,?)", key, "released");
+    });
+  }
+  /** One resumable copy per owner; completed retries never write files again. */
+  copyReadSet(owner: string, entries: FileEntry[], failAfter?: number): Promise<VolumeInfo> {
+    const running = this.copies.get(owner);
+    if (running) return running;
+    const task = this.copyReadSetOnce(owner, entries, failAfter);
+    this.copies.set(owner, task);
+    void task.finally(() => this.copies.delete(owner)).catch(() => {});
+    return task;
+  }
+  private async copyReadSetOnce(owner: string, entries: FileEntry[], failAfter?: number) {
+    this.alive();
+    if (!/^[A-Za-z0-9:_-]{1,200}$/.test(owner) || entries.length > VOLUME_LIMITS.files)
+      throw new FileError("Invalid copy owner or read set");
+    const marker = `copy-read-set:${owner}`, fingerprint = await digest(new TextEncoder().encode(JSON.stringify(entries)));
+    const prior = this.meta(marker);
+    if (prior) {
+      const saved = JSON.parse(prior);
+      if (saved.fingerprint !== fingerprint) throw new FileError("Copy read set changed", 409);
+      if (saved.complete) return this.info();
+    } else this.sql().exec("INSERT INTO metadata VALUES(?,?)", marker, JSON.stringify({ fingerprint }));
+    for (const [index, entry] of entries.entries()) {
+      const hash = entry.sha256 ?? entry.key.split("/").at(-1)!;
+      if (!entry.key.startsWith(`files/${encodeURIComponent(this.meta("tenant")!)}/`) || !/^[a-f0-9]{64}$/.test(hash))
+        throw new FileError("Invalid copy source", 403);
+      const current = [...this.sql().exec<FileEntry>("SELECT * FROM files WHERE path=?", entry.path)][0];
+      if (current && (current.sha256 !== hash || current.size !== entry.size || current.contentType !== entry.contentType))
+        throw new FileError("Copy destination changed", 409);
+      if (!current) {
+        const object = await this.env.BUCKET.get(entry.key);
+        if (!object) throw new FileError("Copy source object missing", 503);
+        const key = await this.beginUpload();
+        await this.env.BUCKET.put(key, object.body, { httpMetadata: { contentType: entry.contentType } });
+        this.commitUpload(entry.path, key, entry.size, hash, entry.contentType, 0);
+      }
+      if (failAfter === index + 1) throw new FileError("Injected fork interruption after a file", 503);
+    }
+    this.sql().exec("INSERT OR REPLACE INTO metadata VALUES(?,?)", marker, JSON.stringify({ fingerprint, complete: true }));
+    return this.info();
   }
   async read(path: string, snapshot?: string, maxBytes?: number) {
     const file = this.stat(path, snapshot);
@@ -650,6 +720,9 @@ export class Volume extends DurableObject<VolumeBindings> {
     });
     await this.scheduleCollection();
   }
+  hasPin(owner: string, key: string) {
+    return [...this.sql().exec("SELECT 1 FROM pins WHERE owner=? AND key=? AND (expiresAt IS NULL OR expiresAt>?)", owner, key, Date.now())].length > 0;
+  }
   unpin(owner: string) {
     this.sql().exec("DELETE FROM pins WHERE owner=?", owner);
   }
@@ -658,6 +731,7 @@ export class Volume extends DurableObject<VolumeBindings> {
       await this.ctx.storage.setAlarm(Date.now() + DAY);
   }
   async collectGarbage(now = Date.now(), grace = DAY) {
+    this.sql().exec("UPDATE metadata SET value='released' WHERE key LIKE 'read-set:%' AND json_valid(value) AND json_extract(value,'$.expiresAt')<=?", now);
     this.sql().exec(
       "DELETE FROM pins WHERE expiresAt IS NOT NULL AND expiresAt<=?",
       now,

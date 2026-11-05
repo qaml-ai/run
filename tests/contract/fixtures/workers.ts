@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { EndUserCredits } from "../../../src/end-user-credits.ts";
 import { configuredModel } from "../../../src/model.ts";
@@ -28,7 +28,6 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
   t.after(close);
   try {
   if (options.failImageResizeOnce) throw new Error("Unsupported fixture state: Workers has no parse-job resize boundary to fail and retry");
-  if (options.anthropicFederationEndpoint) throw new Error("Unsupported fixture state: Workers has no Anthropic federation STS/token exchange adapter");
   const model = await fakeModel({ after: fn => cleanups.push(fn) }, (body, index) => respond(body, index - replyStart));
   // Dynamic import keeps workerd's binding types out of the Node TypeScript project.
   const fixtureModule = new URL("../../../backends/workers/test/fixture.ts", import.meta.url).href;
@@ -38,6 +37,7 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
     AGENT_SECRETS_KEY: randomBytes(32).toString("hex"),
     AGENT_PUBLIC_URL: "https://agents.example.test",
     AGENT_PROVIDER: "openrouter", AGENT_MODEL: "openai/gpt-4o-mini", AGENT_BASE_URL: model.url,
+    AGENT_OUTBOUND_ALLOW_HTTP: "false", AGENT_OUTBOUND_ALLOW_CIDRS: "",
     ...options.env,
   };
   let configuredTenants = options.tenants;
@@ -63,7 +63,7 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
     tenant: "alice",
     tenants: [],
     entrypoint: fileURLToPath(new URL("../../../backends/workers/test/contract-entry.ts", import.meta.url)),
-    modelURL: env.AGENT_BASE_URL ?? model.url,
+    modelURL: env.AGENT_BASE_URL || model.url,
     vars: {
       ...env,
       API_TOKEN: internalOperator,
@@ -76,6 +76,9 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
       // invents EmailTags, ConfigurationSetName, or sender formatting for it.
       ...(env.AWS_ENDPOINT_URL_SESV2 && !env.MAIL_TEST_URL ? { MAIL_TEST_URL: new URL("/v2/email/outbound-emails", env.AWS_ENDPOINT_URL_SESV2).href } : {}),
       TEST_MODE: "1", TEST_MODEL: "1", MODEL: modelReference(configuredModel(env)),
+      // An explicitly supplied gateway speaks the configured provider API.
+      // The default fake responder speaks OpenAI completions for every model.
+      TEST_MODEL_API: options.env?.AGENT_BASE_URL ? configuredModel(env).api : "openai-completions",
     },
   });
   cleanups.push(() => server.stop());
@@ -231,8 +234,11 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
     async failNextAdmissionWrite(_agent) { throw new Error("Unsupported fixture state: Workers request admission does not update Postgres pending_runs"); },
     setModel(next) { respond = next; replyStart = model.bodies.length; },
     async imageResizeFailureCount() { throw new Error("Unsupported fixture state: Workers has no parse-job resize boundary"); },
-    async restartWithLegacyModel(_agent, _model) {
-      throw new Error("Unsupported fixture state: Workers agents have no legacy stored Node model configuration to restore at restart");
+    async restartWithLegacyModel(agent, legacyModel) {
+      const token = `cat_${createHmac("sha256", internalOperator).update(`camelrun-cloudflare:agent:${agent}`).digest("hex")}`;
+      const result = await call(`/clients/${agent}/__test/contract-legacy-model`, { token, body: { model: { ...legacyModel, baseUrl: model.url } } });
+      if (result.status !== 200) throw new Error(`Legacy model fixture: ${result.status} ${result.text}`);
+      await server.restart();
     },
     async now() { return Date.now(); },
     async advanceTime(milliseconds) {

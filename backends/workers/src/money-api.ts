@@ -9,6 +9,7 @@ import { Workspaces } from './workspaces.ts';
 import { HttpError } from './errors.ts';
 import { modelAttempts } from './model-metering.ts';
 import { EndUserCredits } from './end-user-credits.ts';
+import { modelEndUserRoutes } from './model-end-user-routes.ts';
 import type { AuthContext } from './control.ts';
 import { sweepAdmission } from './admission.ts';
 import { withMoneyIdempotency, expireMoneyIdempotency } from './money-idempotency.ts';
@@ -18,7 +19,7 @@ async function services(env: MoneyEnv, request?: Request) {
   const account = accountServices(env, keys.accounts, request ? new URL(request.url).origin : env.PUBLIC_URL ?? 'https://localhost');
   const alerts = new BillingAlerts(keys.accounts.db, keys.accounts);
   const namespace = (env as MoneyEnv & { TENANTS?: { getByName(name: string): {status(): Promise<{active: unknown}>} } }).TENANTS;
-  const billing = { billing: keys.accounts.billing, alerts, emailEnabled: !!account.mail, rateLimits: account.limits,
+  const billing = { billing: keys.accounts.billing, alerts, emailEnabled: !!account.mail, rateLimits: account.limits, exists: (tenant: string) => keys.accounts.exists(tenant),
     ...(namespace ? { busy: async (tenant: string) => Number((await namespace.getByName(tenant).status()).active) } : {}) };
   const webhooks = new Webhooks({ db: keys.accounts.db, accounts: keys.accounts, outbound: keys.outbound });
   return { keys, account, billing, webhooks };
@@ -31,14 +32,16 @@ export async function authenticateMoney(request: Request, env: MoneyEnv): Promis
   const s = await services(env, request);
   const principal = await s.keys.accounts.authenticate(request.headers.get('authorization') ?? undefined)
     ?? await accountPrincipal(request, s.account);
-  if (principal?.via === 'oauth' && new URL(request.url).pathname.startsWith('/v1/') && !oauthAllows(request.method, new URL(request.url).pathname))
+  // Agent MCP is mounted beside the REST API in src and accepts the same tenant credential.
+  const agentMcp = /^\/v1\/agents\/client_[a-f0-9]{40}\/mcp$/.test(new URL(request.url).pathname);
+  if (principal?.via === 'oauth' && new URL(request.url).pathname.startsWith('/v1/') && !agentMcp && !oauthAllows(request.method, new URL(request.url).pathname))
     throw new HttpError(403, 'An OAuth access token works with agents only: it cannot get agent tokens or make API tokens, links, webhooks, channels or provider keys. Use an API token or the console');
   return principal ? { tenantId: principal.tenant, kind: principal.via === 'operator' ? 'operator' : principal.via === 'oauth' ? 'oauth' : principal.via === 'console' ? 'console' : 'api',
     scopes: ['*'], principal } : null;
 }
 export async function moneyRoutes(request: Request, env: MoneyEnv, auth: AuthContext, ctx: ExecutionContext): Promise<Response | undefined> {
   const path = new URL(request.url).pathname;
-  if (!/^\/v1\/(?:me|limits|billing|providers|key-scopes|api-keys|tokens|tenants|sessions|oauth|account|usage|webhooks|usage-webhook|workspaces|workspace-memberships)/.test(path)) return;
+  if (!/^\/v1\/(?:me|limits|billing|providers|key-scopes|api-keys|tokens|tenants|sessions|oauth|account|usage|webhooks|usage-webhook|workspaces|workspace-memberships|end-user-settings|end-users)/.test(path)) return;
   return withMoneyIdempotency(request, env, auth.tenantId, request => routeMoney(request, env, auth, ctx));
 }
 async function routeMoney(request: Request, env: MoneyEnv, auth: AuthContext, ctx: ExecutionContext): Promise<Response | undefined> {
@@ -54,6 +57,8 @@ async function routeMoney(request: Request, env: MoneyEnv, auth: AuthContext, ct
   if (keys) return keys;
   const billed = await billingRoutes(request, env, auth, s.billing);
   if (billed) return billed;
+  const endUser = await modelEndUserRoutes(request, new EndUserCredits(s.keys.accounts.db), tenant);
+  if (endUser) return endUser;
   const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { 'cache-control': 'no-store' } });
   const setter = principal.tokenId ? `token:${principal.tokenId}` : principal.via === 'oauth' ? `oauth:${'grantId' in principal ? principal.grantId : undefined}` : principal.via;
   if (path === '/v1/usage' && request.method === 'GET') {
