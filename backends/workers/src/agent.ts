@@ -1233,7 +1233,7 @@ export class CamelAgent extends DurableObject<Env> {
                 ? { code: "connection_lost", uncertain: true }
                 : { code: result.error.kind }),
             }
-          : { result },
+          : { result: { ...result, ...(await fileOutputs(this.ctx.storage, id)) } },
       };
       const terminal = await this.ctx.storage.transaction(async (tx) => {
         const latest = await tx.get<RequestRecord>(reqKey(id));
