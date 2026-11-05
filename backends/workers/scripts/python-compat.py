@@ -23,11 +23,19 @@ class Result(unittest.TextTestResult):
     def addFailure(self,test,err): super().addFailure(test,err);self.records.append({'test':test.id(),'status':'fail','reason':str(err[1])[:500]})
     def addError(self,test,err): super().addError(test,err);self.records.append({'test':test.id(),'status':'fail','reason':str(err[1])[:500]})
     def addSkip(self,test,reason):super().addSkip(test,reason);self.records.append({'test':test.id(),'status':'not-applicable','reason':reason})
-# Explicitly excluded transport: voice and audio. Other unsupported core features remain failures.
-for name in ('test_voice_sessions_need_the_runtime_to_hold_calls','test_audio_is_transcribed_in_messages_runs_and_on_its_own'):
-    setattr(m.PythonSDKTest,name,unittest.skip('Voice/audio excluded by experiment scope')(getattr(m.PythonSDKTest,name)))
+# Live voice sessions are out of scope; ordinary audio attachments are agent inputs.
+for name in ('test_voice_sessions_need_the_runtime_to_hold_calls',):
+    setattr(m.PythonSDKTest,name,unittest.skip('Voice sessions excluded by experiment scope')(getattr(m.PythonSDKTest,name)))
 suite=unittest.defaultTestLoader.loadTestsFromModule(m)
+if os.environ.get('PYTHON_COMPAT_ONLY'):
+    names=os.environ['PYTHON_COMPAT_ONLY'].split(',')
+    suite=unittest.TestSuite(unittest.defaultTestLoader.loadTestsFromName('PythonSDKTest.'+name,m) for name in names)
 result=unittest.TextTestRunner(verbosity=1,resultclass=Result).run(suite)
 records={record['test']:record for record in result.records}
+if os.environ.get('PYTHON_COMPAT_ONLY'):
+    try:
+        previous=json.loads((HERE/'measurements/python-compat.json').read_text())
+        records={**{row['test']:row for row in previous},**records}
+    except FileNotFoundError: pass
 (HERE/'measurements/python-compat.json').write_text(json.dumps(list(records.values()),indent=2)+'\n')
 raise SystemExit(0 if result.wasSuccessful() else 1)

@@ -101,20 +101,23 @@ export async function startFixture(
       ],
     );
   }
+  const port = await unusedPort();
   const config = JSON.parse(
     await readFile(join(root, options.config ?? "wrangler.test.jsonc"), "utf8"),
   );
   config.main = options.entrypoint ?? join(root, "src/index.ts");
   config.$schema = join(root, "node_modules/wrangler/config-schema.json");
   for (const container of config.containers ?? [])
-    for (const image of Object.values(container.images ?? {}) as { dockerfile?: string }[])
+    for (const image of Object.values(container.images ?? {}) as {
+      dockerfile?: string;
+    }[])
       if (image.dockerfile) image.dockerfile = join(root, image.dockerfile);
   config.hyperdrive[0].localConnectionString = databaseUrl;
-  const port = await unusedPort();
   config.vars = {
     ...config.vars,
     API_TOKEN: token,
     DEFAULT_TENANT: tenant,
+    AGENT_PUBLIC_URL: `http://127.0.0.1:${port}`,
     AGENT_SECRETS_KEY: "0".repeat(64),
     AGENT_OUTBOUND_ALLOW_HTTP: "true",
     AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.0/8,::1/128",

@@ -152,7 +152,7 @@
     {
       "file": "tests/computers-api.test.ts",
       "test": "delegate child creation inherits computer attachments: true",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
@@ -162,7 +162,7 @@
     {
       "file": "tests/computers-api.test.ts",
       "test": "delegate child creation inherits computer attachments: false",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
@@ -172,7 +172,7 @@
     {
       "file": "tests/computers-api.test.ts",
       "test": "agents child creation inherits computer attachments: true",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
@@ -182,7 +182,7 @@
     {
       "file": "tests/computers-api.test.ts",
       "test": "agents child creation inherits computer attachments: false",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
@@ -192,8 +192,8 @@
     {
       "file": "tests/decisions-api.test.ts",
       "test": "POST /v1/decisions answers one state or a batch on the platform's OpenRouter key, bills what OpenRouter charged, and logs no state",
-      "status": "fail",
-      "kind": "sdk-unit",
+      "status": "pass",
+      "kind": "worker",
       "reason": "Original assertion result",
       "process": {
         "reused": true
@@ -202,8 +202,8 @@
     {
       "file": "tests/decisions-api.test.ts",
       "test": "a tenant's own OpenRouter key answers its decisions, and is not charged",
-      "status": "fail",
-      "kind": "sdk-unit",
+      "status": "pass",
+      "kind": "worker",
       "reason": "Original assertion result",
       "process": {
         "reused": true
@@ -212,8 +212,8 @@
     {
       "file": "tests/decisions-api.test.ts",
       "test": "the decide builtin answers from codemode in batches and directly, billed to the run and the agent",
-      "status": "fail",
-      "kind": "sdk-unit",
+      "status": "pass",
+      "kind": "worker",
       "reason": "Original assertion result",
       "process": {
         "reused": true
@@ -222,8 +222,8 @@
     {
       "file": "tests/decisions-api.test.ts",
       "test": "an agent that denies data collection has decide by default, its calls sent with that data policy",
-      "status": "fail",
-      "kind": "sdk-unit",
+      "status": "pass",
+      "kind": "worker",
       "reason": "Original assertion result",
       "process": {
         "reused": true
@@ -232,8 +232,8 @@
     {
       "file": "tests/decisions-api.test.ts",
       "test": "decide is every agent's by default, and opts out with decide: false on the agent, its update or its definition; a toolless run and a tenant without an OpenRouter key have none",
-      "status": "fail",
-      "kind": "sdk-unit",
+      "status": "pass",
+      "kind": "worker",
       "reason": "Original assertion result",
       "process": {
         "reused": true
@@ -302,7 +302,7 @@
     {
       "file": "tests/files.test.ts",
       "test": "the TypeScript SDK attaches bytes, Blobs, local paths and workspace files; a file deleted or replaced after attaching still reads as attached",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
@@ -324,7 +324,7 @@
     {
       "file": "tests/files.test.ts",
       "test": "a run's outcome lists the files it wrote and presented, and a presented file is an event with a download link",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
@@ -374,7 +374,7 @@
     {
       "file": "tests/openapi-sources.test.ts",
       "test": "an OpenAPI spec's operations are tools: requests built from the spec, data back, errors as tool errors",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
@@ -384,7 +384,7 @@
     {
       "file": "tests/openapi-sources.test.ts",
       "test": "OpenAPI sources are checked when the definition is saved",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
@@ -492,7 +492,7 @@
     {
       "file": "tests/sdk-lazy-connections.test.ts",
       "test": "a lazy run whose agent is deleted mid-run settles, and close() stops its wait",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
@@ -502,7 +502,7 @@
     {
       "file": "tests/sdk-multi-agent.test.ts",
       "test": "SDK: delegate settings on upsert bring their builtin; a run lists its child's id, and a stream with subagents shows it start and end",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
@@ -632,7 +632,7 @@
     {
       "file": "tests/sdk-server.test.ts",
       "test": "through a real runtime: served tools get its signed identity, attached tools the same identity from the call",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
@@ -742,43 +742,47 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 0,
+        "signal": null
       }
     },
     {
       "file": "tests/transcription-api.test.ts",
       "test": "audio attached to a message is transcribed before the request is accepted: the model reads the transcript, history keeps it with the audio, and it is billed to the run's agent and budget",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 0,
+        "signal": null
       }
     },
     {
       "file": "tests/transcription-api.test.ts",
       "test": "audio a message sends by default reaches the agent untranscribed, with why, when the tenant has no OpenAI key; one it asks to transcribe is refused; a monthly cap refuses transcriptions",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 0,
+        "signal": null
       }
     },
     {
       "file": "tests/transcription-sdk.test.ts",
       "test": "the TypeScript SDK: transcriptions.create from bytes, a Blob or a URL; audio attached to agent and stateless runs, by URL too",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 0,
+        "signal": null
       }
     },
     {
       "file": "tests/ui-ai-sdk.test.ts",
       "test": "useChat's transport sends the new message and streams the agent's reply, tool calls included",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
@@ -788,7 +792,7 @@
     {
       "file": "tests/ui-ai-sdk.test.ts",
       "test": "an approval the agent waits on is a tool approval request; answering it in the chat resumes the run",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
@@ -798,7 +802,7 @@
     {
       "file": "tests/ui-ai-sdk.test.ts",
       "test": "a question the agent asks arrives as a data part; answering it for the chat, then resuming, streams the rest",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
@@ -808,7 +812,7 @@
     {
       "file": "tests/ui-ai-sdk.test.ts",
       "test": "resumeStream() after the resumed run already finished still ends, with what the run said",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
@@ -818,7 +822,7 @@
     {
       "file": "tests/ui-ai-sdk.test.ts",
       "test": "resumeStream() joining a run mid-answer shows each word once, whatever arrived while it looked",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
@@ -839,7 +843,7 @@
     },
     {
       "file": "tests/voice-api.test.ts",
-      "test": "a call over HTTP: the realtime brain answers on OpenAI with the tenant's key, on the node holding the call; DELETE …/speak from any node reaches it",
+      "test": "a call over HTTP: the realtime brain answers on OpenAI with the tenant's key, on the node holding the call; DELETE \u2026/speak from any node reaches it",
       "status": "not-applicable",
       "reason": "Voice sessions excluded by requested scope"
     },
@@ -876,74 +880,74 @@
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_a_deploy_loses_no_tool_call_close_finishes_the_calls_running",
-      "status": "fail",
-      "reason": "Attached tools are not supported by the Cloudflare backend yet"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_a_failed_run_raises_run_error_or_returns_it",
-      "status": "fail",
-      "reason": "Tuples differ: ('runtime_error', 'failed') != ('model_error', 'failed')\n\nFirst differing element 0:\n'runtime_error'\n'model_error'\n\n- ('runtime_error', 'failed')\n?   -----\n\n+ ('model_error', 'failed')\n?    ++ +\n"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_a_tool_process_that_dies_mid_run_the_restarted_one_serves_its_calls_and_the_same_key_fetches_it",
-      "status": "fail",
-      "reason": "Attached tools are not supported by the Cloudflare backend yet"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_an_approval_answered_by_on_input_resumes_the_turn",
-      "status": "fail",
-      "reason": "Attached tools are not supported by the Cloudflare backend yet"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_an_approval_answered_through_the_run_resumes_it",
-      "status": "fail",
-      "reason": "400 != 201 : {\"error\":\"Attached tools are not supported by the Cloudflare backend yet\",\"code\":\"UNSUPPORTED_FEATURE\"}"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_annotations_reconnect_and_lost_acknowledgements",
-      "status": "fail",
-      "reason": "Attached tools are not supported by the Cloudflare backend yet"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_async_and_slow_on_event_run_apart_from_the_connection",
-      "status": "fail",
-      "reason": "400 != 201 : {\"error\":\"Attached tools are not supported by the Cloudflare backend yet\",\"code\":\"UNSUPPORTED_FEATURE\"}"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_attachments_and_the_agents_files",
-      "status": "fail",
-      "reason": "Unsupported backend operation"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_audio_is_transcribed_in_messages_runs_and_on_its_own",
-      "status": "not-applicable",
-      "reason": "Voice/audio excluded by experiment scope"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_code_mode_false_history_none_and_config_hash",
-      "status": "fail",
-      "reason": "Unsupported field: output"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_connecting_with_changed_tools_declares_them_and_a_run_needs_them_served",
-      "status": "fail",
-      "reason": "'id'"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_delegate_settings_bring_their_builtin_and_a_run_names_its_child_and_streams_it",
-      "status": "fail",
-      "reason": "Unsupported field: instructions"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",
@@ -954,44 +958,44 @@
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_events_start_from_a_snapshot_and_updates_are_deltas",
-      "status": "fail",
-      "reason": "'message' unexpectedly found in {'type': 'message_update', 'message': {'role': 'assistant', 'content': [{'type': 'text', 'text': 'seen'}], 'api': 'openai-completions', 'provider': 'camel-test', 'model': 'openai/gpt-4o-mini', 'usage': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0, 'totalTokens': 0, 'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0, 'total': 0}}, 'stopReason': 'stop', 'timestamp': 1793896604748, 'responseId': 'fixture', 'rawStopReason': 'stop', 'duratio"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_fork_copies_the_agent_and_a_key_returns_the_same_fork",
-      "status": "fail",
-      "reason": "Unsupported backend operation"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_get_takes_an_existing_agent_by_key_or_id_without_changing_it",
-      "status": "fail",
-      "reason": "'systemPrompt'"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_images_on_their_own",
-      "status": "fail",
-      "reason": "404 != 200 : {\"error\":\"Unknown API route\",\"code\":\"NOT_FOUND\"}"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_import_messages_converts_another_apis_conversation",
-      "status": "fail",
-      "reason": "Unsupported field: importMessages"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_initial_messages_begin_an_agents_history_when_it_is_made",
-      "status": "fail",
-      "reason": "Unsupported field: initialMessages"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_key_scopes_tokens_usage_webhooks_and_rotated_credentials",
       "status": "fail",
-      "reason": "Unknown API route"
+      "reason": "list index out of range"
     },
     {
       "file": "tests/python_sdk.py",
@@ -1002,20 +1006,20 @@
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_max_output_tokens_and_temperature_go_on_model_calls_and_configure_removes_them",
-      "status": "fail",
-      "reason": "Unsupported field: maxOutputTokens, temperature"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_parity_history_configure_tools_and_wait_for_request",
-      "status": "fail",
-      "reason": "Unsupported field: spendLimit"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_projects_publish_checked_snapshots_and_the_tool_finds_the_project_from_identity",
-      "status": "fail",
-      "reason": "'vol_3231dbbbab86441b87aa1d55' != 'vol_fadbcb2c1da54835a8c55ff4'\n- vol_3231dbbbab86441b87aa1d55\n+ vol_fadbcb2c1da54835a8c55ff4\n"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",
@@ -1026,8 +1030,8 @@
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_run_with_output_returns_a_pydantic_model_or_the_json_schema_value",
-      "status": "fail",
-      "reason": "Unsupported field: output"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",
@@ -1038,32 +1042,32 @@
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_stateless_runs_one_call_stream_get_abort_and_no_agent_left",
-      "status": "fail",
-      "reason": "Unknown API route"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_steer_answers_once_the_runtime_has_it_and_abort_cancels_the_queue",
-      "status": "fail",
-      "reason": "Unsupported field: whileRunning"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_stream_yields_tool_calls_results_text_then_done_and_plain_functions_are_tools",
-      "status": "fail",
-      "reason": "400 != 201 : {\"error\":\"Attached tools are not supported by the Cloudflare backend yet\",\"code\":\"UNSUPPORTED_FEATURE\"}"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_the_sync_client_upserts_runs_streams_answers_and_runs_statelessly",
-      "status": "fail",
-      "reason": "Lists differ: ['text', 'done'] != ['tool_call', 'tool_result', 'text', 'done']\n\nFirst differing element 0:\n'text'\n'tool_call'\n\nSecond list contains 2 additional elements.\nFirst extra element 2:\n'text'\n\n- ['text', 'done']\n+ ['tool_call', 'tool_result', 'text', 'done']"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_upsert_is_the_same_agent_for_a_key_and_one_process_serves_its_tools",
-      "status": "fail",
-      "reason": "Attached tools are not supported by the Cloudflare backend yet"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",
@@ -1074,8 +1078,8 @@
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_volumes_files_snapshots_and_mounts",
-      "status": "fail",
-      "reason": "Unsupported file operation"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",

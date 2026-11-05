@@ -1,4 +1,4 @@
-import { azureOpenAIConfig, azureCredentials } from "../../../src/azure-openai.ts";
+import { azureOpenAIConfig, azureCredentials } from "./azure-policy.ts";
 
 export type MediaAzureEnv = {
   AGENT_AZURE_OPENAI_ENDPOINT?: string;

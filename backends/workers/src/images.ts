@@ -21,7 +21,7 @@ export interface ImageRef {
   tenant: string;
   key: string;
   originalKey: string;
-  mimeType: "image/jpeg";
+  mimeType: "image/jpeg" | "image/png" | "image/gif" | "image/webp";
   size: number;
   version: 1;
 }
@@ -232,7 +232,7 @@ export async function imageInputs(
     if (
       ref.type !== "image_ref" ||
       ref.tenant !== tenant ||
-      !ref.key.startsWith(`images/${encodeURIComponent(tenant)}/`) ||
+      !ownedImageKey(tenant, ref.key) ||
       ref.size < 1 ||
       ref.size > IMAGE_LIMITS.derivativeBytes
     )
@@ -264,6 +264,8 @@ export async function imageInputs(
   return blocks;
 }
 const MARKER = "[camelrun-image-ref:v1]";
+const ownedImageKey = (tenant: string, key: string) =>
+  key.startsWith(`images/${encodeURIComponent(tenant)}/`) || key.startsWith(`files/${encodeURIComponent(tenant)}/`);
 export function imageReferenceInput(
   text: string,
   refs: ImageRef[],
@@ -277,7 +279,7 @@ export function imageReferenceInput(
       ref.type !== "image_ref" ||
       ref.version !== 1 ||
       typeof ref.key !== "string" ||
-      !ref.key.startsWith(`images/${encodeURIComponent(tenant)}/`) ||
+      !ownedImageKey(tenant, ref.key) ||
       !Number.isSafeInteger(ref.size) ||
       ref.size < 1 ||
       ref.size > IMAGE_LIMITS.derivativeBytes
@@ -298,6 +300,7 @@ export function withImageReferences<A extends Api>(
   provider: Provider<A>,
   env: ImageBindings,
   getTenant: () => Promise<string>,
+  authorizeFile?: (key: string) => Promise<boolean>,
 ): Provider<A> {
   const hydrate = async (context: TranscriptContext) => {
     const locations: {
@@ -324,6 +327,7 @@ export function withImageReferences<A extends Api>(
     for (const location of locations.reverse()) {
       const ref = location.ref,
         size = 4 * Math.ceil(ref.size / 3);
+      if (ref.key.startsWith("files/") && !await authorizeFile?.(ref.key)) continue;
       if (
         count >= IMAGE_LIMITS.requestImages ||
         bytes + size > IMAGE_LIMITS.requestBase64Bytes

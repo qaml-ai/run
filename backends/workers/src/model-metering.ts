@@ -8,6 +8,7 @@ import { estimateModelAttempt } from './model-estimate.ts';
 import { modelSpendLimit } from './agent-spend.ts';
 import type { ModelAttemptEvent, ModelAttemptHook } from './model-attempt.ts';
 import { keyServices, providerCredentials, type KeyEnv } from './security-services.ts';
+import { PREPARED_MODEL_CREDENTIALS } from './model-request-auth.ts';
 
 export type ModelReceipt = { tenant: string; agent: string; platform: boolean; event: ModelAttemptEvent };
 export type ModelBillingContext = {
@@ -34,14 +35,24 @@ export function meterProvider<P extends Provider<any>>(
     void (async () => {
       const identity = await context();
       const service = await modelAttempts(env);
-      const credentials = await providerCredentials(await keyServices(env), identity.tenant, model.provider, identity.keyScope);
+      const credentials = Object.hasOwn(options, PREPARED_MODEL_CREDENTIALS)
+        ? options[PREPARED_MODEL_CREDENTIALS]
+        : await providerCredentials(await keyServices(env), identity.tenant, model.provider, identity.keyScope);
+      // withSettings has already prepared provider-specific request auth. Its
+      // sentinels keep anonymous endpoints valid and bearer keys out of Pi's
+      // API-key/OAuth heuristics; accounting still fingerprints the real key.
+      const preparedKey = options.apiKey;
+      const key = credentials?.apiKey ?? (preparedKey === 'keyless' || preparedKey === 'runtime-bearer' ? '' : preparedKey);
       if (credentials) {
-        options = { ...options, apiKey: credentials.apiKey, ...('headers' in credentials && credentials.headers ? { headers: credentials.headers } : {}) };
+        options = { ...options,
+          apiKey: preparedKey === 'runtime-bearer' ? preparedKey : credentials.apiKey ?? preparedKey,
+          headers: { ...('headers' in credentials ? credentials.headers : {}), ...options.headers },
+        };
         if ('baseUrl' in credentials && credentials.baseUrl) model = { ...model, baseUrl: credentials.baseUrl };
       }
       const limit = await modelSpendLimit(service.db, identity) ?? await service.accounts.runLimit(identity.tenant);
       if (limit) throw typeof limit === 'string' ? new Error(limit) : limit;
-      const platform = credentials ? credentials.platform : identity.platform !== false;
+      const platform = options.endpointIdentity ? false : credentials ? credentials.platform : identity.platform !== false;
       // Provider generation observations, renewal and settlement share the same
       // mutable holds. Finish must follow every preceding accounting write.
       let pending: Promise<unknown> = Promise.resolve();
@@ -68,13 +79,13 @@ export function meterProvider<P extends Provider<any>>(
       const gateway = !platform && (model.provider === 'cloudflare-ai-gateway' || !!credentials?.baseUrl && model.provider === 'openrouter');
       // Pi does not expose the compaction purpose at this provider boundary yet;
       // both call paths are charged, with kind=response until it does.
-      const source = await attemptStream(model, typeof options.apiKey === 'string' ? options.apiKey : '', 'response', hook,
+      const source = await attemptStream(model, typeof key === 'string' ? key : '', 'response', hook,
         (sink, halt, affordable) => stream(model, transcript, {
           ...options,
           signal: options.signal ? AbortSignal.any([options.signal, halt]) : halt,
           ...(affordable !== undefined && affordable < (options.maxTokens ?? model.maxTokens) ? { maxTokens: affordable } : {}),
           ...(FETCH_APIS.includes(model.api) ? { fetch: callFetch(sink, { ...(options.fetch ? { base: options.fetch } : {}) }) } : {}),
-        }), estimate, undefined, gateway);
+        }), estimate, undefined, gateway, options.supersede);
       for await (const event of source) output.push(event);
     })().catch(error => {
       output.push({ type: 'error', reason: 'error', error: { role: 'assistant', api: model.api, provider: model.provider, model: model.id,

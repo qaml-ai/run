@@ -107,11 +107,12 @@ const report = {
         .split("\n").length,
     },
   ],
-  sourceCommit: execFileSync("git", ["rev-parse", "HEAD"], {
+  // Sprite validation uses a committed git archive, which has no .git directory.
+  sourceCommit: process.env.WORKERS_MEASURE_COMMIT ?? execFileSync("git", ["rev-parse", "HEAD"], {
     cwd: root,
     encoding: "utf8",
   }).trim(),
-  worktreeDirty: execFileSync("git", ["status", "--porcelain"], {cwd:root,encoding:"utf8"}).trim().length > 0,
+  worktreeDirty: process.env.WORKERS_MEASURE_COMMIT ? false : execFileSync("git", ["status", "--porcelain"], {cwd:root,encoding:"utf8"}).trim().length > 0,
   method:
     "Physical TypeScript lines, comments and blanks included; declarations, tests, dependencies and generated bindings excluded. Whole mixed-purpose source files counted. Not feature-equivalent.",
   excluded: (await files("src")).filter((x) => excluded.test(x)),

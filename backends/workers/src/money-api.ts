@@ -18,7 +18,7 @@ async function services(env: MoneyEnv, request?: Request) {
   const account = accountServices(env, keys.accounts, request ? new URL(request.url).origin : env.PUBLIC_URL ?? 'https://localhost');
   const alerts = new BillingAlerts(keys.accounts.db, keys.accounts);
   const namespace = (env as MoneyEnv & { TENANTS?: { getByName(name: string): {status(): Promise<{active: unknown}>} } }).TENANTS;
-  const billing = { billing: keys.accounts.billing, alerts, emailEnabled: !!account.mail, rateLimits: account.limits,
+  const billing = { billing: keys.accounts.billing, alerts, emailEnabled: !!account.mail, rateLimits: account.limits, exists: (tenant: string) => keys.accounts.exists(tenant),
     ...(namespace ? { busy: async (tenant: string) => Number((await namespace.getByName(tenant).status()).active) } : {}) };
   const webhooks = new Webhooks({ db: keys.accounts.db, accounts: keys.accounts, outbound: keys.outbound });
   return { keys, account, billing, webhooks };
@@ -31,7 +31,9 @@ export async function authenticateMoney(request: Request, env: MoneyEnv): Promis
   const s = await services(env, request);
   const principal = await s.keys.accounts.authenticate(request.headers.get('authorization') ?? undefined)
     ?? await accountPrincipal(request, s.account);
-  if (principal?.via === 'oauth' && new URL(request.url).pathname.startsWith('/v1/') && !oauthAllows(request.method, new URL(request.url).pathname))
+  // Agent MCP is mounted beside the REST API in src and accepts the same tenant credential.
+  const agentMcp = /^\/v1\/agents\/client_[a-f0-9]{40}\/mcp$/.test(new URL(request.url).pathname);
+  if (principal?.via === 'oauth' && new URL(request.url).pathname.startsWith('/v1/') && !agentMcp && !oauthAllows(request.method, new URL(request.url).pathname))
     throw new HttpError(403, 'An OAuth access token works with agents only: it cannot get agent tokens or make API tokens, links, webhooks, channels or provider keys. Use an API token or the console');
   return principal ? { tenantId: principal.tenant, kind: principal.via === 'operator' ? 'operator' : principal.via === 'oauth' ? 'oauth' : principal.via === 'console' ? 'console' : 'api',
     scopes: ['*'], principal } : null;

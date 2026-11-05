@@ -18,8 +18,9 @@ import { postLedger, accrueUsage, BillingSpendable } from "./billing-sql.ts";
 import { EndUserCredits, lastCallMin, settleUsage, utcDay } from "./end-user-credits.ts";
 import { CreditHolds } from "./credit-holds.ts";
 import { keyServices, type KeyEnv } from "./security-services.ts";
+import { defaultModelFor, validateAgentModel } from "./default-model.ts";
+import { resolveAgentKey } from "./agent-key.ts";
 import { createAdmission } from "./admission.ts";
-import { setAgentSpendLimit } from "./agent-spend.ts";
 import { applyUsageRows } from "./accounts.ts";
 import { applyWorkspaceUsage, Workspaces } from "./workspaces.ts";
 import { activeCharge } from "../../../src/pricing.ts";
@@ -62,6 +63,7 @@ export interface DirectoryEntry {
   tenantId: string;
   key: string | null;
   config: AgentConfiguration;
+  resolvedModel?: import("@earendil-works/pi-ai").Model<import("@earendil-works/pi-ai").Api>;
   configHash: string;
   createdAt: number;
   expiresAt: number | null;
@@ -69,6 +71,9 @@ export interface DirectoryEntry {
   initialized: boolean;
   deleted?: true;
   cleanupPending?: boolean;
+  pendingFork?: { sourceId: string; fingerprint: string };
+  parentAgentId?: string;
+  parentRunId?: string;
 }
 export interface DirectoryFailure {
   failed: true;
@@ -109,10 +114,8 @@ export class Directory {
     this.env = env;
     this.tenantId = tenantId;
   }
-  private async id(key: string) {
-    return /^client_[a-f0-9]{40}$/.test(key)
-      ? key
-      : `client_${(await digest(`${this.tenantId}:${key}`)).slice(0, 40)}`;
+  async id(key: string) {
+    return resolveAgentKey(this.env, this.tenantId, key);
   }
   async get(key: string): Promise<DirectoryEntry | null> {
     const id = await this.id(key);
@@ -138,8 +141,14 @@ export class Directory {
   async upsert(
     input: unknown,
     suppliedKey?: string,
+    runtimeOrigin?: string,
+    pendingFork?: { sourceId: string; fingerprint: string },
   ): Promise<DirectoryEntry | DirectoryFailure> {
-    const { config, ttlSeconds } = configuration(input, this.env.MODEL);
+    const fields = input && typeof input === "object" ? input as Record<string, unknown> : {};
+    const defaultModel = fields.model === undefined
+      ? await defaultModelFor(this.env, this.tenantId, typeof fields.keyScope === "string" ? fields.keyScope : undefined)
+      : this.env.MODEL;
+    const { config, ttlSeconds } = configuration(input, defaultModel);
     const workspaces = new Workspaces(database(this.env));
     if (config.workspaceId !== undefined) await workspaces.validate(this.tenantId, config.workspaceId);
     const key =
@@ -150,6 +159,9 @@ export class Directory {
     const owner=(await withSql(this.env,sql=>sql.query('select tenant,revoked from agents where id=$1',[id]))).rows[0];
     if (owner && owner.tenant!==this.tenantId) throw new ApiError(403,'Agent belongs to another account','FORBIDDEN');
     if (owner?.revoked) throw new ApiError(410,'Agent is deleted','AGENT_GONE');
+    const previousEntry = await this.get(id), previousConfig = previousEntry?.config;
+    if (fields.model === undefined && previousConfig?.model) config.model = previousConfig.model;
+    const resolvedModel = await validateAgentModel(this.env, this.tenantId, config, { reference: previousConfig?.model, model: previousEntry?.resolvedModel });
     const requested=(input as {mounts?:unknown;remount?:boolean}).mounts;
     const before = requested === undefined ? await this.get(id) : undefined;
     // Volume initialization uses its own SQL and DO calls. Keep those outside
@@ -171,27 +183,39 @@ export class Directory {
       if (previous?.revoked)
         throw new ApiError(410, "Agent is deleted", "AGENT_GONE");
       const old = previous?.header as DirectoryEntry | undefined;
+      if (old && fields.subject !== undefined && fields.subject !== old.config.subject)
+        throw new ApiError(409, "An agent's subject cannot change");
+      if (old?.config.subject && fields.subject === undefined) config.subject = old.config.subject;
+      if (old?.config.model && fields.model === undefined) config.model = old.config.model;
+      if (!pendingFork && old?.pendingFork) throw new ApiError(409, "Fork is still being copied", "FORK_IN_PROGRESS");
+      if (pendingFork && old && (old.pendingFork?.sourceId !== pendingFork.sourceId || old.pendingFork?.fingerprint !== pendingFork.fingerprint))
+        throw new ApiError(409, "Key belongs to another agent", "FORK_CONFLICT");
       if (requested===undefined && old?.config.mounts) config.mounts=old.config.mounts;
       if(old?.config.mounts&&requested!==undefined&&JSON.stringify(old.config.mounts)!==JSON.stringify(config.mounts)&&(input as {remount?:boolean}).remount!==true)
         throw new ApiError(409,"Agent mounts differ; set remount: true to change them");
       const configHash=await digest(JSON.stringify(config));
-      await createAdmission(this.env, this.tenantId, !(old?.initialized && old.configHash === configHash));
-      if (old?.initialized && old.configHash === configHash) return old;
+      const sameModel = JSON.stringify(old?.resolvedModel) === JSON.stringify(resolvedModel);
+      if (config.type !== "run")
+        await createAdmission(this.env, this.tenantId, !(old?.initialized && old.configHash === configHash));
+      if (old?.initialized && old.configHash === configHash && sameModel) return old;
       const next: DirectoryEntry = {
         id,
         tenantId: this.tenantId,
         key,
         config,
+        ...(resolvedModel ? { resolvedModel } : {}),
         configHash,
         createdAt: old?.createdAt ?? Date.now(),
         expiresAt:
           old?.expiresAt ??
-          (ttlSeconds ? Date.now() + ttlSeconds * 1000 : null),
+          (ttlSeconds != null ? Date.now() + ttlSeconds * 1000 : ttlSeconds === null || key ? null : Date.now() + 86400_000),
         revision:
-          old?.configHash === configHash
+          old?.configHash === configHash && sameModel
             ? old.revision
             : (old?.revision ?? 0) + 1,
         initialized: false,
+        ...(old?.parentAgentId ? { parentAgentId: old.parentAgentId, parentRunId: old.parentRunId } : {}),
+        ...(pendingFork ? { pendingFork } : {}),
       };
       const written = await sql.query(
         `insert into agents(id,tenant,header,revision,name,type,model,expires_at) values($1,$2,$3,$4,$5,$6,$7,$8)
@@ -210,8 +234,6 @@ export class Directory {
       );
       if (!written.rowCount)
         throw new ApiError(403, "Agent belongs to another tenant", "FORBIDDEN");
-      if (input && typeof input === 'object' && Object.hasOwn(input, 'spendLimit'))
-        await setAgentSpendLimit(sql, id, config.spendLimit ?? null);
       return next;
     });
     if (!entry.initialized) {
@@ -223,8 +245,10 @@ export class Directory {
             id,
             tenantId: this.tenantId,
             config:entry.config,
+            resolvedModel:entry.resolvedModel,
             revision: entry.revision,
             expiresAt: entry.expiresAt,
+            runtimeOrigin,
           }),
         }),
       );
@@ -242,13 +266,16 @@ export class Directory {
           [id, this.tenantId, JSON.stringify(entry), entry.revision],
         ),
       );
-      if (!applied.rowCount)
+      if (!applied.rowCount) {
+        const latest = await this.get(id);
+        if (latest?.initialized && latest.configHash === entry.configHash) return latest;
         return {
           failed: true,
           status: 409,
           error: "A newer configuration or revocation won; retry",
           code: "CONFIGURATION_CHANGED",
         };
+      }
     }
     if (config.workspaceId !== undefined) await workspaces.assign(this.tenantId, "agent", id, config.workspaceId);
     return entry;
@@ -274,7 +301,7 @@ export class Directory {
         error: "Agent revoked; cleanup pending",
         code: "CLEANUP_PENDING",
       };
-    await (await import('./file-mounts.ts')).releaseAgentFiles(this.env,this.tenantId,entry.id,entry.config.mounts??[]);
+    await (await import('./file-mounts.ts')).releaseAgentFiles(this.env,this.tenantId,entry.id,(entry.config.mounts??[]) as import("./files.ts").Mount[]);
     entry.cleanupPending = false;
     entry.config = {};
     entry.configHash = "";
@@ -292,7 +319,7 @@ export class Directory {
 async function lockAccount(sql: Sql, tenantId: string) {
   const row = (
     await sql.query(
-      "select a.balance,a.purchased,t.billing from credit_accounts a join tenants t on t.id=a.tenant where a.tenant=$1 for update of a",
+      "select a.balance,a.purchased from credit_accounts a where a.tenant=$1 for update of a",
       [tenantId],
     )
   ).rows[0];
@@ -373,7 +400,10 @@ export async function settleTurn(
   const { accounts: { billing } } = await keyServices(env);
   const prepaid = await billing.mode(receipt.tenantId) === "prepaid";
   const result = await transaction(env, async (sql) => {
-    await lockAccount(sql, receipt.tenantId);
+    // Admin tenants can run on their own keys without a prepaid account row.
+    // Serialize all of their receipts too, without manufacturing a credit balance.
+    await sql.query("select pg_advisory_xact_lock(hashtextextended($1,0))", [`turn-receipts:${receipt.tenantId}`]);
+    if (prepaid) await lockAccount(sql, receipt.tenantId);
     const prior = (
       await sql.query(
         "select fingerprint from idempotency_keys where tenant=$1 and key=$2",

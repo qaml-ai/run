@@ -680,7 +680,7 @@ export async function handleAgentFilesRoute(
     const mount = mounts.find(
       (m) => absolute === m.path || absolute.startsWith(m.path + "/"),
     );
-    if (!mount) throw new FileError("Path is not inside a mount", 403);
+    if (!mount) throw new FileError("Path is not inside a mount", 400);
     const inside = normalizePath(
       (mount.subpath ?? "/") + "/" + absolute.slice(mount.path.length),
     );

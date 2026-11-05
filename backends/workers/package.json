@@ -9,7 +9,7 @@
     "types": "WRANGLER_LOG_PATH=.wrangler/logs wrangler types --include-runtime=false",
     "build": "WRANGLER_LOG_PATH=.wrangler/logs wrangler deploy --dry-run --outdir dist && WRANGLER_LOG_PATH=.wrangler/logs wrangler deploy --dry-run -c codemode/wrangler.jsonc --outdir dist-codemode",
     "test": "node --import ./test/sdk-deps.mjs --experimental-strip-types --test --test-concurrency=1 test/*.test.ts",
-    "test:integration": "node --import ./test/sdk-deps.mjs --experimental-strip-types --test --test-concurrency=1 test/*.integration.ts",
+    "test:integration": "node --import ./test/compat-register.mjs --experimental-strip-types --test --test-concurrency=1 test/*.integration.ts",
     "test:compat": "node scripts/compatibility.mjs",
     "measure": "node scripts/measure.mjs",
     "test:python": "python3 scripts/python-compat.py",
@@ -29,7 +29,9 @@
     "hono": "^4.13.16",
     "jose": "^6.2.15",
     "pg": "8.16.3",
-    "zod": "4.6.7"
+    "zod": "4.6.7",
+    "yaml": "2.9.1",
+    "@modelcontextprotocol/sdk": "1.32.2"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "latest",

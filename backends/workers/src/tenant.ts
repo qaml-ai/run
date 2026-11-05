@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+const agentOf = "CASE WHEN instr(id, ':') > 0 THEN substr(id, 1, instr(id, ':') - 1) ELSE id END";
 
 /** One tenant serializes admission. No fleet registry, heartbeat or PG advisory lock. */
 export class TenantAdmission extends DurableObject<Record<string, unknown>> {
@@ -14,17 +15,16 @@ export class TenantAdmission extends DurableObject<Record<string, unknown>> {
   async acquire(id: string, limit = 1000): Promise<boolean> {
     return this.ctx.storage.transactionSync(() => {
       const sql = this.ctx.storage.sql;
-      if (sql.exec("SELECT id FROM admitted WHERE id=?", id).toArray().length)
-        return true;
+      const alreadyBusy = sql.exec(`SELECT id FROM admitted WHERE ${agentOf}=? LIMIT 1`, id.split(":")[0]).toArray().length > 0;
       if (
         Number(
           sql
-            .exec<{ count: number }>("SELECT count(*) AS count FROM admitted")
+            .exec<{ count: number }>(`SELECT count(DISTINCT ${agentOf}) AS count FROM admitted`)
             .one().count,
-        ) >= limit
+        ) >= limit && !alreadyBusy
       )
         return false;
-      sql.exec("INSERT INTO admitted VALUES (?,?)", id, Date.now());
+      sql.exec("INSERT OR IGNORE INTO admitted VALUES (?,?)", id, Date.now());
       return true;
     });
   }
@@ -54,7 +54,7 @@ export class TenantAdmission extends DurableObject<Record<string, unknown>> {
   async status() {
     return {
       active: this.ctx.storage.sql
-        .exec("SELECT count(*) AS count FROM admitted")
+        .exec(`SELECT count(DISTINCT ${agentOf}) AS count FROM admitted`)
         .one().count,
     };
   }
