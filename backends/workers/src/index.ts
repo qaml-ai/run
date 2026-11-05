@@ -19,6 +19,7 @@ import {
   type DirectoryEntry,
   type DirectoryFailure,
 } from "./control.ts";
+import { agentToolView } from "./agent-tool-view.ts";
 import { agentActivity } from "./agent-activity.ts";
 import { listAgents } from "./agent-list.ts";
 import { withMoneyIdempotency } from "./money-idempotency.ts";
@@ -100,6 +101,7 @@ function credentials(entry: DirectoryEntry, token?: string) {
 function summary(entry: DirectoryEntry) {
   return {
     ...visibleConfiguration(entry.config),
+    tools: agentToolView(entry.config),
     ...(entry.config.definition ? { definition: { id: entry.config.definition, revision: entry.config.definitionRevision } } : {}),
     ...("forkedFrom" in entry ? { forkedFrom: entry.forkedFrom } : {}),
     ...(entry.parentAgentId ? { parentAgentId: entry.parentAgentId, parentRunId: entry.parentRunId } : {}),

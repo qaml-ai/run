@@ -1,3 +1,4 @@
+import { agentToolView } from "./agent-tool-view.ts";
 import type { Directory, AuthContext, ControlEnv, DirectoryEntry } from "./control.ts";
 
 const response = (value: unknown, status = 200) => Response.json(value, {
@@ -52,7 +53,7 @@ export async function handleServiceRequest(
   const state = await stateResponse.json() as { cursor: number; requests: { state: string }[] };
   const config = entry.config;
   return response({
-    ...metadata(entry), tools: [], systemPrompt: config.systemPrompt ?? "",
+    ...metadata(entry), tools: agentToolView(config), systemPrompt: config.systemPrompt ?? "",
     ...(config.fileTools === false ? { fileTools: false } : {}),
     ...(config.codeMode === false ? { codeMode: false } : {}),
     mounts: config.mounts ?? [], keyScope: null, bucket: null, modelHeaders: null,

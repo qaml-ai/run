@@ -133,7 +133,7 @@ import {
 } from "./model-metering.ts";
 import { keyServices, type KeyEnv } from "./security-services.ts";
 import type { AccountEnv } from "./account-services.ts";
-import { runAdmission, admissionHeaders, admissionError, errorFields, type RateLimitState } from "./admission.ts";
+import { runAdmission, admissionHeaders, admissionError, errorFields, errorHeaders, type RateLimitState } from "./admission.ts";
 import { billingRunStop, isUnbilledLimitMessage } from "./billing-run-stop.ts";
 import { usageCost } from "./webhook-policy.ts";
 import { PromptPreparations } from "./prompt-admission.ts";
@@ -291,8 +291,8 @@ export interface Env
   SCHEDULE_EMAIL_FROM?: string;
   SCHEDULE_OPERATOR_TENANTS?: string;
 }
-export const json = (value: unknown, status = 200) =>
-  Response.json(value, { status, headers: { "cache-control": "no-store" } });
+export const json = (value: unknown, status = 200, headers: Record<string, string> = {}) =>
+  Response.json(value, { status, headers: { "cache-control": "no-store", ...headers } });
 const canonical = (value: unknown): string =>
   JSON.stringify(
     value && typeof value === "object"
@@ -3378,6 +3378,7 @@ export class CamelAgent extends DurableObject<Env> {
                 : "Backend failure",
         },
         status,
+        errorHeaders(error),
       );
     }
   }

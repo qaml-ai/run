@@ -18,7 +18,17 @@ function result(value: DirectoryEntry | DirectoryFailure): DirectoryEntry { if (
 async function call(env: ControlEnv, id: string, path: string, input?: unknown): Promise<Response> {
   return env.AGENTS.getByName(id).fetch(new Request(`https://agent${path}`, input === undefined ? undefined : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) }));
 }
-async function payload(response: Response) { const value = await response.json() as any; if (!response.ok) throw Object.assign(new ApiError(response.status, value.error ?? "Agent operation failed", value.code), { details: Object.fromEntries(Object.entries(value).filter(([key]) => !["error", "code"].includes(key))) }); return value; }
+async function payload(response: Response) {
+  const value = await response.json() as any;
+  if (!response.ok) {
+    const { error, code, ...details } = value;
+    throw Object.assign(new ApiError(response.status, error ?? "Agent operation failed", code), {
+      details,
+      ...(response.headers.has("retry-after") ? { retryAfter: Number(response.headers.get("retry-after")) } : {}),
+    });
+  }
+  return value;
+}
 export function runView(record: Record, retentionMs: number) {
   const result = record.outcome?.result ?? {}, ended = record.state === "completed";
   const error = !ended ? null : record.outcome?.error ? { code: /aborted/i.test(record.outcome.error) ? "aborted" : "runtime_error", message: record.outcome.error } : result.error ? { code: result.code ?? "model_error", message: result.error, ...result.modelError, ...Object.fromEntries(["limit", "reason", "bucket", "endUser"].flatMap(key => typeof result[key] === "string" ? [[key, result[key]]] : [])) } : null;
