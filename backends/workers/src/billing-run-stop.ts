@@ -35,3 +35,11 @@ export function billingRunStop(error: unknown): BillingRunStop | undefined {
   if (value.code === "INSUFFICIENT_CREDIT") return creditRunStop({ message: value.message, reason: "balance" });
   if (value.code === "SPEND_LIMIT") return { error: value.message, stopped: "spend_limit", code: "spend_limit", ...(value.stopLimit ? { limit: value.stopLimit } : {}) };
 }
+
+/** A pre-request Pi hook records an error locally; the source host emits only the run stop. */
+export async function isUnbilledLimitMessage(storage: Pick<DurableObjectStorage, "list">, message: unknown) {
+  const value = message as { role?: string; stopReason?: string; errorMessage?: string; usage?: { billingAttemptId?: string } };
+  if (value.role !== "assistant" || value.stopReason !== "error" || value.usage?.billingAttemptId || !value.errorMessage) return false;
+  const limits = await storage.list<{ error: string }>({ prefix: "run-limit:" });
+  return [...limits.values()].some(limit => value.errorMessage === limit.error || value.errorMessage === `Error: ${limit.error}`);
+}

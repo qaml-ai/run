@@ -135,7 +135,7 @@ import {
 import { keyServices, type KeyEnv } from "./security-services.ts";
 import type { AccountEnv } from "./account-services.ts";
 import { runAdmission, admissionHeaders, admissionError, errorFields, type RateLimitState } from "./admission.ts";
-import { billingRunStop } from "./billing-run-stop.ts";
+import { billingRunStop, isUnbilledLimitMessage } from "./billing-run-stop.ts";
 import { enqueueRunWebhook } from "./run-webhooks.ts";
 import { sendMoneyWebhooks } from "./money-api.ts";
 import { usageCost } from "./webhook-policy.ts";
@@ -332,6 +332,7 @@ export class CamelAgent extends DurableObject<Env> {
   private instanceId = crypto.randomUUID();
   private historyIndex = new AgentHistory(this.ctx.storage.sql, (fn) =>
     this.ctx.storage.transactionSync(fn),
+    async message => !await isUnbilledLimitMessage(this.ctx.storage, message),
   );
   private eventLog = new DurableEventLog(this.ctx.storage.sql);
   private recentEvents = new RecentEvents(this.ctx.storage.sql);
@@ -1333,6 +1334,7 @@ export class CamelAgent extends DurableObject<Env> {
   }
   private async projectMessage(id: string, message: Message, ended: boolean) {
     if (message.role === "system") return;
+    if (await isUnbilledLimitMessage(this.ctx.storage, message)) return;
     message = attachmentMessage(message);
     if (message.role === "user") {
       const record = await this.ctx.storage.get<RequestRecord>(reqKey(id));
