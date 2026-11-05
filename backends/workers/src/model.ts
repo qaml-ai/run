@@ -80,6 +80,8 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEn
       model = { ...boundedModel(selected, config.runLimits?.contextTokens), ...(env.TEST_MODEL === "1" ? { baseUrl: model.baseUrl, api: model.api, runtimeApi: selected.api } : {}) };
     }
     const credential = await hooks.credentials?.(model.provider);
+    if (hooks.credentials && !credential && config.keyScope)
+      throw new Error(`No ${model.provider} API key is configured for key scope ${config.keyScope} or this tenant; set one with PUT /v1/key-scopes/${config.keyScope}/providers/${model.provider}`);
     if (credential?.baseUrl) {
       const catalog = getModel(model.provider, model.id);
       model = { ...model, api: (model as Model<Api> & { runtimeApi?: Api }).runtimeApi ?? catalog?.api ?? model.api };
