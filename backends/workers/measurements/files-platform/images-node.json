@@ -1,0 +1,69 @@
+{
+  "backend": "node",
+  "area": "images",
+  "suiteHash": "67b02bffd2a22bc2200dea203b56b33d07bafc6aa69781b17d3e04eee7db9c41",
+  "revision": "96355e4dc714bfbfa1c2c03a26ff7475c61e7bb7",
+  "runtime": {
+    "node": "v24.22.1",
+    "platform": "linux",
+    "arch": "x64"
+  },
+  "recordedAt": "2026-11-05T22:22:07.161Z",
+  "expectedCases": 6,
+  "rows": [
+    {
+      "area": "images",
+      "source": "tests/image-generation-api.test.ts",
+      "name": "POST /v1/images makes images on the platform's OpenAI key for a prepaid tenant, edits images given as base64, multipart or a URL, and is billed per token",
+      "status": "pass",
+      "durationMs": 3261.44359,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "images",
+      "source": "tests/image-generation-api.test.ts",
+      "name": "POST /v1/images needs an OpenAI key, and a monthly cap refuses it",
+      "status": "pass",
+      "durationMs": 2299.89954,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "images",
+      "source": "tests/image-generation-api.test.ts",
+      "name": "POST /v1/images with volumeId saves the images to the volume and answers their paths",
+      "status": "pass",
+      "durationMs": 2564.66539,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "images",
+      "source": "tests/image-generation-sdk.test.ts:7",
+      "name": "the TypeScript SDK: images.generate and images.edit from bytes, a Blob or a URL, answered as base64 or saved to a volume",
+      "status": "pass",
+      "durationMs": 2497.80652,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "images",
+      "source": "tests/images.test.ts:187",
+      "name": "an image whose scaling failed for now (its parse job crashed) is tried again on the next request, not held as omitted",
+      "status": "pass",
+      "durationMs": 6315.15831,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "images",
+      "source": "tests/images.test.ts",
+      "name": "a thread with over 20 images, one of them 2,400 px, gets a request where every image is at most 1,568 px; the stored history is unchanged",
+      "status": "pass",
+      "durationMs": 7592.56644,
+      "reason": "",
+      "backend": "node"
+    }
+  ]
+}

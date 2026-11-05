@@ -1,0 +1,193 @@
+{
+  "backend": "workers",
+  "area": "schedules,workspaces,selfhost,cli,journey",
+  "suiteHash": "67b02bffd2a22bc2200dea203b56b33d07bafc6aa69781b17d3e04eee7db9c41",
+  "revision": "96355e4dc714bfbfa1c2c03a26ff7475c61e7bb7",
+  "runtime": {
+    "node": "v24.22.1",
+    "platform": "linux",
+    "arch": "x64"
+  },
+  "recordedAt": "2026-11-05T22:24:14.729Z",
+  "expectedCases": 19,
+  "rows": [
+    {
+      "area": "cli",
+      "source": "tests/cli.test.ts",
+      "name": "a manifest's delegate settings bring their builtin",
+      "status": "pass",
+      "durationMs": 0.22382,
+      "reason": "",
+      "backend": "sdk-unit"
+    },
+    {
+      "area": "cli",
+      "source": "tests/cli.test.ts",
+      "name": "a run waiting on a person exits 2 and resumes once answered",
+      "status": "pass",
+      "durationMs": 6722.342914,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "cli",
+      "source": "tests/cli.test.ts",
+      "name": "login saves a checked key readable only by its owner",
+      "status": "pass",
+      "durationMs": 4329.466767,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "cli",
+      "source": "tests/cli.test.ts",
+      "name": "run --stateless answers in one call and leaves no agent; runs get reads it back",
+      "status": "pass",
+      "durationMs": 5717.168794,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "cli",
+      "source": "tests/cli.test.ts",
+      "name": "the CLI deploys a manifest, runs its agent, and manages agents and definitions",
+      "status": "pass",
+      "durationMs": 16184.769021,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "cli",
+      "source": "tests/cli.test.ts",
+      "name": "the CLI reads the runtime's URL from CAMELAI_BASE_URL, as the SDKs do, or CAMELAI_URL",
+      "status": "pass",
+      "durationMs": 0.74717,
+      "reason": "",
+      "backend": "sdk-unit"
+    },
+    {
+      "area": "cli",
+      "source": "tests/cli.test.ts",
+      "name": "the MCP server deploys and runs agents for a coding agent",
+      "status": "pass",
+      "durationMs": 7463.621329,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "journey",
+      "source": "tests/journey-server.test.ts:120",
+      "name": "an account's export holds its journey: what this runtime kept and what the store holds; an account journey never knew has none",
+      "status": "fail",
+      "durationMs": 4594.887152,
+      "reason": "Expected values to be strictly equal: 404 !== 200",
+      "error": {
+        "message": "Expected values to be strictly equal:\n\n404 !== 200\n",
+        "stack": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\n404 !== 200\n\n    at file:///home/sprite/rt/tests/contract/areas/journey.public.contract.test.ts:125:10\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/ported.ts:12:13\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)",
+        "expected": 200,
+        "actual": 404,
+        "operator": "strictEqual"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "journey",
+      "source": "tests/journey-server.test.ts:148",
+      "name": "an email sign-up is an account made when its mailed link is finished, in the browser that finishes it",
+      "status": "pass",
+      "durationMs": 4835.036498,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "journey",
+      "source": "tests/journey-server.test.ts:46",
+      "name": "a runtime with journey events off serves the console as ever: no tag, no cookie, no endpoint",
+      "status": "pass",
+      "durationMs": 5273.6848,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "journey",
+      "source": "tests/journey-server.test.ts:57",
+      "name": "with journey events on, an arrival is noted through the redirect, the browser gets its visitor id, and the console's pages reach the store",
+      "status": "pass",
+      "durationMs": 4783.618671,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "journey",
+      "source": "tests/journey-server.test.ts:88",
+      "name": "with journey events on, making an agent and running it tells the store of the agent, the day's activity and the account's first run",
+      "status": "pass",
+      "durationMs": 7133.547118,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "schedules",
+      "source": "tests/schedule-api.test.ts:21",
+      "name": "public accounts can email their verified address and cannot email strangers or suppressed recipients",
+      "status": "pass",
+      "durationMs": 5420.734933,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "schedules",
+      "source": "tests/schedule-api.test.ts:37",
+      "name": "a calendar wake-up tells the model its fixed local edition date",
+      "status": "pass",
+      "durationMs": 5128.483549,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "schedules",
+      "source": "tests/schedule-api.test.ts:7",
+      "name": "calendar schedules and owner-configured email round trip through the API without crossing accounts",
+      "status": "pass",
+      "durationMs": 6422.05184,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "selfhost",
+      "source": "tests/selfhost.test.ts:39",
+      "name": "a runtime bootstrapped from AGENT_TENANT and AGENT_OPERATOR_TOKEN serves that tenant",
+      "status": "pass",
+      "durationMs": 5737.956153,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "selfhost",
+      "source": "tests/selfhost.test.ts:48",
+      "name": "on a runtime configured by AGENT_TENANT, a run without a model key also names AGENT_TENANT_API_KEYS",
+      "status": "pass",
+      "durationMs": 5086.213593,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "selfhost",
+      "source": "tests/selfhost.test.ts:57",
+      "name": "a private runtime names no URL to browsers: AGENT_BROWSER_URL overrides the browser token's url, or empty leaves it out, and links carry their path on the runtime",
+      "status": "pass",
+      "durationMs": 9858.407453,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "workspaces",
+      "source": "tests/workspaces.test.ts:48",
+      "name": "workspaces API validates ownership, inherits definitions, and accounts agent and stateless model calls",
+      "status": "pass",
+      "durationMs": 9443.802608,
+      "reason": "",
+      "backend": "workers"
+    }
+  ]
+}
