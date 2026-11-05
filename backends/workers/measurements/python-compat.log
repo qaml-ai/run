@@ -1,160 +1,63 @@
-Executing <Task finished name='Task-2' coro=<HistoryPagingTest.test_history_collects_bounded_pages_async_and_sync() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:1721> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.141 seconds
-..EExecuting <Task finished name='Task-12' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.798 seconds
-FExecuting <Task finished name='Task-24' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.680 seconds
-EExecuting <Task finished name='Task-37' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.216 seconds
-EExecuting <Task finished name='Task-47' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.943 seconds
-FExecuting <Task finished name='Task-57' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.841 seconds
-EExecuting <Task finished name='Task-67' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.154 seconds
-FExecuting <Task finished name='Task-77' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.265 seconds
-EExecuting <Task finished name='Task-92' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.432 seconds
-sEExecuting <Task finished name='Task-108' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.555 seconds
-EExecuting <Task finished name='Task-127' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.145 seconds
-EExecuting <Task finished name='Task-137' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.225 seconds
-EExecuting <Task finished name='Task-147' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.437 seconds
-FExecuting <Task finished name='Task-162' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.546 seconds
-EExecuting <Task finished name='Task-177' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.667 seconds
-EExecuting <Task finished name='Task-191' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.346 seconds
-FExecuting <Task finished name='Task-207' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.845 seconds
-EExecuting <Task finished name='Task-217' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.362 seconds
-EExecuting <Task finished name='Task-227' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.393 seconds
-Executing <Task finished name='Task-235' coro=<PythonSDKTest.test_key_scopes_tokens_usage_webhooks_and_rotated_credentials() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:1033> exception=AgentError('Unknown API route') created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.497 seconds
-EExecuting <Task finished name='Task-237' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.997 seconds
-Executing <Task finished name='Task-282' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.188 seconds
-.EExecuting <Task finished name='Task-454' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.977 seconds
-EExecuting <Task finished name='Task-468' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.306 seconds
-FExecuting <Task finished name='Task-481' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.334 seconds
-Executing <Task finished name='Task-503' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.668 seconds
-.EExecuting <Task finished name='Task-523' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.813 seconds
-Executing <Task finished name='Task-537' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.693 seconds
-.EExecuting <Task finished name='Task-550' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.236 seconds
-EExecuting <Task finished name='Task-561' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.960 seconds
-FExecuting <Task finished name='Task-574' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.897 seconds
-FExecuting <Task finished name='Task-583' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.675 seconds
-EExecuting <Task finished name='Task-593' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.998 seconds
-sEExecuting <Task finished name='Task-603' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.901 seconds
+
+> @camelai/run-workers-experiment@0.0.0 test:python
+> python3 scripts/python-compat.py
+
+Executing <Task finished name='Task-2' coro=<HistoryPagingTest.test_history_collects_bounded_pages_async_and_sync() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:1721> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.178 seconds
+..Executing <Task finished name='Task-50' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.650 seconds
+.Executing <Task finished name='Task-66' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.521 seconds
+.Executing <Task finished name='Task-109' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.385 seconds
+.Executing <Task finished name='Task-131' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.277 seconds
+.Executing <Task finished name='Task-155' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.575 seconds
+.Executing <Task finished name='Task-192' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.727 seconds
+.Executing <Task finished name='Task-217' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.301 seconds
+.EExecuting <Task finished name='Task-237' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.316 seconds
+sExecuting <Task finished name='Task-254' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.617 seconds
+.Executing <Task finished name='Task-286' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.487 seconds
+.Executing <Task finished name='Task-310' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.269 seconds
+.EExecuting <Task finished name='Task-324' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.159 seconds
+Executing <Task finished name='Task-343' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.485 seconds
+.Executing <Task finished name='Task-362' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.478 seconds
+.Executing <Task finished name='Task-387' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.634 seconds
+.EExecuting <Task finished name='Task-407' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.831 seconds
+Executing <Task finished name='Task-419' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.793 seconds
+.Executing <Task finished name='Task-434' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.390 seconds
+.Executing <Task pending name='Task-448' coro=<PythonSDKTest.test_key_scopes_tokens_usage_webhooks_and_rotated_credentials() running at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:1062> wait_for=<Future pending cb=[Task.task_wakeup()] created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py:427> cb=[_run_until_complete_cb() at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py:180] created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.126 seconds
+Executing <Task finished name='Task-448' coro=<PythonSDKTest.test_key_scopes_tokens_usage_webhooks_and_rotated_credentials() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:1033> exception=IndexError('list index out of range') created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.234 seconds
+EExecuting <Task finished name='Task-454' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.306 seconds
+Executing <Task finished name='Task-502' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.636 seconds
+.Executing <Task finished name='Task-677' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.413 seconds
+.Executing <Task finished name='Task-709' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.296 seconds
+.FExecuting <Task finished name='Task-732' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.346 seconds
+Executing <Task finished name='Task-759' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.553 seconds
+.Executing <Task pending name='Task-776' coro=<PythonSDKTest.test_run_with_output_returns_a_pydantic_model_or_the_json_schema_value() running at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:544> cb=[_run_until_complete_cb() at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py:180] created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.172 seconds
+Executing <Task finished name='Task-784' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.734 seconds
+.Executing <Task finished name='Task-799' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.929 seconds
+.Executing <Task finished name='Task-823' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.745 seconds
+.----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 52707)
+Traceback (most recent call last):
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socketserver.py", line 691, in process_request_thread
+    self.finish_request(request, client_address)
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socketserver.py", line 361, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socketserver.py", line 755, in __init__
+    self.handle()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/server.py", line 436, in handle
+    self.handle_one_request()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/server.py", line 424, in handle_one_request
+    method()
+  File "/Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py", line 72, in do_POST
+    self.wfile.write(b"data: [DONE]\n\n")
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socketserver.py", line 834, in write
+    self._sock.sendall(b)
+BrokenPipeError: [Errno 32] Broken pipe
+----------------------------------------
+Executing <Task finished name='Task-842' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.316 seconds
+.Executing <Task finished name='Task-866' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.656 seconds
+.Executing <Task finished name='Task-879' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.301 seconds
+.Executing <Task finished name='Task-927' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.461 seconds
+.sEExecuting <Task finished name='Task-944' coro=<PythonSDKTest.asyncTearDown() done, defined at /Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py:739> result=None created at /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py:100> took 0.830 seconds
 ........................
-======================================================================
-ERROR: test_a_deploy_loses_no_tool_call_close_finishes_the_calls_running (upstream_python_sdk.PythonSDKTest.test_a_deploy_loses_no_tool_call_close_finishes_the_calls_running)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 90, in _callTestMethod
-    if self._callMaybeAsync(method) is not None:
-       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 112, in _callMaybeAsync
-    return self._asyncioRunner.run(
-           ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
-    return future.result()
-           ^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 360, in test_a_deploy_loses_no_tool_call_close_finishes_the_calls_running
-    agent = await old.upsert("deploy", tools=[slow])
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2958, in upsert
-    session = await self.runtime.upsert_agent(key, workspace_id=workspace_id, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
-              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 904, in _rest
-    value = await _http(self.http, self.base, path, self._operator(), method, body, retry, headers, timeout)
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 545, in _http
-    return _json_of(await client.request(method, base + path, content=encoded, **_request_options(token, headers, timeout)))
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 522, in _json_of
-    raise AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code, retry_after=_retry_after(response), code=_code(value), **_credit_of(value))
-camelai_run.AgentError: Attached tools are not supported by the Cloudflare backend yet
-
-======================================================================
-ERROR: test_a_tool_process_that_dies_mid_run_the_restarted_one_serves_its_calls_and_the_same_key_fetches_it (upstream_python_sdk.PythonSDKTest.test_a_tool_process_that_dies_mid_run_the_restarted_one_serves_its_calls_and_the_same_key_fetches_it)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 90, in _callTestMethod
-    if self._callMaybeAsync(method) is not None:
-       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 112, in _callMaybeAsync
-    return self._asyncioRunner.run(
-           ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
-    return future.result()
-           ^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 267, in test_a_tool_process_that_dies_mid_run_the_restarted_one_serves_its_calls_and_the_same_key_fetches_it
-    agent = await crashed.upsert("orphaned", tools=[slow])
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2958, in upsert
-    session = await self.runtime.upsert_agent(key, workspace_id=workspace_id, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
-              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 904, in _rest
-    value = await _http(self.http, self.base, path, self._operator(), method, body, retry, headers, timeout)
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 545, in _http
-    return _json_of(await client.request(method, base + path, content=encoded, **_request_options(token, headers, timeout)))
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 522, in _json_of
-    raise AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code, retry_after=_retry_after(response), code=_code(value), **_credit_of(value))
-camelai_run.AgentError: Attached tools are not supported by the Cloudflare backend yet
-
-======================================================================
-ERROR: test_an_approval_answered_by_on_input_resumes_the_turn (upstream_python_sdk.PythonSDKTest.test_an_approval_answered_by_on_input_resumes_the_turn)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 90, in _callTestMethod
-    if self._callMaybeAsync(method) is not None:
-       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 112, in _callMaybeAsync
-    return self._asyncioRunner.run(
-           ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
-    return future.result()
-           ^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 768, in test_an_approval_answered_by_on_input_resumes_the_turn
-    agent = await self.runtime.create_agent(tools=[wipe], on_input=approve)
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 942, in create_agent
-    session = await _http(self.http, self.base, "/v1/agents", self.api_key, "POST", body,
-              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 545, in _http
-    return _json_of(await client.request(method, base + path, content=encoded, **_request_options(token, headers, timeout)))
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 522, in _json_of
-    raise AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code, retry_after=_retry_after(response), code=_code(value), **_credit_of(value))
-camelai_run.AgentError: Attached tools are not supported by the Cloudflare backend yet
-
-======================================================================
-ERROR: test_annotations_reconnect_and_lost_acknowledgements (upstream_python_sdk.PythonSDKTest.test_annotations_reconnect_and_lost_acknowledgements)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 90, in _callTestMethod
-    if self._callMaybeAsync(method) is not None:
-       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 112, in _callMaybeAsync
-    return self._asyncioRunner.run(
-           ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
-    return future.result()
-           ^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 809, in test_annotations_reconnect_and_lost_acknowledgements
-    agent = await self.runtime.create_agent(tools=[save], system_prompt="You are the inventory planner.", name="Downtown cafe", type="inventory-planner")
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 942, in create_agent
-    session = await _http(self.http, self.base, "/v1/agents", self.api_key, "POST", body,
-              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 545, in _http
-    return _json_of(await client.request(method, base + path, content=encoded, **_request_options(token, headers, timeout)))
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 522, in _json_of
-    raise AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code, retry_after=_retry_after(response), code=_code(value), **_credit_of(value))
-camelai_run.AgentError: Attached tools are not supported by the Cloudflare backend yet
-
 ======================================================================
 ERROR: test_attachments_and_the_agents_files (upstream_python_sdk.PythonSDKTest.test_attachments_and_the_agents_files)
 ----------------------------------------------------------------------
@@ -171,124 +74,18 @@ Traceback (most recent call last):
   File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
     return future.result()
            ^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 1205, in test_attachments_and_the_agents_files
+  File "/Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py", line 1205, in test_attachments_and_the_agents_files
     result = await agent.prompt("Look", files=[PNG, local, {"name": "photo.png", "data": PNG, "content_type": "image/png"}, {"path": "/workspace/in/chart.png"}], idempotency_key="py-files")
              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2174, in prompt
+  File "/Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/clients/python/camelai_run/__init__.py", line 2174, in prompt
     result = await self._message("prompt", text, from_=from_, files=files, metadata=metadata, idempotency_key=idempotency_key,
              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2157, in _message
+  File "/Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/clients/python/camelai_run/__init__.py", line 2157, in _message
     attached = await self._attach(request_id, files) if files else None
                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2228, in _attach
+  File "/Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/clients/python/camelai_run/__init__.py", line 2228, in _attach
     raise AgentError(_error(response), response.status_code)
 camelai_run.AgentError: Unsupported backend operation
-
-======================================================================
-ERROR: test_code_mode_false_history_none_and_config_hash (upstream_python_sdk.PythonSDKTest.test_code_mode_false_history_none_and_config_hash)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 90, in _callTestMethod
-    if self._callMaybeAsync(method) is not None:
-       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 112, in _callMaybeAsync
-    return self._asyncioRunner.run(
-           ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
-    return future.result()
-           ^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 506, in test_code_mode_false_history_none_and_config_hash
-    run = await agent.run("Second question", history="none", output={"type": "object", "properties": {"yes": {"type": "boolean"}}, "required": ["yes"]})
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2639, in run
-    return await self._run(text, idempotency_key or str(uuid.uuid4()), user=user, files=files, metadata=metadata, timeout=timeout,
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2656, in _run
-    return await self._settle(request_id, pending, throw_on_error, output)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2660, in _settle
-    run = self._to_run(request_id, await pending, output)
-                                   ^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2174, in prompt
-    result = await self._message("prompt", text, from_=from_, files=files, metadata=metadata, idempotency_key=idempotency_key,
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2158, in _message
-    return await self.request(method, _message_params(text, attached, extra, from_, metadata), idempotency_key=request_id, **options)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2104, in request
-    record = await _http(self.http, self.base, self.path + "/requests", self.session["token"], "POST",
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 545, in _http
-    return _json_of(await client.request(method, base + path, content=encoded, **_request_options(token, headers, timeout)))
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 522, in _json_of
-    raise AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code, retry_after=_retry_after(response), code=_code(value), **_credit_of(value))
-camelai_run.AgentError: Unsupported field: output
-
-======================================================================
-ERROR: test_connecting_with_changed_tools_declares_them_and_a_run_needs_them_served (upstream_python_sdk.PythonSDKTest.test_connecting_with_changed_tools_declares_them_and_a_run_needs_them_served)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 90, in _callTestMethod
-    if self._callMaybeAsync(method) is not None:
-       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 112, in _callMaybeAsync
-    return self._asyncioRunner.run(
-           ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
-    return future.result()
-           ^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 723, in test_connecting_with_changed_tools_declares_them_and_a_run_needs_them_served
-    follower = await self.agents.agent(created)
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2990, in agent
-    client = await self.runtime.connect_agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error,
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 959, in connect_agent
-    agent = AgentClient(self.base, session, tools, on_event, on_error, on_input, attach=attach, takeover=takeover, sync_tools=sync_tools, subagents=subagents,
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 1715, in __init__
-    if not re.fullmatch(r"client_[a-f0-9]{40}", session["id"]):
-                                                ~~~~~~~^^^^^^
-KeyError: 'id'
-
-======================================================================
-ERROR: test_delegate_settings_bring_their_builtin_and_a_run_names_its_child_and_streams_it (upstream_python_sdk.PythonSDKTest.test_delegate_settings_bring_their_builtin_and_a_run_names_its_child_and_streams_it)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 90, in _callTestMethod
-    if self._callMaybeAsync(method) is not None:
-       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 112, in _callMaybeAsync
-    return self._asyncioRunner.run(
-           ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
-    return future.result()
-           ^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 201, in test_delegate_settings_bring_their_builtin_and_a_run_names_its_child_and_streams_it
-    agent = await self.agents.upsert("coordinator", delegate={"instructions": True}, subagents=True)
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2958, in upsert
-    session = await self.runtime.upsert_agent(key, workspace_id=workspace_id, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
-              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 904, in _rest
-    value = await _http(self.http, self.base, path, self._operator(), method, body, retry, headers, timeout)
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 545, in _http
-    return _json_of(await client.request(method, base + path, content=encoded, **_request_options(token, headers, timeout)))
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 522, in _json_of
-    raise AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code, retry_after=_retry_after(response), code=_code(value), **_credit_of(value))
-camelai_run.AgentError: Unsupported field: instructions
 
 ======================================================================
 ERROR: test_end_users_credit_their_users_and_a_run_spends_from_its_bucket (upstream_python_sdk.PythonSDKTest.test_end_users_credit_their_users_and_a_run_spends_from_its_bucket)
@@ -306,21 +103,21 @@ Traceback (most recent call last):
   File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
     return future.result()
            ^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 1103, in test_end_users_credit_their_users_and_a_run_spends_from_its_bucket
+  File "/Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py", line 1103, in test_end_users_credit_their_users_and_a_run_spends_from_its_bucket
     settings = await end_users.configure(enabled=True, allowances={"bot:*": 1_000_000}, markup_bps=2_500)
                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 904, in _rest
+  File "/Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/clients/python/camelai_run/__init__.py", line 904, in _rest
     value = await _http(self.http, self.base, path, self._operator(), method, body, retry, headers, timeout)
             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 545, in _http
+  File "/Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/clients/python/camelai_run/__init__.py", line 545, in _http
     return _json_of(await client.request(method, base + path, content=encoded, **_request_options(token, headers, timeout)))
            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 522, in _json_of
+  File "/Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/clients/python/camelai_run/__init__.py", line 522, in _json_of
     raise AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code, retry_after=_retry_after(response), code=_code(value), **_credit_of(value))
 camelai_run.AgentError: Unknown API route
 
 ======================================================================
-ERROR: test_fork_copies_the_agent_and_a_key_returns_the_same_fork (upstream_python_sdk.PythonSDKTest.test_fork_copies_the_agent_and_a_key_returns_the_same_fork)
+ERROR: test_images_on_their_own (upstream_python_sdk.PythonSDKTest.test_images_on_their_own)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
   File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 90, in _callTestMethod
@@ -335,109 +132,18 @@ Traceback (most recent call last):
   File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
     return future.result()
            ^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 329, in test_fork_copies_the_agent_and_a_key_returns_the_same_fork
-    fork = await source.fork(key="py-fork")
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2737, in fork
-    return await self._agents.fork(self.id, key=key, name=name, at_message=at_message, ttl_seconds=ttl_seconds, subject=subject, context=context,
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2980, in fork
-    answer = await self.runtime.fork_agent(agent_id, key=key, name=name, at_message=at_message, ttl_seconds=ttl_seconds, subject=subject,
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 904, in _rest
+  File "/Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py", line 1280, in test_images_on_their_own
+    made = await self.agents.images.generate("a camel at dawn", quality="low", n=2, subject="user_1", context={"org": "o1"})
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/clients/python/camelai_run/__init__.py", line 904, in _rest
     value = await _http(self.http, self.base, path, self._operator(), method, body, retry, headers, timeout)
             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 545, in _http
+  File "/Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/clients/python/camelai_run/__init__.py", line 545, in _http
     return _json_of(await client.request(method, base + path, content=encoded, **_request_options(token, headers, timeout)))
            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 522, in _json_of
+  File "/Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/clients/python/camelai_run/__init__.py", line 522, in _json_of
     raise AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code, retry_after=_retry_after(response), code=_code(value), **_credit_of(value))
-camelai_run.AgentError: Unsupported backend operation
-
-======================================================================
-ERROR: test_get_takes_an_existing_agent_by_key_or_id_without_changing_it (upstream_python_sdk.PythonSDKTest.test_get_takes_an_existing_agent_by_key_or_id_without_changing_it)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 90, in _callTestMethod
-    if self._callMaybeAsync(method) is not None:
-       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 112, in _callMaybeAsync
-    return self._asyncioRunner.run(
-           ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
-    return future.result()
-           ^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 319, in test_get_takes_an_existing_agent_by_key_or_id_without_changing_it
-    self.assertEqual((await self.runtime.http.get(f"{self.url}/v1/agents/{made.id}", headers={"Authorization": f"Bearer {self.token}"})).json()["systemPrompt"], "Be terse.")
-                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
-KeyError: 'systemPrompt'
-
-======================================================================
-ERROR: test_import_messages_converts_another_apis_conversation (upstream_python_sdk.PythonSDKTest.test_import_messages_converts_another_apis_conversation)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 90, in _callTestMethod
-    if self._callMaybeAsync(method) is not None:
-       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 112, in _callMaybeAsync
-    return self._asyncioRunner.run(
-           ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
-    return future.result()
-           ^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 966, in test_import_messages_converts_another_apis_conversation
-    agent = await self.agents.upsert("py-import-anthropic", import_messages=conversation)
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2958, in upsert
-    session = await self.runtime.upsert_agent(key, workspace_id=workspace_id, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
-              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 904, in _rest
-    value = await _http(self.http, self.base, path, self._operator(), method, body, retry, headers, timeout)
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 545, in _http
-    return _json_of(await client.request(method, base + path, content=encoded, **_request_options(token, headers, timeout)))
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 522, in _json_of
-    raise AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code, retry_after=_retry_after(response), code=_code(value), **_credit_of(value))
-camelai_run.AgentError: Unsupported field: importMessages
-
-======================================================================
-ERROR: test_initial_messages_begin_an_agents_history_when_it_is_made (upstream_python_sdk.PythonSDKTest.test_initial_messages_begin_an_agents_history_when_it_is_made)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 90, in _callTestMethod
-    if self._callMaybeAsync(method) is not None:
-       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 112, in _callMaybeAsync
-    return self._asyncioRunner.run(
-           ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
-    return future.result()
-           ^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 944, in test_initial_messages_begin_an_agents_history_when_it_is_made
-    agent = await self.agents.upsert("py-imported", initial_messages=imported)
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2958, in upsert
-    session = await self.runtime.upsert_agent(key, workspace_id=workspace_id, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
-              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 904, in _rest
-    value = await _http(self.http, self.base, path, self._operator(), method, body, retry, headers, timeout)
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 545, in _http
-    return _json_of(await client.request(method, base + path, content=encoded, **_request_options(token, headers, timeout)))
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 522, in _json_of
-    raise AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code, retry_after=_retry_after(response), code=_code(value), **_credit_of(value))
-camelai_run.AgentError: Unsupported field: initialMessages
+camelai_run.AgentError: File operation failed
 
 ======================================================================
 ERROR: test_key_scopes_tokens_usage_webhooks_and_rotated_credentials (upstream_python_sdk.PythonSDKTest.test_key_scopes_tokens_usage_webhooks_and_rotated_credentials)
@@ -455,240 +161,10 @@ Traceback (most recent call last):
   File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
     return future.result()
            ^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 1037, in test_key_scopes_tokens_usage_webhooks_and_rotated_credentials
-    scope = await self.runtime.set_scope_key("org-1", "openrouter", api_key="sk-or-fixture-1234")
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 904, in _rest
-    value = await _http(self.http, self.base, path, self._operator(), method, body, retry, headers, timeout)
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 545, in _http
-    return _json_of(await client.request(method, base + path, content=encoded, **_request_options(token, headers, timeout)))
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 522, in _json_of
-    raise AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code, retry_after=_retry_after(response), code=_code(value), **_credit_of(value))
-camelai_run.AgentError: Unknown API route
-
-======================================================================
-ERROR: test_max_output_tokens_and_temperature_go_on_model_calls_and_configure_removes_them (upstream_python_sdk.PythonSDKTest.test_max_output_tokens_and_temperature_go_on_model_calls_and_configure_removes_them)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 90, in _callTestMethod
-    if self._callMaybeAsync(method) is not None:
-       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 112, in _callMaybeAsync
-    return self._asyncioRunner.run(
-           ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
-    return future.result()
-           ^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 520, in test_max_output_tokens_and_temperature_go_on_model_calls_and_configure_removes_them
-    agent = await self.agents.upsert("py-settings", instructions="Be brief.", max_output_tokens=300, temperature=0.3)
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2958, in upsert
-    session = await self.runtime.upsert_agent(key, workspace_id=workspace_id, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
-              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 904, in _rest
-    value = await _http(self.http, self.base, path, self._operator(), method, body, retry, headers, timeout)
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 545, in _http
-    return _json_of(await client.request(method, base + path, content=encoded, **_request_options(token, headers, timeout)))
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 522, in _json_of
-    raise AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code, retry_after=_retry_after(response), code=_code(value), **_credit_of(value))
-camelai_run.AgentError: Unsupported field: maxOutputTokens, temperature
-
-======================================================================
-ERROR: test_parity_history_configure_tools_and_wait_for_request (upstream_python_sdk.PythonSDKTest.test_parity_history_configure_tools_and_wait_for_request)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 90, in _callTestMethod
-    if self._callMaybeAsync(method) is not None:
-       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 112, in _callMaybeAsync
-    return self._asyncioRunner.run(
-           ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
-    return future.result()
-           ^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 626, in test_parity_history_configure_tools_and_wait_for_request
-    first, again = await asyncio.gather(agent.run("one", idempotency_key="py-first", spend_limit={"usd": 5}), agent.run("one", idempotency_key="py-first", spend_limit={"usd": 5}))
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2639, in run
-    return await self._run(text, idempotency_key or str(uuid.uuid4()), user=user, files=files, metadata=metadata, timeout=timeout,
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2656, in _run
-    return await self._settle(request_id, pending, throw_on_error, output)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2660, in _settle
-    run = self._to_run(request_id, await pending, output)
-                                   ^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2174, in prompt
-    result = await self._message("prompt", text, from_=from_, files=files, metadata=metadata, idempotency_key=idempotency_key,
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2158, in _message
-    return await self.request(method, _message_params(text, attached, extra, from_, metadata), idempotency_key=request_id, **options)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2104, in request
-    record = await _http(self.http, self.base, self.path + "/requests", self.session["token"], "POST",
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 545, in _http
-    return _json_of(await client.request(method, base + path, content=encoded, **_request_options(token, headers, timeout)))
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 522, in _json_of
-    raise AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code, retry_after=_retry_after(response), code=_code(value), **_credit_of(value))
-camelai_run.AgentError: Unsupported field: spendLimit
-
-======================================================================
-ERROR: test_run_with_output_returns_a_pydantic_model_or_the_json_schema_value (upstream_python_sdk.PythonSDKTest.test_run_with_output_returns_a_pydantic_model_or_the_json_schema_value)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 90, in _callTestMethod
-    if self._callMaybeAsync(method) is not None:
-       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 112, in _callMaybeAsync
-    return self._asyncioRunner.run(
-           ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
-    return future.result()
-           ^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 547, in test_run_with_output_returns_a_pydantic_model_or_the_json_schema_value
-    run = await agent.run("Read this order", output=Order)
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2639, in run
-    return await self._run(text, idempotency_key or str(uuid.uuid4()), user=user, files=files, metadata=metadata, timeout=timeout,
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2656, in _run
-    return await self._settle(request_id, pending, throw_on_error, output)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2660, in _settle
-    run = self._to_run(request_id, await pending, output)
-                                   ^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2174, in prompt
-    result = await self._message("prompt", text, from_=from_, files=files, metadata=metadata, idempotency_key=idempotency_key,
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2158, in _message
-    return await self.request(method, _message_params(text, attached, extra, from_, metadata), idempotency_key=request_id, **options)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2104, in request
-    record = await _http(self.http, self.base, self.path + "/requests", self.session["token"], "POST",
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 545, in _http
-    return _json_of(await client.request(method, base + path, content=encoded, **_request_options(token, headers, timeout)))
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 522, in _json_of
-    raise AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code, retry_after=_retry_after(response), code=_code(value), **_credit_of(value))
-camelai_run.AgentError: Unsupported field: output
-
-======================================================================
-ERROR: test_stateless_runs_one_call_stream_get_abort_and_no_agent_left (upstream_python_sdk.PythonSDKTest.test_stateless_runs_one_call_stream_get_abort_and_no_agent_left)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 90, in _callTestMethod
-    if self._callMaybeAsync(method) is not None:
-       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 112, in _callMaybeAsync
-    return self._asyncioRunner.run(
-           ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
-    return future.result()
-           ^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 586, in test_stateless_runs_one_call_stream_get_abort_and_no_agent_left
-    run = await self.agents.run("Ship on Friday?", instructions="Vote yes or no.", output=Vote, metadata={"voter": "1"})
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2931, in run
-    return await self.runs.run(input, **options)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2880, in run
-    view = await self.create(input, idempotency_key=idempotency_key, wait=True, **config)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2857, in create
-    return await self.runtime.create_run(self._request(input, **config), idempotency_key=idempotency_key, wait=wait)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 904, in _rest
-    value = await _http(self.http, self.base, path, self._operator(), method, body, retry, headers, timeout)
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 545, in _http
-    return _json_of(await client.request(method, base + path, content=encoded, **_request_options(token, headers, timeout)))
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 522, in _json_of
-    raise AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code, retry_after=_retry_after(response), code=_code(value), **_credit_of(value))
-camelai_run.AgentError: Unknown API route
-
-======================================================================
-ERROR: test_steer_answers_once_the_runtime_has_it_and_abort_cancels_the_queue (upstream_python_sdk.PythonSDKTest.test_steer_answers_once_the_runtime_has_it_and_abort_cancels_the_queue)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 90, in _callTestMethod
-    if self._callMaybeAsync(method) is not None:
-       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 112, in _callMaybeAsync
-    return self._asyncioRunner.run(
-           ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
-    return future.result()
-           ^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 293, in test_steer_answers_once_the_runtime_has_it_and_abort_cancels_the_queue
-    self.assertEqual(await agent.steer("start", idempotency_key="py-steer-1"), {"id": "py-steer-1", "status": "queued"})
-                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2719, in steer
-    return await self.client.steer_message(text, from_=_sender(user) if user else None, **options)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2194, in steer_message
-    record = await _http(self.http, self.base, self.path + "/requests", self.session["token"], "POST",
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 545, in _http
-    return _json_of(await client.request(method, base + path, content=encoded, **_request_options(token, headers, timeout)))
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 522, in _json_of
-    raise AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code, retry_after=_retry_after(response), code=_code(value), **_credit_of(value))
-camelai_run.AgentError: Unsupported field: whileRunning
-
-======================================================================
-ERROR: test_upsert_is_the_same_agent_for_a_key_and_one_process_serves_its_tools (upstream_python_sdk.PythonSDKTest.test_upsert_is_the_same_agent_for_a_key_and_one_process_serves_its_tools)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 90, in _callTestMethod
-    if self._callMaybeAsync(method) is not None:
-       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 112, in _callMaybeAsync
-    return self._asyncioRunner.run(
-           ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
-    return future.result()
-           ^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 685, in test_upsert_is_the_same_agent_for_a_key_and_one_process_serves_its_tools
-    first = await self.agents.upsert("py-shared", instructions="You are terse.", tools=[echo])
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 2958, in upsert
-    session = await self.runtime.upsert_agent(key, workspace_id=workspace_id, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
-              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 904, in _rest
-    value = await _http(self.http, self.base, path, self._operator(), method, body, retry, headers, timeout)
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 545, in _http
-    return _json_of(await client.request(method, base + path, content=encoded, **_request_options(token, headers, timeout)))
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 522, in _json_of
-    raise AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code, retry_after=_retry_after(response), code=_code(value), **_credit_of(value))
-camelai_run.AgentError: Attached tools are not supported by the Cloudflare backend yet
+  File "/Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py", line 1063, in test_key_scopes_tokens_usage_webhooks_and_rotated_credentials
+    delivery = deliveries[0]
+               ~~~~~~~~~~^^^
+IndexError: list index out of range
 
 ======================================================================
 ERROR: test_volumes_files_snapshots_and_mounts (upstream_python_sdk.PythonSDKTest.test_volumes_files_snapshots_and_mounts)
@@ -706,135 +182,18 @@ Traceback (most recent call last):
   File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
     return future.result()
            ^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 1176, in test_volumes_files_snapshots_and_mounts
+  File "/Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py", line 1176, in test_volumes_files_snapshots_and_mounts
     fork = self.runtime.volume((await volume.fork(snapshot=snapshot["id"]))["id"])
                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 1484, in fork
+  File "/Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/clients/python/camelai_run/__init__.py", line 1484, in fork
     return await self._json("/fork", "POST", {key: value for key, value in {"name": name, "snapshot": snapshot}.items() if value is not None})
            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 545, in _http
+  File "/Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/clients/python/camelai_run/__init__.py", line 545, in _http
     return _json_of(await client.request(method, base + path, content=encoded, **_request_options(token, headers, timeout)))
            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/clients/python/camelai_run/__init__.py", line 522, in _json_of
+  File "/Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/clients/python/camelai_run/__init__.py", line 522, in _json_of
     raise AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code, retry_after=_retry_after(response), code=_code(value), **_credit_of(value))
 camelai_run.AgentError: Unsupported file operation
-
-======================================================================
-FAIL: test_a_failed_run_raises_run_error_or_returns_it (upstream_python_sdk.PythonSDKTest.test_a_failed_run_raises_run_error_or_returns_it)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 90, in _callTestMethod
-    if self._callMaybeAsync(method) is not None:
-       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 112, in _callMaybeAsync
-    return self._asyncioRunner.run(
-           ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
-    return future.result()
-           ^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 405, in test_a_failed_run_raises_run_error_or_returns_it
-    self.assertEqual((failed.exception.code, failed.exception.run.status), ("model_error", "failed"))
-AssertionError: Tuples differ: ('runtime_error', 'failed') != ('model_error', 'failed')
-
-First differing element 0:
-'runtime_error'
-'model_error'
-
-- ('runtime_error', 'failed')
-?   -----
-
-+ ('model_error', 'failed')
-?    ++ +
-
-
-======================================================================
-FAIL: test_an_approval_answered_through_the_run_resumes_it (upstream_python_sdk.PythonSDKTest.test_an_approval_answered_through_the_run_resumes_it)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 90, in _callTestMethod
-    if self._callMaybeAsync(method) is not None:
-       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 112, in _callMaybeAsync
-    return self._asyncioRunner.run(
-           ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
-    return future.result()
-           ^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 488, in test_an_approval_answered_through_the_run_resumes_it
-    agent = await self.make([wipe])
-            ^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 193, in make
-    self.assertEqual(created.status_code, 201, created.text)
-AssertionError: 400 != 201 : {"error":"Attached tools are not supported by the Cloudflare backend yet","code":"UNSUPPORTED_FEATURE"}
-
-======================================================================
-FAIL: test_async_and_slow_on_event_run_apart_from_the_connection (upstream_python_sdk.PythonSDKTest.test_async_and_slow_on_event_run_apart_from_the_connection)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 90, in _callTestMethod
-    if self._callMaybeAsync(method) is not None:
-       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 112, in _callMaybeAsync
-    return self._asyncioRunner.run(
-           ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
-    return future.result()
-           ^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 455, in test_async_and_slow_on_event_run_apart_from_the_connection
-    agent = await self.make([echo], on_event=slow, on_error=errors.append)
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 193, in make
-    self.assertEqual(created.status_code, 201, created.text)
-AssertionError: 400 != 201 : {"error":"Attached tools are not supported by the Cloudflare backend yet","code":"UNSUPPORTED_FEATURE"}
-
-======================================================================
-FAIL: test_events_start_from_a_snapshot_and_updates_are_deltas (upstream_python_sdk.PythonSDKTest.test_events_start_from_a_snapshot_and_updates_are_deltas)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 90, in _callTestMethod
-    if self._callMaybeAsync(method) is not None:
-       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 112, in _callMaybeAsync
-    return self._asyncioRunner.run(
-           ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
-    return future.result()
-           ^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 790, in test_events_start_from_a_snapshot_and_updates_are_deltas
-    self.assertNotIn("message", event)
-AssertionError: 'message' unexpectedly found in {'type': 'message_update', 'message': {'role': 'assistant', 'content': [{'type': 'text', 'text': 'seen'}], 'api': 'openai-completions', 'provider': 'camel-test', 'model': 'openai/gpt-4o-mini', 'usage': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0, 'totalTokens': 0, 'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0, 'total': 0}}, 'stopReason': 'stop', 'timestamp': 1793896604748, 'responseId': 'fixture', 'rawStopReason': 'stop', 'durationMs': 8, 'thinkingLevel': 'off'}, 'assistantMessageEvent': {'type': 'text_delta', 'delta': 'seen', 'partial': {'role': 'assistant', 'content': [{'type': 'text', 'text': 'seen'}], 'api': 'openai-completions', 'provider': 'camel-test', 'model': 'openai/gpt-4o-mini', 'usage': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0, 'totalTokens': 0, 'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0, 'total': 0}}, 'stopReason': 'stop', 'timestamp': 1793896604748, 'responseId': 'fixture', 'rawStopReason': 'stop', 'durationMs': 8, 'thinkingLevel': 'off'}}}
-
-======================================================================
-FAIL: test_images_on_their_own (upstream_python_sdk.PythonSDKTest.test_images_on_their_own)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 90, in _callTestMethod
-    if self._callMaybeAsync(method) is not None:
-       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 112, in _callMaybeAsync
-    return self._asyncioRunner.run(
-           ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
-    return future.result()
-           ^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 1279, in test_images_on_their_own
-    self.assertEqual(put.status_code, 200, put.text)
-AssertionError: 404 != 200 : {"error":"Unknown API route","code":"NOT_FOUND"}
 
 ======================================================================
 FAIL: test_projects_publish_checked_snapshots_and_the_tool_finds_the_project_from_identity (upstream_python_sdk.PythonSDKTest.test_projects_publish_checked_snapshots_and_the_tool_finds_the_project_from_identity)
@@ -852,76 +211,14 @@ Traceback (most recent call last):
   File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
     return future.result()
            ^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 979, in test_projects_publish_checked_snapshots_and_the_tool_finds_the_project_from_identity
+  File "/Users/miguelsalinas/agent-runtime-wt/workers-parity-agents/tests/python_sdk.py", line 979, in test_projects_publish_checked_snapshots_and_the_tool_finds_the_project_from_identity
     self.assertEqual((await projects.create("py-bot-1", template={"bot.py": "other"})).id, project.id)
-AssertionError: 'vol_3231dbbbab86441b87aa1d55' != 'vol_fadbcb2c1da54835a8c55ff4'
-- vol_3231dbbbab86441b87aa1d55
-+ vol_fadbcb2c1da54835a8c55ff4
+AssertionError: 'vol_c1fcce0a7dee4e2f9fd35ecd' != 'vol_b8b5714a8d3441be937788b7'
+- vol_c1fcce0a7dee4e2f9fd35ecd
++ vol_b8b5714a8d3441be937788b7
 
-
-======================================================================
-FAIL: test_stream_yields_tool_calls_results_text_then_done_and_plain_functions_are_tools (upstream_python_sdk.PythonSDKTest.test_stream_yields_tool_calls_results_text_then_done_and_plain_functions_are_tools)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 90, in _callTestMethod
-    if self._callMaybeAsync(method) is not None:
-       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 112, in _callMaybeAsync
-    return self._asyncioRunner.run(
-           ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
-    return future.result()
-           ^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 427, in test_stream_yields_tool_calls_results_text_then_done_and_plain_functions_are_tools
-    agent = await self.make([lookup])
-            ^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 193, in make
-    self.assertEqual(created.status_code, 201, created.text)
-AssertionError: 400 != 201 : {"error":"Attached tools are not supported by the Cloudflare backend yet","code":"UNSUPPORTED_FEATURE"}
-
-======================================================================
-FAIL: test_the_sync_client_upserts_runs_streams_answers_and_runs_statelessly (upstream_python_sdk.PythonSDKTest.test_the_sync_client_upserts_runs_streams_answers_and_runs_statelessly)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 90, in _callTestMethod
-    if self._callMaybeAsync(method) is not None:
-       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/unittest/async_case.py", line 112, in _callMaybeAsync
-    return self._asyncioRunner.run(
-           ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
-    return future.result()
-           ^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 924, in test_the_sync_client_upserts_runs_streams_answers_and_runs_statelessly
-    await asyncio.to_thread(scenario)
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/asyncio/threads.py", line 25, in to_thread
-    return await loop.run_in_executor(None, func_call)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/concurrent/futures/thread.py", line 58, in run
-    result = self.fn(*self.args, **self.kwargs)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/python_sdk.py", line 880, in scenario
-    self.assertEqual([part.type for part in parts], ["tool_call", "tool_result", "text", "done"])
-AssertionError: Lists differ: ['text', 'done'] != ['tool_call', 'tool_result', 'text', 'done']
-
-First differing element 0:
-'text'
-'tool_call'
-
-Second list contains 2 additional elements.
-First extra element 2:
-'text'
-
-- ['text', 'done']
-+ ['tool_call', 'tool_result', 'text', 'done']
 
 ----------------------------------------------------------------------
-Ran 60 tests in 84.374s
+Ran 60 tests in 154.787s
 
-FAILED (failures=8, errors=21, skipped=2)
+FAILED (failures=1, errors=5, skipped=2)

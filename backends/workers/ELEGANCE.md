@@ -37,7 +37,7 @@ flowchart TB
     A --> CHILD[Child agent DO]
     A --> ALARM[Lifecycle alarm: retry and schedules]
     A --> STREAM[SSE / hibernatable WebSocket]
-    P --> CM[Remote codemode Worker / per-execution sandbox DO]
+    P --> CM[Remote codemode Worker / per-session sandbox DO]
     CM --> TOOLS[Journaled file, human and computer capabilities]
     TOOLS --> V[Shared volume DO: SQLite tree + write ordering]
     V --> R2[(R2: immutable file contents and images)]
@@ -67,13 +67,13 @@ is portable.
 <!-- SIZE_TABLE -->
 | Area | ECS lines / files | Workers lines / files |
 | --- | ---: | ---: |
-| Accounts, money, webhooks | 10,422 / 40 | 10,565 / 51 |
+| Accounts, money, webhooks | 10,422 / 40 | 8,802 / 39 |
 | Hosting, admission, tenancy | 4,374 / 14 | 369 / 2 |
-| Agents, history, schedules | 15,107 / 33 | 2,365 / 7 |
-| HTTP, contracts, remaining policy | 13,677 / 69 | 4,057 / 53 |
-| Files, images, computers | 6,667 / 34 | 6,033 / 34 |
-| Code execution | 797 / 6 | 38 / 2 |
-| Total | 51,044 / 196 | 23,427 / 149 |
+| Agents, history, schedules | 15,107 / 33 | 4,171 / 9 |
+| HTTP, contracts, remaining policy | 13,677 / 69 | 8,893 / 98 |
+| Code execution | 797 / 6 | 138 / 5 |
+| Files, images, computers | 5,579 / 27 | 1,839 / 7 |
+| Total | 49,956 / 189 | 24,212 / 160 |
 <!-- /SIZE_TABLE -->
 
 Reproduce with `npm run measure`; inspect every path and count in
@@ -183,31 +183,29 @@ ledger defect. Once Workers has a production provider registry, replace this
 hook with transport-only interception so the real selection and billing run.
 
 <!-- SCORECARD -->
-The current inventory has **162 cases: 64 pass, 56 fail, 42 not applicable**. Of the passes, **19 reach workerd** and **45 are SDK-only unit checks**.
+The final inventory has **146 cases: 89 pass, 18 fail, 39 not applicable**. Of the passes, **39 reach workerd** and **50 are SDK-only unit checks**.
 
 | Original test file | Worker pass | SDK-only pass | Fail | N/A |
 | --- | ---: | ---: | ---: | ---: |
 | `tests/api.test.ts` | 0 | 0 | 0 | 18 |
 | `tests/cli-api.test.ts` | 0 | 1 | 0 | 0 |
-| `tests/computers-api.test.ts` | 3 | 0 | 4 | 0 |
-| `tests/decisions-api.test.ts` | 0 | 0 | 5 | 0 |
-| `tests/files.test.ts` | 2 | 0 | 3 | 7 |
-| `tests/image-generation-api.test.ts` | 3 | 0 | 0 | 0 |
-| `tests/image-generation-sdk.test.ts` | 1 | 0 | 0 | 0 |
-| `tests/openapi-sources.test.ts` | 0 | 0 | 2 | 0 |
+| `tests/computers-api.test.ts` | 0 | 0 | 7 | 0 |
+| `tests/decisions-api.test.ts` | 0 | 5 | 0 | 0 |
+| `tests/image-generation-api.test.ts` | 0 | 0 | 3 | 0 |
+| `tests/image-generation-sdk.test.ts` | 0 | 0 | 1 | 0 |
+| `tests/openapi-sources.test.ts` | 2 | 0 | 0 | 0 |
 | `tests/openapi.test.ts` | 0 | 0 | 0 | 1 |
-| `tests/projects.test.ts` | 4 | 0 | 0 | 0 |
-| `tests/python_sdk.py` | 3 | 26 | 29 | 2 |
-| `tests/schedule-api.test.ts` | 1 | 0 | 0 | 2 |
-| `tests/sdk-lazy-connections.test.ts` | 1 | 0 | 3 | 0 |
-| `tests/sdk-multi-agent.test.ts` | 0 | 0 | 1 | 0 |
+| `tests/python_sdk.py` | 26 | 26 | 6 | 2 |
+| `tests/schedule-api.test.ts` | 0 | 0 | 1 | 2 |
+| `tests/sdk-lazy-connections.test.ts` | 4 | 0 | 0 | 0 |
+| `tests/sdk-multi-agent.test.ts` | 1 | 0 | 0 | 0 |
 | `tests/sdk-portable.test.ts` | 0 | 10 | 0 | 0 |
-| `tests/sdk-server.test.ts` | 0 | 8 | 1 | 0 |
+| `tests/sdk-server.test.ts` | 1 | 8 | 0 | 0 |
 | `tests/service-api.test.ts` | 0 | 0 | 0 | 4 |
 | `tests/speech-api.test.ts` | 0 | 0 | 0 | 2 |
-| `tests/transcription-api.test.ts` | 1 | 0 | 2 | 0 |
-| `tests/transcription-sdk.test.ts` | 0 | 0 | 1 | 0 |
-| `tests/ui-ai-sdk.test.ts` | 0 | 0 | 5 | 0 |
+| `tests/transcription-api.test.ts` | 0 | 0 | 0 | 3 |
+| `tests/transcription-sdk.test.ts` | 0 | 0 | 0 | 1 |
+| `tests/ui-ai-sdk.test.ts` | 5 | 0 | 0 | 0 |
 | `tests/voice-api.test.ts` | 0 | 0 | 0 | 6 |
 <!-- /SCORECARD -->
 
@@ -234,17 +232,20 @@ Supplied fixture token hashes are seeded into local tenants, and loopback
 streaming-provider URLs are honored. The adapter does not reproduce every Node
 tenant-policy setting, so failure details can also expose fixture limitations.
 
-The remaining agent gaps include attached SDK/MCP tools, remote MCP/OpenAPI
-source management, definitions, stateless runs, fork/import/export, structured
-output and complete model options. Channels and voice sessions are deliberately
-excluded.
+The agents track adds attached SDK/MCP tools, remote MCP/OpenAPI sources,
+definitions, stateless runs, fork/import/export, structured output and model
+options. Its validation and remaining limits are in [AGENTS-PARITY.md](AGENTS-PARITY.md).
+Public computer-provider APIs, complete file/archive semantics and other
+remaining assertions still need the platform track. Channels and voice are
+deliberately excluded.
 
 The [money track](MONEY.md) adds source account/authentication, key/secret,
 credit-hold, model-attempt, subject/workspace, Stripe test-mode and outbox policy.
-The [platform track](PLATFORM.md) adds public computer providers, file/archive/mount
-operations, standalone media, scheduled email and negotiated WebSockets. Each
-report lists its measured tests and remaining gates. Full paid-runtime parity is
-not established by these narrower passing service tests.
+Its independent money scorecard and explicit remaining gaps are in that report.
+The scorecard above includes the agents and money tracks. The four image cases
+still fail at the upload/generation route. All five UI cases now assemble the
+assistant message, including approval and question resumes. Full paid-runtime
+parity is not established by these narrower passing tests.
 
 ## Platform choices
 
@@ -302,9 +303,10 @@ the limit and was replaced. These are prior measurements, not repeated here. The
 is per isolate. Bounded HTTP history and image hydration reduce one source of
 pressure; they do not solve Pi's resident context, compaction, huge tool results
 or colocated-object pressure. Request records are retained without pruning, and
-state/recovery scan them. This backend caps history materialization and fails
-explicitly beyond its bound; it does not yet provide the complete large-history
-paging/export implementation.
+state/recovery scan them. Public history now uses a SQLite ordinal index and
+real paging with count and byte bounds; the 1,302-message import/page/reset test
+passes. Full unpaged reads retain a 64 MiB limit. Pi still materializes the active
+model context, which needs its own large-context memory qualification.
 
 **Transport selection changes idle duration.** Both SDKs now negotiate
 hibernatable WebSockets and preserve Node SSE compatibility. In a paired
@@ -314,10 +316,12 @@ retained its instance and recorded 23.1044 GB-s. The raw period metrics and
 cleanup are in [PLATFORM.md](PLATFORM.md). This proves one synthetic idle path,
 not production connection limits, reconnect bursts or end-to-end cost.
 
-**Cost depends on active duration, SQL and computers.** Two isolated platform probes used temporary Cloudflare resources. All were
-deleted; their combined marginal usage is estimated below $0.02, not measured
-from an invoice. Prior experiment spend remains separate. No cloud snapshots
-are retained from this track. The earlier measured marginal model was $0.00576 per
+**Cost depends on active duration, SQL and computers.** The agents track deployed
+two temporary code-mode probe Workers, then deleted them and their sandbox
+namespace. Estimated marginal probe spend is below $0.01; no settled invoice
+is available. The money track has a separate bounded probe record in `MONEY.md`.
+Prior experiment spend remains approximately $5, as supplied in the task. There
+are no cloud snapshots to retain from the agents track. The earlier measured marginal model was $0.00576 per
 continuously active DO-hour, from `0.128 GB * 3600 * $12.50 / 1e6`; current
 [DO pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/)
 should be checked again before procurement. At those rates, an illustrative

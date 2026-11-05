@@ -1,0 +1,130 @@
+{
+  "date": "2026-11-05",
+  "implementationCommit": "5aabfaf09743783e8e7ad854e2857352215b836e",
+  "integrationBase": "017da3c0",
+  "commands": {
+    "npm ci": "pass",
+    "npm run typecheck": "pass",
+    "npm test": {
+      "pass": 287,
+      "fail": 0
+    },
+    "npm run test:integration": {
+      "pass": 54,
+      "fail": 0
+    },
+    "npm run test:compat": {
+      "pass": 89,
+      "fail": 18,
+      "notApplicable": 39,
+      "exitCode": 1
+    },
+    "npm run test:python": {
+      "pass": 52,
+      "fail": 6,
+      "skipped": 2,
+      "exitCode": 1
+    },
+    "all 17 scripts/reuse-*.mjs --check": "pass",
+    "npm run build": "both dry-run bundles pass",
+    "root npm run docs": "pass",
+    "docs freshness/link test with Workers dependency loader": "pass"
+  },
+  "scorecardDelta": {
+    "before": {
+      "pass": 50,
+      "fail": 57,
+      "notApplicable": 39
+    },
+    "after": {
+      "pass": 89,
+      "fail": 18,
+      "notApplicable": 39
+    }
+  },
+  "remainingFailures": [
+    {
+      "file": "tests/computers-api.test.ts",
+      "test": "native daytona computer API is tenant scoped and tools refresh on an existing agent"
+    },
+    {
+      "file": "tests/computers-api.test.ts",
+      "test": "native sprites computer API is tenant scoped and tools refresh on an existing agent"
+    },
+    {
+      "file": "tests/computers-api.test.ts",
+      "test": "a computer connected during eager startup is available on the first turn"
+    },
+    {
+      "file": "tests/computers-api.test.ts",
+      "test": "delegate child creation inherits computer attachments: true"
+    },
+    {
+      "file": "tests/computers-api.test.ts",
+      "test": "delegate child creation inherits computer attachments: false"
+    },
+    {
+      "file": "tests/computers-api.test.ts",
+      "test": "agents child creation inherits computer attachments: true"
+    },
+    {
+      "file": "tests/computers-api.test.ts",
+      "test": "agents child creation inherits computer attachments: false"
+    },
+    {
+      "file": "tests/image-generation-api.test.ts",
+      "test": "POST /v1/images makes images on the platform's OpenAI key for a prepaid tenant, edits images given as base64, multipart or a URL, and is billed per token"
+    },
+    {
+      "file": "tests/image-generation-api.test.ts",
+      "test": "POST /v1/images with volumeId saves the images to the volume and answers their paths"
+    },
+    {
+      "file": "tests/image-generation-api.test.ts",
+      "test": "POST /v1/images needs an OpenAI key, and a monthly cap refuses it"
+    },
+    {
+      "file": "tests/image-generation-sdk.test.ts",
+      "test": "the TypeScript SDK: images.generate and images.edit from bytes, a Blob or a URL, answered as base64 or saved to a volume"
+    },
+    {
+      "file": "tests/schedule-api.test.ts",
+      "test": "calendar schedules and owner-configured email round trip through the API without crossing accounts"
+    },
+    {
+      "file": "tests/python_sdk.py",
+      "test": "upstream_python_sdk.PythonSDKTest.test_attachments_and_the_agents_files"
+    },
+    {
+      "file": "tests/python_sdk.py",
+      "test": "upstream_python_sdk.PythonSDKTest.test_end_users_credit_their_users_and_a_run_spends_from_its_bucket"
+    },
+    {
+      "file": "tests/python_sdk.py",
+      "test": "upstream_python_sdk.PythonSDKTest.test_images_on_their_own"
+    },
+    {
+      "file": "tests/python_sdk.py",
+      "test": "upstream_python_sdk.PythonSDKTest.test_key_scopes_tokens_usage_webhooks_and_rotated_credentials"
+    },
+    {
+      "file": "tests/python_sdk.py",
+      "test": "upstream_python_sdk.PythonSDKTest.test_projects_publish_checked_snapshots_and_the_tool_finds_the_project_from_identity"
+    },
+    {
+      "file": "tests/python_sdk.py",
+      "test": "upstream_python_sdk.PythonSDKTest.test_volumes_files_snapshots_and_mounts"
+    }
+  ],
+  "cloudProbe": "agents-codemode-cloud.json",
+  "cloudSpend": {
+    "estimatedMarginalUsdLessThan": 0.01,
+    "invoiceSettled": false
+  },
+  "cleanup": {
+    "cloudWorkersAndSandboxNamespace": "deleted and absence verified",
+    "localPostgres": "stopped",
+    "localContainers": "no camelrun-proto containers remain"
+  },
+  "productionWrites": false
+}
