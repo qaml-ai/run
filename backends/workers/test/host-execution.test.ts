@@ -7,7 +7,7 @@ import { createModels } from "@earendil-works/pi-ai";
 import { InlineCodemodeSandbox, loadQuickJSWasm } from "@earendil-works/pi-codemode";
 import { abortHostExecution, admitHostExecution, executionOutput, executionParams, hostExecutionRequest, hostExecutionTool, startHostExecution, waitHostExecution } from "../src/host-execution.ts";
 import { AttachedTools } from "../src/attached-tools.ts";
-import { HumanInputs } from "../src/human.ts";
+import { answerHuman, HumanInputs } from "../src/human.ts";
 
 test("host execution uses Pi's durable task, returns raw output and deduplicates request IDs", async () => {
   const sandbox = new InlineCodemodeSandbox({ wasm: loadQuickJSWasm() });
@@ -89,7 +89,10 @@ test("attached tools keep identity and the stable call key across a durable appr
     }
     assert.ok(pending, "approval was recorded durably");
     assert.equal((await pi.snapshot(HumanInputs, context))?.requests[pending].requestId, "approval");
-    await pi.commit(async tx => { const request = (await tx.doc(HumanInputs)).requests[pending!]; request.answer = '{"approved":true}'; request.state = "answered"; }, context);
+    await pi.commit(async tx => {
+      const request = (await tx.doc(HumanInputs)).requests[pending!];
+      Object.assign(request, answerHuman(request, { action: "accept", actor: "operator" }));
+    }, context);
     assert.deepEqual((await result).output, ['{"approved":true}']);
     assert.equal(frames.length, 2);
     assert.match(frames[0].params._meta["agent-runtime/idempotencyKey"], /^[0-9a-f]{32}$/);
