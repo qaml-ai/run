@@ -81,14 +81,14 @@ function githubTest(source: string, name: string, members: Record<string, "activ
   let github: Github;
   contractTest("auth", source, name, (t, r) => body(t, r, github), { tenants, prepare: async t => {
     github = await fakeGithub(t, members);
-    return { GITHUB_CLIENT_ID: "client-id", GITHUB_CLIENT_SECRET: "client-secret", GITHUB_ORG: "qaml-ai", AGENT_SIGNUP_MIN_ACCOUNT_DAYS: "7", AGENT_GITHUB_WEB_URL: github.url, AGENT_GITHUB_API_URL: github.url, ...env };
+    return { AGENT_PROVIDER: "camelrun", AGENT_MODEL: "default", GITHUB_CLIENT_ID: "client-id", GITHUB_CLIENT_SECRET: "client-secret", GITHUB_ORG: "qaml-ai", AGENT_SIGNUP_MIN_ACCOUNT_DAYS: "7", AGENT_GITHUB_WEB_URL: github.url, AGENT_GITHUB_API_URL: github.url, ...env };
   } });
 }
 function googleTest(source: string, name: string, body: (t: TestContext, r: ContractFixture, google: Google) => Promise<void>) {
   let google: Google;
   contractTest("auth", source, name, (t, r) => body(t, r, google), { tenants, prepare: async t => {
     google = await fakeGoogle(t);
-    return { GOOGLE_CLIENT_ID: "google-client", GOOGLE_CLIENT_SECRET: "google-secret", AGENT_GOOGLE_ISSUER: google.url, AGENT_OPEN_SIGNUP: "true" };
+    return { AGENT_PROVIDER: "camelrun", AGENT_MODEL: "default", GOOGLE_CLIENT_ID: "google-client", GOOGLE_CLIENT_SECRET: "google-secret", AGENT_GOOGLE_ISSUER: google.url, AGENT_OPEN_SIGNUP: "true" };
   } });
 }
 const anonymous = (r: ContractFixture) => (path: string, init: any = {}) => r.call(path, { token: null, ...init });

@@ -22,11 +22,23 @@ export interface ContractFixture {
   prompt(agent: string, text: string, token?: string, extra?: Record<string, unknown>): Promise<any>;
   model: { url: string; bodies: any[]; keys: string[]; headers: any[] };
   setModel(respond: ModelReply): void;
+  /** Reproduce a legacy stored model at restart; adapters must not emulate its billing behavior. */
+  restartWithLegacyModel(agent: string, model: Record<string, unknown>): Promise<void>;
   seedTenant(id: string, options?: TenantSeed): Promise<{ id: string; token: string }>;
   seedIdempotencyLock(lock: { tenant: string; key: string; fingerprint: string; createdAt: number }): Promise<void>;
   setScheduleDueAt(agent: string, schedule: string, dueAt: number): Promise<void>;
   setScheduleLegacyHistory(agent: string, schedule: string, history: "none"): Promise<void>;
   resetChildSettlement(parent: string): Promise<void>;
+  countOAuthRefreshTokens(): Promise<number>;
+  ageUsedOAuthRefreshToken(token: string, milliseconds: number): Promise<void>;
+  revokeOAuthGrants(): Promise<void>;
+  seedEndUserUsage(usage: { tenant: string; endUser: string; bucket: string; amount: number; key: string; metadata?: Record<string, unknown>; at: number }): Promise<void>;
+  seedStripeCustomer(tenant: string, customer: { customer: string; legacyCustomer?: string }): Promise<void>;
+  waitForAgentIdle(agent: string): Promise<void>;
+  failAgentLoad(agent: string): Promise<void>;
+  agentRecovery(agent: string): Promise<{ failures: number; retryAt: number }>;
+  setAgentRecovery(agent: string, state: { failures?: number; retryAt?: number }): Promise<void>;
+  failNextAdmissionWrite(agent: string): Promise<void>;
   now(): Promise<number>;
   /** Wait for real backend time; does not pretend the backend clock advanced. */
   advanceTime(ms: number): Promise<void>;

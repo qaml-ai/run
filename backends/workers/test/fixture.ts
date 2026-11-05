@@ -46,7 +46,6 @@ export async function startFixture(
       options.token ??
       "local-integration-only-token-with-at-least-32-characters",
     tenant = options.tenant ?? "camelrun-proto-local";
-  const storage = await mkdtemp(join(tmpdir(), "camelrun-proto-workers-test-"));
   const schema = options.schema ?? `workers_${randomBytes(8).toString("hex")}`;
   if (!/^[a-z][a-z0-9_]+$/.test(schema))
     throw new Error("Unsafe local test schema");
@@ -56,15 +55,31 @@ export async function startFixture(
   const parsed = new URL(base);
   if (!["127.0.0.1", "localhost"].includes(parsed.hostname))
     throw new Error("Local test Postgres required");
+  const storage = await mkdtemp(join(tmpdir(), "camelrun-proto-workers-test-"));
+  const cleanups: Array<() => Promise<void>> = [() => rm(storage, { recursive: true, force: true })];
+  let stopped = false;
+  const stop = async () => {
+    if (stopped) return;
+    stopped = true;
+    const failures: unknown[] = [];
+    for (const cleanup of cleanups.reverse()) {
+      try { await cleanup(); } catch (error) { failures.push(error); }
+    }
+    if (failures.length) throw new AggregateError(failures, "Local Worker fixture cleanup failed");
+  };
   const admin = new pg.Client({ connectionString: base });
+  cleanups.push(() => admin.end());
+  try {
   await admin.connect();
   await admin.query(`create database ${schema}`);
+  cleanups.push(async () => { await admin.query(`drop database ${schema} with (force)`); });
   // Hyperdrive validates a password even when isolated local Postgres uses trust auth.
   if (!parsed.password) parsed.password = "local-only-unused";
   parsed.pathname = `/${schema}`;
   parsed.search = "";
   const databaseUrl = parsed.toString(),
     db = new pg.Pool({ connectionString: databaseUrl });
+  cleanups.push(() => closePool(db));
   await migrate(db);
   for (const item of options.tenants ?? [{ id: tenant, token }]) {
     await db.query(
@@ -113,30 +128,12 @@ export async function startFixture(
     configPath,
     token,
   );
-  try {
-    await worker.start();
+  cleanups.push(() => worker.stop());
+  await worker.start();
+  return { url: worker.url, databaseUrl, db, worker, token, stop };
   } catch (error) {
-    await closePool(db);
-    await admin.query(`drop database ${schema} with (force)`);
-    await admin.end();
-    await rm(storage, { recursive: true, force: true });
+    try { await stop(); }
+    catch (cleanupError) { throw new AggregateError([error, cleanupError], "Local Worker fixture startup and cleanup failed"); }
     throw error;
   }
-  let stopped = false;
-  return {
-    url: worker.url,
-    databaseUrl,
-    db,
-    worker,
-    token,
-    async stop() {
-      if (stopped) return;
-      stopped = true;
-      await worker.stop();
-      await closePool(db);
-      await admin.query(`drop database ${schema} with (force)`);
-      await admin.end();
-      await rm(storage, { recursive: true, force: true });
-    },
-  };
 }

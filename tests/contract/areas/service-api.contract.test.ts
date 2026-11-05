@@ -28,7 +28,7 @@ contractTest('agents', 'tests/service-api.test.ts:43', 'operator provisioning im
 
 contractTest('agents', 'tests/service-api.test.ts:62', 'scoped configuration persists allowed fields and rejects provider credentials or endpoints', async(t,r)=>{
   const f = await fixture(r);
-  const response = await f.post('/v1/agents', {});
+  const response = await f.post('/v1/agents', { model: 'openrouter/deepseek/deepseek-v4.1-flash-1017' });
   const session = await response.json() as any;
   const path = `/clients/${session.id}`;
   for (const params of [{ model: configuredModel({ AGENT_PROVIDER: "openrouter" }) }, { apiKey: 'secret' }, { initialMessages: [] }]) {
@@ -48,7 +48,9 @@ contractTest('agents', 'tests/service-api.test.ts:62', 'scoped configuration per
   assert.equal(record.outcome.error, undefined);
   const saved = (await r.call(`/v1/agents/${session.id}`, {token:operator})).json;
   assert.equal(saved.systemPrompt, params.systemPrompt);
-  assert.equal(saved.thinkingLevel, 'high');
+  // The public detail has no thinkingLevel field; observe the persisted setting on its next model request.
+  await r.prompt(session.id, 'Check the configured reasoning level.', operator, {allowDisconnected:true});
+  assert.equal(r.model.bodies.at(-1).reasoning?.effort, 'high');
   assert.deepEqual(saved.tools, [{ name: 'inspect', description: 'Inspect a fixture', parameters: inspect.inputSchema, exposure: 'direct' }]);
 
 });

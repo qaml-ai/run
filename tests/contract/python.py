@@ -94,6 +94,7 @@ async def setup(self):
         "tenants": {"tenants": {"python": {"tokenSha256": hashlib.sha256(self.token.encode()).hexdigest(), "apiKeys": {"openrouter": "unset"}}}},
         "env": {
             "AGENT_MODEL": "openai/gpt-4o-mini", "AGENT_BASE_URL": self.model_url,
+            "AGENT_PUBLIC_URL": "",
             "AGENT_OUTBOUND_ALLOW_HTTP": "true", "AGENT_OUTBOUND_ALLOW_CIDRS": "127.0.0.1/32",
             "AGENT_TRANSCRIPTION_URL": f"http://127.0.0.1:{self.transcriber.server_port}",
             "AGENT_IMAGES_URL": f"http://127.0.0.1:{self.transcriber.server_port}",

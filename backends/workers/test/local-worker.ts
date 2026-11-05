@@ -48,6 +48,7 @@ export class LocalWorker {
       CI: "1",
       WRANGLER_SEND_METRICS: "false",
       WRANGLER_LOG_PATH: join(this.storage, "logs"),
+      CLOUDFLARE_DEV_REGISTRY_PATH: join(this.storage, "registry"),
     };
     // Model tests must not accidentally fall back to a configured cloud account.
     for (const key of [

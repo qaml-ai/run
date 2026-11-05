@@ -13,12 +13,13 @@ const backend = option("backend") ?? "both", area = option("area");
 if (!["node", "workers", "both"].includes(backend)) throw new Error("--backend must be node, workers, or both");
 const files = (await readdir(path.join(root, "tests/contract/areas"))).filter(file => file.endsWith(".test.ts")).sort();
 async function walk(directory) {
-  const entries = await readdir(path.join(root, directory), { withFileTypes: true });
+  const entries = (await readdir(path.join(root, directory), { withFileTypes: true }))
+    .filter(entry => !["node_modules", "dist", ".wrangler", ".git"].includes(entry.name));
   return (await Promise.all(entries.map(entry => entry.isDirectory() ? walk(`${directory}/${entry.name}`) : [`${directory}/${entry.name}`]))).flat();
 }
-const suiteFiles = [...await walk("src"), ...await walk("clients"), ...await walk("tests")]
-  .filter(file => /\.(ts|mjs|py)$/.test(file));
-suiteFiles.push("package.json", "package-lock.json", "backends/workers/package-lock.json", "backends/workers/test/fixture.ts", "backends/workers/test/local-worker.ts", "backends/workers/test/contract-entry.ts", "backends/workers/wrangler.test.jsonc");
+const suiteFiles = [...await walk("src"), ...await walk("clients"), ...await walk("tests"), ...await walk("packages"), ...await walk("migrations"), ...await walk("backends/workers/src"), ...await walk("backends/workers/codemode")]
+  .filter(file => /\.(ts|mjs|py|sql)$/.test(file));
+suiteFiles.push("package.json", "package-lock.json", "backends/workers/package-lock.json", "backends/workers/test/fixture.ts", "backends/workers/test/local-worker.ts", "backends/workers/test/contract-entry.ts", "backends/workers/wrangler.test.jsonc", "backends/workers/codemode/wrangler.jsonc");
 const hash = createHash("sha256");
 for (const file of suiteFiles.sort()) hash.update(file).update(await readFile(path.join(root, file)));
 const suiteHash = hash.digest("hex");
@@ -35,13 +36,19 @@ const escape = value => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 async function command(program, commandArgs, env, expected = []) {
   const rows = [], cases = [], chunks = [];
   const child = spawn(program, commandArgs, { cwd: root, env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"], detached: true });
-  const stop = () => { try { process.kill(-child.pid, "SIGTERM"); } catch {} };
+  let killDeadline;
+  const stop = () => {
+    try { process.kill(-child.pid, "SIGTERM"); } catch {}
+    killDeadline ??= setTimeout(() => { try { process.kill(-child.pid, "SIGKILL"); } catch {} }, 5_000);
+  };
   const deadline = setTimeout(stop, Math.max(120_000, expected.length * 120_000));
   let cleanupDeadline;
   let pending = "";
   const line = value => {
     if (value.startsWith("@@CONTRACT_RESULT@@")) {
-      rows.push(JSON.parse(value.slice(19)));
+      const row = JSON.parse(value.slice(19));
+      rows.push(row);
+      if (program === "python3") console.log(`${row.status.toUpperCase()} [${row.area}] ${row.name}${row.status === "fail" ? `: ${row.reason}` : ""}`);
       if (expected.length && rows.length >= expected.length && !cleanupDeadline) cleanupDeadline = setTimeout(stop, 15_000);
     } else if (value.startsWith("@@CONTRACT_CASE@@")) cases.push(JSON.parse(value.slice(17)));
     else if (value) console.log(value);
@@ -55,7 +62,7 @@ async function command(program, commandArgs, env, expected = []) {
     child.on("error", reject);
     child.on("close", (code, signal) => resolve({ code, signal }));
   });
-  clearTimeout(deadline); clearTimeout(cleanupDeadline);
+  clearTimeout(deadline); clearTimeout(cleanupDeadline); clearTimeout(killDeadline);
   if (pending) line(pending);
   return { ...result, rows, cases, log: Buffer.concat(chunks).toString() };
 }
@@ -73,9 +80,11 @@ if (args.includes("--list")) { console.log(JSON.stringify(manifest, null, 2)); p
 
 function complete(rows, expected, processResult) {
   const seen = new Set();
+  const expectedIds = new Set(expected.map(key));
   for (const row of rows) {
     const id = key(row);
     if (seen.has(id)) throw new Error(`Duplicate result: ${row.name}`);
+    if (!expectedIds.has(id) && !(row.area === "harness" && row.status === "fail")) throw new Error(`Unexpected result outside the contract inventory: ${row.name}`);
     seen.add(id);
   }
   for (const row of expected) if (!seen.has(key(row))) rows.push({ ...row, status: "fail", backend: "fixture", reason: "Test process did not report this case; inspect raw log" });
@@ -88,6 +97,7 @@ async function run(which) {
   const rows = manifest.filter(row => row.file === "scope"), logs = [];
   const jobs = [...new Set(manifest.filter(row => row.file !== "scope").map(row => row.file))];
   const concurrency = Number(process.env.CONTRACT_CONCURRENCY ?? (which === "node" ? 2 : 1));
+  if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 8) throw new Error("CONTRACT_CONCURRENCY must be an integer from 1 to 8");
   async function next() {
     for (;;) {
       const file = jobs.shift(); if (!file) return;

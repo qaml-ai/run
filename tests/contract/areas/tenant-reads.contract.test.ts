@@ -118,3 +118,43 @@ contractTest("access","tests/tenant-reads.test.ts:95","an idle agent's history, 
   const poll = await fetch(`${r.base}/v1/agents/${agent}/events?poll=1`, { headers: { Authorization: `Bearer ${OPERATOR}`, "Last-Event-ID": String(cursor) } });
   assert.equal(poll.status, 200);
 });
+
+contractTest("access","tests/tenant-reads.test.ts:117","an agent with work left that cannot be loaded is tried again with capped backoff, never for good, and says so",async t => {
+  const r = await runtime(t, () => ({ content: "hello" }), { AGENT_IDLE_MS: "1000", AGENT_ORPHAN_SWEEP_MS: "200" });
+  const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  await r.prompt(agent, "hi");
+  await r.waitForAgentIdle(agent);
+  // Work left, and a header no node can load.
+  await r.failAgentLoad(agent);
+  const row = async () => { const state = await r.agentRecovery(agent); return { resume_failures: state.failures, resume_after: state.retryAt }; };
+  await until(async () => (await row()).resume_failures >= 2, "the sweeps to fail and back off");
+  // Backing off, doubling: a few windows in a couple of seconds, not a try per sweep.
+  await sleep(2_000);
+  assert.ok((await row()).resume_failures <= 5, `${(await row()).resume_failures} failures in about 2.5 s of 200 ms sweeps`);
+  // Read during a fixed backoff window, rather than race the next deliberately failing sweep's load.
+  await r.setAgentRecovery(agent, { retryAt: Date.now() + 60_000 });
+  await r.waitForAgentIdle(agent);
+  // Reads answer from storage, and say it waits.
+  const state = await r.call(`/v1/agents/${agent}/state`);
+  assert.equal(state.status, 200);
+  assert.ok(state.json.resume.failures >= 2);
+  assert.equal((await r.call("/v1/agents")).json.find((entry: any) => entry.id === agent).resume.failures, state.json.resume.failures, "the listing says so too");
+  // However many failures, it is tried again: at most an hour apart.
+  await r.setAgentRecovery(agent, { failures: 40, retryAt: 0 });
+  await until(async () => (await row()).resume_failures === 41, "another try");
+  const after = Number((await row()).resume_after);
+  assert.ok(after - Date.now() <= 3_600_000 && after - Date.now() > 3_500_000, `capped at an hour (${after - Date.now()} ms)`);
+});
+
+contractTest("access","tests/tenant-reads.test.ts:144","a request whose open-work mark could not be written is not taken, and its retry runs",async t => {
+  const r = await runtime(t, () => ({ content: "ran" }));
+  const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  // The first write marking the agent's work open fails, once, as a database blip would.
+  await r.failNextAdmissionWrite(agent);
+  const first = await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "go", requestId: "retried" } });
+  assert.notEqual(first.status, 202);
+  const retry = await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "go", requestId: "retried" } });
+  assert.equal(retry.status, 202, retry.text);
+  await until(async () => (await r.call(`/v1/agents/${agent}/requests/retried`)).json.state === "completed", "the retried request to run");
+  assert.equal((await r.call(`/v1/agents/${agent}/requests/retried`)).json.outcome.result.reply, "ran");
+});

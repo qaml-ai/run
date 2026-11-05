@@ -7,7 +7,7 @@ const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const alice = OPERATOR, bob = OTHER_OPERATOR;
 const PASSWORD = "correct-horse-battery-staple";
 const browser = { "X-Agent-Runtime-Console": "1", "Sec-Fetch-Site": "same-origin" };
-const apiOptions = { env: { AGENT_VERIFY_KEYS: "false" }, tenants: { tenants: {
+const apiOptions = { env: { AGENT_VERIFY_KEYS: "false", AGENT_PROVIDER: "camelrun", AGENT_MODEL: "default" }, tenants: { tenants: {
   alice: { tokenSha256: sha(alice), apiKeys: {} },
   bob: { tokenSha256: sha(bob), apiKeys: { anthropic: "bob-admin-anthropic-key" }, github: "Bob-Builder" },
 } } };

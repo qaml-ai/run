@@ -1,5 +1,6 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { EndUserCredits } from "../../../src/end-user-credits.ts";
 import { fakeModel, OPERATOR, OTHER_OPERATOR, until, type T } from "../http.ts";
 import type { ContractFixture, FixtureOptions, TenantSeed } from "../fixture.ts";
 
@@ -12,9 +13,14 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
   const close = async () => {
     if (closed) return;
     closed = true;
-    for (const cleanup of cleanups.reverse()) await cleanup();
+    const failures: unknown[] = [];
+    for (const cleanup of cleanups.reverse()) {
+      try { await cleanup(); } catch (error) { failures.push(error); }
+    }
+    if (failures.length) throw new AggregateError(failures, "Workers fixture cleanup failed");
   };
   t.after(close);
+  try {
   const model = await fakeModel({ after: fn => cleanups.push(fn) }, (body, index) => respond(body, index - replyStart));
   // Dynamic import keeps workerd's binding types out of the Node TypeScript project.
   const fixtureModule = new URL("../../../backends/workers/test/fixture.ts", import.meta.url).href;
@@ -42,7 +48,7 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
 
   async function seedTenant(id: string, seed: TenantSeed = {}) {
     if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(id)) throw new Error("Invalid fixture tenant id");
-    const token = seed.token ?? `contract-operator-${id}-${randomUUID()}`;
+    const token = seed.token ?? (seed.operator === false ? `art_${randomBytes(32).toString("hex")}` : `contract-operator-${id}-${randomUUID()}`);
     const config = seed.config ?? {};
     const billing = seed.billingMode ?? config.billing ?? (seed.operator === false ? "prepaid" : "none");
     if (billing !== "none" && billing !== "prepaid") throw new Error("Invalid fixture billing mode");
@@ -139,7 +145,30 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
     async resetChildSettlement(_parent) {
       throw new Error("Unsupported fixture state: Workers child records have no settlement or sweep state to reset");
     },
+    async countOAuthRefreshTokens() {
+      return (await server.db.query("select count(*)::int as n from oauth_tokens where kind='refresh' and grant_id is not null")).rows[0].n;
+    },
+    async ageUsedOAuthRefreshToken(token, milliseconds) {
+      const result = await server.db.query("update oauth_tokens set used_at=used_at-$2 where sha256=$1", [createHash("sha256").update(token).digest("hex"), milliseconds]);
+      if (result.rowCount !== 1) throw new Error("Fixture refresh token not found");
+    },
+    async revokeOAuthGrants() { await server.db.query("delete from oauth_grants"); },
+    async seedEndUserUsage({ tenant, endUser, bucket, amount, key, metadata, at }) {
+      await new EndUserCredits(server.db).charge(tenant, endUser, bucket, amount, key, metadata, at);
+    },
+    async seedStripeCustomer(tenant, { customer, legacyCustomer }) {
+      await server.db.query("insert into billing_stripe_customers(tenant,livemode,request_id,customer,created_at) values($1,false,$2,$3,$4)", [tenant, randomUUID(), customer, Date.now()]);
+      if (legacyCustomer) await server.db.query("insert into credit_accounts(tenant,balance,stripe_customer) values($1,0,$2) on conflict(tenant) do update set stripe_customer=excluded.stripe_customer", [tenant, legacyCustomer]);
+    },
+    async waitForAgentIdle(_agent) { throw new Error("Unsupported fixture state: Workers agents have no actor_owners idle lease"); },
+    async failAgentLoad(_agent) { throw new Error("Unsupported fixture state: Workers agents do not resume from versioned Postgres agent headers"); },
+    async agentRecovery(_agent) { throw new Error("Unsupported fixture state: Workers agents have no Postgres resume_failures or resume_after"); },
+    async setAgentRecovery(_agent, _state) { throw new Error("Unsupported fixture state: Workers agents have no Postgres resume_failures or resume_after"); },
+    async failNextAdmissionWrite(_agent) { throw new Error("Unsupported fixture state: Workers request admission does not update Postgres pending_runs"); },
     setModel(next) { respond = next; replyStart = model.bodies.length; },
+    async restartWithLegacyModel(_agent, _model) {
+      throw new Error("Unsupported fixture state: Workers agents have no legacy stored Node model configuration to restore at restart");
+    },
     async now() { return Date.now(); },
     async advanceTime(milliseconds) {
       if (!Number.isFinite(milliseconds) || milliseconds < 0) throw new Error("Invalid clock advance");
@@ -147,6 +176,11 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
       await new Promise(resolve => setTimeout(resolve, milliseconds));
     },
   };
+  } catch (error) {
+    try { await close(); }
+    catch (cleanupError) { throw new AggregateError([error, cleanupError], "Workers fixture startup and cleanup failed"); }
+    throw error;
+  }
 }
 
 export const createContractFixture = createWorkersFixture;

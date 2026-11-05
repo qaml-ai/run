@@ -2,6 +2,8 @@
 export default async function* reporter(events) {
   const records = new Map(), evidence = new Map();
   for await (const { type, data } of events) {
+    if (type === "test:stdout" || type === "test:stderr") yield data.message;
+    if (type === "test:diagnostic" && !data.message.startsWith("contract-backend:")) yield `${data.message}\n`;
     if (type === "test:diagnostic" && data.message.startsWith("contract-backend:")) {
       const value = JSON.parse(data.message.slice(17)); evidence.set(value.name, value.backend);
       if (records.has(value.name)) {
