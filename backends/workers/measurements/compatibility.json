@@ -152,7 +152,7 @@
     {
       "file": "tests/computers-api.test.ts",
       "test": "delegate child creation inherits computer attachments: true",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
@@ -162,7 +162,7 @@
     {
       "file": "tests/computers-api.test.ts",
       "test": "delegate child creation inherits computer attachments: false",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
@@ -172,7 +172,7 @@
     {
       "file": "tests/computers-api.test.ts",
       "test": "agents child creation inherits computer attachments: true",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
@@ -182,7 +182,7 @@
     {
       "file": "tests/computers-api.test.ts",
       "test": "agents child creation inherits computer attachments: false",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
@@ -193,7 +193,7 @@
       "file": "tests/decisions-api.test.ts",
       "test": "POST /v1/decisions answers one state or a batch on the platform's OpenRouter key, bills what OpenRouter charged, and logs no state",
       "status": "pass",
-      "kind": "sdk-unit",
+      "kind": "worker",
       "reason": "Original assertion result",
       "process": {
         "reused": true
@@ -203,7 +203,7 @@
       "file": "tests/decisions-api.test.ts",
       "test": "a tenant's own OpenRouter key answers its decisions, and is not charged",
       "status": "pass",
-      "kind": "sdk-unit",
+      "kind": "worker",
       "reason": "Original assertion result",
       "process": {
         "reused": true
@@ -213,7 +213,7 @@
       "file": "tests/decisions-api.test.ts",
       "test": "the decide builtin answers from codemode in batches and directly, billed to the run and the agent",
       "status": "pass",
-      "kind": "sdk-unit",
+      "kind": "worker",
       "reason": "Original assertion result",
       "process": {
         "reused": true
@@ -223,7 +223,7 @@
       "file": "tests/decisions-api.test.ts",
       "test": "an agent that denies data collection has decide by default, its calls sent with that data policy",
       "status": "pass",
-      "kind": "sdk-unit",
+      "kind": "worker",
       "reason": "Original assertion result",
       "process": {
         "reused": true
@@ -233,7 +233,99 @@
       "file": "tests/decisions-api.test.ts",
       "test": "decide is every agent's by default, and opts out with decide: false on the agent, its update or its definition; a toolless run and a tenant without an OpenRouter key have none",
       "status": "pass",
-      "kind": "sdk-unit",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
+      }
+    },
+    {
+      "file": "tests/files.test.ts",
+      "test": "content types come from the upload, else magic bytes, the name, or whether it reads as text",
+      "status": "not-applicable",
+      "reason": "Direct Node service/unit test; cannot target a base URL unchanged"
+    },
+    {
+      "file": "tests/files.test.ts",
+      "test": "downloads never run as the runtime's origin: nosniff, and active types are sandboxed attachments",
+      "status": "not-applicable",
+      "reason": "Direct Node service/unit test; cannot target a base URL unchanged"
+    },
+    {
+      "file": "tests/files.test.ts",
+      "test": "files record their content type; files from before types were recorded are sniffed when downloaded",
+      "status": "not-applicable",
+      "reason": "Direct Node service/unit test; cannot target a base URL unchanged"
+    },
+    {
+      "file": "tests/files.test.ts",
+      "test": "the REST API stores the upload's type and serves downloads with safe headers",
+      "status": "pass",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
+      }
+    },
+    {
+      "file": "tests/files.test.ts",
+      "test": "signed links: bound to tenant, volume, path, method, expiry, size and content type; tampering fails",
+      "status": "pass",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
+      }
+    },
+    {
+      "file": "tests/files.test.ts",
+      "test": "an upload streams to storage a chunk at a time: the source is never more than a few chunks ahead of storage",
+      "status": "not-applicable",
+      "reason": "Includes direct Node VolumeService/storage instrumentation; cannot target a base URL unchanged"
+    },
+    {
+      "file": "tests/files.test.ts",
+      "test": "attachments over REST land in the workspace, the transcript keeps references, and the model sees them natively",
+      "status": "fail",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
+      }
+    },
+    {
+      "file": "tests/files.test.ts",
+      "test": "context estimates count what file references stand for, not their JSON",
+      "status": "not-applicable",
+      "reason": "Direct Node service/unit test; cannot target a base URL unchanged"
+    },
+    {
+      "file": "tests/files.test.ts",
+      "test": "the TypeScript SDK attaches bytes, Blobs, local paths and workspace files; a file deleted or replaced after attaching still reads as attached",
+      "status": "pass",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
+      }
+    },
+    {
+      "file": "tests/files.test.ts",
+      "test": "parsing a hostile file stops at its limits on a worker: the runtime's thread neither crashes nor stalls",
+      "status": "not-applicable",
+      "reason": "Direct Node service/unit test; cannot target a base URL unchanged"
+    },
+    {
+      "file": "tests/files.test.ts",
+      "test": "only the runtime's own file tools may return file references: anyone else's are described, never hydrated",
+      "status": "not-applicable",
+      "reason": "Direct Node service/unit test; cannot target a base URL unchanged"
+    },
+    {
+      "file": "tests/files.test.ts",
+      "test": "a run's outcome lists the files it wrote and presented, and a presented file is an event with a download link",
+      "status": "pass",
+      "kind": "worker",
       "reason": "Original assertion result",
       "process": {
         "reused": true
@@ -316,6 +408,46 @@
       }
     },
     {
+      "file": "tests/projects.test.ts",
+      "test": "publishTool finds the project from the call's identity, never its arguments, and tells the model what to fix",
+      "status": "pass",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
+      }
+    },
+    {
+      "file": "tests/projects.test.ts",
+      "test": "a project is restored in place to a published version, and a check hands what it computed to store and the result",
+      "status": "pass",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
+      }
+    },
+    {
+      "file": "tests/projects.test.ts",
+      "test": "pinned versions outlast keep and the snapshot cap, carry labels, and a snapshot can be made from contents",
+      "status": "pass",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
+      }
+    },
+    {
+      "file": "tests/schedule-api.test.ts",
+      "test": "calendar schedules and owner-configured email round trip through the API without crossing accounts",
+      "status": "pass",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
+      }
+    },
+    {
       "file": "tests/schedule-api.test.ts",
       "test": "public accounts can email their verified address and cannot email strangers or suppressed recipients",
       "status": "not-applicable",
@@ -350,7 +482,7 @@
     {
       "file": "tests/sdk-lazy-connections.test.ts",
       "test": "handles that need the stream keep it: onEvent, served tools, or connection: eager",
-      "status": "pass",
+      "status": "fail",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
@@ -610,37 +742,41 @@
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 0,
+        "signal": null
       }
     },
     {
       "file": "tests/transcription-api.test.ts",
       "test": "audio attached to a message is transcribed before the request is accepted: the model reads the transcript, history keeps it with the audio, and it is billed to the run's agent and budget",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 0,
+        "signal": null
       }
     },
     {
       "file": "tests/transcription-api.test.ts",
       "test": "audio a message sends by default reaches the agent untranscribed, with why, when the tenant has no OpenAI key; one it asks to transcribe is refused; a monthly cap refuses transcriptions",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 0,
+        "signal": null
       }
     },
     {
       "file": "tests/transcription-sdk.test.ts",
       "test": "the TypeScript SDK: transcriptions.create from bytes, a Blob or a URL; audio attached to agent and stateless runs, by URL too",
-      "status": "fail",
+      "status": "pass",
       "kind": "worker",
       "reason": "Original assertion result",
       "process": {
-        "reused": true
+        "code": 0,
+        "signal": null
       }
     },
     {
@@ -707,7 +843,7 @@
     },
     {
       "file": "tests/voice-api.test.ts",
-      "test": "a call over HTTP: the realtime brain answers on OpenAI with the tenant's key, on the node holding the call; DELETE …/speak from any node reaches it",
+      "test": "a call over HTTP: the realtime brain answers on OpenAI with the tenant's key, on the node holding the call; DELETE \u2026/speak from any node reaches it",
       "status": "not-applicable",
       "reason": "Voice sessions excluded by requested scope"
     },
@@ -786,14 +922,14 @@
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_attachments_and_the_agents_files",
-      "status": "fail",
-      "reason": "Unsupported backend operation"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_audio_is_transcribed_in_messages_runs_and_on_its_own",
-      "status": "not-applicable",
-      "reason": "Voice/audio excluded by experiment scope"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",
@@ -840,8 +976,8 @@
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_images_on_their_own",
-      "status": "fail",
-      "reason": "File operation failed"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",
@@ -882,8 +1018,8 @@
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_projects_publish_checked_snapshots_and_the_tool_finds_the_project_from_identity",
-      "status": "fail",
-      "reason": "'vol_c1fcce0a7dee4e2f9fd35ecd' != 'vol_b8b5714a8d3441be937788b7'\n- vol_c1fcce0a7dee4e2f9fd35ecd\n+ vol_b8b5714a8d3441be937788b7\n"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",
@@ -942,8 +1078,8 @@
     {
       "file": "tests/python_sdk.py",
       "test": "upstream_python_sdk.PythonSDKTest.test_volumes_files_snapshots_and_mounts",
-      "status": "fail",
-      "reason": "Unsupported file operation"
+      "status": "pass",
+      "kind": "worker"
     },
     {
       "file": "tests/python_sdk.py",

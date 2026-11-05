@@ -1,126 +1,104 @@
 # Agents parity experiment
 
 This is the agents track for `codex/workers-parity`. It is experimental and is
-not a production rollout. The branch was rebased onto the money track before
-the final tests. The current scorecard is in `ELEGANCE.md`; the raw assertions
-and deployed code-mode probe are in `measurements/`.
+not a production rollout. The branch includes the money and platform tracks and
+the backend-neutral contract suite. It does **not** reach full parity.
 
-## Agent surface
+## Delivery boundary
 
-- Definitions carry revisions, apply updates, retain per-agent overrides, and
-  provision agents. Stateless runs use the same durable execution path and stay
-  out of the ordinary agent list.
-- Agent creation and configuration use the source model/output/run-limit
-  schemas. Structured output supports the native `final_output` tool and a
-  bounded correction when the model omits or violates its schema.
-- Model selection supports `camelrun/default`, virtual-model fallback,
-  OpenRouter pass-through, custom OpenAI chat/Responses and Anthropic providers,
-  scoped credentials, bearer-only Bedrock, model options, and stream deadlines.
-  Provider attempts use the money track's journal, including compaction calls.
-- SDK/client tools, MCP tools, remote MCP and OpenAPI sources have independent
-  exposure rules. Source configuration supports refresh, selection, approvals,
-  sealed credentials, runtime identity, and token exchange. Tool invocation
-  identities use the money track's canonical signer and public JWKS.
-- Import, export and fork retain conversation messages and configuration.
-  Forked agents have independent files and request state.
-- Human inputs are durable Pi documents. Questions, approvals and forms survive
-  a hard restart. An answer creates a durable resume request; projection waits
-  for that alias before sending resumed tool results to SDK streams.
-- Delegation reuses source depth, parallelism and budget policy. Children have
-  their own objects and journals. Cancellation, completion notifications,
-  progress and signed parent/child messaging are durable and deduplicated.
-- The UI AI SDK consumes the ordinary event stream. Text, tools, approvals,
-  questions, completed reconnects and mid-answer reconnects are covered by the
-  original five assertions.
+The latest complete contract run is **223 pass / 367 fail**, with 380 out of
+scope, at `d3b9d03b` on `rt-pool-3`. Node passed all 590 in-scope cases. Per the
+wrap-up instruction, no replacement full run was started. The later focused
+results below are distinct observations, not a new aggregate score.
 
-## History and execution
+[AGENTS-FAILURES.md](AGENTS-FAILURES.md) lists each remaining observed failure,
+its exact test name, a one-line diagnosis and the source implementation to use
+for the parallel gap-closing runs. The sanitized machine-readable evidence is
+[agents-contract-handoff.json](measurements/agents-contract-handoff.json).
 
-`AgentHistory` maintains a SQLite ordinal index over the Pi journal. Incremental
-indexing reads 128 entries at a time; HTTP paging bounds both message count and
-serialized bytes. The test imports 1,302 messages, pages both directions, resets
-the model context and compacts it while retaining the public history. An
-unpaged response still has a 64 MiB safety limit; callers can page beyond it.
-The active Pi model context is still materialized by Pi and is a separate memory
-limit from HTTP history.
+The local branch `wip/agents-unfinished` retains the unverified configuration
+queue, public list/activity/idempotency additions, reasoning retry and web-fetch
+edits. Those changes are not part of the delivered tree and that branch is not
+pushed. The retained first-prompt handling, provider repricing, default values
+and paid-account lock each have passing focused evidence.
 
-Code mode uses stock Pi `RemoteCodemodeSandbox`, native tool replay and native
-pause/resume. Each agent session selects one sandbox object by its session key.
-The object uses a 24 MiB VM limit and admits at most three concurrent scripts.
-The source `fs` shim is the only script prefix. Workflows are scripts that call
-`tools.delegate`; they can pause for human input without a second workflow
-engine. Host SDK `execute` uses a separate Pi conversation so it does not add
-messages to the model history.
+## What is retained
 
-The deployed probe checked arithmetic, a 40 MiB allocation failure, the fourth
-concurrent script being refused, and cancellation. Both temporary Workers and
-the sandbox namespace were deleted. Estimated marginal spend is below $0.01;
-the account invoice has not settled. See
-`measurements/agents-codemode-cloud.json` for the request counts and cleanup.
+- Definitions, stateless runs, model options, structured output, virtual models,
+  custom providers, OpenRouter and bearer-only Bedrock routing. These surfaces
+  still have the contract gaps listed in the handoff.
+- Attached SDK/client tools, MCP/OpenAPI source configuration, credential
+  exchange, runtime identity and hosted MCP. Hosted MCP is partial (3/6 cases).
+- Durable human input, decision calls, child ownership and delegation policy.
+  Decisions pass 5/5 and human inputs 20/20. Delegation still has ordering,
+  cancellation, wake-limit and child-spend gaps.
+- Import, export, fork, compaction and bounded history paging. `AgentHistory`
+  incrementally indexes 128 entries at a time, then pages by count and bytes.
+  An unpaged response has a 64 MiB safety bound. Pi still materializes its active
+  model context. Large fork imports retain a separate 32 KiB request-body gap.
+- UI AI SDK message assembly and the source live-stream protocol. All five
+  original UI tests pass; the newer streaming/messages selection passes 12/12.
+- Source-generated run failures, prompts, model/output schemas, delegation,
+  decisions, human-input, attachment, reset and spending policy. Drift scripts
+  check these copies; portable source modules are imported directly.
 
-## Source reuse
+Code mode uses Pi's stock `RemoteCodemodeSandbox`, tool replay and human-input
+pause/resume. Each session selects one sandbox object, with a 24 MiB VM limit
+and at most three concurrent scripts. The file tools expose the source `fs`
+shim. Workflow scripts call `tools.delegate`; host SDK `execute` has a separate
+Pi conversation and does not add model history. Pi uses QuickJS here, so V8/Intl
+semantics and exact v8-exec error names remain different. Its wall-time and
+interrupt limits do not establish equivalent OS-enforced CPU accounting.
 
-The `scripts/reuse-*.mjs --check` scripts verify generated source fragments for
-model options, output validation, run failures, prompts, decisions, delegation,
-human inputs, code-mode `fs`, reset policy, OpenAPI and spending. Common money,
-identity and security policy remains owned by the money track. The image path
-is unchanged; per-request provider fetch is the seam for the separate streaming
-image work.
+The image path remains unchanged. The per-request provider fetch is the seam
+for the separate image-streaming work.
 
-## Remaining limits and decisions
+## Completed focused results
 
-- Pi's VM timeout/interrupt mechanism does not provide the v8-exec process's
-  exact OS-enforced CPU accounting. The CTO must decide whether that difference
-  is acceptable for this experimental backend or requires an external execution
-  boundary. Memory, concurrency, wall time, cancellation and output limits are
-  independently bounded.
-- Platform-funded auxiliary web/decision calls require the same prepaid hold
-  and end-user policy as model calls. The adapters refuse unsupported platform
-  funding before dispatch; they do not claim paid production parity.
-- Binary/multipart OpenAPI requests, file/image attachments, computers and
-  scheduling semantics depend on the platform track. Their original failing
-  assertions remain in the full scorecard. Channels and voice are excluded.
-- `judged` source approvals currently ask a person conservatively. They do not
-  use the source runtime's model-based judgment. MCP discovery refresh is
-  explicit; server `list_changed` notifications do not trigger automatic
-  refresh. Detailed source errors are not yet attached to the run result.
-- Native Pi reports `script`, `sandbox` and `aborted` code-mode error kinds;
-  some exact v8-exec error names differ even though the resource bounds apply.
-- Large active contexts, massive request-record retention, regional Hyperdrive
-  fan-out, and a fenced migration still need separate qualification. Passing
-  public paging and local restart tests does not establish those properties.
-- Active runtime is charged when a run segment completes or pauses. Source-style
-  periodic active-time accrual is not implemented; token attempts have their
-  separate durable accounting journal.
+| Selection | Revision | Node | Workers |
+| --- | --- | ---: | ---: |
+| Agents, SDK, messages, streaming | `4241d8af` | 84/84 | 60/84 |
+| Streaming and messages, later correction | `cbcbd28d` | 12/12 | 12/12 |
+| Human input | `626eca88` | 20/20 | 20/20 |
+| Delegation and decisions | `28528f8f` | 44/44 | 30/44 |
+| Runs and history | `4241d8af` | 53/53 | 49/53 |
+| Tools, MCP and sources | `d161edd4` | 42/42 | 28/42 |
+| Models, providers and definitions | `7f79aee3` | 68/68 | 35/68 |
+| Later configuration/custom-provider selection | `c1a32b21` | — | 21/26 |
 
-## Final validation
+The final selection includes all five custom-provider cases passing. These
+selections overlap. Do not add their pass counts or treat them as a single run.
 
-| Command                                                             | Result                                                                 |
-| ------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| `npm ci` and `npm run typecheck`                                    | Pass                                                                   |
-| `npm test`                                                          | 287/287 pass                                                           |
-| `npm run test:integration`                                          | 54/54 pass, including local Docker computers and hard workerd restarts |
-| `npm run test:compat`                                               | 89 pass, 18 fail, 39 not applicable; exits nonzero                     |
-| `npm run test:python`                                               | 52 pass, 6 fail, 2 excluded voice tests; exits nonzero                 |
-| All 17 `scripts/reuse-*.mjs --check` scripts                        | Pass                                                                   |
-| `npm run build`                                                     | Both dry-run bundles pass                                              |
-| Root `npm run docs` and the anchored `llms.txt` freshness/link test | Pass                                                                   |
+The earlier unchanged-assertion compatibility inventory reached **116 pass /
+5 fail / 41 not applicable**, versus 64/56/42 for the same 162-case inventory:
+**52 additional passes, 51 fewer failures**. Of the 116 passes, 71 exercised
+workerd and 45 were SDK-only. Python reached 57 pass, 2 fail, 1 voice exclusion.
+The remaining legacy failures concern PDF metadata, two lazy-connection counter
+assertions, end-user credit and key-scope/webhook behavior. That inventory is
+separate from the newer 590-case contract suite. Its adjacent raw logs are older
+prototype snapshots; the JSON summaries identify the latest recorded results.
 
-The 146-case scorecard moves from 50 to 89 passes and from 57 to 18 failures.
-The original decisions and UI suites each pass all five cases. OpenAPI sources
-pass 2/2, SDK server 9/9, lazy connections 4/4, and multi-agent 1/1. Python moves
-from 29 to 52 passes. Remaining failures cover the seven computer API cases,
-four image generation cases, one calendar/email case and six Python
-file/image/project/end-user/webhook cases. No failure was reclassified as a
-pass or excluded to produce this delta.
+## Delivery validation and cloud evidence
 
-`measurements/agents-validation.json` indexes the exact commands and failures.
-The final unit, integration, Python and compatibility logs are in
-`measurements/`. The docs test uses `test/compat-register.mjs` to resolve the
-isolated Workers dependencies because root dependencies are not installed.
+Quick delivery checks run on Sprites only: TypeScript, all Workers unit tests,
+both Wrangler dry-run builds, source drift checks, docs/`llms.txt` and OpenAPI
+generation. Exact revisions and final results are in
+[agents-validation.json](measurements/agents-validation.json). No new full
+contract run or full integration run is part of wrap-up. Earlier integration
+coverage was 80/81; the remaining native-container test hit the Sprite kernel's
+missing `xt_socket` support.
 
-The implementation is rebased onto `017da3c0` on `codex/workers-parity`. The
-contract track had not landed at the final fetch, so this uses the unchanged
-original assertions and the local integration suite.
+Two temporary deployed probes checked the sandbox memory/concurrency bounds,
+cancellation and attached-tool reconnection after a 35-second idle eviction.
+The latter retained one WebSocket and one MCP initialization. The Workers and
+namespaces were deleted; no cloud resources are retained. Combined marginal
+Cloudflare spend is estimated below $0.02; the invoice is not settled. Probe
+requests and cleanup are recorded in
+[agents-codemode-cloud.json](measurements/agents-codemode-cloud.json) and
+[agents-ws-cloud.json](measurements/agents-ws-cloud.json). Sprites validation
+used leased team machines; no production provider credentials were used.
 
-No production database,
-AWS execution, real model-provider credential, or main-branch write was used.
+The CTO decision remains whether Pi's QuickJS semantics and interrupt-based CPU
+boundary are acceptable for this experimental backend. Channels and voice are
+out of scope. No production database, AWS execution, main-branch write or
+production deployment was used.

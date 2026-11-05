@@ -46,13 +46,13 @@
   },
   {
     "test": "upstream_python_sdk.PythonSDKTest.test_attachments_and_the_agents_files",
-    "status": "fail",
-    "reason": "Unsupported backend operation"
+    "status": "pass",
+    "kind": "worker"
   },
   {
     "test": "upstream_python_sdk.PythonSDKTest.test_audio_is_transcribed_in_messages_runs_and_on_its_own",
-    "status": "not-applicable",
-    "reason": "Voice/audio excluded by experiment scope"
+    "status": "pass",
+    "kind": "worker"
   },
   {
     "test": "upstream_python_sdk.PythonSDKTest.test_code_mode_false_history_none_and_config_hash",
@@ -91,8 +91,8 @@
   },
   {
     "test": "upstream_python_sdk.PythonSDKTest.test_images_on_their_own",
-    "status": "fail",
-    "reason": "File operation failed"
+    "status": "pass",
+    "kind": "worker"
   },
   {
     "test": "upstream_python_sdk.PythonSDKTest.test_import_messages_converts_another_apis_conversation",
@@ -126,8 +126,8 @@
   },
   {
     "test": "upstream_python_sdk.PythonSDKTest.test_projects_publish_checked_snapshots_and_the_tool_finds_the_project_from_identity",
-    "status": "fail",
-    "reason": "'vol_c1fcce0a7dee4e2f9fd35ecd' != 'vol_b8b5714a8d3441be937788b7'\n- vol_c1fcce0a7dee4e2f9fd35ecd\n+ vol_b8b5714a8d3441be937788b7\n"
+    "status": "pass",
+    "kind": "worker"
   },
   {
     "test": "upstream_python_sdk.PythonSDKTest.test_run_resolves_with_a_run_and_the_token_stays_out_of_logs",
@@ -176,8 +176,8 @@
   },
   {
     "test": "upstream_python_sdk.PythonSDKTest.test_volumes_files_snapshots_and_mounts",
-    "status": "fail",
-    "reason": "Unsupported file operation"
+    "status": "pass",
+    "kind": "worker"
   },
   {
     "test": "upstream_python_sdk.RateLimitRetryTest.test_rate_limited_requests_wait_and_retry",
