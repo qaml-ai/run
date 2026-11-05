@@ -148,19 +148,33 @@ function scopedConfiguration(input: unknown) {
       );
 }
 
+function httpFailure(error: unknown, env: Env): Response {
+  const limited = admissionError(error);
+  if (limited) return limited;
+  if (error instanceof ApiError || error instanceof HttpError)
+    return Response.json({ error: error.message, code: error.code, ...errorFields(error), ...("details" in error ? error.details : {}) }, { status: error.status, headers: { 'cache-control': 'no-store', ...errorHeaders(error) } });
+  if (error instanceof BadRequest || error instanceof URIError)
+    return json({ error: error.message, code: "INVALID_REQUEST" }, 400);
+  failure(env, "http_failed", error);
+  const status = errorStatus(error, 500);
+  return Response.json({ error: "Backend operation failed", code: errorCode(error, status) },
+    { status, headers: { 'cache-control': 'no-store', ...errorHeaders(error) } });
+}
+
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    if (request.method === 'POST' && request.headers.has('idempotency-key') && !skipMoneyIdempotency(new URL(request.url).pathname)) {
-      const auth = await authenticateMoney(request, env) ?? await authenticate(request, env);
-      if (auth) {
-        try { return (await withMoneyIdempotency(request, env, auth.tenantId, next => worker.fetchRequest(next, env, ctx)))!; }
-        catch (error) {
-          if (error instanceof ApiError || error instanceof HttpError) return json({ error: error.message, code: error.code }, error.status);
-          throw error;
+    try {
+      if (request.method === 'POST' && request.headers.has('idempotency-key') && !skipMoneyIdempotency(new URL(request.url).pathname)) {
+        const auth = await authenticateMoney(request, env) ?? await authenticate(request, env);
+        if (auth) {
+          const response = (await withMoneyIdempotency(request, env, auth.tenantId, next => worker.fetchRequest(next, env, ctx)))!;
+          return publicPageHeaders(request, corsResponse(request, response));
         }
       }
+      return await worker.fetchRequest(request, env, ctx);
+    } catch (error) {
+      return publicPageHeaders(request, corsResponse(request, httpFailure(error, env)));
     }
-    return worker.fetchRequest(request, env, ctx);
   },
   async fetchRequest(
     request: Request,
@@ -568,16 +582,7 @@ const worker = {
         : await forward(request, env, entry.id, tail);
       return browser ? browserResponse(response, browser, tail) : response;
     } catch (error) {
-      const limited = admissionError(error);
-      if (limited) return limited;
-      if (error instanceof ApiError || error instanceof HttpError)
-        return Response.json({ error: error.message, code: error.code, ...errorFields(error), ...("details" in error ? error.details : {}) }, { status: error.status, headers: { 'cache-control': 'no-store', ...errorHeaders(error) } });
-      if (error instanceof BadRequest || error instanceof URIError)
-        return json({ error: error.message, code: "INVALID_REQUEST" }, 400);
-      failure(env, "http_failed", error);
-      const status = errorStatus(error, 500);
-      return Response.json({ error: "Backend operation failed", code: errorCode(error, status) },
-        { status, headers: { 'cache-control': 'no-store', ...errorHeaders(error) } });
+      return httpFailure(error, env);
     }
     })())));
   },

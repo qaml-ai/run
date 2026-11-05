@@ -759,6 +759,12 @@ export class CamelAgent extends DurableObject<Env> {
         await this.markBegan(run.id);
         this.partial = event.partial;
         await this.projectMessage(run.id, event.partial, false);
+        if (event.type === "toolcall_delta")
+          await this.emit({ type: "event", requestId: run.id, event: {
+            type: "message_update", assistantMessageEvent: {
+              type: "toolcall_delta", contentIndex: event.contentIndex, delta: event.delta,
+            },
+          } });
       },
       onDiscardedOutput: async (message) => {
         const run = await this.currentRun();
