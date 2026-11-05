@@ -3,13 +3,14 @@ import { approvalPrompt } from './tool-approval-prompt.ts';
 import { runtimeRules } from './prompt-policy.ts';
 import { languageInstructions } from '../../../src/language.ts';
 
-type Config = { codeMode?: boolean; fileTools?: boolean; language?: string; mounts?: { path: string; mode: string }[] };
+type Config = { codeMode?: boolean; fileTools?: boolean; language?: string; systemPrompt?: string; systemPromptAppend?: string; mounts?: { path: string; mode: string }[] };
 /** Pi renders these each request, so compaction cannot discard the runtime rules. */
 export function runtimePromptSections(config: () => Promise<Config>): Extension {
   return {
     name: 'camel.runtime',
     sections: [
       { key: 'runtime', tag: false, render: async ({ agent }) => runtimeRules({ ...await config(), tools: agent.tools }) },
+      { key: 'application', tag: false, render: async () => { const current = await config(); return [current.systemPrompt,current.systemPromptAppend].filter(Boolean).join('\n\n') || undefined; } },
       { key: 'environment', tag: false, render: async ({ agent }) => {
         const current = await config();
         if (current.codeMode === false && !agent.tools.length) return;

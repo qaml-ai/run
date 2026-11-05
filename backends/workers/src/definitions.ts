@@ -31,7 +31,7 @@ const fromRow = (row: Record<string, any>): Definition => ({ id: row.id, tenant:
 const view = ({ tenant, spec, ...definition }: Definition) => ({ ...definition, ...spec, toolSources: sourceDefinitionViews(spec as never), ...(spec.mcpServers ? { mcpServers: spec.mcpServers.map(x => sourceView(x as RemoteSource)) } : {}), ...(spec.openApi ? { openApi: spec.openApi.map(x => sourceView(x as RemoteSource)) } : {}) });
 export function visibleConfiguration(config: AgentConfiguration) {
   const { definitionOverrides, definitionRevision, ...visible } = config;
-  return { ...visible, decide: config.decide ?? null, ...(config.mcpServers ? { mcpServers: config.mcpServers.map(source => sourceView(source as RemoteSource)) } : {}), ...(config.openApi ? { openApi: config.openApi.map(source => sourceView(source as RemoteSource)) } : {}) };
+  return { ...visible, decide: config.decide ?? null, language: config.language ?? null, mcpServers: (config.mcpServers ?? []).map(source => sourceView(source as RemoteSource)), openApi: (config.openApi ?? []).map(source => sourceView(source as RemoteSource)) };
 }
 export async function resolveDefinition(env: ControlEnv, tenant: string, ref: string): Promise<Definition> {
   const id = /^def_[a-f0-9]{20}$/.test(ref) ? ref : `def_${(await digest(`${tenant}:${ref}`)).slice(0, 20)}`;

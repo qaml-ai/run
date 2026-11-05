@@ -101,6 +101,7 @@ export function configuration(input: unknown, defaultModel: string): { config: A
   }
   for (const field of ["model", "systemPrompt", "systemPromptAppend", "name", "type", "thinkingLevel", "definition"] as const) {
     if (fields[field] === undefined) continue;
+    if (field === "model" && typeof fields[field] !== "string") throw new BadRequest('model must be a "provider/model-id" string');
     if (typeof fields[field] !== "string" || new TextEncoder().encode(fields[field] as string).length > 100_000) throw new BadRequest(`${field} must be bounded text`);
     config[field] = fields[field] as string;
   }
