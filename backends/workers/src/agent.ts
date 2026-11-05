@@ -1603,9 +1603,9 @@ export class CamelAgent extends DurableObject<Env> {
     if (!record.accepted) return record;
     if (record.method === "execute") {
       const signal = waitMs ? AbortSignal.timeout(waitMs) : undefined;
-      let result;
+      let finished;
       try {
-        result = await waitHostExecution(
+        finished = await waitHostExecution(
           await this.harness.pi(), record.task as never,
           signal ? withAbortSignal(signal, BACKGROUND_CONTEXT) : BACKGROUND_CONTEXT,
         );
@@ -1617,6 +1617,15 @@ export class CamelAgent extends DurableObject<Env> {
         }
         throw error;
       }
+      const { endedAt, ...result } = finished;
+      if (this.env.TEST_MODEL === "1") {
+        if (await this.ctx.storage.get("test:crash-host-settlement")) {
+          await this.ctx.storage.put("test:host-finished-at", endedAt);
+          await this.ctx.storage.put("test:host-stop-owner", this.instanceId);
+          await this.ctx.storage.delete("test:crash-host-settlement");
+        }
+        if (await this.ctx.storage.get("test:host-stop-owner") === this.instanceId) return record;
+      }
       const current = await this.ctx.storage.get<RequestRecord>(reqKey(id));
       if (current?.state === "completed") {
         await this.flushBilling(true);
@@ -1626,7 +1635,7 @@ export class CamelAgent extends DurableObject<Env> {
         ...record,
         state: "completed",
         status: result.error ? "failed" : "completed",
-        endedAt: Date.now(),
+        endedAt,
         outcome: result.error
           ? {
               error: result.error.message,
@@ -2930,6 +2939,7 @@ export class CamelAgent extends DurableObject<Env> {
         return json({
           crashReached: !!(await this.ctx.storage.get("test:crash-reached")),
           pending: (await this.ctx.storage.list({ prefix: "billing:" })).size,
+          hostFinishedAt: await this.ctx.storage.get<number>("test:host-finished-at"),
         });
       }
       if (
@@ -2939,9 +2949,16 @@ export class CamelAgent extends DurableObject<Env> {
       ) {
         await this.ctx.storage.delete("test:crash-reached");
         await this.ctx.storage.delete("test:crash-owner");
+        const input = (await body(request)) as { events?: boolean; beforeReceipt?: boolean };
+        if (input.beforeReceipt === true) {
+          await this.ctx.storage.delete("test:host-finished-at");
+          await this.ctx.storage.delete("test:host-stop-owner");
+          await this.ctx.storage.put("test:crash-host-settlement", true);
+          return json({ armed: true });
+        }
         await this.ctx.storage.put(
           "test:crash-events",
-          ((await body(request)) as { events?: boolean }).events === true,
+          input.events === true,
         );
         await this.ctx.storage.put("test:crash-settlement", true);
         return json({ armed: true });

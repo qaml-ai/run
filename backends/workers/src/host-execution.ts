@@ -127,18 +127,21 @@ export async function startHostExecution(pi: Harness, root: Conversation, reques
   }, context);
 }
 
-export async function waitHostExecution(pi: Harness, task: TaskId<ToolTaskResult>, context: Context = BACKGROUND_CONTEXT): Promise<ExecutionResult & { diagnostics?: unknown[] }> {
+export async function waitHostExecution(pi: Harness, task: TaskId<ToolTaskResult>, context: Context = BACKGROUND_CONTEXT): Promise<ExecutionResult & { diagnostics?: unknown[]; endedAt: number }> {
   const settled = await pi.waitForTask(task, context), outcome = settled.state.outcome;
   const result = "result" in outcome ? outcome.result : undefined;
   if (result?.kind === "model") {
     const entry = await pi.commit(tx => tx.entry(ToolResultEntry, result.entryId), context), message = entry?.model?.[0];
     if (message?.role === "toolResult") {
+      // A replay reads the durable finish, not the time its observer recovered.
+      const endedAt = settled.endedAt ?? message.timestamp;
       const captured = (message.details as { hostExecution?: ExecutionResult } | undefined)?.hostExecution;
-      if (captured) return { ...captured, diagnostics: entry?.data?.diagnostics ?? [] };
-      return { output: [], truncated: false, error: { kind: outcome.status === "aborted" ? "aborted" : "sandbox", message: message.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n") }, diagnostics: entry?.data?.diagnostics ?? [] };
+      if (captured) return { ...captured, diagnostics: entry?.data?.diagnostics ?? [], endedAt };
+      return { output: [], truncated: false, error: { kind: outcome.status === "aborted" ? "aborted" : "sandbox", message: message.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n") }, diagnostics: entry?.data?.diagnostics ?? [], endedAt };
     }
   }
-  return { output: [], truncated: false, error: { kind: outcome.status === "aborted" ? "aborted" : "sandbox", message: "error" in outcome && outcome.error ? outcome.error.message : `Execution ${outcome.status}` } };
+  if (settled.endedAt === undefined) throw new Error("Terminal host execution has no durable completion time");
+  return { output: [], truncated: false, endedAt: settled.endedAt, error: { kind: outcome.status === "aborted" ? "aborted" : "sandbox", message: "error" in outcome && outcome.error ? outcome.error.message : `Execution ${outcome.status}` } };
 }
 
 export async function abortHostExecution(pi: Harness, requestId: string, context: Context = BACKGROUND_CONTEXT) {
