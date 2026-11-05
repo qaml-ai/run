@@ -1854,6 +1854,16 @@ export class CamelAgent extends DurableObject<Env> {
     await this.emit({ type: "response", id, outcome: record.outcome });
     return record;
   }
+  private async requireApplication(allowDisconnected: unknown) {
+    if (allowDisconnected !== undefined && typeof allowDisconnected !== "boolean")
+      throw new BadRequest("allowDisconnected must be a boolean");
+    if (allowDisconnected === true || !(await this.config()).config.mcp?.tools?.length) return;
+    if (await this.attached.waitUntilReady()) return;
+    throw Object.assign(
+      new Error("APPLICATION_NOT_CONNECTED: this agent's tools are answered by its application, and none is connected. Connect it: upsert the agent with its tools in a process that stays up (TypeScript agents.upsert(key, { tools }), Python agents.upsert(key, tools=[…]); lower down, connectAgent or connect_agent), or send allowDisconnected: true (allow_disconnected=True) to run anyway"),
+      { status: 409, code: "APPLICATION_NOT_CONNECTED" },
+    );
+  }
   private async admit(
     input: unknown,
     notice?: RuntimeNotice,
@@ -1902,6 +1912,7 @@ export class CamelAgent extends DurableObject<Env> {
           { status: 409 },
         );
       if (old) return old.accepted || old.state === "completed" ? old : this.startHostRequest(old);
+      await this.requireApplication(allowDisconnected);
       await refreshIdleLifetime(this.env, this.ctx.storage, await this.config());
       const record: RequestRecord = {
         id,
@@ -2084,15 +2095,7 @@ export class CamelAgent extends DurableObject<Env> {
     const running = (await this.harness.pending()).find(
       (item) => item.status === "running",
     );
-    if (
-      conf.config.mcp?.tools?.length &&
-      !(await this.attached.waitUntilReady()) &&
-      params.allowDisconnected !== true
-    )
-      throw Object.assign(
-        new Error("APPLICATION_NOT_CONNECTED: this agent's tools are answered by its application, and none is connected. Connect it: upsert the agent with its tools in a process that stays up (TypeScript agents.upsert(key, { tools }), Python agents.upsert(key, tools=[…]); lower down, connectAgent or connect_agent), or send allowDisconnected: true (allow_disconnected=True) to run anyway"),
-        { status: 409, code: "APPLICATION_NOT_CONNECTED" },
-      );
+    await this.requireApplication(params.allowDisconnected);
     const preparing = params.files !== undefined && !old?.admitted && !(delivery && !delivery.run && notice);
     if (preparing) {
       await this.promptPreparations.begin({ tenant: conf.tenantId, agent: conf.id, requestId: id, fingerprint }, () => this.admitRequest(conf, id));
@@ -3520,7 +3523,7 @@ export class CamelAgent extends DurableObject<Env> {
     if (attachment?.type === "camel.application")
       socket.serializeAttachment({ ...attachment, serving: false });
     try {
-      socket.send(eventFrame({}, undefined, "closed"));
+      socket.send(eventFrame({ reason: "replaced" }, undefined, "closed"));
     } catch {}
     try {
       socket.close(1000, "Connection retired");
@@ -3633,7 +3636,7 @@ export class CamelAgent extends DurableObject<Env> {
                 () => {
                   if (closed) return;
                   controller.enqueue(
-                    encoder.encode("event: closed\ndata: {}\n\n"),
+                    encoder.encode('event: closed\ndata: {"reason":"replaced"}\n\n'),
                   );
                   cleanup();
                   controller.close();
