@@ -241,6 +241,7 @@ type RequestRecord = {
   params?: Record<string, unknown>;
   configurationOrder?: number;
   configurationOrigin?: string;
+  configurationWait?: number;
   replaceConfiguration?: boolean;
   piId?: string;
   task?: number;
@@ -337,7 +338,8 @@ export class CamelAgent extends DurableObject<Env> {
   }
   private instanceId = crypto.randomUUID();
   private configurationQueue = new ConfigurationQueue<RequestRecord>(this.ctx.storage, {
-    busy: async () => (await this.harness.session().busy()) || (await this.records()).some(record => record.method !== 'configure' && record.state !== 'completed'),
+    busy: async order => (await this.harness.session().busy()) || (await this.records()).some(record => record.method !== 'configure' && record.state !== 'completed' && (record.configurationWait === undefined || record.configurationWait < order)),
+    released: order => this.releaseConfigurationWaiters(order),
     apply: record => this.applyConfigurationRequest({ id: record.id, method: record.method, params: record.params }, record.configurationOrigin),
     failed: async (record, error) => {
       const completed = { ...record, state: 'completed' as const, endedAt: Date.now(), outcome: { error: error instanceof Error ? error.message : String(error) } };
@@ -1743,6 +1745,7 @@ export class CamelAgent extends DurableObject<Env> {
               },
             }
           : (projectRunFailure({
+              aborted: !!(await this.ctx.storage.get(`cancelled-request:${id}`)),
               reason:
                 usage.last?.errorMessage ??
                 result.reason ??
@@ -1807,11 +1810,11 @@ export class CamelAgent extends DurableObject<Env> {
       });
       // Receipt and terminal state commit together. A lost PG acknowledgement
       // only replays this immutable receipt; money remains one PG transaction.
+      if (changed && stored) await recordAgentActivity(this.env, stored.tenantId, stored.id, terminal);
       await this.flushBilling();
       if (changed) {
         const conf = await this.ctx.storage.get<Config>("configuration");
         if (conf) await journeyRunEnded(this.env, conf.tenantId, { completed: terminal.status === 'completed', at: terminal.endedAt });
-        if (stored) await recordAgentActivity(this.env, stored.tenantId, stored.id, terminal);
         metric(
           this.env,
           "turn_metrics",
@@ -2083,6 +2086,17 @@ export class CamelAgent extends DurableObject<Env> {
       if (record.method === "execute" && !record.accepted && record.state !== "completed")
         await this.startHostRequest(record);
   }
+  private async releaseConfigurationWaiters(order: number) {
+    for (const record of await this.records()) {
+      if (record.state === 'completed' || record.configurationWait === undefined || record.configurationWait > order) continue;
+      try { await this.submit({ id: record.id, method: record.method, params: record.params }); }
+      catch (error) {
+        const completed = { ...record, state: 'completed' as const, endedAt: Date.now(), outcome: { error: error instanceof Error ? error.message : String(error) } };
+        await this.ctx.storage.put(reqKey(record.id), completed);
+        await this.emit({ type: 'response', id: record.id, outcome: completed.outcome });
+      }
+    }
+  }
   private async configureRequest(input: unknown, replacement = false, origin?: string) {
     const request = object(input, ['id', 'method', 'params']);
     if (!request.params || typeof request.params !== 'object' || Array.isArray(request.params)) throw new BadRequest('Expected configuration object');
@@ -2135,7 +2149,7 @@ export class CamelAgent extends DurableObject<Env> {
     });
     if (previous?.state === "completed") return previous;
     if (modelError) {
-      const failed: RequestRecord = { id, method: "configure", fingerprint, state: "completed", startedAt: previous?.startedAt ?? Date.now(), endedAt: Date.now(), outcome: { error: modelError } };
+      const failed: RequestRecord = { ...previous, id, method: "configure", fingerprint, state: "completed", startedAt: previous?.startedAt ?? Date.now(), endedAt: Date.now(), outcome: { error: modelError } };
       await this.ctx.storage.put(reqKey(id), failed);
       await this.emit({ type: "response", id, outcome: failed.outcome });
       return failed;
@@ -2162,6 +2176,7 @@ export class CamelAgent extends DurableObject<Env> {
         params.spendLimit,
       );
     const record: RequestRecord = {
+      ...previous,
       id,
       method: "configure",
       fingerprint,
@@ -2520,6 +2535,17 @@ export class CamelAgent extends DurableObject<Env> {
       await this.emit({ type: 'response', id, outcome: record.outcome });
       return record;
     }
+    const configurationWait = record.configurationWait ?? await this.configurationQueue.pendingOrder();
+    if (configurationWait > await this.configurationQueue.completedOrder()) {
+      if (preparing) { record.admitted = true; await this.promptPreparations.finish(id); }
+      record.configurationWait = configurationWait;
+      record.state = 'queued';
+      await this.ctx.storage.put(reqKey(id), record);
+      await this.arm(Date.now() + 1000);
+      return record;
+    }
+    delete record.configurationWait;
+    record.state = running ? 'queued' : 'running';
     if (preparing) record.admitted = true;
     await this.ctx.storage.put(reqKey(id), record);
     if (preparing) await this.promptPreparations.finish(id);
@@ -3307,6 +3333,7 @@ export class CamelAgent extends DurableObject<Env> {
         return json({ ok: true });
       }
       if (path === "/credentials/rotate" && request.method === "POST") {
+        await this.configurationQueue.settled();
         this.attached.close();
         for (const close of [...this.closeEventStreams]) close();
         for (const socket of this.ctx.getWebSockets()) this.retireAttachedSocket(socket);

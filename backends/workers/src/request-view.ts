@@ -8,6 +8,7 @@ export async function requestView<
     params: _params,
     configurationOrder: _configurationOrder,
     configurationOrigin: _configurationOrigin,
+    configurationWait: _configurationWait,
     replaceConfiguration: _replaceConfiguration,
     billing: _billing,
     task: _task,

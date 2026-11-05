@@ -8,7 +8,8 @@ type Record = { id: string; method: string; params?: { [key: string]: unknown };
 export class ConfigurationQueue<T extends Record> {
   private working?: Promise<void>;
   constructor(private readonly storage: DurableObjectStorage, private readonly host: {
-    busy(): Promise<boolean>;
+    busy(order: number): Promise<boolean>;
+    released(order: number): Promise<void>;
     apply(record: T): Promise<unknown>;
     failed(record: T, error: unknown): Promise<void>;
     background(work: Promise<void>): void;
@@ -37,19 +38,30 @@ export class ConfigurationQueue<T extends Record> {
     await this.host.wake();
     return record;
   }
+  async pendingOrder() {
+    return Math.max(0, ...[...(await this.storage.list<T>({ prefix: 'request:' })).values()]
+      .filter(record => record.method === 'configure' && record.state !== 'completed').map(record => record.configurationOrder ?? 0));
+  }
+  async completedOrder() { return await this.storage.get<number>('configuration-completed') ?? 0; }
   kick() {
     if (this.working) return;
     const work = this.drain().finally(() => { this.working = undefined; });
     this.working = work;
     this.host.background(work);
   }
+  /** Wait only for a write already under way, not for a future turn boundary. */
+  async settled() { await this.working; }
   private async drain() {
     for (;;) {
-      const pending = [...(await this.storage.list<T>({ prefix: 'request:' })).values()]
+      const records = [...(await this.storage.list<T>({ prefix: 'request:' })).values()];
+      const completed = Math.max(await this.completedOrder(), ...records.filter(record => record.method === 'configure' && record.state === 'completed').map(record => record.configurationOrder ?? 0));
+      await this.storage.put('configuration-completed', completed);
+      await this.host.released(completed);
+      const pending = records
         .filter(record => record.method === 'configure' && record.state !== 'completed')
         .sort((a, b) => (a.configurationOrder ?? 0) - (b.configurationOrder ?? 0));
       if (!pending.length) return;
-      if (await this.host.busy()) { await this.host.wake(); return; }
+      if (await this.host.busy(pending[0].configurationOrder ?? 0)) { await this.host.wake(); return; }
       const record = pending[0];
       try { await this.host.apply(record); }
       catch (error) { await this.host.failed(record, error); }

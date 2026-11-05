@@ -13,6 +13,7 @@ export async function rotateAgentCredentials(env: ControlEnv, entry: DirectoryEn
     if (!result.rows.length) throw new ApiError(404, "Unknown agent", "AGENT_NOT_FOUND");
     return result.rows[0].header as DirectoryEntry;
   });
-  await env.AGENTS.getByName(entry.id).fetch(new Request("https://agent/credentials/rotate", { method: "POST" }));
+  const retired = await env.AGENTS.getByName(entry.id).fetch(new Request("https://agent/credentials/rotate", { method: "POST" }));
+  if (!retired.ok) throw new ApiError(retired.status, "Agent connection retirement failed", "ROTATION_FAILED");
   return { id: entry.id, token: await agentToken(env.API_TOKEN, entry.id, updated.tokenVersion), expiresAt: updated.expiresAt };
 }

@@ -114,6 +114,9 @@ export async function authenticate(
     : null;
 }
 
+const mountIdentity = (mounts: AgentConfiguration['mounts']) => JSON.stringify((mounts ?? []).map(mount =>
+  [mount.volumeId, mount.path, mount.mode, mount.subpath ?? '/', mount.notify === true]));
+
 export class Directory {
   private env: ControlEnv;
   private tenantId: string;
@@ -227,7 +230,7 @@ export class Directory {
       if (pendingFork && old && (old.pendingFork?.sourceId !== pendingFork.sourceId || old.pendingFork?.fingerprint !== pendingFork.fingerprint))
         throw new ApiError(409, "Key belongs to another agent", "FORK_CONFLICT");
       if (requested===undefined && old?.config.mounts) config.mounts=old.config.mounts;
-      if(old?.config.mounts&&requested!==undefined&&JSON.stringify(old.config.mounts)!==JSON.stringify(config.mounts)&&(input as {remount?:boolean}).remount!==true)
+      if(old?.config.mounts&&requested!==undefined&&mountIdentity(old.config.mounts)!==mountIdentity(config.mounts)&&(input as {remount?:boolean}).remount!==true)
         throw new ApiError(409,`An existing agent's mounts cannot change; delete it (DELETE /v1/agents/${id}) or use another idempotency key, or send remount: true to change its mounts`);
       const configHash=await digest(JSON.stringify(config));
       const sameModel = JSON.stringify(old?.resolvedModel) === JSON.stringify(resolvedModel);
