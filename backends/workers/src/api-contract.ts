@@ -73,7 +73,7 @@ export async function digest(value: string): Promise<string> {
     .join("");
 }
 
-export async function agentToken(secret: string, id: string): Promise<string> {
+export async function agentToken(secret: string, id: string, version?: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(secret),
@@ -84,7 +84,7 @@ export async function agentToken(secret: string, id: string): Promise<string> {
   const signature = await crypto.subtle.sign(
     "HMAC",
     key,
-    new TextEncoder().encode(`camelrun-cloudflare:agent:${id}`),
+    new TextEncoder().encode(`camelrun-cloudflare:agent:${id}${version ? `:${version}` : ""}`),
   );
   return `cat_${[...new Uint8Array(signature)].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }

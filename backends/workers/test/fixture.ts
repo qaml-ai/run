@@ -6,6 +6,7 @@ import { createHash, randomBytes } from "node:crypto";
 import pg from "pg";
 import { LocalWorker, unusedPort } from "./local-worker.ts";
 import { migrate } from "../scripts/migrate.mjs";
+import { publicAssets } from "../scripts/public-assets.mjs";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const activeFixtures = new Set<() => Promise<void>>();
 function stopActiveFixtures() {
@@ -170,6 +171,13 @@ export async function startFixture(
     ...(options.modelURL ? { TEST_MODEL_BASE_URL: options.modelURL } : {}),
   };
   const configPath = join(storage, "wrangler.json");
+  const assetDirectory = join(storage, "public");
+  await publicAssets(assetDirectory, {
+    docs: options.vars?.AGENT_DOCS_DIR,
+    registry: options.vars?.AGENT_REGISTRY_DIR,
+    console: options.vars?.AGENT_CONSOLE_DIR,
+  });
+  config.assets = { directory: assetDirectory, binding: "PUBLIC_ASSETS", run_worker_first: true, html_handling: "none", not_found_handling: "none" };
   await writeFile(configPath, JSON.stringify(config));
   if (stopped) throw new Error("Local Worker fixture startup was cancelled");
   const worker = new LocalWorker(

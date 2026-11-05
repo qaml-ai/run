@@ -62,6 +62,7 @@ export type AuthContext = {
 };
 export interface DirectoryEntry {
   id: string;
+  tokenVersion?: string;
   tenantId: string;
   key: string | null;
   config: AgentConfiguration;
@@ -71,13 +72,12 @@ export interface DirectoryEntry {
   expiresAt: number | null;
   revision: number;
   initialized: boolean;
+  reconfigured?: Record<string, unknown> | true;
   deleted?: true;
   cleanupPending?: boolean;
   pendingFork?: { sourceId: string; fingerprint: string };
   parentAgentId?: string;
   parentRunId?: string;
-  /** Returned for an upsert of an existing agent; never persisted in its header. */
-  reconfigured?: true;
 }
 const creationRates = new WeakMap<DirectoryEntry, RateLimitState>();
 export const creationRate = (entry: DirectoryEntry) => creationRates.get(entry);
@@ -158,6 +158,7 @@ export class Directory {
     suppliedKey?: string,
     runtimeOrigin?: string,
     pendingFork?: { sourceId: string; fingerprint: string },
+    queueConfiguration = false,
   ): Promise<DirectoryEntry | DirectoryFailure> {
     const fields = input && typeof input === "object" ? input as Record<string, unknown> : {};
     const defaultModel = fields.model === undefined
@@ -177,6 +178,18 @@ export class Directory {
     const previousEntry = await this.get(id), previousConfig = previousEntry?.config;
     if (fields.model === undefined && previousConfig?.model) config.model = previousConfig.model;
     const resolvedModel = await validateAgentModel(this.env, this.tenantId, config, { reference: previousConfig?.model, model: previousEntry?.resolvedModel, defaultModel: fields.model === undefined });
+    if (queueConfiguration && previousEntry) {
+      for (const field of ['subject', 'context', 'definition'] as const)
+        if (fields[field] !== undefined && JSON.stringify(fields[field]) !== JSON.stringify(previousEntry.config[field]))
+          throw new ApiError(409, `An agent's ${field} cannot change`);
+      const response = await this.env.AGENTS.getByName(id).fetch(new Request('https://agent/upsert', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: crypto.randomUUID(), method: 'configure', params: config }),
+      }));
+      const reconfigured = await response.json() as Record<string, unknown>;
+      if (!response.ok) return { failed: true, status: response.status, error: String(reconfigured.error ?? 'Agent configuration was refused'), code: String(reconfigured.code ?? 'CONFIGURATION_FAILED') };
+      return { ...previousEntry, reconfigured };
+    }
     const release = config.type !== "run" && !previousEntry?.initialized
       ? await reserveAgentCreation(this.env as import("./agent.ts").Env, this.tenantId, id)
       : async () => {};
@@ -236,6 +249,7 @@ export class Directory {
             ? old.revision
             : (old?.revision ?? 0) + 1,
         initialized: false,
+        ...(old?.tokenVersion ? { tokenVersion: old.tokenVersion } : {}),
         ...(old?.parentAgentId ? { parentAgentId: old.parentAgentId, parentRunId: old.parentRunId } : {}),
         ...(pendingFork ? { pendingFork } : {}),
       };
@@ -286,10 +300,11 @@ export class Directory {
       entry.initialized = true;
       const applied = await withSql(this.env, (sql) =>
         sql.query(
-          "update agents set header=$3 where id=$1 and tenant=$2 and revision=$4 and not revoked",
-          [id, this.tenantId, JSON.stringify(entry), entry.revision],
+          "update agents set header=jsonb_set(header::jsonb, '{initialized}', 'true'::jsonb)::json where id=$1 and tenant=$2 and revision=$3 and not revoked returning header",
+          [id, this.tenantId, entry.revision],
         ),
       );
+      if (applied.rowCount) Object.assign(entry, applied.rows[0].header);
       if (!applied.rowCount) {
         const latest = await this.get(id);
         if (latest?.initialized && latest.configHash === entry.configHash) return latest;

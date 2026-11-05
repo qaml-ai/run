@@ -16,6 +16,8 @@
   ],
   "workers_dev": false,
   "preview_urls": false,
+  "build": { "command": "node scripts/public-assets.mjs" },
+  "assets": { "directory": ".assets", "binding": "PUBLIC_ASSETS", "run_worker_first": true, "html_handling": "none", "not_found_handling": "none" },
   "observability": {
     "enabled": true,
     "traces": {

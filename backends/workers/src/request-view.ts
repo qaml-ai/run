@@ -6,6 +6,9 @@ export async function requestView<
 >(record: T) {
   const {
     params: _params,
+    configurationOrder: _configurationOrder,
+    configurationOrigin: _configurationOrigin,
+    replaceConfiguration: _replaceConfiguration,
     billing: _billing,
     task: _task,
     piId: _piId,
@@ -15,11 +18,11 @@ export async function requestView<
     fingerprint,
     ...visible
   } = record as T & Record<string, unknown>;
+  const outcome = visible.outcome as { error?: unknown; result?: { error?: unknown } } | undefined;
+  const error = typeof outcome?.result?.error === "string" ? outcome.result.error : outcome?.error;
   return {
     ...visible,
-    ...(typeof (visible.outcome as { result?: { error?: unknown }; error?: unknown } | undefined)?.result?.error === "string"
-      ? { error: (visible.outcome as { result: { error: string } }).result.error }
-      : typeof (visible.outcome as { error?: unknown } | undefined)?.error === "string" ? { error: (visible.outcome as { error: string }).error } : {}),
+    ...(typeof error === "string" ? { error, status: 'failed' } : {}),
     ...((visible.outcome as { result?: { stopped?: string } } | undefined)?.result?.stopped ? { stopped: (visible.outcome as { result: { stopped: string } }).result.stopped } : {}),
     state: record.state === "queued" ? "running" : record.state,
     fingerprint: await digest(fingerprint),

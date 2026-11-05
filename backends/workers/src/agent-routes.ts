@@ -101,7 +101,7 @@ export async function agentLifecycleRoutes(request: Request, env: ControlEnv & F
   const answer = async (ready: NonNullable<typeof saved>) => {
     if (ready.forkedFrom?.agentId !== entry.id) throw new ApiError(409, "Key belongs to another agent");
     if (claim) await releaseForkClaim(env, entry.tenantId, claim);
-    return json({ id: ready.id, ...(includeToken ? { token: await agentToken(env.API_TOKEN, ready.id) } : {}), expiresAt: ready.expiresAt, forkedFrom: ready.forkedFrom }, 201);
+    return json({ id: ready.id, ...(includeToken ? { token: await agentToken(env.API_TOKEN, ready.id, ready.tokenVersion) } : {}), expiresAt: ready.expiresAt, forkedFrom: ready.forkedFrom }, 201);
   };
   if (saved?.forkedFrom) return answer(saved);
   if (saved && !claim) throw new ApiError(409, "Key belongs to another agent");

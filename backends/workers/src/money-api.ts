@@ -13,12 +13,14 @@ import { EndUserCredits } from './end-user-credits.ts';
 import { endUserRoutes } from './end-user-routes.ts';
 import type { AuthContext } from './control.ts';
 import { sweepAdmission } from './admission.ts';
-import { withMoneyIdempotency, expireMoneyIdempotency } from './money-idempotency.ts';
+import { expireMoneyIdempotency } from './money-idempotency.ts';
+import { withSql } from './postgres.ts';
+import { publishPending, type WebhookEnv } from './webhooks.ts';
 import { z } from 'zod';
 const workspaceName = z.string().trim().min(1).max(120);
 const workspaceInput = z.object({ name: workspaceName });
 const workspacePatch = z.object({ name: workspaceName.optional(), archived: z.boolean().optional() });
-export type MoneyEnv = KeyEnv & AccountEnv;
+export type MoneyEnv = KeyEnv & AccountEnv & { AGENT_USAGE_WEBHOOK_RETRY_MS?: string };
 async function services(env: MoneyEnv, request?: Request) {
   const keys = await keyServices(env);
   const account = accountServices(env, keys.accounts, request ? new URL(request.url).origin : env.PUBLIC_URL ?? 'https://localhost');
@@ -26,7 +28,9 @@ async function services(env: MoneyEnv, request?: Request) {
   const namespace = (env as MoneyEnv & { TENANTS?: { getByName(name: string): {status(): Promise<{active: unknown}>} } }).TENANTS;
   const billing = { billing: keys.accounts.billing, alerts, emailEnabled: !!((env.EMAIL || (env.TEST_MODE === '1' && env.MAIL_TEST_URL)) && (env.AGENT_BILLING_EMAIL_FROM || env.EMAIL_FROM)), rateLimits: account.limits, exists: (tenant: string) => keys.accounts.exists(tenant),
     ...(namespace ? { busy: async (tenant: string) => Number((await namespace.getByName(tenant).status()).active) } : {}) };
-  const webhooks = new Webhooks({ db: keys.accounts.db, accounts: keys.accounts, outbound: keys.outbound });
+  const retryBaseMs = Number(env.AGENT_USAGE_WEBHOOK_RETRY_MS);
+  const webhooks = new Webhooks({ db: keys.accounts.db, accounts: keys.accounts, outbound: keys.outbound,
+    ...(Number.isFinite(retryBaseMs) && retryBaseMs > 0 ? { retryBaseMs } : {}) });
   return { keys, account, billing, webhooks };
 }
 export async function publicMoneyRoutes(request: Request, env: MoneyEnv, ctx: ExecutionContext) {
@@ -47,7 +51,7 @@ export async function authenticateMoney(request: Request, env: MoneyEnv): Promis
 export async function moneyRoutes(request: Request, env: MoneyEnv, auth: AuthContext, ctx: ExecutionContext): Promise<Response | undefined> {
   const path = new URL(request.url).pathname;
   if (!/^\/v1\/(?:me|limits|billing|providers|key-scopes|api-keys|tokens|tenants|sessions|oauth|account|usage|webhooks|usage-webhook|workspaces|workspace-memberships|end-user-settings|end-users)/.test(path)) return;
-  try { return await withMoneyIdempotency(request, env, auth.tenantId, request => routeMoney(request, env, auth, ctx)); }
+  try { return await routeMoney(request, env, auth, ctx); }
   finally {
     // The source mail worker notices outbox rows after mutations. Keep delivery
     // alive after the HTTP response; Cron still repairs interrupted publication.
@@ -74,7 +78,7 @@ async function routeMoney(request: Request, env: MoneyEnv, auth: AuthContext, ct
     return keys;
   }
   const billed = await billingRoutes(request, env, auth, s.billing);
-  if (billed) return billed;
+  if (billed) { ctx.waitUntil(publishPending(env as WebhookEnv)); return billed; }
   const endUser = await endUserRoutes(request, tenant, new EndUserCredits(s.keys.accounts.db));
   if (endUser) return endUser;
   const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { 'cache-control': 'no-store' } });
@@ -83,7 +87,9 @@ async function routeMoney(request: Request, env: MoneyEnv, auth: AuthContext, ct
     const query = new URL(request.url).searchParams, days = Math.min(365, Math.max(1, Number(query.get('days') ?? 30) || 30));
     const workspace = query.get('workspaceId') ?? undefined;
     if (workspace && workspace !== 'unassigned') await new Workspaces(s.keys.accounts.db).get(tenant, workspace);
-    return json(await s.keys.accounts.usage(tenant, Date.now() - days * 86400000, workspace));
+    const usage = await s.keys.accounts.usage(tenant, Date.now() - days * 86400000, workspace);
+    ctx.waitUntil(publishPending(env as WebhookEnv));
+    return json(usage);
   }
   if (path.startsWith('/v1/webhooks') || path.startsWith('/v1/usage-webhook')) {
     if (!s.keys.accounts.canStoreKeys) throw new HttpError(503, 'This runtime is not configured to store webhook secrets');
@@ -142,7 +148,12 @@ async function webhookInput(request: Request): Promise<Record<string, unknown>> 
   try { const value = JSON.parse(text || '{}'); if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(); return value; }
   catch { throw new HttpError(400, 'Invalid JSON body'); }
 }
-export async function sendMoneyWebhooks(env: MoneyEnv) { await (await services(env)).webhooks.send(); }
+export async function sendMoneyWebhooks(env: MoneyEnv): Promise<number | undefined> {
+  await (await services(env)).webhooks.send();
+  const row = (await withSql(env, sql => sql.query(`select min(due) due from (
+    select due from webhook_deliveries union all select due from usage_webhook_outbox) pending`))).rows[0];
+  return row?.due == null ? undefined : Math.max(1, Math.ceil((Number(row.due) - Date.now()) / 1000));
+}
 export async function moneyMaintenance(env: MoneyEnv) {
   const s = await services(env);
   await sweepAdmission(env);
