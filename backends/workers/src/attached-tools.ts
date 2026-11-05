@@ -148,12 +148,12 @@ export class AttachedTools {
     });
   }
 
-  async call(name: string, args: unknown, timeoutMs = TOOL_DEADLINES.attachedMs, signal?: AbortSignal, options: ToolInputReply & { meta?: Record<string, unknown> } = {}): Promise<McpResult> {
+  async call(name: string, args: unknown, timeoutMs: number = TOOL_DEADLINES.attachedMs, signal?: AbortSignal, options: ToolInputReply & { meta?: Record<string, unknown> } = {}): Promise<McpResult> {
     const connection = this.current;
     if (!connection || connection.draining) throw Object.assign(new Error("No application is connected to answer this tool call; it did not run"), { code: "not_connected" });
     await connection.ready;
     if (this.current !== connection) throw new Error("Application connection replaced");
-    const { meta, approval: _approval, ...params } = options;
+    const { meta, approval: _approval, note: _note, ...params } = options;
     return await this.request(connection, "tools/call", { name, arguments: args, ...params, ...(meta ? { _meta: meta } : {}) }, timeoutMs, signal) as McpResult;
   }
 

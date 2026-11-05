@@ -4,10 +4,10 @@ import type { Context } from "@earendil-works/chord";
 import { registration, type McpResult, type ToolDefinition } from "./attached-tools.ts";
 import { checkDocument, operations, formEncode, type Operation } from "./openapi-policy.ts";
 import { HttpError } from "./errors.ts";
-import { waitForHuman } from "./human.ts";
+import { HumanInputs, waitForHuman } from "./human.ts";
 import { parse as parseYaml } from "yaml";
 import { signRuntimeIdentity, type IdentityEnv, type RuntimeIdentity } from "./tool-identity.ts";
-import { withToolInputs, type ToolInputReply } from "./mcp-inputs.ts";
+import { resolveToolInputs, withInputNote, withToolInputs, type ToolInputReply } from "./mcp-inputs.ts";
 import { openProviderSecret } from "./model-credentials.ts";
 import { credentialExchange, type ExchangeAuth } from "./exchange-auth.ts";
 import { COMPUTER_TOOLS } from "./computers/policy.ts";
@@ -213,7 +213,7 @@ export function sourceView(source: RemoteSource) {
 
 /** Public catalog from the installed tools, with no credentials or executable callbacks. */
 export function toolSourceViews(config: { mcp?: { tools?: ToolDefinition[] }; mcpServers?: RemoteSource[]; openApi?: RemoteSource[]; fileTools?: boolean; codeMode?: boolean; builtins?: string[] }, tools: ToolRegistration[], connected: boolean) {
-  const view = (tool: ToolRegistration) => ({ name: tool.name, description: tool.description, inputSchema: tool.parameters, ...(tool.executionMode ? { executionMode: tool.executionMode } : {}) });
+  const view = (tool: ToolRegistration) => ({ name: tool.name, description: tool.description, inputSchema: tool.parameters, exposure: tool.callers?.length === 1 ? tool.callers[0] === "model" ? "direct" : "codemode" : "both", ...(tool.executionMode ? { executionMode: tool.executionMode } : {}) });
   const result: { kind: string; name: string; status: string; tools: unknown[]; connected?: boolean; url?: string; error?: string }[] = [];
   const fileNames = new Set(["read", "write", "edit", "ls", "find", "glob", "grep", "stat", "mkdir", "rm", "rename", "cp", "mv", "present_file"]);
   const files = tools.filter(tool => fileNames.has(tool.name));
@@ -249,7 +249,12 @@ function rpcMessages(text: string): any[] {
 function rpcResult(text: string, id: string): any {
   const response = rpcMessages(text).find(message => String(message.id) === id);
   if (!response) throw new Error("MCP server returned no matching response");
-  if (response.error) throw new Error(String(response.error.message ?? "MCP request failed"));
+  if (response.error) {
+    // MCP's older URL elicitation spelling, retained by src/client-sessions/tools.ts.
+    const elicitations = response.error.code === -32042 ? response.error.data?.elicitations : undefined;
+    if (Array.isArray(elicitations) && elicitations.length) return { resultType: "input_required", inputRequests: Object.fromEntries(elicitations.map((params, index) => [`url_${index}`, { method: "elicitation/create", params: { ...params, mode: "url" } }])) };
+    throw new Error(String(response.error.message ?? "MCP request failed"));
+  }
   return response.result;
 }
 
@@ -301,7 +306,7 @@ class RemoteMcp {
   }
   async call(name: string, args: unknown, signal?: AbortSignal, api?: ToolExecutionApi, reply: ToolInputReply = {}): Promise<McpResult> {
     await this.init();
-    const { approval, ...responses } = reply;
+    const { approval, note: _note, ...responses } = reply;
     const identity = api ? await this.identity?.(api) : undefined;
     const site = api ? identity?.call ?? await toolCallSite(api) : undefined;
     const meta = site ? toolCallMeta(identity?.claims.agent ?? String(api!.conversationId), site, identity?.claims.origin, identity?.claims.act) : undefined;
@@ -326,17 +331,19 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
       const value = await identity(api);
       return { Authorization: `Bearer ${await signRuntimeIdentity(env as IdentityEnv, value.issuer, source.audience ?? source.url ?? source.baseUrl!, { ...value.claims, ...(approval ? { approval } : {}) })}` };
     };
-    const needsApproval = async (tool: string, args: unknown, destructive: boolean, api: ToolExecutionApi, context: Context, method?: string) => {
+    const needsApproval = async (tool: string, args: unknown, destructive: boolean, api: ToolExecutionApi, context: Context, method?: string): Promise<{ result: McpResult } | { reply: ToolInputReply }> => {
       const mode = source.approval?.tools?.[tool] ?? source.approval?.default ?? "never";
       if (mode === "always" || mode === "judged" || mode === "destructive" && destructive || !!method && source.approval?.methods?.includes(method)) {
+        if ((await toolCallSite(api, context)).innerCallId) throw new Error(`${source.name}__${tool} needs the user's approval: call ${source.name}__${tool} directly`);
         const input = { name: `${source.name}__${tool}`, args, kind: "approval" as const, message: `Allow ${source.name}__${tool} to run?`, detail: { tool: `${source.name}__${tool}`, source: source.name, arguments: args } };
         if (approve) await approve(input);
         else {
-          const answer = await waitForHuman({ kind: "approval", question: input.message, detail: input.detail }, api, context);
-          const value = JSON.parse(answer.output[0].text);
-          if (value.approved !== true) throw new Error("Tool approval declined");
+          await waitForHuman({ kind: "approval", question: input.message, detail: input.detail }, api, context);
+          const saved = (await api.snapshot(HumanInputs, context))!.requests[String(api.taskId)];
+          return resolveToolInputs([{ id: String(api.taskId), input: saved }]);
         }
       }
+      return { reply: {} };
     };
     if (kind === "mcpServers") {
       const client = new RemoteMcp(env, source, headers, runtimeHeaders, exchange?.refused, identity);
@@ -346,15 +353,17 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
       for (const tool of listed) {
         if (source.allowTools && !source.allowTools.includes(tool.name) || source.denyTools?.includes(tool.name)) continue;
         const { name } = tool;
-        result.push(registration({ ...tool, name: `${source.name}__${name}`, exposure: source.exposure ?? tool.exposure }, async (args, api, context) => {
-          await needsApproval(name, args, !(tool as any).annotations?.readOnlyHint, api, context);
-          return api ? withToolInputs(reply => client.call(name, args, context?.abortSignal, api, reply), api, context, { name: `${source.name}__${name}`, args }) : client.call(name, args, context?.abortSignal);
+        result.push(registration({ ...tool, name: `${source.name}__${name}`, exposure: tool.exposure ?? tool._meta?.["agent-runtime/exposure"] as ToolDefinition["exposure"] ?? source.exposure }, async (args, api, context) => {
+          const approval = await needsApproval(name, args, !(tool as any).annotations?.readOnlyHint, api, context);
+          if ("result" in approval) return approval.result;
+          return api ? withToolInputs(reply => client.call(name, args, context?.abortSignal, api, reply), api, context, { name: `${source.name}__${name}`, args }, approval.reply) : client.call(name, args, context?.abortSignal);
         }));
       }
     } else {
       for (const operation of source.operations ?? []) result.push(registration({ name: `${source.name}__${operation.name}`, description: operation.description, inputSchema: operation.inputSchema, exposure: source.exposure, executionMode: operation.readOnly ? "parallel" : "sequential" }, async (input, api, context) => {
         const args = input as Record<string, unknown>;
-        await needsApproval(operation.name, args, !operation.readOnly, api, context, operation.method);
+        const approval = await needsApproval(operation.name, args, !operation.readOnly, api, context, operation.method);
+        if ("result" in approval) return approval.result;
         const text = (value: unknown) => typeof value === "string" ? value : JSON.stringify(value);
         const path = operation.path.replace(/\{([^}]+)\}/g, (_, name: string) => {
           if (args[name] === undefined) throw new Error(`Missing path parameter ${name}`);
@@ -367,7 +376,7 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
           if (parameter.in === "query") for (const item of Array.isArray(value) ? value : [value]) url.searchParams.append(parameter.name, text(item));
           else if (parameter.in === "header") sent[parameter.name] = text(value);
         }
-        Object.assign(sent, headers, await runtimeHeaders(api));
+        Object.assign(sent, headers, await runtimeHeaders(api, approval.reply.approval));
         if (api) {
           const value = await identity?.(api), site = value?.call ?? await toolCallSite(api, context);
           sent["Idempotency-Key"] = String(toolCallMeta(value?.claims.agent ?? String(api.conversationId), site)["agent-runtime/idempotencyKey"]);
@@ -379,7 +388,7 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
           else throw new Error("Binary and multipart OpenAPI request bodies require file transport");
         }
         const response = await fetchSource(env, url, { method: operation.method, headers: sent, body, signal: AbortSignal.any([AbortSignal.timeout(source.timeoutMs ?? 30_000), ...(context?.abortSignal ? [context.abortSignal] : [])]) });
-        return { content: [{ type: "text", text: response.response.ok ? response.text : `${operation.method} ${operation.path} answered HTTP ${response.response.status}: ${response.text}` }], ...(!response.response.ok ? { isError: true } : {}) };
+        return withInputNote({ content: [{ type: "text", text: response.response.ok ? response.text : `${operation.method} ${operation.path} answered HTTP ${response.response.status}: ${response.text}` }], ...(!response.response.ok ? { isError: true } : {}) }, approval.reply);
       }));
     }
   }
