@@ -26,7 +26,7 @@ test('hidden file tools remain available to host code, while the model only rece
   const agents = new Agents({ url: fixture.url, apiKey: fixture.token, connection: 'lazy', pollMs: 10 });
   t.after(() => agents.close());
   const agent = await agents.upsert('hidden-files', { fileTools: false });
-  const executed = await agent.client.execute('await tools.write({path:"/workspace/hidden.txt",content:"from hidden tools"}); return await tools.read({path:"/workspace/hidden.txt"});', { timeoutMs: 30_000 });
+  const executed = await agent.client.execute('await tools.write({path:"/workspace/hidden.txt",content:"from hidden tools"}); return (await tools.read({path:"/workspace/hidden.txt"})).content;', { timeoutMs: 30_000 });
   assert.equal(executed.error, undefined, JSON.stringify(executed));
   assert.match(executed.output.join('\n'), /from hidden tools/);
   assert.equal(new TextDecoder().decode((await agent.files.download('/workspace/hidden.txt')).data), 'from hidden tools');

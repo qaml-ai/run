@@ -146,7 +146,7 @@ test(
       "remote codemode reaches ordered R2-backed tools",
       async () => {
         const r = await alpha.run(
-          'code:await tools.write({path:"/workspace/code.txt",content:"remote"}); text(await tools.read({path:"/workspace/code.txt"}));',
+          'code:await tools.write({path:"/workspace/code.txt",content:"remote"}); text((await tools.read({path:"/workspace/code.txt"})).content);',
           { timeoutMs: 30000 },
         );
         assert.match(r.text ?? "", /remote/);
