@@ -23,7 +23,8 @@ import { stream as streamAnthropic, streamSimple as simpleAnthropic } from "@ear
 import { stream as streamGoogle, streamSimple as simpleGoogle } from "@earendil-works/pi-ai/api/google-generative-ai";
 import { stream as streamBedrock, streamSimple as simpleBedrock } from "@earendil-works/pi-ai/api/bedrock-converse-stream";
 import { stream as streamCodex, streamSimple as simpleCodex } from "@earendil-works/pi-ai/api/openai-codex-responses";
-import { getModels, callSettings, withOpenRouterHosts, reasoningFloor } from "./model-catalog.ts";
+import { stream as streamAzure, streamSimple as simpleAzure } from "@earendil-works/pi-ai/api/azure-openai-responses";
+import { getModels, getModel, callSettings, withOpenRouterHosts, reasoningFloor } from "./model-catalog.ts";
 import { resolveModel, virtualChain, routeModel, virtualModelReferences, type ModelEndpoints, type CustomProviders } from "./model-policy.ts";
 import { deepseekContext } from "./deepseek-policy.ts";
 import { forcedToolChoice, OUTPUT_INSTRUCTIONS } from "./output-policy.ts";
@@ -35,7 +36,7 @@ import { listModels } from "./catalog-policy.ts";
 import { streamTimeouts, watchedStream, isStalled } from "./model-stream.ts";
 
 export type ModelRequestSettings = AgentConfiguration & { requestId?: string; output?: { schema?: Record<string, unknown>; [key: string]: unknown } };
-export type ModelCredentials = { apiKey?: string; baseUrl?: string; headers?: Record<string, string>; region?: string; bearer?: true; identity?: true };
+export type ModelCredentials = { apiKey?: string; baseUrl?: string; headers?: Record<string, string>; region?: string; bearer?: true; identity?: true; deployments?: Record<string, string> };
 export type ModelHooks = {
   agentId?: () => Promise<string>;
   beforeRequest?: () => Promise<void>;
@@ -59,6 +60,8 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: 
       if (!selected) throw new Error("Virtual model fallback chain is exhausted");
       model = { ...boundedModel(selected, config.runLimits?.contextTokens), ...(env.TEST_MODEL === "1" ? { baseUrl: model.baseUrl } : {}) };
     }
+    const credential = await hooks.credentials?.(model.provider);
+    if (credential?.baseUrl) model = { ...model, api: (model as Model<Api> & { runtimeApi?: Api }).runtimeApi ?? getModel(model.provider, model.id)?.api ?? model.api };
     const outputSchema = config.output?.schema;
     const request = config.requestId ?? String(context.messages.find(message => message.role === "user")?.timestamp ?? 0);
     if (!forcing || forcing.request !== request) forcing = { request, count: 0, refused: false };
@@ -73,7 +76,9 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: 
     } else {
       context = normalizeContext({ messages: [...context.messages, { role: "system", content: "", toolsRemoved: [{ name: "final_output" }], timestamp: Date.now() }] });
     }
-    const credential = await hooks.credentials?.(model.provider);
+    const deployment = credential?.deployments?.[model.id];
+    if (model.provider === "azure" && !credential?.identity && (!credential?.baseUrl || !deployment))
+      throw new Error(`No azure deployment is configured for ${model.provider}/${model.id} on this runtime; move the agent to a model you can use (GET /v1/models?available=true)`);
     if (!credential && !getModels(model.provider).length && !["test", "camel-test", "cloudflare"].includes(model.provider) && !hooks.endpoints?.[model.provider])
       throw new Error(`${model.provider} provider is gone; set it again with PUT /v1/providers/${model.provider}`);
     if (model.provider === "amazon-bedrock" && !credential?.apiKey && !options.apiKey)
@@ -87,6 +92,7 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: 
         if (target.origin !== new URL(credential.baseUrl!).origin) throw new Error("Custom provider request changed origin");
         const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
         if (!credential.apiKey) { headers.delete("authorization"); headers.delete("x-api-key"); }
+        if (credential.deployments) { headers.delete("authorization"); headers.delete("x-api-key"); headers.set("api-key", credential.apiKey!); }
         if (credential.bearer && credential.apiKey) { headers.set("authorization", `Bearer ${credential.apiKey}`); headers.delete("x-api-key"); }
         const response = await (options.fetch ?? fetch)(input, { ...init, headers, redirect:"manual" });
         if (response.status >= 300 && response.status < 400) { await response.body?.cancel(); throw new Error("Custom provider redirects are not allowed"); }
@@ -98,6 +104,7 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: 
       ...(reasoning ? { reasoning } : {}),
       ...(credential ? { apiKey: credential.bearer ? "runtime-bearer" : credential.apiKey ?? "keyless" } : {}),
       ...(credential?.identity ? { endpointIdentity: true } : {}),
+      ...(deployment ? { azureDeployment: deployment, env: { AZURE_OPENAI_BASE_URL: credential!.baseUrl, AZURE_OPENAI_API_VERSION: "v1", AZURE_OPENAI_DEPLOYMENT_NAME_MAP: `${model.id}=${deployment}` } } : {}),
       ...(tenantFetch ? { fetch:tenantFetch } : {}),
       ...(model.api === "bedrock-converse-stream" ? { bearerToken: credential?.apiKey ?? options.apiKey, region: credential?.region } : {}),
       headers: { ...credential?.headers, ...options.headers, ...config.modelHeaders, ...(credential?.identity ? { "X-Agent-Runtime-Identity": credential.apiKey } : {}), ...(credential?.bearer && credential.apiKey ? { Authorization: `Bearer ${credential.apiKey}`, "x-api-key": null } : {}) },
@@ -148,6 +155,8 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: 
 }
 
 function streamApi(model: Model<Api>, simple: boolean, context: TranscriptContext, options: StreamOptions | undefined) {
+  if (model.provider === "azure" && model.api === "openai-completions" && (options as { azureDeployment?: string })?.azureDeployment)
+    model = { ...model, id: (options as unknown as { azureDeployment: string }).azureDeployment };
   if ((options as { endpointIdentity?: true })?.endpointIdentity) {
     const [provider, ...id] = model.id.split("/");
     const region = provider === "amazon-bedrock" ? id.shift() : undefined;
@@ -167,6 +176,7 @@ function streamApi(model: Model<Api>, simple: boolean, context: TranscriptContex
     case "google-generative-ai": { const target = model as Model<"google-generative-ai">; return simple ? simpleGoogle(target, context, options as SimpleStreamOptions) : streamGoogle(target, context, options); }
     case "bedrock-converse-stream": { const target = model as Model<"bedrock-converse-stream">; return simple ? simpleBedrock(target, context, options as SimpleStreamOptions) : streamBedrock(target, context, options); }
     case "openai-codex-responses": { const target = model as Model<"openai-codex-responses">; return simple ? simpleCodex(target, context, options as SimpleStreamOptions) : streamCodex(target, context, options); }
+    case "azure-openai-responses": { const target = model as Model<"azure-openai-responses">; return simple ? simpleAzure(target, context, options as SimpleStreamOptions) : streamAzure(target, context, options); }
     default: throw new Error(`Unsupported provider API ${model.api}`);
   }
 }
@@ -277,7 +287,7 @@ export function modelRuntime(
         ? { ...model, provider: name.split("/")[0], id: name.slice(name.indexOf("/") + 1) }
         : resolvedModel ?? resolveModel(name, hooks.endpoints, custom);
       const ownTransport = custom?.[selected.provider] || hooks.endpoints?.[selected.provider];
-      const transported = { ...selected, ...(!ownTransport ? { api: "openai-completions" as const } : {}), baseUrl: ownTransport ? selected.baseUrl : endpoint.href };
+      const transported = { ...selected, runtimeApi: selected.api, ...(!ownTransport ? { api: "openai-completions" as const } : {}), baseUrl: ownTransport ? selected.baseUrl : endpoint.href };
       catalog.set(name, transported);
       install(transported.provider);
       return bounded(transported, contextTokens);

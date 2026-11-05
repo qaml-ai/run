@@ -6,6 +6,7 @@ import { Outbound } from "./security-outbound.ts";
 import { createStripe, type BillingEnv } from "./billing-routes.ts";
 import { database } from "./postgres.ts";
 import { pricingFromEnvironment } from "../../../src/pricing.ts";
+import { modelAzure, type ModelAzureEnv } from "./model-azure.ts";
 
 export type PricingEnv = Partial<Record<
   | `AGENT_PRICE_${string}`
@@ -16,7 +17,7 @@ export type PricingEnv = Partial<Record<
   | "AGENT_FREE_HOURLY_SPEND_USD" | "AGENT_FREE_MAX_AGENTS" | "AGENT_USAGE_TIERS"
   | "AGENT_MAX_AGENTS" | "AGENT_MAX_AGENTS_PER_TENANT", string>>;
 
-export type SecurityEnv = BillingEnv & PricingEnv & {
+export type SecurityEnv = BillingEnv & PricingEnv & ModelAzureEnv & {
   AGENT_SECRETS_KEY?: string;
   AGENT_TENANTS_JSON?: string;
   AGENT_PUBLIC_URL?: string;
@@ -41,7 +42,7 @@ export async function keyServices(env: SecurityEnv) {
     return value;
   };
   const maxAgents = positive("AGENT_MAX_AGENTS", 8);
-  const accounts = new Accounts({ tenants, db, secretsKey: env.AGENT_SECRETS_KEY, stripe: createStripe(env),
+  const accounts = new Accounts({ tenants, db, secretsKey: env.AGENT_SECRETS_KEY, stripe: createStripe(env), azureOpenAI: modelAzure(env),
     publicUrl: env.AGENT_PUBLIC_URL ?? env.PUBLIC_URL, pricing: pricingFromEnvironment(env as unknown as NodeJS.ProcessEnv),
     maxAgentsPerTenant: positive("AGENT_MAX_AGENTS_PER_TENANT", Math.max(1, Math.ceil(maxAgents / 2))) });
   const split = (value?: string) => value?.split(",").map(s => s.trim()).filter(Boolean);

@@ -1,5 +1,6 @@
 import { keyServices, providerCredentials, type KeyEnv } from "./security-services.ts";
 import { signRuntimeIdentity, type RuntimeIdentity } from "./tool-identity.ts";
+import { azureChatCredentials } from "./azure-policy.ts";
 
 /** Tenant endpoints receive a fresh signed identity for each provider request. */
 export async function resolveModelCredentials(
@@ -15,5 +16,8 @@ export async function resolveModelCredentials(
     apiKey: await signRuntimeIdentity(env, identity.issuer, endpoint.baseUrl, identity.claims),
     identity: true as const,
   };
-  return providerCredentials(services, tenant, provider, keyScope);
+  const credential = await providerCredentials(services, tenant, provider, keyScope);
+  return provider === "azure" && credential && services.accounts.azureChat
+    ? { ...credential, ...azureChatCredentials(services.accounts.azureChat) }
+    : credential;
 }

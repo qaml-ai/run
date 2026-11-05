@@ -29,7 +29,7 @@ export async function validateAgentModel(env: DefaultModelEnv, tenant: string, c
   const services = await keyServices(env);
   try {
     const resolved = resolveModel(reference, services.tenants.modelEndpoints(tenant), await services.modelProviders.resolvable(tenant, config.keyScope));
-    const model = previous?.reference === reference && previous.model
+    const model = (resolved as { passthrough?: true }).passthrough && previous?.reference === reference && previous.model
       ? previous.model
       : await withOpenRouterDetails(resolved, env.AGENT_OPENROUTER_API_URL, (input, init) => services.outbound.fetch(String(input), { ...init, timeoutMs: 5000, maxBytes: 1024 * 1024 }));
     const refusal = modelSettingsRefusal(model, config);
