@@ -26,6 +26,7 @@ export function createJourney(env: JourneyEnv, accounts: Accounts, publicUrl: st
   const config = journeyConfig(env as unknown as NodeJS.ProcessEnv, env.AGENT_JOURNEY_SECRET);
   return config && new Journey({
     ...config, db: accounts.db, publicUrl,
+    fetch: (input, init) => fetch(input, init),
     host: { transaction: (db, work) => transaction(db as Db, work), readText, safeError, signedHeaders },
     internal: (tenant, email) => accounts.tenants.has(tenant) || emailAt(config.internalEmailDomains, email),
   });
