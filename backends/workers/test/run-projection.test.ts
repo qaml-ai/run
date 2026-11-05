@@ -23,8 +23,8 @@ test('run summary includes failed and nested calls without arguments', () => {
     entry([assistant([{ type: 'toolCall', id: 'c', name: 'codemode', arguments: { code: 'private source' } }], { stopReason: 'toolUse' })]),
     entry([{ role: 'toolResult', toolCallId: 'c', toolName: 'codemode', content: [{ type: 'text', text: 'failed' }], details: { calls: [{ id: 1, name: 'read', status: 'error', error: 'missing file' }] }, isError: true, timestamp: 2 }]),
   ]);
-  assert.deepEqual(result.toolCalls, [{ tool: 'codemode', toolCallId: 'c', ok: false, code: 'tool_error' }, { tool: 'read', toolCallId: 'c', innerCallId: '1', ok: false, code: 'tool_error' }]);
-  assert.equal(result.toolErrors?.length, 2);
+  assert.deepEqual(result.toolCalls, [{ tool: 'read', toolCallId: 'c', innerCallId: 'c1', ok: false, code: 'tool_error' }]);
+  assert.equal(result.toolErrors?.length, 1);
   assert.ok(!JSON.stringify(result).includes('private source'));
 });
 test('reply index skips system entries exactly as public history does', () => {
@@ -65,4 +65,15 @@ test('stock prompt rules retain tool safety and sender rules without inventing c
   const bare = runtimeRules({ codeMode: false, tools: [] });
   assert.match(bare, /RUNTIME_CONTEXT/);
   assert.doesNotMatch(bare, /Each script starts fresh/);
+});
+
+test('codemode wrapper does not consume a public call slot', () => {
+  const result = projectRunEntries('r', [
+    { kind: 'camel.prompt', data: { requestId: 'r' } },
+    entry([assistant([{ type: 'toolCall', id: 'outer', name: 'codemode', arguments: {} }])]),
+    entry([{ role: 'toolResult', toolCallId: 'outer', toolName: 'codemode', content: [], isError: false, timestamp: 2,
+      details: { calls: Array.from({ length: 105 }, (_, i) => ({ id: i + 1, name: 'echo', status: 'ok' })) } }]),
+  ]);
+  assert.equal(result.toolCalls?.length, 100);
+  assert.deepEqual(result.toolCalls?.at(-1), { tool: 'echo', toolCallId: 'outer', innerCallId: 'c100', ok: true });
 });

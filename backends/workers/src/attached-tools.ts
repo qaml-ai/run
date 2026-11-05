@@ -2,7 +2,9 @@ import type { ToolRegistration, ToolExecutionResult, ToolExecutionApi } from "@e
 import type { Context } from "@earendil-works/chord";
 import { HttpError } from "./errors.ts";
 import { withToolInputs, type ToolInputReply } from "./mcp-inputs.ts";
+import { TOOL_DEADLINES, declaredTimeout, timedOut } from "./tool-call-policy.ts";
 import type { RuntimeIdentity } from "./tool-identity.ts";
+import { toolCallMeta, toolCallSite, type ToolCallSite } from "./tool-call-context.ts";
 
 export type ToolDefinition = {
   name: string; description?: string; inputSchema?: Record<string, unknown>;
@@ -11,7 +13,7 @@ export type ToolDefinition = {
   _meta?: Record<string, unknown>;
 };
 export type McpResult = { content?: unknown[]; structuredContent?: unknown; isError?: boolean; inputRequests?: unknown; resultType?: string; requestState?: string; [key: string]: unknown };
-type Pending = { resolve: (result: unknown) => void; reject: (error: Error) => void };
+type Pending = { resolve: (result: unknown) => void; reject: (error: Error) => void; progress: () => void };
 type Connection = { id: string; send: (event: unknown) => void; pending: Map<string, Pending>; ready: Promise<unknown>; initialized: boolean; draining: boolean; retired?: () => void };
 
 /** Attached MCP runs over the SDK's event stream, with replies on /mcp. */
@@ -81,6 +83,10 @@ export class AttachedTools {
     if (!value || typeof value !== "object") throw new HttpError(400, "Expected an MCP message");
     const message = value as Record<string, unknown>;
     if (message.method === "notifications/camelrun/draining" || message.method === "notifications/agent-runtime/draining") connection.draining = true;
+    if (message.method === "notifications/progress") {
+      const token = (message.params as { progressToken?: unknown } | undefined)?.progressToken;
+      if (typeof token === "string" || typeof token === "number") connection.pending.get(String(token))?.progress();
+    }
     if (message.id === undefined) return;
     const key = String(message.id), pending = connection.pending.get(key);
     if (!pending) return;
@@ -118,21 +124,31 @@ export class AttachedTools {
         pending?.reject(new Error("Attached tool cancelled; its outcome may be unknown"));
         this.retireIfIdle(connection);
       };
-      const timeout = setTimeout(() => {
+      let timeout: ReturnType<typeof setTimeout>;
+      const started = Date.now();
+      const expire = () => {
         connection.send({ type: "mcp", message: { jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: id, reason: "Tool timeout" } } });
-        connection.pending.get(id)?.reject(Object.assign(new Error(`Attached tool timed out after ${timeoutMs}ms; its outcome may be unknown`), { code: "timeout", outcomeUnknown: true }));
+        connection.pending.get(id)?.reject(timedOut(timeoutMs));
         connection.pending.delete(id);
         this.retireIfIdle(connection);
-      }, timeoutMs);
+      };
+      const progress = () => {
+        clearTimeout(timeout);
+        timeout = setTimeout(expire, Math.max(0, Math.min(timeoutMs, TOOL_DEADLINES.maxTotalMs - (Date.now() - started))));
+      };
+      progress();
       signal?.addEventListener("abort", cancelled, { once: true });
       const cleanup = () => { clearTimeout(timeout); signal?.removeEventListener("abort", cancelled); };
-      connection.pending.set(id, { resolve: result => { cleanup(); resolve(result); }, reject: error => { cleanup(); reject(error); } });
-      try { connection.send({ type: "mcp", message: { jsonrpc: "2.0", id, method, params } }); }
+      connection.pending.set(id, { progress, resolve: result => { cleanup(); resolve(result); }, reject: error => { cleanup(); reject(error); } });
+      try {
+        const requestParams = method === "tools/call" ? { ...params as object, _meta: { ...(params as { _meta?: object })._meta, progressToken: id } } : params;
+        connection.send({ type: "mcp", message: { jsonrpc: "2.0", id, method, params: requestParams } });
+      }
       catch (error) { connection.pending.get(id)?.reject(error as Error); connection.pending.delete(id); }
     });
   }
 
-  async call(name: string, args: unknown, timeoutMs = 300_000, signal?: AbortSignal, options: ToolInputReply & { meta?: Record<string, unknown> } = {}): Promise<McpResult> {
+  async call(name: string, args: unknown, timeoutMs = TOOL_DEADLINES.attachedMs, signal?: AbortSignal, options: ToolInputReply & { meta?: Record<string, unknown> } = {}): Promise<McpResult> {
     const connection = this.current;
     if (!connection || connection.draining) throw Object.assign(new Error("No application is connected to answer this tool call; it did not run"), { code: "not_connected" });
     await connection.ready;
@@ -141,14 +157,17 @@ export class AttachedTools {
     return await this.request(connection, "tools/call", { name, arguments: args, ...params, ...(meta ? { _meta: meta } : {}) }, timeoutMs, signal) as McpResult;
   }
 
-  tools(definitions: ToolDefinition[], identity?: (api: ToolExecutionApi) => Promise<{ claims: RuntimeIdentity }>): ToolRegistration[] {
-    return definitions.map(definition => registration(definition, async (args, api, context) => {
+  tools(definitions: ToolDefinition[], identity?: (api: ToolExecutionApi) => Promise<{ claims: RuntimeIdentity; call?: ToolCallSite }>): ToolRegistration[] {
+    return definitions.map(definition => {
+      const timeoutMs = definition.timeoutMs ?? declaredTimeout(definition._meta) ?? TOOL_DEADLINES.attachedMs;
+      return registration(definition, async (args, api, context) => {
       // Unit callers without a durable API still use the transport directly.
-      if (!api) return this.call(definition.name, args, definition.timeoutMs, context?.abortSignal);
-      const claims = (await identity?.(api))?.claims;
-      const idempotencyKey = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${claims?.agent ?? api.conversationId}:${api.taskId}:${api.callId}`)))).map(byte => byte.toString(16).padStart(2, "0")).join("").slice(0, 32);
-      try { return await withToolInputs(reply => this.call(definition.name, args, definition.timeoutMs, context?.abortSignal, { ...reply, meta: {
-        "agent-runtime/toolCallId": api.callId, "agent-runtime/idempotencyKey": idempotencyKey,
+      if (!api) return this.call(definition.name, args, timeoutMs, context?.abortSignal);
+      const value = await identity?.(api), claims = value?.claims;
+      const site = value?.call ?? await toolCallSite(api, context);
+      const meta = toolCallMeta(claims?.agent ?? String(api.conversationId), site, claims?.origin, claims?.act);
+      try { return await withToolInputs(reply => this.call(definition.name, args, timeoutMs, context?.abortSignal, { ...reply, meta: {
+        ...meta,
         ...(claims ? { "agent-runtime/identity": { ...claims, ...(reply.approval ? { approval: reply.approval } : {}) } } : {}),
         ...(claims?.origin ? { "agent-runtime/origin": claims.origin } : {}),
         ...(claims?.act ? { "agent-runtime/actor": claims.act } : {}),
@@ -159,7 +178,8 @@ export class AttachedTools {
         if (!failure.code) throw error;
         return { isError: true, content: [{ type: "text", text: JSON.stringify({ code: failure.code, message: failure.message ?? String(error), ...(failure.outcomeUnknown ? { outcomeUnknown: true } : {}) }) }] };
       }
-    }));
+      });
+    });
   }
 }
 

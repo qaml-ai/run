@@ -1,3 +1,4 @@
+import { toolCallSite } from "./tool-call-context.ts";
 import { withMoneyMetrics } from "./money-metrics.ts";
 import { DurableObject } from "cloudflare:workers";
 import { type Message, type AssistantMessage } from "@earendil-works/pi-ai";
@@ -553,8 +554,15 @@ export class CamelAgent extends DurableObject<Env> {
       params = "params" in run ? run.params : undefined;
     const issuer = this.env.AGENT_PUBLIC_URL || conf.runtimeOrigin;
     if (!issuer) throw new Error("Runtime public URL is not configured");
+    const call = api ? await toolCallSite(api) : undefined;
+    if (call?.assistant !== undefined) {
+      const pi = await this.harness.pi();
+      await this.historyIndex.sync(await pi.root(BACKGROUND_CONTEXT));
+      call.messageIndex = this.historyIndex.messageIndex(call.assistant);
+    }
     return {
       issuer,
+      ...(call ? { call } : {}),
       claims: {
         tenant: conf.tenantId,
         agent: conf.id,
@@ -566,7 +574,7 @@ export class CamelAgent extends DurableObject<Env> {
           | string
           | undefined,
         req: run.id,
-        tcid: api?.callId,
+        tcid: call?.toolCallId,
       },
     };
   }

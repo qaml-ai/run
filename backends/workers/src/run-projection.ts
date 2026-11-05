@@ -26,7 +26,7 @@ export class RunProjection {
       if (this.active !== this.requestId) continue;
       if (message.role === 'assistant') {
         if (message.stopReason !== 'error' && message.content.some(part => part.type === 'text' && part.text.trim())) this.replyIndex = index;
-        for (const part of message.content) if (part.type === 'toolCall' && this.calls.size < 100 && !this.calls.has(part.id)) this.calls.set(part.id, { tool: part.name, toolCallId: part.id, ok: false, code: 'aborted' });
+        for (const part of message.content) if (part.type === 'toolCall' && part.name !== 'codemode' && this.calls.size < 100 && !this.calls.has(part.id)) this.calls.set(part.id, { tool: part.name, toolCallId: part.id, ok: false, code: 'aborted' });
       }
       if (message.role === 'toolResult') this.result(message);
     }
@@ -37,14 +37,14 @@ export class RunProjection {
     const value = objectOf(text);
     const code = message.isError ? typeof value?.code === 'string' ? value.code : 'tool_error' : undefined;
     const child = ['delegate', 'spawn_agent'].includes(call.tool) && typeof value?.agentId === 'string' ? value.agentId : undefined;
-    if (this.calls.size < 100 || this.calls.has(message.toolCallId)) this.calls.set(message.toolCallId, { tool: call.tool, toolCallId: call.toolCallId, ok: !message.isError, ...(code ? { code } : {}), ...(child ? { agentId: child } : {}) });
-    if (message.isError && this.errors.size < 100) this.errors.set(message.toolCallId, { tool: call.tool, toolCallId: call.toolCallId, code: code!, message: typeof value?.message === 'string' ? value.message : text, ...(value?.outcomeUnknown===true ? {outcomeUnknown:true} : {}) });
+    if (call.tool !== 'codemode' && (this.calls.size < 100 || this.calls.has(message.toolCallId))) this.calls.set(message.toolCallId, { tool: call.tool, toolCallId: call.toolCallId, ok: !message.isError, ...(code ? { code } : {}), ...(child ? { agentId: child } : {}) });
+    if (call.tool !== 'codemode' && message.isError && this.errors.size < 100) this.errors.set(message.toolCallId, { tool: call.tool, toolCallId: call.toolCallId, code: code!, message: typeof value?.message === 'string' ? value.message : text, ...(value?.outcomeUnknown===true ? {outcomeUnknown:true} : {}) });
     // Pi's codemode result keeps a bounded table of inner calls. Only metadata,
     // never their arguments or result bodies, enters the public run summary.
     const details = message.details as { calls?: { id: number | string; name: string; status: string; error?: string }[] } | undefined;
     if (call.tool === 'codemode' && Array.isArray(details?.calls)) for (const inner of details.calls) {
       if (this.calls.size >= 100) break;
-      const innerCallId = String(inner.id), ok = inner.status === 'ok';
+      const innerCallId = `c${inner.id}`, ok = inner.status === 'ok';
       const innerCode = inner.status === 'cancelled' ? 'aborted' : 'tool_error';
       this.calls.set(`${message.toolCallId}:${innerCallId}`, { tool: inner.name, toolCallId: message.toolCallId, innerCallId, ok, ...(!ok ? { code: innerCode } : {}) });
       if (!ok && inner.error && this.errors.size < 100) this.errors.set(`${message.toolCallId}:${innerCallId}`, { tool: inner.name, toolCallId: message.toolCallId, innerCallId, code: innerCode, message: inner.error });

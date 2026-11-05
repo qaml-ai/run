@@ -1,3 +1,4 @@
+import { toolCallMeta, toolCallSite, type ToolCallSite } from "./tool-call-context.ts";
 import type { ToolRegistration, ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
 import { registration, type McpResult, type ToolDefinition } from "./attached-tools.ts";
@@ -260,9 +261,10 @@ class RemoteMcp {
   private headers: Record<string, string>;
   private runtimeHeaders: (api?: ToolExecutionApi, approval?: ToolInputReply["approval"]) => Promise<Record<string, string>>;
   private refused?: () => void;
-  constructor(env: Env, source: RemoteSource, headers: Record<string, string>, runtimeHeaders: (api?: ToolExecutionApi, approval?: ToolInputReply["approval"]) => Promise<Record<string, string>>, refused?: () => void) {
+  private identity?: SourceIdentity;
+  constructor(env: Env, source: RemoteSource, headers: Record<string, string>, runtimeHeaders: (api?: ToolExecutionApi, approval?: ToolInputReply["approval"]) => Promise<Record<string, string>>, refused?: () => void, identity?: SourceIdentity) {
     this.env = env; this.source = source; this.headers = headers; this.runtimeHeaders = runtimeHeaders;
-    this.refused = refused;
+    this.refused = refused; this.identity = identity;
   }
   private async rpc(method: string, params: unknown, notification = false, signal?: AbortSignal, api?: ToolExecutionApi, approval?: ToolInputReply["approval"]): Promise<any> {
     const id = crypto.randomUUID();
@@ -300,13 +302,15 @@ class RemoteMcp {
   async call(name: string, args: unknown, signal?: AbortSignal, api?: ToolExecutionApi, reply: ToolInputReply = {}): Promise<McpResult> {
     await this.init();
     const { approval, ...responses } = reply;
-    const key = api ? Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${api.conversationId}:${api.taskId}:${api.callId}`)))).map(byte => byte.toString(16).padStart(2, "0")).join("").slice(0, 32) : undefined;
-    return this.rpc("tools/call", { name, arguments: args, ...responses, ...(api ? { _meta: { "agent-runtime/toolCallId": api.callId, "agent-runtime/idempotencyKey": key, ...(approval ? { "agent-runtime/approval": approval } : {}) } } : {}) }, false, signal, api, approval);
+    const identity = api ? await this.identity?.(api) : undefined;
+    const site = api ? identity?.call ?? await toolCallSite(api) : undefined;
+    const meta = site ? toolCallMeta(identity?.claims.agent ?? String(api!.conversationId), site, identity?.claims.origin, identity?.claims.act) : undefined;
+    return this.rpc("tools/call", { name, arguments: args, ...responses, ...(meta ? { _meta: { ...meta, ...(approval ? { "agent-runtime/approval": approval } : {}) } } : {}) }, false, signal, api, approval);
   }
 }
 
 export type SourceApproval = (input: { name: string; args: unknown; kind: "approval"; message: string; detail: Record<string, unknown> }) => Promise<void>;
-export type SourceIdentity = (api?: ToolExecutionApi) => Promise<{ issuer: string; claims: RuntimeIdentity }>;
+export type SourceIdentity = (api?: ToolExecutionApi) => Promise<{ issuer: string; claims: RuntimeIdentity; call?: ToolCallSite }>;
 
 /** Resolve only this agent's configured sources; credentials never enter model context. */
 export async function sourceTools(env: Env, tenant: string, definition: string | undefined, config: { mcpServers?: RemoteSource[]; openApi?: RemoteSource[] }, approve?: SourceApproval, identity?: SourceIdentity): Promise<ToolRegistration[]> {
@@ -335,7 +339,7 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
       }
     };
     if (kind === "mcpServers") {
-      const client = new RemoteMcp(env, source, headers, runtimeHeaders, exchange?.refused);
+      const client = new RemoteMcp(env, source, headers, runtimeHeaders, exchange?.refused, identity);
       // An unavailable server cannot prevent loading or using the agent's other tools.
       let listed: ToolDefinition[];
       try { listed = await client.list(); } catch { continue; }
@@ -364,6 +368,10 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
           else if (parameter.in === "header") sent[parameter.name] = text(value);
         }
         Object.assign(sent, headers, await runtimeHeaders(api));
+        if (api) {
+          const value = await identity?.(api), site = value?.call ?? await toolCallSite(api, context);
+          sent["Idempotency-Key"] = String(toolCallMeta(value?.claims.agent ?? String(api.conversationId), site)["agent-runtime/idempotencyKey"]);
+        }
         let body: BodyInit | undefined;
         if (args.body !== undefined && operation.body) {
           if (operation.body === "json") { sent["Content-Type"] = "application/json"; body = JSON.stringify(args.body); }
