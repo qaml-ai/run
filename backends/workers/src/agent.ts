@@ -106,6 +106,7 @@ import {
 import { keyServices, type KeyEnv } from "./security-services.ts";
 import type { AccountEnv } from "./account-services.ts";
 import { runAdmission } from "./admission.ts";
+import { PromptPreparations } from "./prompt-admission.ts";
 import { actorInput, bucketInput } from "./security-policy.ts";
 import { MessageProjection } from "./message-projection.ts";
 import { OUTPUT_REMINDER } from "./output-policy.ts";
@@ -274,6 +275,10 @@ export class CamelAgent extends DurableObject<Env> {
   private codeExtension?: Extension;
   private attached = new AttachedTools();
   private promptAttachments = new PromptAttachments(this.ctx.storage, this.env);
+  private promptPreparations = new PromptPreparations(this.ctx.storage, async receipt => {
+    await releaseTurn(this.env, receipt.tenant, receipt.agent, receipt.requestId);
+    await this.env.TENANTS.getByName(receipt.tenant).release(`${receipt.agent}:${receipt.requestId}`);
+  });
   private socketsRestored = this.restoreWebSockets();
   private wakeBudget = new DelegationWakeBudget(this.ctx.storage);
   async admitDelegateWake(id: string): Promise<WakeDecision> {
@@ -1459,6 +1464,7 @@ export class CamelAgent extends DurableObject<Env> {
     return result;
   }
   private async abortRequests() {
+    await this.promptPreparations.cancel();
     await this.markCancelledRequests();
     const pending = await this.harness.pending();
     const cancelled = pending
@@ -1890,13 +1896,20 @@ export class CamelAgent extends DurableObject<Env> {
         new Error("No process is connected to serve this agent's tools"),
         { status: 409, code: "APPLICATION_NOT_CONNECTED" },
       );
+    const preparing = params.files !== undefined && !old?.admitted && !(delivery && !delivery.run && notice);
+    if (preparing) {
+      await this.promptPreparations.begin({ tenant: conf.tenantId, agent: conf.id, requestId: id, fingerprint }, () => this.admitRequest(conf, id));
+      await this.arm();
+    }
+    let files: Awaited<ReturnType<PromptAttachments["attach"]>> | undefined;
+    try {
     const audioRunLimit = (params.spendLimit as { usd?: number } | undefined)?.usd;
     const audioBudget = params.files === undefined ? Infinity : Math.min(
       spend ? Math.max(0, spend.usd - spend.spent) : Infinity,
       audioRunLimit === undefined ? Infinity : Math.max(0,
         audioRunLimit - await withSql(this.env, sql => runSpend(sql, conf.tenantId, conf.id, id)) - await this.delegation.cost(id)),
     );
-    const files =
+    files =
       params.files === undefined
         ? undefined
         : await this.promptAttachments.attach(
@@ -1916,7 +1929,13 @@ export class CamelAgent extends DurableObject<Env> {
           );
     if (request.method !== "continue" && !text.trim() && !files?.some(file => file.transcript))
       throw new BadRequest("Give the agent some text, or audio to transcribe");
+    if (await this.ctx.storage.get(`cancelled-request:${id}`))
+      throw Object.assign(new Error("Request cancelled"), { status: 409, code: "aborted" });
     if (files) params.files = attachmentFiles(files);
+    } catch (error) {
+      if (preparing) await this.promptPreparations.fail(id);
+      throw error;
+    }
     const record: RequestRecord = old ?? {
       id,
       method: String(request.method),
@@ -1942,7 +1961,9 @@ export class CamelAgent extends DurableObject<Env> {
       : params.images
         ? imageReferenceInput(text, params.images as ImageRef[], conf.tenantId)
         : text;
+    if (preparing) record.admitted = true;
     await this.ctx.storage.put(reqKey(id), record);
+    if (preparing) await this.promptPreparations.finish(id);
     if (delivery && !delivery.run && notice) {
       const pi = await this.harness.pi(),
         root = await pi.root(BACKGROUND_CONTEXT);
@@ -1971,7 +1992,7 @@ export class CamelAgent extends DurableObject<Env> {
       return record;
     }
     await this.arm(Date.now() + 1000);
-    if (!old?.admitted) {
+    if (!record.admitted) {
       await this.admitRequest(conf, id);
       record.admitted = true;
     }
@@ -2185,6 +2206,7 @@ export class CamelAgent extends DurableObject<Env> {
       }
       if (request.method === "DELETE" && path === "/") {
         const deletion = this.admission.then(async () => {
+          await this.promptPreparations.cancel();
           const conf = await this.ctx.storage.get<Config>("configuration");
           await this.markCancelledRequests();
           await this.abortExecutions();
@@ -2893,6 +2915,7 @@ export class CamelAgent extends DurableObject<Env> {
       pendingBilling ? Date.now() + 5000 : Infinity,
       pendingEvents ? Date.now() + 1000 : Infinity,
       pendingRun ? Date.now() + 1000 : Infinity,
+      await this.promptPreparations.deadline(),
       await this.limits.deadline(),
     );
     if (Number.isFinite(next))
@@ -2906,6 +2929,7 @@ export class CamelAgent extends DurableObject<Env> {
     return withMoneyMetrics(this.env, () => this.restorePending());
   }
   private async restorePending() {
+    await this.promptPreparations.sweep(Date.now(), true);
     await this.restoreCancellations();
     await this.restoreHostAdmissions();
     await this.delegation.recover();
@@ -2932,6 +2956,7 @@ export class CamelAgent extends DurableObject<Env> {
     });
   }
   private async wake() {
+    await this.promptPreparations.sweep();
     await this.restoreCancellations();
     const conf = await this.ctx.storage.get<Config>("configuration");
     if (conf)
@@ -2943,6 +2968,7 @@ export class CamelAgent extends DurableObject<Env> {
         ),
       );
     if (conf?.expiresAt && conf.expiresAt <= Date.now()) {
+      await this.promptPreparations.cancel();
       await this.markCancelledRequests();
       await this.abortExecutions();
       await this.ctx.storage.put("deleted", true);
