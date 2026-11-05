@@ -31,7 +31,6 @@ import {
 } from "./auxiliary-usage.ts";
 import { publishPending } from "./webhooks.ts";
 import { HttpError, errorStatus } from "./errors.ts";
-import { boundedBytes } from "./images.ts";
 import type { AttachedFile } from "./attachment-markers.ts";
 
 export type AttachmentAudioScope = {
@@ -180,6 +179,7 @@ export async function transcribeAttachments(
   const read =
     host.read ??
     (async (file) => {
+      const { boundedBytes } = await import("./images.ts");
       const object = await env.BUCKET.get(file.key);
       if (!object) throw new HttpError(503, "Attached audio is missing");
       return boundedBytes(object.body, AUDIO_LIMITS.fileBytes);
