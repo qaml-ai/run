@@ -15,8 +15,9 @@ export class RunProjection {
   private replyIndex?: number;
   private calls = new Map<string, RunToolCall>();
   private errors = new Map<string, RunToolError>();
+  private children: ReadonlyMap<string, string>;
   readonly requestId: string;
-  constructor(requestId: string) { this.requestId = requestId; }
+  constructor(requestId: string, children: ReadonlyMap<string, string> = new Map()) { this.requestId = requestId; this.children = children; }
   add(entry: Pick<EntryRecord, 'kind' | 'data' | 'model'>) {
     if (entry.kind === 'camel.context' || entry.kind === 'pi.reset') return;
     if (entry.kind === 'camel.prompt') this.active = (entry.data as { requestId?: string })?.requestId;
@@ -36,7 +37,9 @@ export class RunProjection {
     const text = textOf(message);
     const value = objectOf(text);
     const code = message.isError ? typeof value?.code === 'string' ? value.code : 'tool_error' : undefined;
-    const child = ['delegate', 'spawn_agent'].includes(call.tool) && typeof value?.agentId === 'string' ? value.agentId : undefined;
+    // A trusted source's spawn directive can use any tool name. Its durable
+    // delegation record proves the relation; arbitrary tool JSON does not.
+    const child = this.children.get(message.toolCallId) ?? (['delegate', 'spawn_agent'].includes(call.tool) && typeof value?.agentId === 'string' ? value.agentId : undefined);
     if (call.tool !== 'codemode' && (this.calls.size < 100 || this.calls.has(message.toolCallId))) this.calls.set(message.toolCallId, { tool: call.tool, toolCallId: call.toolCallId, ok: !message.isError, ...(code ? { code } : {}), ...(child ? { agentId: child } : {}) });
     if (call.tool !== 'codemode' && message.isError && this.errors.size < 100) this.errors.set(message.toolCallId, { tool: call.tool, toolCallId: call.toolCallId, code: code!, message: typeof value?.message === 'string' ? value.message : text, ...(value?.outcomeUnknown===true ? {outcomeUnknown:true} : {}) });
     // Pi's codemode result keeps a bounded table of inner calls. Only metadata,

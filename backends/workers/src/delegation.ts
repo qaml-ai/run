@@ -35,6 +35,8 @@ export interface DelegationHost {
   fetch(id: string, request: Request): Promise<Response>;
   /** Cancel exactly this child request, including a queued request of an existing agent. */
   cancelRequest?(agentId: string, requestId: string): Promise<unknown>;
+  /** Remove only agents created for this parent's delegation calls. */
+  remove?(agentId: string): Promise<void>;
   emit(event: unknown): Promise<void>;
   waitUntil(promise: Promise<unknown>): void;
   /** Journal a runtime-authored child notification so recovery cannot lose it. */
@@ -300,6 +302,11 @@ export class Delegation {
     });
     await Promise.all(children.map(child => this.cancelRemote(child)));
   }
+  async destroy() {
+    await this.cancel();
+    const made = new Set((await this.children()).filter(child => child.made).map(child => child.id));
+    for (const id of made) if (id) await this.host.remove?.(id);
+  }
   private async cancelRemote(child: DelegatedChild) {
       if (!child.id) return;
       if (this.host.cancelRequest) { await this.host.cancelRequest(child.id, child.requestId); return; }
@@ -453,7 +460,8 @@ export class Delegation {
     let chosen = base, n = 1;
     while (running.some(child => child.name === chosen)) chosen = `${base.slice(0, 56)}-${n++}`;
     const child = await this.start({ agent, task, name: chosen, ...(output !== undefined ? { output } : {}) }, api.callId, context.abortSignal ?? new AbortController().signal, true, api, { ...config.delegate, agents: [{ name: agent, agent }] });
-    return { content: [{ type: 'text', text: JSON.stringify({ agentId: child.id, name: child.name }) }] };
+    const result = { agentId: child.id, name: child.name };
+    return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
   }
   async toolsFor(settings: DelegateSettings, builtins: readonly string[], subagent = false): Promise<ToolRegistration[]> {
     return this.tools(settings, builtins, subagent, await this.targetDescriptions(settings));

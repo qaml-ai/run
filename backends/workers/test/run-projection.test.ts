@@ -27,6 +27,16 @@ test('run summary includes failed and nested calls without arguments', () => {
   assert.equal(result.toolErrors?.length, 1);
   assert.ok(!JSON.stringify(result).includes('private source'));
 });
+test('a trusted tool spawn projects the child from durable delegation, not arbitrary tool text', () => {
+  const projection = new RunProjection('r', new Map([['trusted', 'actual-child']]));
+  projection.add({ kind: 'camel.prompt', data: { requestId: 'r' } });
+  projection.add(entry([assistant(['trusted', 'ordinary'].map(id => ({ type: 'toolCall' as const, id, name: `app__${id}`, arguments: {} })))]));
+  for (const id of ['trusted', 'ordinary']) projection.add(entry([{ role: 'toolResult', toolCallId: id, toolName: `app__${id}`, content: [{ type: 'text', text: '{"agentId":"untrusted-value"}' }], isError: false, timestamp: 2 }]));
+  assert.deepEqual(projection.finish().toolCalls, [
+    { tool: 'app__trusted', toolCallId: 'trusted', ok: true, agentId: 'actual-child' },
+    { tool: 'app__ordinary', toolCallId: 'ordinary', ok: true },
+  ]);
+});
 test('reply index skips system entries exactly as public history does', () => {
   const value = projectRunEntries('r', [
     entry([{ role: 'system', content: 'private rules', timestamp: 0 }]),

@@ -382,6 +382,13 @@ export class CamelAgent extends DurableObject<Env> {
       if (parent) await recordChildParent(this.env, conf.tenantId, entry.id, parent.agent, parent.run);
       return entry;
     },
+    remove: async (id) => {
+      const conf = await this.ctx.storage.get<Config>("configuration");
+      if (!conf) return;
+      const result = await new Directory(this.env, conf.tenantId).remove(id);
+      if (result && typeof result === "object" && "failed" in result)
+        throw new Error(result.error);
+    },
     target: async (ref) => {
       const conf = await this.config();
       if (ref.definition) {
@@ -2534,7 +2541,7 @@ export class CamelAgent extends DurableObject<Env> {
               new ComputerService(this.env, conf.tenantId).removeAgent(conf.id),
             );
           await this.ctx.storage.put("deleted", true);
-          await this.delegation.cancel();
+          await this.delegation.destroy();
           await this.harness.session().abort();
           await this.cancelHumanInputs();
           if (conf)
@@ -2976,7 +2983,8 @@ export class CamelAgent extends DurableObject<Env> {
       auxiliaryRunCosts(this.env, conf.tenantId, conf.id, id),
       this.delegation.cost(id),
     ]);
-    const projection = new RunProjection(id);
+    const children = new Map((await this.delegation.children()).filter(child => child.parentRequestId === id).map(child => [child.toolCallId, child.id]));
+    const projection = new RunProjection(id, children);
     let cursor,
       active: string | undefined,
       inputTokens = 0,
@@ -3235,7 +3243,7 @@ export class CamelAgent extends DurableObject<Env> {
       await this.markCancelledRequests();
       await this.abortExecutions();
       await this.ctx.storage.put("deleted", true);
-      await this.delegation.cancel();
+      await this.delegation.destroy();
       await this.harness.session().abort();
       await this.cancelHumanInputs();
       // Unsettled turns are still charged from their durable receipts below.

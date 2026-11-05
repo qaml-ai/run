@@ -240,8 +240,22 @@ test('a trusted tool starts an existing tenant worker without exposing a model s
   f.host.target = async ({ agent }) => ({ id: agent!, config: { name: 'prepared' } });
   const result = await f.delegation.toolSpawn('app__work', { agent: 'prepared-worker', task: 'do it', output: { type: 'object' } }, { callId: 'source-call', taskId: 1, getTask: async () => undefined } as unknown as ToolExecutionApi, { abortSignal: signal() } as never);
   assert.equal(JSON.parse((result.content![0] as { text: string }).text).agentId, 'prepared-worker');
+  assert.deepEqual(result.structuredContent, { agentId: 'prepared-worker', name: 'prepared' });
   assert.deepEqual(f.submitted[0].params.output, { schema: { type: 'object' } });
   await Promise.all(f.tasks);
+});
+test('deleting a parent retries made-child cleanup without deleting named workers', async () => {
+  const f = fixture(), removed: string[] = [];
+  const child = { requestId: 'done', parentRequestId: 'parent-run', toolCallId: 'call', task: 'go', name: 'helper', depth: 1, createdAt: 1, status: 'completed', accepted: true };
+  f.values.set('delegation:made', { ...child, id: 'made', key: 'made', made: true });
+  f.values.set('delegation:resume', { ...child, id: 'made', key: 'resume', made: true });
+  f.values.set('delegation:named', { ...child, id: 'named', key: 'named', made: false });
+  let fail = true;
+  f.host.remove = async id => { if (fail) throw new Error('retry cleanup'); removed.push(id); };
+  await assert.rejects(f.delegation.destroy(), /retry cleanup/);
+  fail = false;
+  await f.delegation.destroy();
+  assert.deepEqual(removed, ['made']);
 });
 test('parent cancellation aborts made children and only its actively running named child', async () => {
   const f = fixture(), aborted: string[] = [];
