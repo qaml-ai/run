@@ -54,6 +54,7 @@ import { browserUrl } from "./selfhost-policy.ts";
 import { createJourney, sendJourney } from "./journey.ts";
 import { keyServices } from "./security-services.ts";
 import { eventRead } from "./event-reads.ts";
+import { relayEvents } from "./event-relay.ts";
 import { decisionService, type DecisionEnv } from "./decision-service.ts";
 import { decisionRoute } from "./decision-runtime.ts";
 import {
@@ -121,7 +122,8 @@ function summary(entry: DirectoryEntry) {
 async function forward(request: Request, env: Env, id: string, path: string) {
   const url = new URL(request.url);
   url.pathname = path;
-  return env.AGENTS.getByName(id).fetch(new Request(url, request));
+  const response = await env.AGENTS.getByName(id).fetch(new Request(url, request));
+  return relayEvents(response, request.signal);
 }
 function scopedConfiguration(input: unknown) {
   if (!input || typeof input !== "object" || Array.isArray(input))
