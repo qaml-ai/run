@@ -14,7 +14,7 @@ npm --prefix backends/workers run typecheck
   cd backends/workers
   node --import ./test/sdk-deps.mjs --experimental-strip-types --test \
     test/child-config.test.ts test/configuration-targets.test.ts \
-    test/delegation-charges.test.ts test/delegation-notifications.test.ts \
+    test/delegation-charges.test.ts test/delegation-notifications.test.ts test/delegation-progress.test.ts \
     test/steering-placement.test.ts test/event-visibility.test.ts \
     test/run-limits.test.ts
 )

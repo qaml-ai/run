@@ -12,6 +12,7 @@ import { escapeMarkers } from './sender.ts';
 import { outputInput } from './output-validation.ts';
 import type { Context } from '@earendil-works/chord';
 import type { McpResult } from './attached-tools.ts';
+import { waitsForProgress } from './delegation-progress.ts';
 
 type Configuration = { model?: string | object; systemPrompt?: string; delegate?: DelegateSettings; builtins?: string[]; spendLimit?: { usd: number }; [key: string]: unknown };
 export type ParentRun = { id: string; piId?: string; startedAt?: number; params?: { spendLimit?: { usd: number }; bucket?: string; actor?: string }; metadata?: unknown };
@@ -376,18 +377,20 @@ export class Delegation {
     }
     return { reported: true };
   }
-  private async takeProgress() {
+  private async takeProgress(api?: ToolExecutionApi) {
+    const site = api ? await toolCallSite(api) : undefined;
+    const entry = site?.assistant !== undefined ? await api!.commit(tx => tx.entry(site.assistant as never), BACKGROUND_CONTEXT) : undefined;
     return this.host.storage.transaction(async tx => {
       const reports = [];
-      for (const child of (await tx.list<DelegatedChild>({ prefix })).values()) if (child.status === 'running' && child.progress && child.progress.sequence > (child.progressShown ?? 0)) {
+      for (const child of (await tx.list<DelegatedChild>({ prefix })).values()) if (child.status === 'running' && child.progress && child.progress.sequence > (child.progressShown ?? 0) && !waitsForProgress(entry?.model ?? [], child)) {
         reports.push({ name: child.name, text: child.progress.text, at: child.progress.at });
         await tx.put(prefix + child.key, { ...child, progressShown: child.progress.sequence });
       }
       return reports;
     });
   }
-  private async toolResult(value: unknown) {
-    const reports = await this.takeProgress();
+  private async toolResult(value: unknown, api?: ToolExecutionApi) {
+    const reports = await this.takeProgress(api);
     return { output: [{ type: 'text' as const, text: JSON.stringify(value) }, ...(reports.length ? [agentUpdates(reports)] : [])] };
   }
   private async send(args: Record<string, unknown>, callId: string, api?: ToolExecutionApi, signal?: AbortSignal) {
@@ -510,27 +513,27 @@ export class Delegation {
       const signal = context.abortSignal ?? new AbortController().signal;
       if (definition.name === 'delegate') {
         const child = await this.wait(await this.start(args, api.callId, signal, false, api), signal);
-        return { ...await this.toolResult(this.answer(child)), ...(child.status === 'completed' ? {} : { isError: true }) };
+        return { ...await this.toolResult(this.answer(child), api), ...(child.status === 'completed' ? {} : { isError: true }) };
       }
       if (definition.name === 'spawn_agent') {
         const work = this.start(args, api.callId, signal, true, api);
         this.starting.add(work);
-        try { return this.toolResult(this.answer(await work)); }
+        try { return this.toolResult(this.answer(await work), api); }
         finally { this.starting.delete(work); }
       }
       if (['wait_agent', 'list_agents', 'send_message', 'interrupt_agent'].includes(definition.name))
         await Promise.allSettled([...this.starting]);
-      if (definition.name === 'send_message') return this.toolResult(await this.send(args, api.callId, api, signal));
-      if (definition.name === 'report_progress') return this.toolResult(await this.progress(args, api.callId, api));
+      if (definition.name === 'send_message') return this.toolResult(await this.send(args, api.callId, api, signal), api);
+      if (definition.name === 'report_progress') return this.toolResult(await this.progress(args, api.callId, api), api);
       const children = await this.children();
-      if (definition.name === 'list_agents') return this.toolResult({ agents: [...new Map(children.filter(child => child.background && !child.folded).map(child => [child.id, child])).values()].map(child => ({ agentId: child.id, name: child.name, status: child.status, startedAt: child.createdAt, ...(child.endedAt ? { endedAt: child.endedAt } : {}), ...(child.progress ? { progress: escapeMarkers(child.progress.text), progressAt: child.progress.at } : {}) })) });
+      if (definition.name === 'list_agents') return this.toolResult({ agents: [...new Map(children.filter(child => child.background && !child.folded).map(child => [child.id, child])).values()].map(child => ({ agentId: child.id, name: child.name, status: child.status, startedAt: child.createdAt, ...(child.endedAt ? { endedAt: child.endedAt } : {}), ...(child.progress ? { progress: escapeMarkers(child.progress.text), progressAt: child.progress.at } : {}) })) }, api);
       if (definition.name === 'wait_agent') {
         if (args.agents !== undefined && (!Array.isArray(args.agents) || args.agents.some(name => typeof name !== 'string'))) throw new HttpError(400, 'agents is a list of names or agentIds');
         if (args.timeoutMs !== undefined && (!Number.isInteger(args.timeoutMs) || Number(args.timeoutMs) < 1000 || Number(args.timeoutMs) > MULTI_AGENT_LIMITS.maxWaitMs)) throw new HttpError(400, `timeoutMs is an integer from 1000 to ${MULTI_AGENT_LIMITS.maxWaitMs}`);
         const background = [...new Map(children.filter(child => child.background && !child.folded).map(child => [child.id, child])).values()];
         const selected = background.filter(child => Array.isArray(args.agents) ? args.agents.includes(child.id) || args.agents.includes(child.name) : !child.landedBy);
         if (Array.isArray(args.agents)) for (const name of args.agents) if (!selected.some(child => child.id === name || child.name === name)) throw new HttpError(400, `You have no sub-agent ${name}`);
-        if (!selected.length) return this.toolResult({ agents: [] });
+        if (!selected.length) return this.toolResult({ agents: [] }, api);
         if (args.untilProgress !== undefined && typeof args.untilProgress !== 'boolean') throw new HttpError(400, 'untilProgress is true or false');
         const stop = new AbortController(), wait = AbortSignal.any([signal, stop.signal]);
         const deadline = Date.now() + Number(args.timeoutMs ?? MULTI_AGENT_LIMITS.waitMs), earliestProgress = Date.now() + MULTI_AGENT_LIMITS.progressWaitMs;
@@ -568,11 +571,11 @@ export class Delegation {
           }
           return answers;
         });
-        return this.toolResult({ agents: answers, ...(messaged.size ? { messaged: [...messaged], message: `${[...messaged].join(', ')} sent you a message, which follows this result: read it, then wait again if you need to` } : {}), ...(updated.size ? { updated: [...updated] } : {}), ...(!messaged.size && !updated.size && answers.every(child => child.status === 'running') ? { timedOut: true } : {}) });
+        return this.toolResult({ agents: answers, ...(messaged.size ? { messaged: [...messaged], message: `${[...messaged].join(', ')} sent you a message, which follows this result: read it, then wait again if you need to` } : {}), ...(updated.size ? { updated: [...updated] } : {}), ...(!messaged.size && !updated.size && answers.every(child => child.status === 'running') ? { timedOut: true } : {}) }, api);
       }
       const child = children.find(child => child.id === args.agent || child.name === args.agent || child.id === args.to || child.name === args.to);
       if (!child) throw new HttpError(404, 'Unknown sub-agent');
-      if (definition.name === 'interrupt_agent') { await this.host.fetch(child.id, new Request('https://agent/requests', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: `interrupt-${api.callId}`, method: 'abort', params: {} }) })); return this.toolResult({ agentId: child.id, interrupted: true }); }
+      if (definition.name === 'interrupt_agent') { await this.host.fetch(child.id, new Request('https://agent/requests', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: `interrupt-${api.callId}`, method: 'abort', params: {} }) })); return this.toolResult({ agentId: child.id, interrupted: true }, api); }
       throw new HttpError(400, 'Unknown delegation tool');
     } }));
   }
