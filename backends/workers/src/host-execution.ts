@@ -144,7 +144,11 @@ export async function waitHostExecution(pi: Harness, task: TaskId<ToolTaskResult
   return { output: [], truncated: false, endedAt: settled.endedAt, error: { kind: outcome.status === "aborted" ? "aborted" : "sandbox", message: "error" in outcome && outcome.error ? outcome.error.message : `Execution ${outcome.status}` } };
 }
 
+export async function hostExecutionTask(pi: Harness, requestId: string, context: Context = BACKGROUND_CONTEXT) {
+  return (await pi.snapshot(Executions, requestId, context))?.task as TaskId<ToolTaskResult> | undefined;
+}
+
 export async function abortHostExecution(pi: Harness, requestId: string, context: Context = BACKGROUND_CONTEXT) {
-  const saved = await pi.snapshot(Executions, requestId, context);
-  if (saved?.task !== undefined) await pi.abortTask(saved.task as TaskId, context);
+  const task = await hostExecutionTask(pi, requestId, context);
+  if (task !== undefined) await pi.abortTask(task, context);
 }

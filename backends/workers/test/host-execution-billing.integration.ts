@@ -56,3 +56,46 @@ test("a recovered host execution bills only through its durable finish, once", {
   ]);
   assert.deepEqual(await ledger(), charged, "polling, request replay and receipt flushing do not charge twice");
 });
+
+test("cancelling a host execution whose acceptance was interrupted still bills its committed work once", { timeout: 90000 }, async t => {
+  const f = await startFixture({ vars: { AGENT_PRICE_AGENT_HOUR_USD: "3600" } });
+  t.after(() => f.stop());
+  const headers = { authorization: `Bearer ${f.token}`, "content-type": "application/json" };
+  const call = async (path: string, input?: unknown, status?: number) => {
+    const response = await fetch(f.url + path, { headers, method: input === undefined ? "GET" : "POST",
+      ...(input === undefined ? {} : { body: JSON.stringify(input) }) });
+    const body = await response.json() as any;
+    if (status !== undefined) assert.equal(response.status, status, JSON.stringify(body));
+    else assert.ok(response.ok, `${response.status} ${path}: ${JSON.stringify(body)}`);
+    return body;
+  };
+  const agent = (await call("/v1/agents", { model: "test/echo" })).id;
+  const experimental = `/experimental/agents/${agent}`;
+  const request = { id: "host_lost_acceptance", method: "execute", params: { code: 'return "committed"' } };
+  await call(`${experimental}/__test/crash-next-settlement`, { beforeAcceptance: true });
+  await call(`/v1/agents/${agent}/requests`, request, 503);
+  const { unacceptedFinishedAt } = await call(`${experimental}/__test/settlement-state`);
+  assert.equal(typeof unacceptedFinishedAt, "number", "Pi committed the task before the interrupted acceptance write");
+  const before = await call(`/v1/agents/${agent}/requests/${request.id}`);
+  assert.equal(before.state, "running");
+  const ledger = async () => (await f.db.query("select amount, metadata from credit_ledger where tenant=$1 and kind='usage'", ["camelrun-proto-local"])).rows;
+  assert.deepEqual(await ledger(), [], "the unaccepted task has no posted receipt yet");
+
+  await call(`/v1/agents/${agent}/requests`, { id: "cancel_lost_acceptance", method: "abort", params: {} });
+  const completed = await call(`/v1/agents/${agent}/requests/${request.id}`);
+  assert.equal(completed.state, "completed");
+  assert.equal(completed.endedAt, unacceptedFinishedAt);
+  assert.deepEqual(completed.outcome.result.output, ["committed"], "cancellation preserves the already completed native result");
+  assert.equal(Object.hasOwn(completed.outcome.result, "endedAt"), false);
+  const activeMs = unacceptedFinishedAt - before.began;
+  assert.ok(Number.isSafeInteger(activeMs) && activeMs >= 0);
+  const charged = await ledger();
+  assert.equal(charged.length, 1);
+  assert.equal(charged[0].metadata.activeMs, activeMs);
+  assert.equal(Number(charged[0].amount), -activeMs * 1000);
+  await Promise.all([
+    call(`/v1/agents/${agent}/requests`, request),
+    call(`${experimental}/__test/flush-billing`, {}),
+  ]);
+  assert.deepEqual(await ledger(), charged, "replaying an interrupted admission cannot add or drop its charge");
+});

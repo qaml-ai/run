@@ -173,6 +173,7 @@ import {
   admitHostExecution,
   waitHostExecution,
   abortHostExecution,
+  hostExecutionTask,
   executionParams,
   HOST_EXECUTION_TOOL,
 } from "./host-execution.ts";
@@ -1983,6 +1984,17 @@ export class CamelAgent extends DurableObject<Env> {
         await this.ctx.storage.put(`cancelled-request:${record.id}`, true);
   }
   private async cancelHostIntent(record: RequestRecord) {
+    // Pi may have committed the task before the adapter's acceptance write was
+    // interrupted. Cancel that real work through its normal receipt path.
+    const pi = await this.harness.pi(), task = await hostExecutionTask(pi, record.id);
+    if (task !== undefined) {
+      const latest = (await this.ctx.storage.get<RequestRecord>(reqKey(record.id))) ?? record;
+      if (latest.state === "completed") return;
+      await this.ctx.storage.put(reqKey(record.id), { ...latest, task: Number(task), accepted: true, state: "running" });
+      await abortHostExecution(pi, record.id);
+      await this.settle(record.id, 0);
+      return;
+    }
     const completed = { ...record, state: "completed" as const, status: "failed", endedAt: Date.now(),
       outcome: { error: "Execution aborted", result: { code: "aborted" } } };
     await this.ctx.storage.put(reqKey(record.id), completed);
@@ -2040,7 +2052,13 @@ export class CamelAgent extends DurableObject<Env> {
         saved.began = Date.now();
         await this.ctx.storage.put(reqKey(saved.id), saved);
       }
-      return Number(await startHostExecution(pi, root, saved.id, { code, timeoutMs, maxOutputCharacters }, tool));
+      const task = await startHostExecution(pi, root, saved.id, { code, timeoutMs, maxOutputCharacters }, tool);
+      if (this.env.TEST_MODEL === "1" && await this.ctx.storage.get("test:crash-host-acceptance")) {
+        await this.ctx.storage.delete("test:crash-host-acceptance");
+        await this.ctx.storage.put("test:host-unaccepted-task", Number(task));
+        throw Object.assign(new Error("Injected interruption after native host admission"), { status: 503 });
+      }
+      return Number(task);
     });
     this.track(record.id);
     return record;
@@ -2936,10 +2954,12 @@ export class CamelAgent extends DurableObject<Env> {
         this.env.TEST_MODEL === "1" &&
         request.method === "GET"
       ) {
+        const unaccepted = await this.ctx.storage.get<number>("test:host-unaccepted-task");
         return json({
           crashReached: !!(await this.ctx.storage.get("test:crash-reached")),
           pending: (await this.ctx.storage.list({ prefix: "billing:" })).size,
           hostFinishedAt: await this.ctx.storage.get<number>("test:host-finished-at"),
+          unacceptedFinishedAt: unaccepted === undefined ? undefined : (await waitHostExecution(await this.harness.pi(), unaccepted as never)).endedAt,
         });
       }
       if (
@@ -2949,7 +2969,12 @@ export class CamelAgent extends DurableObject<Env> {
       ) {
         await this.ctx.storage.delete("test:crash-reached");
         await this.ctx.storage.delete("test:crash-owner");
-        const input = (await body(request)) as { events?: boolean; beforeReceipt?: boolean };
+        const input = (await body(request)) as { events?: boolean; beforeReceipt?: boolean; beforeAcceptance?: boolean };
+        if (input.beforeAcceptance === true) {
+          await this.ctx.storage.delete("test:host-unaccepted-task");
+          await this.ctx.storage.put("test:crash-host-acceptance", true);
+          return json({ armed: true });
+        }
         if (input.beforeReceipt === true) {
           await this.ctx.storage.delete("test:host-finished-at");
           await this.ctx.storage.delete("test:host-stop-owner");
