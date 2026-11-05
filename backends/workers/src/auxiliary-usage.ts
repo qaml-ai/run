@@ -8,7 +8,7 @@ export type AuxiliaryCall = {
   requestId?: string;
   /** Pi's durable tool call ID, including the run ID if the provider reuses call IDs. */
   callId: string;
-  kind: "decision" | "web_search" | "x_search" | "web_fetch" | "image";
+  kind: "decision" | "web_search" | "x_search" | "web_fetch" | "image" | "transcription";
   /** Captured before the external call, so a late answer cannot charge a reset budget. */
   startedAt: number;
 };
@@ -74,10 +74,11 @@ export async function auxiliaryUsageCosts(env: PostgresEnv, tenant: string, agen
     const row = (await sql.query(`select
       coalesce(sum((message->'_workersAuxiliary'->>'costUsd')::double precision) filter(where message->'_workersAuxiliary'->>'kind'='decision'),0) as decision,
       coalesce(sum((message->'_workersAuxiliary'->>'costUsd')::double precision) filter(where message->'_workersAuxiliary'->>'kind'='image'),0) as image,
+      coalesce(sum((message->'_workersAuxiliary'->>'costUsd')::double precision) filter(where message->'_workersAuxiliary'->>'kind'='transcription'),0) as transcription,
       coalesce(sum((message->'_workersAuxiliary'->>'costUsd')::double precision) filter(where message->'_workersAuxiliary'->>'kind' in ('web_search','x_search','web_fetch')),0) as web
       from pi_usage_receipts where tenant=$1 and session_id=$2 and accounted and entry_id<0
       and message ? '_workersAuxiliary' and message->'_workersAuxiliary'->>'requestId'=$3`, [tenant, agent, requestId])).rows[0];
-    return { decisionCostUsd: Number(row.decision), imageCostUsd: Number(row.image), webCostUsd: Number(row.web) };
+    return { decisionCostUsd: Number(row.decision), imageCostUsd: Number(row.image), webCostUsd: Number(row.web), transcriptionCostUsd: Number(row.transcription) };
   });
 }
 

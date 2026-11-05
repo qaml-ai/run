@@ -1,0 +1,361 @@
+import { AUDIO_LIMITS } from "../../../src/limits.ts";
+import {
+  checkedAudio,
+  openaiTranscription,
+  Transcriber,
+  type Transcript,
+} from "./media/transcription.ts";
+import type { AgentIdentity, UsageRecord } from "./media/types.ts";
+import {
+  admitMedia,
+  mediaKey,
+  mediaOutbound,
+  type MediaBindings,
+} from "./media-api.ts";
+import { mediaAzure } from "./media-azure.ts";
+import {
+  keyServices,
+  type KeyEnv,
+  type KeyServices,
+} from "./security-services.ts";
+import { database, transaction, withSql } from "./postgres.ts";
+import { EndUserCredits } from "./end-user-credits.ts";
+import {
+  readAgentSpendLimit,
+  remainingAgentSpend,
+  runSpend,
+} from "./agent-spend.ts";
+import {
+  admitAuxiliaryUsage,
+  recordAuxiliaryUsage,
+} from "./auxiliary-usage.ts";
+import { publishPending } from "./webhooks.ts";
+import { HttpError, errorStatus } from "./errors.ts";
+import { boundedBytes } from "./images.ts";
+import type { AttachedFile } from "./attachment-markers.ts";
+
+export type AttachmentAudioScope = {
+  tenant: string;
+  agent: string;
+  requestId: string;
+  spendLimit?: number;
+  keyScope?: string;
+  identity?: AgentIdentity;
+  actor?: string;
+  bucket?: string;
+};
+type Env = MediaBindings & KeyEnv;
+type Scope = AttachmentAudioScope & { callId: string; startedAt: number };
+type Receipt = { scope: Scope; usage: UsageRecord };
+type Cached = {
+  fingerprint: string;
+  state: "pending" | "complete";
+  transcript?: Transcript;
+  untranscribed?: string;
+  error?: { status: number; message: string; code: string };
+};
+type Host = {
+  transcriber?: Transcriber;
+  read?: (file: AttachedFile) => Promise<Uint8Array>;
+  budget?: () => Promise<number>;
+  admit?: () => Promise<void>;
+  record?: (receipt: Receipt) => Promise<void>;
+  hold?: (
+    usd: number,
+  ) => Promise<
+    { settle(usd: number): Promise<void>; release(): Promise<void> } | undefined
+  >;
+};
+
+async function recordAudio(
+  env: Env,
+  services: KeyServices,
+  { scope, usage }: Receipt,
+) {
+  await transaction(env, async (sql) => {
+    if (
+      await recordAuxiliaryUsage(
+        sql,
+        { ...scope, kind: "transcription" },
+        {
+          costUsd: usage.usage.cost.total,
+          provider: usage.provider,
+          model: usage.model,
+        },
+      )
+    )
+      await services.accounts.recordUsageIn(sql, scope.tenant, scope.agent, {
+        ...usage,
+        requestId: scope.requestId,
+        ...(scope.identity ? { identity: scope.identity } : {}),
+        ...(scope.actor ? { actor: scope.actor } : {}),
+        ...(scope.keyScope ? { keyScope: scope.keyScope } : {}),
+      });
+  });
+  await services.accounts.usageCommitted(scope.tenant);
+  await publishPending(env);
+}
+
+/** A known transcript and its charge survive a failed Postgres acknowledgement. */
+export async function flushAttachmentTranscriptions(
+  env: Env,
+  storage: DurableObjectStorage,
+  record?: Host["record"],
+) {
+  const receipts = await storage.list<Receipt>({
+    prefix: "transcription-billing:",
+  });
+  if (!receipts.size) return;
+  const services = record ? undefined : await keyServices(env);
+  for (const [key, receipt] of receipts) {
+    if (record) await record(receipt);
+    else await recordAudio(env, services!, receipt);
+    await storage.delete(key);
+  }
+}
+
+/** Source attachment transcription policy, using the shared media provider and billing journal. */
+export async function transcribeAttachments(
+  env: Env,
+  storage: DurableObjectStorage,
+  scope: AttachmentAudioScope,
+  files: AttachedFile[],
+  host: Host = {},
+): Promise<AttachedFile[]> {
+  const plain = files.map(({ transcribe: _transcribe, ...file }) => file);
+  const chosen = files.flatMap((file, index) =>
+    (file.transcribe ?? file.contentType.split(";")[0].startsWith("audio/"))
+      ? [index]
+      : [],
+  );
+  if (!chosen.length) return plain;
+  await flushAttachmentTranscriptions(env, storage, host.record);
+  const services =
+    host.transcriber && host.record && host.admit && host.budget
+      ? undefined
+      : await keyServices(env);
+  const transcriber =
+    host.transcriber ??
+    new Transcriber({
+      provider: openaiTranscription({
+        outbound: mediaOutbound(env),
+        baseUrl: env.MEDIA_BASE_URL,
+      }),
+      key: (tenant, keyScope, provider) =>
+        mediaKey(
+          env,
+          tenant,
+          keyScope,
+          provider,
+          services,
+          mediaAzure(env)?.transcriptionDeployment,
+        ),
+      price: () =>
+        ({
+          ...services!.accounts.billing.pricing,
+          ...(env.TEST_MODE === "1"
+            ? JSON.parse(env.MEDIA_PRICING ?? "{}")
+            : {}),
+        }).transcription,
+    });
+  const read =
+    host.read ??
+    (async (file) => {
+      const object = await env.BUCKET.get(file.key);
+      if (!object) throw new HttpError(503, "Attached audio is missing");
+      return boundedBytes(object.body, AUDIO_LIMITS.fileBytes);
+    });
+  const failed = (index: number, error: unknown) => {
+    if (files[index].transcribe || errorStatus(error, 500) === 402) throw error;
+    plain[index] = {
+      ...plain[index],
+      untranscribed: (error instanceof Error
+        ? error.message
+        : String(error)
+      ).slice(0, 300),
+    };
+  };
+  const audio: {
+    index: number;
+    header: ReturnType<typeof checkedAudio>;
+    cacheKey: string;
+    fingerprint: string;
+  }[] = [];
+  let seconds = 0;
+  for (const [position, index] of chosen.entries()) {
+    try {
+      const file = files[index],
+        cacheKey = `attachment-audio:${scope.requestId}:${index}`;
+      const fingerprint = Array.from(
+        new Uint8Array(
+          await crypto.subtle.digest(
+            "SHA-256",
+            new TextEncoder().encode(
+              JSON.stringify([
+                file.chunks,
+                file.contentType,
+                scope.keyScope,
+                scope.identity,
+                scope.actor,
+                scope.bucket,
+              ]),
+            ),
+          ),
+        ),
+        (byte) => byte.toString(16).padStart(2, "0"),
+      ).join("");
+      const cached = await storage.get<Cached>(cacheKey);
+      if (cached) {
+        if (cached.fingerprint !== fingerprint)
+          throw new HttpError(
+            409,
+            "Attached audio changed during a retry",
+            "IDEMPOTENCY_CONFLICT",
+          );
+        if (cached.state === "pending")
+          throw new HttpError(
+            503,
+            "The previous transcription has an unknown outcome; use a new request ID",
+            "TRANSCRIPTION_UNCERTAIN",
+          );
+        if (cached.error)
+          throw new HttpError(
+            cached.error.status,
+            cached.error.message,
+            cached.error.code,
+          );
+        plain[index] = {
+          ...plain[index],
+          ...(cached.transcript ? { transcript: cached.transcript } : {}),
+          ...(cached.untranscribed
+            ? { untranscribed: cached.untranscribed }
+            : {}),
+        };
+        continue;
+      }
+      if (position >= AUDIO_LIMITS.files)
+        throw new HttpError(
+          413,
+          `At most ${AUDIO_LIMITS.files} audio files are transcribed for a message`,
+          "AUDIO_TOO_LONG",
+        );
+      if (file.size > AUDIO_LIMITS.fileBytes)
+        throw new HttpError(
+          413,
+          `${file.path} is larger than ${AUDIO_LIMITS.fileBytes} bytes, the most transcription takes`,
+          "AUDIO_TOO_LARGE",
+        );
+      const header = checkedAudio(await read(file), file.path);
+      if (seconds + header.seconds > AUDIO_LIMITS.messageSeconds)
+        throw new HttpError(
+          413,
+          `At most ${AUDIO_LIMITS.messageSeconds} seconds of audio are transcribed for a message`,
+          "AUDIO_TOO_LONG",
+        );
+      seconds += header.seconds;
+      audio.push({ index, header, cacheKey, fingerprint });
+    } catch (error) {
+      failed(index, error);
+    }
+  }
+  if (!audio.length) return plain;
+  const budget = host.budget
+    ? await host.budget()
+    : Math.min(
+        remainingAgentSpend(
+          await readAgentSpendLimit(env, scope.tenant, scope.agent),
+        ),
+        scope.spendLimit === undefined
+          ? Infinity
+          : scope.spendLimit -
+              (await withSql(env, (sql) =>
+                runSpend(sql, scope.tenant, scope.agent, scope.requestId),
+              )),
+      );
+  const estimate = audio.reduce(
+    (total, item) => total + transcriber.cost(item.header.seconds),
+    0,
+  );
+  if (estimate > budget)
+    throw new HttpError(
+      402,
+      `Transcribing this message's audio costs about $${estimate.toFixed(4)}, more than the $${Math.max(0, budget).toFixed(4)} left of this run's spend limit`,
+      "SPEND_LIMIT",
+    );
+  const held = host.hold
+    ? await host.hold(estimate)
+    : scope.identity?.subject
+      ? await new EndUserCredits(database(env)).hold(
+          scope.tenant,
+          scope.identity.subject,
+          scope.bucket ?? "default",
+          estimate,
+          "transcription",
+          { agent: scope.agent, requestId: scope.requestId },
+        )
+      : undefined;
+  let total = 0;
+  try {
+    for (const item of audio) {
+      const { index, cacheKey, fingerprint, header } = item;
+      const call = {
+        ...scope,
+        callId: `${scope.requestId}:attachment:${index}`,
+        startedAt: Date.now(),
+      };
+      try {
+        if (host.admit) await host.admit();
+        else {
+          await admitAuxiliaryUsage(env, scope);
+          await admitMedia(env, scope.tenant, services!);
+        }
+        const bytes = await read(files[index]);
+        await storage.put(cacheKey, { fingerprint, state: "pending" });
+        let made;
+        try {
+          made = await transcriber.transcribe(
+            scope,
+            { bytes, header },
+            {},
+            AbortSignal.timeout(AUDIO_LIMITS.timeoutMs + 10_000),
+          );
+        } catch (error) {
+          const saved = {
+            status: errorStatus(error, 500),
+            message: error instanceof Error ? error.message : String(error),
+            code: (error as { code?: string }).code ?? "TRANSCRIPTION_FAILED",
+          };
+          await storage.put(cacheKey, {
+            fingerprint,
+            state: "complete",
+            ...(files[index].transcribe || saved.status === 402
+              ? { error: saved }
+              : { untranscribed: saved.message.slice(0, 300) }),
+          });
+          throw error;
+        }
+        total += made.usage.usage.cost.total;
+        await storage.transaction(async (tx) => {
+          await tx.put(cacheKey, {
+            fingerprint,
+            state: "complete",
+            transcript: made.transcript,
+          });
+          await tx.put(`transcription-billing:${call.callId}`, {
+            scope: call,
+            usage: made.usage,
+          });
+        });
+        plain[index] = { ...plain[index], transcript: made.transcript };
+        // Leave a receipt in place if settling fails. A retry reuses its transcript.
+        await flushAttachmentTranscriptions(env, storage, host.record);
+      } catch (error) {
+        if (plain[index].transcript) throw error;
+        failed(index, error);
+      }
+    }
+  } finally {
+    await held?.settle(total);
+  }
+  return plain;
+}

@@ -36,6 +36,11 @@ import {
   type ImageRef,
 } from "./images.ts";
 import { keyServices, type KeyEnv } from "./security-services.ts";
+import {
+  transcribeAttachments,
+  type AttachmentAudioScope,
+} from "./attachment-transcription.ts";
+import type { MediaBindings } from "./media-api.ts";
 
 import {
   ATTACHMENT_MARKER as MARKER,
@@ -48,13 +53,10 @@ export {
   attachmentMessage,
   type AttachedFile,
 } from "./attachment-markers.ts";
-type Identity = {
-  tenant: string;
-  agent: string;
-  requestId: string;
+type Identity = AttachmentAudioScope & {
   mounts: Mount[];
 };
-type AttachmentEnv = FileBindings & KeyEnv;
+type AttachmentEnv = FileBindings & KeyEnv & MediaBindings;
 const pinnedVolumesKey = "file-pin-volumes";
 
 /** Files are staged once per request; only immutable references are durable. */
@@ -252,11 +254,9 @@ export class PromptAttachments {
           kind: "none",
           reason: "PDF inspection is unavailable on Workers",
         };
-      if (/^audio\//.test(entry.contentType) && input.transcribe !== false)
-        ref.untranscribed = "attachment transcription is not available";
       files.push(ref);
     }
-    return files;
+    return transcribeAttachments(this.env, this.storage, identity, files);
   }
 }
 
@@ -307,9 +307,12 @@ export function withAttachmentReferences<A extends Api>(
           content.push(part);
           continue;
         }
+        const needsBytes =
+          ref.media?.kind === "image" || documents.has(`${m}:${p}`);
         if (
-          !ref.key.startsWith(`files/${encodeURIComponent(tenant)}/`) ||
-          !(await authorizeFile?.(ref.key))
+          needsBytes &&
+          (!ref.key.startsWith(`files/${encodeURIComponent(tenant)}/`) ||
+            !(await authorizeFile?.(ref.key)))
         ) {
           content.push({
             type: "text",
