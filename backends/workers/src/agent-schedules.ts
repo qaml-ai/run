@@ -45,7 +45,7 @@ export function agentScheduleTools(builtins: string[] | undefined, host?: Schedu
       const value = definition.name === 'schedule' ? view(await host.create(args))
         : definition.name === 'list_schedules' ? { schedules: (await host.list()).map(view) }
         : { cancelled: await host.cancel(String(args.id)) };
-      return { output: [{ type: 'text' as const, text: JSON.stringify(value) }], details: value, structuredOutput: value as never };
+      return { output: [{ type: 'text' as const, text: JSON.stringify(value) }], details: value as never, structuredOutput: value as never };
     } });
   });
 }
