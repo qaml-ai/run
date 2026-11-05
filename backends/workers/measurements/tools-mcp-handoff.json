@@ -1,0 +1,181 @@
+{
+  "group": "tools-mcp",
+  "reportedFailureRevision": "d161edd4",
+  "initialBaseRevision": "0a96eb16970a2017cef6c379615f212bc3bad685",
+  "rebasedBaseRevision": "5c26c585f8580dab72e886547c7b25e4a9448026",
+  "validatedRevision": "538f43af5f5d33c2d6e4f166c078d98085e04e8c",
+  "suiteHash": "c381b0d3b8ae18a68fce6a70d2ede906d1d7c63f723c494d012e3b91963a37b2",
+  "recordedAt": "2026-11-05T22:21:05.420Z",
+  "sprite": "rt-pool-28",
+  "run": "20261105-161738-59072-1",
+  "command": "scripts/sprite-test HEAD env CONTRACT_REVISION=538f43af5f5d33c2d6e4f166c078d98085e04e8c bash backends/workers/scripts/check-tools-mcp.sh",
+  "final": {
+    "node": {
+      "httpPass": 38,
+      "httpFail": 0,
+      "sdkOnlyPass": 2,
+      "selectedCasePass": 40,
+      "selectedCaseFail": 0
+    },
+    "workers": {
+      "httpPass": 37,
+      "httpFail": 1,
+      "sdkOnlyPass": 2,
+      "selectedCasePass": 39,
+      "selectedCaseFail": 1
+    }
+  },
+  "checks": {
+    "rootTypecheck": "pass",
+    "workersTypecheck": "pass",
+    "docsBuildAndLlmsChecks": "pass",
+    "assertionIntegrity": "pass",
+    "focusedUnitTests": {
+      "pass": 31,
+      "fail": 0
+    },
+    "keyedUpsertIntegrationTests": {
+      "pass": 2,
+      "fail": 0
+    }
+  },
+  "assignedCases": [
+    {
+      "case": "Disconnected application admission",
+      "source": "tests/attach.test.ts:43",
+      "name": "a run for an agent whose tools need its application is refused while none is connected, after a short wait for one reconnecting",
+      "status": "pass",
+      "alreadyPassingAtStart": false
+    },
+    {
+      "case": "Application takeover error and replacement notice",
+      "source": "tests/attach.test.ts:6",
+      "name": "one application serves an agent's tools at a time: another connection is refused unless it takes over, and the replaced one is told why",
+      "status": "pass",
+      "alreadyPassingAtStart": false
+    },
+    {
+      "case": "Builtin creation/configuration/keyed upsert",
+      "source": "tests/builtins.test.ts:117",
+      "name": "an agent takes builtins without a definition: at creation, by upsert and by configuration, and only from its tenant",
+      "status": "pass",
+      "alreadyPassingAtStart": false
+    },
+    {
+      "case": "Structured web_fetch in model and codemode",
+      "source": "tests/builtins.test.ts:18",
+      "name": "web_fetch reads public pages as text, from the model and codemode, and never reaches inside",
+      "status": "pass",
+      "alreadyPassingAtStart": false
+    },
+    {
+      "case": "Private-address refusal text",
+      "source": "tests/builtins.test.ts:46",
+      "name": "web_fetch refuses internal addresses when nothing is allowed",
+      "status": "pass",
+      "alreadyPassingAtStart": false
+    },
+    {
+      "case": "Schedule, list, cancel and wake-up tools",
+      "source": "tests/builtins.test.ts:55",
+      "name": "an agent schedules, lists and cancels its own wake-ups, and wakes up",
+      "status": "pass",
+      "alreadyPassingAtStart": false
+    },
+    {
+      "case": "Spend-limit schedule error and next occurrence",
+      "source": "tests/builtins.test.ts:85",
+      "name": "a schedule of an agent at its spend limit records the 402 and moves to its next occurrence instead of retrying",
+      "status": "pass",
+      "alreadyPassingAtStart": false
+    },
+    {
+      "case": "Real V8 guest engine",
+      "source": "tests/code-engine.test.ts:21",
+      "name": "codemode runs on V8 for every tenant, and the limits API refuses an engine",
+      "status": "fail",
+      "alreadyPassingAtStart": false
+    },
+    {
+      "case": "Hosted MCP OAuth token scope",
+      "source": "tests/hosted-mcp.test.ts",
+      "name": "MCP clients sign in with OAuth: registration, consent, PKCE, rotating refresh tokens, revocation",
+      "status": "pass",
+      "alreadyPassingAtStart": false
+    },
+    {
+      "case": "Hosted MCP alias metadata",
+      "source": "tests/hosted-mcp.test.ts",
+      "name": "an alias serves everything, names MCP resources as reached, keeps the issuer, and sends browser pages to the public URL",
+      "status": "pass",
+      "alreadyPassingAtStart": false
+    },
+    {
+      "case": "Hosted MCP CLI, early refusal and public docs",
+      "source": "tests/hosted-mcp.test.ts",
+      "name": "the hosted MCP endpoint runs the CLI's tools as the caller, and reads no files or environment",
+      "status": "pass",
+      "alreadyPassingAtStart": false
+    },
+    {
+      "case": "Own MCP server clearing",
+      "source": "tests/inline-mcp-servers.test.ts:42",
+      "name": "an agent without a definition has MCP servers of its own, called with identity tokens that name it and no definition",
+      "status": "pass",
+      "alreadyPassingAtStart": true
+    },
+    {
+      "case": "Tool-source catalog matches model exposure",
+      "source": "tests/mcp.test.ts:156",
+      "name": "an agent shows every tool source and what its model gets, connecting to MCP servers only when asked",
+      "status": "pass",
+      "alreadyPassingAtStart": true
+    },
+    {
+      "case": "Capped history and large-context forks",
+      "source": "tests/tool-calls.test.ts:187",
+      "name": "history and forks keep capped tool details and deduplicated prompts without changing model content",
+      "status": "pass",
+      "alreadyPassingAtStart": false
+    }
+  ],
+  "assignedSummary": {
+    "total": 14,
+    "passing": 13,
+    "newlyPassing": 11,
+    "alreadyPassingAtStart": 2,
+    "remaining": 1
+  },
+  "remainingFailures": [
+    {
+      "area": "tools",
+      "source": "tests/code-engine.test.ts:21",
+      "name": "codemode runs on V8 for every tenant, and the limits API refuses an engine",
+      "status": "fail",
+      "durationMs": 7130.917139,
+      "reason": "The input did not match the regular expression /Output:\\n+v8/. Input: 'Script completed\\nWall time 0.0 seconds\\nOutput:\\n\\nother'",
+      "error": {
+        "message": "The input did not match the regular expression /Output:\\n+v8/. Input:\n\n'Script completed\\nWall time 0.0 seconds\\nOutput:\\n\\nother'\n",
+        "stack": "AssertionError [ERR_ASSERTION]: The input did not match the regular expression /Output:\\n+v8/. Input:\n\n'Script completed\\nWall time 0.0 seconds\\nOutput:\\n\\nother'\n\n    at file:///home/sprite/rt/tests/contract/areas/code-engine.public.contract.test.ts:26:10\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/ported.ts:12:13\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)",
+        "expected": {},
+        "actual": "Script completed\nWall time 0.0 seconds\nOutput:\n\nother",
+        "operator": "match"
+      },
+      "backend": "workers"
+    }
+  ],
+  "ctoDecision": {
+    "topic": "Native V8 guest sandbox",
+    "current": "Pi codemode runs guest JavaScript in QuickJS/Wasm in a separate Worker. The host V8 engine does not satisfy the guest-engine contract.",
+    "decision": "Adopt a native Dynamic Worker guest implementation behind the existing sandbox boundary, or keep this parity gap pending that work.",
+    "requirements": [
+      "deterministic replay and exchange barriers",
+      "restricted globals and outbound capabilities",
+      "bounded output and persistence",
+      "cancellation, CPU termination and sibling responsiveness",
+      "memory limits and concurrency ownership"
+    ],
+    "prototype": "An isolated Sprite smoke passed real Intl, RPC tool/result exchange and blocked outbound fetch; it did not validate replay or resource isolation. No sandbox implementation or limits were replaced."
+  },
+  "scope": "Focused tools,mcp comparison only; no full 590-case run or Cloudflare deployment. Node runtime behavior and contract assertions are unchanged."
+}
