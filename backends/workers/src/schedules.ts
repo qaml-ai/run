@@ -85,7 +85,8 @@ export async function deliverScheduleEmail(env:ScheduleEnv,id:string) {
   const reply=String(result.reply),format=row.email.format??'markdown';
   let messageId:string|undefined;
   if(env.TEST_MODE!=='1') {
-   if(!env.MAIL||!env.SCHEDULE_EMAIL_FROM)throw Error('Schedule mail transport is not configured');
+   const from=env.SCHEDULE_EMAIL_FROM||env.AGENT_ACCOUNT_EMAIL_FROM;
+   if(!env.MAIL||!from)throw Error('Schedule mail transport is not configured');
    // SendEmail has no AbortSignal. Renew only while the send is active; never
    // start it after another consumer has acquired the expired lease.
    const renew=async()=>{
@@ -99,7 +100,7 @@ export async function deliverScheduleEmail(env:ScheduleEnv,id:string) {
     renewing=renew().then(owned=>{if(!owned)clearInterval(timer);}).catch(error=>failure(env,'schedule_mail_lease_failed',error)).finally(()=>{renewing=undefined;});
    },20000);
    try {
-    messageId=(await env.MAIL.send({from:env.SCHEDULE_EMAIL_FROM,to:row.email.to,subject:row.email.subject,headers:{'X-CamelRun-Delivery':id},text:format==='html'?readableText(reply).text:reply,...(format==='text'?{}:{html:format==='html'?reply:markdownEmail(reply)})})).messageId;
+    messageId=(await env.MAIL.send({from,to:row.email.to,subject:row.email.subject,headers:{'X-CamelRun-Delivery':id},text:format==='html'?readableText(reply).text:reply,...(format==='text'?{}:{html:format==='html'?reply:markdownEmail(reply)})})).messageId;
    } finally {clearInterval(timer);await renewing;}
   }
   if(!(await finish('sent',undefined,messageId)).rowCount)return false;
