@@ -3,15 +3,15 @@
   "area": "all",
   "group": "webhooks",
   "nodeKey": "1ff65be69bdb97687bb551ad863a1ab48c42d7c4726928e25ab5efd896fabdfc",
-  "suiteHash": "65af56a1c957282a54d6e7d0512980e7d2f5c6e73ad9674d05b2a73235d4351c",
-  "revision": "0bdefc191d38f7653a4568135fb743457e8f9fcb",
-  "durationMs": 37379.068496,
+  "suiteHash": "89ddba6f9c0dd2f121fe32b0db66722f3662c4dd740d49a8fcc03096fab84e77",
+  "revision": "10c8ee951bc544ee8ee5df491239f94e8b1456d4",
+  "durationMs": 30422.529488,
   "runtime": {
     "node": "v24.22.1",
     "platform": "linux",
     "arch": "x64"
   },
-  "recordedAt": "2026-11-05T23:11:09.146Z",
+  "recordedAt": "2026-11-05T23:33:38.979Z",
   "expectedCases": 10,
   "rows": [
     {
@@ -19,7 +19,7 @@
       "source": "tests/end-user-webhooks.test.ts",
       "name": "end-user events reach an endpoint that selected them, signed",
       "status": "pass",
-      "durationMs": 10242.687656,
+      "durationMs": 8978.25395,
       "reason": "",
       "backend": "workers"
     },
@@ -28,7 +28,7 @@
       "source": "tests/billing-alerts.test.ts",
       "name": "registered billing webhooks are delivered by the existing worker with valid signatures",
       "status": "pass",
-      "durationMs": 9168.968494,
+      "durationMs": 7910.608361,
       "reason": "",
       "backend": "workers"
     },
@@ -37,7 +37,7 @@
       "source": "tests/usage-webhooks.test.ts",
       "name": "a rotated usage webhook secret signs beside the old one for a day, and removing the webhook stops events",
       "status": "pass",
-      "durationMs": 7388.422513,
+      "durationMs": 8188.098131,
       "reason": "",
       "backend": "workers"
     },
@@ -46,7 +46,7 @@
       "source": "tests/usage-webhooks.test.ts",
       "name": "calls through a tenant's own endpoint are sent too, named as the agent names its model",
       "status": "pass",
-      "durationMs": 9255.563652,
+      "durationMs": 9037.013642,
       "reason": "",
       "backend": "workers"
     },
@@ -54,13 +54,9 @@
       "area": "webhooks",
       "source": "tests/usage-webhooks.test.ts",
       "name": "each model response's usage is POSTed, signed, to the tenant's webhook: retried after a failure, and kept across a restart",
-      "status": "fail",
-      "durationMs": 29538.267189,
-      "reason": "Timed out waiting for delivery after the restart",
-      "error": {
-        "message": "Timed out waiting for delivery after the restart",
-        "stack": "Error: Timed out waiting for delivery after the restart\n    at until (file:///home/sprite/rt/tests/contract/http.ts:28:38)\n    at async file:///home/sprite/rt/tests/contract/areas/usage-webhook-recovery.ported.test.ts:48:3\n    at async file:///home/sprite/rt/tests/contract/ported.ts:13:13\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)"
-      },
+      "status": "pass",
+      "durationMs": 16094.459894,
+      "reason": "",
       "backend": "workers"
     },
     {
@@ -68,7 +64,7 @@
       "source": "tests/webhooks.test.ts:103",
       "name": "a run that ends with an error is sent as run.failed",
       "status": "pass",
-      "durationMs": 6870.38235,
+      "durationMs": 6813.785172,
       "reason": "",
       "backend": "workers"
     },
@@ -77,7 +73,7 @@
       "source": "tests/webhooks.test.ts:118",
       "name": "the usage webhook still works, apart from endpoints, and gets usage in its original body",
       "status": "pass",
-      "durationMs": 6829.667138,
+      "durationMs": 6580.158438,
       "reason": "",
       "backend": "workers"
     },
@@ -86,7 +82,7 @@
       "source": "tests/webhooks.test.ts:25",
       "name": "webhook endpoints: registered with the event types they want, managed, and each sent its events in a signed envelope",
       "status": "pass",
-      "durationMs": 10331.303348,
+      "durationMs": 8658.568638,
       "reason": "",
       "backend": "workers"
     },
@@ -95,7 +91,7 @@
       "source": "tests/webhooks.test.ts",
       "name": "a run whose event could not be written when it ended has it written with the agent's next load or run, once",
       "status": "pass",
-      "durationMs": 11670.423672,
+      "durationMs": 12120.275883,
       "reason": "",
       "backend": "workers"
     },
@@ -104,7 +100,7 @@
       "source": "tests/webhooks.test.ts",
       "name": "in a rolling deploy, nodes of the previous release see only usage webhook deliveries, and their usage webhook changes take effect",
       "status": "pass",
-      "durationMs": 6606.454711,
+      "durationMs": 6842.191745,
       "reason": "",
       "backend": "workers"
     }
@@ -113,12 +109,12 @@
     {
       "index": 1,
       "total": 2,
-      "durationMs": 33707.795997
+      "durationMs": 30422.529488
     },
     {
       "index": 2,
       "total": 2,
-      "durationMs": 37379.068496
+      "durationMs": 28668.418115
     }
   ]
 }

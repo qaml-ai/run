@@ -1,15 +1,14 @@
 # Lifecycle and SDK gap closure
 
-This branch was rebased onto `codex/workers-parity` at `5370128b` (files/platform PR #657, after fast harness PR #656).
-The evidence below comes from local workerd on the team's Sprites pool. No cloud
-deployment or production data was used. `src/`, the SDKs, and frozen contract
-assertions are unchanged by this branch.
+Rebased onto `codex/workers-parity` at `1e4d0335` (accounts/money PR #660,
+after delegation/configuration PR #658). Tests run on local workerd in the team's
+Sprites pool. No deployment or production data was used. This branch does not
+change `src/`, SDK code, or frozen contract assertions.
 
 ## Scope
 
-The assigned list contained 59 observed failures: **57 now have passing evidence;
-2 remain**. Results are cumulative focused runs, not a new 590-case scorecard.
-The coordinator still owns the full run.
+Of the 59 assigned failures, **57 have passing evidence; 2 remain**. This is a
+focused group result, not a new 590-case scorecard.
 
 | Assigned source cases | Count | Result |
 | --- | ---: | --- |
@@ -37,135 +36,81 @@ The coordinator still owns the full run.
 | Python SDK assigned cases | 9 | Pass |
 | Billing, usage and run webhook assigned cases | 9 | Pass |
 
-## Evidence
-
-Tests ran through `scripts/sprite-test <revision> ...` or the new
-`npm run parity` Sprite-pool wrapper. Static assertion checks ran in the same
-leased Sprite checkout using `sprite exec`.
-`backends/workers/scripts/check-lifecycle-sdk.sh` installs the Python and Workers
-dependencies, runs both TypeScript checks, then runs the selected contracts.
-`--files` selects unchanged TypeScript cases; `--python` selects the named
-cases through the harness's isolated Python runner and runs Node before Workers.
+## Final evidence
 
 | Revision | Selection | Result | Sprite log |
 | --- | --- | --- | --- |
-| `38021ff7` | Lifetime, list, idempotency, scoped configuration, agents, registry, errors, spend and 2 new regressions | 33/33 pass | `rt-pool-21:~/runs/20261105-161147-33055-1.log` |
-| `7e1a6b18` | Runs, watch, lazy connections, rotation, history units | 39 pass; completion stress timed out | `rt-pool-2:~/runs/20261105-160520-2610-1.log` |
-| `7e1a6b18` | Auth and UI ownership | 4/4 pass | `rt-pool-5:~/runs/20261105-160524-3308-1.log` |
-| `83f54946` | Completion stress, MCP full queue, token revocation | 3/3 pass; completion stress 44.8 s | `rt-pool-2:~/runs/20261105-161042-29106-1.log` |
-| `7e1a6b18` | Transport, identity, UI chat and handler | 33/34 pass; tool disconnect failed | `rt-pool-23:~/runs/20261105-160457-99653-1.log` |
-| `7e8e242a` | Post-rebase lifecycle and cancellation smoke | 13/13 pass | `rt-pool-3:~/runs/20261105-161631-53676-1.log` |
-| `7e8e242a` | HTTP, errors and webhooks | Node 15/15; Workers 15/15 pass | `rt-pool-29:~/runs/20261105-161657-55673-1.log` |
-| `7e8e242a` | 13 focused Python cases, including all 9 assigned failures | Node 13/13; Workers 12/13; credit error timing fixed below | `rt-pool-5:~/runs/20261105-161636-53997-1.log` |
-| `bed84579` | Python end-user credit, refusal code and bucket attribution | Node 1/1; Workers 1/1 pass | `rt-pool-23:~/runs/20261105-163027-5029-1.log` |
-| `076160e6` | All 6 deploy-drain contracts plus synchronous-tool regression | 6/7 pass; explicit detach was delayed, prompting the native-pipe repair | `rt-pool-3:~/runs/20261105-161857-65506-1.log` |
-| `bed84579` | 6 lifecycle regressions: queue/hash, spend, cancellation, omitted fields, refused file input, remount | 6/6 pass | `rt-pool-22:~/runs/20261105-163025-4865-1.log` |
-| `015f851a` | Native-pipe cancellation, synchronous tool deadline and lazy connections | 10/11 pass; cutoff still timed out through the development proxy | `rt-pool-2:~/runs/20261105-163220-11266-1.log` |
-| `d53c256c` | Public HTTP/errors/registry and document units | All 7 assigned cases and 2 document units pass; Node keepalive and missing-console fallback fail | `rt-pool-2:~/runs/20261105-163804-27951-1.log` |
-| `661da5d2` | Missing-console fallback, document units, docs build and source llms checks | 3/3 focused checks, docs build and 2/2 llms checks pass | `rt-pool-5:~/runs/20261105-164050-36816-1.log` |
-| `99625556` | Lifetime/list/idempotency/scoped configuration and 8 integration regressions | 23/23 pass; Workers typecheck passes | `rt-pool-4:~/runs/20261105-163904-30898-1.log` |
-| `4bb82fab` | Python image and end-user credit cases after final files/platform rebase | Node 2/2; Workers 2/2 pass; both typechecks pass | `rt-pool-4:~/runs/20261105-165504-68986-1.log` |
-| `57340d01` | Console journey routing and concurrent delivery after final rebase | 4/4 supported journey cases plus flush regression pass; both typechecks pass | `rt-pool-4:~/runs/20261105-165719-74137-1.log` |
-| `e2dab3bd` | Public HTTP/console/docs and frozen assertion guards after final rebase | Public cases pass; docs build, 2/2 llms checks and both assertion guards pass | `rt-pool-2:~/runs/20261105-165315-65706-1.log` |
-| `e2dab3bd` | Final files/platform rebase: lifecycle regressions, keyed sources, lifetime and schedules | 18/18 pass; root and Workers typechecks pass | `rt-pool-3:~/runs/20261105-165315-65720-1.log` |
-| `99625556` | All 9 assigned Python cases after the tools/MCP rebase | Node 9/9; Workers 9/9 pass; both typechecks pass | `rt-pool-3:~/runs/20261105-163853-30385-1.log` |
-| `47cb10b2` | Scheduled-email sender and recipient policy | 3/3 pass; Workers typecheck passes | `rt-pool-4:~/runs/20261105-164602-50961-1.log` |
-| `41a5e3b7` | Blocking-tool regression after TCP close repair | 1/1 pass; Workers typecheck passes | `rt-pool-2:~/runs/20261105-164202-40957-1.log` |
-| `41a5e3b7` | Cached-baseline lifecycle group, 3 Sprites | 98/102 pass in 250 seconds; 2 assigned host/fixture gaps and 2 additional scheduled-email gaps | `parity-workers-group-lifecycle.json` |
-| `41a5e3b7` | Cached-baseline webhook group, 2 Sprites | 10/10 pass in 84 seconds; report merged separately after supplying local inventory dependencies | `parity-workers-group-webhooks.json` |
+| `ca5aebe9` | Lifecycle group, 3 Sprites | 100/102 pass; only the two assigned host/fixture gaps below fail; 234.5 s wall time | `rt-pool-20/21/22:~/runs/20261105-172614-23246-{1,2,3}.log` |
+| `ca5aebe9` | Definitions and delegation, 2 Sprites | 49/49 pass; 214.5 s wall time | `rt-pool-5/4:~/runs/20261105-172610-22958-{1,2}.log` |
+| `ca5aebe9` | Assigned Python cases | Node 9/9; Workers 9/9; both typechecks pass | `rt-pool-25:~/runs/20261105-172632-23968-1.log` |
+| `ca5aebe9` | Incoming unit tests and configuration replay regression | 42/42 pass with the standard strip-only loader; both typechecks pass | `rt-pool-5:~/runs/20261105-172500-21805-1.log` |
+| `ca5aebe9` | Queue, definition target, keyed source and idempotency regressions | 12/12 pass; docs build, llms 2/2 and both frozen assertion guards pass | `rt-pool-26:~/runs/20261105-172633-24142-1.log` |
+| `10c8ee95` | Webhook group, 2 Sprites | 10/10 pass; 53.0 s wall time | `rt-pool-5/20:~/runs/20261105-173248-32218-{1,2}.log` |
+| `10c8ee95` | Python scoped credentials, token rotation, usage and credit buckets after the test-protocol repair | Node 2/2; Workers 2/2; both typechecks pass | `rt-pool-1:~/runs/20261105-173228-31526-1.log` |
+| `53cf79a8` | Model settings and external provider gateways | 7/7 pass; both typechecks pass | `rt-pool-1:~/runs/20261105-173559-35299-1.log` |
+| `53cf79a8` | Lifecycle, keyed-source, target-order, idempotency and lifetime checks after validation repair | 19/19 pass; both typechecks pass | `rt-pool-4:~/runs/20261105-173615-35649-1.log` |
 
-The final group runs reuse the checked-in green Node baseline
-`37fe8ceacf3bc0cd00210c288964a3d85119933e53516aa4392d3f40854b56dc`.
-Their reports retain the tested revision and complete case identities. The
-lifecycle report was merged in a clean checkout of its tested revision after
-the schedule follow-up began. No test was repeated to repair report collection.
-Older hashes above name the actual tested snapshots before rebasing. The group
-artifacts predate the final files/platform merge; the final overlap checks above
-cover that merge. This is cumulative evidence, not a new full-suite result.
+The checked-in reports retain their actual tested revisions:
+`parity-workers-group-lifecycle.json`, `parity-workers-group-webhooks.json`, and
+`parity-workers-definitions_delegation.json`. The selected Node baseline key is
+`1ff65be69bdb97687bb551ad863a1ab48c42d7c4726928e25ab5efd896fabdfc`.
+The Python method names are the nine failures assigned in the task.
 
-The initial complete Python area comparison at `ebf29e6c` had Node 56 pass and
-4 out of scope, and Workers 49 pass, 7 fail and 4 out of scope. It also includes
-pure SDK unit cases; those do not count as backend passes. Subsequent focused
-runs cover every one of those seven failures, with passing evidence for each.
+Intermediate integration runs exposed duplicate HTTP/file idempotency claims,
+cancelled-request replay, aborted child notification delivery, abrupt fixture
+queue shutdown, and a scripted provider protocol mismatch. The final checks
+above cover their repairs. In particular, webhook recovery now delivers the
+original token counts and provider cost after restart. No failed case was
+reclassified or assertion weakened. The guards retain 311 ported cases with
+2,516 original assertions and 49 product declarations with 620 assertions.
 
-The earlier transport count of 34 includes 10 pure SDK unit cases. The source
-disconnect case was first repaired with active-call pings, then reviewed and
-replaced with explicit connection detachment: a synchronous tool must retain
-its declared timeout. The final regression blocks the SDK loop for 3.5 seconds
-under a 10-second tool deadline. The cutoff case finally passes after the test
-TCP proxy propagates a client close to its upstream socket. The old relay left
-that half-open and hid the disconnect from workerd.
-
-Reproduction commands (at the listed tested revision; a changed Node source
-key first needs the selected Node baseline with `--backend=node`):
+Reproduce from the corresponding revision:
 
 ```sh
 npm run parity -- --backend=workers --group=lifecycle --shards=3
 npm run parity -- --backend=workers --group=webhooks --shards=2
+npm run parity -- --backend=workers --area=definitions,delegation --shards=2
+scripts/sprite-test HEAD bash backends/workers/scripts/check-lifecycle-sdk.sh --files <files>
 scripts/sprite-test HEAD bash backends/workers/scripts/check-lifecycle-sdk.sh --python <method names>
-scripts/sprite-test HEAD bash backends/workers/scripts/check-lifecycle-sdk.sh --files <contract files>
 ```
 
-The Python method names are the nine assigned `PythonSDKTest` failures.
-The exact selections and outputs are retained in the Sprite logs above.
+The helper runs root and Workers typechecks before selected cases. Python runs
+Node before Workers. The pool runner uses a matching green Node baseline; it
+never treats a missing baseline as a pass. Raw logs are also retained in the
+ignored `measurements/runs/` directories.
 
 ## Implementation
 
-- Configuration requests share durable ordering with prompts. Omitted model and
-  language resolve when the upsert is applied. Replacement defaults also resolve
-  against the preceding queued configuration. Idle upserts return their completed
-  receipt; busy upserts stay queued. Spend assignments take effect at
-  acceptance, and replay does not reset consumed allowance. Cancelled or refused
-  deferred prompts release their admission.
-- Key generations survive rotation and keyed recreation. Public request views
-  omit internal accounting and queue fields. Lists retain activity and failures.
-- Public documents reuse the existing document handler through one generated
-  static asset binding. POST idempotency and error
-  handling match the source API. End-user routes use the existing SQL service.
-- Console assets still pass through the existing account/journey handler. A
-  coalesced follow-up flush delivers events enqueued during an active send;
-  Workers do not have the source process's polling timer.
-- Webhook intent is durable beside stream events. SQL controls retry timing and
-  expiry; a new Worker restores a missing queue wake-up.
-- Concurrent history readers share in-flight indexing. The fixture preserves
-  Worker environment identity until tenant configuration changes, while reading
-  that configuration on every request. No authentication result is cached by
-  this change.
-- The public Worker explicitly detaches the exact Durable Object SSE connection
-  on cancellation. The internal connection header is removed before delivery.
-  The test TCP proxy now closes its upstream when its client closes.
-
-The broader lifecycle group also exposed two scheduled-email cases outside the
-assigned list. `47cb10b2` maps the source sender setting in the fixture and uses
-the same configured-tenant exemption as the source runtime, while retaining
-recipient verification and suppression checks. Its three focused schedule
-contracts passed. The final files/platform rebase already includes the same
-runtime repair; the branch retains the fixture setting translation.
+- Configuration and prompts share one durable queue. Upserts keep order, resolve
+  omitted settings at application time, and preserve a definition revision
+  applied ahead of them. Idle applications return their settled receipt. Spend
+  assignments take effect at acceptance; retries keep consumed allowance.
+- Credentials preserve token generations through rotation and recreation.
+  Request views hide queue and billing internals, while exposing source errors.
+  Concurrent history reads share indexing work and retain completion messages.
+- SDK streams detach their exact connection. SSE remains available for custom
+  fetch and buffered-proxy fallback; explicit WebSocket offers still work.
+- Public documents reuse the document handler through one asset binding.
+  Nested HTTP/file adapters acquire an idempotency key once. Existing console,
+  end-user, account, rate-limit and billing routes retain the integrated policy.
+- Webhook intent is durable beside stream events; SQL owns retry time and expiry.
+  The test fixture waits for active delivery handlers on graceful shutdown and
+  preserves immediate crashes. Scoped scripted providers retain their configured
+  wire protocol; real external providers keep their own protocol selection.
+  Configuration acceptance validates the new model and all retained settings.
 
 ## Remaining failures and decisions
 
-1. `tests/http-drain.test.ts:15` expects Node's `Keep-Alive: timeout=365`, then a
+1. `tests/http-drain.test.ts:15` expects Node's `Keep-Alive: timeout=365`, then
    process SIGTERM drain with `Connection: close`. Workerd has no Node HTTP
-   server or process-drain hook. The unchanged case fails at the keepalive
-   assertion; the fixture's drain operation is also explicitly unsupported.
-   Decide the equivalent Workers host contract before implementing its adapter.
-2. `tests/pi-durable-context-guard.test.ts:107` asks the fixture to inspect
-   Postgres `resume_failures` and `resume_after`. Workers recovery lives in the
-   Durable Object; `agentRecovery()` currently rejects this inspection. The
-   startup and live oversized-context cases pass. A recovery-state mapping
-   needs to inspect actual DO state, rather than inventing passing counters.
+   server/process-drain hook. The unchanged case fails at the keepalive assertion;
+   the fixture also does not define that host operation. Decide the equivalent
+   Workers host contract before implementing its adapter.
+2. `tests/pi-durable-context-guard.test.ts:107` inspects Postgres `resume_failures`
+   and `resume_after`. Workers recovery is in the Durable Object, and
+   `agentRecovery()` does not map that state yet. Startup and live oversized
+   context cases pass. The mapping must inspect real DO recovery state rather
+   than invent counters.
 
-Dual SSE/WebSocket offers currently select SSE so SDK custom fetch and buffered
-proxy fallback remain observable. Explicit WebSocket offers still work. This
-restores the SDK contract but does not validate production SSE active-time cost
-or hibernation behavior.
-
-A final integration check also retains the files/platform track's known
-`tests/journey-server.test.ts:120` account-export gap: `GET /v1/account/export`
-returns 404. It is outside the 59 assigned failures. Console journey routing
-and event delivery are checked separately. The final concurrent-flush
-regression preserves delivery when the fixture keeps its environment identity.
-
-The frozen assertion checks passed (311 ported cases / 2,516 assertions and
-49 product declarations / 620 assertions). No source assertion was weakened
-and no unsupported case was marked passed.
+Production SSE active-time cost and hibernation were not measured in these
+local workerd checks. The coordinator still owns the full contract run.
