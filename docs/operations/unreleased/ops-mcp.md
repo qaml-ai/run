@@ -24,7 +24,7 @@ to run out of credit are a sort away. `retention` charts sign-up cohorts by week
 conversations and inbound messages by provider (and answers at last whether anyone uses them), `schedules` counts what
 wakes agents and its backlog, `integrations` counts what accounts connect, and `help_requests` counts support load and
 where delivery stands. `agents` also breaks its totals down `by_type`. See
-[Operations MCP server](ops-mcp.md).
+`docs/operations/ops-mcp.md`.
 
 No migration and no configuration: the endpoint is the same stateless `/ops/mcp`, and a client that already signed in
 sees the new tools at its next `tools/list`.
