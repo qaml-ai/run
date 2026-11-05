@@ -210,6 +210,8 @@ export default {
           return json({ queued: await publishPending(env) });
         const money = await moneyRoutes(request, env, auth, ctx);
         if (money) return money;
+        const admin = await handleAdminRequest(request, env, auth);
+        if (admin) return admin;
         if (path === "/v1/decisions") {
           const decisions = decisionService(
             env as Env & DecisionEnv,
@@ -393,6 +395,17 @@ export default {
       if (!auth && tail === "/requests" && request.method === "POST") {
         const input = (await request.clone().json()) as { method?: string; params?: unknown };
         if (input.method === "configure") scopedConfiguration(input.params);
+      }
+      if (!browser && tail === "/events" && request.method === "GET" && request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+        const selected = negotiateEvents(request);
+        if (selected) return selected;
+      }
+      // Browser grants retain Node's read-only SSE policy. The internal agent
+      // endpoint also negotiates transports, so strip the WebSocket offer here.
+      if (browser && tail === "/events") {
+        const headers = new Headers(request.headers);
+        headers.set("accept", "text/event-stream");
+        request = new Request(request, { headers });
       }
       const response = await forward(request, env, entry.id, tail);
       return browser ? browserResponse(response, browser, tail) : response;

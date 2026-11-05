@@ -67,6 +67,26 @@ test('delegation persists idempotent child, budget and result events', async () 
   assert.equal(f.events.filter(event => event.event.type === 'subagent_end').length, 1);
   await Promise.all(f.tasks);
 });
+test('new child inherits the parent computer before submission, once across replay', async () => {
+  const f = fixture(), inherited: string[][] = [], fetch = f.host.fetch;
+  f.host.inheritComputer = async (...ids) => { inherited.push(ids); };
+  f.host.fetch = async (id, request) => {
+    if (request.method === 'POST') assert.deepEqual(inherited, [['parent', id]]);
+    return fetch(id, request);
+  };
+  await f.delegation.start({ instructions: 'helper', task: 'help' }, 'inherit', signal());
+  await Promise.all(f.tasks);
+  await f.delegation.start({ instructions: 'helper', task: 'help' }, 'inherit', signal());
+  assert.deepEqual(inherited, [['parent', 'child-1']]);
+});
+test('delegation to an existing agent preserves its computer connection', async () => {
+  const f = fixture(), context = f.host.context;
+  f.host.context = async () => ({ ...await context(), config: { delegate: { agents: [{ name: 'helper', agent: 'existing' }] } } });
+  f.host.target = async () => ({ id: 'existing', config: {} });
+  f.host.inheritComputer = async () => { assert.fail('must not replace an existing agent connection'); };
+  assert.equal((await f.delegation.start({ agent: 'helper', task: 'help' }, 'existing', signal())).id, 'existing');
+  await Promise.all(f.tasks);
+});
 test('child spending includes decisions, web tools, images and its own children', async () => {
   const f = fixture(), fetch = f.host.fetch;
   f.host.fetch = async (id, request) => request.method === 'GET' && new URL(request.url).pathname.startsWith('/requests/')

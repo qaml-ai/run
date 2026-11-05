@@ -21,6 +21,8 @@ export interface DelegationHost {
   /** Authoritative remaining spend after completed work, before active child shares. */
   remainingBudget?(background: boolean): Promise<number | undefined>;
   create(config: Configuration, key: string): Promise<{ id: string }>;
+  /** Copy an eligible parent connection before a newly created child starts. */
+  inheritComputer?(parent: string, child: string): Promise<void>;
   target(ref: { agent?: string; definition?: string }): Promise<{ id?: string; config: Configuration }>;
   fetch(id: string, request: Request): Promise<Response>;
   emit(event: unknown): Promise<void>;
@@ -123,6 +125,7 @@ export class Delegation {
           const made = resolved?.id ? resolved : await this.host.create({ ...(resolved?.config ?? config), ...(target ? {} : { systemPrompt: SUBAGENT_PROMPT }), name: admitted.name, type: 'subagent', ttlSeconds: MULTI_AGENT_LIMITS.childTtlSeconds }, key);
           admitted.id = made.id!;
           await this.host.storage.put(prefix + key, admitted);
+          if (!resolved?.id) await this.host.inheritComputer?.(id, admitted.id);
           signal.throwIfAborted();
           const metadata = { [PARENT_KEYS.agent]: id, [PARENT_KEYS.run]: run.id, [PARENT_KEYS.toolCall]: callId, [PARENT_KEYS.depth]: String(place.depth), [PARENT_KEYS.maxDepth]: String(place.maxDepth), [PARENT_KEYS.chain]: place.chain.join(',') };
           const signed = { ...metadata, [PARENT_KEYS.signature]: await signature(this.host.secret, admitted.id, admitted.requestId, String(place.depth), String(place.maxDepth), place.chain.join(',')) };
