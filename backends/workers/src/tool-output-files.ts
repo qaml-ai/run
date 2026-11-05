@@ -2,13 +2,13 @@ import { Buffer } from 'node:buffer';
 import { TOOL_FILE_LIMITS } from '../../../src/limits.ts';
 import { digest } from './api-contract.ts';
 import { safeName } from './file-policy.ts';
-import { workspaceId } from './file-mounts.ts';
 import type { FileBindings, Mount } from './files.ts';
 import { scratchMount } from './media/files-policy.ts';
 import type { WebFiles } from './web-policy-host.ts';
 
 /** Files returned by a tool share the volume writer and the source's per-call cap. */
 export async function toolResultFiles(env: FileBindings, scope: { tenant: string; agent: string; mounts: Mount[]; tool: string; call: string }): Promise<WebFiles | undefined> {
+  const { workspaceId } = await import('./file-mounts.ts');
   const own = await workspaceId(scope.agent);
   const mount = scratchMount(scope.mounts.map(value => ({ ...value, workspace: value.volumeId === own || value.volumeId === `agent:${scope.agent}` })));
   if (!mount) return;
