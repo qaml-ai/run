@@ -27,7 +27,15 @@ export function resolveToolInputs(inputs: { id: string; input: HumanInput; key?:
 }
 
 export function withInputNote(result: McpResult, reply: ToolInputReply): McpResult {
-  return reply.note ? { ...result, content: [...result.content ?? [], { type: "text", text: reply.note }] } : result;
+  if (!reply.note) return result;
+  // Keep the tool's data separate from the runtime's annotation for code callers.
+  let data = result.structuredContent;
+  const content = result.content ?? [];
+  if (data === undefined && content.length === 1 && (content[0] as { type?: string }).type === "text") {
+    const text = String((content[0] as { text?: string }).text ?? "");
+    try { data = JSON.parse(text); } catch { data = text; }
+  }
+  return { ...result, ...(data !== undefined ? { structuredContent: data } : {}), content: [...content, { type: "text", text: reply.note }] };
 }
 
 /** An MCP server's elicitation is a durable human wait, followed by the same keyed call. */

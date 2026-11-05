@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { resolveToolInputs, withInputNote } from '../src/mcp-inputs.ts';
+import { toolResult } from '../src/attached-tools.ts';
 import type { HumanInput } from '../src/human.ts';
 
 const approved: HumanInput = { question: 'Allow wipe?', kind: 'approval', createdAt: 1000, state: 'answered', answer: '{"approved":true}', answerDetail: { action: 'accept', by: { via: 'api', actor: 'ops-1' }, at: 4000 } };
@@ -29,4 +30,10 @@ test('approval proof carries sender ids while its note retains the display name'
   assert.ok('reply' in resolved);
   assert.deepEqual(resolved.reply.approval?.by, { via: 'agent', from: 'agent-1', actor: 'ops' });
   assert.match(resolved.reply.note!, /Operator/);
+});
+
+test('an approval annotation does not remove a host script tool result', () => {
+  const result = toolResult(withInputNote({ content: [{ type: 'text', text: 'saved' }] }, { note: '(Approved by Operator.)' }));
+  assert.equal(result.structuredOutput, 'saved');
+  assert.deepEqual(result.output, [{ type: 'text', text: 'saved' }, { type: 'text', text: '(Approved by Operator.)' }]);
 });
