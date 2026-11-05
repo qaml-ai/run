@@ -147,6 +147,9 @@ export class Directory {
         ? null
         : boundedText(suppliedKey, "Idempotency-Key", 80);
     const id = await this.id(key ?? crypto.randomUUID());
+    const owner=(await withSql(this.env,sql=>sql.query('select tenant,revoked from agents where id=$1',[id]))).rows[0];
+    if (owner && owner.tenant!==this.tenantId) throw new ApiError(403,'Agent belongs to another account','FORBIDDEN');
+    if (owner?.revoked) throw new ApiError(410,'Agent is deleted','AGENT_GONE');
     const requested=(input as {mounts?:unknown;remount?:boolean}).mounts;
     const before = requested === undefined ? await this.get(id) : undefined;
     // Volume initialization uses its own SQL and DO calls. Keep those outside

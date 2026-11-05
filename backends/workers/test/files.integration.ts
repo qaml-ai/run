@@ -88,14 +88,17 @@ test(
           );
           assert.equal(bulk.status, 200);
           const snapshotContents = (await bulk.json()) as {
-            files: { path: string; data: string }[];
+            files: { path: string; data?: string; text?: string }[];
           };
           assert.equal(
-            Buffer.from(
-              snapshotContents.files.find((file) => file.path === "/hello.txt")!
-                .data,
-              "base64",
-            ).toString(),
+            snapshotContents.files.find((file) => file.path === "/hello.txt")!
+              .text ??
+              Buffer.from(
+                snapshotContents.files.find(
+                  (file) => file.path === "/hello.txt",
+                )!.data!,
+                "base64",
+              ).toString(),
             saved,
           );
           await worker.stop(true);
@@ -134,7 +137,7 @@ test(
         },
       );
       await t.test(
-        "capabilities are signed, immutable and do not require API credentials",
+        "file links are signed and do not require API credentials",
         async () => {
           const response = await call(base + "/links", {
             method: "POST",
@@ -150,9 +153,9 @@ test(
           assert.match(await content.text(), /^writer /);
           const url = new URL(link.url);
           url.pathname = url.pathname.replace(
-            /\/([^/]+)\/file$/,
+            /\/([^/]+)\/[^/]+$/,
             (whole, signature: string) =>
-              `/${signature.slice(0, -1)}${signature.endsWith("a") ? "b" : "a"}/file`,
+              `/${signature.slice(0, -1)}${signature.endsWith("a") ? "b" : "a"}/hello.txt`,
           );
           assert.equal((await fetch(url)).status, 403);
         },

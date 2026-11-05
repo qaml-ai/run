@@ -12,8 +12,8 @@ export async function startFixture(
     token?: string;
     tenant?: string;
     modelURL?: string;
-    schema?: string;
     config?: string;
+    schema?: string;
     tenants?: { id: string; token?: string; tokenSha256?: string }[];
     vars?: Record<string, string>;
   } = {},

@@ -7,9 +7,11 @@ import {
 import { digest } from "./api-contract.ts";
 import { isIP } from "node:net";
 import { HttpError } from "./errors.ts";
+import { metric } from './observability.ts';
 
 export { webhookEvent, enqueueEvents, usageEvent, usageCost } from "./webhook-policy.ts";
-export type DeliveryMessage = { id: string; kind?: "email" };
+export type { WebhookEvent } from "./webhook-policy.ts";
+export type DeliveryMessage = { id: string; kind?: "email" | "schedule" };
 export type WebhookEnv = PostgresEnv & {
   WEBHOOKS?: Queue<DeliveryMessage>;
   API_TOKEN: string;
@@ -133,6 +135,8 @@ export async function createEndpoint(
 
 export async function publishPending(env: WebhookEnv): Promise<number> {
   if (!env.WEBHOOKS) return 0;
+  const backlog = (await withSql(env, sql => sql.query('select count(*) pending,min(created_at) oldest from webhook_deliveries'))).rows[0];
+  metric(env,'webhook_backlog',{WebhookBacklog:Number(backlog.pending),WebhookOldestPendingMs:backlog.oldest === null ? 0 : Math.max(0,Date.now()-Number(backlog.oldest))});
   const { rows } = await withSql(env, (sql) =>
     sql.query(
       "select id from (select id,due from webhook_deliveries union all select id,due from usage_webhook_outbox) pending where due <= $1 order by due limit 100",
@@ -204,7 +208,9 @@ export async function deliver(env: WebhookEnv, id: string): Promise<void> {
     await withSql(env, (sql) =>
       sql.query("delete from webhook_deliveries where id=$1", [id]),
     );
+    metric(env,'webhook_delivered',{WebhooksDelivered:1,WebhookDeliveryLagMs:Math.max(0,Date.now()-Number(row.created_at)),WebhookAttempts:Number(row.attempts)+1},{Kind:'endpoint'});
   } catch (error) {
+    metric(env,'webhook_failed',{WebhooksFailed:1},{Kind:'endpoint'});
     const detail =
       env.TEST_MODE === "1" && error instanceof Error
         ? error.message.replace(/https?:\/\/\S+/g, "[url]").slice(0, 200)
