@@ -158,3 +158,21 @@ test('a refused configuration waiter releases its attachment admission', { timeo
   await fixture.prompt(other.id, 'other');
   assert.deepEqual(fixture.model.bodies.map(lastUser), ['hold', 'other']);
 });
+
+test('keyed configuration preserves mounts unless it explicitly remounts', { timeout: 90_000 }, async t => {
+  const fixture = await createWorkersFixture(t);
+  const volume = (await fixture.call('/v1/volumes', { body: { name: 'mounted' } })).json.id;
+  const headers = { 'Idempotency-Key': 'mounted-configuration' };
+  const mounts = (path: string) => [{ volumeId: volume, path, mode: 'rw' }, { workspace: true }];
+  const initial = await fixture.call('/v1/agents', { body: { mounts: mounts('/data') }, headers });
+  assert.equal(initial.status, 201, initial.text);
+  const repeated = await fixture.call('/v1/agents', { body: { mounts: mounts('/data') }, headers });
+  assert.equal(repeated.status, 201, repeated.text);
+  const refused = await fixture.call('/v1/agents', { body: { mounts: mounts('/moved') }, headers });
+  assert.equal(refused.status, 409, refused.text);
+  assert.match(refused.json.error, /mounts cannot change.*remount: true/);
+  const moved = await fixture.call('/v1/agents', { body: { mounts: mounts('/moved'), remount: true }, headers });
+  assert.equal(moved.status, 201, moved.text);
+  await until(async () => (await fixture.call(`/v1/agents/${initial.json.id}/requests/${moved.json.reconfigured.id}`)).json.state === 'completed', 'remounted configuration');
+  assert.equal((await fixture.call(`/v1/agents/${initial.json.id}/mounts`)).json[0].path, '/moved');
+});

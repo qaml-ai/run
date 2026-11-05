@@ -203,6 +203,7 @@ import {
   type TerminalDelivery,
 } from "./event-log.ts";
 import { EVENT_CONNECTION_HEADER } from "./event-relay.ts";
+import { EndUserCredits, creditError } from "./end-user-credits.ts";
 import { agentBuiltins } from "./agent-builtins.ts";
 import { scheduleError, type ScheduleToolsHost } from "./agent-schedules.ts";
 import { auxiliaryRunCosts } from "./auxiliary-usage.ts";
@@ -627,7 +628,7 @@ export class CamelAgent extends DurableObject<Env> {
       },
     );
   }
-  private async admitRequest(conf: Config, id: string) {
+  private async admitRequest(conf: Config, id: string, bucket?: string) {
     let acquired = false;
     try {
       const rate = await runAdmission(this.env, conf.tenantId);
@@ -644,6 +645,10 @@ export class CamelAgent extends DurableObject<Env> {
         throw typeof limited === "string"
           ? Object.assign(new Error(limited), { status: 402 })
           : limited;
+      if (conf.config.subject && this.models.resolve(conf.config.model).api !== "openai-codex-responses") {
+        const broke = await new EndUserCredits(accounts.db).refusal(conf.tenantId, conf.config.subject, bucket ?? conf.config.bucket ?? "default");
+        if (broke) throw creditError(broke);
+      }
       const { limit } = await accounts.billing.busyLimit(conf.tenantId);
       acquired = await this.env.TENANTS.getByName(conf.tenantId).acquire(
         `${conf.id}:${id}`,
@@ -1856,6 +1861,7 @@ export class CamelAgent extends DurableObject<Env> {
     input: unknown,
     notice?: RuntimeNotice,
     delivery?: NoticeDelivery,
+    acceptedFingerprint?: string,
   ) {
     // Configuration acceptance joins admission; its application runs separately
     // so the directory's /configuration round trip can acquire admission later.
@@ -1866,7 +1872,7 @@ export class CamelAgent extends DurableObject<Env> {
     )
       return this.configureRequest(input);
     const result = this.admission.then(() =>
-      this.admit(input, notice, delivery),
+      this.admit(input, notice, delivery, acceptedFingerprint),
     );
     this.admission = result.catch(() => {});
     return result;
@@ -2101,7 +2107,9 @@ export class CamelAgent extends DurableObject<Env> {
     const pending = (await this.records()).sort((a, b) => (a.configurationWaitSequence ?? 0) - (b.configurationWaitSequence ?? 0));
     for (const record of pending) {
       if (record.state === 'completed' || record.configurationWait === undefined || record.configurationWait > order) continue;
-      try { await this.submit({ id: record.id, method: record.method, params: record.params }); }
+      // Attachment bytes have already become stored file references. This is
+      // internal continuation of the accepted request, not a new caller input.
+      try { await this.submit({ id: record.id, method: record.method, params: record.params }, undefined, undefined, record.fingerprint); }
       catch (error) {
         const completed = { ...record, state: 'completed' as const, endedAt: Date.now(), outcome: { error: error instanceof Error ? error.message : String(error) } };
         await this.ctx.storage.put(reqKey(record.id), completed);
@@ -2229,6 +2237,7 @@ export class CamelAgent extends DurableObject<Env> {
     input: unknown,
     notice?: RuntimeNotice,
     delivery?: NoticeDelivery,
+    acceptedFingerprint?: string,
   ) {
     await this.config();
     const request = object(input, ["id", "method", "params"]);
@@ -2434,10 +2443,10 @@ export class CamelAgent extends DurableObject<Env> {
     if (request.method === 'steer') params.whileRunning = 'steer';
     if (params.output !== undefined && params.whileRunning === "steer")
       throw new BadRequest("output is for a prompt that starts its own turn, not whileRunning: steer");
-    const fingerprint =
+    const fingerprint = acceptedFingerprint ?? (
       params.files === undefined
         ? canonical({ method: request.method, params })
-        : await digest(canonical({ method: request.method, params }));
+        : await digest(canonical({ method: request.method, params })));
     const old = await this.ctx.storage.get<RequestRecord>(reqKey(id));
     if (old && old.fingerprint !== fingerprint)
       throw Object.assign(new Error("Request id reused with different input"), {
@@ -2487,7 +2496,7 @@ export class CamelAgent extends DurableObject<Env> {
     await this.requireApplication(params.allowDisconnected);
     const preparing = params.files !== undefined && !old?.admitted && !(delivery && !delivery.run && notice);
     if (preparing) {
-      await this.promptPreparations.begin({ tenant: conf.tenantId, agent: conf.id, requestId: id, fingerprint }, () => this.admitRequest(conf, id));
+      await this.promptPreparations.begin({ tenant: conf.tenantId, agent: conf.id, requestId: id, fingerprint }, () => this.admitRequest(conf, id, params.bucket as string | undefined));
       await this.arm();
     }
     let files: Awaited<ReturnType<PromptAttachments["attach"]>> | undefined;
@@ -2631,7 +2640,7 @@ export class CamelAgent extends DurableObject<Env> {
     if (noTurn && notice) return landWithoutTurn(noTurn);
     await this.arm(Date.now() + 1000);
     if (!record.admitted) {
-      await this.admitRequest(conf, id);
+      await this.admitRequest(conf, id, params.bucket as string | undefined);
       record.admitted = true;
     }
     await this.ctx.storage.put(reqKey(id), record);
@@ -2791,7 +2800,7 @@ export class CamelAgent extends DurableObject<Env> {
         let resumed = await this.ctx.storage.get<RequestRecord>(reqKey(resumeId));
         if (!resumed) {
           await this.flushBilling(true);
-          if (!system) await this.admitRequest(conf, resumeId);
+          if (!system) await this.admitRequest(conf, resumeId, old.params?.bucket as string | undefined);
           resumed = { ...old, id: resumeId, piId, method: "resume", state: "running", status: undefined,
             outcome: undefined, startedAt: Date.now(), began: Date.now(), endedAt: undefined,
             usageBaseline: this.usageView(await this.usageForRequest(piId)) };
