@@ -7,7 +7,7 @@ import { approvalFor } from "./tool-call-policy.ts";
 import { toolCallMeta, toolCallSite, type ToolCallSite } from "./tool-call-context.ts";
 import type { ToolRegistration, ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
-import { registration, type McpResult, type ToolDefinition } from "./attached-tools.ts";
+import { registration, type McpResult, type ToolDefinition, type ToolSpawn } from "./attached-tools.ts";
 import { checkDocument, operations, formEncode, type Operation } from "./openapi-policy.ts";
 import { HttpError } from "./errors.ts";
 import { HostExecutionRequest } from "./host-execution.ts";
@@ -412,7 +412,7 @@ export function sourceDefinitionViews(config: { mcpServers?: RemoteSource[]; ope
 }
 
 export type SourceApproval = (input: { name: string; args: unknown; kind: "approval"; message: string; detail: Record<string, unknown> }) => Promise<void>;
-export type SourceIdentity = (api?: ToolExecutionApi) => Promise<{ issuer: string; claims: RuntimeIdentity; call?: ToolCallSite; elicit?: boolean; intent?: string; progress?: (event: ToolProgressEvent) => Promise<void> }>;
+export type SourceIdentity = (api?: ToolExecutionApi) => Promise<{ issuer: string; claims: RuntimeIdentity; call?: ToolCallSite; elicit?: boolean; intent?: string; progress?: (event: ToolProgressEvent) => Promise<void>; spawn?: ToolSpawn }>;
 
 /** Resolve only this agent's configured sources; credentials never enter model context. */
 export async function sourceTools(env: Env, tenant: string, definition: string | undefined, config: { mcpServers?: RemoteSource[]; openApi?: RemoteSource[] }, approve?: SourceApproval, identity?: SourceIdentity, report?: (failures: SourceFailure[]) => void, judge?: (input: JudgeInput, api: ToolExecutionApi, context: Context) => Promise<Judged>): Promise<ToolRegistration[]> {
@@ -463,7 +463,11 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
           const approval = await needsApproval(name, args, (tool as any).annotations?.destructiveHint === true, api, context, undefined, tool.description);
           if ("result" in approval) return approval.result;
           return api ? withToolInputs(reply => client.call(name, args, context?.abortSignal, api, reply), api, context, { name: `${source.name}__${name}`, args }, approval.reply) : client.call(name, args, context?.abortSignal);
-        })));
+        }, source.auth?.type === "runtime" ? async (...args) => {
+          const spawn = (await identity?.(args[2]))?.spawn;
+          if (!spawn) throw new Error("Sub-agents are not enabled on this runtime");
+          return spawn(...args);
+        } : undefined)));
       }
     } else {
       for (const operation of source.operations ?? []) result.push(markListed(registration({ name: `${source.name}__${operation.name}`, description: operation.description, inputSchema: operation.inputSchema, needsApproval: approvalFor(source.approval, operation.name, !operation.readOnly, operation.method) === "always", judged: approvalFor(source.approval, operation.name, !operation.readOnly, operation.method) === "judged", exposure: source.exposure, executionMode: operation.readOnly ? "parallel" : "sequential" }, async (input, api, context) => {

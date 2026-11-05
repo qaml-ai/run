@@ -204,7 +204,19 @@ export function toolResult(result: McpResult): ToolExecutionResult {
   return { output, ...(details !== undefined ? { details: details as never } : {}), ...(result.isError ? { isError: true } : structuredOutput !== undefined ? { structuredOutput: structuredOutput as never } : {}) };
 }
 
-export function registration(definition: ToolDefinition, call: (args: unknown, api: ToolExecutionApi, context: Context) => Promise<McpResult>): ToolRegistration {
+export type ToolSpawn = (tool: string, directive: unknown, api: ToolExecutionApi, context: Context) => Promise<McpResult>;
+
+/** A tool directive is trusted only after the source's runtime authentication. */
+export async function resolveSpawnDirective(result: McpResult, tool: string, api: ToolExecutionApi, context: Context, spawn?: ToolSpawn): Promise<McpResult> {
+  const meta = result._meta as Record<string, unknown> | undefined;
+  if (!meta || !Object.hasOwn(meta, 'camelrun/spawn')) return result;
+  if (!spawn) throw new Error(`${tool} asked to start a sub-agent (camelrun/spawn), which only a tool server with auth "runtime" may`);
+  const site = await toolCallSite(api, context);
+  if (site.innerCallId) throw new Error(`${tool} starts a sub-agent: call it directly, not from code`);
+  return spawn(tool, meta['camelrun/spawn'], api, context);
+}
+
+export function registration(definition: ToolDefinition, call: (args: unknown, api: ToolExecutionApi, context: Context) => Promise<McpResult>, spawn?: ToolSpawn): ToolRegistration {
   const exposure = definition.exposure ?? definition._meta?.["agent-runtime/exposure"];
   return {
     name: definition.name, description: definition.description ?? definition.name,
@@ -215,7 +227,7 @@ export function registration(definition: ToolDefinition, call: (args: unknown, a
     replay: "unsafe", ...(definition.executionMode ? { executionMode: definition.executionMode } : {}),
     ...(exposure === "codemode" ? { callers: ["tools"] as const } : exposure === "direct" ? { callers: ["model"] as const } : {}),
     execute: async (args, api, context) => {
-      try { return toolResult(await call(args, api, context)); }
+      try { return toolResult(await resolveSpawnDirective(await call(args, api, context), definition.name, api, context, spawn)); }
       catch (error) {
         const failure = error as { code?: string; message?: string; outcomeUnknown?: boolean };
         if (!failure.code) throw error;

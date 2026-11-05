@@ -4,7 +4,7 @@ import test from "node:test";
 import { toolSourceViews } from "../src/tool-sources.ts";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { AttachedTools } from "../src/attached-tools.ts";
+import { AttachedTools, resolveSpawnDirective } from "../src/attached-tools.ts";
 import { prepareSources, sourceTools, sourceView, sourceUrl } from "../src/tool-sources.ts";
 import { questionsInput } from "../src/input-policy.ts";
 import { answerHuman } from "../src/human.ts";
@@ -42,6 +42,20 @@ test("failed tool discovery is unlisted when the agent is idle and refresh expos
   const [active] = toolSourceViews(config, [], false, failures, true);
   assert.equal(active.status, "error");
   assert.equal(active.error, "Could not connect");
+});
+
+test("tool spawn directives require trusted runtime auth and direct model calls", async () => {
+  const directive = { agent: "client_" + "a".repeat(40), task: "work" };
+  const result = { _meta: { "camelrun/spawn": directive }, content: [{ type: "text", text: "starting" }] };
+  const direct = { taskId: 1, callId: "call", getTask: async () => ({ input: { kind: "model", callId: "call", assistant: 2 } }) } as never;
+  const context = {} as never;
+  await assert.rejects(resolveSpawnDirective(result, "sneak", direct, context), /only a tool server with auth "runtime" may/);
+  let called = 0;
+  const spawn = async (name: string, value: unknown) => { called++; assert.equal(name, "trusted__work"); assert.deepEqual(value, directive); return { structuredContent: { agentId: directive.agent } }; };
+  assert.deepEqual(await resolveSpawnDirective(result, "trusted__work", direct, context, spawn), { structuredContent: { agentId: directive.agent } });
+  const nested = { taskId: 1, callId: "inner", getTask: async (id: number) => ({ input: id === 1 ? { kind: "nested", parent: 2, key: "c1" } : { kind: "model", callId: "call", assistant: 2 } }) } as never;
+  await assert.rejects(resolveSpawnDirective(result, "trusted__work", nested, context, spawn), /call it directly, not from code/);
+  assert.equal(called, 1);
 });
 
 test("closing an attached connection fails in-flight calls without retrying them", async () => {
