@@ -1,4 +1,4 @@
-import { defineDoc, defineTool, hook, ToolTask, type Extension, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
+import { defineDoc, defineTool, hook, ToolTask, type Extension, type Harness, type ToolExecutionApi, type ToolRegistration, type ToolTaskInput } from "@earendil-works/pi-durable";
 import { obj, str } from "@earendil-works/pi-schema";
 import type { Context } from "@earendil-works/chord";
 import { answerInput, expiresAt, mayAnswer, questionsInput, resolution, type Answer, type HumanInputSettings, type InputRow, type Responder } from "./input-policy.ts";
@@ -145,6 +145,26 @@ export function systemHumanAnswer(system: NonNullable<Responder["system"]>, now 
 export function cancelledHumanInput(item: HumanInput, now = Date.now()): HumanInput {
   if (item.answer !== undefined) return item;
   return { ...item, ...systemHumanAnswer("aborted", now) };
+}
+
+/** A continued call starts again in the resume stream, with its original arguments. */
+export async function resumedHumanTools(pi: Pick<Harness, 'getTask' | 'commit'>, keys: string[], context: Context) {
+  const calls = new Map<string, { type: 'tool_execution_start'; toolCallId: string; toolName: string; args: unknown }>();
+  for (const key of keys) {
+    let task = Number(key.split(':')[0]);
+    if (!Number.isSafeInteger(task)) continue;
+    for (let depth = 0; depth < 64; depth++) {
+      const input = (await pi.getTask(task as never, context))?.input as ToolTaskInput | undefined;
+      if (input?.kind === 'nested') { task = Number(input.parent); continue; }
+      if (input?.kind !== 'model') break;
+      const entry = await pi.commit(tx => tx.entry(input.assistant), context);
+      for (const message of entry?.model ?? []) if (message.role === 'assistant')
+        for (const call of message.content) if (call.type === 'toolCall' && call.id === input.callId)
+          calls.set(call.id, { type: 'tool_execution_start', toolCallId: call.id, toolName: call.name, args: call.arguments });
+      break;
+    }
+  }
+  return [...calls.values()];
 }
 
 /** Pi keeps the tool result and its post-tools stop durable, even during abort. */

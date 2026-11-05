@@ -37,7 +37,7 @@ export class MessageProjection {
       });
       this.seen.set(message.timestamp, ended ? true : structuredClone(message));
     } else this.seen.set(message.timestamp, true);
-    if (ended) events.push({ type: "message_end", message });
+    if (ended && message.role !== "toolResult") events.push({ type: "message_end", message });
     if (ended && message.role === "assistant")
       for (const call of message.content)
         if (call.type === "toolCall")
@@ -54,7 +54,7 @@ export class MessageProjection {
         toolName: message.toolName,
         result: { content: message.content },
         isError: message.isError ?? false,
-      });
+      }, { type: "message_end", message });
     if (this.seen.size > 256) this.seen.delete(this.seen.keys().next().value!);
     return events;
   }

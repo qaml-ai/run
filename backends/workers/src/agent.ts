@@ -52,6 +52,7 @@ import {
   cancelledHumanInput,
   humanInputView,
   HumanInputs,
+  resumedHumanTools,
   type HumanInput,
 } from "./human.ts";
 import { answerList } from "./input-policy.ts";
@@ -2191,7 +2192,7 @@ export class CamelAgent extends DurableObject<Env> {
       const unresolved = new Set(await Promise.all(Object.entries(snapshot?.requests ?? {})
         .filter(([key, input]) => !selected.has(key) && input.answer === undefined)
         .map(async ([key, input]) => input.requestId ?? await this.ctx.storage.get<string>(`input-owner:${key}`))));
-      const requests: RequestRecord[] = [];
+      const requests: RequestRecord[] = [], resumeOwners = new Map<string, string>();
       for (const owner of new Set(checked.map(entry => entry.owner))) {
         if (!owner || unresolved.has(owner)) continue;
         const old = await this.ctx.storage.get<RequestRecord>(reqKey(owner));
@@ -2219,6 +2220,7 @@ export class CamelAgent extends DurableObject<Env> {
         }
         this.active = resumeId;
         requests.push(resumed);
+        resumeOwners.set(resumed.id, owner);
       }
       const inputs: ReturnType<typeof humanInputView>[] = [];
       await root.commit(async tx => {
@@ -2234,6 +2236,10 @@ export class CamelAgent extends DurableObject<Env> {
           inputs.push(humanInputView(entry.id, JSON.parse(JSON.stringify(current)), conf!.id, entry.owner));
         }
       }, BACKGROUND_CONTEXT);
+      if (fresh && !system) for (const resumed of requests.filter(request => request.method === 'resume')) {
+        const events = await resumedHumanTools(pi, checked.filter(entry => entry.owner === resumeOwners.get(resumed.id)).map(entry => entry.id), BACKGROUND_CONTEXT);
+        for (const event of events) await this.emit({ type: 'event', requestId: resumed.id, event });
+      }
       if (fresh) for (const entry of checked)
         await this.emit({ type: "event", requestId: entry.owner, event: { type: "input_resolved", id: entry.id } });
       for (const request of requests) this.track(request.id);
