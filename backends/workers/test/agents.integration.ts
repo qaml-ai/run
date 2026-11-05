@@ -32,6 +32,7 @@ test(
     const alpha = await agents.upsert("alpha", {
       model: "test/echo",
       instructions: "Answer simply.",
+      builtins: ["ask_human"],
     });
     await t.test(
       "create, keyed upsert, message, history and idempotency",
@@ -39,6 +40,7 @@ test(
         const again = await agents.upsert("alpha", {
           model: "test/echo",
           instructions: "Answer simply.",
+          builtins: ["ask_human"],
         });
         assert.equal(again.id, alpha.id);
         await again.close();
@@ -84,11 +86,18 @@ test(
       await fixture.worker.stop(true);
       await fixture.worker.start();
       assert.deepEqual(await request(`/v1/agents/${alpha.id}/inputs`), inputs);
-      await request(`/v1/agents/${alpha.id}/inputs/${inputs[0].id}`, {
-        answer: "yes",
-      });
+      const resumed = await request(
+        `/v1/agents/${alpha.id}/inputs/${inputs[0].id}`,
+        { answer: "yes" },
+      );
+      assert.equal(
+        (await request(`/v1/agents/${alpha.id}/requests/${sent.id}`)).outcome
+          .result.stopped,
+        "input_required",
+      );
+      assert.ok(resumed.request?.id);
       assert.match(
-        (await alpha.wait(sent.id, { timeoutMs: 30000 })).text ?? "",
+        (await alpha.wait(resumed.request.id, { timeoutMs: 30000 })).text ?? "",
         /yes/,
       );
     });

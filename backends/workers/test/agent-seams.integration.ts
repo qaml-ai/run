@@ -31,7 +31,10 @@ test(
     const f = await startFixture({ vars: { TENANT_MAX_ACTIVE: "1" } });
     t.after(() => f.stop());
     const call = client(f);
-    const a = (await call("/v1/agents", { model: "test/echo" })).body.id,
+    const a = (await call("/v1/agents", {
+        model: "test/echo",
+        builtins: ["ask_human"],
+      })).body.id,
       b = (await call("/v1/agents", { model: "test/echo" })).body.id;
     assert.equal(
       (
