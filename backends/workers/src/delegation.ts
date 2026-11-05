@@ -91,9 +91,9 @@ export class Delegation {
     if (parentDepth + 1 > maxDepth) throw new HttpError(400, `Delegation has reached its depth limit of ${maxDepth}: do this task yourself`, 'DELEGATION_DEPTH');
     return { depth: parentDepth + 1, maxDepth, chain: [...lineage?.chain ?? [], id] };
   }
-  async start(args: Record<string, unknown>, callId: string, signal: AbortSignal, background = false, api?: ToolExecutionApi): Promise<DelegatedChild> {
+  async start(args: Record<string, unknown>, callId: string, signal: AbortSignal, background = false, api?: ToolExecutionApi, override?: DelegateSettings): Promise<DelegatedChild> {
     const context = await this.host.context(api), { id, config, run } = context;
-    const settings = config.delegate;
+    const settings = override ?? config.delegate;
     if (!settings) throw new HttpError(400, 'This agent has no delegation settings');
     const target = args.agent === undefined ? undefined : settings.agents?.find(target => target.name === args.agent);
     if (args.agent !== undefined && !target) throw new HttpError(400, `There is no agent ${String(args.agent)} to delegate to`);
@@ -120,7 +120,7 @@ export class Delegation {
     const place = await this.place(id, run, settings);
     const maxParallel = settings.maxParallel ?? MULTI_AGENT_LIMITS.maxParallel;
     let group: { messageIndex: number; delegates: number } | undefined;
-    if (!background && api?.getTask && api.commit) {
+    if (!background && !override && api?.getTask && api.commit) {
       const site = await toolCallSite(api);
       if (site.assistant !== undefined) {
         const entry = await api.commit(tx => tx.entry(site.assistant as never), BACKGROUND_CONTEXT);
@@ -281,9 +281,9 @@ export class Delegation {
     }
   }
   answer(child: DelegatedChild) { return { agentId: child.id, requestId: child.requestId, name: child.name, status: child.status, ...(child.outcome?.result?.reply ? { text: child.outcome.result.reply } : {}), ...(child.outcome?.result?.output !== undefined ? { output: child.outcome.result.output } : {}), ...(child.error ? { error: child.error } : {}) }; }
-  async cancel(requestId?: string) {
+  async cancel(requestId?: string, callPrefix?: string) {
     const children = await this.host.storage.transaction(async tx => {
-      const children = [...(await tx.list<DelegatedChild>({ prefix })).values()].filter(child => child.status === 'running' && (!requestId || child.parentRequestId === requestId));
+      const children = [...(await tx.list<DelegatedChild>({ prefix })).values()].filter(child => child.status === 'running' && (!requestId || child.parentRequestId === requestId) && (!callPrefix || child.toolCallId.startsWith(callPrefix)));
       for (const child of children) await tx.put(prefix + child.key, { ...child, cancelRequested: true });
       return children;
     });
@@ -392,13 +392,16 @@ export class Delegation {
       if (child.accepted) this.follow(child);
     }
   }
-  async toolsFor(settings: DelegateSettings, builtins: readonly string[], subagent = false): Promise<ToolRegistration[]> {
+  async targetDescriptions(settings: DelegateSettings) {
     const descriptions = new Map<string, string>();
     await Promise.all((settings.agents ?? []).filter(target => target.definition && !target.description).map(async target => {
       const resolved = await this.host.target(target).catch(() => undefined);
       if (resolved?.description) descriptions.set(target.definition!, resolved.description);
     }));
-    return this.tools(settings, builtins, subagent, target => target.definition ? descriptions.get(target.definition) : undefined);
+    return (target: NonNullable<DelegateSettings['agents']>[number]) => target.definition ? descriptions.get(target.definition) : undefined;
+  }
+  async toolsFor(settings: DelegateSettings, builtins: readonly string[], subagent = false): Promise<ToolRegistration[]> {
+    return this.tools(settings, builtins, subagent, await this.targetDescriptions(settings));
   }
   tools(settings: DelegateSettings, builtins: readonly string[], subagent = false, describe: Parameters<typeof delegateTool>[1] = () => undefined): ToolRegistration[] {
     const definitions: ToolDefinition[] = [...(builtins.includes('delegate') ? [delegateTool(settings, describe)] : []), ...(builtins.includes('agents') ? agentsTools(settings, describe) : [])];
