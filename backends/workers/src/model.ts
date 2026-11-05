@@ -27,7 +27,7 @@ import { stream as streamCodex, streamSimple as simpleCodex } from "@earendil-wo
 import { stream as streamAzure, streamSimple as simpleAzure } from "@earendil-works/pi-ai/api/azure-openai-responses";
 import { getModels, getModel, callSettings, withOpenRouterHosts, reasoningFloor } from "./model-catalog.ts";
 import { resolveModel, virtualChain, routeModel, virtualModelReferences, type ModelEndpoints, type CustomProviders } from "./model-policy.ts";
-import { deepseekContext } from "./deepseek-policy.ts";
+import { deepseekContext, refusedReasoningReplay } from "./deepseek-policy.ts";
 import { forcedToolChoice, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER } from "./output-policy.ts";
 import { normalizeContext, getCurrentTools } from "@earendil-works/pi-ai/utils/transcript";
 import { boundedModel } from "./model-context.ts";
@@ -135,6 +135,7 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEn
       try {
         let prepared = await prepare(model, context, options);
         let retry = false;
+        let reasoningRetries = 0;
         do {
         retry = false;
         let stalled: Promise<void> | undefined;
@@ -147,6 +148,11 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEn
         for await (const event of stream) {
           if (event.type === "error" || event.type === "done") await stalled;
           if (event.type === "error" && event.reason !== "aborted" && !isStalled(event.error.errorMessage) && prepared.transportError()) event.error.errorMessage = prepared.transportError();
+          if (event.type === "error" && event.reason !== "aborted" && prepared.model.provider === "openrouter" && refusedReasoningReplay(event.error.errorMessage) && reasoningRetries < 2 && !options?.signal?.aborted) {
+            reasoningRetries++;
+            retry = true;
+            continue;
+          }
           if (event.type === "error" && event.reason !== "aborted" && prepared.virtualNext && !event.error.content.length && isModelUnavailable(event.error) && !options?.signal?.aborted) {
             routing!.failed = prepared.model;
             prepared = await prepare(prepared.virtualNext, context, options);
