@@ -14,7 +14,12 @@ type Storage = Pick<DurableObjectStorage, "get" | "put" | "delete" | "list">;
 
 export class PromptPreparations {
   private active = new Set<string>();
-  constructor(private storage: Storage, private release: (receipt: PromptPreparation) => Promise<void>) {}
+  private storage: Storage;
+  private release: (receipt: PromptPreparation) => Promise<void>;
+  constructor(storage: Storage, release: (receipt: PromptPreparation) => Promise<void>) {
+    this.storage = storage;
+    this.release = release;
+  }
 
   async begin(input: Omit<PromptPreparation, "expiresAt" | "admitted">, admit: () => Promise<void>, now = Date.now()) {
     const key = PROMPT_PREPARATION_PREFIX + input.requestId;
