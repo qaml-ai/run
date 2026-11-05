@@ -151,7 +151,8 @@ export function configuration(input: unknown, defaultModel: string): { config: A
     config[field] = fields[field] as Record<string, unknown>[];
   }
   if (fields.humanInput !== undefined) config.humanInput = humanInputSettings(fields.humanInput);
-  if (fields.workflow !== undefined) config.workflow = workflowSettings(config.builtins, fields.workflow);
+  const workflow = workflowSettings(config.builtins, fields.workflow);
+  if (workflow !== undefined) config.workflow = workflow;
   for (const field of ["subagents"] as const) if (fields[field] !== undefined) {
     if (!fields[field] || typeof fields[field] !== "object" || Array.isArray(fields[field])) throw new BadRequest(`${field} must be an object`);
     config[field] = fields[field] as Record<string, unknown>;
