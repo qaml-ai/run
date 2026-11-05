@@ -31,6 +31,7 @@ test("configuration validates prompt, human input and exclusive lifetimes", () =
 });
 
 test("configuration retains provider settings, imports history and rejects reserved headers", () => {
+  assert.throws(() => configuration({ modelOverride: { cost: { input: 0 } } }, "test/echo"), /Unknown agent field: modelOverride/);
   const { config } = configuration({ maxOutputTokens: 300, temperature: 0.3, dataCollection: "deny", language: "pt-br", modelHeaders: { "cf-aig-metadata": "fixture" }, runLimits: { contextTokens: 24000, maxResponses: 3 }, importMessages: { format: "openai-chat", messages: [{ role: "user", content: "Remember Ada" }, { role: "assistant", content: "Hello" }] } }, "test/echo");
   assert.equal(config.language, "pt-BR");
   assert.equal(config.maxOutputTokens, 300);

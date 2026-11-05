@@ -91,7 +91,14 @@ export async function agentToken(secret: string, id: string): Promise<string> {
 
 const BUILTINS = ["file_link", "file_import", "web_fetch", "web_search", "x_search", "schedule", "ask_user", "ask_human", "delegate", "generate_image", "agents", "decide", "workflow"];
 export function configuration(input: unknown, defaultModel: string): { config: AgentConfiguration; ttlSeconds?: number | null } {
-  const fields = object(input, ["model", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "name", "type", "thinkingLevel", "mcp", "ttlSeconds", "idleTtlSeconds", "builtins", "webSearch", "delegate", "workflow", "decide", "mounts", "maxOutputTokens", "temperature", "dataCollection", "language", "modelHeaders", "runLimits", "initialMessages", "importMessages", "definition", "subject", "context", "keyScope", "spendLimit", "bucket", "humanInput", "subagents", "workspaceId", "remount", "prompt", "mcpServers", "openApi", "definitionRevision", "definitionOverrides"]);
+  let fields: Record<string, unknown>;
+  try {
+    fields = object(input, ["model", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "name", "type", "thinkingLevel", "mcp", "ttlSeconds", "idleTtlSeconds", "builtins", "webSearch", "delegate", "workflow", "decide", "mounts", "maxOutputTokens", "temperature", "dataCollection", "language", "modelHeaders", "runLimits", "initialMessages", "importMessages", "definition", "subject", "context", "keyScope", "spendLimit", "bucket", "humanInput", "subagents", "workspaceId", "remount", "prompt", "mcpServers", "openApi", "definitionRevision", "definitionOverrides"]);
+  } catch (error) {
+    if (error instanceof BadRequest && error.message.startsWith("Unsupported field: "))
+      throw new BadRequest(`Unknown agent field: ${error.message.slice("Unsupported field: ".length).split(", ")[0]}`);
+    throw error;
+  }
   const config: AgentConfiguration = { model: defaultModel };
   Object.assign(config, identityInput(fields));
   if (fields.bucket !== undefined && fields.bucket !== null) config.bucket = bucketInput(fields.bucket);
