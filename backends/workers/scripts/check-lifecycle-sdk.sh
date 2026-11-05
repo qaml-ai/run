@@ -17,12 +17,19 @@ if [[ ${1:-} == --python ]]; then
   shift
   for contract_backend in node workers; do
     CONTRACT_BACKEND=$contract_backend python3 - "$@" <<'PY'
-import runpy
 import sys
-import unittest
+from pathlib import Path
 
-unittest.defaultTestLoader.testNamePatterns = [f"*{name}" for name in sys.argv[1:]] or None
-runpy.run_path("tests/contract/python.py", run_name="__main__")
+sys.path.insert(0, str(Path("tests/contract").resolve()))
+from python_runner import inventory, run_cases
+
+wanted = set(sys.argv[1:])
+manifest = inventory(Path("tests/python_sdk.py"))
+selected = [row for row in manifest if not wanted or row["name"] in wanted or row["name"].split(".", 1)[1] in wanted]
+matched = {name for name in wanted if any(row["name"] == name or row["name"].endswith("." + name) for row in selected)}
+if matched != wanted:
+    raise SystemExit(f"Unknown Python cases: {sorted(wanted - matched)}")
+raise SystemExit(run_cases(selected, Path("tests/contract/python.py").resolve(), 2))
 PY
   done
 elif [[ ${1:-} == --files ]]; then
