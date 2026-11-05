@@ -68,6 +68,7 @@ export interface DirectoryEntry {
   initialized: boolean;
   deleted?: true;
   cleanupPending?: boolean;
+  pendingFork?: { sourceId: string; fingerprint: string };
 }
 export interface DirectoryFailure {
   failed: true;
@@ -108,7 +109,7 @@ export class Directory {
     this.env = env;
     this.tenantId = tenantId;
   }
-  private async id(key: string) {
+  async id(key: string) {
     return /^client_[a-f0-9]{40}$/.test(key)
       ? key
       : `client_${(await digest(`${this.tenantId}:${key}`)).slice(0, 40)}`;
@@ -138,6 +139,7 @@ export class Directory {
     input: unknown,
     suppliedKey?: string,
     runtimeOrigin?: string,
+    pendingFork?: { sourceId: string; fingerprint: string },
   ): Promise<DirectoryEntry | DirectoryFailure> {
     const { config, ttlSeconds } = configuration(input, this.env.MODEL);
     const workspaces = new Workspaces(database(this.env));
@@ -171,6 +173,9 @@ export class Directory {
       if (previous?.revoked)
         throw new ApiError(410, "Agent is deleted", "AGENT_GONE");
       const old = previous?.header as DirectoryEntry | undefined;
+      if (!pendingFork && old?.pendingFork) throw new ApiError(409, "Fork is still being copied", "FORK_IN_PROGRESS");
+      if (pendingFork && old && (old.pendingFork?.sourceId !== pendingFork.sourceId || old.pendingFork?.fingerprint !== pendingFork.fingerprint))
+        throw new ApiError(409, "Key belongs to another agent", "FORK_CONFLICT");
       if (requested===undefined && old?.config.mounts) config.mounts=old.config.mounts;
       if(old?.config.mounts&&requested!==undefined&&JSON.stringify(old.config.mounts)!==JSON.stringify(config.mounts)&&(input as {remount?:boolean}).remount!==true)
         throw new ApiError(409,"Agent mounts differ; set remount: true to change them");
@@ -192,6 +197,7 @@ export class Directory {
             ? old.revision
             : (old?.revision ?? 0) + 1,
         initialized: false,
+        ...(pendingFork ? { pendingFork } : {}),
       };
       const written = await sql.query(
         `insert into agents(id,tenant,header,revision,name,type,model,expires_at) values($1,$2,$3,$4,$5,$6,$7,$8)
@@ -273,7 +279,7 @@ export class Directory {
         error: "Agent revoked; cleanup pending",
         code: "CLEANUP_PENDING",
       };
-    await (await import('./file-mounts.ts')).releaseAgentFiles(this.env,this.tenantId,entry.id,entry.config.mounts??[]);
+    await (await import('./file-mounts.ts')).releaseAgentFiles(this.env,this.tenantId,entry.id,(entry.config.mounts??[]) as import("./files.ts").Mount[]);
     entry.cleanupPending = false;
     entry.config = {};
     entry.configHash = "";

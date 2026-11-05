@@ -1,8 +1,8 @@
 import { Directory, type AuthContext, type ControlEnv, type DirectoryEntry, type DirectoryFailure } from "./control.ts";
-import { agentToken, ApiError, digest } from "./api-contract.ts";
-import { body, object } from "./validation.ts";
+import { agentToken, ApiError, configuration, digest } from "./api-contract.ts";
+import { body, boundedText, object } from "./validation.ts";
 import { withSql } from "./postgres.ts";
-import { copyAgentWorkspace, forkWorkspaceMounts } from "./agent-workspace.ts";
+import { claimAgentWorkspace, claimFork, copyAgentWorkspace, forkWorkspaceMounts, readForkClaim, releaseForkClaim } from "./agent-workspace.ts";
 import type { FileBindings } from "./files.ts";
 import { provisionDefinition, visibleConfiguration } from "./definitions.ts";
 import { canonical } from "../../../shared/durable-json.ts";
@@ -80,21 +80,61 @@ export async function agentLifecycleRoutes(request: Request, env: ControlEnv & F
   const input = object(await body(request), ["key", "name", "atMessage", "ttlSeconds", "subject", "context", "systemPromptAppend", "modelHeaders"]);
   const suppliedKey = input.key ?? request.headers.get("Idempotency-Key") ?? undefined;
   if (suppliedKey !== undefined && typeof suppliedKey !== "string") throw new ApiError(400, "Invalid fork key");
-  const key = suppliedKey ?? crypto.randomUUID();
-  const directory = new Directory(env, entry.tenantId), existing = key ? await directory.get(key as string) : null;
-  const saved = existing as (DirectoryEntry & { forkedFrom?: {agentId:string;atMessage:number} }) | null;
-  if (saved) { if (saved.forkedFrom?.agentId !== entry.id) throw new ApiError(409, "Key belongs to another agent"); return json({id:saved.id,token:await agentToken(env.API_TOKEN,saved.id),expiresAt:saved.expiresAt,forkedFrom:saved.forkedFrom},201); }
-  const history = await payload(await call(env, entry.id, "/history"));
-  const at = input.atMessage === undefined ? history.messages.length - 1 : Number(input.atMessage);
-  if (!Number.isInteger(at) || at < -1 || at >= history.messages.length) throw new ApiError(400, "Invalid fork point");
-  const initialMessages = history.messages.slice(0, at + 1);
-  const { key: _key, atMessage: _at, ...settings } = input;
-  // Allocate the same identity as Directory before resolving private mounts.
-  const targetId = await directory.id(key);
-  const workspace = await forkWorkspaceMounts(entry.config.mounts, entry.id, targetId);
-  const created = result(await directory.upsert({ ...entry.config, ...settings, mounts:workspace.mounts, initialMessages, ttlSeconds: input.ttlSeconds === undefined ? (suppliedKey ? null : 86400) : input.ttlSeconds }, key, new URL(request.url).origin));
-  if (workspace.copyPrivate) await copyAgentWorkspace(env, entry.tenantId, entry.id, created.id);
-  const forkedFrom = {agentId:entry.id,atMessage:at};
-  await withSql(env, sql => sql.query("update agents set header=$3 where tenant=$1 and id=$2", [entry.tenantId,created.id,JSON.stringify({...created,forkedFrom})]));
-  return json({id:created.id,token:await agentToken(env.API_TOKEN,created.id),expiresAt:created.expiresAt,forkedFrom},201);
+  const key = boundedText(suppliedKey ?? crypto.randomUUID(), "Fork key", 80);
+  const directory = new Directory(env, entry.tenantId), targetId = await directory.id(key);
+  let saved = await directory.get(key) as (DirectoryEntry & { forkedFrom?: { agentId: string; atMessage: number } }) | null;
+  let claim = await readForkClaim(env, entry.tenantId, targetId);
+  if (saved?.deleted) {
+    if (claim) await releaseForkClaim(env, entry.tenantId, claim);
+    throw new ApiError(410, "Fork was deleted", "AGENT_GONE");
+  }
+  const answer = async (ready: NonNullable<typeof saved>) => {
+    if (ready.forkedFrom?.agentId !== entry.id) throw new ApiError(409, "Key belongs to another agent");
+    if (claim) await releaseForkClaim(env, entry.tenantId, claim);
+    return json({ id: ready.id, token: await agentToken(env.API_TOKEN, ready.id), expiresAt: ready.expiresAt, forkedFrom: ready.forkedFrom }, 201);
+  };
+  if (saved?.forkedFrom) return answer(saved);
+  if (saved && !claim) throw new ApiError(409, "Key belongs to another agent");
+  if (claim && claim.sourceId !== entry.id) throw new ApiError(409, "Key belongs to another agent");
+  if (claim?.expired || (claim && claim.expiresAt <= Date.now())) {
+    await releaseForkClaim(env, entry.tenantId, claim, true);
+    throw new ApiError(410, "Incomplete fork expired after 24 hours; use a new key", "FORK_EXPIRED");
+  }
+  if (!claim) {
+    const history = await payload(await call(env, entry.id, "/history"));
+    const at = input.atMessage === undefined ? history.messages.length - 1 : Number(input.atMessage);
+    if (!Number.isInteger(at) || at < -1 || at >= history.messages.length) throw new ApiError(400, "Invalid fork point");
+    const initialMessages = history.messages.slice(0, at + 1);
+    const { key: _key, atMessage: _at, ...settings } = input;
+    const workspace = await forkWorkspaceMounts(entry.config.mounts, entry.id, targetId);
+    const config = { ...entry.config, ...settings, mounts: workspace.mounts, initialMessages, ttlSeconds: input.ttlSeconds === undefined ? (suppliedKey ? null : 86400) : input.ttlSeconds };
+    configuration(config, env.MODEL);
+    const fingerprint = await digest(canonical(JSON.parse(JSON.stringify({ sourceId: entry.id, atMessage: at, config }))));
+    const ttl = env.TEST_MODE === "1" && request.headers.get("x-camel-test-fork-short-ttl") === "1" ? 1000 : 86400_000;
+    claim = await claimFork(env, entry.tenantId, { sourceId: entry.id, targetId, key, fingerprint, atMessage: at, copyPrivate: workspace.copyPrivate, config, origin: new URL(request.url).origin, expiresAt: Date.now() + ttl });
+  }
+  try {
+    // The plan predates Directory creation. Its source read set and pins are
+    // committed together, so a retry uses the same history and file versions.
+    saved = await directory.get(key) as typeof saved;
+    if (saved?.forkedFrom) return answer(saved);
+    const captured = claim.copyPrivate ? await claimAgentWorkspace(env, entry.tenantId, claim.sourceId, targetId, claim.expiresAt) : undefined;
+    const fail = env.TEST_MODE === "1" ? request.headers.get("x-camel-test-fork-failure") : null;
+    if (fail === "claimed") throw new ApiError(503, "Injected fork interruption before creation");
+    const created = result(await directory.upsert(claim.config, key, claim.origin, { sourceId: claim.sourceId, fingerprint: claim.fingerprint }));
+    if (fail === "created") throw new ApiError(503, "Injected fork interruption after creation");
+    if (claim.copyPrivate) await copyAgentWorkspace(env, entry.tenantId, claim.sourceId, targetId, captured, fail === "copied" ? 1 : undefined);
+    const forkedFrom = { agentId: claim.sourceId, atMessage: claim.atMessage };
+    const updated = await withSql(env, sql => sql.query("update agents set header=(jsonb_set(header::jsonb,'{forkedFrom}',$3::jsonb)-'pendingFork')::json where tenant=$1 and id=$2 and not revoked returning header", [entry.tenantId, created.id, JSON.stringify(forkedFrom)]));
+    if (!updated.rows.length) throw new ApiError(410, "Fork was deleted", "AGENT_GONE");
+    return answer(updated.rows[0].header);
+  } catch (error) {
+    // A concurrent retry may finish and release its read-set while this request
+    // is suspended. Its completed header is the authoritative result.
+    saved = await directory.get(key) as typeof saved;
+    if (saved?.deleted) { await releaseForkClaim(env, entry.tenantId, claim); throw error; }
+    if (saved?.forkedFrom) return answer(saved);
+    if (error instanceof ApiError && error.code === "FORK_CONFLICT") await releaseForkClaim(env, entry.tenantId, claim);
+    throw error;
+  }
 }

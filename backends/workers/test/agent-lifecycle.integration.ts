@@ -96,3 +96,89 @@ test("forks isolate a relocated private workspace, retain shared mounts, and pre
   const privateVolume = (await f.db.query("select count(*)::int n from volumes where name='workspace'")).rows[0].n;
   assert.equal(privateVolume, 2, "neither source without a workspace nor its fork creates one");
 });
+
+test("fork retries resume the claimed history and file versions after interruption", { timeout: 180000 }, async t => {
+  const f = await startFixture();
+  t.after(() => f.stop());
+  const call = (path: string, options: RequestInit = {}) => fetch(f.url + path, {
+    ...options, headers: { authorization: `Bearer ${f.token}`, ...options.headers },
+  });
+  async function json(path: string, value?: unknown, extra: Record<string, string> = {}) {
+    const response = await call(path, value === undefined ? {} : {
+      method: "POST", headers: { "content-type": "application/json", ...extra }, body: JSON.stringify(value),
+    });
+    const body = await response.json() as any;
+    assert.ok(response.ok, `${path}: ${response.status} ${JSON.stringify(body)}`);
+    return body;
+  }
+  const source = await json("/v1/agents", { initialMessages: [{ role: "user", content: "Original history" }] });
+  const mounts = await json(`/v1/agents/${source.id}/mounts`), volume = mounts[0].volumeId;
+  const write = async (name: string, value: string) => {
+    const response = await call(`/v1/agents/${source.id}/files/workspace/${name}`, { method: "PUT", body: value });
+    assert.equal(response.status, 201, await response.text());
+  };
+  const invalid = await call(`/v1/agents/${source.id}/fork`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ key: "correct-invalid", modelHeaders: { bad: 42 } }),
+  });
+  assert.equal(invalid.status, 400, await invalid.text());
+  assert.ok((await json(`/v1/agents/${source.id}/fork`, { key: "correct-invalid" })).id, "invalid input cannot leave a durable bad plan");
+  for (const point of ["created", "copied"]) {
+    await write("a.txt", `${point}: original a`);
+    await write("b.txt", `${point}: original b`);
+    const key = `resume-${point}`;
+    const interrupted = await call(`/v1/agents/${source.id}/fork`, {
+      method: "POST", headers: { "content-type": "application/json", "x-camel-test-fork-failure": point },
+      body: JSON.stringify({ key, atMessage: 0 }),
+    });
+    assert.ok(interrupted.status >= 500, await interrupted.text());
+    const pending = (await f.db.query("select header from agents where tenant=$1 and header->>'key'=$2", ["camelrun-proto-local", key])).rows[0].header;
+    assert.equal(pending.forkedFrom, undefined);
+    const before = point === "copied" ? await call(`/v1/agents/${pending.id}/files/workspace/a.txt`) : undefined;
+    const copiedVersion = before?.headers.get("x-file-version");
+    if (before) assert.equal(await before.text(), `${point}: original a`);
+    await write("a.txt", `${point}: newer a`);
+    await write("b.txt", `${point}: newer b`);
+    const held = await json(`/v1/volumes/${volume}/__gc?advance=82800000`, {});
+    assert.equal(held.held, 4, "the pending copy pins both old versions alongside current files");
+    await f.worker.stop(true);
+    await f.worker.start();
+    const forks = await Promise.all(Array.from({ length: 3 }, () => json(`/v1/agents/${source.id}/fork`, { key, atMessage: 0 })));
+    assert.ok(forks.every(fork => fork.id === pending.id), "concurrent retries converge on one fork");
+    for (const name of ["a", "b"]) {
+      const response = await call(`/v1/agents/${pending.id}/files/workspace/${name}.txt`);
+      assert.equal(await response.text(), `${point}: original ${name}`);
+      if (name === "b") assert.equal(response.headers.get("x-file-version"), "2", "concurrent retries copy a pending file only once");
+      if (name === "a" && copiedVersion) assert.equal(response.headers.get("x-file-version"), copiedVersion, "a completed file is not copied again");
+    }
+    assert.deepEqual((await json(`/v1/agents/${pending.id}/history`)).messages.map((message: any) => message.content), ["Original history"]);
+    assert.equal((await json(`/v1/volumes/${volume}/__gc?advance=82800000`, {})).held, 2, "completion releases the source read-set pins");
+    assert.equal((await json(`/v1/agents/${source.id}/fork`, { key })).id, pending.id);
+  }
+  const expiring = await call(`/v1/agents/${source.id}/fork`, {
+    method: "POST", headers: { "content-type": "application/json", "x-camel-test-fork-failure": "created", "x-camel-test-fork-short-ttl": "1" },
+    body: JSON.stringify({ key: "expired-copy" }),
+  });
+  assert.equal(expiring.status, 503, await expiring.text());
+  await write("a.txt", "after expired claim");
+  await new Promise(resolve => setTimeout(resolve, 1100));
+  for (let retry = 0; retry < 2; retry++) {
+    const expired = await call(`/v1/agents/${source.id}/fork`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: "expired-copy" }),
+    });
+    assert.equal(expired.status, 410);
+    assert.equal((await expired.json() as any).code, "FORK_EXPIRED");
+  }
+  assert.equal((await json(`/v1/volumes/${volume}/__gc`, {})).held, 2, "expired claims release their pins without recapturing new files");
+  const raced = await call(`/v1/agents/${source.id}/fork`, {
+    method: "POST", headers: { "content-type": "application/json", "x-camel-test-fork-failure": "claimed" },
+    body: JSON.stringify({ key: "ordinary-create-race" }),
+  });
+  assert.equal(raced.status, 503, await raced.text());
+  const ordinary = await json("/v1/agents", { name: "unrelated", mounts: [{ workspace: false }] }, { "idempotency-key": "ordinary-create-race" });
+  const conflict = await call(`/v1/agents/${source.id}/fork`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: "ordinary-create-race" }),
+  });
+  assert.equal(conflict.status, 409, await conflict.text());
+  assert.equal((await json(`/v1/agents/${ordinary.id}/configuration`)).name, "unrelated");
+});
