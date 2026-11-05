@@ -46,6 +46,9 @@ test("custom provider declarations, credentials, scopes and live routing", {time
   assert.equal(calls[0].headers.authorization,undefined);
   assert.equal(calls[0].body.temperature,0.3);
   assert.equal(calls[0].body.max_tokens??calls[0].body.max_completion_tokens,123);
+  await fixture.worker.stop(true);
+  await fixture.worker.start();
+  assert.equal((await agent.run("after restart",{timeoutMs:15000})).text,"Local provider answer");
   const output={type:"object" as const,properties:{answer:{type:"integer" as const}},required:["answer"],additionalProperties:false};
   const structured=await agent.run("structured",{output,timeoutMs:15000});
   assert.deepEqual(structured.output,{answer:42});
