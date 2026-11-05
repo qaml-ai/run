@@ -40,3 +40,32 @@ test('prompts submitted between upserts use their preceding configuration', { ti
     assert.ok(String(system).includes(`configuration ${label}.`), String(system));
   }
 });
+
+test('spend configuration applies before a queued turn and a retry preserves consumed allowance', { timeout: 90_000 }, async t => {
+  const gate = Promise.withResolvers<void>();
+  t.after(() => gate.resolve());
+  const fixture = await createWorkersFixture(t, { respond: body => ({
+    role: 'assistant', content: 'ok', usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0.25 },
+    ...(lastUser(body) === 'hold' ? { wait: gate.promise } : {}),
+  }) });
+  const agent = (await fixture.call('/v1/agents', { body: {} })).json;
+  const path = `/v1/agents/${agent.id}`;
+  const configure = () => fixture.call(`${path}/requests`, {
+    body: { id: 'allowance', method: 'configure', params: { spendLimit: { usd: 1 } } },
+  });
+  assert.equal((await configure()).status, 202);
+  await fixture.prompt(agent.id, 'spend');
+  const spent = async () => (await fixture.call(path)).json.spendLimit.spent;
+  assert.equal((await spent()).toFixed(2), '0.25');
+  assert.equal((await configure()).status, 202);
+  assert.equal((await spent()).toFixed(2), '0.25', 'replaying the configuration preserves its allowance counter');
+
+  const held = await fixture.call(`${path}/prompt`, { body: { text: 'hold' } });
+  assert.equal(held.status, 202);
+  await until(() => fixture.model.bodies.length === 2, 'held turn');
+  assert.equal((await fixture.call(`${path}/configuration`, { method: 'PATCH', body: { spendLimit: { usd: 0 } } })).status, 202);
+  const refused = await fixture.call(`${path}/prompt`, { body: { text: 'refused' } });
+  assert.deepEqual([refused.status, refused.json.code], [402, 'SPEND_LIMIT']);
+  gate.resolve();
+  await until(async () => (await fixture.call(`${path}/requests/${held.json.id}`)).json.state === 'completed', 'held turn completion');
+});

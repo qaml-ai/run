@@ -568,9 +568,7 @@ export class CamelAgent extends DurableObject<Env> {
     );
   }
   private async agentSpend(conf: Config) {
-    const spend = conf.config.spendLimit
-      ? await readAgentSpendLimit(this.env, conf.tenantId, conf.id)
-      : null;
+    const spend = await readAgentSpendLimit(this.env, conf.tenantId, conf.id);
     return spend
       ? {
           ...spend,
@@ -1852,8 +1850,8 @@ export class CamelAgent extends DurableObject<Env> {
     notice?: RuntimeNotice,
     delivery?: NoticeDelivery,
   ) {
-    // Directory applies configuration through this object's /configuration endpoint.
-    // Do not hold the admission queue while making that round trip.
+    // Configuration acceptance joins admission; its application runs separately
+    // so the directory's /configuration round trip can acquire admission later.
     if (
       input &&
       typeof input === "object" &&
@@ -2102,8 +2100,15 @@ export class CamelAgent extends DurableObject<Env> {
     }
   }
   private async configureRequest(input: unknown, replacement = false, origin?: string) {
+    const accepted = this.admission.then(() => this.acceptConfigurationRequest(input, replacement, origin));
+    this.admission = accepted.catch(() => {});
+    return accepted;
+  }
+  private async acceptConfigurationRequest(input: unknown, replacement: boolean, origin?: string) {
     const request = object(input, ['id', 'method', 'params']);
     if (!request.params || typeof request.params !== 'object' || Array.isArray(request.params)) throw new BadRequest('Expected configuration object');
+    const id = boundedText(request.id, 'id', 80);
+    if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new BadRequest('Invalid request id');
     if (!replacement && !Object.keys(request.params).length) throw new BadRequest("Give at least one configuration field");
     const conf = await this.config();
     const params = request.params as Record<string, unknown>;
@@ -2117,7 +2122,15 @@ export class CamelAgent extends DurableObject<Env> {
         if (error) throw new BadRequest(error);
       } catch (error) { throw new BadRequest(error instanceof Error ? error.message : String(error)); }
     }
-    return this.configurationQueue.enqueue({ id: boundedText(request.id, 'id', 80), method: 'configure', params }, replacement, origin);
+    if (!await this.ctx.storage.get(reqKey(id))) {
+      if ((await this.records()).filter(record => record.state !== 'completed').length >= MAX_OPEN_REQUESTS)
+        throw Object.assign(new Error('Too many requests queued for this agent'), { status: 429 });
+      // Like the source runtime, a new allowance takes effect before queued work.
+      // Replaying the request must not reset its already consumed counter.
+      if (Object.hasOwn(request.params, 'spendLimit'))
+        await setAgentSpendLimit(this.env, conf.tenantId, conf.id, (request.params as Record<string, unknown>).spendLimit);
+    }
+    return this.configurationQueue.enqueue({ id, method: 'configure', params }, replacement, origin);
   }
   private async applyConfigurationRequest(input: unknown, origin?: string) {
     const request = object(input, ["id", "method", "params"]);
@@ -2175,13 +2188,6 @@ export class CamelAgent extends DurableObject<Env> {
         status: updated.status,
         code: updated.code,
       });
-    if (Object.hasOwn(params, "spendLimit"))
-      await setAgentSpendLimit(
-        this.env,
-        conf.tenantId,
-        conf.id,
-        params.spendLimit,
-      );
     const record: RequestRecord = {
       ...previous,
       id,
@@ -2884,10 +2890,7 @@ export class CamelAgent extends DurableObject<Env> {
             (await this.harness.session().busy())
           )
             return json({ error: "Agent is busy" }, 409);
-          if (
-            canonical(old?.config.spendLimit ?? null) !==
-            canonical(incoming.config.spendLimit ?? null)
-          )
+          if (!old && incoming.config.spendLimit !== undefined)
             await setAgentSpendLimit(
               this.env,
               incoming.tenantId,
