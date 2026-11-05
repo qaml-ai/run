@@ -21,7 +21,7 @@ async function walk(directory) {
 // file, excluding build/cache directories, so a changed fixture cannot reuse a
 // green baseline just because its extension differs from the test sources.
 const suiteFiles = [...await walk("src"), ...await walk("shared"), ...await walk("clients"), ...await walk("tests"), ...await walk("packages"), ...await walk("migrations"), ...await walk("sandbox"), ...await walk("backends/workers/src"), ...await walk("backends/workers/codemode")];
-suiteFiles.push("package.json", "package-lock.json", "backends/workers/package.json", "backends/workers/package-lock.json", "backends/workers/test/fixture.ts", "backends/workers/test/local-worker.ts", "backends/workers/test/contract-entry.ts", "backends/workers/wrangler.test.jsonc", "backends/workers/codemode/wrangler.jsonc");
+suiteFiles.push("package.json", "package-lock.json", "backends/workers/package.json", "backends/workers/package-lock.json", "backends/workers/test/fixture.ts", "backends/workers/test/local-worker.ts", "backends/workers/test/local-worker-process.mjs", "backends/workers/test/contract-entry.ts", "backends/workers/wrangler.test.jsonc", "backends/workers/codemode/wrangler.jsonc");
 const hash = createHash("sha256");
 for (const file of suiteFiles.sort()) hash.update(file).update(await readFile(path.join(root, file)));
 const suiteHash = hash.digest("hex");
