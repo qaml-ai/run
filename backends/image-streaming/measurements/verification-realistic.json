@@ -1,0 +1,12 @@
+{
+  "source": "/Users/miguelsalinas/agent-runtime-wt/image-streaming/backends/image-streaming/measurements/cloud-realistic-2026-11-05T18-49-28-882Z.json.gz",
+  "smoke": false,
+  "checks": 53022,
+  "passed": 53022,
+  "failed": 0,
+  "failures": [],
+  "notes": [
+    "B/replay/probe: No execution filesystem: Pi could not save an artifact; output image remained marked",
+    "D/replay/probe: No execution filesystem: Pi could not save an artifact; output image remained marked"
+  ]
+}

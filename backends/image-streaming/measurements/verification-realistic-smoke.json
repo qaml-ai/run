@@ -1,0 +1,13 @@
+{
+  "source": "/Users/miguelsalinas/agent-runtime-wt/image-streaming/backends/image-streaming/measurements/cloud-realistic-smoke-2026-11-05T18-47-46-341Z.json.gz",
+  "smoke": true,
+  "checks": 300,
+  "passed": 300,
+  "failed": 0,
+  "failures": [],
+  "notes": [
+    "B/replay/probe: No execution filesystem: Pi could not save an artifact; output image remained marked",
+    "D/replay/probe: No execution filesystem: Pi could not save an artifact; output image remained marked",
+    "DO telemetry is missing: memory, CPU and error counters remain unverified"
+  ]
+}

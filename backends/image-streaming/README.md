@@ -58,10 +58,11 @@ npm run cloud -- --realistic --vision-only --smoke
 # Verify a completed realistic matrix; vision-only reports have no matrix.
 node scripts/verify-results.mjs measurements/cloud-realistic-YYYY-MM-DDTHH-MM-SS-mmmZ.json
 node scripts/report.mjs measurements/cloud-realistic-YYYY-MM-DDTHH-MM-SS-mmmZ.json
+node scripts/summarize-realistic.mjs measurements/cloud-realistic-YYYY-MM-DDTHH-MM-SS-mmmZ.json
 node scripts/phase-telemetry.mjs measurements/cloud-realistic-YYYY-MM-DDTHH-MM-SS-mmmZ.json
 ```
 
-The three report tools accept plain `.json` or gzip-compressed `.json.gz` files.
+The report tools accept plain `.json` or gzip-compressed `.json.gz` files.
 The default report search recognizes both formats. Realistic reductions write
 `comparison-realistic.json` and `phase-telemetry-realistic.json`.
 
@@ -169,4 +170,5 @@ invoice to itself.
 | `scripts/realistic-fixtures.mjs`, `scripts/realistic-sources.json` | Pinned Wikimedia candidate download and provenance |
 | `scripts/verify-results.mjs` | Independent completed-run correctness and cleanup checks |
 | `scripts/report.mjs` | Deduplicated comparison tables without filling telemetry gaps |
+| `scripts/summarize-realistic.mjs` | Per-object CPU, telemetry coverage and realistic-corpus totals |
 | `scripts/phase-telemetry.mjs` | Read-only per-phase Worker telemetry for proxy/server overhead |

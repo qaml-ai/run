@@ -1,0 +1,20 @@
+[
+  {
+    "source": "cloud-realistic-2026-11-05T18-49-28-882Z.json",
+    "archive": "cloud-realistic-2026-11-05T18-49-28-882Z.json.gz",
+    "originalBytes": 6795316,
+    "archiveBytes": 781635,
+    "originalSha256": "49d6ee91f992688da62e34de7a2309d8cbd8d3eaa5b76b0f3a7cdb69224081a9",
+    "archiveSha256": "951ed17909afd204d826ba8edf745f44d1bdb6756e1eaa60fc387c0e7ecf54a0",
+    "roundTrip": true
+  },
+  {
+    "source": "cloud-realistic-smoke-2026-11-05T18-47-46-341Z.json",
+    "archive": "cloud-realistic-smoke-2026-11-05T18-47-46-341Z.json.gz",
+    "originalBytes": 57414,
+    "archiveBytes": 8327,
+    "originalSha256": "a65b58660a9ec3689d216e8b43acc4bbcbbc67729334a1d224ac701afd0c1807",
+    "archiveSha256": "402b563492929d1c0bff5af080b421e5181da79a7c49c4a2c5db5a8717d54c98",
+    "roundTrip": true
+  }
+]

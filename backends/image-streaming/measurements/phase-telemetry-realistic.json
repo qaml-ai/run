@@ -1,0 +1,1645 @@
+{
+  "source": "cloud-realistic-2026-11-05T18-49-28-882Z.json",
+  "generatedAt": "2026-11-05T19:13:57.355Z",
+  "account": "85bbd288051330fb51ee1c86031a299b",
+  "phases": [
+    {
+      "kind": "single",
+      "id": "b-1-openai-completions",
+      "mode": "B",
+      "count": 1,
+      "api": "openai-completions",
+      "start": "2026-11-05T19:02:09.661Z",
+      "end": "2026-11-05T19:02:40.470Z",
+      "match": true,
+      "requestResult": 200
+    },
+    {
+      "kind": "single",
+      "id": "b-20-openai-completions",
+      "mode": "B",
+      "count": 20,
+      "api": "openai-completions",
+      "start": "2026-11-05T19:02:41.246Z",
+      "end": "2026-11-05T19:03:21.102Z",
+      "match": true,
+      "requestResult": 200
+    },
+    {
+      "kind": "single",
+      "id": "b-100-openai-completions",
+      "mode": "B",
+      "count": 100,
+      "api": "openai-completions",
+      "start": "2026-11-05T19:03:22.026Z",
+      "end": "2026-11-05T19:04:39.733Z",
+      "match": true,
+      "requestResult": 200
+    },
+    {
+      "kind": "single",
+      "id": "d-1-openai-completions",
+      "mode": "D",
+      "count": 1,
+      "api": "openai-completions",
+      "start": "2026-11-05T19:04:40.533Z",
+      "end": "2026-11-05T19:05:11.194Z",
+      "match": true,
+      "requestResult": 200
+    },
+    {
+      "kind": "single",
+      "id": "d-20-openai-completions",
+      "mode": "D",
+      "count": 20,
+      "api": "openai-completions",
+      "start": "2026-11-05T19:05:12.028Z",
+      "end": "2026-11-05T19:05:47.686Z",
+      "match": true,
+      "requestResult": 200
+    },
+    {
+      "kind": "single",
+      "id": "d-100-openai-completions",
+      "mode": "D",
+      "count": 100,
+      "api": "openai-completions",
+      "start": "2026-11-05T19:05:48.942Z",
+      "end": "2026-11-05T19:06:48.184Z",
+      "match": true,
+      "requestResult": 200
+    },
+    {
+      "kind": "single",
+      "id": "b-1-openai-responses",
+      "mode": "B",
+      "count": 1,
+      "api": "openai-responses",
+      "start": "2026-11-05T19:06:48.941Z",
+      "end": "2026-11-05T19:07:19.445Z",
+      "match": true,
+      "requestResult": 200
+    },
+    {
+      "kind": "single",
+      "id": "b-1-anthropic-messages",
+      "mode": "B",
+      "count": 1,
+      "api": "anthropic-messages",
+      "start": "2026-11-05T19:07:20.343Z",
+      "end": "2026-11-05T19:07:50.899Z",
+      "match": true,
+      "requestResult": 200
+    },
+    {
+      "kind": "single",
+      "id": "d-1-openai-responses",
+      "mode": "D",
+      "count": 1,
+      "api": "openai-responses",
+      "start": "2026-11-05T19:07:51.901Z",
+      "end": "2026-11-05T19:08:22.560Z",
+      "match": true,
+      "requestResult": 200
+    },
+    {
+      "kind": "single",
+      "id": "d-1-anthropic-messages",
+      "mode": "D",
+      "count": 1,
+      "api": "anthropic-messages",
+      "start": "2026-11-05T19:08:23.252Z",
+      "end": "2026-11-05T19:08:53.763Z",
+      "match": true,
+      "requestResult": 200
+    },
+    {
+      "kind": "concurrent",
+      "id": "concurrent-B-1",
+      "mode": "B",
+      "count": 1,
+      "agents": 50,
+      "start": "2026-11-05T19:09:28.495Z",
+      "end": "2026-11-05T19:09:29.830Z",
+      "matches": 50,
+      "attemptedAgents": 50
+    },
+    {
+      "kind": "concurrent",
+      "id": "concurrent-B-20",
+      "mode": "B",
+      "count": 20,
+      "agents": 50,
+      "start": "2026-11-05T19:09:29.841Z",
+      "end": "2026-11-05T19:09:35.117Z",
+      "matches": 50,
+      "attemptedAgents": 50
+    },
+    {
+      "kind": "concurrent",
+      "id": "concurrent-B-100",
+      "mode": "B",
+      "count": 100,
+      "agents": 50,
+      "start": "2026-11-05T19:09:35.129Z",
+      "end": "2026-11-05T19:09:57.326Z",
+      "matches": 50,
+      "attemptedAgents": 50
+    },
+    {
+      "kind": "concurrent",
+      "id": "concurrent-D-1",
+      "mode": "D",
+      "count": 1,
+      "agents": 50,
+      "start": "2026-11-05T19:09:57.339Z",
+      "end": "2026-11-05T19:09:58.828Z",
+      "matches": 50,
+      "attemptedAgents": 50
+    },
+    {
+      "kind": "concurrent",
+      "id": "concurrent-D-20",
+      "mode": "D",
+      "count": 20,
+      "agents": 50,
+      "start": "2026-11-05T19:09:58.841Z",
+      "end": "2026-11-05T19:10:02.701Z",
+      "matches": 50,
+      "attemptedAgents": 50
+    },
+    {
+      "kind": "concurrent",
+      "id": "concurrent-D-100",
+      "mode": "D",
+      "count": 100,
+      "agents": 50,
+      "start": "2026-11-05T19:10:02.721Z",
+      "end": "2026-11-05T19:10:19.012Z",
+      "matches": 50,
+      "attemptedAgents": 50
+    }
+  ],
+  "skipped": [],
+  "queries": [
+    {
+      "phaseId": "b-1-openai-completions",
+      "kind": "single",
+      "mode": "B",
+      "count": 1,
+      "requestedScript": "camelrun-proto-image-realistic",
+      "start": "2026-11-05T19:02:09.661Z",
+      "end": "2026-11-05T19:02:40.470Z",
+      "queriedAt": "2026-11-05T19:13:57.356Z",
+      "status": 200,
+      "errors": null,
+      "rows": [
+        {
+          "dimensions": {
+            "scriptName": "camelrun-proto-image-realistic",
+            "usageModel": "standard"
+          },
+          "quantiles": {
+            "cpuTimeP50": 1244,
+            "cpuTimeP95": 8034,
+            "cpuTimeP99": 8034,
+            "memoryUsageBytesP50": 14929062,
+            "memoryUsageBytesP95": 20333140,
+            "memoryUsageBytesP99": 20333140,
+            "wallTimeP50": 609361,
+            "wallTimeP95": 30691404,
+            "wallTimeP99": 30691404,
+            "wasmMemoryBytesP50": 0,
+            "wasmMemoryBytesP95": 0,
+            "wasmMemoryBytesP99": 0
+          },
+          "sum": {
+            "cpuTimeUs": 11742,
+            "duration": 3.9099725,
+            "errors": 0,
+            "requests": 4,
+            "subrequests": 4
+          }
+        }
+      ],
+      "summary": {
+        "available": true,
+        "rowCount": 1,
+        "requests": 4,
+        "errors": 0,
+        "subrequests": 4,
+        "cpuTimeUs": 11742,
+        "duration": 3.9099725,
+        "cpuMs": 11.742,
+        "largestRowMemoryP50Bytes": 14929062,
+        "largestRowMemoryP95Bytes": 20333140,
+        "largestRowMemoryP99Bytes": 20333140,
+        "largestRowCpuP50Us": 1244,
+        "largestRowCpuP95Us": 8034,
+        "largestRowCpuP99Us": 8034,
+        "returnedScriptNames": [
+          "camelrun-proto-image-realistic"
+        ]
+      }
+    },
+    {
+      "phaseId": "b-20-openai-completions",
+      "kind": "single",
+      "mode": "B",
+      "count": 20,
+      "requestedScript": "camelrun-proto-image-realistic",
+      "start": "2026-11-05T19:02:41.246Z",
+      "end": "2026-11-05T19:03:21.102Z",
+      "queriedAt": "2026-11-05T19:13:57.682Z",
+      "status": 200,
+      "errors": null,
+      "rows": [
+        {
+          "dimensions": {
+            "scriptName": "camelrun-proto-image-realistic",
+            "usageModel": "standard"
+          },
+          "quantiles": {
+            "cpuTimeP50": 1080,
+            "cpuTimeP95": 1902,
+            "cpuTimeP99": 1902,
+            "memoryUsageBytesP50": 14929488,
+            "memoryUsageBytesP95": 14929630,
+            "memoryUsageBytesP99": 14929630,
+            "wallTimeP50": 727911,
+            "wallTimeP95": 39826680,
+            "wallTimeP99": 39826680,
+            "wasmMemoryBytesP50": 0,
+            "wasmMemoryBytesP95": 0,
+            "wasmMemoryBytesP99": 0
+          },
+          "sum": {
+            "cpuTimeUs": 3858,
+            "duration": 3.84455,
+            "errors": 0,
+            "requests": 3,
+            "subrequests": 3
+          }
+        }
+      ],
+      "summary": {
+        "available": true,
+        "rowCount": 1,
+        "requests": 3,
+        "errors": 0,
+        "subrequests": 3,
+        "cpuTimeUs": 3858,
+        "duration": 3.84455,
+        "cpuMs": 3.858,
+        "largestRowMemoryP50Bytes": 14929488,
+        "largestRowMemoryP95Bytes": 14929630,
+        "largestRowMemoryP99Bytes": 14929630,
+        "largestRowCpuP50Us": 1080,
+        "largestRowCpuP95Us": 1902,
+        "largestRowCpuP99Us": 1902,
+        "returnedScriptNames": [
+          "camelrun-proto-image-realistic"
+        ]
+      }
+    },
+    {
+      "phaseId": "b-20-openai-completions",
+      "kind": "single",
+      "mode": "B",
+      "count": 20,
+      "requestedScript": "camelrun-proto-image-realistic-provider",
+      "start": "2026-11-05T19:02:41.246Z",
+      "end": "2026-11-05T19:03:21.102Z",
+      "queriedAt": "2026-11-05T19:13:57.897Z",
+      "status": 200,
+      "errors": null,
+      "rows": [],
+      "summary": {
+        "available": false,
+        "rowCount": 0,
+        "requests": null,
+        "errors": null,
+        "subrequests": null,
+        "cpuTimeUs": null,
+        "duration": null,
+        "cpuMs": null,
+        "largestRowMemoryP50Bytes": null,
+        "largestRowMemoryP95Bytes": null,
+        "largestRowMemoryP99Bytes": null,
+        "largestRowCpuP50Us": null,
+        "largestRowCpuP95Us": null,
+        "largestRowCpuP99Us": null,
+        "returnedScriptNames": []
+      }
+    },
+    {
+      "phaseId": "b-100-openai-completions",
+      "kind": "single",
+      "mode": "B",
+      "count": 100,
+      "requestedScript": "camelrun-proto-image-realistic",
+      "start": "2026-11-05T19:03:22.026Z",
+      "end": "2026-11-05T19:04:39.733Z",
+      "queriedAt": "2026-11-05T19:13:58.303Z",
+      "status": 200,
+      "errors": null,
+      "rows": [
+        {
+          "dimensions": {
+            "scriptName": "camelrun-proto-image-realistic",
+            "usageModel": "standard"
+          },
+          "quantiles": {
+            "cpuTimeP50": 970,
+            "cpuTimeP95": 1290,
+            "cpuTimeP99": 1290,
+            "memoryUsageBytesP50": 14929914,
+            "memoryUsageBytesP95": 14930056,
+            "memoryUsageBytesP99": 14930056,
+            "wallTimeP50": 597825,
+            "wallTimeP95": 77556090,
+            "wallTimeP99": 77556090,
+            "wasmMemoryBytesP50": 0,
+            "wasmMemoryBytesP95": 0,
+            "wasmMemoryBytesP99": 0
+          },
+          "sum": {
+            "cpuTimeUs": 3223,
+            "duration": 3.827834625,
+            "errors": 0,
+            "requests": 3,
+            "subrequests": 3
+          }
+        }
+      ],
+      "summary": {
+        "available": true,
+        "rowCount": 1,
+        "requests": 3,
+        "errors": 0,
+        "subrequests": 3,
+        "cpuTimeUs": 3223,
+        "duration": 3.827834625,
+        "cpuMs": 3.223,
+        "largestRowMemoryP50Bytes": 14929914,
+        "largestRowMemoryP95Bytes": 14930056,
+        "largestRowMemoryP99Bytes": 14930056,
+        "largestRowCpuP50Us": 970,
+        "largestRowCpuP95Us": 1290,
+        "largestRowCpuP99Us": 1290,
+        "returnedScriptNames": [
+          "camelrun-proto-image-realistic"
+        ]
+      }
+    },
+    {
+      "phaseId": "b-1-openai-completions",
+      "kind": "single",
+      "mode": "B",
+      "count": 1,
+      "requestedScript": "camelrun-proto-image-realistic-provider",
+      "start": "2026-11-05T19:02:09.661Z",
+      "end": "2026-11-05T19:02:40.470Z",
+      "queriedAt": "2026-11-05T19:13:57.369Z",
+      "status": 200,
+      "errors": null,
+      "rows": [],
+      "summary": {
+        "available": false,
+        "rowCount": 0,
+        "requests": null,
+        "errors": null,
+        "subrequests": null,
+        "cpuTimeUs": null,
+        "duration": null,
+        "cpuMs": null,
+        "largestRowMemoryP50Bytes": null,
+        "largestRowMemoryP95Bytes": null,
+        "largestRowMemoryP99Bytes": null,
+        "largestRowCpuP50Us": null,
+        "largestRowCpuP95Us": null,
+        "largestRowCpuP99Us": null,
+        "returnedScriptNames": []
+      }
+    },
+    {
+      "phaseId": "b-100-openai-completions",
+      "kind": "single",
+      "mode": "B",
+      "count": 100,
+      "requestedScript": "camelrun-proto-image-realistic-provider",
+      "start": "2026-11-05T19:03:22.026Z",
+      "end": "2026-11-05T19:04:39.733Z",
+      "queriedAt": "2026-11-05T19:13:58.630Z",
+      "status": 200,
+      "errors": null,
+      "rows": [],
+      "summary": {
+        "available": false,
+        "rowCount": 0,
+        "requests": null,
+        "errors": null,
+        "subrequests": null,
+        "cpuTimeUs": null,
+        "duration": null,
+        "cpuMs": null,
+        "largestRowMemoryP50Bytes": null,
+        "largestRowMemoryP95Bytes": null,
+        "largestRowMemoryP99Bytes": null,
+        "largestRowCpuP50Us": null,
+        "largestRowCpuP95Us": null,
+        "largestRowCpuP99Us": null,
+        "returnedScriptNames": []
+      }
+    },
+    {
+      "phaseId": "d-1-openai-completions",
+      "kind": "single",
+      "mode": "D",
+      "count": 1,
+      "requestedScript": "camelrun-proto-image-realistic",
+      "start": "2026-11-05T19:04:40.533Z",
+      "end": "2026-11-05T19:05:11.194Z",
+      "queriedAt": "2026-11-05T19:13:58.883Z",
+      "status": 200,
+      "errors": null,
+      "rows": [
+        {
+          "dimensions": {
+            "scriptName": "camelrun-proto-image-realistic",
+            "usageModel": "standard"
+          },
+          "quantiles": {
+            "cpuTimeP50": 939,
+            "cpuTimeP95": 3052,
+            "cpuTimeP99": 3052,
+            "memoryUsageBytesP50": 14930198,
+            "memoryUsageBytesP95": 14930482,
+            "memoryUsageBytesP99": 14930482,
+            "wallTimeP50": 249008,
+            "wallTimeP95": 30636032,
+            "wallTimeP99": 30636032,
+            "wasmMemoryBytesP50": 0,
+            "wasmMemoryBytesP95": 0,
+            "wasmMemoryBytesP99": 0
+          },
+          "sum": {
+            "cpuTimeUs": 6060,
+            "duration": 3.868262125,
+            "errors": 0,
+            "requests": 4,
+            "subrequests": 3
+          }
+        }
+      ],
+      "summary": {
+        "available": true,
+        "rowCount": 1,
+        "requests": 4,
+        "errors": 0,
+        "subrequests": 3,
+        "cpuTimeUs": 6060,
+        "duration": 3.868262125,
+        "cpuMs": 6.06,
+        "largestRowMemoryP50Bytes": 14930198,
+        "largestRowMemoryP95Bytes": 14930482,
+        "largestRowMemoryP99Bytes": 14930482,
+        "largestRowCpuP50Us": 939,
+        "largestRowCpuP95Us": 3052,
+        "largestRowCpuP99Us": 3052,
+        "returnedScriptNames": [
+          "camelrun-proto-image-realistic"
+        ]
+      }
+    },
+    {
+      "phaseId": "d-1-openai-completions",
+      "kind": "single",
+      "mode": "D",
+      "count": 1,
+      "requestedScript": "camelrun-proto-image-realistic-provider",
+      "start": "2026-11-05T19:04:40.533Z",
+      "end": "2026-11-05T19:05:11.194Z",
+      "queriedAt": "2026-11-05T19:13:58.886Z",
+      "status": 200,
+      "errors": null,
+      "rows": [],
+      "summary": {
+        "available": false,
+        "rowCount": 0,
+        "requests": null,
+        "errors": null,
+        "subrequests": null,
+        "cpuTimeUs": null,
+        "duration": null,
+        "cpuMs": null,
+        "largestRowMemoryP50Bytes": null,
+        "largestRowMemoryP95Bytes": null,
+        "largestRowMemoryP99Bytes": null,
+        "largestRowCpuP50Us": null,
+        "largestRowCpuP95Us": null,
+        "largestRowCpuP99Us": null,
+        "returnedScriptNames": []
+      }
+    },
+    {
+      "phaseId": "d-20-openai-completions",
+      "kind": "single",
+      "mode": "D",
+      "count": 20,
+      "requestedScript": "camelrun-proto-image-realistic",
+      "start": "2026-11-05T19:05:12.028Z",
+      "end": "2026-11-05T19:05:47.686Z",
+      "queriedAt": "2026-11-05T19:13:59.154Z",
+      "status": 200,
+      "errors": null,
+      "rows": [
+        {
+          "dimensions": {
+            "scriptName": "camelrun-proto-image-realistic",
+            "usageModel": "standard"
+          },
+          "quantiles": {
+            "cpuTimeP50": 1311,
+            "cpuTimeP95": 2147,
+            "cpuTimeP99": 2147,
+            "memoryUsageBytesP50": 11556545,
+            "memoryUsageBytesP95": 14930766,
+            "memoryUsageBytesP99": 14930766,
+            "wallTimeP50": 250317,
+            "wallTimeP95": 297110,
+            "wallTimeP99": 297110,
+            "wasmMemoryBytesP50": 0,
+            "wasmMemoryBytesP95": 0,
+            "wasmMemoryBytesP99": 0
+          },
+          "sum": {
+            "cpuTimeUs": 25773,
+            "duration": 0.549267375,
+            "errors": 0,
+            "requests": 18,
+            "subrequests": 1
+          }
+        }
+      ],
+      "summary": {
+        "available": true,
+        "rowCount": 1,
+        "requests": 18,
+        "errors": 0,
+        "subrequests": 1,
+        "cpuTimeUs": 25773,
+        "duration": 0.549267375,
+        "cpuMs": 25.773,
+        "largestRowMemoryP50Bytes": 11556545,
+        "largestRowMemoryP95Bytes": 14930766,
+        "largestRowMemoryP99Bytes": 14930766,
+        "largestRowCpuP50Us": 1311,
+        "largestRowCpuP95Us": 2147,
+        "largestRowCpuP99Us": 2147,
+        "returnedScriptNames": [
+          "camelrun-proto-image-realistic"
+        ]
+      }
+    },
+    {
+      "phaseId": "d-20-openai-completions",
+      "kind": "single",
+      "mode": "D",
+      "count": 20,
+      "requestedScript": "camelrun-proto-image-realistic-provider",
+      "start": "2026-11-05T19:05:12.028Z",
+      "end": "2026-11-05T19:05:47.686Z",
+      "queriedAt": "2026-11-05T19:13:59.194Z",
+      "status": 200,
+      "errors": null,
+      "rows": [],
+      "summary": {
+        "available": false,
+        "rowCount": 0,
+        "requests": null,
+        "errors": null,
+        "subrequests": null,
+        "cpuTimeUs": null,
+        "duration": null,
+        "cpuMs": null,
+        "largestRowMemoryP50Bytes": null,
+        "largestRowMemoryP95Bytes": null,
+        "largestRowMemoryP99Bytes": null,
+        "largestRowCpuP50Us": null,
+        "largestRowCpuP95Us": null,
+        "largestRowCpuP99Us": null,
+        "returnedScriptNames": []
+      }
+    },
+    {
+      "phaseId": "d-100-openai-completions",
+      "kind": "single",
+      "mode": "D",
+      "count": 100,
+      "requestedScript": "camelrun-proto-image-realistic",
+      "start": "2026-11-05T19:05:48.942Z",
+      "end": "2026-11-05T19:06:48.184Z",
+      "queriedAt": "2026-11-05T19:13:59.414Z",
+      "status": 200,
+      "errors": null,
+      "rows": [
+        {
+          "dimensions": {
+            "scriptName": "camelrun-proto-image-realistic",
+            "usageModel": "standard"
+          },
+          "quantiles": {
+            "cpuTimeP50": 1264,
+            "cpuTimeP95": 1899,
+            "cpuTimeP99": 2522,
+            "memoryUsageBytesP50": 11831689,
+            "memoryUsageBytesP95": 12109108,
+            "memoryUsageBytesP99": 14931334,
+            "wallTimeP50": 271631,
+            "wallTimeP95": 459097,
+            "wallTimeP99": 30478048,
+            "wasmMemoryBytesP50": 0,
+            "wasmMemoryBytesP95": 0,
+            "wasmMemoryBytesP99": 0
+          },
+          "sum": {
+            "cpuTimeUs": 149638,
+            "duration": 11.159819,
+            "errors": 0,
+            "requests": 104,
+            "subrequests": 5
+          }
+        }
+      ],
+      "summary": {
+        "available": true,
+        "rowCount": 1,
+        "requests": 104,
+        "errors": 0,
+        "subrequests": 5,
+        "cpuTimeUs": 149638,
+        "duration": 11.159819,
+        "cpuMs": 149.638,
+        "largestRowMemoryP50Bytes": 11831689,
+        "largestRowMemoryP95Bytes": 12109108,
+        "largestRowMemoryP99Bytes": 14931334,
+        "largestRowCpuP50Us": 1264,
+        "largestRowCpuP95Us": 1899,
+        "largestRowCpuP99Us": 2522,
+        "returnedScriptNames": [
+          "camelrun-proto-image-realistic"
+        ]
+      }
+    },
+    {
+      "phaseId": "d-100-openai-completions",
+      "kind": "single",
+      "mode": "D",
+      "count": 100,
+      "requestedScript": "camelrun-proto-image-realistic-provider",
+      "start": "2026-11-05T19:05:48.942Z",
+      "end": "2026-11-05T19:06:48.184Z",
+      "queriedAt": "2026-11-05T19:13:59.442Z",
+      "status": 200,
+      "errors": null,
+      "rows": [],
+      "summary": {
+        "available": false,
+        "rowCount": 0,
+        "requests": null,
+        "errors": null,
+        "subrequests": null,
+        "cpuTimeUs": null,
+        "duration": null,
+        "cpuMs": null,
+        "largestRowMemoryP50Bytes": null,
+        "largestRowMemoryP95Bytes": null,
+        "largestRowMemoryP99Bytes": null,
+        "largestRowCpuP50Us": null,
+        "largestRowCpuP95Us": null,
+        "largestRowCpuP99Us": null,
+        "returnedScriptNames": []
+      }
+    },
+    {
+      "phaseId": "b-1-openai-responses",
+      "kind": "single",
+      "mode": "B",
+      "count": 1,
+      "requestedScript": "camelrun-proto-image-realistic",
+      "start": "2026-11-05T19:06:48.941Z",
+      "end": "2026-11-05T19:07:19.445Z",
+      "queriedAt": "2026-11-05T19:13:59.876Z",
+      "status": 200,
+      "errors": null,
+      "rows": [
+        {
+          "dimensions": {
+            "scriptName": "camelrun-proto-image-realistic",
+            "usageModel": "standard"
+          },
+          "quantiles": {
+            "cpuTimeP50": 952,
+            "cpuTimeP95": 1178,
+            "cpuTimeP99": 1178,
+            "memoryUsageBytesP50": 14931476,
+            "memoryUsageBytesP95": 14931760,
+            "memoryUsageBytesP99": 14931760,
+            "wallTimeP50": 589406,
+            "wallTimeP95": 30478048,
+            "wallTimeP99": 30478048,
+            "wasmMemoryBytesP50": 0,
+            "wasmMemoryBytesP95": 0,
+            "wasmMemoryBytesP99": 0
+          },
+          "sum": {
+            "cpuTimeUs": 4975,
+            "duration": 3.91320825,
+            "errors": 0,
+            "requests": 5,
+            "subrequests": 5
+          }
+        }
+      ],
+      "summary": {
+        "available": true,
+        "rowCount": 1,
+        "requests": 5,
+        "errors": 0,
+        "subrequests": 5,
+        "cpuTimeUs": 4975,
+        "duration": 3.91320825,
+        "cpuMs": 4.975,
+        "largestRowMemoryP50Bytes": 14931476,
+        "largestRowMemoryP95Bytes": 14931760,
+        "largestRowMemoryP99Bytes": 14931760,
+        "largestRowCpuP50Us": 952,
+        "largestRowCpuP95Us": 1178,
+        "largestRowCpuP99Us": 1178,
+        "returnedScriptNames": [
+          "camelrun-proto-image-realistic"
+        ]
+      }
+    },
+    {
+      "phaseId": "b-1-openai-responses",
+      "kind": "single",
+      "mode": "B",
+      "count": 1,
+      "requestedScript": "camelrun-proto-image-realistic-provider",
+      "start": "2026-11-05T19:06:48.941Z",
+      "end": "2026-11-05T19:07:19.445Z",
+      "queriedAt": "2026-11-05T19:14:00.043Z",
+      "status": 200,
+      "errors": null,
+      "rows": [],
+      "summary": {
+        "available": false,
+        "rowCount": 0,
+        "requests": null,
+        "errors": null,
+        "subrequests": null,
+        "cpuTimeUs": null,
+        "duration": null,
+        "cpuMs": null,
+        "largestRowMemoryP50Bytes": null,
+        "largestRowMemoryP95Bytes": null,
+        "largestRowMemoryP99Bytes": null,
+        "largestRowCpuP50Us": null,
+        "largestRowCpuP95Us": null,
+        "largestRowCpuP99Us": null,
+        "returnedScriptNames": []
+      }
+    },
+    {
+      "phaseId": "b-1-anthropic-messages",
+      "kind": "single",
+      "mode": "B",
+      "count": 1,
+      "requestedScript": "camelrun-proto-image-realistic-provider",
+      "start": "2026-11-05T19:07:20.343Z",
+      "end": "2026-11-05T19:07:50.899Z",
+      "queriedAt": "2026-11-05T19:14:00.340Z",
+      "status": 200,
+      "errors": null,
+      "rows": [],
+      "summary": {
+        "available": false,
+        "rowCount": 0,
+        "requests": null,
+        "errors": null,
+        "subrequests": null,
+        "cpuTimeUs": null,
+        "duration": null,
+        "cpuMs": null,
+        "largestRowMemoryP50Bytes": null,
+        "largestRowMemoryP95Bytes": null,
+        "largestRowMemoryP99Bytes": null,
+        "largestRowCpuP50Us": null,
+        "largestRowCpuP95Us": null,
+        "largestRowCpuP99Us": null,
+        "returnedScriptNames": []
+      }
+    },
+    {
+      "phaseId": "b-1-anthropic-messages",
+      "kind": "single",
+      "mode": "B",
+      "count": 1,
+      "requestedScript": "camelrun-proto-image-realistic",
+      "start": "2026-11-05T19:07:20.343Z",
+      "end": "2026-11-05T19:07:50.899Z",
+      "queriedAt": "2026-11-05T19:14:00.203Z",
+      "status": 200,
+      "errors": null,
+      "rows": [
+        {
+          "dimensions": {
+            "scriptName": "camelrun-proto-image-realistic",
+            "usageModel": "standard"
+          },
+          "quantiles": {
+            "cpuTimeP50": 1430,
+            "cpuTimeP95": 1430,
+            "cpuTimeP99": 1430,
+            "memoryUsageBytesP50": 14931902,
+            "memoryUsageBytesP95": 14931902,
+            "memoryUsageBytesP99": 14931902,
+            "wallTimeP50": 30452916,
+            "wallTimeP95": 30452916,
+            "wallTimeP99": 30452916,
+            "wasmMemoryBytesP50": 0,
+            "wasmMemoryBytesP95": 0,
+            "wasmMemoryBytesP99": 0
+          },
+          "sum": {
+            "cpuTimeUs": 1430,
+            "duration": 3.75,
+            "errors": 0,
+            "requests": 1,
+            "subrequests": 1
+          }
+        }
+      ],
+      "summary": {
+        "available": true,
+        "rowCount": 1,
+        "requests": 1,
+        "errors": 0,
+        "subrequests": 1,
+        "cpuTimeUs": 1430,
+        "duration": 3.75,
+        "cpuMs": 1.43,
+        "largestRowMemoryP50Bytes": 14931902,
+        "largestRowMemoryP95Bytes": 14931902,
+        "largestRowMemoryP99Bytes": 14931902,
+        "largestRowCpuP50Us": 1430,
+        "largestRowCpuP95Us": 1430,
+        "largestRowCpuP99Us": 1430,
+        "returnedScriptNames": [
+          "camelrun-proto-image-realistic"
+        ]
+      }
+    },
+    {
+      "phaseId": "d-1-openai-responses",
+      "kind": "single",
+      "mode": "D",
+      "count": 1,
+      "requestedScript": "camelrun-proto-image-realistic",
+      "start": "2026-11-05T19:07:51.901Z",
+      "end": "2026-11-05T19:08:22.560Z",
+      "queriedAt": "2026-11-05T19:14:00.597Z",
+      "status": 200,
+      "errors": null,
+      "rows": [
+        {
+          "dimensions": {
+            "scriptName": "camelrun-proto-image-realistic",
+            "usageModel": "standard"
+          },
+          "quantiles": {
+            "cpuTimeP50": 1064,
+            "cpuTimeP95": 2694,
+            "cpuTimeP99": 2694,
+            "memoryUsageBytesP50": 14932186,
+            "memoryUsageBytesP95": 14932612,
+            "memoryUsageBytesP99": 14932612,
+            "wallTimeP50": 243937,
+            "wallTimeP95": 30596828,
+            "wallTimeP99": 30596828,
+            "wasmMemoryBytesP50": 0,
+            "wasmMemoryBytesP95": 0,
+            "wasmMemoryBytesP99": 0
+          },
+          "sum": {
+            "cpuTimeUs": 8208,
+            "duration": 3.949090875,
+            "errors": 0,
+            "requests": 6,
+            "subrequests": 5
+          }
+        }
+      ],
+      "summary": {
+        "available": true,
+        "rowCount": 1,
+        "requests": 6,
+        "errors": 0,
+        "subrequests": 5,
+        "cpuTimeUs": 8208,
+        "duration": 3.949090875,
+        "cpuMs": 8.208,
+        "largestRowMemoryP50Bytes": 14932186,
+        "largestRowMemoryP95Bytes": 14932612,
+        "largestRowMemoryP99Bytes": 14932612,
+        "largestRowCpuP50Us": 1064,
+        "largestRowCpuP95Us": 2694,
+        "largestRowCpuP99Us": 2694,
+        "returnedScriptNames": [
+          "camelrun-proto-image-realistic"
+        ]
+      }
+    },
+    {
+      "phaseId": "d-1-openai-responses",
+      "kind": "single",
+      "mode": "D",
+      "count": 1,
+      "requestedScript": "camelrun-proto-image-realistic-provider",
+      "start": "2026-11-05T19:07:51.901Z",
+      "end": "2026-11-05T19:08:22.560Z",
+      "queriedAt": "2026-11-05T19:14:00.726Z",
+      "status": 200,
+      "errors": null,
+      "rows": [],
+      "summary": {
+        "available": false,
+        "rowCount": 0,
+        "requests": null,
+        "errors": null,
+        "subrequests": null,
+        "cpuTimeUs": null,
+        "duration": null,
+        "cpuMs": null,
+        "largestRowMemoryP50Bytes": null,
+        "largestRowMemoryP95Bytes": null,
+        "largestRowMemoryP99Bytes": null,
+        "largestRowCpuP50Us": null,
+        "largestRowCpuP95Us": null,
+        "largestRowCpuP99Us": null,
+        "returnedScriptNames": []
+      }
+    },
+    {
+      "phaseId": "d-1-anthropic-messages",
+      "kind": "single",
+      "mode": "D",
+      "count": 1,
+      "requestedScript": "camelrun-proto-image-realistic",
+      "start": "2026-11-05T19:08:23.252Z",
+      "end": "2026-11-05T19:08:53.763Z",
+      "queriedAt": "2026-11-05T19:14:00.853Z",
+      "status": 200,
+      "errors": null,
+      "rows": [
+        {
+          "dimensions": {
+            "scriptName": "camelrun-proto-image-realistic",
+            "usageModel": "standard"
+          },
+          "quantiles": {
+            "cpuTimeP50": 1136,
+            "cpuTimeP95": 2093,
+            "cpuTimeP99": 2093,
+            "memoryUsageBytesP50": 14932754,
+            "memoryUsageBytesP95": 14933038,
+            "memoryUsageBytesP99": 14933038,
+            "wallTimeP50": 162996,
+            "wallTimeP95": 30487456,
+            "wallTimeP99": 30487456,
+            "wasmMemoryBytesP50": 0,
+            "wasmMemoryBytesP95": 0,
+            "wasmMemoryBytesP99": 0
+          },
+          "sum": {
+            "cpuTimeUs": 5258,
+            "duration": 3.853764375,
+            "errors": 0,
+            "requests": 4,
+            "subrequests": 3
+          }
+        }
+      ],
+      "summary": {
+        "available": true,
+        "rowCount": 1,
+        "requests": 4,
+        "errors": 0,
+        "subrequests": 3,
+        "cpuTimeUs": 5258,
+        "duration": 3.853764375,
+        "cpuMs": 5.258,
+        "largestRowMemoryP50Bytes": 14932754,
+        "largestRowMemoryP95Bytes": 14933038,
+        "largestRowMemoryP99Bytes": 14933038,
+        "largestRowCpuP50Us": 1136,
+        "largestRowCpuP95Us": 2093,
+        "largestRowCpuP99Us": 2093,
+        "returnedScriptNames": [
+          "camelrun-proto-image-realistic"
+        ]
+      }
+    },
+    {
+      "phaseId": "d-1-anthropic-messages",
+      "kind": "single",
+      "mode": "D",
+      "count": 1,
+      "requestedScript": "camelrun-proto-image-realistic-provider",
+      "start": "2026-11-05T19:08:23.252Z",
+      "end": "2026-11-05T19:08:53.763Z",
+      "queriedAt": "2026-11-05T19:14:00.990Z",
+      "status": 200,
+      "errors": null,
+      "rows": [],
+      "summary": {
+        "available": false,
+        "rowCount": 0,
+        "requests": null,
+        "errors": null,
+        "subrequests": null,
+        "cpuTimeUs": null,
+        "duration": null,
+        "cpuMs": null,
+        "largestRowMemoryP50Bytes": null,
+        "largestRowMemoryP95Bytes": null,
+        "largestRowMemoryP99Bytes": null,
+        "largestRowCpuP50Us": null,
+        "largestRowCpuP95Us": null,
+        "largestRowCpuP99Us": null,
+        "returnedScriptNames": []
+      }
+    },
+    {
+      "phaseId": "concurrent-B-1",
+      "kind": "concurrent",
+      "mode": "B",
+      "count": 1,
+      "requestedScript": "camelrun-proto-image-realistic",
+      "start": "2026-11-05T19:09:28.495Z",
+      "end": "2026-11-05T19:09:29.830Z",
+      "queriedAt": "2026-11-05T19:14:01.272Z",
+      "status": 200,
+      "errors": null,
+      "rows": [
+        {
+          "dimensions": {
+            "scriptName": "camelrun-proto-image-realistic",
+            "usageModel": "standard"
+          },
+          "quantiles": {
+            "cpuTimeP50": 887,
+            "cpuTimeP95": 1578,
+            "cpuTimeP99": 2348,
+            "memoryUsageBytesP50": 11670296,
+            "memoryUsageBytesP95": 11874386,
+            "memoryUsageBytesP99": 12098694,
+            "wallTimeP50": 415044,
+            "wallTimeP95": 624502,
+            "wallTimeP99": 699467,
+            "wasmMemoryBytesP50": 0,
+            "wasmMemoryBytesP95": 0,
+            "wasmMemoryBytesP99": 0
+          },
+          "sum": {
+            "cpuTimeUs": 137486,
+            "duration": 7.356565750000001,
+            "errors": 0,
+            "requests": 142,
+            "subrequests": 142
+          }
+        }
+      ],
+      "summary": {
+        "available": true,
+        "rowCount": 1,
+        "requests": 142,
+        "errors": 0,
+        "subrequests": 142,
+        "cpuTimeUs": 137486,
+        "duration": 7.356565750000001,
+        "cpuMs": 137.486,
+        "largestRowMemoryP50Bytes": 11670296,
+        "largestRowMemoryP95Bytes": 11874386,
+        "largestRowMemoryP99Bytes": 12098694,
+        "largestRowCpuP50Us": 887,
+        "largestRowCpuP95Us": 1578,
+        "largestRowCpuP99Us": 2348,
+        "returnedScriptNames": [
+          "camelrun-proto-image-realistic"
+        ]
+      }
+    },
+    {
+      "phaseId": "concurrent-B-1",
+      "kind": "concurrent",
+      "mode": "B",
+      "count": 1,
+      "requestedScript": "camelrun-proto-image-realistic-provider",
+      "start": "2026-11-05T19:09:28.495Z",
+      "end": "2026-11-05T19:09:29.830Z",
+      "queriedAt": "2026-11-05T19:14:01.287Z",
+      "status": 200,
+      "errors": null,
+      "rows": [],
+      "summary": {
+        "available": false,
+        "rowCount": 0,
+        "requests": null,
+        "errors": null,
+        "subrequests": null,
+        "cpuTimeUs": null,
+        "duration": null,
+        "cpuMs": null,
+        "largestRowMemoryP50Bytes": null,
+        "largestRowMemoryP95Bytes": null,
+        "largestRowMemoryP99Bytes": null,
+        "largestRowCpuP50Us": null,
+        "largestRowCpuP95Us": null,
+        "largestRowCpuP99Us": null,
+        "returnedScriptNames": []
+      }
+    },
+    {
+      "phaseId": "concurrent-B-20",
+      "kind": "concurrent",
+      "mode": "B",
+      "count": 20,
+      "requestedScript": "camelrun-proto-image-realistic-provider",
+      "start": "2026-11-05T19:09:29.841Z",
+      "end": "2026-11-05T19:09:35.117Z",
+      "queriedAt": "2026-11-05T19:14:01.686Z",
+      "status": 200,
+      "errors": null,
+      "rows": [],
+      "summary": {
+        "available": false,
+        "rowCount": 0,
+        "requests": null,
+        "errors": null,
+        "subrequests": null,
+        "cpuTimeUs": null,
+        "duration": null,
+        "cpuMs": null,
+        "largestRowMemoryP50Bytes": null,
+        "largestRowMemoryP95Bytes": null,
+        "largestRowMemoryP99Bytes": null,
+        "largestRowCpuP50Us": null,
+        "largestRowCpuP95Us": null,
+        "largestRowCpuP99Us": null,
+        "returnedScriptNames": []
+      }
+    },
+    {
+      "phaseId": "concurrent-B-20",
+      "kind": "concurrent",
+      "mode": "B",
+      "count": 20,
+      "requestedScript": "camelrun-proto-image-realistic",
+      "start": "2026-11-05T19:09:29.841Z",
+      "end": "2026-11-05T19:09:35.117Z",
+      "queriedAt": "2026-11-05T19:14:01.653Z",
+      "status": 200,
+      "errors": null,
+      "rows": [
+        {
+          "dimensions": {
+            "scriptName": "camelrun-proto-image-realistic",
+            "usageModel": "standard"
+          },
+          "quantiles": {
+            "cpuTimeP50": 842,
+            "cpuTimeP95": 2101,
+            "cpuTimeP99": 2138,
+            "memoryUsageBytesP50": 11710972,
+            "memoryUsageBytesP95": 12100256,
+            "memoryUsageBytesP99": 12322434,
+            "wallTimeP50": 620020,
+            "wallTimeP95": 15543389,
+            "wallTimeP99": 19966646,
+            "wasmMemoryBytesP50": 0,
+            "wasmMemoryBytesP95": 0,
+            "wasmMemoryBytesP99": 0
+          },
+          "sum": {
+            "cpuTimeUs": 239611,
+            "duration": 122.91772224999995,
+            "errors": 0,
+            "requests": 240,
+            "subrequests": 240
+          }
+        }
+      ],
+      "summary": {
+        "available": true,
+        "rowCount": 1,
+        "requests": 240,
+        "errors": 0,
+        "subrequests": 240,
+        "cpuTimeUs": 239611,
+        "duration": 122.91772224999995,
+        "cpuMs": 239.611,
+        "largestRowMemoryP50Bytes": 11710972,
+        "largestRowMemoryP95Bytes": 12100256,
+        "largestRowMemoryP99Bytes": 12322434,
+        "largestRowCpuP50Us": 842,
+        "largestRowCpuP95Us": 2101,
+        "largestRowCpuP99Us": 2138,
+        "returnedScriptNames": [
+          "camelrun-proto-image-realistic"
+        ]
+      }
+    },
+    {
+      "phaseId": "concurrent-B-100",
+      "kind": "concurrent",
+      "mode": "B",
+      "count": 100,
+      "requestedScript": "camelrun-proto-image-realistic",
+      "start": "2026-11-05T19:09:35.129Z",
+      "end": "2026-11-05T19:09:57.326Z",
+      "queriedAt": "2026-11-05T19:14:02.147Z",
+      "status": 200,
+      "errors": null,
+      "rows": [
+        {
+          "dimensions": {
+            "scriptName": "camelrun-proto-image-realistic",
+            "usageModel": "standard"
+          },
+          "quantiles": {
+            "cpuTimeP50": 892,
+            "cpuTimeP95": 2101,
+            "cpuTimeP99": 3170,
+            "memoryUsageBytesP50": 11892332,
+            "memoryUsageBytesP95": 12279912,
+            "memoryUsageBytesP99": 12322434,
+            "wallTimeP50": 515737,
+            "wallTimeP95": 18914192,
+            "wallTimeP99": 20784668,
+            "wasmMemoryBytesP50": 0,
+            "wasmMemoryBytesP95": 0,
+            "wasmMemoryBytesP99": 0
+          },
+          "sum": {
+            "cpuTimeUs": 194905,
+            "duration": 119.69210899999999,
+            "errors": 0,
+            "requests": 183,
+            "subrequests": 171
+          }
+        }
+      ],
+      "summary": {
+        "available": true,
+        "rowCount": 1,
+        "requests": 183,
+        "errors": 0,
+        "subrequests": 171,
+        "cpuTimeUs": 194905,
+        "duration": 119.69210899999999,
+        "cpuMs": 194.905,
+        "largestRowMemoryP50Bytes": 11892332,
+        "largestRowMemoryP95Bytes": 12279912,
+        "largestRowMemoryP99Bytes": 12322434,
+        "largestRowCpuP50Us": 892,
+        "largestRowCpuP95Us": 2101,
+        "largestRowCpuP99Us": 3170,
+        "returnedScriptNames": [
+          "camelrun-proto-image-realistic"
+        ]
+      }
+    },
+    {
+      "phaseId": "concurrent-B-100",
+      "kind": "concurrent",
+      "mode": "B",
+      "count": 100,
+      "requestedScript": "camelrun-proto-image-realistic-provider",
+      "start": "2026-11-05T19:09:35.129Z",
+      "end": "2026-11-05T19:09:57.326Z",
+      "queriedAt": "2026-11-05T19:14:02.563Z",
+      "status": 200,
+      "errors": null,
+      "rows": [],
+      "summary": {
+        "available": false,
+        "rowCount": 0,
+        "requests": null,
+        "errors": null,
+        "subrequests": null,
+        "cpuTimeUs": null,
+        "duration": null,
+        "cpuMs": null,
+        "largestRowMemoryP50Bytes": null,
+        "largestRowMemoryP95Bytes": null,
+        "largestRowMemoryP99Bytes": null,
+        "largestRowCpuP50Us": null,
+        "largestRowCpuP95Us": null,
+        "largestRowCpuP99Us": null,
+        "returnedScriptNames": []
+      }
+    },
+    {
+      "phaseId": "concurrent-D-1",
+      "kind": "concurrent",
+      "mode": "D",
+      "count": 1,
+      "requestedScript": "camelrun-proto-image-realistic",
+      "start": "2026-11-05T19:09:57.339Z",
+      "end": "2026-11-05T19:09:58.828Z",
+      "queriedAt": "2026-11-05T19:14:02.620Z",
+      "status": 200,
+      "errors": null,
+      "rows": [
+        {
+          "dimensions": {
+            "scriptName": "camelrun-proto-image-realistic",
+            "usageModel": "standard"
+          },
+          "quantiles": {
+            "cpuTimeP50": 1012,
+            "cpuTimeP95": 2494,
+            "cpuTimeP99": 3206,
+            "memoryUsageBytesP50": 11851514,
+            "memoryUsageBytesP95": 12280338,
+            "memoryUsageBytesP99": 12322434,
+            "wallTimeP50": 318854,
+            "wallTimeP95": 585348,
+            "wallTimeP99": 641376,
+            "wasmMemoryBytesP50": 0,
+            "wasmMemoryBytesP95": 0,
+            "wasmMemoryBytesP99": 0
+          },
+          "sum": {
+            "cpuTimeUs": 224768,
+            "duration": 7.639505125000001,
+            "errors": 0,
+            "requests": 195,
+            "subrequests": 145
+          }
+        }
+      ],
+      "summary": {
+        "available": true,
+        "rowCount": 1,
+        "requests": 195,
+        "errors": 0,
+        "subrequests": 145,
+        "cpuTimeUs": 224768,
+        "duration": 7.639505125000001,
+        "cpuMs": 224.768,
+        "largestRowMemoryP50Bytes": 11851514,
+        "largestRowMemoryP95Bytes": 12280338,
+        "largestRowMemoryP99Bytes": 12322434,
+        "largestRowCpuP50Us": 1012,
+        "largestRowCpuP95Us": 2494,
+        "largestRowCpuP99Us": 3206,
+        "returnedScriptNames": [
+          "camelrun-proto-image-realistic"
+        ]
+      }
+    },
+    {
+      "phaseId": "concurrent-D-1",
+      "kind": "concurrent",
+      "mode": "D",
+      "count": 1,
+      "requestedScript": "camelrun-proto-image-realistic-provider",
+      "start": "2026-11-05T19:09:57.339Z",
+      "end": "2026-11-05T19:09:58.828Z",
+      "queriedAt": "2026-11-05T19:14:02.890Z",
+      "status": 200,
+      "errors": null,
+      "rows": [],
+      "summary": {
+        "available": false,
+        "rowCount": 0,
+        "requests": null,
+        "errors": null,
+        "subrequests": null,
+        "cpuTimeUs": null,
+        "duration": null,
+        "cpuMs": null,
+        "largestRowMemoryP50Bytes": null,
+        "largestRowMemoryP95Bytes": null,
+        "largestRowMemoryP99Bytes": null,
+        "largestRowCpuP50Us": null,
+        "largestRowCpuP95Us": null,
+        "largestRowCpuP99Us": null,
+        "returnedScriptNames": []
+      }
+    },
+    {
+      "phaseId": "concurrent-D-20",
+      "kind": "concurrent",
+      "mode": "D",
+      "count": 20,
+      "requestedScript": "camelrun-proto-image-realistic",
+      "start": "2026-11-05T19:09:58.841Z",
+      "end": "2026-11-05T19:10:02.701Z",
+      "queriedAt": "2026-11-05T19:14:02.945Z",
+      "status": 200,
+      "errors": null,
+      "rows": [
+        {
+          "dimensions": {
+            "scriptName": "camelrun-proto-image-realistic",
+            "usageModel": "standard"
+          },
+          "quantiles": {
+            "cpuTimeP50": 862,
+            "cpuTimeP95": 1994,
+            "cpuTimeP99": 2744,
+            "memoryUsageBytesP50": 11557520,
+            "memoryUsageBytesP95": 12059296,
+            "memoryUsageBytesP99": 12281616,
+            "wallTimeP50": 93287,
+            "wallTimeP95": 627190,
+            "wallTimeP99": 2525004,
+            "wasmMemoryBytesP50": 0,
+            "wasmMemoryBytesP95": 0,
+            "wasmMemoryBytesP99": 0
+          },
+          "sum": {
+            "cpuTimeUs": 1312797,
+            "duration": 34.988043625,
+            "errors": 0,
+            "requests": 1262,
+            "subrequests": 178
+          }
+        }
+      ],
+      "summary": {
+        "available": true,
+        "rowCount": 1,
+        "requests": 1262,
+        "errors": 0,
+        "subrequests": 178,
+        "cpuTimeUs": 1312797,
+        "duration": 34.988043625,
+        "cpuMs": 1312.797,
+        "largestRowMemoryP50Bytes": 11557520,
+        "largestRowMemoryP95Bytes": 12059296,
+        "largestRowMemoryP99Bytes": 12281616,
+        "largestRowCpuP50Us": 862,
+        "largestRowCpuP95Us": 1994,
+        "largestRowCpuP99Us": 2744,
+        "returnedScriptNames": [
+          "camelrun-proto-image-realistic"
+        ]
+      }
+    },
+    {
+      "phaseId": "concurrent-D-20",
+      "kind": "concurrent",
+      "mode": "D",
+      "count": 20,
+      "requestedScript": "camelrun-proto-image-realistic-provider",
+      "start": "2026-11-05T19:09:58.841Z",
+      "end": "2026-11-05T19:10:02.701Z",
+      "queriedAt": "2026-11-05T19:14:03.189Z",
+      "status": 200,
+      "errors": null,
+      "rows": [],
+      "summary": {
+        "available": false,
+        "rowCount": 0,
+        "requests": null,
+        "errors": null,
+        "subrequests": null,
+        "cpuTimeUs": null,
+        "duration": null,
+        "cpuMs": null,
+        "largestRowMemoryP50Bytes": null,
+        "largestRowMemoryP95Bytes": null,
+        "largestRowMemoryP99Bytes": null,
+        "largestRowCpuP50Us": null,
+        "largestRowCpuP95Us": null,
+        "largestRowCpuP99Us": null,
+        "returnedScriptNames": []
+      }
+    },
+    {
+      "phaseId": "concurrent-D-100",
+      "kind": "concurrent",
+      "mode": "D",
+      "count": 100,
+      "requestedScript": "camelrun-proto-image-realistic",
+      "start": "2026-11-05T19:10:02.721Z",
+      "end": "2026-11-05T19:10:19.012Z",
+      "queriedAt": "2026-11-05T19:14:03.349Z",
+      "status": 200,
+      "errors": null,
+      "rows": [
+        {
+          "dimensions": {
+            "scriptName": "camelrun-proto-image-realistic",
+            "usageModel": "standard"
+          },
+          "quantiles": {
+            "cpuTimeP50": 857,
+            "cpuTimeP95": 1738,
+            "cpuTimeP99": 3516,
+            "memoryUsageBytesP50": 11832989,
+            "memoryUsageBytesP95": 12879971,
+            "memoryUsageBytesP99": 13164865,
+            "wallTimeP50": 90100,
+            "wallTimeP95": 160036,
+            "wallTimeP99": 836967,
+            "wasmMemoryBytesP50": 0,
+            "wasmMemoryBytesP95": 0,
+            "wasmMemoryBytesP99": 0
+          },
+          "sum": {
+            "cpuTimeUs": 5153714,
+            "duration": 127.00294112499998,
+            "errors": 0,
+            "requests": 5077,
+            "subrequests": 97
+          }
+        }
+      ],
+      "summary": {
+        "available": true,
+        "rowCount": 1,
+        "requests": 5077,
+        "errors": 0,
+        "subrequests": 97,
+        "cpuTimeUs": 5153714,
+        "duration": 127.00294112499998,
+        "cpuMs": 5153.714,
+        "largestRowMemoryP50Bytes": 11832989,
+        "largestRowMemoryP95Bytes": 12879971,
+        "largestRowMemoryP99Bytes": 13164865,
+        "largestRowCpuP50Us": 857,
+        "largestRowCpuP95Us": 1738,
+        "largestRowCpuP99Us": 3516,
+        "returnedScriptNames": [
+          "camelrun-proto-image-realistic"
+        ]
+      }
+    },
+    {
+      "phaseId": "concurrent-D-100",
+      "kind": "concurrent",
+      "mode": "D",
+      "count": 100,
+      "requestedScript": "camelrun-proto-image-realistic-provider",
+      "start": "2026-11-05T19:10:02.721Z",
+      "end": "2026-11-05T19:10:19.012Z",
+      "queriedAt": "2026-11-05T19:14:03.706Z",
+      "status": 200,
+      "errors": null,
+      "rows": [],
+      "summary": {
+        "available": false,
+        "rowCount": 0,
+        "requests": null,
+        "errors": null,
+        "subrequests": null,
+        "cpuTimeUs": null,
+        "duration": null,
+        "cpuMs": null,
+        "largestRowMemoryP50Bytes": null,
+        "largestRowMemoryP95Bytes": null,
+        "largestRowMemoryP99Bytes": null,
+        "largestRowCpuP50Us": null,
+        "largestRowCpuP95Us": null,
+        "largestRowCpuP99Us": null,
+        "returnedScriptNames": []
+      }
+    }
+  ],
+  "units": {
+    "cpuTimeUs": "microseconds",
+    "cpuTimeP50": "microseconds",
+    "cpuTimeP95": "microseconds",
+    "cpuTimeP99": "microseconds",
+    "wallTime": "microseconds",
+    "memoryUsageBytes": "bytes for a whole Worker isolate"
+  },
+  "limitations": [
+    "Each query is scoped by an explicit scriptName and exact phase window. The returned scriptName may still be __unknown__; requestedScript records the filter used.",
+    "Single-request windows include client transit and the telemetry hold, but exclude seed. Concurrent windows include seed and requests for all 50 agents.",
+    "Adaptive data may be sampled, delayed, absent or zero-valued. Missing rows and fields remain null; query errors are retained.",
+    "Memory values are invocation-distribution quantiles over whole isolates, not peak resident memory or per-agent allocation.",
+    "The largest returned P99 across rows is not a recomputed global P99. CPU sums are retained separately from those quantiles.",
+    "Main Worker scope includes API dispatch and D signed-image serving. Proxy Worker scope isolates C transport. Neither scope replaces Durable Object telemetry.",
+    "Provider scope is optional and measures the synthetic decoder overhead, not a production transport requirement.",
+    "Boundary timestamps are inclusive. Adjacent phase windows and overlapping scripts must not be blindly summed into a billing total."
+  ],
+  "completedAt": "2026-11-05T19:14:04.050Z"
+}

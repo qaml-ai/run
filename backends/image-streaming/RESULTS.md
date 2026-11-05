@@ -2,7 +2,8 @@
 
 Experiment in `qaml-ai/run`, November 5, 2026. It extends the investigation in
 draft #645. It changes no ECS runtime, production configuration, database or
-vendored Pi package. The measured implementation is commit `55a94bf9`.
+vendored Pi package. The initial stress implementation is commit `55a94bf9`;
+the realistic-image implementation is `9e519f92`, on the same draft PR #646.
 
 The isolated package pins the published `pi-ai`, `pi-durable`, `pi-codemode`
 and `chord` packages at 1.5.0, matching the existing Workers experiment. This
@@ -12,12 +13,175 @@ main, are the basis of this report. No upstream issue or PR was opened.
 
 ## Result
 
-The marker approach works without changing Pi. All three alternatives passed at 1, 20 and 100 images, both singly and across 50 concurrent agent workflows. The inline baseline failed at 20 images during requests and at 100 while seeding. Every completed receiver check matched the expected image hashes.
+The marker approach works without changing Pi. In the initial large-PNG stress run, all three alternatives passed at 1, 20 and 100 images, both singly and across 50 concurrent agent workflows. The inline baseline failed at 20 images during requests and at 100 while seeding. Every completed receiver check matched the expected image hashes.
 
 Use **B, in-DO streaming**, as the base64 HTTP path: it is simpler than a proxy and passed the full matrix. Prefer **D, signed URLs**, for explicitly verified URL-capable provider/model combinations; it used less agent CPU and had the best large-image latency here. Keep **C** for a deliberate isolation or centralized-egress requirement. It reduced agent DO work but added a service and did not improve the 50-agent/100-image latency materially. None of these results establish production readiness; integration gaps are listed below.
 
-<!-- COMPARISON -->
+## Realistic JPEG follow-up
+
+The follow-up reran **B and D only**, with a 30-second CPU limit on the agent
+and fake-provider Workers. All 1/20/100-image single cases and all six groups of
+50 agent workflows passed. These measurements test the requested compressed-image sizes; the large-PNG
+stress results remain below for comparison.
+
 ### Single agents
+
+| Variant | Images | DO isolate max (MiB)* | DO CPU (s)* | Request (s) | Memory / CPU error observations* |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| B | 1 | 14.31 | 0.074 | 0.674 | 0 / 0 |
+| B | 20 | 22.99 | 0.594 | 9.838 | 0 / 0 |
+| B | 100 | 29.31 | 2.850 | 47.604 | 0 / 0 |
+| D | 1 | 12.02 | 0.087 | 0.655 | 0 / 0 |
+| D | 20 | 13.80 | 0.097 | 5.687 | 0 / 0 |
+| D | 100 | 15.13 | 0.290 | 29.310 | 0 / 0 |
+
+### Fifty concurrent agent workflows
+
+| Variant | Images each | Hash matches | DO isolate max (MiB)* | DO CPU mean / max per object (s)* | Request p50 / p95 (s) | Memory / CPU error observations* |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| B | 1 | 50/50 | 40.14 | 0.088 / 0.152 | 0.167 / 0.225 | 0 / 0 |
+| B | 20 | 50/50 | 45.99 | 0.626 / 1.029 | 2.742 / 3.601 | 0 / 0 |
+| B | 100 | 50/50 | 49.03 | 2.951 / 4.517 | 14.849 / 20.281 | 0 / 0 |
+| D | 1 | 50/50 | 48.43 | 0.042 / 0.101 | 0.272 / 0.419 | 0 / 0 |
+| D | 20 | 50/50 | 48.75 | 0.073 / 0.175 | 2.136 / 2.874 | 0 / 0 |
+| D | 100 | 50/50 | 29.58 | 0.149 / 0.354 | 9.958 / 13.157 | 0 / 0 |
+
+*DO CPU sums the sampled work for each object, including seed, request, hold
+and status. Memory is an object-associated whole-isolate sample, not per-agent
+heap or a guaranteed peak. The 30-second hold is excluded from request latency.
+Concurrent workflows begin together and request as their own seed completes;
+they do not synchronize all provider starts at a barrier. Values are one run,
+not repeated randomized trials. B/1 has CPU and memory rows for 49/50 objects;
+all other groups have 50/50. Its zero counters describe those 49 observations.
+The high D/1 and D/20 samples do not establish D-only allocations: memory covers
+the whole isolate and this run used a fixed B-then-D order.
+
+For B/100, CPU fell from **27.883 s to 2.850 s**
+(89.8% lower). The largest observed B/100 object CPU across the 50-agent
+group was **4.517 s**, leaving 25.48 s against the 30 s budget.
+This is observed headroom, not a guarantee for arbitrary image counts or sizes.
+
+### Corpus, correctness and real vision
+
+The corpus contains 15 screenshots and 85 photographs from Wikimedia.
+The deployed Images binding created JPEGs of **202,777–391,708 bytes**
+(28,803,394 bytes total), each at most 1,568 pixels on its longest side.
+JPEG quality was 72 for 11 images, 82 for 72, and 90 for 17. The runner considered
+114 upload/download attempts and rejected 14 out-of-band derivatives.
+Source hashes, author/license metadata, dimensions, quality attempts and both
+original/derivative hashes are retained. The candidates were selected by encoded
+size; this is not a representative screenshot distribution or a visual/OCR
+quality evaluation. No padding or artificial noise enlarged the JPEGs.
+
+The receiver verified **318 completed requests and 12,506 images**
+(3,604,649,858 decoded bytes), with matching order, size,
+SHA-256 and JPEG magic. B also matched exact Content-Length without
+Transfer-Encoding. PNG markers restore the derivative MIME in provider JSON;
+JPEG was checked on deployed Chat, Responses and Anthropic shapes, and JPEG/
+WebP field rewriting was checked in the Sprite tests. Both variants passed
+retry, abort/recovery, missing-object, forced eviction and Pi lifecycle probes.
+The independent verifier passed **53,022/53,022 checks**.
+
+The real model `@cf/meta/llama-3.2-11b-vision-instruct` ran inside an **ImageAgent Durable Object**.
+It described the controlled image as: **“Left: Red Square; Right: Blue Circle.”**
+The 2,844-byte PNG traversed stock pi-ai Chat and B's fixed-length
+stream from R2; the bridge consumed and verified all 4,202 JSON bytes.
+The model call took 0.685 s; the whole check took 2.385 s.
+The bridge then buffered that single image and called `AI.run` with
+**`image: number[]`**. Workers AI did not consume an HTTP stream. This proves
+the one-image B adapter chain and visual recognition; it adds no journal entry
+and does not establish large-image AI-binding memory scaling or external HTTPS
+provider acceptance. The smoke run independently returned the same description.
+
+### Telemetry, spend and cleanup
+
+There were 36 DO telemetry polls, 11 initially empty; 321 distinct
+object/time rows were retained. CPU/memory telemetry covers 299/300 concurrent
+objects and 10/10 single cases. The missing object is `fan-b-1-11`; its request
+passed, but its CPU, memory and error counters remain unavailable.
+The fake-provider Worker has no returned CPU/memory rows; that cost and memory
+remain unavailable. Main Worker invocation metrics include D image serving and
+are separate from the DO samples. Missing telemetry is never reported as zero.
+
+The phase query completed 32 requests: 16 windows for each Worker. All main
+Worker windows had data; all fake-provider windows were empty. These are
+invocation metrics, separate from the DO table above:
+
+| Case | Main Worker CPU (ms) | Main isolate largest-row P99 (MiB) | Observed invocations |
+| --- | ---: | ---: | ---: |
+| B, single 100 | 3.223 | 14.24 | 3 |
+| D, single 100 | 149.638 | 14.24 | 104 |
+| B, 50 × 100 | 194.905 | 11.75 | 183 |
+| D, 50 × 100 | 5,153.714 | 12.55 | 5,077 |
+
+Window boundaries, adaptive aggregation and the single-case hold affect these
+counts; do not treat them as an exact request ledger or add overlapping scopes
+as disjoint charges. D moves work into image serving as well as the receiver.
+
+The returned full-run telemetry has a **$0.09207 rate-equivalent subtotal**:
+275.359 DO GB-seconds ($0.00344), 85,641 SQL writes ($0.08564), 206,075 SQL reads
+($0.00021), 33.966 seconds of main Worker CPU ($0.00068), and 7,010 main Worker
+requests ($0.00210). This is incomplete usage evidence, not invoice spend; it
+excludes the absent provider CPU, Images, R2, storage, smoke runtime and Sprites.
+The two real-model calls together report 15.881 neurons, about $0.000175 before
+included allowances, using [Workers AI pricing](https://developers.cloudflare.com/workers-ai/platform/pricing/).
+
+A conservative **$26.32 modeled Cloudflare envelope**, plus a **$1 Sprite
+allowance**, totals **$27.32 against the $30 follow-up budget**. It includes full
+and smoke runs, missing provider CPU and billing-unit rounding. The Sprite
+allowance is not measured spend or a proven billing bound. It allows 8,750 Worker
+invocations at their entire 30-second CPU budget ($5.25), one extra DO-duration
+billing unit ($12.50), and whole-unit allowances for SQL, R2, requests, storage,
+Images and AI. Observed DO duration, SQL reads/writes and stored data are well
+below those unit bounds. `measurements/cost-realistic.json` records the
+arithmetic and exclusions. The account invoice and actual marginal effect of
+included usage/monthly rounding are unverified. The earlier experiment's spend
+is separate.
+
+The shared marker plus streaming transport is now 346 physical lines; D remains
+206. The shared main bundle is 3,181.96 KiB (806.88 KiB gzip), and the realistic
+fake provider is 17.65 KiB (5.01 KiB gzip). Main includes all modes, Pi, code mode
+and the small vision bridge; these are not independent per-design bundles.
+
+The full run started `2026-11-05T18:49:28.883Z`; measurements finished
+`2026-11-05T19:10:19.037Z` and cleanup completed `2026-11-05T19:15:52.043Z`.
+Cleanup deleted 332 R2 objects and the bucket, the ImageAgent
+DO class/namespace and both `camelrun-proto-image-realistic*` Workers.
+Final inventories were empty and both public endpoints returned 404. The smoke
+run also cleaned all nine objects and both Workers with no cleanup errors.
+
+Validation ran on Sprites: 32/32 package tests, package and root typechecks, all five Worker
+dry-run configurations, the historical 41,050-check verifier, docs generation
+and the anchored llms.txt freshness/link test passed. The full deployed run and
+its offline verifier/report commands are retained below.
+
+| Follow-up command | Result |
+| --- | --- |
+| On a Sprite: `npm ci`, `npm run typecheck`, `npm test`, `npm run build` in this package | Passed; 32 tests, three original profile bundles |
+| On a Sprite: `npx wrangler deploy --dry-run -c wrangler.realistic.jsonc --outdir dist-realistic` and the realistic-provider config | Both passed |
+| `scripts/sprite-test HEAD npm run typecheck` from the root | All root/project TypeScript checks passed |
+| `node scripts/cloud.mjs --realistic --smoke` | Passed, including real vision; 300 verifier checks; cleanup confirmed |
+| `node scripts/cloud.mjs --realistic` | Ten single cases, six 50-agent groups, six faults and two replay/probes passed; cleanup confirmed |
+| `node scripts/verify-results.mjs measurements/cloud-realistic-2026-11-05T18-49-28-882Z.json.gz` | 53,022/53,022 checks passed |
+| `node scripts/report.mjs` and `node scripts/summarize-realistic.mjs` with that archive | Wrote separate realistic comparison, per-object CPU and coverage artifacts |
+| `node scripts/phase-telemetry.mjs <report> --include-provider` | 32 successful queries; missing provider rows retained |
+| On a Sprite: root `npm run docs` and `node --experimental-strip-types --test --test-name-pattern='^llms.txt' tests/docs.test.ts` | Passed |
+
+The authoritative full archive is
+`measurements/cloud-realistic-2026-11-05T18-49-28-882Z.json.gz`; the smoke archive
+is `measurements/cloud-realistic-smoke-2026-11-05T18-47-46-341Z.json.gz`.
+`verification-realistic.json`, `comparison-realistic.json`,
+`summary-realistic.json`, `phase-telemetry-realistic.json` and
+`cost-realistic.json` retain the checks, reductions, gaps and cost arithmetic.
+Both raw reports were archived losslessly; `archive-manifest-realistic.json`
+records their before/after SHA-256 values and round-trip verification. Historical
+archives and their original comparison/phase outputs remain unchanged.
+
+The original stress results follow; their 4.69 MB PNGs and 300-second configured
+CPU budget are intentionally different from this follow-up.
+
+<!-- COMPARISON -->
+### Initial stress run: single agents
 
 DO metrics include seed, request, hold and status work. CPU is seconds; memory is MiB.
 
@@ -36,7 +200,7 @@ DO metrics include seed, request, hold and status work. CPU is seconds; memory i
 | D | 20 | Hashes match | 13.77 | 0.072 | 5.102 | 0 |
 | D | 100 | Hashes match | 14.83 | 0.239 | 34.606 | 0 |
 
-### Fifty concurrent agent workflows
+### Initial stress run: fifty concurrent agent workflows
 
 Successful-request p50/p95 are seconds. Every successful group has 50 latency samples; failed groups have none.
 
@@ -85,7 +249,7 @@ MAIN includes dispatch and D's signed-image serving. These invocation quantiles 
 <!-- /PHASE_METRICS -->
 <!-- /COMPARISON -->
 
-## What ran
+## Initial stress setup
 
 All measured cases run on actual deployed Workers in the camelAI account. The
 owned names are `camelrun-proto-image-streaming`,
@@ -194,18 +358,18 @@ the size of the object it references.
 | Google Generative / Vertex | No | Installed adapters explicitly reject custom fetch |
 | Bedrock Converse | No | Installed adapter uses its AWS client and does not consume this option |
 
-The real Smithy SigV4 test hashes the expanded stream once, reconstructs it,
-and obtains the same signature as a fully materialized expanded body. Signing
-the marker body produces a different signature. A two-pass transport is
-mechanically possible, but it does not create a hook in Pi's Bedrock adapter
-or undo its earlier image base64-to-bytes conversion. It doubles reads and
-encoding for each attempt. This is an offline test with synthetic credentials,
-not an AWS request. See [provider audit](docs/provider-audit.md).
+**Bedrock uses API keys and bearer HTTPS in the selected design.** Call its
+HTTPS endpoint with the streaming fetch; no SigV4 or two-pass hash is needed.
+The pinned native Bedrock adapter still ignores custom fetch and materializes
+image bytes, so native Converse requires an application-owned HTTP adapter.
+An explicitly verified OpenAI-compatible Bedrock API/model could instead use
+Pi's existing HTTP adapter. The bearer-stream test uses a synthetic endpoint;
+no AWS call was made. See [provider audit](docs/provider-audit.md).
 
-The optional Workers AI vision attempt returned HTTP 502 / `AiError 5016`:
-the selected model requires a license acknowledgment. No terms were accepted
-and no real-model vision check completed. Provider URL acceptance and visual
-answer quality therefore remain unverified.
+The initial Workers AI attempt was blocked by license acknowledgment. After
+the account owner accepted the license, the follow-up successfully ran the
+real model through the bounded AI-binding bridge described above. No external
+provider credential or real provider URL capability was tested.
 
 ## Memory and timing interpretation
 
@@ -238,9 +402,9 @@ data must not be added to DO data as if both described disjoint billable work.
 - Cover arbitrary nested structured outputs. The hook handles ordinary output
   and a schema-aware image result; this is not a universal object traversal.
 - Keep production request-byte, image-count and pixel limits. Streaming avoids
-  a giant allocation; it does not expand provider limits. PNG results do not
-  establish JPEG MIME rewriting: B/C must update the provider MIME when the
-  actual derivative differs from the marker PNG.
+  a giant allocation; it does not expand provider limits. The follow-up restores
+  JPEG MIME metadata from the reference and verifies actual JPEG bytes in B/D.
+  Local adapter tests also cover WebP MIME rewriting.
 - Bound image creation and ingestion before the hook. An `afterTool` hook
   cannot undo a huge base64 array already allocated by a tool. Likewise, parsing
   one enormous inline user JSON body can fail before image externalization.
@@ -258,14 +422,14 @@ stream with exact Content-Length and, where required, `duplex: 'half'` instead
 of Workers' `FixedLengthStream`. Do not give every agent the bucket credential.
 [The ECS integration map](docs/ecs.md) names the current files and remaining gates.
 
-## Reproduction, spend and cleanup
+## Initial stress reproduction, spend and cleanup
 
 Commands run from this package, unless stated otherwise:
 
 | Command | Result |
 | --- | --- |
 | `npm ci` | Installed the pinned experiment dependencies |
-| `npm test` | 30 tests passed, including actual Pi SDK fetch hooks and two-pass Smithy signing |
+| Initial `npm test` | 30 tests passed; the historical signing test was removed in the bearer-only follow-up |
 | `npm run typecheck` | Passed |
 | `npm run build` | All three Wrangler dry-run bundles passed |
 | `node --check scripts/phase-telemetry.mjs` | Passed |
@@ -308,7 +472,8 @@ unit for DO duration ($12.50), SQL writes ($1), R2 writes ($4.50) and reads
 envelope below $30 for this work**, including setup smokes. This is deliberately
 an upper bound, not a measured bill or a claim that missing CPU was free.
 The roughly $5 reported before this work is separate. No paid real-model
-inference succeeded and no production service was changed.
+inference succeeded in this initial run; the follow-up records successful
+inference separately. No production service was changed.
 
 The full deployed run started at `2026-11-05T17:46:30.212Z`; measurements
 finished at `18:18:39.988Z`. After eight final telemetry polls, cleanup completed

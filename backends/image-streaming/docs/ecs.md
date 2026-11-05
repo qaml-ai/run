@@ -77,10 +77,11 @@ unsupported adapter: a valid PNG marker could otherwise reach a real model as a
 blank 1x1 image without an obvious protocol error.
 
 The current marker is itself a small PNG so Pi's image-header checks accept it.
-The experiment stores PNG derivatives. The stream builder also restores JPEG
-and WebP MIME/data-URL prefixes and native image formats from reference metadata,
-with synthetic unit coverage. An ECS integration must retain that translation
-and validate the metadata against the stored derivative; its hash and format
+The stress profile stores PNG derivatives; the realistic follow-up stores JPEGs.
+The stream builder restores MIME/data-URL prefixes and native image formats from
+reference metadata, with deployed JPEG and unit-level JPEG/WebP coverage. An ECS
+integration must retain that translation and validate the metadata against the
+stored derivative; its hash and format
 cannot be trusted merely because they appear in a marker.
 
 Marker metadata is not authorization. Before expanding or signing it, resolve

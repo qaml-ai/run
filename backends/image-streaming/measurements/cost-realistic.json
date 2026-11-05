@@ -1,0 +1,54 @@
+{
+  "rateEquivalentComponentsUSD": {
+    "doDuration": 0.0034419838207999996,
+    "sqlWrites": 0.085641,
+    "sqlReads": 0.000206075,
+    "mainWorkerCpu": 0.00067931092,
+    "mainWorkerRequests": 0.002103
+  },
+  "rateEquivalentSubtotalUSD": 0.09207136974079998,
+  "roundedUpperEnvelopeUSD": 27.316,
+  "roundedUpperEnvelopeComponentsUSD": {
+    "doDuration": 12.5,
+    "doRequests": 0.15,
+    "sqlWrites": 1,
+    "sqlReads": 0.001,
+    "sqlStorage": 0.2,
+    "r2Writes": 4.5,
+    "r2Reads": 0.36,
+    "r2Storage": 0.015,
+    "workerCpu": 5.25,
+    "workerRequests": 0.3,
+    "images": 2,
+    "workersAi": 0.04,
+    "spriteAllowance": 1
+  },
+  "scope": "Follow-up full run and smoke; subtotal is only returned full-run telemetry, not an invoice or complete usage. Upper envelope includes smoke, absent provider CPU, billing-unit rounding and a $1 Sprite allowance.",
+  "sources": [
+    "https://developers.cloudflare.com/workers/platform/pricing/",
+    "https://developers.cloudflare.com/durable-objects/platform/pricing/",
+    "https://developers.cloudflare.com/r2/pricing/",
+    "https://developers.cloudflare.com/images/pricing/",
+    "https://developers.cloudflare.com/workers-ai/platform/pricing/"
+  ],
+  "constraints": {
+    "maximumWorkerInvocations": 8750,
+    "maximumCpuMsEach": 30000,
+    "doDurationBelowGBSeconds": 1000000.0,
+    "sqlReadsBelow": 1000000.0,
+    "sqlWritesBelow": 1000000.0,
+    "sqlStorageBelowGB": 1,
+    "r2StorageBelowGB": 1
+  },
+  "exclusionsFromSubtotal": [
+    "Images",
+    "R2 operations and storage",
+    "SQL storage",
+    "unreturned fake-provider CPU",
+    "smoke runtime telemetry",
+    "Sprite usage",
+    "invoice attribution"
+  ],
+  "modeledCloudflareUpperEnvelopeUSD": 26.316,
+  "spriteAllowanceCaveat": "Budget allowance only; actual incremental Sprite usage was not separately metered."
+}
