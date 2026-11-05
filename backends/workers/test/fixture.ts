@@ -113,7 +113,6 @@ export async function startFixture(
     }[])
       if (image.dockerfile) image.dockerfile = join(root, image.dockerfile);
   config.hyperdrive[0].localConnectionString = databaseUrl;
-  const port = await unusedPort();
   config.vars = {
     ...config.vars,
     API_TOKEN: token,
