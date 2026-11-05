@@ -1,0 +1,27 @@
+{
+  "name": "@camelai/image-streaming-experiment",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "build": "wrangler deploy --dry-run --outdir dist && wrangler deploy --dry-run -c wrangler.proxy.jsonc --outdir dist-proxy && wrangler deploy --dry-run -c wrangler.provider.jsonc --outdir dist-provider",
+    "cloud": "node scripts/cloud.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "1.5.0",
+    "@earendil-works/pi-durable": "1.5.0",
+    "@earendil-works/pi-codemode": "1.5.0",
+    "@earendil-works/pi-schema": "1.5.0",
+    "@earendil-works/chord": "1.5.0",
+    "agents": "0.33.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261104.1",
+    "@types/node": "22.19.15",
+    "typescript": "5.9.3",
+    "wrangler": "4.157.0",
+    "@smithy/signature-v4": "5.7.5"
+  }
+}
