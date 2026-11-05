@@ -188,3 +188,42 @@ contractTest("tools", "tests/tool-calls.test.ts:160", "a direct tool's large res
   assert.match(toolResults(r.model.bodies[before + 1]).at(-1), /\/workspace\/tool-results\/1-call_big\.txt: read it in parts with tools\.read \(offset and length\) in codemode/);
   assert.match(toolResults(r.model.bodies[before + 2]).at(-1), /100000/, "code reads it");
 });
+
+contractTest("tools","tests/tool-calls.test.ts:187","history and forks keep capped tool details and deduplicated prompts without changing model content",async t => {
+  const details = { value: "é".repeat(9_000) };
+  const small = { value: "kept" };
+  const server = await mcpServer(t, {
+    large: () => ({ content: [{ type: "text", text: "large result" }], structuredContent: details, isError: true }),
+    small: () => ({ content: [{ type: "text", text: "small result" }], structuredContent: small }),
+  });
+  const r = await runtime(t, (_body, index) => [
+    toolCall("tools__large", {}, "large"),
+    toolCall("tools__small", {}, "small"),
+    toolCall("codemode", { code: '// @options: {"max_output_tokens": 15000}\ntext("x".repeat(40000))' }, "code"),
+    { role: "assistant", content: "done" },
+  ][index] ?? { role: "assistant", content: "continued" }, LOCAL);
+  const definition = (await r.call("/v1/definitions", { body: { name: "Details", mcpServers: [{ name: "tools", url: server.url, exposure: "direct" }] } })).json;
+  const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id as string;
+  await r.prompt(agent, "unique prompt", undefined, { from: { id: "sender", name: "Sender" }, metadata: { label: "kept" } });
+  const history = (await r.call(`/v1/agents/${agent}/history`)).json.messages;
+  const results = history.filter((message: any) => message.role === "toolResult");
+  assert.deepEqual(results[0].details, { truncated: true, path: "/workspace/tool-results/1-large.json" });
+  assert.equal(results[0].isError, true);
+  assert.deepEqual(results[1].details, small);
+  assert.deepEqual(results[2].details, { calls: [] }, "Pi stores call metadata separately from text output");
+  assert.ok(results[2].content.filter((part: any) => part.type === "text").map((part: any) => part.text).join("\n").includes("x".repeat(40000)));
+  assert.equal(toolResults(r.model.bodies[1]).at(-1), "large result");
+  assert.equal(toolResults(r.model.bodies[2]).at(-1), "small result");
+  assert.ok(toolResults(r.model.bodies[3]).at(-1).includes("x".repeat(40000)));
+  assert.deepEqual(history[0].from, { id: "sender", name: "Sender" });
+  assert.deepEqual(history[0].metadata, { label: "kept" });
+  // Private journal representation is checked in the source suite.
+  const volume = (await r.call(`/v1/agents/${agent}`)).json.mounts[0].volumeId;
+  const saved = await r.call(`/v1/volumes/${volume}/files/tool-results/1-large.json`);
+  assert.deepEqual(JSON.parse(saved.text), details);
+  const fork = await r.call(`/v1/agents/${agent}/fork`, { body: {} });
+  assert.equal(fork.status, 201, fork.text);
+  assert.deepEqual((await r.call(`/v1/agents/${fork.json.id}/history`)).json.messages, history);
+  await r.prompt(fork.json.id, "continue");
+  assert.ok(JSON.stringify(r.model.bodies.at(-1)).includes("unique prompt"));
+});

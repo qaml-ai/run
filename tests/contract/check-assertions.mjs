@@ -26,6 +26,8 @@ const implementationOnly = expectation => [
   "r.logs.some(", "mayAnswer(input,", "r.db.query(", "slow.db.query(", "Number(cursor.reserved_cursor)",
   "await identity(", "await thinking(", "existsSync(", "assert.deepEqual(row,", "saved.config.initialMessages",
   "'requests' in saved", "readFile(join(f.root", "JSON.stringify(saved)", "header.tenant", "JSON.stringify(header)",
+  "ignored(r.logs,", "rows.map((row: any) => row.child)", "Math.abs(row.budget", "kept.rows[0].count",
+  "assert.deepEqual(rows,", "assert.equal(entries.length", "entries[0].model[0].content", "await owner()",
 ].some(fragment => expectation.includes(fragment));
 // The decisions webhook is delivered to a local HTTP receiver instead of reading Node's SQL outbox.
 const normalize = expectation => expectation.replace('url: "https://hooks.example.test/usage"', 'url: webhook + "/usage"').replaceAll('saved.config.systemPrompt', 'saved.systemPrompt').replaceAll('saved.config.thinkingLevel', 'saved.thinkingLevel').replaceAll('saved.definitions', 'saved.tools');

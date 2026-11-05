@@ -97,6 +97,17 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
       const result = await db.query("update schedules set due_at=$3 where agent=$1 and id=$2", [agent, schedule, dueAt]);
       if (result.rowCount !== 1) throw new Error("Fixture schedule not found");
     },
+    async seedIdempotencyLock({ tenant, key, fingerprint, createdAt }) {
+      await db.query("insert into idempotency_keys(tenant,key,fingerprint,created_at) values($1,$2,$3,$4)", [tenant, key, fingerprint, createdAt]);
+    },
+    async setScheduleLegacyHistory(agent, schedule, history) {
+      const result = await db.query("update schedules set history=$3,due_at=0 where id=$1 and agent=$2", [schedule, agent, history]);
+      if (result.rowCount !== 1) throw new Error("Fixture schedule not found");
+    },
+    async resetChildSettlement(parent) {
+      const result = await db.query("update agent_children set ended_at=null,landed_at=null,landed_by=null,state='running',checked_at=0 where parent=$1", [parent]);
+      if (!result.rowCount) throw new Error("Fixture child settlement not found");
+    },
     async now() { return Date.now(); },
     async advanceTime(ms) { await sleep(ms); }, close,
   };

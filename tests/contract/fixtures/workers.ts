@@ -129,6 +129,16 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
       const result = await call(`/v1/agents/${agent}/__test/contract-schedule-due`, { body: { id: schedule, dueAt } });
       if (result.status !== 200) throw new Error(`Schedule fixture: ${result.status} ${result.text}`);
     },
+    async seedIdempotencyLock({ tenant, key, fingerprint, createdAt }) {
+      await server.db.query("insert into idempotency_keys(tenant,key,fingerprint,created_at) values($1,$2,$3,$4)", [tenant, key, fingerprint, createdAt]);
+    },
+    async setScheduleLegacyHistory(agent, schedule, history) {
+      const result = await call(`/v1/agents/${agent}/__test/contract-schedule-due`, { body: { id: schedule, dueAt: 0, history } });
+      if (result.status !== 200) throw new Error(`Schedule fixture: ${result.status} ${result.text}`);
+    },
+    async resetChildSettlement(_parent) {
+      throw new Error("Unsupported fixture state: Workers child records have no settlement or sweep state to reset");
+    },
     setModel(next) { respond = next; replyStart = model.bodies.length; },
     async now() { return Date.now(); },
     async advanceTime(milliseconds) {

@@ -23,7 +23,10 @@ export interface ContractFixture {
   model: { url: string; bodies: any[]; keys: string[]; headers: any[] };
   setModel(respond: ModelReply): void;
   seedTenant(id: string, options?: TenantSeed): Promise<{ id: string; token: string }>;
+  seedIdempotencyLock(lock: { tenant: string; key: string; fingerprint: string; createdAt: number }): Promise<void>;
   setScheduleDueAt(agent: string, schedule: string, dueAt: number): Promise<void>;
+  setScheduleLegacyHistory(agent: string, schedule: string, history: "none"): Promise<void>;
+  resetChildSettlement(parent: string): Promise<void>;
   now(): Promise<number>;
   /** Wait for real backend time; does not pretend the backend clock advanced. */
   advanceTime(ms: number): Promise<void>;

@@ -5,8 +5,8 @@ claim of complete repository coverage or a test result. Each copied case identif
 its source file and line. `node tests/contract/list.mjs` lists the complete current
 TypeScript suite; Python SDK cases are separate. `PARITY.md` records execution.
 
-`node tests/contract/check-assertions.mjs` checks these 195 copied cases against
-1,603 original public assertions. It compares assertion expressions rather than
+`node tests/contract/check-assertions.mjs` checks these 206 copied cases against
+1,682 original public assertions. It compares assertion expressions rather than
 pass counts. The table counts source cases copied here, including a case when its
 public portion was copied and its implementation-only portion remains in the
 original suite.
@@ -15,9 +15,9 @@ original suite.
 | --- | ---: |
 | `agent-fork.test.ts` | 11 / 11 |
 | `agent-language.test.ts` | 3 / 4 |
-| `agent-lifetime.test.ts` | 6 / 7 |
+| `agent-lifetime.test.ts` | 7 / 7 |
 | `agent-links.test.ts` | 1 / 1 |
-| `agent-mcp.test.ts` | 2 / 3 |
+| `agent-mcp.test.ts` | 3 / 3 |
 | `agent-messaging.test.ts` | 5 / 5 |
 | `agent-progress.test.ts` | 10 / 10 |
 | `agents-list.test.ts` | 1 / 2 |
@@ -25,7 +25,7 @@ original suite.
 | `agents.test.ts` | 12 / 12 |
 | `api.test.ts` | 2 / 18 here; 13 more in the account/API ports |
 | `attach.test.ts` | 5 / 5 |
-| `background-agents.test.ts` | 6 / 7 |
+| `background-agents.test.ts` | 7 / 7 |
 | `browser-tokens.test.ts` | 4 / 4 |
 | `builtins.test.ts` | 5 / 7 |
 | `context-reset.test.ts` | 1 / 5 |
@@ -34,12 +34,12 @@ original suite.
 | `errors.test.ts` | 1 / 1 |
 | `history-formats.test.ts` | 1 / 5 |
 | `history-import.test.ts` | 3 / 4 |
-| `history-none-ignored.test.ts` | 1 / 3 |
+| `history-none-ignored.test.ts` | 3 / 3 |
 | `history-pages.test.ts` | 4 / 12 |
 | `human-input.test.ts` | 13 / 13 |
-| `idempotency.test.ts` | 1 / 3 |
+| `idempotency.test.ts` | 3 / 3 |
 | `model-settings.test.ts` | 3 / 4 |
-| `multi-agent.test.ts` | 7 / 10 |
+| `multi-agent.test.ts` | 9 / 10 |
 | `prompt-options.test.ts` | 5 / 5 |
 | `request-wait.test.ts` | 2 / 2 |
 | `run-limits.test.ts` | 5 / 5 |
@@ -50,8 +50,8 @@ original suite.
 | `service-api.test.ts` | 4 / 4 |
 | `stream-deltas.test.ts` | 4 / 4 |
 | `structured-output.test.ts` | 7 / 7 |
-| `tenant-reads.test.ts` | 4 / 7 |
-| `tool-calls.test.ts` | 7 / 8 |
+| `tenant-reads.test.ts` | 5 / 7 |
+| `tool-calls.test.ts` | 8 / 8 |
 | `tool-spawn.test.ts` | 2 / 2 |
 | `tool-streaming.test.ts` | 1 / 4 |
 
@@ -83,28 +83,40 @@ cases assert the HTTP, SDK, model-provider and webhook observations. In particul
   source. Pure language, history conversion, model policy, sender rendering,
   streaming measurement and SDK-constructor tests also remain in their sources.
 
-## Remaining mixed public/private cases
+## Private setup replaced by fixture controls
 
-These source cases still contain public behavior that is not fully represented
-by these ports. They require additional backend-neutral setup or failure injection;
-they are gaps, not passing or out-of-scope cases. No expectations were changed to
-make a backend pass.
+- Keyed-agent expiry waits for its public TTL. The source's restart and edited
+  `expires_at` row are not needed for the public replacement assertions.
+- Agent MCP authorization obtains its OAuth token through the public password,
+  consent and token endpoints; anonymous, cross-agent, cross-tenant and OAuth
+  assertions remain unchanged.
+- Legacy schedule history and an abandoned idempotency lock are seeded by small
+  fixture controls. Tests still use the production scheduler and API handlers.
+- The orphaned-child case resets the original settlement fields through a fixture
+  control, then observes the parent's public `spendLimit.spent`, including the
+  original $0.60 assertion. A backend lacking settlement state reports a fixture
+  failure; the control never simulates successful product behavior.
+- The concurrent child case retains public spawn, limit validation and SDK
+  expectations. Its exact reservation-row amounts remain an internal SQL check.
+- Secret-once replay, parent abort/deletion, tool-result history and forks, and
+  idle-agent reads retain their public assertions. Secret storage, settlement
+  provenance, journal representation and process ownership stay internal.
 
-| Source | Remaining setup or observation |
-| --- | --- |
-| `agent-lifetime.test.ts:83` | Expired/deleted keyed agent replacement with SQL expiry setup |
-| `agent-mcp.test.ts:33` | MCP prompt authorization with extra private fixture setup |
-| `background-agents.test.ts:213` | Concurrent child budget reservation and tool spawn limits with SQL inspection |
-| `history-none-ignored.test.ts:12` | Legacy prompt history flag plus once-per-agent log observation |
-| `history-none-ignored.test.ts:51` | Legacy stored schedule history flag with private schedule setup |
-| `idempotency.test.ts:35` | Secret-once replay protection plus stored-response inspection |
-| `idempotency.test.ts:58` | Recovery of an abandoned keyed request and oversized request body |
-| `multi-agent.test.ts:203` | Parent abort/deletion, child settlement and private cleanup inspection |
-| `multi-agent.test.ts:232` | Sweep settlement of an orphaned delegate result |
-| `tool-calls.test.ts:187` | Large tool detail/history/fork behavior plus private journal assertions |
-| `tenant-reads.test.ts:95` | Idle-agent reads without process loading |
-| `tenant-reads.test.ts:117` | Agent-load failure and bounded retry injection |
-| `tenant-reads.test.ts:144` | Failed durable work-mark write and retry injection |
+## Implementation-specific failure injection
+
+The healthy public history, state, input and retry surfaces are covered. These two
+source cases additionally corrupt Node storage or install a Postgres trigger.
+They are not classified as channels/voice or counted as backend passes:
+
+| Source | Injection still in the original test | Additional public behavior it observes |
+| --- | --- | --- |
+| `tenant-reads.test.ts:117` | Make a released agent unreadable (`header.version = 99`) with pending work; set persisted resume count/time between sweeps | State and listing expose the same resume failures; failed loads retry with a capped interval |
+| `tenant-reads.test.ts:144` | Fail the first durable pending-work update using a SQL trigger | Failed admission is not accepted; the same request ID can be retried and completes |
+
+A future portable recovery-fixture contract would need `failAgentLoad`,
+`setResumeState`, and `failNextAdmissionWrite` controls implemented at each
+backend's actual persistence boundary. Healthy-route coverage does not establish
+these recovery guarantees.
 
 Channels and voice are deliberately out of scope. Other original cases not in
 this inventory must be assessed separately; this document does not count them as

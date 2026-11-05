@@ -4,6 +4,7 @@ import type {T} from '../http.ts';
 async function runtime(t:T,respond:ModelReply,env:Record<string,string>={},tenants?:object):Promise<ContractFixture>{return createContractFixture(t,{respond,env,tenants});}
 
 import assert from "node:assert/strict";
+import { until } from "../support.ts";
 
 import {Agents} from "../../../clients/node.ts";
 
@@ -29,4 +30,44 @@ contractTest("history", "tests/history-none-ignored.test.ts:32", "the SDK still 
   assert.deepEqual(userTexts(body).map((text: string) => text.includes("First question") || text.includes("Second question")), [true, true]);
   assert.deepEqual(body.tool_choice, { type: "function", function: { name: "final_output" } });
   assert.doesNotMatch(JSON.stringify(body), /codemode/);
+});
+
+contractTest("history","tests/history-none-ignored.test.ts:12","a prompt's history: \"none\" is accepted and ignored: the run sees the agent's history, logged once per agent",async t => {
+  const r = await runtime(t, (_body, index) => ({ role: "assistant", content: `answer ${index}` }));
+  const id = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  await r.prompt(id, "first question");
+  await r.prompt(id, "second question", undefined, { history: "none" });
+  await r.prompt(id, "third question", undefined, { history: "none" });
+  await r.prompt(id, "fourth question", undefined, { history: "full" });
+  for (const [index, seen] of [[1, ["first", "second"]], [2, ["first", "second", "third"]], [3, ["first", "second", "third", "fourth"]]] as const) {
+    assert.deepEqual(userTexts(r.model.bodies[index]).map((text: string) => text.match(/(first|second|third|fourth) question/)?.[1]), seen);
+  }
+  // Not marked on the stored message.
+  const history = (await r.call(`/v1/agents/${id}/history`)).json.messages;
+  assert.ok(history.every((message: any) => message.history === undefined));
+  // Logged once for the agent, however often it is sent.
+  // The once-per-agent deprecation log is checked in the source suite.
+  // Only full or none, as before.
+  assert.equal((await r.call(`/v1/agents/${id}/prompt`, { body: { text: "x", history: "some" } })).status, 400);
+});
+
+contractTest("history","tests/history-none-ignored.test.ts:51","a schedule's history: \"none\", sent or stored, is accepted and ignored: its wake-up sees the agent's history",async t => {
+  const r = await runtime(t, (_body, index) => ({ role: "assistant", content: `answer ${index}` }));
+  const id = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  await r.prompt(id, "first question");
+  const sent = await r.call(`/v1/agents/${id}/schedules`, { body: { text: "nightly triage", history: "none", inSeconds: 0 } });
+  assert.equal(sent.status, 201, sent.text);
+  assert.equal(sent.json.history, undefined, "not stored");
+  const woken = await until(() => r.model.bodies.find((body: any) => userTexts(body).some((text: string) => text.includes("nightly triage"))), "the wake-up");
+  assert.ok(userTexts(woken).some((text: string) => text.includes("first question")), "the wake-up sees the history");
+  // One an earlier release stored with history "none" wakes with the history too.
+  const stored = await r.call(`/v1/agents/${id}/schedules`, { body: { text: "stored triage", inSeconds: 3600 } });
+  await r.setScheduleLegacyHistory(id, stored.json.id, "none");
+  const storedWake = await until(() => r.model.bodies.find((body: any) => userTexts(body).some((text: string) => text.includes("stored triage"))), "the stored wake-up");
+  assert.ok(userTexts(storedWake).some((text: string) => text.includes("nightly triage")));
+  await until(async () => (await r.call(`/v1/agents/${id}/schedules`)).json.length === 0, "the one-off schedules gone");
+  // The once-per-agent deprecation log is checked in the source suite.
+  // Only full or none, as before; a code schedule may carry it too, ignored.
+  assert.equal((await r.call(`/v1/agents/${id}/schedules`, { body: { text: "x", history: "some", inSeconds: 60 } })).status, 400);
+  assert.equal((await r.call(`/v1/agents/${id}/schedules`, { body: { code: "return 1", history: "none", inSeconds: 60 } })).status, 201);
 });

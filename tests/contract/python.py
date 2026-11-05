@@ -4,6 +4,7 @@ The Python tests talk to the same base-URL fixture as TypeScript. Model replies
 remain the original tests' local HTTP server and mutable script, unchanged.
 """
 import asyncio
+import functools
 import hashlib
 import importlib.util
 import json
@@ -124,6 +125,29 @@ async def teardown(self):
 
 original.PythonSDKTest.asyncSetUp = setup
 original.PythonSDKTest.asyncTearDown = teardown
+
+
+def bounded_case(method):
+    """Keep the source method intact, but let a missing backend feature time out."""
+    @functools.wraps(method)
+    async def run(self):
+        timeout_ms = int(os.environ.get("CONTRACT_TIMEOUT_MS", "90000"))
+        if timeout_ms <= 0:
+            raise ValueError("CONTRACT_TIMEOUT_MS must be positive")
+        task = asyncio.create_task(method(self))
+        try:
+            return await asyncio.wait_for(task, timeout_ms / 1000)
+        except asyncio.TimeoutError:
+            if task.cancelled():
+                self.fail(f"Python contract timed out after {timeout_ms} ms")
+            raise
+    return run
+
+
+for name in dir(original.PythonSDKTest):
+    method = getattr(original.PythonSDKTest, name)
+    if name.startswith("test_") and asyncio.iscoroutinefunction(method):
+        setattr(original.PythonSDKTest, name, bounded_case(method))
 
 # Transport scope is explicit; these are never reported as failures or passes.
 for name in ("test_voice_sessions_need_the_runtime_to_hold_calls", "test_audio_is_transcribed_in_messages_runs_and_on_its_own"):

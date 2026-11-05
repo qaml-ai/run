@@ -4,6 +4,7 @@ import type {T} from '../http.ts';
 async function runtime(t:T,respond:ModelReply,env:Record<string,string>={},tenants?:object):Promise<ContractFixture>{return createContractFixture(t,{respond,env,tenants});}
 
 import assert from "node:assert/strict";
+import { listen } from "../support.ts";
 
 import {until} from "../support.ts";
 
@@ -35,4 +36,40 @@ contractTest("agents", "tests/idempotency.test.ts:7", "an Idempotency-Key header
   assert.equal(prompt.json.id, "prompt-1");
   assert.equal((await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "hi" }, headers: { "Idempotency-Key": "prompt-1" } })).json.startedAt, prompt.json.startedAt);
   await until(async () => (await r.call(`/v1/agents/${agent}/requests/prompt-1`)).json.state === "completed", "the prompt");
+});
+
+contractTest("agents","tests/idempotency.test.ts:35","a response carrying a secret shown once is never kept or replayed: its key's retry is a conflict",async t => {
+  const hook = await listen(t, (_req, res) => void res.writeHead(204).end());
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }), LOCAL);
+  const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  const volume = (await r.call("/v1/volumes", { body: { name: "v" } })).json.id as string;
+  const endpoint = (await r.call("/v1/webhooks", { body: { url: hook, events: ["run.started"] } })).json.id as string;
+  await r.call("/v1/usage-webhook", { method: "PUT", body: { url: hook } });
+  const routes: [string, object][] = [
+    ["/v1/tokens", { name: "ci" }], ["/v1/webhooks", { url: hook, events: ["run.failed"] }], [`/v1/webhooks/${endpoint}/secret`, {}],
+    ["/v1/usage-webhook/secret", {}], [`/v1/agents/${agent}/browser-tokens`, {}], [`/v1/agents/${agent}/credentials/rotate`, {}], [`/v1/volumes/${volume}/links`, { path: "/a.txt" }],
+  ];
+  for (const [path, body] of routes) {
+    const headers = { "Idempotency-Key": `secret-${path}` };
+    const first = await r.call(path, { body, headers });
+    assert.ok(first.status < 300, `${path}: ${first.text}`);
+    const replay = await r.call(path, { body, headers });
+    assert.deepEqual([replay.status, replay.json.code], [409, "IDEMPOTENCY_CONFLICT"], path);
+    assert.match(replay.json.error, /shown once/);
+  }
+  // Storage never retaining secret responses is checked in the source suite.
+});
+
+contractTest("agents","tests/idempotency.test.ts:58","a key whose request died mid-way is taken over after a while, and a body past the limit is refused before it is read whole",async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }), { ...LOCAL, AGENT_IDEMPOTENCY_LOCK_MS: "500" });
+  const tenant = "alice";
+  await r.seedIdempotencyLock({ tenant, key: "orphaned", fingerprint: "x", createdAt: await r.now() });
+  const locked = await r.call("/v1/volumes", { body: { name: "a" }, headers: { "Idempotency-Key": "orphaned" } });
+  assert.deepEqual([locked.status, locked.json.code], [409, "IDEMPOTENCY_IN_PROGRESS"], "while it may still be running");
+  await new Promise(resolve => setTimeout(resolve, 600));
+  const taken = await r.call("/v1/volumes", { body: { name: "a" }, headers: { "Idempotency-Key": "orphaned" } });
+  assert.equal(taken.status, 201, taken.text);
+
+  const huge = await fetch(`${r.base}/v1/volumes`, { method: "POST", headers: { Authorization: "Bearer fixture-operator-token-at-least-24-chars", "Content-Type": "application/json", "Idempotency-Key": "huge" }, body: JSON.stringify({ name: "x".repeat(9 * 1024 * 1024) }) });
+  assert.equal(huge.status, 413);
 });

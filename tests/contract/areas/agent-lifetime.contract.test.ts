@@ -145,3 +145,25 @@ contractTest("agents", "tests/agent-lifetime.test.ts:142", "the last upsert wins
   await settle(last);
   assert.equal(await prompt(a.id), "B.", "C was queued, then B (the header's own value) again: B");
 });
+
+contractTest("agents","tests/agent-lifetime.test.ts:83","a key whose agent was deleted or expired makes a fresh agent, with a new token; the old one stays gone",async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+  const first = (await r.call("/v1/agents", { body: {}, headers: { "Idempotency-Key": "thread-a" } })).json;
+  await r.prompt(first.id, "remember me");
+  assert.equal((await r.call(`/v1/agents/${first.id}`, { method: "DELETE" })).status, 200);
+  const second = await r.call("/v1/agents", { body: {}, headers: { "Idempotency-Key": "thread-a" } });
+  assert.equal(second.status, 201, second.text);
+  assert.notEqual(second.json.id, first.id);
+  assert.notEqual(second.json.token, first.token);
+  assert.equal((await r.call(`/v1/agents/${second.json.id}/history`)).json.messages.length, 0, "a fresh agent");
+  assert.equal((await r.call(`/v1/agents/${first.id}`)).status, 404, "the deleted one stays deleted");
+  assert.equal((await r.call("/v1/agents", { body: {}, headers: { "Idempotency-Key": "thread-a" } })).json.id, second.json.id, "and the key now means the new one");
+
+  // Expired: the same, on a node that reads it from the database.
+  const lapsing = (await r.call("/v1/agents", { body: { ttlSeconds: 60 }, headers: { "Idempotency-Key": "thread-b" } })).json;
+  // Wait for the public TTL rather than editing the saved agent or restarting a process.
+  await r.advanceTime(60_100);
+  const renewed = await r.call("/v1/agents", { body: { ttlSeconds: 60 }, headers: { "Idempotency-Key": "thread-b" } });
+  assert.equal(renewed.status, 201, renewed.text);
+  assert.notEqual(renewed.json.id, lapsing.id);
+});

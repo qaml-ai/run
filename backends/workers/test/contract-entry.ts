@@ -10,12 +10,12 @@ export * from "../src/index.ts";
 export class CamelAgent extends RuntimeAgent {
   async fetch(request: Request) {
     if (this.env.TEST_MODE === "1" && new URL(request.url).pathname === "/__test/contract-schedule-due" && request.method === "POST") {
-      const { id, dueAt } = await request.json() as { id: string; dueAt: number };
-      if (typeof id !== "string" || !Number.isSafeInteger(dueAt)) return Response.json({ error: "Invalid schedule fixture input" }, { status: 400 });
+      const { id, dueAt, history } = await request.json() as { id: string; dueAt: number; history?: "none" };
+      if (typeof id !== "string" || !Number.isSafeInteger(dueAt) || (history !== undefined && history !== "none")) return Response.json({ error: "Invalid schedule fixture input" }, { status: 400 });
       const key = `schedule:${id}`;
       const schedule = await this.ctx.storage.get<Record<string, unknown>>(key);
       if (!schedule) return Response.json({ error: "Unknown schedule" }, { status: 404 });
-      await this.ctx.storage.put(key, { ...schedule, dueAt });
+      await this.ctx.storage.put(key, { ...schedule, dueAt, ...(history === undefined ? {} : { history }) });
       // arm is intentionally private to the runtime. Only this non-deployed test
       // subclass prepares due times; it must not duplicate the alarm implementation.
       await (this as unknown as { arm(): Promise<void> }).arm();

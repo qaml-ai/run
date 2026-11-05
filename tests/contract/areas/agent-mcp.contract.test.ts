@@ -126,3 +126,78 @@ contractTest("agents", "tests/agent-mcp.test.ts:135", "a turn waiting on a perso
   assert.deepEqual([declined.isError, declined.text], [false, "Not deploying"]);
   await until(async () => (await r.call(`/v1/agents/${asker.id}/inputs?state=declined`)).json.length === 1, "the declined input");
 });
+
+import {createHash, randomBytes} from "node:crypto";
+import {OTHER_OPERATOR} from "../support.ts";
+const PUBLIC = "https://agents.example.test";
+
+/** Obtain the same tenant OAuth credential through the public password, consent and token endpoints. */
+async function oauthToken(r: ContractFixture, clientId: string, agentId: string): Promise<string> {
+  const password = "contract-oauth-password-123";
+  const saved = await r.call("/v1/tenants/alice/password", {method:"PUT", body:{email:"alice@example.test",password}});
+  if(saved.status !== 200) throw new Error(`OAuth setup password failed: ${saved.status}`);
+  const verifier = randomBytes(32).toString("base64url");
+  const query = new URLSearchParams({response_type:"code",client_id:clientId,redirect_uri:"http://127.0.0.1:43210/cb",code_challenge:createHash("sha256").update(verifier).digest("base64url"),code_challenge_method:"S256",resource:`${PUBLIC}/v1/agents/${agentId}/mcp`});
+  const post = (path:string, body:Record<string,string>, headers:Record<string,string>={}) => fetch(r.base+path,{method:"POST",redirect:"manual",headers:{"Content-Type":"application/x-www-form-urlencoded",...headers},body:new URLSearchParams(body)});
+  const login = await post("/oauth/password",{email:"alice@example.test",password,next:`/oauth/authorize?${query}`},{Origin:r.base});
+  if(login.status !== 303) throw new Error(`OAuth setup login failed: ${login.status}`);
+  const cookie=login.headers.get("set-cookie")!.split(";")[0];
+  const allowed=await post("/oauth/authorize",{...Object.fromEntries(query),decision:"allow"},{Cookie:cookie,Origin:r.base});
+  if(allowed.status !== 302) throw new Error(`OAuth setup consent failed: ${allowed.status}`);
+  const code=new URL(allowed.headers.get("location")!).searchParams.get("code")!;
+  const issued=await post("/oauth/token",{client_id:clientId,grant_type:"authorization_code",code,redirect_uri:"http://127.0.0.1:43210/cb",code_verifier:verifier});
+  if(issued.status !== 200) throw new Error(`OAuth setup exchange failed: ${issued.status}`);
+  return (await issued.json()).access_token;
+}
+
+contractTest("agents", "tests/agent-mcp.test.ts:33","an agent's MCP endpoint takes whatever may prompt it, and no other tenant's token",async t => {
+  const r = await runtime(t, body => ({ role: "assistant", content: `echo: ${lastUser(body)}` }));
+  const echo = await agent(r), other = await agent(r, { name: "Other" });
+  const url = `${r.base}/v1/agents/${echo.id}/mcp`;
+  const list = { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) };
+
+  const anonymous = await fetch(url, list);
+  assert.equal(anonymous.status, 401);
+  const metadata = `${PUBLIC}/.well-known/oauth-protected-resource/v1/agents/${echo.id}/mcp`;
+  assert.match(anonymous.headers.get("www-authenticate")!, new RegExp(`^Bearer resource_metadata="${metadata.replaceAll(".", "\\.")}"`));
+  const resource = await (await fetch(`${r.base}/.well-known/oauth-protected-resource/v1/agents/${echo.id}/mcp`)).json();
+  assert.deepEqual([resource.resource, resource.authorization_servers], [`${PUBLIC}/v1/agents/${echo.id}/mcp`, [PUBLIC]]);
+  // Clients sign in for the agent's endpoint as a resource of its own.
+  const registered = await (await fetch(`${r.base}/oauth/register`, { method: "POST", body: JSON.stringify({ client_name: "Test", redirect_uris: ["http://127.0.0.1:43210/cb"], token_endpoint_auth_method: "none" }) })).json();
+  const authorize = (target: string) => fetch(`${r.base}/oauth/authorize?${new URLSearchParams({ response_type: "code", client_id: registered.client_id, redirect_uri: "http://127.0.0.1:43210/cb",
+    code_challenge: randomBytes(32).toString("base64url"), code_challenge_method: "S256", resource: target })}`, { redirect: "manual" });
+  assert.equal((await authorize(`${PUBLIC}/v1/agents/${echo.id}/mcp`)).status, 200, "the sign-in page");
+  assert.match((await authorize(`${PUBLIC}/v1/agents/${echo.id}/other`)).headers.get("location")!, /error=invalid_target/);
+  const bad = await fetch(url, { ...list, headers: { ...list.headers, Authorization: "Bearer art_nope" } });
+  assert.equal(bad.status, 401);
+  assert.match(bad.headers.get("www-authenticate")!, /error="invalid_token"/);
+  assert.equal((await fetch(url, { ...list, headers: { ...list.headers, Authorization: `Bearer ${other.token}` } })).status, 401, "another agent's token");
+  assert.equal((await fetch(url, { ...list, headers: { ...list.headers, Authorization: `Bearer ${OTHER_OPERATOR}` } })).status, 404, "another tenant's");
+
+  // An OAuth access token for the tenant, as a client that signed in holds.
+  const oauth = await oauthToken(r, registered.client_id, echo.id);
+
+  for (const token of [echo.token, OPERATOR, oauth]) {
+    const { client, message } = await connect(t, r, echo.id, token);
+    const [tool] = (await client.listTools()).tools;
+    assert.equal(tool.name, "message");
+    assert.match(tool.description!, /^Send a message to the agent "Echo" and get its reply\./);
+    assert.doesNotMatch(tool.description!, /repeat/, "never its system prompt");
+    const reply = await message(`hi via ${token.slice(0, 4)}`);
+    assert.deepEqual([reply.isError, reply.text], [false, `echo: hi via ${token.slice(0, 4)}`]);
+  }
+  // A definition's description says what its agents are for; a change to it shows at once.
+  const definition = (await r.call("/v1/definitions", { body: { name: "Support", description: "Answers questions about orders and refunds.", systemPrompt: "Secret instructions." } })).json;
+  const support = await agent(r, { definition: definition.id });
+  const described = async () => (await (await connect(t, r, support.id, OPERATOR)).client.listTools()).tools[0].description!;
+  assert.match(await described(), /^Send a message to the agent "Support" and get its reply\.\n\nAnswers questions about orders and refunds\./);
+  assert.doesNotMatch(await described(), /Secret/);
+  assert.equal((await r.call(`/v1/definitions/${definition.id}`, { method: "PATCH", body: { description: "Tracks parcels." } })).status, 200);
+  assert.match(await described(), /\n\nTracks parcels\.\n/);
+  assert.equal((await r.call("/v1/definitions", { body: { name: "Bad", description: " " } })).status, 400);
+
+  // The messages went into the agent's one history, as prompts do.
+  const history = (await r.call(`/v1/agents/${echo.id}/history`)).json.messages;
+  assert.equal(history.filter((entry: any) => entry.role === "user").length, 3);
+  assert.equal((await r.call(`/v1/agents/${other.id}/history`)).json.messages.length, 0);
+});
