@@ -7,7 +7,7 @@ source runtime remains the specification. No product assertion is relaxed.
 
 - File arguments stay off for external tools unless their definition enables
   them. Enabled tools receive mount-authorized bytes or call-bound URLs. URLs
-  retain file versions and directory snapshots and expire with the call.
+  retain file versions and directory snapshots and carry call identity and expiry.
 - MCP and OpenAPI file inputs support their declared transport. Binary, image,
   audio and long text results are retained in the workspace. Download responses
   use the source sandbox headers, and fetched redirects are checked separately.
