@@ -1,0 +1,36 @@
+
+> @camelai/run-workers-experiment@0.0.0 build
+> WRANGLER_LOG_PATH=.wrangler/logs wrangler deploy --dry-run --outdir dist && WRANGLER_LOG_PATH=.wrangler/logs wrangler deploy --dry-run -c codemode/wrangler.jsonc --outdir dist-codemode
+
+
+ ⛅️ wrangler 4.157.0 (update available 4.158.0)
+───────────────────────────────────────────────
+Total Upload: 3203.22 KiB / gzip: 645.77 KiB
+Your Worker has access to the following bindings:
+Binding                                                                                     Resource
+env.AGENTS (CamelAgent)                                                                     Durable Object
+env.TENANTS (TenantAdmission)                                                               Durable Object
+env.VOLUMES (Volume)                                                                        Durable Object
+env.CODEMODE_SANDBOX (CodemodeSandbox, defined in camelrun-proto-workers-codemode)          Durable Object
+env.WEBHOOKS (camelrun-proto-workers-webhooks)                                              Queue
+env.HYPERDRIVE (00000000000000000000000000000000)                                           Hyperdrive Config
+env.BUCKET (camelrun-proto-workers-files)                                                   R2 Bucket
+env.METRICS (camelrun_proto_workers)                                                        Analytics Engine Dataset
+env.IMAGES                                                                                  Images
+env.TEST_MODEL ("1")                                                                        Environment Variable
+env.MODEL ("test/echo")                                                                     Environment Variable
+env.API_TOKEN ("local-integration-only-token-with-at-...")                                  Environment Variable
+env.FILE_SIGNING_SECRET ("local-only-file-secret-with-at-least-...")                        Environment Variable
+env.ALLOW_LOCAL_WEBHOOKS ("1")                                                              Environment Variable
+env.TEST_MODE ("1")                                                                         Environment Variable
+
+--dry-run: exiting now.
+
+ ⛅️ wrangler 4.157.0 (update available 4.158.0)
+───────────────────────────────────────────────
+Total Upload: 754.16 KiB / gzip: 315.89 KiB
+Your Worker has access to the following bindings:
+Binding                            Resource
+env.SANDBOX (CodemodeSandbox)      Durable Object
+
+--dry-run: exiting now.

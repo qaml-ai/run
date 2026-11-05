@@ -1,0 +1,302 @@
+[
+  {
+    "test": "upstream_python_sdk.HistoryPagingTest.test_history_collects_bounded_pages_async_and_sync",
+    "status": "pass",
+    "kind": "sdk-unit"
+  },
+  {
+    "test": "upstream_python_sdk.OriginTest.test_plain_http_reaches_only_private_hosts",
+    "status": "pass",
+    "kind": "sdk-unit"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_a_deploy_loses_no_tool_call_close_finishes_the_calls_running",
+    "status": "fail",
+    "reason": "Attached tools are not supported by the Cloudflare backend yet"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_a_failed_run_raises_run_error_or_returns_it",
+    "status": "fail",
+    "reason": "Tuples differ: ('runtime_error', 'failed') != ('model_error', 'failed')\n\nFirst differing element 0:\n'runtime_error'\n'model_error'\n\n- ('runtime_error', 'failed')\n?   -----\n\n+ ('model_error', 'failed')\n?    ++ +\n"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_a_tool_process_that_dies_mid_run_the_restarted_one_serves_its_calls_and_the_same_key_fetches_it",
+    "status": "fail",
+    "reason": "Attached tools are not supported by the Cloudflare backend yet"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_an_approval_answered_by_on_input_resumes_the_turn",
+    "status": "fail",
+    "reason": "Attached tools are not supported by the Cloudflare backend yet"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_an_approval_answered_through_the_run_resumes_it",
+    "status": "fail",
+    "reason": "400 != 201 : {\"error\":\"Attached tools are not supported by the Cloudflare backend yet\",\"code\":\"UNSUPPORTED_FEATURE\"}"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_annotations_reconnect_and_lost_acknowledgements",
+    "status": "fail",
+    "reason": "Attached tools are not supported by the Cloudflare backend yet"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_async_and_slow_on_event_run_apart_from_the_connection",
+    "status": "fail",
+    "reason": "400 != 201 : {\"error\":\"Attached tools are not supported by the Cloudflare backend yet\",\"code\":\"UNSUPPORTED_FEATURE\"}"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_attachments_and_the_agents_files",
+    "status": "fail",
+    "reason": "Unsupported backend operation"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_audio_is_transcribed_in_messages_runs_and_on_its_own",
+    "status": "not-applicable",
+    "reason": "Voice/audio excluded by experiment scope"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_code_mode_false_history_none_and_config_hash",
+    "status": "fail",
+    "reason": "Unsupported field: output"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_connecting_with_changed_tools_declares_them_and_a_run_needs_them_served",
+    "status": "fail",
+    "reason": "'id'"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_delegate_settings_bring_their_builtin_and_a_run_names_its_child_and_streams_it",
+    "status": "fail",
+    "reason": "Unsupported field: instructions"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_end_users_credit_their_users_and_a_run_spends_from_its_bucket",
+    "status": "fail",
+    "reason": "Unknown API route"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_events_start_from_a_snapshot_and_updates_are_deltas",
+    "status": "fail",
+    "reason": "'message' unexpectedly found in {'type': 'message_update', 'message': {'role': 'assistant', 'content': [{'type': 'text', 'text': 'seen'}], 'api': 'openai-completions', 'provider': 'camel-test', 'model': 'openai/gpt-4o-mini', 'usage': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0, 'totalTokens': 0, 'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0, 'total': 0}}, 'stopReason': 'stop', 'timestamp': 1793896604748, 'responseId': 'fixture', 'rawStopReason': 'stop', 'duratio"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_fork_copies_the_agent_and_a_key_returns_the_same_fork",
+    "status": "fail",
+    "reason": "Unsupported backend operation"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_get_takes_an_existing_agent_by_key_or_id_without_changing_it",
+    "status": "fail",
+    "reason": "'systemPrompt'"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_images_on_their_own",
+    "status": "fail",
+    "reason": "404 != 200 : {\"error\":\"Unknown API route\",\"code\":\"NOT_FOUND\"}"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_import_messages_converts_another_apis_conversation",
+    "status": "fail",
+    "reason": "Unsupported field: importMessages"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_initial_messages_begin_an_agents_history_when_it_is_made",
+    "status": "fail",
+    "reason": "Unsupported field: initialMessages"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_key_scopes_tokens_usage_webhooks_and_rotated_credentials",
+    "status": "fail",
+    "reason": "Unknown API route"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_lazy_handles_hold_no_stream_while_idle_run_without_one_and_stream_for_a_run",
+    "status": "pass",
+    "kind": "worker"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_max_output_tokens_and_temperature_go_on_model_calls_and_configure_removes_them",
+    "status": "fail",
+    "reason": "Unsupported field: maxOutputTokens, temperature"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_parity_history_configure_tools_and_wait_for_request",
+    "status": "fail",
+    "reason": "Unsupported field: spendLimit"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_projects_publish_checked_snapshots_and_the_tool_finds_the_project_from_identity",
+    "status": "fail",
+    "reason": "'vol_3231dbbbab86441b87aa1d55' != 'vol_fadbcb2c1da54835a8c55ff4'\n- vol_3231dbbbab86441b87aa1d55\n+ vol_fadbcb2c1da54835a8c55ff4\n"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_run_resolves_with_a_run_and_the_token_stays_out_of_logs",
+    "status": "pass",
+    "kind": "worker"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_run_with_output_returns_a_pydantic_model_or_the_json_schema_value",
+    "status": "fail",
+    "reason": "Unsupported field: output"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_send_returns_at_once_and_wait_gets_the_run",
+    "status": "pass",
+    "kind": "worker"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_stateless_runs_one_call_stream_get_abort_and_no_agent_left",
+    "status": "fail",
+    "reason": "Unknown API route"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_steer_answers_once_the_runtime_has_it_and_abort_cancels_the_queue",
+    "status": "fail",
+    "reason": "Unsupported field: whileRunning"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_stream_yields_tool_calls_results_text_then_done_and_plain_functions_are_tools",
+    "status": "fail",
+    "reason": "400 != 201 : {\"error\":\"Attached tools are not supported by the Cloudflare backend yet\",\"code\":\"UNSUPPORTED_FEATURE\"}"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_the_sync_client_upserts_runs_streams_answers_and_runs_statelessly",
+    "status": "fail",
+    "reason": "Lists differ: ['text', 'done'] != ['tool_call', 'tool_result', 'text', 'done']\n\nFirst differing element 0:\n'text'\n'tool_call'\n\nSecond list contains 2 additional elements.\nFirst extra element 2:\n'text'\n\n- ['text', 'done']\n+ ['tool_call', 'tool_result', 'text', 'done']"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_upsert_is_the_same_agent_for_a_key_and_one_process_serves_its_tools",
+    "status": "fail",
+    "reason": "Attached tools are not supported by the Cloudflare backend yet"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_voice_sessions_need_the_runtime_to_hold_calls",
+    "status": "not-applicable",
+    "reason": "Voice/audio excluded by experiment scope"
+  },
+  {
+    "test": "upstream_python_sdk.PythonSDKTest.test_volumes_files_snapshots_and_mounts",
+    "status": "fail",
+    "reason": "Unsupported file operation"
+  },
+  {
+    "test": "upstream_python_sdk.RateLimitRetryTest.test_rate_limited_requests_wait_and_retry",
+    "status": "pass",
+    "kind": "sdk-unit"
+  },
+  {
+    "test": "upstream_python_sdk.ReconnectHintTest.test_a_hinted_close_reconnects_at_once_and_an_unhinted_one_backs_off",
+    "status": "pass",
+    "kind": "sdk-unit"
+  },
+  {
+    "test": "upstream_python_sdk.ServeToolsTest.test_a_confirmation_takes_true_or_false",
+    "status": "pass",
+    "kind": "sdk-unit"
+  },
+  {
+    "test": "upstream_python_sdk.ServeToolsTest.test_a_function_of_identity_lists_each_caller_its_own_tools",
+    "status": "pass",
+    "kind": "sdk-unit"
+  },
+  {
+    "test": "upstream_python_sdk.ServeToolsTest.test_a_token_from_another_tenant_is_refused_and_tenant_is_required",
+    "status": "pass",
+    "kind": "sdk-unit"
+  },
+  {
+    "test": "upstream_python_sdk.ServeToolsTest.test_a_tool_answers_with_a_spawn_directive_and_notices_are_told_apart",
+    "status": "pass",
+    "kind": "sdk-unit"
+  },
+  {
+    "test": "upstream_python_sdk.ServeToolsTest.test_a_tool_asks_the_user_and_runs_again_with_each_answer",
+    "status": "pass",
+    "kind": "sdk-unit"
+  },
+  {
+    "test": "upstream_python_sdk.ServeToolsTest.test_a_tool_that_needs_approval_asks_first_and_runs_once_approved",
+    "status": "pass",
+    "kind": "sdk-unit"
+  },
+  {
+    "test": "upstream_python_sdk.ServeToolsTest.test_anything_but_the_runtimes_token_for_this_server_is_refused",
+    "status": "pass",
+    "kind": "sdk-unit"
+  },
+  {
+    "test": "upstream_python_sdk.ServeToolsTest.test_attached_calls_carry_the_identity_the_runtime_sent",
+    "status": "pass",
+    "kind": "sdk-unit"
+  },
+  {
+    "test": "upstream_python_sdk.ServeToolsTest.test_each_call_is_answered_as_the_user_the_token_names",
+    "status": "pass",
+    "kind": "sdk-unit"
+  },
+  {
+    "test": "upstream_python_sdk.ServeToolsTest.test_protected_resource_metadata_and_post_only",
+    "status": "pass",
+    "kind": "sdk-unit"
+  },
+  {
+    "test": "upstream_python_sdk.ServeToolsTest.test_the_hosted_runtime_signs_as_agents_camelai_dev_at_either_url",
+    "status": "pass",
+    "kind": "sdk-unit"
+  },
+  {
+    "test": "upstream_python_sdk.ServeToolsTest.test_verify_file_url_checks_the_url_is_the_runtimes_for_a_file_of_the_agent",
+    "status": "pass",
+    "kind": "sdk-unit"
+  },
+  {
+    "test": "upstream_python_sdk.VersionTest.test_version_is_pyprojects",
+    "status": "pass",
+    "kind": "sdk-unit"
+  },
+  {
+    "test": "upstream_python_sdk.VoiceLibraryTest.test_get_async_and_sync",
+    "status": "pass",
+    "kind": "sdk-unit"
+  },
+  {
+    "test": "upstream_python_sdk.VoiceLibraryTest.test_search_async_and_sync",
+    "status": "pass",
+    "kind": "sdk-unit"
+  },
+  {
+    "test": "upstream_python_sdk.WebhookTest.test_a_signed_event_verifies_and_anything_else_is_refused",
+    "status": "pass",
+    "kind": "sdk-unit"
+  },
+  {
+    "test": "upstream_python_sdk.WebhookTest.test_during_a_rotation_either_secret_verifies",
+    "status": "pass",
+    "kind": "sdk-unit"
+  },
+  {
+    "test": "upstream_python_sdk.WsgiServeToolsTest.test_a_real_wsgi_server_runs_plain_tools_in_the_request_thread",
+    "status": "pass",
+    "kind": "sdk-unit"
+  },
+  {
+    "test": "upstream_python_sdk.WsgiServeToolsTest.test_anything_but_the_runtimes_token_for_this_server_is_refused",
+    "status": "pass",
+    "kind": "sdk-unit"
+  },
+  {
+    "test": "upstream_python_sdk.WsgiServeToolsTest.test_each_call_is_answered_as_the_user_the_token_names",
+    "status": "pass",
+    "kind": "sdk-unit"
+  },
+  {
+    "test": "upstream_python_sdk.WsgiServeToolsTest.test_verify_file_url_is_synchronous",
+    "status": "pass",
+    "kind": "sdk-unit"
+  },
+  {
+    "test": "upstream_python_sdk.WsgiServeToolsTest.test_verify_runtime_token_is_synchronous_and_takes_a_list_of_audiences",
+    "status": "pass",
+    "kind": "sdk-unit"
+  }
+]

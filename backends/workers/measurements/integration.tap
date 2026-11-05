@@ -1,0 +1,165 @@
+
+> @camelai/run-workers-experiment@0.0.0 test:integration
+> node --import ./test/sdk-deps.mjs --experimental-strip-types --test --test-concurrency=1 test/*.integration.ts
+
+TAP version 13
+# Subtest: tenant rejection cannot later execute an unaccepted request
+ok 1 - tenant rejection cannot later execute an unaccepted request
+  ---
+  duration_ms: 3018.29625
+  type: 'test'
+  ...
+# Subtest: concurrent configuration leaves Postgres and Pi on one revision
+ok 2 - concurrent configuration leaves Postgres and Pi on one revision
+  ---
+  duration_ms: 1596.617958
+  type: 'test'
+  ...
+# Subtest: accepted turn settles after restart without a client result poll
+ok 3 - accepted turn settles after restart without a client result poll
+  ---
+  duration_ms: 5093.927333
+  type: 'test'
+  ...
+# Subtest: Workers-native core lifecycle, recovery and financial seam
+    # Subtest: create, keyed upsert, message, history and idempotency
+    ok 1 - create, keyed upsert, message, history and idempotency
+      ---
+      duration_ms: 105.469458
+      type: 'test'
+      ...
+    # Subtest: stream emits actual text deltas
+    ok 2 - stream emits actual text deltas
+      ---
+      duration_ms: 67.377375
+      type: 'test'
+      ...
+    # Subtest: human input survives a hard workerd restart
+    ok 3 - human input survives a hard workerd restart
+      ---
+      duration_ms: 1062.546334
+      type: 'test'
+      ...
+    # Subtest: alarm wakes the agent and completes scheduled work
+    ok 4 - alarm wakes the agent and completes scheduled work
+      ---
+      duration_ms: 147.890333
+      type: 'test'
+      ...
+    # Subtest: delegate to a durable child and read its independent history
+    ok 5 - delegate to a durable child and read its independent history
+      ---
+      duration_ms: 63.798875
+      type: 'test'
+      ...
+    # Subtest: remote codemode reaches ordered R2-backed tools
+    ok 6 - remote codemode reaches ordered R2-backed tools
+      ---
+      duration_ms: 118.031584
+      type: 'test'
+      ...
+    # Subtest: crash after Postgres commit before DO acknowledgement never charges twice
+    ok 7 - crash after Postgres commit before DO acknowledgement never charges twice
+      ---
+      duration_ms: 1103.826709
+      type: 'test'
+      ...
+    1..7
+ok 4 - Workers-native core lifecycle, recovery and financial seam
+  ---
+  duration_ms: 4175.349709
+  type: 'test'
+  ...
+# Subtest: optional native Container and Sandbox SDK providers in local Docker
+    # Subtest: container
+    ok 1 - container
+      ---
+      duration_ms: 7640.192959
+      type: 'test'
+      ...
+    # cold_start_ms=839
+    # restore_and_read_ms=446
+    # Subtest: sandbox
+    ok 2 - sandbox
+      ---
+      duration_ms: 4336.546583
+      type: 'test'
+      ...
+    # cold_start_ms=871
+    # restore_and_read_ms=299
+    1..2
+ok 5 - optional native Container and Sandbox SDK providers in local Docker
+  ---
+  duration_ms: 14853.722792
+  type: 'test'
+  ...
+# Subtest: R2 files, volume ordering, retained snapshots, signed images and restart
+    # Subtest: conditional concurrent writers have exactly one winner
+    ok 1 - conditional concurrent writers have exactly one winner
+      ---
+      duration_ms: 69.852584
+      type: 'test'
+      ...
+    # Subtest: snapshot keeps immutable bytes after overwrite and restart
+    ok 2 - snapshot keeps immutable bytes after overwrite and restart
+      ---
+      duration_ms: 1081.894792
+      type: 'test'
+      ...
+    # Subtest: file control JSON rejects an oversized body before parsing
+    ok 3 - file control JSON rejects an oversized body before parsing
+      ---
+      duration_ms: 2.797416
+      type: 'test'
+      ...
+    # Subtest: capabilities are signed, immutable and do not require API credentials
+    ok 4 - capabilities are signed, immutable and do not require API credentials
+      ---
+      duration_ms: 13.584834
+      type: 'test'
+      ...
+    # Subtest: stored image derivative yields bounded base64 and signed URL
+    ok 5 - stored image derivative yields bounded base64 and signed URL
+      ---
+      duration_ms: 158.310334
+      type: 'test'
+      ...
+    1..5
+ok 6 - R2 files, volume ordering, retained snapshots, signed images and restart
+  ---
+  duration_ms: 2809.454917
+  type: 'test'
+  ...
+# Subtest: Postgres money: holds, concurrent overspend, lost acknowledgement, transfers and rollback
+ok 7 - Postgres money: holds, concurrent overspend, lost acknowledgement, transfers and rollback
+  ---
+  duration_ms: 1717.512666
+  type: 'test'
+  ...
+# Subtest: Unchanged end-user credit policy: expiring lots and idempotent grants
+ok 8 - Unchanged end-user credit policy: expiring lots and idempotent grants
+  ---
+  duration_ms: 1542.027583
+  type: 'test'
+  ...
+# Subtest: API keys isolate tenants, revoke immediately, Queue delivers signed webhooks and account email links once
+ok 9 - API keys isolate tenants, revoke immediately, Queue delivers signed webhooks and account email links once
+  ---
+  duration_ms: 3942.490833
+  type: 'test'
+  ...
+# Subtest: Public-id creation keys cannot take another tenant agent; unknown webhook receivers are refused
+ok 10 - Public-id creation keys cannot take another tenant agent; unknown webhook receivers are refused
+  ---
+  duration_ms: 1615.445916
+  type: 'test'
+  ...
+1..10
+# tests 24
+# suites 0
+# pass 24
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 55335.843375

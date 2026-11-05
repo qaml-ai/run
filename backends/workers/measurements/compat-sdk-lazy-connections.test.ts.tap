@@ -1,0 +1,64 @@
+TAP version 13
+# Subtest: lazy handles (the Agents default) hold no event stream while idle, and run without one
+ok 1 - lazy handles (the Agents default) hold no event stream while idle, and run without one
+  ---
+  duration_ms: 3688.620208
+  type: 'test'
+  ...
+# Subtest: a lazy handle's stream() connects for the run, yields it from its start, and lets the stream go after
+ok 2 - a lazy handle's stream() connects for the run, yields it from its start, and lets the stream go after
+  ---
+  duration_ms: 2645.686625
+  type: 'test'
+  ...
+# Subtest: handles that need the stream keep it: onEvent, served tools, or connection: eager
+not ok 3 - handles that need the stream keep it: onEvent, served tools, or connection: eager
+  ---
+  duration_ms: 1844.557375
+  type: 'test'
+  location: '/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/sdk-lazy-connections.test.ts:66:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    The expression evaluated to a falsy value:
+
+      assert.ok(events.includes("agent_end"))
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: true
+  actual: false
+  operator: '=='
+  stack: |-
+    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-native/tests/sdk-lazy-connections.test.ts:77:10)
+    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: a lazy run whose agent is deleted mid-run settles, and close() stops its wait
+not ok 4 - a lazy run whose agent is deleted mid-run settles, and close() stops its wait
+  ---
+  duration_ms: 1707.4085
+  type: 'test'
+  location: '/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/sdk-lazy-connections.test.ts:91:1'
+  failureType: 'testCodeFailure'
+  error: 'RunError: aborted'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: true
+  actual: false
+  operator: '=='
+  stack: |-
+    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-native/tests/sdk-lazy-connections.test.ts:102:10)
+    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+1..4
+# tests 4
+# suites 0
+# pass 2
+# fail 2
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 13066.392417

@@ -1,0 +1,45 @@
+
+> @camelai/run-workers-experiment@0.0.0 types
+> WRANGLER_LOG_PATH=.wrangler/logs wrangler types --include-runtime=false
+
+
+ ⛅️ wrangler 4.157.0 (update available 4.158.0)
+───────────────────────────────────────────────
+Generating project types...
+
+interface __BaseEnv_Env {
+	BUCKET: R2Bucket;
+	HYPERDRIVE: Hyperdrive;
+	METRICS: AnalyticsEngineDataset;
+	WEBHOOKS: Queue;
+	IMAGES: ImagesBinding;
+	TEST_MODEL: "1";
+	MODEL: "test/echo";
+	API_TOKEN: "local-integration-only-token-with-at-least-32-characters";
+	FILE_SIGNING_SECRET: "local-only-file-secret-with-at-least-32-characters";
+	ALLOW_LOCAL_WEBHOOKS: "1";
+	TEST_MODE: "1";
+	AGENTS: DurableObjectNamespace<import("./src/index").CamelAgent>;
+	TENANTS: DurableObjectNamespace<import("./src/index").TenantAdmission>;
+	VOLUMES: DurableObjectNamespace<import("./src/index").Volume>;
+	CODEMODE_SANDBOX: DurableObjectNamespace /* CodemodeSandbox from camelrun-proto-workers-codemode */;
+}
+declare namespace Cloudflare {
+	interface GlobalProps {
+		mainModule: typeof import("./src/index");
+		durableNamespaces: "CamelAgent" | "TenantAdmission" | "Volume";
+	}
+	interface Env extends __BaseEnv_Env {}
+}
+interface Env extends __BaseEnv_Env {}
+type StringifyValues<EnvType extends Record<string, unknown>> = {
+	[Binding in keyof EnvType]: EnvType[Binding] extends string ? EnvType[Binding] : string;
+};
+declare namespace NodeJS {
+	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "TEST_MODEL" | "MODEL" | "API_TOKEN" | "FILE_SIGNING_SECRET" | "ALLOW_LOCAL_WEBHOOKS" | "TEST_MODE">> {}
+}
+
+
+✨ Types written to worker-configuration.d.ts
+
+📣 Remember to rerun 'wrangler types' after you change your wrangler.jsonc file.

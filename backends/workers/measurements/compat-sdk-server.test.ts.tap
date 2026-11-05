@@ -1,0 +1,75 @@
+TAP version 13
+# Subtest: serveTools answers each call as the user the runtime's token names, and refuses anything else
+ok 1 - serveTools answers each call as the user the runtime's token names, and refuses anything else
+  ---
+  duration_ms: 13.522584
+  type: 'test'
+  ...
+# Subtest: runtimeAuth gives MCP SDK servers the same identity; verifyRuntimeToken checks tokens directly
+ok 2 - runtimeAuth gives MCP SDK servers the same identity; verifyRuntimeToken checks tokens directly
+  ---
+  duration_ms: 1.512083
+  type: 'test'
+  ...
+# Subtest: through a real runtime: served tools get its signed identity, attached tools the same identity from the call
+not ok 3 - through a real runtime: served tools get its signed identity, attached tools the same identity from the call
+  ---
+  duration_ms: 1515.893833
+  type: 'test'
+  location: '/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/sdk-server.test.ts:85:1'
+  failureType: 'testCodeFailure'
+  error: 'Unknown API route'
+  code: 'NOT_FOUND'
+  name: 'AgentError'
+  stack: |-
+    Transport.json (file:///Users/miguelsalinas/agent-runtime-wt/workers-native/clients/typescript.ts:993:47)
+    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    async TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-native/tests/sdk-server.test.ts:102:22)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: nodeListener checks tokens against the URL the runtime called, behind a proxy that ends TLS
+ok 4 - nodeListener checks tokens against the URL the runtime called, behind a proxy that ends TLS
+  ---
+  duration_ms: 9.413792
+  type: 'test'
+  ...
+# Subtest: a token from another tenant is refused, whatever it says about the user; tenant is required
+ok 5 - a token from another tenant is refused, whatever it says about the user; tenant is required
+  ---
+  duration_ms: 1.676125
+  type: 'test'
+  ...
+# Subtest: the hosted runtime signs as https://agents.camelai.dev whichever of its URLs a server names
+ok 6 - the hosted runtime signs as https://agents.camelai.dev whichever of its URLs a server names
+  ---
+  duration_ms: 1.776666
+  type: 'test'
+  ...
+# Subtest: nodeListener trusts X-Forwarded-Proto and -Host only when told to
+ok 7 - nodeListener trusts X-Forwarded-Proto and -Host only when told to
+  ---
+  duration_ms: 8.522916
+  type: 'test'
+  ...
+# Subtest: nodeListener streams a response: an SSE body's chunks arrive as they are written
+ok 8 - nodeListener streams a response: an SSE body's chunks arrive as they are written
+  ---
+  duration_ms: 2.574708
+  type: 'test'
+  ...
+# Subtest: serveTools lists each caller its own tools: a function of identity, or a ToolServer whose listTools gets the context
+ok 9 - serveTools lists each caller its own tools: a function of identity, or a ToolServer whose listTools gets the context
+  ---
+  duration_ms: 2.353458
+  type: 'test'
+  ...
+1..9
+# tests 9
+# suites 0
+# pass 8
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 4751.730125

@@ -1,0 +1,38 @@
+
+> @camelai/run-workers-experiment@0.0.0 test
+> node --import ./test/sdk-deps.mjs --experimental-strip-types --test --test-concurrency=1 test/*.test.ts
+
+TAP version 13
+# Subtest: native lifecycle blocks egress; snapshots survive reopen; failed capture preserves prior handle
+ok 1 - native lifecycle blocks egress; snapshots survive reopen; failed capture preserves prior handle
+  ---
+  duration_ms: 2.533708
+  type: 'test'
+  ...
+# Subtest: native output is bounded and the process is killed on overflow
+ok 2 - native output is bounded and the process is killed on overflow
+  ---
+  duration_ms: 0.529625
+  type: 'test'
+  ...
+# Subtest: SDK provider restores a durable R2 record and delegates files through the SDK interface
+ok 3 - SDK provider restores a durable R2 record and delegates files through the SDK interface
+  ---
+  duration_ms: 8.252958
+  type: 'test'
+  ...
+# Subtest: invalid paths, snapshot names and commands are refused before starting a VM
+ok 4 - invalid paths, snapshot names and commands are refused before starting a VM
+  ---
+  duration_ms: 0.259083
+  type: 'test'
+  ...
+1..4
+# tests 4
+# suites 0
+# pass 4
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 84.253209

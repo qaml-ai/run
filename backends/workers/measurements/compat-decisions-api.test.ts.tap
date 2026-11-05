@@ -1,0 +1,125 @@
+TAP version 13
+# Subtest: POST /v1/decisions answers one state or a batch on the platform's OpenRouter key, bills what OpenRouter charged, and logs no state
+not ok 1 - POST /v1/decisions answers one state or a batch on the platform's OpenRouter key, bills what OpenRouter charged, and logs no state
+  ---
+  duration_ms: 1554.37425
+  type: 'test'
+  location: '/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/decisions-api.test.ts:60:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+
+    401 !== 201
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 201
+  actual: 401
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-native/tests/decisions-api.test.ts:62:10)
+    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+# Subtest: a tenant's own OpenRouter key answers its decisions, and is not charged
+not ok 2 - a tenant's own OpenRouter key answers its decisions, and is not charged
+  ---
+  duration_ms: 1557.226583
+  type: 'test'
+  location: '/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/decisions-api.test.ts:104:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    {"error":"Unauthorized","code":"UNAUTHORIZED"}
+
+    401 !== 200
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 200
+  actual: 401
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-native/tests/decisions-api.test.ts:107:10)
+    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: the decide builtin answers from codemode in batches and directly, billed to the run and the agent
+not ok 3 - the decide builtin answers from codemode in batches and directly, billed to the run and the agent
+  ---
+  duration_ms: 1411.221334
+  type: 'test'
+  location: '/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/decisions-api.test.ts:130:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+
+    401 !== 201
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 201
+  actual: 401
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-native/tests/decisions-api.test.ts:132:10)
+    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: an agent that denies data collection has decide by default, its calls sent with that data policy
+not ok 4 - an agent that denies data collection has decide by default, its calls sent with that data policy
+  ---
+  duration_ms: 1642.869
+  type: 'test'
+  location: '/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/decisions-api.test.ts:151:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+
+    401 !== 201
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 201
+  actual: 401
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-native/tests/decisions-api.test.ts:153:10)
+    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: decide is every agent's by default, and opts out with decide: false on the agent, its update or its definition; a toolless run and a tenant without an OpenRouter key have none
+not ok 5 - decide is every agent's by default, and opts out with decide: false on the agent, its update or its definition; a toolless run and a tenant without an OpenRouter key have none
+  ---
+  duration_ms: 1582.665625
+  type: 'test'
+  location: '/Users/miguelsalinas/agent-runtime-wt/workers-native/tests/decisions-api.test.ts:164:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+
+    401 !== 201
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 201
+  actual: 401
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///Users/miguelsalinas/agent-runtime-wt/workers-native/tests/decisions-api.test.ts:166:10)
+    process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+1..5
+# tests 5
+# suites 0
+# pass 0
+# fail 5
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 10806.881709
