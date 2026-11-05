@@ -204,7 +204,6 @@ import {
   type TerminalDelivery,
 } from "./event-log.ts";
 import { EVENT_CONNECTION_HEADER } from "./event-relay.ts";
-import { EndUserCredits, creditError } from "./end-user-credits.ts";
 import { agentBuiltins } from "./agent-builtins.ts";
 import { scheduleError, type ScheduleToolsHost } from "./agent-schedules.ts";
 import { auxiliaryRunCosts } from "./auxiliary-usage.ts";

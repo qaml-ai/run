@@ -16,7 +16,6 @@ import {
 } from "./postgres.ts";
 import { postLedger, accrueUsage, BillingSpendable } from "./billing-sql.ts";
 import { EndUserCredits, lastCallMin, settleUsage, utcDay } from "./end-user-credits.ts";
-import { endUserRoutes } from "./model-end-user-routes.ts";
 import { CreditHolds } from "./credit-holds.ts";
 import { keyServices, type KeyEnv } from "./security-services.ts";
 import { defaultModelFor, validateAgentModel } from "./default-model.ts";
@@ -920,8 +919,6 @@ export async function controlRoutes(
         )
       ).rows[0],
     );
-  const endUser = await endUserRoutes(request, env, tenant);
-  if (endUser) return endUser;
   return null;
 }
 
