@@ -153,6 +153,7 @@ export function configuration(input: unknown, defaultModel: string): { config: A
     config.mcp = { tools: mcp.tools as ToolDefinition[] };
   }
   for (const field of ["mcpServers", "openApi"] as const) if (fields[field] !== undefined) {
+    if (fields[field] === null) { config[field] = []; continue; }
     if (!Array.isArray(fields[field]) || fields[field].length > 64) throw new BadRequest(`${field} must be an array of at most 64 sources`);
     config[field] = fields[field] as Record<string, unknown>[];
   }
