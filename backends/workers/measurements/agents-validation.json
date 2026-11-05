@@ -1,130 +1,161 @@
 {
   "date": "2026-11-05",
-  "implementationCommit": "5aabfaf09743783e8e7ad854e2857352215b836e",
-  "integrationBase": "017da3c0",
-  "commands": {
-    "npm ci": "pass",
-    "npm run typecheck": "pass",
-    "npm test": {
-      "pass": 287,
+  "integrationBase": "a2d1d6c7",
+  "scope": "Experimental agents-track delivery; no production rollout.",
+  "fullContract": {
+    "revision": "d3b9d03b",
+    "sprite": "rt-pool-3",
+    "node": {
+      "pass": 590,
       "fail": 0
     },
-    "npm run test:integration": {
-      "pass": 54,
-      "fail": 0
+    "workers": {
+      "pass": 223,
+      "fail": 367,
+      "outOfScope": 380
     },
-    "npm run test:compat": {
-      "pass": 89,
-      "fail": 18,
-      "notApplicable": 39,
-      "exitCode": 1
-    },
-    "npm run test:python": {
-      "pass": 52,
-      "fail": 6,
-      "skipped": 2,
-      "exitCode": 1
-    },
-    "all 17 scripts/reuse-*.mjs --check": "pass",
-    "npm run build": "both dry-run bundles pass",
-    "root npm run docs": "pass",
-    "docs freshness/link test with Workers dependency loader": "pass"
+    "suiteHash": "1797c18c59c73f039e3f0d7efba2fc07e50610993c1a38f0a95cccbcf89da68e",
+    "replacementRunStarted": false
   },
-  "scorecardDelta": {
-    "before": {
-      "pass": 50,
-      "fail": 57,
-      "notApplicable": 39
-    },
-    "after": {
-      "pass": 89,
-      "fail": 18,
-      "notApplicable": 39
-    }
-  },
-  "remainingFailures": [
+  "focusedContractResults": [
     {
-      "file": "tests/computers-api.test.ts",
-      "test": "native daytona computer API is tenant scoped and tools refresh on an existing agent"
+      "selection": "agents,sdk,messages,streaming",
+      "revision": "4241d8af",
+      "nodePass": 84,
+      "workersPass": 60,
+      "workersFail": 24
     },
     {
-      "file": "tests/computers-api.test.ts",
-      "test": "native sprites computer API is tenant scoped and tools refresh on an existing agent"
+      "selection": "streaming,messages",
+      "revision": "cbcbd28d",
+      "nodePass": 12,
+      "workersPass": 12,
+      "workersFail": 0
     },
     {
-      "file": "tests/computers-api.test.ts",
-      "test": "a computer connected during eager startup is available on the first turn"
+      "selection": "human-input",
+      "revision": "626eca88",
+      "nodePass": 20,
+      "workersPass": 20,
+      "workersFail": 0
     },
     {
-      "file": "tests/computers-api.test.ts",
-      "test": "delegate child creation inherits computer attachments: true"
+      "selection": "delegation,decisions",
+      "revision": "28528f8f",
+      "nodePass": 44,
+      "workersPass": 30,
+      "workersFail": 14,
+      "decisionsPass": 5
     },
     {
-      "file": "tests/computers-api.test.ts",
-      "test": "delegate child creation inherits computer attachments: false"
+      "selection": "runs,history",
+      "revision": "4241d8af",
+      "nodePass": 53,
+      "workersPass": 49,
+      "workersFail": 4
     },
     {
-      "file": "tests/computers-api.test.ts",
-      "test": "agents child creation inherits computer attachments: true"
+      "selection": "tools,mcp,sources",
+      "revision": "d161edd4",
+      "nodePass": 42,
+      "workersPass": 28,
+      "workersFail": 14
     },
     {
-      "file": "tests/computers-api.test.ts",
-      "test": "agents child creation inherits computer attachments: false"
+      "selection": "models,providers,definitions",
+      "revision": "7f79aee3",
+      "nodePass": 68,
+      "workersPass": 35,
+      "workersFail": 33
     },
     {
-      "file": "tests/image-generation-api.test.ts",
-      "test": "POST /v1/images makes images on the platform's OpenAI key for a prepaid tenant, edits images given as base64, multipart or a URL, and is billed per token"
-    },
-    {
-      "file": "tests/image-generation-api.test.ts",
-      "test": "POST /v1/images with volumeId saves the images to the volume and answers their paths"
-    },
-    {
-      "file": "tests/image-generation-api.test.ts",
-      "test": "POST /v1/images needs an OpenAI key, and a monthly cap refuses it"
-    },
-    {
-      "file": "tests/image-generation-sdk.test.ts",
-      "test": "the TypeScript SDK: images.generate and images.edit from bytes, a Blob or a URL, answered as base64 or saved to a volume"
-    },
-    {
-      "file": "tests/schedule-api.test.ts",
-      "test": "calendar schedules and owner-configured email round trip through the API without crossing accounts"
-    },
-    {
-      "file": "tests/python_sdk.py",
-      "test": "upstream_python_sdk.PythonSDKTest.test_attachments_and_the_agents_files"
-    },
-    {
-      "file": "tests/python_sdk.py",
-      "test": "upstream_python_sdk.PythonSDKTest.test_end_users_credit_their_users_and_a_run_spends_from_its_bucket"
-    },
-    {
-      "file": "tests/python_sdk.py",
-      "test": "upstream_python_sdk.PythonSDKTest.test_images_on_their_own"
-    },
-    {
-      "file": "tests/python_sdk.py",
-      "test": "upstream_python_sdk.PythonSDKTest.test_key_scopes_tokens_usage_webhooks_and_rotated_credentials"
-    },
-    {
-      "file": "tests/python_sdk.py",
-      "test": "upstream_python_sdk.PythonSDKTest.test_projects_publish_checked_snapshots_and_the_tool_finds_the_project_from_identity"
-    },
-    {
-      "file": "tests/python_sdk.py",
-      "test": "upstream_python_sdk.PythonSDKTest.test_volumes_files_snapshots_and_mounts"
+      "selection": "configuration and custom providers",
+      "revision": "c1a32b21",
+      "workersPass": 21,
+      "workersFail": 5,
+      "customProviderPass": 5
     }
   ],
-  "cloudProbe": "agents-codemode-cloud.json",
-  "cloudSpend": {
-    "estimatedMarginalUsdLessThan": 0.01,
-    "invoiceSettled": false
+  "interpretation": "Selections overlap and use different commits. They are not a new aggregate score. The handoff keeps later unrerun fixes listed as failures.",
+  "deliveryChecks": {
+    "revision": "cfec8cdf",
+    "sprite": "rt-pool-4",
+    "command": "SPRITE_NAME=rt-pool-4 scripts/sprite-test cfec8cdf bash backends/workers/scripts/validate-sprite.sh checks",
+    "typecheck": "pass",
+    "sourceDriftChecks": "pass",
+    "workerDryRunBuilds": 2,
+    "docs": "pass",
+    "llmsTxt": {
+      "pass": 1,
+      "fail": 0
+    },
+    "openapiGeneration": "pass",
+    "exit": 0,
+    "checksArtifact": "/home/sprite/runs/workers-agents-checks-20261105-214245.tgz"
   },
-  "cleanup": {
-    "cloudWorkersAndSandboxNamespace": "deleted and absence verified",
-    "localPostgres": "stopped",
-    "localContainers": "no camelrun-proto containers remain"
+  "fsDrift": {
+    "sprite": "rt-pool-20",
+    "result": "pass",
+    "command": "FS_SHIM_REF=HEAD node /home/sprite/rt/backends/workers/scripts/reuse-fs-shim.mjs --check",
+    "fixture": "Temporary git fixture containing origin/main:sandbox/v8-exec/src/pi-glue.js; removed after comparison."
   },
-  "productionWrites": false
+  "verifiedRestoreAfterDeliverySnapshot": {
+    "revision": "f41858d0",
+    "change": "The sole code change after the complete unit snapshot restores the configured credit-account lock without requiring a tenant row.",
+    "evidence": "Decision contracts 5/5 at28528f8f and typecheck plus56 focused tests atfe88cb4f include this exact restored hunk."
+  },
+  "legacyCompatibility": {
+    "before": {
+      "pass": 64,
+      "fail": 56,
+      "notApplicable": 42
+    },
+    "after": {
+      "pass": 116,
+      "fail": 5,
+      "notApplicable": 41
+    },
+    "workerPass": 71,
+    "sdkOnlyPass": 45,
+    "python": {
+      "pass": 57,
+      "fail": 2,
+      "voiceExcluded": 1
+    }
+  },
+  "integrationEarlier": {
+    "pass": 80,
+    "fail": 1,
+    "reason": "Native-container fixture blocked by Sprite kernel missing xt_socket; not rerun in wrap-up."
+  },
+  "unfinishedBranch": {
+    "name": "wip/agents-unfinished",
+    "pushed": false,
+    "preserves": "Configuration queue, public list/activity/idempotency additions, unverified reasoning-retry and web-fetch edits."
+  },
+  "cloud": {
+    "probeFiles": [
+      "agents-codemode-cloud.json",
+      "agents-ws-cloud.json"
+    ],
+    "estimatedCloudflareMarginalUsdLessThan": 0.02,
+    "invoiceSettled": false,
+    "temporaryWorkersAndNamespaces": "deleted",
+    "retainedResources": 0,
+    "spriteCompletedVMHoursObserved": 5.02,
+    "spriteCost": "Shared pool usage; no settled invoice figure."
+  },
+  "productionWrites": false,
+  "unitChecks": {
+    "revision": "829b6a8a",
+    "sprite": "rt-pool-20",
+    "command": "SPRITE_NAME=rt-pool-20 scripts/sprite-test 829b6a8a bash -lc \"bash backends/workers/scripts/validate-sprite.sh checks && bash backends/workers/scripts/validate-sprite.sh unit\"",
+    "differenceFromDelivery": "The sole later code change restores the separately verified credit-lock hunk in f41858d0; cfec8cdf adds documentation and sanitized evidence.",
+    "pass": 413,
+    "fail": 0,
+    "cancelled": 0,
+    "skipped": 0,
+    "exit": 0,
+    "artifact": "/home/sprite/runs/workers-agents-unit-20261105-214121.tgz"
+  }
 }
