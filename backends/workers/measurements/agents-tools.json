@@ -1,0 +1,27 @@
+{
+  "date": "2026-11-05",
+  "track": "agents: tools and code mode",
+  "local": {
+    "agent-tools.test.ts": { "passed": 9, "failed": 0 },
+    "host-execution.test.ts": { "passed": 3, "failed": 0 },
+    "source-exchange.integration.ts": { "passed": 1, "failed": 0, "runtime": "local workerd, local PostgreSQL, local fake MCP and credential exchange" },
+    "unchanged_sdk-server.test.ts": { "passed": 9, "failed": 0, "durationMs": 5338, "runtime": "local workerd, local PostgreSQL, fake model" },
+    "unchanged_openapi-sources.test.ts": { "passed": 2, "failed": 0 },
+    "policyDriftChecks": ["reuse-fs-shim", "reuse-inputs", "reuse-openapi", "reuse-exchange-policy"]
+  },
+  "remoteEvidence": "agents-codemode-cloud.json",
+  "limits": {
+    "memoryMiBPerVm": 24,
+    "vmsPerSession": 3,
+    "ordinary": { "calls": 256, "concurrentCalls": 32, "argumentBytes": 131072, "aggregateResultBytes": 8388608, "timeoutMs": 120000 },
+    "workflow": { "calls": 8192, "concurrentCalls": 64, "argumentBytes": 1048576, "aggregateResultBytes": 134217728, "timeoutMs": 3600000 },
+    "resultBytesPerCall": 1047552,
+    "printedBytes": 128000,
+    "printEvents": 1024
+  },
+  "limitations": [
+    "CPU is bounded by Pi's native QuickJS interrupt-poll budget. It is not a measured two-second operating-system CPU quota as in v8-exec.",
+    "OpenAPI binary and multipart request bodies still require the platform file-transport integration.",
+    "Remote source discovery failures are isolated from the other tools and visible as an unavailable catalog entry; refresh depends on the agent configuration/source refresh integration."
+  ]
+}

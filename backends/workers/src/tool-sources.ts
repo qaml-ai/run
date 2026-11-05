@@ -8,13 +8,14 @@ import { parse as parseYaml } from "yaml";
 import { signRuntimeIdentity, type IdentityEnv, type RuntimeIdentity } from "./runtime-identity.ts";
 import { withToolInputs, type ToolInputReply } from "./mcp-inputs.ts";
 import { openProviderSecret } from "./model-credentials.ts";
+import { credentialExchange, type ExchangeAuth } from "./exchange-auth.ts";
 
 type Env = { API_TOKEN: string; TEST_MODE?: string } & Partial<IdentityEnv>;
 type Approval = { default?: "never" | "always" | "destructive" | "judged"; tools?: Record<string, "never" | "always" | "judged">; methods?: string[] };
 type Sealed = { iv: string; ciphertext: string; tag: string };
 export type RemoteSource = {
   name: string; url?: string; baseUrl?: string; spec?: string; operations?: Operation[];
-  headerNames?: string[]; auth?: { type: "bearer" | "runtime" }; sealed?: Sealed; audience?: string;
+  headerNames?: string[]; auth?: { type: "bearer" | "runtime" } | ExchangeAuth; sealed?: Sealed; audience?: string;
   allowTools?: string[]; denyTools?: string[]; timeoutMs?: number;
   exposure?: "direct" | "codemode" | "both"; approval?: Approval;
 };
@@ -37,7 +38,7 @@ export function sourceUrl(value: unknown, env: Pick<Env, "TEST_MODE">): URL {
   return url;
 }
 
-async function fetchSource(env: Pick<Env, "TEST_MODE">, url: string | URL, init: RequestInit, max = MAX_BYTES) {
+async function fetchSource(env: Pick<Env, "TEST_MODE">, url: string | URL, init: RequestInit, max = MAX_BYTES, complete?: (text: string) => boolean) {
   let current = sourceUrl(String(url), env);
   for (let count = 0; count < 6; count++) {
     const response = await fetch(current, { ...init, redirect: "manual" });
@@ -48,17 +49,19 @@ async function fetchSource(env: Pick<Env, "TEST_MODE">, url: string | URL, init:
       current = next;
       continue;
     }
-    const text = await readText(response, max);
+    const text = await readText(response, max, complete);
     return { response, text };
   }
   throw bad("Too many source redirects");
 }
 
-async function readText(response: Response, max: number) {
+async function readText(response: Response, max: number, complete?: (text: string) => boolean) {
   if (!response.body) return "";
   const reader = response.body.getReader();
   const parts: Uint8Array[] = [];
   let size = 0;
+  let streamed = "";
+  const decoder = new TextDecoder();
   try {
     for (;;) {
       const part = await reader.read();
@@ -66,6 +69,10 @@ async function readText(response: Response, max: number) {
       size += part.value.byteLength;
       if (size > max) { await reader.cancel(); throw new Error("Source response exceeds its byte limit"); }
       parts.push(part.value);
+      if (complete) {
+        streamed += decoder.decode(part.value, { stream: true });
+        if (complete(streamed)) { await reader.cancel(); return streamed; }
+      }
     }
   } finally { reader.releaseLock(); }
   const bytes = new Uint8Array(size);
@@ -79,7 +86,6 @@ const b64 = (bytes: Uint8Array) => {
   for (let i = 0; i < bytes.length; i += 16384) text += String.fromCharCode(...bytes.subarray(i, i + 16384));
   return btoa(text);
 };
-const unb64 = (text: string) => Uint8Array.from(atob(text), c => c.charCodeAt(0));
 async function key(env: Env) {
   if (!env.AGENT_SECRETS_KEY || !/^[a-f0-9]{64}$/i.test(env.AGENT_SECRETS_KEY)) throw new HttpError(503, "This runtime has no AGENT_SECRETS_KEY, so it cannot store credentials");
   return crypto.subtle.importKey("raw", Uint8Array.from(env.AGENT_SECRETS_KEY.match(/../g)!, part => Number.parseInt(part, 16)), "AES-GCM", false, ["encrypt"]);
@@ -126,8 +132,13 @@ export async function prepareSources(env: Env, tenant: string, definition: strin
       }
     }
     if (value.auth !== undefined) {
-      if (value.auth?.type !== "runtime" && (value.auth?.type !== "bearer" || typeof value.auth.token !== "string" || !/^[\x21-\x7e]{1,8192}$/.test(value.auth.token))) throw bad("Source auth must be runtime or a bearer credential in a definition");
+      if (value.auth?.type !== "runtime" && value.auth?.type !== "exchange" && (value.auth?.type !== "bearer" || typeof value.auth.token !== "string" || !/^[\x21-\x7e]{1,8192}$/.test(value.auth.token))) throw bad("Source auth must be runtime, exchange, or a bearer credential in a definition");
       if (value.auth?.type === "runtime" && Object.keys(value.auth).length !== 1) throw bad("Runtime auth takes no credentials");
+      if (value.auth?.type === "exchange") {
+        if (kind !== "mcpServers" || Object.keys(value.auth).some(key => !["type", "url", "audience"].includes(key))) throw bad("Credential exchange is for MCP servers and takes only url and audience");
+        const exchange = sourceUrl(value.auth.url, env);
+        if (value.auth.audience !== undefined && (typeof value.auth.audience !== "string" || !value.auth.audience.startsWith(`urn:camelrun:${tenant}:`) && sourceUrl(value.auth.audience, env).origin !== exchange.origin)) throw bad("auth.audience must name the exchange origin or this tenant's urn");
+      }
       if (Object.keys(headers).some(x => x.toLowerCase() === "authorization")) throw bad("Use an Authorization header or auth, not both");
       if (value.auth.type === "bearer") headers.Authorization = `Bearer ${value.auth.token}`;
     }
@@ -138,6 +149,7 @@ export async function prepareSources(env: Env, tenant: string, definition: strin
       ...(value.allowTools !== undefined ? { allowTools: names(value.allowTools, "allowTools") } : {}),
       ...(value.denyTools !== undefined ? { denyTools: names(value.denyTools, "denyTools") } : {}),
       ...(value.auth?.type === "runtime" ? { auth: { type: "runtime" as const } } : {}),
+      ...(value.auth?.type === "exchange" ? { auth: { type: "exchange" as const, url: sourceUrl(value.auth.url, env).href, ...(value.auth.audience ? { audience: value.auth.audience } : {}) } } : {}),
     };
     if (value.approval !== undefined) {
       const approval = value.approval;
@@ -207,8 +219,8 @@ export function toolSourceViews(config: { mcp?: { tools?: ToolDefinition[] }; mc
   return result;
 }
 
-function rpcResult(text: string, id: string): any {
-  if (!text.trim()) return {};
+function rpcMessages(text: string): any[] {
+  if (!text.trim()) return [];
   let messages: any[];
   try { messages = [JSON.parse(text)]; }
   catch {
@@ -218,7 +230,10 @@ function rpcResult(text: string, id: string): any {
       try { return [JSON.parse(data)]; } catch { return []; }
     });
   }
-  const response = messages.flat().find(message => String(message.id) === id);
+  return messages.flat();
+}
+function rpcResult(text: string, id: string): any {
+  const response = rpcMessages(text).find(message => String(message.id) === id);
   if (!response) throw new Error("MCP server returned no matching response");
   if (response.error) throw new Error(String(response.error.message ?? "MCP request failed"));
   return response.result;
@@ -231,15 +246,22 @@ class RemoteMcp {
   private source: RemoteSource;
   private headers: Record<string, string>;
   private runtimeHeaders: (api?: ToolExecutionApi, approval?: ToolInputReply["approval"]) => Promise<Record<string, string>>;
-  constructor(env: Env, source: RemoteSource, headers: Record<string, string>, runtimeHeaders: (api?: ToolExecutionApi, approval?: ToolInputReply["approval"]) => Promise<Record<string, string>>) {
+  private refused?: () => void;
+  constructor(env: Env, source: RemoteSource, headers: Record<string, string>, runtimeHeaders: (api?: ToolExecutionApi, approval?: ToolInputReply["approval"]) => Promise<Record<string, string>>, refused?: () => void) {
     this.env = env; this.source = source; this.headers = headers; this.runtimeHeaders = runtimeHeaders;
+    this.refused = refused;
   }
   private async rpc(method: string, params: unknown, notification = false, signal?: AbortSignal, api?: ToolExecutionApi, approval?: ToolInputReply["approval"]): Promise<any> {
     const id = crypto.randomUUID();
-    const result = await fetchSource(this.env, this.source.url!, {
+    let result!: Awaited<ReturnType<typeof fetchSource>>;
+    for (let attempt = 0; attempt < 2; attempt++) {
+    result = await fetchSource(this.env, this.source.url!, {
       method: "POST", headers: { ...this.headers, ...await this.runtimeHeaders(api, approval), Accept: "application/json, text/event-stream", "Content-Type": "application/json", ...(this.session ? { "Mcp-Session-Id": this.session, "MCP-Protocol-Version": "2025-06-18" } : {}) },
       body: JSON.stringify({ jsonrpc: "2.0", ...(notification ? {} : { id }), method, params }), signal: AbortSignal.any([AbortSignal.timeout(this.source.timeoutMs ?? 300_000), ...(signal ? [signal] : [])]),
-    });
+    }, MAX_BYTES, notification ? undefined : text => rpcMessages(text).some(message => String(message.id) === id));
+    if (attempt === 0 && this.refused && [401, 403].includes(result.response.status)) { this.refused(); continue; }
+    break;
+    }
     if (!result.response.ok) throw new Error(`MCP source ${this.source.name} answered HTTP ${result.response.status}`);
     this.session = result.response.headers.get("mcp-session-id") ?? this.session;
     return notification ? undefined : rpcResult(result.text, id);
@@ -278,7 +300,10 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
   const result: ToolRegistration[] = [];
   for (const kind of ["mcpServers", "openApi"] as const) for (const source of config[kind] ?? []) {
     const headers = await unseal(env, aad(tenant, definition ?? "", kind, source.name), source.sealed);
+    const exchange = source.auth?.type === "exchange" && identity && env.HYPERDRIVE ? credentialExchange(env as IdentityEnv, { name: source.name, url: source.url!, auth: source.auth }, identity, (url, init, max) => fetchSource(env, url, init, max)) : undefined;
     const runtimeHeaders = async (api?: ToolExecutionApi, approval?: ToolInputReply["approval"]): Promise<Record<string, string>> => {
+      if (exchange) return exchange.headers(api);
+      if (source.auth?.type === "exchange") throw new Error("Runtime identity is not configured for credential exchange");
       if (source.auth?.type !== "runtime") return {};
       if (!identity || !env.HYPERDRIVE) throw new Error("Runtime identity is not configured");
       const value = await identity(api);
@@ -297,7 +322,7 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
       }
     };
     if (kind === "mcpServers") {
-      const client = new RemoteMcp(env, source, headers, runtimeHeaders);
+      const client = new RemoteMcp(env, source, headers, runtimeHeaders, exchange?.refused);
       // An unavailable server cannot prevent loading or using the agent's other tools.
       let listed: ToolDefinition[];
       try { listed = await client.list(); } catch { continue; }
@@ -318,13 +343,14 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
           if (args[name] === undefined) throw new Error(`Missing path parameter ${name}`);
           return encodeURIComponent(text(args[name]));
         });
-        const url = new URL(source.baseUrl!.replace(/\/+$/, "") + path), sent: Record<string, string> = { ...headers, ...await runtimeHeaders(api), Accept: "application/json" };
+        const url = new URL(source.baseUrl!.replace(/\/+$/, "") + path), sent: Record<string, string> = { Accept: "application/json" };
         for (const parameter of operation.parameters) {
           const value = args[parameter.name];
           if (value === undefined || value === null) continue;
           if (parameter.in === "query") for (const item of Array.isArray(value) ? value : [value]) url.searchParams.append(parameter.name, text(item));
           else if (parameter.in === "header") sent[parameter.name] = text(value);
         }
+        Object.assign(sent, headers, await runtimeHeaders(api));
         let body: BodyInit | undefined;
         if (args.body !== undefined && operation.body) {
           if (operation.body === "json") { sent["Content-Type"] = "application/json"; body = JSON.stringify(args.body); }

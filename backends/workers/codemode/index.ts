@@ -1,6 +1,7 @@
 // A separate Worker is required to keep synchronous QuickJS off the agent thread.
 import { CodemodeSandboxDurableObject } from "@earendil-works/pi-codemode/cloudflare";
 import type { CodemodeRemoteRequest, CodemodeRemoteExchange } from "@earendil-works/pi-codemode/portable";
+import { boundedExchange } from "./limits.ts";
 
 export class CodemodeSandbox extends CodemodeSandboxDurableObject {
   // Three independent 24 MiB heaps leave headroom for Wasm and the host in a
@@ -10,7 +11,7 @@ export class CodemodeSandbox extends CodemodeSandboxDurableObject {
   override async execute(request: CodemodeRemoteRequest, exchange: CodemodeRemoteExchange) {
     if (this.active >= 3) throw new Error("Agent sandbox concurrency limit (3) reached");
     this.active++;
-    try { await super.execute(request, exchange); }
+    try { await super.execute(request, boundedExchange(exchange, (request as CodemodeRemoteRequest & { workflow?: boolean }).workflow === true)); }
     finally { this.active--; }
   }
 }

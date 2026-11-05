@@ -9,6 +9,7 @@ import { answerHuman } from "../src/human.ts";
 import { isolatedSandboxRemote } from "../codemode/routing.ts";
 import { compatibleFileTools } from "../src/fs-tools.ts";
 import { FS_SHIM } from "../codemode/fs-shim.ts";
+import { boundedExchange } from "../codemode/limits.ts";
 import type { ToolRegistration } from "@earendil-works/pi-durable";
 
 test("attached tools initialize on their connection and preserve a tool result", async () => {
@@ -78,6 +79,43 @@ test("MCP sources page tool discovery and call only allowed names", async t => {
   assert.deepEqual(result.output, [{ type: "text", text: '{"key":7}' }]);
   assert.equal(calls.filter(call => call.method === "tools/list").length, 2);
   assert.equal(calls.at(-1).params.name, "second");
+});
+
+test("MCP streamed responses settle at their matching JSON-RPC result", async t => {
+  const server = createServer(async (request, response) => {
+    let text = "";
+    for await (const chunk of request) text += chunk;
+    const message = JSON.parse(text);
+    if (!message.id) { response.writeHead(202).end(); return; }
+    const result = message.method === "initialize" ? {} : message.method === "tools/list" ? { tools: [{ name: "echo", inputSchema: { type: "object" } }] } : { content: [{ type: "text", text: "streamed" }] };
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.write(`data: ${JSON.stringify({ jsonrpc: "2.0", id: message.id, result })}\n\n`);
+    const timer = setTimeout(() => response.end(), 2000);
+    response.on("close", () => clearTimeout(timer));
+  });
+  server.listen(0, "127.0.0.1"); await once(server, "listening");
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const start = Date.now(), env = { API_TOKEN: "unit-test", TEST_MODE: "1" };
+  const [tool] = await sourceTools(env, "tenant", undefined, { mcpServers: [{ name: "stream", url: `http://127.0.0.1:${(server.address() as any).port}/mcp` }] });
+  assert.deepEqual((await tool.execute({}, undefined as never, undefined as never)).output, [{ type: "text", text: "streamed" }]);
+  assert.ok(Date.now() - start < 1500, "must not wait for the long-lived SSE response to end");
+});
+
+test("remote code limits reject excessive calls and arguments and bound each result", async () => {
+  const seen: any[] = [];
+  const oversized = boundedExchange(async messages => { seen.push(...messages); return null; });
+  assert.deepEqual(await oversized([{ type: "call", target: "tool", id: 1, name: "echo", args: "x".repeat(131073) }]), { type: "stop" });
+  assert.match(seen[0].error.message, /arguments exceed/);
+  assert.equal(seen.some(message => message.type === "call"), false);
+  const limited = boundedExchange(async () => ({ type: "result", id: 1, ok: true, payload: "x".repeat(1024 * 1024) }));
+  const result = await limited([{ type: "call", target: "tool", id: 1, name: "echo", args: "{}" }]);
+  assert.equal(result?.type === "result" && result.ok, false);
+  assert.match(result?.type === "result" ? result.payload! : "", /a script gets at most/);
+  const counted = boundedExchange(async messages => messages[0]?.type === "call" ? { type: "result", id: messages[0].id, ok: true, payload: "null" } : null);
+  for (let i = 1; i <= 256; i++) assert.equal((await counted([{ type: "call", target: "tool", id: i, name: "echo", args: "{}" }]))?.type, "result");
+  assert.deepEqual(await counted([{ type: "call", target: "tool", id: 257, name: "echo", args: "{}" }]), { type: "stop" });
+  const workflow = boundedExchange(async messages => messages[0]?.type === "call" ? { type: "result", id: messages[0].id, ok: true, payload: "null" } : null, true);
+  for (let i = 1; i <= 257; i++) assert.equal((await workflow([{ type: "call", target: "tool", id: i, name: "delegate", args: "{}" }]))?.type, "result");
 });
 
 test("ask_user validates answers against the same question policy as src", () => {

@@ -8,6 +8,7 @@ export type RuntimeIdentity = {
   ctx?: Record<string, unknown>; act?: string; origin?: Record<string, unknown>;
   req?: string; tcid?: string; par?: string; root?: string;
   approval?: { input: string; by: Record<string, unknown>; at: number };
+  exchange?: { server: string; url: string };
 };
 type KeyRow = { kid: string; public_jwk: JsonWebKey; private_sealed: { iv: string; tag: string; ciphertext: string }; retired_at: number | null };
 const cache = new WeakMap<IdentityEnv, { expires: number; keys: Promise<{ publicKeys: JsonWebKey[]; kid: string; key: CryptoKey }> }>();
