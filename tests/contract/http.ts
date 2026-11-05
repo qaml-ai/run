@@ -63,7 +63,18 @@ export async function fakeModel(t: T, respond: (body: any, index: number) => obj
     // `wait`: a promise the answer waits for (a barrier between concurrent calls), before any `delayMs`.
     const { usage, delayMs, httpStatus, wait, ...delta } = respond(body, bodies.length - 1) as any;
     if (wait) await wait;
-    if (delayMs) await sleep(delayMs);
+    if (delayMs) {
+      // An aborted runtime request must not leave a fixture timer keeping the
+      // test process alive after its server and sockets have closed.
+      const connected = await new Promise<boolean>(resolve => {
+        const finish = (open: boolean) => { clearTimeout(timer); res.off("close", closed); resolve(open); };
+        const closed = () => finish(false);
+        const timer = setTimeout(() => finish(true), delayMs);
+        res.once("close", closed);
+        if (res.destroyed) closed();
+      });
+      if (!connected) return;
+    }
     // A provider refusing the request: `httpStatus` with an OpenAI-style error.
     if (httpStatus) { res.writeHead(httpStatus, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: delta.message ?? "Refused", type: "invalid_request_error" } })); return; }
     res.writeHead(200, { "Content-Type": "text/event-stream" });

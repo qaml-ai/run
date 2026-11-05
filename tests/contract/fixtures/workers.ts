@@ -215,7 +215,16 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
     async updateLegacyUsageWebhook(url) { await server.db.query("update usage_webhooks set url=$1 where tenant='alice'", [url]); },
     seedJourneyAccount: input => seedJourneyAccount(server.db, input),
     async drain() { throw new Error("Unsupported fixture lifecycle: deployed Workers have no Node SIGTERM/HTTP server drain boundary"); },
-    async waitForAgentIdle(_agent) { throw new Error("Unsupported fixture state: Workers agents have no actor_owners idle lease"); },
+    async waitForAgentIdle(agent) {
+      await until(async () => {
+        const state = await call(`/v1/agents/${agent}/state`);
+        if (state.status !== 200 || !Array.isArray(state.json.requests)) throw new Error(`Agent quiescence fixture: ${state.status} ${state.text}`);
+        return state.json.requests.every((request: { state: string }) => request.state !== "running");
+      }, "the agent's requests to finish before a cold reload", 20_000);
+      // workerd has no Node owner lease. Restart the real local process to evict
+      // live DOs, preserving its SQLite/R2 directory and Postgres database.
+      await server.restart();
+    },
     async failAgentLoad(_agent) { throw new Error("Unsupported fixture state: Workers agents do not resume from versioned Postgres agent headers"); },
     async agentRecovery(_agent) { throw new Error("Unsupported fixture state: Workers agents have no Postgres resume_failures or resume_after"); },
     async setAgentRecovery(_agent, _state) { throw new Error("Unsupported fixture state: Workers agents have no Postgres resume_failures or resume_after"); },

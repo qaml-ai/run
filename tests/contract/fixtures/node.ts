@@ -21,11 +21,26 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
   let respond: ModelReply = options.respond ?? (() => ({ role: "assistant", content: "ok" }));
   let index = 0;
   let imageResizeFailures = 0;
+  const pendingDelays = new Set<() => void>();
   const cleanups: Array<() => Promise<void> | void> = [];
   let closed = false;
+  // The legacy server helper leaves a scripted delay alive after its request
+  // is aborted. Own those timers here so fixture teardown cancels them too.
+  const scriptedReply: ModelReply = body => {
+    const reply = respond(body, index++) as { delayMs?: number; wait?: Promise<unknown>; [key: string]: unknown };
+    if (!reply.delayMs) return reply;
+    const { delayMs, wait, ...delta } = reply;
+    return { ...delta, wait: Promise.resolve(wait).then(() => new Promise<void>(resolve => {
+      if (closed) return resolve();
+      const finish = () => { clearTimeout(timer); pendingDelays.delete(finish); resolve(); };
+      const timer = setTimeout(finish, delayMs);
+      pendingDelays.add(finish);
+    })) };
+  };
   const close = async () => {
     if (closed) return;
     closed = true;
+    for (const finish of pendingDelays) finish();
     const failures: unknown[] = [];
     for (const cleanup of cleanups.reverse()) {
       try { await cleanup(); } catch (error) { failures.push(error); }
@@ -76,7 +91,7 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
       runtimeEnv.AGENT_SANDBOX_DIR = launcher.dir;
     }
     if (options.anthropicFederationEndpoint) runtimeEnv.TEST_ANTHROPIC_FEDERATION_ENDPOINT = options.anthropicFederationEndpoint;
-    r = await runtime({ after: fn => cleanups.push(fn) }, (body) => respond(body, index++), runtimeEnv,
+    r = await runtime({ after: fn => cleanups.push(fn) }, scriptedReply, runtimeEnv,
       tenants, { databaseUrl: databaseUrl.href, ...(options.anthropicFederationEndpoint ? {
         execArgv: ["--import", new URL("../../fixtures/anthropic-federation.mjs", import.meta.url).href],
       } : {}) });
@@ -113,7 +128,7 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
     // runtime helper's fresh root is only for the replacement process config.
     runtimeEnv.AGENT_DATA_DIR ??= previous.root;
     index = 0;
-    r = await runtime({ after: fn => cleanups.push(fn) }, body => respond(body, index++), runtimeEnv,
+    r = await runtime({ after: fn => cleanups.push(fn) }, scriptedReply, runtimeEnv,
       tenants, { databaseUrl: previous.databaseUrl });
   };
   const model: ContractFixture["model"] = {

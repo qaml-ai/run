@@ -14,3 +14,7 @@ npm run docs
 node --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-name-pattern='llms.txt' tests/docs.test.ts
 export CONTRACT_CONCURRENCY=${CONTRACT_CONCURRENCY:-4}
 npm run parity -- --backend=node
+if [[ ${1:-} == --compare ]]; then
+  npm ci --prefix backends/workers
+  CONTRACT_CONCURRENCY=${CONTRACT_WORKER_CONCURRENCY:-4} npm run parity -- --backend=workers
+fi

@@ -41,6 +41,9 @@ without it, the content hash still identifies every tested source and fixture.
 The resulting report is under `~/rt/backends/workers/measurements/` on that Sprite.
 Copy `parity-node.json` back before a local Workers run. Installing Workers
 dependencies on the Sprite also allows running both backends there.
+Pass `--compare` to `validate-node.sh` to install those dependencies and run
+Workers after the green Node baseline, within the same isolated Python environment.
+`CONTRACT_WORKER_CONCURRENCY` controls that comparison (default four).
 
 `npm run parity` runs Node first and refuses to run Workers unless every selected
 Node case is green. A Workers-only run requires a Node report for the same area,
