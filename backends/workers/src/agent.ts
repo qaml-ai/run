@@ -15,6 +15,7 @@ import { seedHistory, writeModelContext } from "./history-seed.ts";
 import { assertContextRange, contextRangeExtension, contextRangeLimit } from "./context-range.ts";
 import { workflowTools } from "./workflow.ts";
 import { recordChildParent } from "./child-parent.ts";
+import { errorCode } from "./errors.ts";
 import { RecentEvents } from "./recent-events.ts";
 import { tenantRunCaps } from "./tenant-run-caps.ts";
 import { toolCallSite } from "./tool-call-context.ts";
@@ -2120,7 +2121,10 @@ export class CamelAgent extends DurableObject<Env> {
     const id = boundedText(request.id, "id", 80);
     if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new BadRequest("Invalid request id");
     if (await this.ctx.storage.get(`cancelled-request:${id}`))
-      throw Object.assign(new Error("Request cancelled"), { status: 409, code: "aborted" });
+      throw Object.assign(new Error("Request cancelled"), {
+        status: 409,
+        code: "aborted",
+      });
     if (!request.params || typeof request.params !== "object" || Array.isArray(request.params))
       throw new BadRequest("Expected configuration object");
     const params = request.params as Record<string, unknown>;
@@ -2135,7 +2139,7 @@ export class CamelAgent extends DurableObject<Env> {
       if (old && old.fingerprint !== fingerprint)
         throw Object.assign(
           new Error("Request id reused with different input"),
-          { status: 409 },
+          { status: 409, code: "IDEMPOTENCY_CONFLICT" },
         );
       if (!old)
         await tx.put(reqKey(id), {
@@ -2244,9 +2248,11 @@ export class CamelAgent extends DurableObject<Env> {
       if (old && old.fingerprint !== fingerprint)
         throw Object.assign(
           new Error("Request id reused with different input"),
-          { status: 409 },
+          { status: 409, code: "IDEMPOTENCY_CONFLICT" },
         );
       if (old) return old.accepted || old.state === "completed" ? this.replayedRequest(old) : this.startHostRequest(old);
+      if (await this.ctx.storage.get(`cancelled-request:${id}`))
+        throw Object.assign(new Error("Request cancelled"), { status: 409, code: "aborted" });
       await this.requireApplication(allowDisconnected);
       await refreshIdleLifetime(this.env, this.ctx.storage, await this.config());
       const record: RequestRecord = {
@@ -2271,7 +2277,7 @@ export class CamelAgent extends DurableObject<Env> {
       if (previous && previous.fingerprint !== fingerprint)
         throw Object.assign(
           new Error("Request id reused with different input"),
-          { status: 409 },
+          { status: 409, code: "IDEMPOTENCY_CONFLICT" },
         );
       if (previous?.state === "completed") return previous;
       const stopped = await this.abortRequests(params.queued === 'keep' ? 'keep' : 'cancel', params.children === 'keep');
@@ -2414,6 +2420,7 @@ export class CamelAgent extends DurableObject<Env> {
     if (old && old.fingerprint !== fingerprint)
       throw Object.assign(new Error("Request id reused with different input"), {
         status: 409,
+        code: "IDEMPOTENCY_CONFLICT",
       });
     if (old?.state === "completed" || old?.accepted) return this.replayedRequest(old);
     if (!(notice && delivery && !delivery.run) && await this.ctx.storage.get(`cancelled-request:${id}`)) {
@@ -3392,7 +3399,7 @@ export class CamelAgent extends DurableObject<Env> {
           conf.config.mounts as never,
         );
       }
-      return json({ error: "Unsupported backend operation" }, 404);
+      return json({ error: "Unsupported backend operation", code: "NOT_FOUND" }, 404);
     } catch (error) {
       const limited = admissionError(error);
       if (limited) return limited;
@@ -3404,9 +3411,7 @@ export class CamelAgent extends DurableObject<Env> {
       return json(
         {
           ...errorFields(error),
-          ...(typeof (error as { code?: unknown }).code === "string"
-            ? { code: (error as { code: string }).code }
-            : {}),
+          code: errorCode(error, status),
           ...("input" in Object(error) ? { input: (error as { input: unknown }).input } : {}),
           error:
             status >= 500

@@ -6,10 +6,9 @@ import { lastUser, until } from '../../../tests/contract/http.ts';
 test('prompts submitted between upserts use their preceding configuration', { timeout: 90_000 }, async t => {
   const gate = Promise.withResolvers<void>();
   t.after(() => gate.resolve());
-  const fixture = await createWorkersFixture(t, { respond: async body => {
-    if (lastUser(body) === 'hold') await gate.promise;
-    return { role: 'assistant', content: 'ok' };
-  } });
+  const fixture = await createWorkersFixture(t, { respond: body => ({
+    role: 'assistant', content: 'ok', ...(lastUser(body) === 'hold' ? { wait: gate.promise } : {}),
+  }) });
   const upsert = async (systemPrompt: string) => {
     const response = await fixture.call('/v1/agents', { body: { systemPrompt }, headers: { 'Idempotency-Key': 'configuration-order' } });
     assert.equal(response.status, 201, response.text);

@@ -22,7 +22,7 @@ export class ConfigurationQueue<T extends Record> {
       const key = `request:${input.id}`;
       const old = await tx.get<T>(key);
       if (old) {
-        if (old.fingerprint !== fingerprint) throw Object.assign(new Error('Request id reused with different input'), { status: 409 });
+        if (old.fingerprint !== fingerprint) throw Object.assign(new Error('Request id reused with different input'), { status: 409, code: 'IDEMPOTENCY_CONFLICT' });
         return old;
       }
       const requests = await tx.list<T>({ prefix: 'request:' });

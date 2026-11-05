@@ -1,5 +1,6 @@
 import { agentToolView } from "./agent-tool-view.ts";
 import type { Directory, AuthContext, ControlEnv, DirectoryEntry } from "./control.ts";
+import { authenticationHint } from "./public-http.ts";
 
 const response = (value: unknown, status = 200) => Response.json(value, {
   status, headers: { "cache-control": "no-store" },
@@ -26,7 +27,7 @@ export async function handleServiceRequest(
 ): Promise<Response | null> {
   const path = new URL(request.url).pathname;
   if (path !== "/registry" && !path.startsWith("/registry/")) return null;
-  if (!auth) return error(401, "Unauthorized", "UNAUTHORIZED");
+  if (!auth) return error(401, authenticationHint(request, env.AGENT_PUBLIC_URL || new URL(request.url).origin), "UNAUTHORIZED");
   if (request.headers.has("origin")) return new Response(null, { status: 403 });
   const registry = directory ?? new (await import("./control.ts")).Directory(env, auth.tenantId);
   if (path === "/registry") {
