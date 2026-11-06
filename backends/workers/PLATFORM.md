@@ -63,6 +63,55 @@ the teardown). The earlier one-computer record,
 `measurements/platform-container-cloud.json` (2026-11-05, `lite`), took 7,090 ms
 through the first command.
 
+### Native computer egress and parent forks (experimental, Workers only)
+
+A definition's `computer` configures its agents' native `container` computer:
+
+```json
+{"name": "Coder", "computer": {"idleSeconds": 900, "egress": [
+  {"host": "github.com", "auth": {"type": "exchange", "url": "https://app.example.com/github-token"}, "scheme": "basic"},
+  {"host": "api.github.com", "auth": {"type": "exchange", "url": "https://app.example.com/github-token"}},
+  {"host": "registry.npmjs.org"}]}}
+```
+
+- The Container still starts with `enableInternet: false`. Each `egress` host's
+  HTTPS is intercepted (`interceptOutboundHttps`) into `ComputerEgress`, a
+  loopback entrypoint that makes the request itself, under the runtime's
+  outbound rules. Every other host is unreachable, so the list is an allowlist
+  (at most 32 public DNS names). The machine trusts the interception CA at
+  every start, snapshot restores included.
+- A grant with `auth` gets its credential the way an MCP server's `exchange` does.
+  The runtime posts a signed identity token for this agent to `auth.url`, with
+  `exchange.server` set to `computer:<host>`. The token is cached in memory and
+  refreshed early, and it is dropped when the host answers 401 or 403. The
+  gateway replaces the machine's own `Authorization` header with it: `Bearer`,
+  or `Basic x-access-token:<token>` (`scheme: "basic"`, what Git over HTTPS sends
+  to GitHub). Neither the machine nor the model ever holds it, so
+  `git clone https://github.com/org/repo` and pushes just work.
+- `instance` (`lite`, `standard-1` … `standard-4`) picks the machine size for the
+  definition's agents; the deployment's `COMPUTER_INSTANCE` stays the default.
+  A changed size replaces a running machine on its next operation.
+- `idleSeconds` (10–3,600, default 60) is how long an idle machine stays up.
+  `exec` takes `timeoutMs` up to 600,000.
+- Agents take `computer` only from their definition. `POST /v1/agents` and
+  `PATCH …/configuration` refuse it. Inline sub-agents inherit their parent's;
+  a definition's sub-agent has its definition's. Changed grants replace a
+  running machine on its next operation.
+- **Fork stand-in.** A sub-agent the runtime made can start its container as a
+  copy of its parent's: `{"op": "restore", "name": "base", "from": "parent"}`.
+  The runtime finds the parent from the signed parent link, never from model
+  input. It reads the parent computer's named `snapshotContainer()` handle and
+  starts this agent's own machine from it (`start({containerSnapshot})`) with
+  this agent's grants. The parent's machine is unchanged. This stands in for a
+  `fork` computer API.
+
+`test/computers.integration.ts` (its second test) covers clone and push through a local
+`git http-backend` (`TEST_EGRESS_UPSTREAM` maps every granted host to a loopback
+origin, in TEST_MODE only), the exchange claims, that no credential is on the
+machine, that other hosts are blocked, and a child's fork. In local Docker the
+first exec with a clone took about 11 s (image start, CA trust, clone), and a
+child's fork restore about 7.5 s.
+
 `spikes/hibernation/` deploys the actual CamelAgent without Postgres or model
 bindings. `measurements/platform-hibernation.jsonl` records an idle socket kept
 open for 180 seconds while the DO instance changed. That establishes eviction

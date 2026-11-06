@@ -5,6 +5,12 @@ import { createServer, type AddressInfo } from "node:net";
 import test from "node:test";
 import { promisify } from "node:util";
 import { startFixture } from "./fixture.ts";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { mkdtemp, rm } from "node:fs/promises";
+import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 async function dockerUnavailable() {
   for (const args of [["info"], ["buildx", "version"]]) {
@@ -331,3 +337,177 @@ test(
     }
   },
 );
+
+// Egress grants and the parent fork run here, after the test above, rather than in a file of their own: two fixtures
+// of this configuration at once (integration files run in parallel) race on its one image and fail to start containers.
+const TOKEN = "ghs_egress_integration_token_0123456789";
+const BASIC = `Basic ${Buffer.from(`x-access-token:${TOKEN}`).toString("base64")}`;
+
+const listen = async (handler: (request: IncomingMessage, response: ServerResponse) => void) => {
+  const server = createHttpServer(handler);
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  return { server, origin: `http://127.0.0.1:${(server.address() as { port: number }).port}` };
+};
+const close = (server: ReturnType<typeof createHttpServer>) => { server.closeAllConnections(); return new Promise<void>(resolve => server.close(() => resolve())); };
+
+/** Git's smart HTTP through `git http-backend`, standing in for github.com: it serves only the runtime's credential. */
+async function gitServer(root: string) {
+  const seen: { path: string; authorization?: string; host?: string }[] = [];
+  const { server, origin } = await listen((request, response) => {
+    const url = new URL(request.url!, "http://local");
+    seen.push({ path: url.pathname, authorization: request.headers.authorization, host: request.headers["x-camelrun-egress-host"] as string | undefined });
+    if (request.headers["x-camelrun-egress-host"] !== "github.com") { response.writeHead(421); response.end("not routed by the egress gateway"); return; }
+    if (request.headers.authorization !== BASIC) { response.writeHead(401, { "www-authenticate": 'Basic realm="GitHub"' }); response.end(); return; }
+    const cgi = spawn("git", ["http-backend"], { env: {
+      ...process.env, GIT_PROJECT_ROOT: root, GIT_HTTP_EXPORT_ALL: "1", REMOTE_USER: "x-access-token",
+      PATH_INFO: url.pathname, QUERY_STRING: url.search.slice(1), REQUEST_METHOD: request.method!,
+      CONTENT_TYPE: request.headers["content-type"] ?? "", ...(request.headers["content-encoding"] ? { HTTP_CONTENT_ENCODING: request.headers["content-encoding"] } : {}),
+    } });
+    request.pipe(cgi.stdin);
+    let head = Buffer.alloc(0), sent = false;
+    cgi.stdout.on("data", (chunk: Buffer) => {
+      if (sent) { response.write(chunk); return; }
+      head = Buffer.concat([head, chunk]);
+      const end = head.indexOf("\r\n\r\n");
+      if (end < 0) return;
+      const headers: Record<string, string> = {};
+      let status = 200;
+      for (const line of head.subarray(0, end).toString().split("\r\n")) {
+        const [name, ...rest] = line.split(":"), value = rest.join(":").trim();
+        if (name.toLowerCase() === "status") status = Number(value.split(" ")[0]); else headers[name] = value;
+      }
+      response.writeHead(status, headers);
+      response.write(head.subarray(end + 4));
+      sent = true;
+    });
+    cgi.on("close", () => response.end());
+  });
+  return { server, origin, seen };
+}
+
+test("computer egress: git clone and push through the runtime's credential gateway, and a child forks its parent's machine", {
+  timeout: 600_000, skip: requireDocker ? false : unavailable,
+}, async (t) => {
+  assert.equal(unavailable, undefined, unavailable);
+  const egressImage = await egressImageWithoutSocketMatch(t);
+  if (egressImage) {
+    process.env.MINIFLARE_CONTAINER_EGRESS_IMAGE = egressImage;
+    t.after(() => { delete process.env.MINIFLARE_CONTAINER_EGRESS_IMAGE; });
+  }
+  const repos = await mkdtemp(join(tmpdir(), "camelrun-egress-git-"));
+  t.after(() => rm(repos, { recursive: true, force: true }));
+  await run("git", ["init", "--bare", "-b", "main", join(repos, "acme/app.git")]);
+  const seed = join(repos, "seed");
+  await run("git", ["clone", join(repos, "acme/app.git"), seed]);
+  await run("sh", ["-c", `cd ${seed} && echo '# app' > README.md && git add . && git -c user.name=t -c user.email=t@t commit -qm init && git push -q origin HEAD:main`]);
+  const git = await gitServer(repos);
+  t.after(() => close(git.server));
+
+  const exchanges: Record<string, any>[] = [];
+  const exchange = await listen(async (request, response) => {
+    let raw = ""; for await (const chunk of request) raw += chunk;
+    const jwt = String(request.headers.authorization ?? "").replace(/^Bearer /, "");
+    exchanges.push({ body: JSON.parse(raw), claims: JSON.parse(Buffer.from(jwt.split(".")[1], "base64url").toString()) });
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ token: TOKEN, expiresIn: 3600 }));
+  });
+  t.after(() => close(exchange.server));
+
+  // A scripted model: the parent spawns one inline child, which answers at once.
+  const model = await listen(async (request, response) => {
+    let raw = ""; for await (const chunk of request) raw += chunk;
+    const body = JSON.parse(raw), text = JSON.stringify(body.messages);
+    const delta = text.includes("FORK_CHILD") || body.messages.at(-1).role === "tool" || text.includes("agent_notification")
+      ? { role: "assistant", content: "done" }
+      : { role: "assistant", tool_calls: [{ index: 0, id: "spawn-1", type: "function", function: { name: "spawn_agent", arguments: JSON.stringify({ instructions: "FORK_CHILD", task: "Work in a fork", name: "worker" }) } }] };
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.write(`data: ${JSON.stringify({ id: "m", object: "chat.completion.chunk", choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`);
+    response.end(`data: ${JSON.stringify({ id: "m", object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" in delta ? "tool_calls" : "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0 } })}\n\ndata: [DONE]\n\n`);
+  });
+  t.after(() => close(model.server));
+
+  const fixture = await startFixture({ config: "wrangler.computers.test.jsonc", modelURL: `${model.origin}/v1`, vars: { TEST_EGRESS_UPSTREAM: git.origin } });
+  t.after(async () => {
+    const names = new Set([...fixture.worker.logs().matchAll(/containerName = (workerd-camelrun-proto-workers-computers-local-(?:ContainerComputer|SandboxComputer)-[a-f0-9]{64})/g)].map(match => match[1]));
+    await fixture.stop();
+    for (const name of names) for (const target of [name, `${name}-proxy`]) await run("docker", ["rm", "-f", target]).catch(() => {});
+  });
+  t.after(() => { if (process.env.EGRESS_DEBUG) console.log(fixture.worker.logs().slice(-20000)); });
+  const api = async (path: string, init: { method?: string; body?: unknown; key?: string } = {}, expected = [200, 201, 202]) => {
+    const response = await fetch(fixture.url + path, {
+      method: init.method ?? (init.body === undefined ? "GET" : "POST"),
+      headers: { authorization: `Bearer ${fixture.token}`, "content-type": "application/json", ...(init.key ? { "idempotency-key": init.key } : {}) },
+      ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
+      signal: AbortSignal.timeout(200_000),
+    });
+    const value = await response.json() as any;
+    assert.ok(expected.includes(response.status), `${path}: ${response.status} ${JSON.stringify(value)}\n${fixture.worker.logs().slice(-4000)}`);
+    return value;
+  };
+  const computer = (agent: string, request: object, expected?: number[]) => api(`/experimental/agents/${agent}/computer`, { body: { provider: "container", ...request } }, expected);
+  const sh = async (agent: string, command: string, timeoutMs = 120_000) => {
+    const started = performance.now();
+    const result = await computer(agent, { op: "exec", argv: ["bash", "-lc", command], timeoutMs });
+    return { ...result, ms: Math.round(performance.now() - started) };
+  };
+
+  // Definitions refuse a computer they cannot use, and agents cannot set one themselves.
+  await api("/v1/definitions", { body: { name: "Bad", computer: { egress: [{ host: "10.0.0.1" }] } } }, [400]);
+  await api("/v1/agents", { body: { computer: { egress: [{ host: "github.com" }] } } }, [400]);
+
+  const definition = await api("/v1/definitions", { key: "egress-lead", body: {
+    name: "Lead", builtins: ["agents"], delegate: { instructions: true }, codeMode: false, fileTools: false,
+    computer: { idleSeconds: 600, egress: [{ host: "github.com", auth: { type: "exchange", url: `${exchange.origin}/token` }, scheme: "basic" }] },
+  } });
+  assert.deepEqual(definition.computer.egress[0], { host: "github.com", auth: { type: "exchange", url: `${exchange.origin}/token` }, scheme: "basic" });
+  const lead = await api("/v1/agents", { body: { definition: definition.id } });
+
+  const clone = await sh(lead.id, "git clone -q https://github.com/acme/app.git /workspace/app && git -C /workspace/app log --format=%s -1");
+  assert.equal(clone.exitCode, 0, JSON.stringify(clone));
+  assert.equal(clone.stdout.trim(), "init");
+  t.diagnostic(`first_exec_with_clone_ms=${clone.ms}`);
+  const push = await sh(lead.id, "cd /workspace/app && git switch -qc camel/badge && echo badge >> README.md && git -c user.name=camel -c user.email=c@c commit -qam badge && git push -q origin camel/badge");
+  assert.equal(push.exitCode, 0, JSON.stringify(push));
+  assert.equal((await run("git", ["--git-dir", join(repos, "acme/app.git"), "log", "--format=%s", "-1", "camel/badge"])).stdout.trim(), "badge");
+  assert.ok(git.seen.some(request => request.path.endsWith("/git-receive-pack")));
+  assert.ok(git.seen.every(request => request.authorization === BASIC), "every request reached the host with the runtime's credential");
+
+  // The exchange was asked as this agent, for this grant.
+  assert.equal(exchanges[0].claims.tenant, "camelrun-proto-local");
+  assert.equal(exchanges[0].claims.agent, lead.id);
+  assert.equal(exchanges[0].claims.definition, definition.id);
+  assert.deepEqual(exchanges[0].claims.exchange, { server: "computer:github.com", url: "https://github.com" });
+  assert.equal(exchanges[0].claims.aud, `${exchange.origin}/token`);
+
+  // The machine never holds the credential, and no other host is reachable.
+  const hygiene = await sh(lead.id, `env; cat /workspace/app/.git/config; cat ~/.git-credentials 2>/dev/null; grep -rIl ${TOKEN} /workspace /root /tmp /etc 2>/dev/null; true`);
+  assert.equal(hygiene.stdout.includes(TOKEN) || hygiene.stdout.includes(BASIC.slice(6)), false);
+  const blocked = await sh(lead.id, "curl -sS -m 5 https://example.com/ >/dev/null && echo reachable || echo blocked");
+  assert.match(blocked.stdout, /blocked/);
+
+  // The project machine: snapshot it for children to fork.
+  const backup = performance.now();
+  await computer(lead.id, { op: "snapshot", name: "base" });
+  t.diagnostic(`snapshot_ms=${Math.round(performance.now() - backup)}`);
+
+  // A runtime-made child restores the parent's backup into its own computer, and inherits the parent's egress.
+  const started = await api(`/v1/agents/${lead.id}/prompt`, { body: { text: "start" } });
+  let child: string | undefined;
+  for (const deadline = Date.now() + 60_000; !child && Date.now() < deadline; await new Promise(resolve => setTimeout(resolve, 200)))
+    child = (await fixture.db.query("select id from agents where header->>'parentAgentId'=$1", [lead.id])).rows[0]?.id;
+  assert.ok(child, `no child of ${lead.id} (request ${started.id})`);
+  const fork = performance.now();
+  assert.deepEqual(await computer(child!, { op: "restore", name: "base", from: "parent" }), { restore: "base", from: "parent" });
+  t.diagnostic(`fork_restore_ms=${Math.round(performance.now() - fork)}`);
+  const forked = await sh(child!, "git -C /workspace/app log --format=%s -1 && git -C /workspace/app fetch -q origin && git -C /workspace/app branch -r");
+  assert.equal(forked.exitCode, 0, JSON.stringify(forked));
+  assert.match(forked.stdout, /^badge\n/);
+  assert.match(forked.stdout, /origin\/main/);
+  assert.ok(exchanges.some(entry => entry.claims.agent === child), "the child's egress credential is its own");
+
+  // A child's fork never changes its parent's machine; an agent without a parent has nothing to fork.
+  await sh(child!, "touch /workspace/child-only");
+  assert.match((await sh(lead.id, "test -e /workspace/child-only && echo shared || echo separate")).stdout, /separate/);
+  await computer(lead.id, { op: "restore", name: "base", from: "parent" }, [500]);
+});

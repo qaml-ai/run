@@ -79,6 +79,7 @@ export { CamelAgent };
 export { TenantAdmission } from "./tenant.ts";
 export { Volume } from "./volume.ts";
 export { ContainerComputer } from "./computers/objects.ts";
+export { ComputerEgress } from "./computers/egress-gateway.ts";
 
 function result<T>(value: T | DirectoryFailure): T {
   if (

@@ -16,6 +16,8 @@ import { humanInputSettings, type HumanInputSettings } from "./input-policy.ts";
 import { rejectWorkflow } from "./workflow-refusal.ts";
 
 export interface AgentConfiguration {
+  /** A definition's native computer settings (computers/egress.ts); agents take them only from their definition. */
+  computer?: import("./computers/egress.ts").ComputerSettings;
   model?: string;
   systemPrompt?: string;
   systemPromptAppend?: string;
@@ -94,7 +96,7 @@ export function configuration(input: unknown, defaultModel: string, operation: "
   rejectWorkflow(input);
   let fields: Record<string, unknown>;
   try {
-    fields = object(input, ["model", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "name", "type", "thinkingLevel", "mcp", "ttlSeconds", "idleTtlSeconds", "builtins", "webSearch", "delegate", "decide", "mounts", "maxOutputTokens", "temperature", "dataCollection", "language", "modelHeaders", "runLimits", "initialMessages", "importMessages", "definition", "subject", "context", "keyScope", "spendLimit", "bucket", "humanInput", "subagents", "workspaceId", "remount", "prompt", "mcpServers", "openApi", "definitionRevision", "definitionOverrides"]);
+    fields = object(input, ["model", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "name", "type", "thinkingLevel", "mcp", "ttlSeconds", "idleTtlSeconds", "builtins", "webSearch", "delegate", "decide", "mounts", "maxOutputTokens", "temperature", "dataCollection", "language", "modelHeaders", "runLimits", "initialMessages", "importMessages", "definition", "subject", "context", "keyScope", "spendLimit", "bucket", "humanInput", "subagents", "workspaceId", "remount", "prompt", "mcpServers", "openApi", "definitionRevision", "definitionOverrides", "computer"]);
   } catch (error) {
     if (error instanceof BadRequest && error.message.startsWith("Unsupported field: "))
       throw new BadRequest(`Unknown agent field: ${error.message.slice("Unsupported field: ".length).split(", ")[0]}`);
@@ -160,6 +162,8 @@ export function configuration(input: unknown, defaultModel: string, operation: "
     config[field] = fields[field] as Record<string, unknown>[];
   }
   if (fields.humanInput !== undefined) config.humanInput = humanInputSettings(fields.humanInput);
+  // Checked when its definition is saved (definitions.ts); provisioning refuses it from anywhere else.
+  if (fields.computer !== undefined && fields.computer !== null) config.computer = fields.computer as AgentConfiguration["computer"];
   for (const field of ["subagents"] as const) if (fields[field] !== undefined) {
     if (!fields[field] || typeof fields[field] !== "object" || Array.isArray(fields[field])) throw new BadRequest(`${field} must be an object`);
     config[field] = fields[field] as Record<string, unknown>;
