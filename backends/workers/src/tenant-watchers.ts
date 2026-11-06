@@ -13,10 +13,10 @@ export class TenantWatchers {
     this.sql.exec("CREATE TABLE IF NOT EXISTS event_watchers (id TEXT PRIMARY KEY, agent TEXT NOT NULL, expires_at INTEGER)");
     if (!this.sql.exec<{ name: string }>("PRAGMA table_info(event_watchers)").toArray().some(column => column.name === "expires_at"))
       this.sql.exec("ALTER TABLE event_watchers ADD COLUMN expires_at INTEGER");
-    this.sql.exec("UPDATE event_watchers SET expires_at=? WHERE id LIKE 'poll:%' AND expires_at IS NULL", this.now() + 120_000);
+    this.sql.exec("UPDATE event_watchers SET expires_at=? WHERE id LIKE 'poll:%' AND expires_at IS NULL", this.now() + 30_000);
   }
   private prune() {
-    // JSON polls wait at most 25s. A two-minute lease recovers slots if their
+    // JSON polls wait at most 25s. A 30-second lease recovers slots if their
     // serving isolate dies before finally; sockets never expire on a timer.
     this.sql.exec("DELETE FROM event_watchers WHERE expires_at <= ?", this.now());
   }
@@ -31,7 +31,7 @@ export class TenantWatchers {
       const existing = this.sql.exec<{ agent: string }>("SELECT agent FROM event_watchers WHERE id=?", id).toArray()[0];
       if (existing) return existing.agent === agent;
       if (!this.canWatch(limit, agent)) return false;
-      this.sql.exec("INSERT INTO event_watchers VALUES (?,?,?)", id, agent, id.startsWith("poll:") ? this.now() + 120_000 : null);
+      this.sql.exec("INSERT INTO event_watchers VALUES (?,?,?)", id, agent, id.startsWith("poll:") ? this.now() + 30_000 : null);
       return true;
     });
   }
