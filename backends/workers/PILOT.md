@@ -76,7 +76,10 @@ The admin command must run in your interactive terminal. It creates `pilot-admin
 and an API key through the application's tenant/token paths, grants $25 of
 internal test credit, deletes its temporary bootstrap Worker, then displays the
 key once. It writes no credential to the repository. Store that key in your own
-password manager. Running it again does not recover the original key.
+password manager. Running it again mints a fresh key for the existing tenant;
+it does not recover or revoke older keys. The initial credit grant is
+idempotent. If the grant fails, the script revokes its unreported new key and
+keeps the tenant so a later run can retry.
 
 The key is a normal tenant API key, with read-only admin visibility via
 `ADMIN_TENANTS=pilot-admin`. Tenant provisioning and grants require the short-lived
@@ -137,22 +140,33 @@ SDK-only tests of Node-compatible SSE still run. Shared contract stream helpers
 negotiate through the existing SDK without changing assertions; Node still runs
 every accepted-difference case.
 
-The first complete deployed fake-provider smoke passed **10/10** checks on
+The final deployed fake-provider smoke passed **10/10** checks on
 2026-11-06: TypeScript create/message/history and WebSocket streaming, human
 input, schedule alarms, files, image streaming, code mode, delegation, Python
 message/stream/history, and the default SDK idle connection. Separate public
 probes confirmed agent SSE watch fails with HTTP 406 and `WEBSOCKET_REQUIRED`,
 and standalone MCP GET fails with HTTP 405. The connection stayed open for
-90,001 ms with no frames and received a wake turn over the same socket.
-This establishes behavior; it does not isolate billed duration from Cloudflare's
-minute buckets. The final repeat uses 180 seconds to include complete idle
-minutes. See `measurements/pilot-smoke-90s.json` for the first run and object ID.
+180,002 ms with no frames and received a wake turn over the same socket.
+Cloudflare reported **0 GB-s** of duration and no activity in both complete
+idle minutes, 02:49 and 02:50 UTC. Nonzero 02:48 and 02:51 buckets bracket the
+idle interval and confirm ingestion; their whole durations are not attributed
+to idle. See `measurements/pilot-smoke.json` and `pilot-hibernation.json` for the
+exact object ID, interval and metrics.
 
 That run made 15 settled synthetic model attempts, with no provider charge and
-$0.000147 of tenant active-time charges. Its temporary tenant, agent rows, API
+$0.000123 of tenant active-time charges. Its temporary tenant, agent rows, API
 keys, providers, volumes and outstanding holds were removed; accounting audit
-records remain. Final deployment verification and the single real-model call
-are pending the remaining transport fixes.
+records remain. A separate live browser-token check reached clean stream EOF
+after 4.876 seconds for a five-second token and then received HTTP 401 on a
+protected read. It made no model calls and cleaned up its tenant.
+
+The single real-model check also passed: `openrouter/openai/gpt-4o-mini`,
+7.237 seconds, 167 input tokens and four output tokens. It submitted one run
+and recorded exactly one settled model attempt, with no retry or pending hold.
+The API reported $0.00002745 of model usage and a 29-microdollar platform-model
+charge; the total tenant debit, including active time, was $0.000042. Its tenant
+and key were revoked and deleted afterward. See `measurements/pilot-real-model.json`
+and `pilot-browser-expiry.json` for the recorded evidence.
 
 The load driver leases a Sprite through `scripts/sprite-test`; credentials travel
 through stdin and a kernel FIFO, never in command arguments, reports or regular

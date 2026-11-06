@@ -1,0 +1,135 @@
+{
+  "tenant": "pilot-smoke-f6097e537cee",
+  "startedAt": "2026-11-06T02:47:01.152Z",
+  "agentNamespaceId": "b7a05e64caac4a9dbd59df0956a89a5c",
+  "publicTransport": [
+    {
+      "label": "agent-watch-sse",
+      "status": 406,
+      "ms": 1272,
+      "code": "WEBSOCKET_REQUIRED",
+      "message": "Workers live events require WebSocket; use a WebSocket-capable client"
+    },
+    {
+      "label": "mcp-standalone-get",
+      "status": 405,
+      "ms": 102
+    }
+  ],
+  "smoke": {
+    "startedAt": "2026-11-06T02:51:49.321Z",
+    "checks": [
+      {
+        "name": "typescript-create-message-history",
+        "ms": 4894
+      },
+      {
+        "name": "typescript-websocket-stream",
+        "ms": 5524
+      },
+      {
+        "name": "human-input",
+        "ms": 9122
+      },
+      {
+        "name": "schedule-alarm",
+        "ms": 5011
+      },
+      {
+        "name": "files-roundtrip",
+        "ms": 2141
+      },
+      {
+        "name": "image-attachment-streaming-and-history",
+        "ms": 5975
+      },
+      {
+        "name": "codemode-remote-sandbox",
+        "ms": 13098
+      },
+      {
+        "name": "delegation",
+        "ms": 17350
+      },
+      {
+        "name": "python-sdk-message-and-stream",
+        "ms": 19098
+      },
+      {
+        "name": "idle-default-sdk-websocket",
+        "ms": 195410
+      }
+    ],
+    "websocketConnections": 2,
+    "idle": {
+      "agentId": "client_9a85273dc50939a5b36717c3ed80f8f45e1f0181",
+      "startedAt": "2026-11-06T02:48:43.378Z",
+      "endedAt": "2026-11-06T02:51:43.380Z",
+      "elapsedMs": 180002,
+      "frames": 0,
+      "transport": "sdk-default-websocket",
+      "connection": "eager"
+    },
+    "note": "Idle socket lifetime is observed here; use Cloudflare DO duration metrics for billing proof."
+  },
+  "beforeCleanup": {
+    "tenants": 1,
+    "agents": 6,
+    "api_tokens": 1,
+    "provider_keys": 0,
+    "model_providers": 0,
+    "volumes": 5,
+    "end_users": 0,
+    "holds": 0,
+    "held_micros": 0,
+    "end_user_holds": 0,
+    "end_user_held_micros": 0,
+    "balance_micros": 9999877,
+    "usage_debits": 1,
+    "usage_micros": -123,
+    "responses": 15,
+    "receipts": 0,
+    "attempts": 15,
+    "pending_attempts": 0,
+    "settled_attempts": 15,
+    "attempt_charge_micros": 0,
+    "deleted_tenants": 0,
+    "revoked_agents": 6,
+    "purged_agents": 6,
+    "deleting_tenants": 0,
+    "deletion_attempts": 0,
+    "claimed_deletions": 0,
+    "agentId": "client_9a85273dc50939a5b36717c3ed80f8f45e1f0181",
+    "agentObjectId": "41a873c240956b90a46ee917d48e494357fc8b7a202545ae12faaf993aaa1b36"
+  },
+  "afterCleanup": {
+    "tenants": 0,
+    "agents": 0,
+    "api_tokens": 0,
+    "provider_keys": 0,
+    "model_providers": 0,
+    "volumes": 0,
+    "end_users": 0,
+    "holds": 0,
+    "held_micros": 0,
+    "end_user_holds": 0,
+    "end_user_held_micros": 0,
+    "balance_micros": 9999877,
+    "usage_debits": 1,
+    "usage_micros": -123,
+    "responses": 15,
+    "receipts": 0,
+    "attempts": 15,
+    "pending_attempts": 0,
+    "settled_attempts": 15,
+    "attempt_charge_micros": 0,
+    "deleted_tenants": 1,
+    "revoked_agents": 0,
+    "purged_agents": 0,
+    "deleting_tenants": 0,
+    "deletion_attempts": 1,
+    "claimed_deletions": 0
+  },
+  "cleanup": "completed",
+  "apiVersion": "8fc0599b-260d-4c64-aa30-4d8bf705ea99"
+}
