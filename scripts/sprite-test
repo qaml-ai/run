@@ -14,7 +14,7 @@
 #                                                        # one command per lease; collect immutable artifacts
 #   --contract-baselines                                 # include validated local Node report caches in the archive
 #
-# The pool is rt-pool-1..SPRITE_POOL (default 40) in the Fly org SPRITE_ORG (default camelai: `sprite login -o camelai`).
+# The pool is rt-pool-1..SPRITE_POOL (default 42) in the Fly org SPRITE_ORG (default camelai: `sprite login -o camelai`).
 # Each sprite keeps a checkout in ~/rt with node_modules and the v8-exec build, and Postgres 16. A sleeping sprite costs
 # nothing and wakes on the next exec, so a warm pool is free to keep. A pool sprite that does not exist yet is created
 # when every existing one is busy, and sets itself up on its first run.
@@ -57,7 +57,7 @@
 # contact was lost (the job carries on; its log and status stay in ~/runs on the sprite); 137 when the job was killed or
 # died.
 set -euo pipefail
-org=${SPRITE_ORG:-camelai}; pool=${SPRITE_POOL:-40}; stale_s=${SPRITE_LEASE_STALE:-300}; coordinator=${SPRITE_COORDINATOR:-rt-coordinator}
+org=${SPRITE_ORG:-camelai}; pool=${SPRITE_POOL:-42}; stale_s=${SPRITE_LEASE_STALE:-300}; coordinator=${SPRITE_COORDINATOR:-rt-coordinator}
 max_age=$(awk -v hours="${SPRITE_RUN_HOURS:-2}" 'BEGIN { print int(hours * 3600 + 600) }')
 wait_s=$(( ${SPRITE_WAIT_MINUTES:-30} * 60 )); lost_s=$(( ${SPRITE_LOST_MINUTES:-10} * 60 ))
 cd "$(git rev-parse --show-toplevel)"
