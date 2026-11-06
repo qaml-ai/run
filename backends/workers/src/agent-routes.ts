@@ -10,6 +10,7 @@ import { provisionDefinition, visibleConfiguration } from "./definitions.ts";
 import { canonical } from "../../../shared/durable-json.ts";
 import { runInput } from "./run-input.ts";
 import { inheritHistoryPins } from "./history-pins.ts";
+import { bridgeEvents, bridgeOptions, wantsEventStream } from "./sse-bridge.ts";
 
 type Record = { id: string; state: string; outcome?: { result?: any; error?: string; uncertain?: boolean }; metadata?: unknown; startedAt?: number; began?: number; endedAt?: number };
 type RunInfo = { fingerprint: string; retentionMs: number };
@@ -94,7 +95,8 @@ export async function statelessRoutes(request: Request, env: ControlEnv, auth: A
     target.search = url.search;
     target.searchParams.set("watch", "1");
     target.searchParams.set("runId", runId);
-    return env.AGENTS.getByName(entry.id).fetch(new Request(target, { headers, signal: request.signal }));
+    const agent = env.AGENTS.getByName(entry.id), events = new Request(target, { headers, signal: request.signal });
+    return wantsEventStream(events) ? bridgeEvents(events, request => agent.fetch(request), bridgeOptions(env)) : agent.fetch(events);
   }
   if (match[2] === "/abort" && request.method === "POST") return call(env, entry.id, "/abort", {});
   if (!match[2] && request.method === "DELETE") { await directory.remove(entry.id); return json({deleted:true}); }

@@ -1,0 +1,822 @@
+{
+  "measuredAt": "2026-11-06T14:16:26.148Z",
+  "idleEndedAt": "2026-11-06T14:28:27.751Z",
+  "endedAt": "2026-11-06T14:28:38.345Z",
+  "idleSeconds": 720.0,
+  "account": "85bbd288051330fb51ee1c86031a299b",
+  "prototype": {
+    "script": "sse-bridge-proto-6c912d",
+    "durableObjectNamespace": "fb0d60f014ee4c62ab1b0314636a91bb",
+    "source": "Throwaway Worker + minimal SQLite Durable Object (not CamelAgent; nothing of the pilot was touched). The object accepts sockets with ctx.acceptWebSocket and a ping/pong auto-response, and holds SSE responses with a 30 s heartbeat comment. Four objects, one client each, from one Node client: websocket-direct (client WebSocket forwarded by the Worker to the object, client ping every 30 s), sse-direct (the object holds the SSE response), sse-bridge (the Worker opens a WebSocket to the object with stub.fetch + Upgrade, accept()s it and writes frames as SSE; heartbeat comment from the Worker every 30 s), sse-bridge-wsping (the same, and the Worker also sends \"ping\" upstream every 30 s, answered by the auto-response). After the idle period one event was sent to each object; the event carries the object instance id, which changes only when the object was evicted."
+  },
+  "results": {
+    "websocket-direct": {
+      "objectId": "05c98d4df928f243a152e3a3220f87bf118934b123722bc5e2af01c3b4c50a55",
+      "billedDurationGBSeconds": 0.003755,
+      "idleMinutesDurationGBSeconds": 0,
+      "activeSeconds": 0.029,
+      "metricMinutes": [
+        "2026-11-06T14:16:00Z",
+        "2026-11-06T14:28:00Z"
+      ],
+      "instanceBeforeIdle": "ee5823a4-df8d-4452-9b88-fb2919e99506",
+      "instanceAfterIdle": "94ff8b0a-e1e9-4adf-8086-8123c614e5f3",
+      "objectEvicted": true,
+      "eventAfterIdleDelivered": true,
+      "eventReceivedAt": "2026-11-06T14:28:27.936Z",
+      "connectionSurvivedIdle": true
+    },
+    "sse-direct": {
+      "objectId": "393952df3fb2f7f1e9a81ec4d1827dbae82792a43ea4577f4596906aa6bdf6a2",
+      "billedDurationGBSeconds": 96.000147,
+      "idleMinutesDurationGBSeconds": 84.480068,
+      "activeSeconds": 750.001,
+      "metricMinutes": [
+        "2026-11-06T14:16:00Z",
+        "2026-11-06T14:17:00Z",
+        "2026-11-06T14:18:00Z",
+        "2026-11-06T14:19:00Z",
+        "2026-11-06T14:20:00Z",
+        "2026-11-06T14:21:00Z",
+        "2026-11-06T14:22:00Z",
+        "2026-11-06T14:23:00Z",
+        "2026-11-06T14:24:00Z",
+        "2026-11-06T14:25:00Z",
+        "2026-11-06T14:26:00Z",
+        "2026-11-06T14:27:00Z",
+        "2026-11-06T14:28:00Z"
+      ],
+      "instanceBeforeIdle": "96abc927-5bb8-430f-81f7-d2338d3cf42f",
+      "instanceAfterIdle": "96abc927-5bb8-430f-81f7-d2338d3cf42f",
+      "objectEvicted": false,
+      "eventAfterIdleDelivered": true,
+      "eventReceivedAt": "2026-11-06T14:28:28.073Z",
+      "connectionSurvivedIdle": true
+    },
+    "sse-bridge": {
+      "objectId": "460037bb2a6c2071941b65df2ea6a2005ffecc0fcfe44f0557c7ba6e621324bd",
+      "billedDurationGBSeconds": 0.001025,
+      "idleMinutesDurationGBSeconds": 0,
+      "activeSeconds": 0.008,
+      "metricMinutes": [
+        "2026-11-06T14:16:00Z",
+        "2026-11-06T14:28:00Z"
+      ],
+      "instanceBeforeIdle": "af9f5821-9243-44d8-9658-953a767a074d",
+      "instanceAfterIdle": "ad7f8c2d-92b3-4675-bef7-5d0f3953c15c",
+      "objectEvicted": true,
+      "eventAfterIdleDelivered": true,
+      "eventReceivedAt": "2026-11-06T14:28:28.201Z",
+      "connectionSurvivedIdle": true,
+      "workerCpuMs": 6,
+      "workerWallSeconds": 731.3
+    },
+    "sse-bridge-wsping": {
+      "objectId": "48d2425c1bcc429ecdf621de9f9014b8c41d574beec6f44e76b7a5e5643d9405",
+      "billedDurationGBSeconds": 0.001165,
+      "idleMinutesDurationGBSeconds": 0,
+      "activeSeconds": 0.009,
+      "metricMinutes": [
+        "2026-11-06T14:16:00Z",
+        "2026-11-06T14:28:00Z"
+      ],
+      "instanceBeforeIdle": "847e4ff4-8c46-4b5a-9f25-4def5143ee27",
+      "instanceAfterIdle": "d7fea6d3-a7d5-4d3b-a73e-e3760a49d6c1",
+      "objectEvicted": true,
+      "eventAfterIdleDelivered": true,
+      "eventReceivedAt": "2026-11-06T14:28:28.340Z",
+      "connectionSurvivedIdle": true,
+      "workerCpuMs": 16,
+      "workerWallSeconds": 730.9
+    }
+  },
+  "workerCpu": {
+    "method": "wrangler tail per-invocation outcome (cpuTime, wallTime) for the bridging requests; cross-checked by workersInvocationsAdaptive (clientDisconnected, 2 requests, cpuTimeUs 22815, p50 6581, p99 16234).",
+    "workersInvocationsAdaptive": [
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:15:00Z",
+          "status": "clientDisconnected"
+        },
+        "quantiles": {
+          "cpuTimeP50": 1653,
+          "cpuTimeP99": 2227,
+          "cpuTimeP999": 2227
+        },
+        "sum": {
+          "cpuTimeUs": 4798,
+          "duration": 5.906604875,
+          "errors": 0,
+          "requests": 3,
+          "subrequests": 3,
+          "wallTime": 47252839
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:15:00Z",
+          "status": "success"
+        },
+        "quantiles": {
+          "cpuTimeP50": 498,
+          "cpuTimeP99": 673,
+          "cpuTimeP999": 673
+        },
+        "sum": {
+          "cpuTimeUs": 2225,
+          "duration": 0.002225,
+          "errors": 0,
+          "requests": 4,
+          "subrequests": 0,
+          "wallTime": 3770
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:16:00Z",
+          "status": "clientDisconnected"
+        },
+        "quantiles": {
+          "cpuTimeP50": 6581,
+          "cpuTimeP99": 16234,
+          "cpuTimeP999": 16234
+        },
+        "sum": {
+          "cpuTimeUs": 22815,
+          "duration": 7.5,
+          "errors": 0,
+          "requests": 2,
+          "subrequests": 2,
+          "wallTime": 1462203357
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:16:00Z",
+          "status": "success"
+        },
+        "quantiles": {
+          "cpuTimeP50": 571,
+          "cpuTimeP99": 920,
+          "cpuTimeP999": 920
+        },
+        "sum": {
+          "cpuTimeUs": 5648,
+          "duration": 3.7598333749999995,
+          "errors": 0,
+          "requests": 9,
+          "subrequests": 5,
+          "wallTime": 732076095
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:28:00Z",
+          "status": "success"
+        },
+        "quantiles": {
+          "cpuTimeP50": 1055,
+          "cpuTimeP99": 1413,
+          "cpuTimeP999": 1413
+        },
+        "sum": {
+          "cpuTimeUs": 4801,
+          "duration": 0.015689,
+          "errors": 0,
+          "requests": 4,
+          "subrequests": 4,
+          "wallTime": 125512
+        }
+      }
+    ],
+    "note": "The Worker held each bridged SSE response for ~731 s of wall time and used 6 ms (heartbeats only) and 16 ms (heartbeats plus upstream pings echoed through) of CPU. Workers Standard pricing bills CPU time; the \"duration\" field in the Workers dataset is not billed under Standard."
+  },
+  "analytics": {
+    "queriedAt": "2026-11-06T14:35:09.893Z",
+    "query": "{ viewer { accounts(filter:{accountTag:\"85bbd288051330fb51ee1c86031a299b\"}) {\n  durableObjectsPeriodicGroups(limit:1000,filter:{datetime_geq:\"2026-11-06T14:14:00Z\",datetime_leq:\"2026-11-06T14:34:00Z\",namespaceId:\"fb0d60f014ee4c62ab1b0314636a91bb\"},orderBy:[datetimeMinute_ASC]) { dimensions {datetimeMinute objectId} sum {duration activeTime cpuTime inboundWebsocketMsgCount outboundWebsocketMsgCount} }\n  durableObjectsInvocationsAdaptiveGroups(limit:1000,filter:{datetime_geq:\"2026-11-06T14:14:00Z\",datetime_leq:\"2026-11-06T14:34:00Z\",namespaceId:\"fb0d60f014ee4c62ab1b0314636a91bb\"},orderBy:[datetimeMinute_ASC]){dimensions{datetimeMinute objectId type}sum{requests wallTime errors}}\n  workersInvocationsAdaptive(limit:1000,filter:{datetime_geq:\"2026-11-06T14:14:00Z\",datetime_leq:\"2026-11-06T14:34:00Z\",scriptName:\"sse-bridge-proto-6c912d\"},orderBy:[datetimeMinute_ASC]){dimensions{datetimeMinute status}sum{requests errors subrequests cpuTimeUs wallTime duration} quantiles{cpuTimeP50 cpuTimeP99 cpuTimeP999}}\n} } }",
+    "durableObjectsPeriodicGroups": [
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:15:00Z",
+          "objectId": "e8c95cb376f58aa1eb4e7204562306808392c86399d05b190477ed0008ca7d00"
+        },
+        "sum": {
+          "activeTime": 2109,
+          "cpuTime": 741,
+          "duration": 0.000269952,
+          "inboundWebsocketMsgCount": 0,
+          "outboundWebsocketMsgCount": 2
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:15:00Z",
+          "objectId": "97396e8b59b9420e385e50615473afc0909e308b20bb398c0e211780724d8f95"
+        },
+        "sum": {
+          "activeTime": 30001912,
+          "cpuTime": 2452,
+          "duration": 3.840244736,
+          "inboundWebsocketMsgCount": 0,
+          "outboundWebsocketMsgCount": 0
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:15:00Z",
+          "objectId": "120a4bad98cf1d97cf4eeed1e40cc9c2bef55d7fcac0edbb97d5050a045256ab"
+        },
+        "sum": {
+          "activeTime": 5499,
+          "cpuTime": 2026,
+          "duration": 0.000703872,
+          "inboundWebsocketMsgCount": 0,
+          "outboundWebsocketMsgCount": 2
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:15:00Z",
+          "objectId": "7a4f331881dff1d2ee2455a4bce3cc05e43ffa3eb5a655868e3d83a83c599f9c"
+        },
+        "sum": {
+          "activeTime": 4240,
+          "cpuTime": 1391,
+          "duration": 0.00054272,
+          "inboundWebsocketMsgCount": 0,
+          "outboundWebsocketMsgCount": 2
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:16:00Z",
+          "objectId": "120a4bad98cf1d97cf4eeed1e40cc9c2bef55d7fcac0edbb97d5050a045256ab"
+        },
+        "sum": {
+          "activeTime": 4596,
+          "cpuTime": 432,
+          "duration": 0.000588288,
+          "inboundWebsocketMsgCount": 0,
+          "outboundWebsocketMsgCount": 1
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:16:00Z",
+          "objectId": "48d2425c1bcc429ecdf621de9f9014b8c41d574beec6f44e76b7a5e5643d9405"
+        },
+        "sum": {
+          "activeTime": 3122,
+          "cpuTime": 1166,
+          "duration": 0.000399616,
+          "inboundWebsocketMsgCount": 0,
+          "outboundWebsocketMsgCount": 1
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:16:00Z",
+          "objectId": "05c98d4df928f243a152e3a3220f87bf118934b123722bc5e2af01c3b4c50a55"
+        },
+        "sum": {
+          "activeTime": 19862,
+          "cpuTime": 632,
+          "duration": 0.002542336,
+          "inboundWebsocketMsgCount": 0,
+          "outboundWebsocketMsgCount": 1
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:16:00Z",
+          "objectId": "7a4f331881dff1d2ee2455a4bce3cc05e43ffa3eb5a655868e3d83a83c599f9c"
+        },
+        "sum": {
+          "activeTime": 3239,
+          "cpuTime": 258,
+          "duration": 0.000414592,
+          "inboundWebsocketMsgCount": 0,
+          "outboundWebsocketMsgCount": 1
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:16:00Z",
+          "objectId": "393952df3fb2f7f1e9a81ec4d1827dbae82792a43ea4577f4596906aa6bdf6a2"
+        },
+        "sum": {
+          "activeTime": 59999991,
+          "cpuTime": 894,
+          "duration": 7.679998848,
+          "inboundWebsocketMsgCount": 0,
+          "outboundWebsocketMsgCount": 0
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:16:00Z",
+          "objectId": "e8c95cb376f58aa1eb4e7204562306808392c86399d05b190477ed0008ca7d00"
+        },
+        "sum": {
+          "activeTime": 6048,
+          "cpuTime": 323,
+          "duration": 0.000774144,
+          "inboundWebsocketMsgCount": 0,
+          "outboundWebsocketMsgCount": 1
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:16:00Z",
+          "objectId": "460037bb2a6c2071941b65df2ea6a2005ffecc0fcfe44f0557c7ba6e621324bd"
+        },
+        "sum": {
+          "activeTime": 2237,
+          "cpuTime": 659,
+          "duration": 0.000286336,
+          "inboundWebsocketMsgCount": 0,
+          "outboundWebsocketMsgCount": 1
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:17:00Z",
+          "objectId": "393952df3fb2f7f1e9a81ec4d1827dbae82792a43ea4577f4596906aa6bdf6a2"
+        },
+        "sum": {
+          "activeTime": 60000040,
+          "cpuTime": 295,
+          "duration": 7.68000512,
+          "inboundWebsocketMsgCount": 0,
+          "outboundWebsocketMsgCount": 0
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:18:00Z",
+          "objectId": "393952df3fb2f7f1e9a81ec4d1827dbae82792a43ea4577f4596906aa6bdf6a2"
+        },
+        "sum": {
+          "activeTime": 60000022,
+          "cpuTime": 296,
+          "duration": 7.680002816,
+          "inboundWebsocketMsgCount": 0,
+          "outboundWebsocketMsgCount": 0
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:19:00Z",
+          "objectId": "393952df3fb2f7f1e9a81ec4d1827dbae82792a43ea4577f4596906aa6bdf6a2"
+        },
+        "sum": {
+          "activeTime": 60000054,
+          "cpuTime": 280,
+          "duration": 7.680006912,
+          "inboundWebsocketMsgCount": 0,
+          "outboundWebsocketMsgCount": 0
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:20:00Z",
+          "objectId": "393952df3fb2f7f1e9a81ec4d1827dbae82792a43ea4577f4596906aa6bdf6a2"
+        },
+        "sum": {
+          "activeTime": 60000048,
+          "cpuTime": 297,
+          "duration": 7.680006144,
+          "inboundWebsocketMsgCount": 0,
+          "outboundWebsocketMsgCount": 0
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:21:00Z",
+          "objectId": "393952df3fb2f7f1e9a81ec4d1827dbae82792a43ea4577f4596906aa6bdf6a2"
+        },
+        "sum": {
+          "activeTime": 60000050,
+          "cpuTime": 340,
+          "duration": 7.6800064,
+          "inboundWebsocketMsgCount": 0,
+          "outboundWebsocketMsgCount": 0
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:22:00Z",
+          "objectId": "393952df3fb2f7f1e9a81ec4d1827dbae82792a43ea4577f4596906aa6bdf6a2"
+        },
+        "sum": {
+          "activeTime": 60000063,
+          "cpuTime": 311,
+          "duration": 7.680008064,
+          "inboundWebsocketMsgCount": 0,
+          "outboundWebsocketMsgCount": 0
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:23:00Z",
+          "objectId": "393952df3fb2f7f1e9a81ec4d1827dbae82792a43ea4577f4596906aa6bdf6a2"
+        },
+        "sum": {
+          "activeTime": 60000046,
+          "cpuTime": 390,
+          "duration": 7.680005888,
+          "inboundWebsocketMsgCount": 0,
+          "outboundWebsocketMsgCount": 0
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:24:00Z",
+          "objectId": "393952df3fb2f7f1e9a81ec4d1827dbae82792a43ea4577f4596906aa6bdf6a2"
+        },
+        "sum": {
+          "activeTime": 60000041,
+          "cpuTime": 341,
+          "duration": 7.680005248,
+          "inboundWebsocketMsgCount": 0,
+          "outboundWebsocketMsgCount": 0
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:25:00Z",
+          "objectId": "393952df3fb2f7f1e9a81ec4d1827dbae82792a43ea4577f4596906aa6bdf6a2"
+        },
+        "sum": {
+          "activeTime": 60000083,
+          "cpuTime": 391,
+          "duration": 7.680010624,
+          "inboundWebsocketMsgCount": 0,
+          "outboundWebsocketMsgCount": 0
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:26:00Z",
+          "objectId": "393952df3fb2f7f1e9a81ec4d1827dbae82792a43ea4577f4596906aa6bdf6a2"
+        },
+        "sum": {
+          "activeTime": 60000047,
+          "cpuTime": 277,
+          "duration": 7.680006016,
+          "inboundWebsocketMsgCount": 0,
+          "outboundWebsocketMsgCount": 0
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:27:00Z",
+          "objectId": "393952df3fb2f7f1e9a81ec4d1827dbae82792a43ea4577f4596906aa6bdf6a2"
+        },
+        "sum": {
+          "activeTime": 60000035,
+          "cpuTime": 279,
+          "duration": 7.68000448,
+          "inboundWebsocketMsgCount": 0,
+          "outboundWebsocketMsgCount": 0
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:28:00Z",
+          "objectId": "460037bb2a6c2071941b65df2ea6a2005ffecc0fcfe44f0557c7ba6e621324bd"
+        },
+        "sum": {
+          "activeTime": 5768,
+          "cpuTime": 759,
+          "duration": 0.000738304,
+          "inboundWebsocketMsgCount": 0,
+          "outboundWebsocketMsgCount": 2
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:28:00Z",
+          "objectId": "05c98d4df928f243a152e3a3220f87bf118934b123722bc5e2af01c3b4c50a55"
+        },
+        "sum": {
+          "activeTime": 9477,
+          "cpuTime": 1879,
+          "duration": 0.0012130560000000001,
+          "inboundWebsocketMsgCount": 0,
+          "outboundWebsocketMsgCount": 2
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:28:00Z",
+          "objectId": "393952df3fb2f7f1e9a81ec4d1827dbae82792a43ea4577f4596906aa6bdf6a2"
+        },
+        "sum": {
+          "activeTime": 30000630,
+          "cpuTime": 996,
+          "duration": 3.84008064,
+          "inboundWebsocketMsgCount": 0,
+          "outboundWebsocketMsgCount": 0
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:28:00Z",
+          "objectId": "48d2425c1bcc429ecdf621de9f9014b8c41d574beec6f44e76b7a5e5643d9405"
+        },
+        "sum": {
+          "activeTime": 5977,
+          "cpuTime": 721,
+          "duration": 0.000765056,
+          "inboundWebsocketMsgCount": 0,
+          "outboundWebsocketMsgCount": 2
+        }
+      }
+    ],
+    "durableObjectsInvocationsAdaptiveGroups": [
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:15:00Z",
+          "objectId": "120a4bad98cf1d97cf4eeed1e40cc9c2bef55d7fcac0edbb97d5050a045256ab",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 1,
+          "requests": 1,
+          "wallTime": 16234341
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:15:00Z",
+          "objectId": "97396e8b59b9420e385e50615473afc0909e308b20bb398c0e211780724d8f95",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 1,
+          "requests": 1,
+          "wallTime": 15877658
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:15:00Z",
+          "objectId": "7a4f331881dff1d2ee2455a4bce3cc05e43ffa3eb5a655868e3d83a83c599f9c",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 1,
+          "requests": 1,
+          "wallTime": 15645841
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:15:00Z",
+          "objectId": "e8c95cb376f58aa1eb4e7204562306808392c86399d05b190477ed0008ca7d00",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 1,
+          "requests": 1,
+          "wallTime": 15305842
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:16:00Z",
+          "objectId": "120a4bad98cf1d97cf4eeed1e40cc9c2bef55d7fcac0edbb97d5050a045256ab",
+          "type": "hibernation"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 1,
+          "wallTime": 4673
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:16:00Z",
+          "objectId": "7a4f331881dff1d2ee2455a4bce3cc05e43ffa3eb5a655868e3d83a83c599f9c",
+          "type": "hibernation"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 1,
+          "wallTime": 3308
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:16:00Z",
+          "objectId": "393952df3fb2f7f1e9a81ec4d1827dbae82792a43ea4577f4596906aa6bdf6a2",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 1,
+          "requests": 1,
+          "wallTime": 731470830
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:16:00Z",
+          "objectId": "120a4bad98cf1d97cf4eeed1e40cc9c2bef55d7fcac0edbb97d5050a045256ab",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 1,
+          "wallTime": 1036
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:16:00Z",
+          "objectId": "05c98d4df928f243a152e3a3220f87bf118934b123722bc5e2af01c3b4c50a55",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 1,
+          "wallTime": 731857407
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:16:00Z",
+          "objectId": "48d2425c1bcc429ecdf621de9f9014b8c41d574beec6f44e76b7a5e5643d9405",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 1,
+          "wallTime": 730628148
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:16:00Z",
+          "objectId": "7a4f331881dff1d2ee2455a4bce3cc05e43ffa3eb5a655868e3d83a83c599f9c",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 1,
+          "wallTime": 818
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:16:00Z",
+          "objectId": "e8c95cb376f58aa1eb4e7204562306808392c86399d05b190477ed0008ca7d00",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 1,
+          "wallTime": 502
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:16:00Z",
+          "objectId": "e8c95cb376f58aa1eb4e7204562306808392c86399d05b190477ed0008ca7d00",
+          "type": "hibernation"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 1,
+          "wallTime": 6104
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:16:00Z",
+          "objectId": "460037bb2a6c2071941b65df2ea6a2005ffecc0fcfe44f0557c7ba6e621324bd",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 1,
+          "requests": 1,
+          "wallTime": 731138838
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:16:00Z",
+          "objectId": "97396e8b59b9420e385e50615473afc0909e308b20bb398c0e211780724d8f95",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 1,
+          "wallTime": 24220110
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:28:00Z",
+          "objectId": "460037bb2a6c2071941b65df2ea6a2005ffecc0fcfe44f0557c7ba6e621324bd",
+          "type": "hibernation"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 1,
+          "wallTime": 4551
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:28:00Z",
+          "objectId": "05c98d4df928f243a152e3a3220f87bf118934b123722bc5e2af01c3b4c50a55",
+          "type": "hibernation"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 1,
+          "wallTime": 6447
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:28:00Z",
+          "objectId": "48d2425c1bcc429ecdf621de9f9014b8c41d574beec6f44e76b7a5e5643d9405",
+          "type": "hibernation"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 1,
+          "wallTime": 4676
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:28:00Z",
+          "objectId": "393952df3fb2f7f1e9a81ec4d1827dbae82792a43ea4577f4596906aa6bdf6a2",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 1,
+          "wallTime": 28825387
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:28:00Z",
+          "objectId": "05c98d4df928f243a152e3a3220f87bf118934b123722bc5e2af01c3b4c50a55",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 1,
+          "wallTime": 3307
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:28:00Z",
+          "objectId": "460037bb2a6c2071941b65df2ea6a2005ffecc0fcfe44f0557c7ba6e621324bd",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 1,
+          "wallTime": 1332
+        }
+      },
+      {
+        "dimensions": {
+          "datetimeMinute": "2026-11-06T14:28:00Z",
+          "objectId": "48d2425c1bcc429ecdf621de9f9014b8c41d574beec6f44e76b7a5e5643d9405",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 1,
+          "wallTime": 1438
+        }
+      }
+    ],
+    "objectLabels": {
+      "05c98d4df928f243a152e3a3220f87bf118934b123722bc5e2af01c3b4c50a55": "websocket-direct",
+      "393952df3fb2f7f1e9a81ec4d1827dbae82792a43ea4577f4596906aa6bdf6a2": "sse-direct",
+      "460037bb2a6c2071941b65df2ea6a2005ffecc0fcfe44f0557c7ba6e621324bd": "sse-bridge",
+      "48d2425c1bcc429ecdf621de9f9014b8c41d574beec6f44e76b7a5e5643d9405": "sse-bridge-wsping"
+    }
+  },
+  "interpretation": "An object behind a WebSocket that a Worker opened hibernates exactly like one behind an external client: no duration was recorded for either bridged object in any complete idle minute (14:17-14:27), only setup and wake (~0.001 GB-s each, the same order as the direct WebSocket control at 0.004 GB-s), and both objects were evicted (new instance) and woke to deliver the event over the same bridged socket. The direct SSE control held its instance and recorded 7.68 GB-s every minute (128 MB x 60 s), 96 GB-s for the run. All four connections survived 12 minutes idle; the Worker-side heartbeat every 30 s kept the client connection open, and the Worker-to-object socket needed no ping to stay open (sse-bridge sent none). A short synthetic experiment, not a production workload estimate.",
+  "cleanup": {
+    "deletedAt": "2026-11-06T14:36:00Z",
+    "command": "wrangler delete --config wrangler.jsonc --force",
+    "result": "Successfully deleted sse-bridge-proto-6c912d",
+    "verified": [
+      "GET /accounts/:id/workers/scripts/sse-bridge-proto-6c912d -> 10007 This Worker does not exist on your account",
+      "durable_objects/namespaces lists no sse-bridge-proto namespace (total 2765 -> 2764)",
+      "https://sse-bridge-proto-6c912d.miguel-85b.workers.dev/meta -> 404"
+    ],
+    "estimatedMarginalSpendUsdLessThan": 0.01
+  }
+}

@@ -283,7 +283,8 @@ export interface RuntimeOptions {
   /** The runtime's origin. Default https://run.camelai.com. */
   url?: string;
   apiKey?: string;
-  /** Injectable for tests, observability, or an application's HTTP stack. */
+  /** Injectable for tests, observability, or an application's HTTP stack. With one, event streams are SSE through it
+   * too: a WebSocket would go around it. */
   fetch?: typeof globalThis.fetch;
   /** Opens a local file to attach by its path; set by the Node entry (`@camelai/run/node`). */
   openFile?: (path: string) => Promise<Blob>;
@@ -961,6 +962,8 @@ let warnedStalling = false;
 class Transport {
   readonly base: string;
   readonly fetcher: typeof globalThis.fetch;
+  /** The event streams to offer: SSE alone through the application's own fetch, which a WebSocket would bypass. */
+  readonly streams: string | undefined;
   constructor(options: RuntimeOptions) {
     const url = new URL(options.url ?? DEFAULT_URL);
     if (url.username || url.password || url.search || url.hash || url.pathname !== "/") throw new Error("Use a runtime origin without credentials, path, or query");
@@ -972,6 +975,7 @@ class Transport {
       console.warn(`@camelai/run: this Node's fetch (undici ${(globalThis as any).process.versions.undici}) stops sending requests on an HTTP/2 connection that holds an agent's event stream, so tool replies and later calls time out. Upgrade Node to 26.5.1 or later, or use Node 24 LTS (qaml-ai/run#351).`);
     }
     this.fetcher = fetcher ? (input, init) => fetcher(input, init) : globalThis.fetch.bind(globalThis);
+    this.streams = fetcher ? "sse" : undefined;
   }
   async json(path: string, token: string, method = "GET", body?: unknown, retry = true, headers: Record<string, string> = {}, timeoutMs = 10_000, signal?: AbortSignal): Promise<any> {
     const data = body === undefined ? undefined : JSON.stringify(body);
@@ -1808,7 +1812,7 @@ export class AgentRuntime {
       try {
         response = await openEventStream(this.transport.fetcher, `${this.transport.base}/v1/runs/${encodeURIComponent(id)}/events`, {
           headers: { Authorization: `Bearer ${this.operator()}`, Accept: "text/event-stream", ...(cursor ? { "Last-Event-ID": String(cursor) } : {}) }, redirect: "manual", ...(options.signal ? { signal: options.signal } : {}),
-        });
+        }, this.transport.streams);
       } catch (error) {
         if (options.signal?.aborted || ++failures > 5) throw error;
         await pause(250 * 2 ** failures);
@@ -2155,7 +2159,7 @@ export class AgentClient {
             ...(this.attaching && this.connection ? { "X-Agent-Connection": this.connection } : {}),
           },
           signal: this.stream.signal, redirect: "manual",
-        });
+        }, this.transport.streams);
         hibernatable = response.headers.get("x-agent-transport") === "websocket";
         if (hibernatable) clearTimeout(watchdog);
         await rejectRedirect(response);

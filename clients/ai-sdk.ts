@@ -113,7 +113,7 @@ export class AgentRuntimeChatTransport {
   private async watch(thread: string | null, onEvent: (event: AgentEvent) => void, onChange: (watcher: Watcher) => void): Promise<{ watcher: Watcher; read: Read }> {
     const minted = await this.call("token", thread);
     const ready = Promise.withResolvers<void>();
-    const reads = readsFrom(minted, this.options.endpoint, thread, this.doFetch, this.options.headers, this.options.credentials);
+    const reads = readsFrom(minted, this.options.endpoint, thread, this.doFetch, this.options.headers, this.options.credentials, !!this.options.fetch);
     const read: Read = async path => {
       const response = await reads.fetch!(`${reads.url.replace(/\/+$/, "")}/v1/agents/${encodeURIComponent(minted.agentId)}${path}`, { headers: { Authorization: `Bearer ${minted.token}` } });
       if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
@@ -200,7 +200,7 @@ export class AgentRuntimeChatTransport {
   async loadMessages(options: { chatId?: string; limit?: number } = {}): Promise<AgentUIMessage[]> {
     const thread = this.threadOf(options.chatId);
     const minted = await this.call("token", thread);
-    const reads = readsFrom(minted, this.options.endpoint, thread, this.doFetch, this.options.headers, this.options.credentials);
+    const reads = readsFrom(minted, this.options.endpoint, thread, this.doFetch, this.options.headers, this.options.credentials, !!this.options.fetch);
     const response = await reads.fetch!(`${reads.url.replace(/\/+$/, "")}/v1/agents/${encodeURIComponent(minted.agentId)}/history?limit=${options.limit ?? 50}`, { headers: { Authorization: `Bearer ${minted.token}` } });
     if (!response.ok) throw new Error(`history: HTTP ${response.status}`);
     const page = await response.json() as { entries: { index: number; message: any }[] };

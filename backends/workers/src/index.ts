@@ -55,6 +55,7 @@ import { createJourney, sendJourney } from "./journey.ts";
 import { flushJourney } from "./journey-delivery.ts";
 import { keyServices } from "./security-services.ts";
 import { eventRead } from "./event-reads.ts";
+import { bridgeEvents, bridgeOptions, wantsEventStream } from "./sse-bridge.ts";
 import { decisionService, type DecisionEnv } from "./decision-service.ts";
 import { decisionRoute } from "./decision-runtime.ts";
 import {
@@ -576,7 +577,9 @@ const worker = {
         const input = await body(request, 6 * 1024 * 1024) as Record<string, unknown>;
         request = new Request(request.url, { method: 'POST', headers: request.headers, body: JSON.stringify({ ...input, requestId: request.headers.get('idempotency-key') }) });
       }
-      const response = tail === "/events"
+      const response = tail === "/events" && wantsEventStream(request)
+        ? await bridgeEvents(request, request => forward(request, env, entry!.id, tail, ctx), bridgeOptions(env))
+        : tail === "/events"
         ? await eventRead(request, env, entry.tenantId, entry.id, request => forward(request, env, entry!.id, tail, ctx), task => ctx.waitUntil(task))
         : await forward(request, env, entry.id, tail, ctx);
       return browser ? browserResponse(response, browser, tail) : response;

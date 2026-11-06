@@ -264,7 +264,7 @@ three tracks. Passing these tests does not establish paid production parity.
 | R2 and Images                 | Immutable contents, snapshots/backups and bounded stored image derivatives                                                                                            |
 | Queues and Cron               | Delivery plus repair of the SQL-to-Queue publication gap and periodic expiry                                                                                          |
 | Containers / Sandbox SDK      | Optional Linux exec, files, parsing and persistence tests                                                                                                             |
-| Hibernatable WebSockets | Workers live streams require WebSockets; existing Node servers explicitly select compatible SSE. Workers reject SSE with HTTP 406 and `WEBSOCKET_REQUIRED`. |
+| Hibernatable WebSockets | Workers live streams prefer WebSockets. SSE clients are served by the front Worker over the object's hibernatable WebSocket (`sse-bridge.ts`), so the object never holds an SSE response. |
 | Analytics Engine              | Structured source metric names; real duration probe; alert evaluator exists, query/delivery service remains missing                                                              |
 | Rate Limiting binding         | Optional fast HTTP throttle hook; durable tenant admission remains authoritative; no real cloud binding is provisioned                                                |
 | Secrets Store                 | No real credentials are needed locally. No Secrets Store resource is created; production secret distribution and rotation remain work                                 |

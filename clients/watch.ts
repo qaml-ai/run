@@ -32,7 +32,8 @@ export interface WatchOptions {
   /** Every event as it arrives (Pi's, and the runtime's own), after `state` took it in. */
   onEvent?: (event: AgentEvent) => void;
   onError?: (error: Error) => void;
-  /** "auto" (default): prefer a server-advertised WebSocket, else SSE; or force a transport. */
+  /** "auto": prefer a server-advertised WebSocket, else SSE; or force a transport. The default is "auto", or "sse"
+   * with your own `fetch`, which a WebSocket would go around. */
   transport?: "auto" | "websocket" | "sse" | "poll";
   /** Messages a history page asks for (default 50). */
   pageSize?: number;
@@ -356,7 +357,7 @@ export function watchAgent(options: WatchOptions): Watcher {
    */
   async function sse(signal: AbortSignal): Promise<boolean> {
     const path = `/events?snapshot=1${options.subagents ? "&subagents=1" : ""}`;
-    const response = await openEventStream((_url, init) => get(path, init, signal), base + path, { headers: { Accept: "text/event-stream", Authorization: `Bearer ${token}`, ...(cursor ? { "Last-Event-ID": String(cursor) } : {}) }, signal }, options.transport === "sse" ? "sse" : options.transport === "websocket" ? "websocket" : "websocket,sse", () => `Bearer ${token}`);
+    const response = await openEventStream((_url, init) => get(path, init, signal), base + path, { headers: { Accept: "text/event-stream", Authorization: `Bearer ${token}`, ...(cursor ? { "Last-Event-ID": String(cursor) } : {}) }, signal }, options.transport === "sse" || (!options.transport && options.fetch) ? "sse" : options.transport === "websocket" ? "websocket" : "websocket,sse", () => `Bearer ${token}`);
     if (!response.ok || !response.body) throw Object.assign(new Error(`events: HTTP ${response.status}`), { status: response.status });
     const hibernatable = response.headers.get("x-agent-transport") === "websocket";
     websocketSelected = hibernatable;

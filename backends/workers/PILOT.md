@@ -141,12 +141,15 @@ PILOT_FAKE_URL=https://camelrun-pilot-fakemodel.miguel-85b.workers.dev \
   node --experimental-strip-types backends/workers/scripts/pilot-validate.mjs --real-model-only
 ```
 
-Workers live streams are WebSocket-only by CTO decision on 2026-11-05. The SDKs'
-default capability offer selects a hibernatable WebSocket. A live request without
-that capability or a WebSocket upgrade fails with HTTP 406, code
-`WEBSOCKET_REQUIRED`, and a message directing the caller to WebSocket. Bounded
-JSON event polling remains available. The Node runtime retains SSE, and the SDKs
-retain their Node compatibility. The pilot idle check uses the default SDK path.
+Workers live streams prefer the hibernatable WebSocket: the SDKs' default
+capability offer selects one. A client that asks for SSE (no capability offer, no
+upgrade) gets SSE from the stateless front Worker, which opens the same
+hibernatable WebSocket to the agent's Durable Object and writes each frame as an
+SSE event (`src/sse-bridge.ts`), with Node's ids, `Last-Event-ID` resume,
+a heartbeat comment every 10 s, and a `reconnect` frame after 5 idle minutes.
+The object never holds an SSE response, so it still hibernates while idle; the
+Worker is billed CPU, not wall time (`measurements/sse-bridge.json`). Bounded
+JSON event polling remains available.
 MCP retains its specification-defined SSE transport. Its stateless endpoint
 returns HTTP 405 for a standalone GET, so there is no idle listening stream;
 an active POST response stream ends with the call.
@@ -156,12 +159,9 @@ limit. It records API usage, cost in USD, and durable model-attempt counters
 before deleting the throwaway tenant. Do not manually retry a failed real call:
 inspect those counters first, since the runtime can retry upstream requests.
 
-Twelve exact SSE-dependent cases have been added to the accepted-differences
-registry (17 total). They cover direct SSE attachment, CORS content type, HTTP
-response-body lifetime instrumentation, SSE proxies and explicit SSE watchers.
-SDK-only tests of Node-compatible SSE still run. Shared contract stream helpers
-negotiate through the existing SDK without changing assertions; Node still runs
-every accepted-difference case.
+The twelve SSE-dependent cases once registered as accepted differences (direct
+SSE attachment, CORS content type, SSE proxies and explicit SSE watchers) pass
+on Workers through the bridge; five accepted differences remain.
 
 The final deployed fake-provider smoke passed **10/10** checks on
 2026-11-06: TypeScript create/message/history and WebSocket streaming, human
