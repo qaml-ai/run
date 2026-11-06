@@ -14,7 +14,7 @@ const latency = values => ({ samples: values.length, p50Ms: percentile(values, .
 const emit = value => process.stdout.write(`${JSON.stringify(value)}\n`);
 
 class RequestError extends Error {
-  constructor(status, code, reason) { super(`HTTP ${status} ${code}`); this.status = status; this.code = code; this.reason = reason; }
+  constructor(status, code, reason, route, ray) { super(`HTTP ${status} ${code}`); this.status = status; this.code = code; this.reason = reason; this.route = route; this.ray = ray; }
 }
 function errorClass(error) {
   if (error instanceof RequestError) return `http_${error.status}:${error.code}${error.reason ? ':' + error.reason : ''}`;
@@ -74,10 +74,14 @@ export async function runPilotLoad(options) {
   if (!stages.every(n => Number.isInteger(n) && n > 0 && n <= 2000) || stages.some((n, i) => i && n <= stages[i - 1])) throw new Error('Stages must increase, with at most 2000 agents');
   const totalAgents = Math.max(...stages);
   const perTenant = Math.ceil(totalAgents / tenantIds.length);
-  const report = { startedAt: new Date().toISOString(), target: baseUrl, fakeProvider: fakeBaseUrl, tenantCount: tenantIds.length, totalAgents, stages: [], setup: {}, cleanup: {}, errors: {} };
+  const report = { startedAt: new Date().toISOString(), target: baseUrl, fakeProvider: fakeBaseUrl, tenantCount: tenantIds.length, totalAgents, stages: [], setup: {}, cleanup: {}, errors: {}, errorSamples: [] };
   const createdTenants = [];
   const agents = [];
-  const recordError = error => { const name = errorClass(error); report.errors[name] = (report.errors[name] ?? 0) + 1; return name; };
+  const recordError = error => {
+    const name = errorClass(error); report.errors[name] = (report.errors[name] ?? 0) + 1;
+    if (report.errorSamples.length < 20) report.errorSamples.push({ at: new Date().toISOString(), classification: name, ...(error?.route ? { route: error.route } : {}), ...(error?.ray ? { ray: error.ray } : {}) });
+    return name;
+  };
   const request = async (base, token, path, init = {}) => {
     const response = await fetch(base + path, {
       method: init.method ?? (init.body === undefined ? 'GET' : 'POST'),
@@ -86,7 +90,10 @@ export async function runPilotLoad(options) {
       signal: AbortSignal.timeout(init.timeoutMs ?? 120_000),
     });
     const data = await response.json().catch(() => null);
-    if (!response.ok) throw new RequestError(response.status, publicCode(data?.code), failureReason(data?.error));
+    if (!response.ok) {
+      const route = path.replace(/\/agents\/[^/]+/, '/agents/:id').replace(/\/end-users\/[^/]+/, '/end-users/:id').replace(/\/requests\/[^?]+/, '/requests/:id').split('?')[0];
+      throw new RequestError(response.status, publicCode(data?.code), failureReason(data?.error), route, response.headers.get('cf-ray'));
+    }
     return data;
   };
   const admin = (path, init) => request(operatorBaseUrl, operatorToken, path, init);
