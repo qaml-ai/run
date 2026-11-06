@@ -261,9 +261,9 @@ contractTest("keys", "tests/key-scopes.test.ts:10","key scopes store sealed entr
   assert.equal((await r.call("/v1/key-scopes/org_1", { method: "DELETE" })).status, 200);
   assert.deepEqual((await r.call("/v1/key-scopes/org_1")).json, { scope: "org_1", providers: [] });
 
-  // Scope calls are the tenant's own keys: counted in /v1/usage, and not as platform responses, as the four on the admin's key are.
+  // Scope calls, like those on the admin's key (the entry's apiKeys), are the tenant's own: counted in /v1/usage, never as platform responses.
   const usage = (await r.call("/v1/usage")).json;
-  assert.deepEqual([usage.totals.responses, usage.totals.platformResponses], [7, 4], JSON.stringify(usage.totals));
+  assert.deepEqual([usage.totals.responses, usage.totals.platformResponses], [7, 0], JSON.stringify(usage.totals));
 }, { env: LOCAL });
 
 contractTest("billing", "tests/billing.test.ts:623", "without Stripe, checkout answers 503 and the webhook 404", async (_t, r) => {
