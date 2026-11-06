@@ -70,7 +70,13 @@ export function mergeDbProfiles(values) {
     for (const [phase, metrics] of Object.entries(value?.phases ?? {})) {
       const target = result.phases[phase] ??= {};
       for (const [key, number] of Object.entries(metrics)) {
-        if (Array.isArray(number)) (target[key] ??= []).push(...number);
+        if (key === 'statements') {
+          const statements = target.statements ??= {};
+          for (const [label, counters] of Object.entries(number)) {
+            const current = statements[label] ??= { queries: 0, queryMs: 0, errors: 0 };
+            for (const metric of Object.keys(current)) current[metric] += counters[metric];
+          }
+        } else if (Array.isArray(number)) (target[key] ??= []).push(...number);
         else if (key.endsWith('MaxMs')) target[key] = Math.max(target[key] ?? 0, number);
         else target[key] = (target[key] ?? 0) + number;
       }

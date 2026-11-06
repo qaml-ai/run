@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DbProfile, dbPhase, profileConnect, profileHttp, profileSql } from "../src/db-profile.ts";
+import { DbProfile, dbPhase, profileConnect, profileHttp, profileSql, statementCategory } from "../src/db-profile.ts";
 
 test("concurrent profiles retain phase attribution and never expose SQL or parameters", async () => {
   const profiles = [new DbProfile(true), new DbProfile(true)];
@@ -55,4 +55,11 @@ test("profiling is opt in and HTTP response data and status remain intact", asyn
   assert.equal(await response.text(), "okay");
   assert.equal(JSON.parse(response.headers.get("x-pilot-db-profile")!).phases.edge.queries, 1);
   assert.equal((await profileHttp(false, async () => new Response())).headers.has("x-pilot-db-profile"), false);
+});
+
+
+test("statement categories use only fixed schema names and operation labels", () => {
+  assert.equal(statementCategory("select * from agents join agent_spend_limits on true where secret='raw-value'"), "select:agent_spend_limits+agents");
+  assert.equal(statementCategory("select credential from customer_supplied_table where token=$1"), "select:other");
+  assert.equal(statementCategory("insert into usage values ($1)"), "insert:usage");
 });
