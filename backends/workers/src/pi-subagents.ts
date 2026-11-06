@@ -34,6 +34,7 @@ import {
   type ToolRegistration,
   type Tx,
   UsageDoc,
+  LiveDoc,
 } from "@earendil-works/pi-durable";
 import { HttpError } from "./errors.ts";
 import { MULTI_AGENT_LIMITS, REPORT_PROGRESS, SEND_MESSAGE, agentsTools, agentUpdates, delegateTool, roleAndTask, type DelegateSettings } from "./multi-agent-policy.ts";
@@ -320,7 +321,7 @@ export class PiSubagents {
   }
 
   /** The reporter: deliver one message to a background child and land its answer once (example 22's Reporter). */
-  readonly Reporter = defineTask<{ conversation: string; message: string; requestId: string; followUp: boolean }, { phase: "deliver" } | { phase: "report"; ended: ChildRow | null }, null>({
+  readonly Reporter = defineTask<{ conversation: string; message: string; requestId: string; followUp: boolean }, { phase: "deliver" } | { phase: "report"; ended: ChildRow | null; tries?: number }, null>({
     name: "camel.subagent-reporter", version: 1,
     initial: () => ({ phase: "deliver" }),
     phases: {
@@ -333,8 +334,16 @@ export class PiSubagents {
       },
       report: async (task, runtime, taskContext) => {
         const ended = task.state.checkpoint.ended;
-        // One commit claims the landing, so a wait_agent that took the answer first wins and no notification follows.
         const pi = await this.host.pi(), root = await pi.root(context);
+        // A notification lands between the parent's turns (the outbox's canLand): while the parent works, a wait_agent
+        // in that turn may take the answer instead. Sleep and look again; the sleep is durable.
+        const tries = (task.state.checkpoint as { tries?: number }).tries ?? 0;
+        const parentBusy = (await pi.snapshot(LiveDoc, root.id, context))?.run !== undefined;
+        if (ended && parentBusy && tries < 2400) {
+          await runtime.sleepUntil(Date.now() + 250, { phase: "report", ended, tries: tries + 1 } as never, taskContext);
+          return;
+        }
+        // One commit claims the landing, so a wait_agent that took the answer first wins and no notification follows.
         const claimed = ended && await root.commit(async (tx) => {
           const row = (await tx.doc(ChildrenDoc, root.id)).children[ended.conversationId]!;
           if (row.landedBy) return false;
