@@ -18,8 +18,8 @@ try {
       created = true;
       await operator.request("/v1/billing/adjustments", { body: { tenant, amount: 10_000_000, reason: "Disposable pilot smoke credit", idempotencyKey: `${tenant}-credit` } });
       await operator.request(`/v1/tenants/${tenant}/limits`, { method: "PUT", body: { maxBusyAgents: 20, agentCreatesPerMinute: 100, runsPerMinute: 100 } });
-      report.smoke = await runSmoke({ apiKey: account.token.token, baseUrl: PILOT_URL, fakeUrl, python: process.env.PILOT_PYTHON, idleMs: Number(process.env.PILOT_IDLE_MS ?? 90000) });
-      if (process.argv.includes("--real-model")) {
+      if (!process.argv.includes("--real-model-only")) report.smoke = await runSmoke({ apiKey: account.token.token, baseUrl: PILOT_URL, fakeUrl, python: process.env.PILOT_PYTHON, idleMs: Number(process.env.PILOT_IDLE_MS ?? 90000) });
+      if (process.argv.includes("--real-model") || process.argv.includes("--real-model-only")) {
         const agents = new Agents({ url: PILOT_URL, apiKey: account.token.token });
         try {
           const agent = await agents.upsert(`${tenant}-real`, { model: process.env.PILOT_REAL_MODEL ?? "openrouter/openai/gpt-4o-mini", codeMode: false, fileTools: false, maxOutputTokens: 16 });
@@ -31,7 +31,7 @@ try {
           } finally { await agent.delete(); }
         } finally { await agents.close(); }
       }
-      const idleAgent = report.smoke.idle?.agentId;
+      const idleAgent = report.smoke?.idle?.agentId;
       report.beforeCleanup = await operator.request(`/pilot/inspect?tenant=${encodeURIComponent(tenant)}${idleAgent ? `&agent=${encodeURIComponent(idleAgent)}` : ""}`);
     } finally {
       if (created) {
