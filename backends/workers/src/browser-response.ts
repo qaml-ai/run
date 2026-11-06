@@ -1,8 +1,8 @@
 import { readableFrame, readableMessage, readableRequest, type BrowserClaims } from "./browser-tokens.ts";
 
-/** Source browser projections for bounded JSON reads; live sockets project in the DO. */
+/** Source browser projections for bounded JSON reads; live streams (sockets, and SSE bridged over one) project in the DO. */
 export async function browserResponse(response: Response, claims: BrowserClaims, path: string): Promise<Response> {
-  if (!response.ok || response.status === 101 || response.headers.get("content-type")?.startsWith("application/vnd.camelrun.events+json")) return response;
+  if (!response.ok || response.status === 101 || /^(?:application\/vnd\.camelrun\.events\+json|text\/event-stream)/.test(response.headers.get("content-type") ?? "")) return response;
   const headers = new Headers(response.headers);
   headers.delete("content-length");
   const value: any = await response.json();

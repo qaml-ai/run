@@ -18,7 +18,7 @@ class Socket extends EventTarget {
   message(value: unknown) { this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(value) })); }
 }
 
-test("Workers select WebSocket in either offer order and refuse SSE-only streams", async () => {
+test("Workers select WebSocket in either offer order; SSE-only offers are left to the front Worker's bridge", async () => {
   for (const accept of ["application/vnd.camelrun.events+json, text/event-stream", "text/event-stream, application/vnd.camelrun.events+json"]) {
     const response = negotiateEvents(new Request("https://runtime.test/events", { headers: { accept } }));
     assert.ok(response);
