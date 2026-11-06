@@ -14,7 +14,7 @@ const signers = new WeakMap<IdentityEnv, { issuer: string; signer: Promise<Runti
 
 /** Compact transport claims use the same signer, key envelope and issuer policy as account and file tokens. */
 export function runtimeSigner(env: IdentityEnv, fallback: string) {
-  const issuer = publicOrigins(env as unknown as NodeJS.ProcessEnv, fallback).issuer;
+  const issuer = publicOrigins(env, fallback).issuer;
   let entry = signers.get(env);
   if (!entry || entry.issuer !== issuer) {
     entry = { issuer, signer: keyServices(env).then(({ accounts }) => new RuntimeSigner({ db: accounts.db, accounts, issuer })) };

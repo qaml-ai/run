@@ -57,7 +57,7 @@ const cache = new WeakMap<AccountEnv, Map<string, AccountServices>>();
 
 /** Reuse the source state machines; only networking, mail, timers and database ownership differ. */
 export function accountServices(env: AccountEnv, accounts: Accounts, fallbackOrigin: string): AccountServices {
-  const origins = publicOrigins(env as unknown as NodeJS.ProcessEnv, fallbackOrigin);
+  const origins = publicOrigins(env, fallbackOrigin);
   const origin = origins.canonical;
   const secret = env.AGENT_SESSION_SECRET || env.API_TOKEN;
   if (!secret || secret.length < 32) throw new Error("Set AGENT_SESSION_SECRET to at least 32 random characters");

@@ -237,7 +237,7 @@ const worker = {
       let auth = browser ? null : await authenticateMoney(request, env)
         ?? (((env.TEST_MODE === "1" && !bearer?.startsWith("Bearer art_")) || await authorized(request, env.API_TOKEN)) ? await authenticate(request, env) : null);
       if (path === "/mcp") {
-        if (!auth) return agentMcpSignIn(request, publicOrigins(env as unknown as NodeJS.ProcessEnv, url.origin).of(request.headers), "");
+        if (!auth) return agentMcpSignIn(request, publicOrigins(env, url.origin).of(request.headers), "");
         const publicOrigin = env.AGENT_PUBLIC_URL || url.origin;
         return serveHostedMcp(request, { publicOrigin, fetch: (async (input, init) => {
           const local = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
