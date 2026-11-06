@@ -16,10 +16,10 @@ Original contract assertions and their explicit timeouts are unchanged.
 | --- | --- |
 | Definition and agent language inheritance | #659, `79c62fb4`, combined with #658's definition application. Preserve an explicit agent override and allow an explicit definition null to clear inheritance. |
 | Models chosen by name over REST | #658, `b93119d8`, and later configuration admission validation. Keep provider-key failure in the accepted configuration's outcome; do not replace that contract with an eager HTTP error. |
-| Lookup metadata and provider request routing | #659, `069db299`, re-resolved a prepared model at admission; #660, `d677202f`, also used that path. Carry `resolvedModel` through admission. Preserve the already selected native protocol instead of applying the fixture protocol again. |
+| Lookup metadata and provider request routing | #659, `069db299`, re-resolved a prepared model at admission; #660, `d677202f`, also used that path. Carry `resolvedModel` through admission. #659, `fb936055`, and #660, `10c8ee95`, exposed a second override of the prepared native protocol; preserve the selected protocol instead of applying the fixture protocol again. |
 | Lookup price reaches the end-user hold | Same admission re-resolution. Keeping the prepared model also keeps its trusted lookup price for the hold. |
 | Codex on a tenant endpoint | Same prepared-model seam. Preserve the Codex protocol and its subscription accounting exception. |
-| Unbilled administrator usage costs | #660's metering path conflated platform key ownership with prepaid catalog pricing. Persist the prepaid pricing decision independently in each receipt; retain provider-reported costs for unbilled tenants. |
+| Unbilled administrator usage costs | #660, `d677202f`, conflated platform key ownership with prepaid catalog pricing; `c40e3fbb` exposed it for administrator keys. Persist the prepaid pricing decision independently in each receipt; retain provider-reported costs for unbilled tenants. |
 | Decisions on a tenant's OpenRouter key | #660, `c40e3fbb`, treated administrator-owned credentials as platform credentials. Auxiliary calls charge only a platform-owned key. |
 | X search on tenant keys | Same auxiliary credential ownership seam. |
 | Search on operator-configured tenant keys | Same auxiliary credential ownership seam. |
