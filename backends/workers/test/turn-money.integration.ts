@@ -10,9 +10,10 @@ test('every model call records subject and workspace usage; a poor subject canno
   const credits = new EndUserCredits(database({ HYPERDRIVE: { connectionString: f.databaseUrl } }));
   await credits.setSettings('camelrun-proto-local', { enabled: true, markupBps: 2500 });
   await credits.post('camelrun-proto-local', 'customer', { kind: 'grant', amount: 1_000_000, key: 'customer-grant' });
-  const call = async (path: string, body?: object) => {
+  const call = async (path: string, body?: object, expectedStatus?: number) => {
     const response = await fetch(f.url + path, { method: body ? 'POST' : 'GET', headers: { authorization: `Bearer ${f.token}`, 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
-    assert.ok(response.ok, `${response.status}: ${await response.clone().text()}`);
+    if (expectedStatus === undefined) assert.ok(response.ok, `${response.status}: ${await response.clone().text()}`);
+    else assert.equal(response.status, expectedStatus, await response.clone().text());
     return response.json() as Promise<any>;
   };
   const workspace = await call('/v1/workspaces', { name: 'Customer workspace' });
@@ -37,11 +38,9 @@ test('every model call records subject and workspace usage; a poor subject canno
   assert.equal(Number((await f.db.query('select count(*) n from end_user_holds')).rows[0].n), 0);
 
   const broke = await call('/v1/agents', { model: 'test/echo', subject: 'empty-customer', bucket: 'support' });
-  await call(`/v1/agents/${broke.id}/requests`, { id: 'poor-turn', method: 'prompt', params: { text: 'must not call provider' } });
-  for (let i = 0; i < 100; i++) {
-    result = await call(`/v1/agents/${broke.id}/requests/poor-turn?wait=1`);
-    if (result.state === 'completed') break;
-  }
+  const refused = await call(`/v1/agents/${broke.id}/requests`, { id: 'poor-turn', method: 'prompt', params: { text: 'must not call provider' } }, 402);
+  assert.deepEqual([refused.code, refused.reason, refused.endUser, refused.bucket],
+    ['END_USER_CREDIT', 'balance', 'empty-customer', 'support']);
   assert.equal(Number((await f.db.query('select count(*) n from model_attempts where agent=$1', [broke.id])).rows[0].n), 0);
   assert.equal((await credits.get('camelrun-proto-local', 'empty-customer')).balance, 0);
 });
