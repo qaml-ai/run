@@ -234,7 +234,7 @@ default, at most 128,000).
 
 | Limit | Value |
 | --- | --- |
-| How long an input waits | 7 days by default; a definition's `humanInput.expiresInSeconds` from 60 s to 30 days, never past the agent's expiry |
+| How long an input waits | 15 minutes by default, then the runtime answers for the person and the turn goes on; a definition's `humanInput.expiresInSeconds` from 60 s to 30 days, never past the agent's expiry |
 | Inputs one tool call may ask at once | 8 |
 | An input's message, an approval's shown arguments | 4,000 characters |
 | Answers in one batch (`POST …/inputs`) | 1–100; one answer's body 256 KiB |

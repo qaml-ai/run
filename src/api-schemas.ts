@@ -691,7 +691,7 @@ export const Input = z.object({
   message: z.string(),
   detail: z.record(z.string(), z.unknown()).openapi({ description: "question: { questions }; approval: { tool, source, arguments, argumentsHash }, built by the runtime from the real call; form: { requestedSchema }; url: { url, origin }" }),
   responders: z.object({ audience: z.array(z.string()).optional() }).openapi({ description: "Who may answer besides the definition's humanInput.approvers: by default the sender or actor whose message started the turn" }),
-  state: z.enum(["pending", "answered", "declined", "cancelled", "expired", "superseded"]),
+  state: z.enum(["pending", "answered", "declined", "cancelled", "expired", "superseded"]).openapi({ description: "expired: no one answered by expiresAt, so the runtime answered for the person (answer.by.system \"expired\"; an approval is not given) and, unless the definition's humanInput.onExpire is close, the agent went on without them" }),
   answer: z.object({ action: z.enum(["accept", "decline", "cancel"]), content: z.unknown().optional(), by: z.record(z.string(), z.unknown()), at: z.number() }).optional(),
   createdAt: z.number(), expiresAt: z.number(),
 }).openapi("Input");
@@ -1033,8 +1033,8 @@ const definitionFields = {
   openApi: z.array(OpenApiInput).max(64).openapi({ description: "OpenAPI specs whose operations the runtime calls for the agent, as tools" }),
   delegate: DelegateSettings,
   humanInput: z.strictObject({
-    expiresInSeconds: z.number().int().min(60).max(30 * 86_400).optional().openapi({ description: "How long an input waits for an answer: 7 days by default, at most 30, and never past the agent's own expiry" }),
-    onExpire: z.enum(["close", "resume"]).optional().openapi({ description: "close (default): an expired input closes its call and the turn without the model; resume: the model is told and continues" }),
+    expiresInSeconds: z.number().int().min(60).max(30 * 86_400).optional().openapi({ description: "How long an input waits for an answer before the runtime answers for the person: 900 (15 minutes) by default, 60 to 2592000 (30 days), and never past the agent's own expiry" }),
+    onExpire: z.enum(["close", "resume"]).optional().openapi({ description: "What happens when no one answers in time. resume (default): the runtime answers for the person (an approval is not given and the call does not run; a question gets \"The user did not respond in a timely manner. Continue.\"), and the model continues the turn; close: the call and the turn close without the model" }),
     approvers: z.array(z.string()).max(100).optional().openapi({ description: "Who may answer any input besides the person whose message started the turn: actors, or channel senders like slack:U0123" }),
   }).openapi({ description: "Questions, approvals and setup steps the agent's turns wait on" }),
   applyOnUpdate: z.boolean().openapi({ description: "true: every save that makes a new revision (an upsert that changes it, or a PATCH) also applies it to every live agent made from the definition, as apply: \"all\" does, and answers with applied. Default false: only new agents get a new revision" }),
