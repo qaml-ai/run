@@ -1,0 +1,139 @@
+{
+  "schemaVersion": 1,
+  "sourceRevision": "e6e9a8a7bf0c8429b67c60f55fa3b8ce29b49342",
+  "baseRevision": "9de3ed55e0512cd3496f4acaffd27477a9691a34",
+  "pullRequest": 667,
+  "command": "SPRITE_NAME='rt-pr667-parity-20261106-1 rt-pr667-parity-20261106-2 rt-pr667-parity-20261106-3 rt-pr667-parity-20261106-4 rt-pr667-parity-20261106-5 rt-pr667-parity-20261106-6' SPRITE_RETRIES=0 npm run parity -- --shards=6",
+  "fullParityInvocations": 1,
+  "automaticRetries": 0,
+  "run": {
+    "shards": 6,
+    "elapsedMs": 586654,
+    "status": 0,
+    "phases": [
+      {
+        "backend": "node",
+        "elapsedMs": 174487,
+        "status": 0,
+        "mergeStatus": 0
+      },
+      {
+        "backend": "workers",
+        "elapsedMs": 412165,
+        "status": 0,
+        "mergeStatus": 0
+      }
+    ],
+    "args": [
+      "--shards=6"
+    ]
+  },
+  "runArtifacts": "backends/workers/measurements/runs/2026-11-06T06-26-01-763Z-13662",
+  "preparation": {
+    "commandType": "fresh-host dependency and readiness preparation only",
+    "automaticRetries": 0,
+    "hosts": [
+      {
+        "host": "rt-pr667-parity-20261106-1",
+        "revision": "e6e9a8a7bf0c8429b67c60f55fa3b8ce29b49342",
+        "node": "v24.22.1",
+        "elapsedSeconds": 175,
+        "exitCode": 0,
+        "pythonRequirementsCheck": "pass",
+        "v8ExecutableAndWorkersMarkerCheck": "pass",
+        "testsRun": false
+      },
+      {
+        "host": "rt-pr667-parity-20261106-2",
+        "revision": "e6e9a8a7bf0c8429b67c60f55fa3b8ce29b49342",
+        "node": "v24.22.1",
+        "elapsedSeconds": 196,
+        "exitCode": 0,
+        "pythonRequirementsCheck": "pass",
+        "v8ExecutableAndWorkersMarkerCheck": "pass",
+        "testsRun": false
+      },
+      {
+        "host": "rt-pr667-parity-20261106-3",
+        "revision": "e6e9a8a7bf0c8429b67c60f55fa3b8ce29b49342",
+        "node": "v24.22.1",
+        "elapsedSeconds": 176,
+        "exitCode": 0,
+        "pythonRequirementsCheck": "pass",
+        "v8ExecutableAndWorkersMarkerCheck": "pass",
+        "testsRun": false
+      },
+      {
+        "host": "rt-pr667-parity-20261106-4",
+        "revision": "e6e9a8a7bf0c8429b67c60f55fa3b8ce29b49342",
+        "node": "v24.22.1",
+        "elapsedSeconds": 187,
+        "exitCode": 0,
+        "pythonRequirementsCheck": "pass",
+        "v8ExecutableAndWorkersMarkerCheck": "pass",
+        "testsRun": false
+      },
+      {
+        "host": "rt-pr667-parity-20261106-5",
+        "revision": "e6e9a8a7bf0c8429b67c60f55fa3b8ce29b49342",
+        "node": "v24.22.1",
+        "elapsedSeconds": 186,
+        "exitCode": 0,
+        "pythonRequirementsCheck": "pass",
+        "v8ExecutableAndWorkersMarkerCheck": "pass",
+        "testsRun": false
+      },
+      {
+        "host": "rt-pr667-parity-20261106-6",
+        "revision": "e6e9a8a7bf0c8429b67c60f55fa3b8ce29b49342",
+        "node": "v24.22.1",
+        "elapsedSeconds": 185,
+        "exitCode": 0,
+        "pythonRequirementsCheck": "pass",
+        "v8ExecutableAndWorkersMarkerCheck": "pass",
+        "testsRun": false
+      }
+    ]
+  },
+  "results": {
+    "node": {
+      "report": "backends/workers/measurements/parity-node.json",
+      "recordedAt": "2026-11-06T06:28:53.507Z",
+      "suiteHash": "ad429f6978f18ed4a7d2abebd13ed9c06162238e0bd623d8d1539442dac0ff45",
+      "nodeKey": "13e6e455c701d18fb72a5a778e1c74228cbad247c20f506e35ba48df00649350",
+      "statuses": {
+        "pass": 590,
+        "accepted-difference": 0,
+        "fail": 0,
+        "out-of-scope": 380
+      },
+      "backendPasses": {
+        "node": 524,
+        "sdk-unit": 66
+      }
+    },
+    "workers": {
+      "report": "backends/workers/measurements/parity-workers.json",
+      "recordedAt": "2026-11-06T06:35:45.808Z",
+      "suiteHash": "ad429f6978f18ed4a7d2abebd13ed9c06162238e0bd623d8d1539442dac0ff45",
+      "nodeKey": "13e6e455c701d18fb72a5a778e1c74228cbad247c20f506e35ba48df00649350",
+      "statuses": {
+        "pass": 573,
+        "accepted-difference": 17,
+        "fail": 0,
+        "out-of-scope": 380
+      },
+      "backendPasses": {
+        "sdk-unit": 66,
+        "workers": 507
+      }
+    }
+  },
+  "notes": [
+    "Both Node and Workers executed against the same frozen source revision. Node was freshly executed; the merged result supplied the Workers baseline.",
+    "The six hosts were newly created for this validation. Preparation installed dependencies and verified Python wheel integrity before executing tests.",
+    "No runtime or test-source edits were made between Node and Workers phases. Generated reports and Node baseline were the only working-tree changes.",
+    "The prior 25 full-parity failures did not reproduce. No additional full-parity invocation was used.",
+    "No pilot deployment, database change or load measurement was performed for this rebase validation."
+  ]
+}

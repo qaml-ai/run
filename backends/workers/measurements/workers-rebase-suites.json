@@ -1,0 +1,318 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-11-06T06:50:57.777Z",
+  "sourceRevision": "e6e9a8a7bf0c8429b67c60f55fa3b8ce29b49342",
+  "baseRevision": "9de3ed55e0512cd3496f4acaffd27477a9691a34",
+  "execution": {
+    "runner": "scripts/sprite-test",
+    "sourceTransport": "Committed git-archive tree at the explicit revision; no local source overlay.",
+    "dependencySetup": "source tests/contract/setup.sh workers",
+    "freshSprites": [
+      "rt-pr667-unit-20261106",
+      "rt-pr667-integration-20261106"
+    ],
+    "discardedSetup": {
+      "revision": "13274acdcac1696d6944dd507b7b37a20ac845b6",
+      "status": "Cancelled both jobs during root dependency setup before any test command; superseded by corrected modular alarm test hooks."
+    },
+    "assertionRetries": 0,
+    "nodeVersion": "v24.22.1",
+    "ciNodeVersion": "22.x",
+    "reporter": "Node spec reporter; raw output retains the original .tap filename."
+  },
+  "checks": {
+    "workerTypecheck": {
+      "environment": {
+        "revision": "e6e9a8a7bf0c8429b67c60f55fa3b8ce29b49342",
+        "hostname": "rt-pr667-unit-20261106",
+        "node": "v24.22.1",
+        "startedAt": "2026-11-06T06:23:51.256Z"
+      },
+      "command": "cd backends/workers && npm run typecheck",
+      "exitCode": 0,
+      "log": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/unit/typecheck.log"
+    },
+    "sharedTypecheck": {
+      "environment": {
+        "revision": "e6e9a8a7bf0c8429b67c60f55fa3b8ce29b49342",
+        "hostname": "rt-pr667-unit-20261106",
+        "node": "v24.22.1",
+        "startedAt": "2026-11-06T06:28:30.414Z"
+      },
+      "command": "npm run typecheck",
+      "exitCode": 0,
+      "log": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/shared-typecheck/shared-typecheck.log"
+    },
+    "runner": {
+      "environment": {
+        "revision": "e6e9a8a7bf0c8429b67c60f55fa3b8ce29b49342",
+        "hostname": "rt-pr667-unit-20261106",
+        "node": "v24.22.1",
+        "startedAt": "2026-11-06T06:23:51.256Z"
+      },
+      "command": "node --test tests/contract/harness.test.mjs backends/workers/test/pilot-load.test.mjs",
+      "exitCode": 0,
+      "reported": {
+        "tests": 10,
+        "suites": 0,
+        "pass": 10,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "duration_ms": 11412.5713
+      },
+      "log": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/unit/runner.tap"
+    },
+    "unit": {
+      "environment": {
+        "revision": "e6e9a8a7bf0c8429b67c60f55fa3b8ce29b49342",
+        "hostname": "rt-pr667-unit-20261106",
+        "node": "v24.22.1",
+        "startedAt": "2026-11-06T06:23:51.256Z"
+      },
+      "command": "cd backends/workers && WRANGLER_SEND_METRICS=false WORKERS_REQUIRE_DOCKER=0 npm test",
+      "exitCode": 0,
+      "reported": {
+        "tests": 518,
+        "suites": 0,
+        "pass": 518,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "duration_ms": 227184.22567
+      },
+      "log": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/unit/unit.tap"
+    },
+    "integration": {
+      "environment": {
+        "revision": "e6e9a8a7bf0c8429b67c60f55fa3b8ce29b49342",
+        "hostname": "rt-pr667-integration-20261106",
+        "node": "v24.22.1",
+        "startedAt": "2026-11-06T06:23:39.545Z"
+      },
+      "command": "cd backends/workers && WRANGLER_SEND_METRICS=false WORKERS_REQUIRE_DOCKER=0 npm run test:integration",
+      "exitCode": 0,
+      "reported": {
+        "tests": 109,
+        "suites": 0,
+        "pass": 108,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 1,
+        "todo": 0,
+        "duration_ms": 1551837.011379
+      },
+      "log": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/integration/integration.tap",
+      "nativeDockerSkipReason": "Native Docker computer tests are unsupported on Sprites: the host restricts required kernel modules and OCI namespace operations.",
+      "largeDeletion": {
+        "agentCount": 2001,
+        "durablePasses": 81,
+        "totalCaseIncludingStartupAndCreationMs": 815237.93892,
+        "durableDrainIncludingInterruptionMs": 502415,
+        "startupCreationAndOtherAssertionsMs": 312822.93892
+      }
+    }
+  },
+  "strictNativeDockerComparison": {
+    "command": "cd backends/workers && WRANGLER_SEND_METRICS=false WORKERS_REQUIRE_DOCKER=1 node --import ./test/compat-register.mjs --experimental-strip-types --test --test-concurrency=1 test/computers.integration.ts",
+    "head": {
+      "environment": {
+        "revision": "e6e9a8a7bf0c8429b67c60f55fa3b8ce29b49342",
+        "hostname": "rt-pr667-integration-20261106",
+        "node": "v24.22.1",
+        "startedAt": "2026-11-06T06:23:39.545Z"
+      },
+      "exitCode": 1,
+      "reported": {
+        "tests": 1,
+        "suites": 0,
+        "pass": 0,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "duration_ms": 512.2954
+      },
+      "log": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/integration/strict-native-head.tap"
+    },
+    "base": {
+      "environment": {
+        "revision": "9de3ed55e0512cd3496f4acaffd27477a9691a34",
+        "hostname": "rt-pr667-unit-20261106",
+        "node": "v24.22.1",
+        "startedAt": "2026-11-06T06:29:52.469Z"
+      },
+      "exitCode": 1,
+      "reported": {
+        "tests": 1,
+        "suites": 0,
+        "pass": 0,
+        "fail": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "duration_ms": 287.1255
+      },
+      "log": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/strict-native-base/strict-native-base.tap"
+    },
+    "identicalFailureReason": true,
+    "failureReason": "Native Docker computer tests are unsupported on Sprites: the host restricts required kernel modules and OCI namespace operations.",
+    "testFileUnchangedFromBase": true,
+    "dockerInfoExit": 127,
+    "dockerBuildxExit": 127,
+    "conclusion": "This is an unchanged Sprite host limitation. The two strict failures do not supply native Container/Sandbox runtime coverage. Full strict Docker integration at this head remains a required Ubuntu CI check after the final push."
+  },
+  "supplementalEvidence": {
+    "documentation": {
+      "reportedBy": "Root agent; separate documentation-only snapshot with the same runtime source.",
+      "revision": "ac12fa2c72fa389c35727fe51c105fee9a7e97bd",
+      "sprite": "rt-pr667-parity-20261106-1",
+      "retries": 0,
+      "docsCommand": "npm run docs",
+      "docsExitCode": 0,
+      "llmsCommand": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-name-pattern=\"llms.txt\" tests/docs.test.ts",
+      "llms": {
+        "pass": 2,
+        "fail": 0,
+        "skipped": 0
+      },
+      "jobDurationSeconds": 14,
+      "localLog": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/docs/docs.log",
+      "remoteLog": "~/runs/20261106-004230-37235-1.log"
+    }
+  },
+  "rawLogs": [
+    {
+      "path": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/unit/environment.json",
+      "bytes": 165,
+      "sha256": "808d3e1743c789c4f6993bce4b524b749fefac9c1d5c024c63ad2941acf89785"
+    },
+    {
+      "path": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/unit/runner.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/unit/runner.tap",
+      "bytes": 12259,
+      "sha256": "3f4bd1710acacf59f1471668e543fda3086601c295b877a79eeba1fe4a15773d"
+    },
+    {
+      "path": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/unit/setup.log",
+      "bytes": 336,
+      "sha256": "ccf344815c3051d1f0d0beb6d6c6a7cae05160c5ff7b96efeb0edf5a622321d6"
+    },
+    {
+      "path": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/unit/typecheck.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/unit/typecheck.log",
+      "bytes": 91,
+      "sha256": "b5ea0a349ba5a798eb835c96ae08953bda52303c38f84926b4b93af9780e7641"
+    },
+    {
+      "path": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/unit/unit.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/unit/unit.tap",
+      "bytes": 144104,
+      "sha256": "c508608b5e972737454007bc896535a4f171f81fd49304fafdd57bd923353305"
+    },
+    {
+      "path": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/shared-typecheck/environment.json",
+      "bytes": 165,
+      "sha256": "512c585d4e48fc1c474ff47a1ffc88fbf6864cb597d1db5dd2b1a0bf223dee44"
+    },
+    {
+      "path": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/shared-typecheck/shared-typecheck.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/shared-typecheck/shared-typecheck.log",
+      "bytes": 462,
+      "sha256": "f5c4a9c48dca93c947880abeb8db1ba4f99fe4eb38f7feab5ea1ad64b9d00edd"
+    },
+    {
+      "path": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/integration/docker-buildx.exit",
+      "bytes": 4,
+      "sha256": "743c7850cccfba5e53a9002663ec1ddd1079315a98bdbfdde10e6044f56abefe"
+    },
+    {
+      "path": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/integration/docker-info.exit",
+      "bytes": 4,
+      "sha256": "743c7850cccfba5e53a9002663ec1ddd1079315a98bdbfdde10e6044f56abefe"
+    },
+    {
+      "path": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/integration/docker-preflight.log",
+      "bytes": 82,
+      "sha256": "eb8cdbf97b2e11c12042f18c2be4bc5ea8b76acd2b9f27ec8dc72b06f27c2044"
+    },
+    {
+      "path": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/integration/environment.json",
+      "bytes": 172,
+      "sha256": "c647b1dde1ff98ddd1a5956f4266704798e1a7fcae4cc1c6a65123f858a40ea1"
+    },
+    {
+      "path": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/integration/integration.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/integration/integration.tap",
+      "bytes": 15950,
+      "sha256": "1a63b2b351a63878e88c055d97c60b9569a5c9f96b3a6551f8778f41d4d5a624"
+    },
+    {
+      "path": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/integration/setup.log",
+      "bytes": 336,
+      "sha256": "ccf344815c3051d1f0d0beb6d6c6a7cae05160c5ff7b96efeb0edf5a622321d6"
+    },
+    {
+      "path": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/integration/strict-native-head.exit",
+      "bytes": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "path": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/integration/strict-native-head.tap",
+      "bytes": 1333,
+      "sha256": "a11b53d4006b655172b862892095853624a908e946504cb741bffbf58dfd2294"
+    },
+    {
+      "path": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/strict-native-base/environment.json",
+      "bytes": 165,
+      "sha256": "093beaeb3e5fd7cbecb2ba8ff295bf360121a75013a6fe80a988d3dd4cae6a3c"
+    },
+    {
+      "path": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/strict-native-base/setup.log",
+      "bytes": 95,
+      "sha256": "b4c4b2f5fc61bb0a8ac0b8138b1c413950bbdefb178018631d566858146dd1dc"
+    },
+    {
+      "path": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/strict-native-base/strict-native-base.exit",
+      "bytes": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "path": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/strict-native-base/strict-native-base.tap",
+      "bytes": 1333,
+      "sha256": "5ca3bc2caec6e7e4ddba81fa3a7dfb8726fda6854f1980fac04a522b1dc3a651"
+    },
+    {
+      "path": "backends/workers/measurements/runs/pr667-rebase-e6e9a8a7/docs/docs.log",
+      "bytes": 1116,
+      "sha256": "2b6fde4a3678f0b58f0b8a282504fb22e18059e8c23118e35e6414bad49ee6c7"
+    }
+  ],
+  "limitations": [
+    "The supported Sprite integration run retains the source-defined native Docker skip; it must not be described as zero-skip Docker integration.",
+    "These fresh Sprites ran Node 24.22.1, while the GitHub Workers workflow installs Node 22.x. Both satisfy the repository minimum, but they are separate environments.",
+    "Raw logs are retained under the repository ignored measurements/runs directory. Relative paths and SHA-256 checksums identify the captured immutable output."
+  ]
+}
