@@ -11,7 +11,7 @@ import { metric } from './observability.ts';
 
 export { webhookEvent, enqueueEvents, usageEvent, usageCost } from "./webhook-policy.ts";
 export type { WebhookEvent } from "./webhook-policy.ts";
-export type DeliveryMessage = { id: string; kind?: "email" | "schedule" };
+export type DeliveryMessage = { id: string; kind?: "email" | "schedule" | "account_deletion" };
 export type WebhookEnv = PostgresEnv & {
   WEBHOOKS?: Queue<DeliveryMessage>;
   API_TOKEN: string;
@@ -153,33 +153,37 @@ export async function createEndpoint(
   return { id, url: url.href, events, secret, createdAt };
 }
 
+/** One snapshot and one database round trip for all delivery wake-ups. */
+export async function pendingDeliveries(sql: Sql, now = Date.now()) {
+  const { rows: [pending] } = await sql.query(`
+    select count(*) as pending, min(created_at) as oldest,
+      coalesce((select jsonb_agg(d.id) from (
+        select id from (select id,due from webhook_deliveries union all select id,due from usage_webhook_outbox) d
+        where due <= $1 order by due limit 100
+      ) d), '[]'::jsonb) as deliveries,
+      coalesce((select jsonb_agg(e.key) from (
+        select key from idempotency_keys where key like 'workers:email:%' and status=102 order by created_at limit 100
+      ) e), '[]'::jsonb) as emails
+    from webhook_deliveries`, [now]);
+  return pending as { pending: number; oldest: number | null; deliveries: string[]; emails: string[] };
+}
+
 export async function publishPending(env: WebhookEnv): Promise<number> {
   if (!env.WEBHOOKS) return 0;
-  const backlog = (await withSql(env, sql => sql.query('select count(*) pending,min(created_at) oldest from webhook_deliveries'))).rows[0];
+  const backlog = await withSql(env, sql => pendingDeliveries(sql));
   metric(env,'webhook_backlog',{WebhookBacklog:Number(backlog.pending),WebhookOldestPendingMs:backlog.oldest === null ? 0 : Math.max(0,Date.now()-Number(backlog.oldest))});
-  const { rows } = await withSql(env, (sql) =>
-    sql.query(
-      "select id from (select id,due from webhook_deliveries union all select id,due from usage_webhook_outbox) pending where due <= $1 order by due limit 100",
-      [Date.now()],
-    ),
-  );
-  if (rows.length)
-    await env.WEBHOOKS.sendBatch(rows.map((row) => ({ body: { id: row.id } })));
-  const emails = await withSql(env, (sql) =>
-    sql.query(
-      "select key from idempotency_keys where key like 'workers:email:%' and status=102 order by created_at limit 100",
-    ),
-  );
-  if (emails.rows.length)
+  if (backlog.deliveries.length)
+    await env.WEBHOOKS.sendBatch(backlog.deliveries.map(id => ({ body: { id } })));
+  if (backlog.emails.length)
     await env.WEBHOOKS.sendBatch(
-      emails.rows.map((row) => ({
+      backlog.emails.map(key => ({
         body: {
-          id: row.key.slice("workers:email:".length),
+          id: key.slice("workers:email:".length),
           kind: "email" as const,
         },
       })),
     );
-  return rows.length + emails.rows.length;
+  return backlog.deliveries.length + backlog.emails.length;
 }
 export async function deliver(env: WebhookEnv, id: string): Promise<void> {
   const row = await transaction(env, async (sql) => {
