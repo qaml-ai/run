@@ -48,7 +48,15 @@ export async function runSmoke(options: { apiKey: string; baseUrl: string; fakeU
     });
     await check("typescript-websocket-stream", async () => {
       const before = sockets;
-      const streamingClient = new Agents({ url: baseUrl, apiKey, pollMs: 200 });
+      // The parity backend deliberately selects SSE when both are offered.
+      // Exercise the SDK's WebSocket path by explicitly offering only it.
+      const websocketFetch: typeof fetch = (input, init) => {
+        const target = input instanceof Request ? input.url : String(input);
+        const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+        if (new URL(target).pathname.endsWith("/events")) headers.set("accept", "application/vnd.camelrun.events+json");
+        return fetch(input, { ...init, headers });
+      };
+      const streamingClient = new Agents({ url: baseUrl, apiKey, pollMs: 200, fetch: websocketFetch });
       try {
         const streamingAgent = await streamingClient.get(agent.id);
         const parts: string[] = [];
