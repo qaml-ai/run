@@ -14,7 +14,7 @@ concurrency:
 jobs:
   test:
     name: Workers ${{ matrix.suite }}${{ matrix.shard && format(' (shard {0}/3)', matrix.shard) || '' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner || 'ubuntu-latest' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -27,6 +27,9 @@ jobs:
           - suite: integration
             command: test:integration
             shard: 1
+            # About 12 minutes of agent creation and deletion passes against a 15 minute timeout: it hung at the limit twice
+            # on a 2 vCPU runner (and once on codex/workers-scale), so it gets a faster one.
+            runner: blacksmith-4vcpu-ubuntu-2404
           - suite: integration
             command: test:integration
             shard: 2
