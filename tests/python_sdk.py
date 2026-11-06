@@ -1752,6 +1752,47 @@ class ReconnectHintTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events.count("agent_start"), 1)
         self.assertEqual(events.count("agent_end"), 1)
 
+    def test_the_sync_client_follows_the_workers_idle_close_at_once_to_the_runs_outcome(self):
+        """The sync client's run stream, across the bridge's idle close: heartbeats, then `reconnect` (reason idle)."""
+        import httpx
+        starts, sent = [], []
+
+        def answer(request):
+            if not request.url.path.endswith("/events"):
+                return httpx.Response(404, json={"error": "unexpected"})
+            starts.append((time.monotonic(), request.headers.get("last-event-id")))
+            ready = 'event: ready\ndata: {"version": 5, "watch": true}\n\n'
+            if len(starts) == 1:
+                body = ready + 'id: 7\ndata: {"type": "event", "requestId": "r1", "event": {"type": "agent_start"}}\n\n' + \
+                    ": heartbeat\n\n" * 3 + 'event: reconnect\nretry: 0\ndata: {"type": "reconnect", "reason": "idle", "retryMs": 0}\n\n'
+            else:
+                # The resumed stream repeats event 7 (as a host may) and then carries what came after it.
+                body = ready + 'id: 7\ndata: {"type": "event", "requestId": "r1", "event": {"type": "agent_start"}}\n\n' + \
+                    'id: 8\ndata: {"type": "event", "requestId": "r1", "event": {"type": "agent_end"}}\n\n' + \
+                    'id: 9\ndata: {"type": "response", "id": "r1", "outcome": {"result": "done"}}\n\n'
+            return httpx.Response(200, content=body.encode(), headers={"Content-Type": "text/event-stream"})
+
+        client = sync.AgentClient("http://127.0.0.1:1", {"id": "client_" + "a" * 40, "token": "t"})
+        client.http.close()
+        client.http = httpx.Client(transport=httpx.MockTransport(answer))
+        events, outcome = [], None
+        try:
+            follow = client._follow("r1", lambda: sent.append(1) or {"id": "r1", "state": "running"})
+            while True:
+                try:
+                    events.append(next(follow)["type"])
+                except StopIteration as stop:
+                    outcome = stop.value
+                    break
+        finally:
+            client.close()
+        self.assertEqual(sent, [1], "the request is sent once, on the first stream")
+        self.assertEqual(len(starts), 2)
+        self.assertLess(starts[1][0] - starts[0][0], 0.2, "an idle close is a hint: no backoff")
+        self.assertEqual(starts[1][1], "7", "it resumes after the last event it had")
+        self.assertEqual(events, ["agent_start", "agent_end"], "nothing lost, nothing repeated")
+        self.assertEqual(outcome, {"result": "done"})
+
 
 class HistoryPagingTest(unittest.IsolatedAsyncioTestCase):
     async def test_history_collects_bounded_pages_async_and_sync(self):
