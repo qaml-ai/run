@@ -9,7 +9,8 @@ async function fixture(extra: Record<string, string> = {}) {
   const { db, url } = await testDatabase();
   const token = "fake-operator-token-with-at-least-32-characters";
   const env = { HYPERDRIVE: { connectionString: url }, API_TOKEN: "fake-platform-token-with-at-least-32-characters",
-    AGENT_PUBLIC_URL: "https://runtime.example.test", AGENT_RATE_LIMIT_API_PER_IP: "2",
+    // src/rate-limits.ts only trusts Cloudflare headers when explicitly enabled.
+    AGENT_PUBLIC_URL: "https://runtime.example.test", AGENT_TRUST_CF_CONNECTING_IP: "true", AGENT_RATE_LIMIT_API_PER_IP: "2",
     AGENT_TENANTS_JSON: JSON.stringify({ tenants: { operator: { tokenSha256: createHash("sha256").update(token).digest("hex"), tier: "internal" } } }), ...extra };
   await db.query("insert into tenants(id, billing, limits, created_at) values ('subject', 'none', $1, $2)", [JSON.stringify({ agentCreatesPerMinute: 2, runsPerMinute: 2 }), Date.now()]);
   return { db, env, token };

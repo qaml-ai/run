@@ -9,6 +9,11 @@ import type { Outbound, UsageRecord } from '../src/web-policy-host.ts';
 const context = (builtins: string[], extra: Partial<BuiltinScope> = {}) => async () => ({ tenant: 'fixture', agent: 'agent', builtins, ...extra });
 const invoke = (tool: any, args: Record<string, unknown>) => tool.execute(args, { callId: 'call' }, { abortSignal: new AbortController().signal });
 const value = (result: any) => JSON.parse(result.output[0].text);
+function toolError(result: any, message: RegExp) {
+  // src/pi-durable/agent.ts exposes failed tools as error results to the model.
+  assert.equal(result.isError, true);
+  assert.match(result.output[0].text, message);
+}
 function outbound(fetch: Outbound['fetch']): Outbound { return { fetch, reachable: async url => new URL(url), withoutOrigins() { return this; }, allowHttp: false }; }
 
 test('public outbound rejects private names, mixed DNS and mapped private addresses before dispatch', async () => {
@@ -37,7 +42,7 @@ test('public redirects are rechecked and cross-origin secrets are stripped', asy
 });
 test('test mode alone does not grant web builtins access to private addresses', async () => {
   const tools = await agentBuiltins({ TEST_MODE: '1', TEST_MODEL: '1' } as never, context(['web_fetch']));
-  await assert.rejects(invoke(tools[0], { url: 'http://127.0.0.1/' }), /127.0.0.1 is a private, local or reserved address/);
+  toolError(await invoke(tools[0], { url: 'http://127.0.0.1/' }), /127.0.0.1 is a private, local or reserved address/);
 });
 test('outbound streams stop at their byte budget', async () => {
   const guard = new PublicOutbound({ resolve: async () => ['93.184.216.34'], transport: async () => new Response('too much data') });
@@ -85,7 +90,7 @@ test('web search falls back only on retryable failures and records the answering
 test('search reports missing own keys without dispatching', async () => {
   let fetched = false;
   const tools = await agentBuiltins({} as never, context(['web_search']), { key: async () => undefined, outbound: outbound(async () => { fetched = true; return Response.json({}); }) });
-  await assert.rejects(invoke(tools[0], { query: 'test' }), /add an Exa, Brave or Parallel key/);
+  toolError(await invoke(tools[0], { query: 'test' }), /add an Exa, Brave or Parallel key/);
   assert.equal(fetched, false);
 });
 test('x_search preserves handle filters, citations and provider-reported exact cost', async () => {
@@ -101,7 +106,7 @@ test('x_search preserves handle filters, citations and provider-reported exact c
   assert.equal(result.usage.searchCalls, 2);
   assert.equal(result.citations.length, 1);
   assert.equal(usages[0].usage.cost.total, 0.0025);
-  await assert.rejects(invoke(tools[0], { query: 'topic', allowedHandles: ['a'], excludedHandles: ['b'] }), /not both/);
+  toolError(await invoke(tools[0], { query: 'topic', allowedHandles: ['a'], excludedHandles: ['b'] }), /not both/);
 });
 test('JavaScript shells use source renderer and meter once', async () => {
   const usages: UsageRecord[] = [];
