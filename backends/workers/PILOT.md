@@ -218,10 +218,10 @@ Retain their existing `v1` migrations and append these migrations respectively:
 Remove the class exports from those temporary entry points as well. Deploy the
 API teardown configuration first: this removes its external binding to
 `camelrun-pilot-codemode`. Then deploy the sandbox teardown configuration. These
-[deletion migrations](https://developers.cloudflare.com/durable-objects/reference/durable-objects-migrations-legacy/)
+[deletion migrations](https://developers.cloudflare.com/durable-objects/reference/durable-object-class-migrations-legacy/)
 permanently remove all four namespaces and their stored data. Verify success
-before deleting either Worker. Do not run `scripts/pilot-deploy` afterward,
-because its original migrations would try to recreate the namespaces.
+before deleting either Worker. Do not run `scripts/pilot-deploy` afterward;
+the original configuration is for an active pilot, not a retired deployment.
 
 For temporary config copies saved beside the original files, run from the repo
 root after reviewing their contents:
