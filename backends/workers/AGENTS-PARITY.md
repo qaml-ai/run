@@ -45,7 +45,12 @@ and paid-account lock each have passing focused evidence.
 Code mode uses Pi's stock `RemoteCodemodeSandbox`, tool replay and human-input
 pause/resume. Each session selects one sandbox object, with a 24 MiB VM limit
 and at most three concurrent scripts. The file tools expose the source `fs`
-shim. Workflow scripts call `tools.delegate`; host SDK `execute` has a separate
+shim. Workflows are scripts that call `tools.delegate` (the workflow builtin is
+gone, as on main). A call from code that needs a person ends the run
+`input_required` as a direct call does; while the script waits only on people
+its VM stops, and the answer's result starts a new VM that replays the script
+(`codemode/sandbox.ts`). Waits on people and sub-agents are off the script's
+clock. Host SDK `execute` has a separate
 Pi conversation and does not add model history. Pi uses QuickJS here, so V8/Intl
 semantics and exact v8-exec error names remain different. Its wall-time and
 interrupt limits do not establish equivalent OS-enforced CPU accounting.
