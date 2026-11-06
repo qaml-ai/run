@@ -109,6 +109,7 @@
   },
   "vars": {
     "TEST_MODEL": "1",
+    "TEST_HOOKS": "1",
     "MODEL": "test/echo",
     "API_TOKEN": "local-integration-only-token-with-at-least-32-characters",
     "FILE_SIGNING_SECRET": "local-only-file-secret-with-at-least-32-characters",

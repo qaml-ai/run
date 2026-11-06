@@ -1,3 +1,4 @@
+import { TestStorage } from "./test-storage.ts";
 import { retriesModelError } from "./model-errors.ts";
 import { modelCompactionSettings } from "./model-context.ts";
 import { withCompactionPrompt } from "./model-compaction.ts";
@@ -292,6 +293,8 @@ export interface Env
   AGENT_PUBLIC_URL?: string;
   PUBLIC_ASSETS?: Fetcher;
   TEST_MODEL?: string;
+  /** Local fault injection only; absent from deployable configurations. */
+  TEST_HOOKS?: string;
   TEST_MODEL_BASE_URL?: string;
   TEST_TURN_COST_MICROS?: string;
   TENANT_MAX_ACTIVE?: string;
@@ -344,6 +347,7 @@ export class CamelAgent extends DurableObject<Env> {
     await this.ctx.storage.put("deleted", true);
   }
   private instanceId = crypto.randomUUID();
+  private testStorage = new TestStorage(this.env.TEST_HOOKS === "1", this.ctx.storage);
   private shuttingDown = false;
   private configurationQueue = new ConfigurationQueue<RequestRecord>(this.ctx.storage, {
     busy: async order => (await this.harness.session().busy()) || (await this.records()).some(record => record.method !== 'configure' && record.state !== 'completed' && (record.configurationWait === undefined || record.configurationWait < order)),
@@ -1234,8 +1238,8 @@ export class CamelAgent extends DurableObject<Env> {
   private async flushTerminalEvents() {
     if (
       this.env.TEST_MODEL === "1" &&
-      (await this.ctx.storage.get("test:crash-events")) &&
-      (await this.ctx.storage.get("test:crash-owner")) === this.instanceId
+      (await this.testStorage.get("test:crash-events")) &&
+      (await this.testStorage.get("test:crash-owner")) === this.instanceId
     )
       return;
     for (const [key, pending] of await this.ctx.storage.list<TerminalEvents>({
@@ -1655,12 +1659,12 @@ export class CamelAgent extends DurableObject<Env> {
       }
       const { endedAt, ...result } = finished;
       if (this.env.TEST_MODEL === "1") {
-        if (await this.ctx.storage.get("test:crash-host-settlement")) {
-          await this.ctx.storage.put("test:host-finished-at", endedAt);
-          await this.ctx.storage.put("test:host-stop-owner", this.instanceId);
-          await this.ctx.storage.delete("test:crash-host-settlement");
+        if (await this.testStorage.get("test:crash-host-settlement")) {
+          await this.testStorage.put("test:host-finished-at", endedAt);
+          await this.testStorage.put("test:host-stop-owner", this.instanceId);
+          await this.testStorage.delete("test:crash-host-settlement");
         }
-        if (await this.ctx.storage.get("test:host-stop-owner") === this.instanceId) return record;
+        if (await this.testStorage.get("test:host-stop-owner") === this.instanceId) return record;
       }
       const current = await this.ctx.storage.get<RequestRecord>(reqKey(id));
       if (current?.state === "completed") {
@@ -2095,9 +2099,9 @@ export class CamelAgent extends DurableObject<Env> {
         await this.ctx.storage.put(reqKey(saved.id), saved);
       }
       const task = await startHostExecution(pi, root, saved.id, { code, timeoutMs, maxOutputCharacters }, tool);
-      if (this.env.TEST_MODEL === "1" && await this.ctx.storage.get("test:crash-host-acceptance")) {
-        await this.ctx.storage.delete("test:crash-host-acceptance");
-        await this.ctx.storage.put("test:host-unaccepted-task", Number(task));
+      if (this.env.TEST_MODEL === "1" && await this.testStorage.get("test:crash-host-acceptance")) {
+        await this.testStorage.delete("test:crash-host-acceptance");
+        await this.testStorage.put("test:host-unaccepted-task", Number(task));
         throw Object.assign(new Error("Injected interruption after native host admission"), { status: 503 });
       }
       return Number(task);
@@ -3118,7 +3122,7 @@ export class CamelAgent extends DurableObject<Env> {
       }
       if (
         path === "/__test/flush-billing" &&
-        this.env.TEST_MODEL === "1" &&
+        this.env.TEST_HOOKS === "1" &&
         request.method === "POST"
       ) {
         await this.flushBilling(true);
@@ -3128,41 +3132,41 @@ export class CamelAgent extends DurableObject<Env> {
       }
       if (
         path === "/__test/settlement-state" &&
-        this.env.TEST_MODEL === "1" &&
+        this.env.TEST_HOOKS === "1" &&
         request.method === "GET"
       ) {
-        const unaccepted = await this.ctx.storage.get<number>("test:host-unaccepted-task");
+        const unaccepted = await this.testStorage.get<number>("test:host-unaccepted-task");
         return json({
-          crashReached: !!(await this.ctx.storage.get("test:crash-reached")),
+          crashReached: !!(await this.testStorage.get("test:crash-reached")),
           pending: (await this.ctx.storage.list({ prefix: "billing:" })).size,
-          hostFinishedAt: await this.ctx.storage.get<number>("test:host-finished-at"),
+          hostFinishedAt: await this.testStorage.get<number>("test:host-finished-at"),
           unacceptedFinishedAt: unaccepted === undefined ? undefined : (await waitHostExecution(await this.harness.pi(), unaccepted as never)).endedAt,
         });
       }
       if (
         path === "/__test/crash-next-settlement" &&
-        this.env.TEST_MODEL === "1" &&
+        this.env.TEST_HOOKS === "1" &&
         request.method === "POST"
       ) {
-        await this.ctx.storage.delete("test:crash-reached");
-        await this.ctx.storage.delete("test:crash-owner");
+        await this.testStorage.delete("test:crash-reached");
+        await this.testStorage.delete("test:crash-owner");
         const input = (await body(request)) as { events?: boolean; beforeReceipt?: boolean; beforeAcceptance?: boolean };
         if (input.beforeAcceptance === true) {
-          await this.ctx.storage.delete("test:host-unaccepted-task");
-          await this.ctx.storage.put("test:crash-host-acceptance", true);
+          await this.testStorage.delete("test:host-unaccepted-task");
+          await this.testStorage.put("test:crash-host-acceptance", true);
           return json({ armed: true });
         }
         if (input.beforeReceipt === true) {
-          await this.ctx.storage.delete("test:host-finished-at");
-          await this.ctx.storage.delete("test:host-stop-owner");
-          await this.ctx.storage.put("test:crash-host-settlement", true);
+          await this.testStorage.delete("test:host-finished-at");
+          await this.testStorage.delete("test:host-stop-owner");
+          await this.testStorage.put("test:crash-host-settlement", true);
           return json({ armed: true });
         }
-        await this.ctx.storage.put(
+        await this.testStorage.put(
           "test:crash-events",
           input.events === true,
         );
-        await this.ctx.storage.put("test:crash-settlement", true);
+        await this.testStorage.put("test:crash-settlement", true);
         return json({ armed: true });
       }
       if (path === "/schedules" && request.method === "GET")
@@ -3602,15 +3606,15 @@ export class CamelAgent extends DurableObject<Env> {
     })) {
       try {
         await settleTurn(this.env, receipt);
-        if (await this.ctx.storage.get("test:crash-settlement")) {
+        if (await this.testStorage.get("test:crash-settlement")) {
           await this.ctx.storage.transaction(async (tx) => {
-            await tx.delete("test:crash-settlement");
-            await tx.put("test:crash-reached", true);
-            await tx.put("test:crash-owner", this.instanceId);
+            await this.testStorage.delete("test:crash-settlement", tx);
+            await this.testStorage.put("test:crash-reached", true, tx);
+            await this.testStorage.put("test:crash-owner", this.instanceId, tx);
           });
         }
         if (
-          (await this.ctx.storage.get("test:crash-owner")) === this.instanceId
+          (await this.testStorage.get("test:crash-owner")) === this.instanceId
         ) {
           throw new Error(
             "Injected crash after PostgreSQL commit before DO acknowledgement",
