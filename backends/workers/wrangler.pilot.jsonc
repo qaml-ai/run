@@ -113,6 +113,7 @@
     "AGENT_ACCOUNT_EMAIL_FROM": "camelrun@staging.camelai.dev",
     "SCHEDULE_EMAIL_FROM": "camelrun@staging.camelai.dev",
     "ADMIN_TENANTS": "pilot-admin",
+    "AGENT_OPEN_SIGNUP": "false",
     "AGENT_MAX_AGENTS": "2100",
     "AGENT_MAX_AGENTS_PER_TENANT": "2100",
     "TENANT_MAX_ACTIVE": "2100"
