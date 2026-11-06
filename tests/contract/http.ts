@@ -236,6 +236,12 @@ export async function watchEvents(t: T, url: string, headers: Record<string, str
     try { errorBody = JSON.parse(text); } catch { /* plain HTTP error */ }
     ended = true;
   }
+  if (response.ok && response.headers.get("X-Agent-Transport") === "websocket") {
+    await until(() => {
+      if (ended) throw new Error("Event WebSocket ended before its ready frame");
+      return frames.some(frame => frame.event === "ready");
+    }, "the event WebSocket to be ready", 10_000);
+  }
   const observe = observeMissingStream(url, response.status, errorBody);
   return { status: response.status, get frames() {
     observe();

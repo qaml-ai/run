@@ -3,6 +3,11 @@ const source = await readFile(new URL('../../../src/agent-mcp.ts', import.meta.u
 const first = source.indexOf('/** An input as GET'), end = source.indexOf('export function agentMcp('), helpers = source.indexOf("/** The tool's description:");
 if ([first, end, helpers].some(index => index < 0)) throw new Error('Agent MCP extraction boundary changed');
 let content = source.slice(first, end) + source.slice(helpers);
+const followStart = content.indexOf('/**\n * Read the agent\'s event stream'), followEnd = content.indexOf('/** What a call waits on');
+if (followStart < 0 || followEnd < followStart) throw new Error('Agent MCP event follower boundary changed');
+// MCP's public Streamable HTTP stays unchanged. Only its host-internal watcher
+// differs: Workers' agent streams are hibernatable WebSockets, never SSE.
+content = content.slice(0, followStart) + content.slice(followEnd);
 content = content.replace('interface Call {', 'export interface Call {\n  fetch: typeof fetch;')
   .replace('type Extra =', 'export type Extra =')
   .replace(/^const sha = .*;\n/m, '')
@@ -12,7 +17,7 @@ content = content.replace('interface Call {', 'export interface Call {\n  fetch:
   .replace('async function converse(', 'export async function converse(')
   .replace('async function settle(', 'export async function settle(')
   .replace('(await response.json().catch(() => ({}))).error', '(await response.json().catch(() => ({})) as { error?: string }).error');
-const output = "// Generated from src/agent-mcp.ts by scripts/reuse-agent-mcp.mjs. Only host dependencies change.\nimport type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';\nimport { Api, ApiError, summarize, type RunSummary } from './agent-mcp-api.ts';\nimport { digest } from './api-contract.ts';\nconst resumeId = async (id: string) => 'resume_' + (await digest(id)).slice(0, 40);\n\n" + content;
+const output = "// Generated from src/agent-mcp.ts by scripts/reuse-agent-mcp.mjs. Only host dependencies change.\nimport type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';\nimport { Api, ApiError, summarize, type RunSummary } from './agent-mcp-api.ts';\nimport { digest } from './api-contract.ts';\nimport { followEvents as follow } from './agent-mcp-events.ts';\nconst resumeId = async (id: string) => 'resume_' + (await digest(id)).slice(0, 40);\n\n" + content;
 const path = new URL('../src/agent-mcp-core.ts', import.meta.url);
 if (process.argv.includes('--check')) { if (await readFile(path, 'utf8') !== output) throw new Error('Agent MCP source drifted'); }
 else await writeFile(path, output);
@@ -33,7 +38,10 @@ const generated = async (name, text) => {
   else await writeFile(path, text);
 };
 const header = '// Generated from packages/cli/src/ by scripts/reuse-agent-mcp.mjs. Host dependencies only.\n';
-await generated('hosted-mcp-ops.ts', header + ops.replaceAll('"./api.ts"', '"./agent-mcp-api.ts"').replaceAll('"./manifest.ts"', '"./hosted-mcp-manifest.ts"').replaceAll('globalThis.crypto', 'crypto'));
+await generated('hosted-mcp-ops.ts', header + ops.replaceAll('"./api.ts"', '"./agent-mcp-api.ts"').replaceAll('"./manifest.ts"', '"./hosted-mcp-manifest.ts"').replaceAll('globalThis.crypto', 'crypto')
+  // Workers' create response names an idempotently reused agent existingAgent.
+  .replaceAll('agent.reconfigured ?', 'agent.reconfigured || agent.existingAgent ?')
+  .replaceAll('created.reconfigured ?', 'created.reconfigured || created.existingAgent ?'));
 await generated('hosted-mcp-manifest.ts', header + await readFile(new URL('../../../packages/cli/src/manifest.ts', import.meta.url), 'utf8'));
 const cliTools = await readFile(new URL('../../../packages/cli/src/tools.ts', import.meta.url), 'utf8');
 await generated('hosted-mcp-tools.ts', header + cliTools.replaceAll('"./api.ts"', '"./agent-mcp-api.ts"').replaceAll('"./manifest.ts"', '"./hosted-mcp-manifest.ts"').replaceAll('"./ops.ts"', '"./hosted-mcp-ops.ts"'));
