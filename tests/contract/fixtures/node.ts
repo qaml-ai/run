@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { seedOpsAccount } from "./ops-seed.ts";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { writeFile } from "node:fs/promises";
@@ -220,6 +221,7 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
       await db.query("insert into oauth_grants(id,tenant,client_id,client_name,login,scope,resource,created_at) values($1,$2,$3,$4,$5,$6,$7,$8)", [grant.grantId, grant.tenant, grant.clientId, grant.clientName, grant.login, grant.scope, grant.resource, Date.now()]);
       await db.query("insert into oauth_tokens(sha256,kind,grant_id,expires_at) values($1,'access',$2,$3)", [hash(grant.token), grant.grantId, grant.expiresAt]);
     },
+    async seedOpsAccount(now) { await seedOpsAccount((text, values) => db.query(text, values), now); },
     async expireAccountEmailLinks() { await db.query("update account_email_links set expires_at=$1", [Date.now() - 1]); },
     async seedConsoleIdentity(tenant, identity) {
       const now = Date.now(), raw = randomBytes(32).toString("base64url");
