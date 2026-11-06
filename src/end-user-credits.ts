@@ -140,21 +140,19 @@ const amountInput = (value: unknown, what: string, { min = 0, nullable = false }
 function allowancesInput(value: unknown, removable: boolean, what = "allowances"): Record<string, number | null> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new HttpError(400, `${what} must be an object of bucket (or "prefix*", or "*") to micro-USD per day`);
   const entries = Object.entries(value);
-  if (entries.length > 100) throw new HttpError(400, `${what} may have at most 100 keys`);
   return Object.fromEntries(entries.map(([key, amount]) => {
     if (!ALLOWANCE_KEY.test(key)) throw new HttpError(400, `${what}: "${key}" is not a bucket, a "prefix*" or "*"`);
     return [key, amountInput(amount, `${what}["${key}"]`, { nullable: removable })];
   }));
 }
 
-/** `overrides` merged into `current` key by key, a null removing a key; at most 100 keys. */
+/** `overrides` merged into `current` key by key, a null removing a key. */
 function mergeKeys(current: Allowances, overrides: Record<string, number | null> | undefined, what: string): Allowances {
   const merged: Allowances = { ...current };
   for (const [key, value] of Object.entries(overrides ?? {})) {
     if (value === null) delete merged[key];
     else merged[key] = value;
   }
-  if (Object.keys(merged).length > 100) throw new HttpError(400, `At most 100 ${what} keys`);
   return merged;
 }
 
@@ -314,7 +312,7 @@ export class EndUserCredits {
     // another merges into what that one wrote.
     const params: unknown[] = [tenant, Date.now()];
     const param = (value: unknown) => `$${params.push(value)}`;
-    const sets: string[] = [], limits: string[] = [];
+    const sets: string[] = [];
     const values: Record<string, string> = { enabled: "false", allowances: "'{}'::jsonb", bucket_limits: "'{}'::jsonb", daily_limit: "null", markup_bps: "0", low_balance: "null", allowance_warning_percent: "null" };
     const column = (name: string, value: unknown) => {
       values[name] = param(value);
@@ -328,7 +326,6 @@ export class EndUserCredits {
       values[name] = `${param(set)}::jsonb`;
       const merged = `(s.${name} || ${values[name]}) - ${param(removed)}::text[]`;
       sets.push(`${name} = ${merged}`);
-      limits.push(`(select count(*) from jsonb_object_keys(${merged})) <= 100`);
     };
     if (input.enabled !== undefined) column("enabled", input.enabled);
     map("allowances", allowances);
@@ -341,7 +338,6 @@ export class EndUserCredits {
     const write = async (sql: Sql) => (await sql.query(`
       insert into end_user_settings as s (tenant, ${names.join(", ")}, updated_at) values ($1, ${names.map(name => values[name]).join(", ")}, $2)
       on conflict (tenant) do update set ${[...sets, "updated_at = excluded.updated_at"].join(", ")}
-      ${limits.length ? `where ${limits.join(" and ")}` : ""}
       returning *`, params)).rows[0];
     // A threshold set: each person under it who has not been told yet is, once (in the same transaction).
     const row = lowBalance === undefined ? await write(this.db) : await transaction(this.db, async sql => {
@@ -349,8 +345,6 @@ export class EndUserCredits {
       if (row) await thresholdChanged(sql, tenant, row.low_balance === null ? null : Number(row.low_balance));
       return row;
     });
-    // No row: the row is there, and a PATCH would take one of its maps past 100 keys. Nothing was written.
-    if (!row) throw new HttpError(400, "At most 100 keys in allowances, and 100 in bucketLimits");
     return settingsView(row);
   }
 

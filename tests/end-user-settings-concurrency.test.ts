@@ -76,16 +76,18 @@ test("two first writes for a tenant with no settings yet both land", async () =>
   }
 });
 
-test("a PATCH past 100 keys is refused and changes nothing", async () => {
+test("per-bot allowance keys can grow with a shared account", async () => {
   const { db } = await testDatabase();
   const credits = new EndUserCredits(db);
   await credits.setSettings("a", { enabled: true, allowances: Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`bot:${i}`, i])) });
-  await assert.rejects(credits.setSettings("a", { allowances: { "bot:new": 1 }, markupBps: 2_500 }, { merge: true }), (error: any) => error.status === 400 && /100/.test(error.message));
+  await credits.setSettings("a", { allowances: { "bot:new": 1 }, markupBps: 2_500 }, { merge: true });
   const settings = await credits.settings("a");
-  assert.deepEqual([Object.keys(settings.allowances).length, settings.markupBps], [100, 0]);
-  // Replacing one key and removing another stays within it.
-  const swapped = await credits.setSettings("a", { allowances: { "bot:0": null, "bot:new": 1 } }, { merge: true });
-  assert.deepEqual([Object.keys(swapped.allowances).length, swapped.allowances["bot:new"], swapped.allowances["bot:0"]], [100, 1, undefined]);
+  assert.deepEqual([Object.keys(settings.allowances).length, settings.markupBps], [101, 2_500]);
+  const swapped = await credits.setSettings("a", { allowances: { "bot:0": null, "bot:next": 1 } }, { merge: true });
+  assert.deepEqual([Object.keys(swapped.allowances).length, swapped.allowances["bot:next"], swapped.allowances["bot:0"]], [101, 1, undefined]);
+  await credits.update("a", "team:one", { allowances: Object.fromEntries(Array.from({ length: 200 }, (_, i) => [`bot:${i}`, i])) });
+  await credits.update("a", "team:one", { allowances: { "decide:new": 5 } });
+  assert.equal(Object.keys((await credits.get("a", "team:one")).overrides.allowances).length, 201);
 });
 
 test("holds and charges go through while a writer holds the settings row", async () => {
