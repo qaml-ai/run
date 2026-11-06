@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "revision": "76f5609635adacb5250d4d39cc8ff7dd4dcce5a7",
+  "method": "Read-only local-fetch timing preload; unchanged assertions, current Node-derived deadlines; no payloads, credentials or URLs retained.",
+  "originalFullRun": {
+    "sprite": "rt-pool-8",
+    "timedOutCases": [
+      {
+        "case": "agent-language first case",
+        "deadlineMs": 35628
+      },
+      {
+        "case": "agent-lifetime first case",
+        "deadlineMs": 30000
+      }
+    ]
+  },
+  "isolatedLanguage": {
+    "sprite": "rt-pool-22",
+    "durationMs": 13346.284997,
+    "passed": 1,
+    "failed": 0,
+    "processes": [
+      {
+        "healthReadyMs": 5665,
+        "responsesExcludingHealth": 54,
+        "requestMs": {
+          "max": 360,
+          "p50": 74,
+          "p95": 248
+        },
+        "lastResponseMs": 13576
+      }
+    ]
+  },
+  "concurrentTwoCases": {
+    "sprite": "rt-pool-22",
+    "testConcurrency": 2,
+    "durationMs": 14471.27074,
+    "passed": 2,
+    "failed": 0,
+    "cases": [
+      {
+        "case": "agent-language first case",
+        "durationMs": 14017.252275
+      },
+      {
+        "case": "agent-lifetime first case",
+        "durationMs": 6911.853538
+      }
+    ],
+    "processes": [
+      {
+        "healthReadyMs": 6292,
+        "responsesExcludingHealth": 53,
+        "requestMs": {
+          "max": 330,
+          "p50": 74,
+          "p95": 269
+        },
+        "lastResponseMs": 14248
+      },
+      {
+        "healthReadyMs": 5919,
+        "responsesExcludingHealth": 5,
+        "requestMs": {
+          "max": 465,
+          "p50": 257,
+          "p95": 465
+        },
+        "lastResponseMs": 7099
+      }
+    ]
+  },
+  "interpretation": "Neither isolated nor concurrent timing probes reproduced a stalled HTTP request. They do not establish the cause of the original full-run timeouts."
+}
