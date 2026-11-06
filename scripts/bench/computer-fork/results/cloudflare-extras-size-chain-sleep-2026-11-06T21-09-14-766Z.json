@@ -1,0 +1,66 @@
+{
+  "startedAt": "2026-11-06T21:09:14.766Z",
+  "tag": "cfx-gw9e6",
+  "checks": [
+    "size",
+    "chain",
+    "sleep"
+  ],
+  "size": [
+    {
+      "stage": "empty",
+      "rootfsKb": 420084,
+      "snapshotMs": 4439,
+      "snapshotBytes": 188896,
+      "unchangedSnapshotMs": 3933
+    },
+    {
+      "stage": "cloned",
+      "rootfsKb": 537788,
+      "snapshotMs": 7644,
+      "snapshotBytes": 102746572,
+      "unchangedSnapshotMs": 14724
+    },
+    {
+      "stage": "root_installed",
+      "rootfsKb": 1723536,
+      "snapshotMs": 22073,
+      "snapshotBytes": 836810910,
+      "unchangedSnapshotMs": 22339
+    },
+    {
+      "stage": "all_installed",
+      "rootfsKb": 2564740,
+      "snapshotMs": 31554,
+      "snapshotBytes": 1327828334,
+      "unchangedSnapshotMs": 26210
+    }
+  ],
+  "chain": {
+    "restoreMs": 2732,
+    "snapshotOfForkMs": 11096,
+    "snapshotOfForkBytes": 210184596,
+    "restoreOfForkMs": 1394,
+    "firstCommandAfterMs": 453,
+    "state": {
+      "fork_id": "chain1",
+      "branch": "chain",
+      "node_modules": "yes",
+      "boot": "fc4ecb6b"
+    },
+    "blobKb": "204800"
+  },
+  "sleep": {
+    "destroyMs": 332,
+    "restartMs": 387,
+    "afterRestart": "cat: /workspace/marker: No such file or directory\ncat: /root/marker: No such file or directory",
+    "bootId": "4cbea4c1-c8f5-4f65-9d07-a316ded27b33"
+  },
+  "destroyed": [
+    "cfx-gw9e6-size",
+    "cfx-gw9e6-chain1",
+    "cfx-gw9e6-chain2",
+    "cfx-gw9e6-sleep"
+  ],
+  "finishedAt": "2026-11-06T21:12:36.069Z"
+}

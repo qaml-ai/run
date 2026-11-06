@@ -1,0 +1,23 @@
+{
+  "startedAt": "2026-11-06T21:32:48.172Z",
+  "tag": "cfx-hqjzg",
+  "checks": [
+    "image"
+  ],
+  "image": {
+    "phase": "after",
+    "snapshotRev": "1",
+    "deployedRev": "2",
+    "restoreOldSnapshot": {
+      "ok": true,
+      "ms": 553,
+      "rev": "1",
+      "marker": "from-rev-1"
+    }
+  },
+  "destroyed": [
+    "cfx-hqjzg-imgnew",
+    "cfx-hqjzg-imgold"
+  ],
+  "finishedAt": "2026-11-06T21:32:49.988Z"
+}

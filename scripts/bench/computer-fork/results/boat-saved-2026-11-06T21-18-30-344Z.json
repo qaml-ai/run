@@ -1,0 +1,342 @@
+{
+  "provider": "boat-saved",
+  "prefix": "cfork-h862x",
+  "startedAt": "2026-11-06T21:18:30.345Z",
+  "rounds": [
+    {
+      "n": 5,
+      "ok": 5,
+      "callMs": {
+        "n": 5,
+        "p50": 729,
+        "p95": 782,
+        "max": 782
+      },
+      "firstCommandMs": {
+        "n": 5,
+        "p50": 1938,
+        "p95": 3069,
+        "max": 3069
+      },
+      "allFirstCommandMs": 3069,
+      "allBuiltMs": 77012,
+      "buildMs": {
+        "n": 5,
+        "p50": 24254,
+        "p95": 51690,
+        "max": 51690
+      },
+      "builds": [
+        {
+          "exit": 0,
+          "root_tsc_ms": "15911",
+          "workers_tsc_ms": "7238",
+          "test_ms": "7736",
+          "build_ms": "30885",
+          "exits": "0,0,0"
+        },
+        {
+          "exit": 0,
+          "root_tsc_ms": "2665",
+          "workers_tsc_ms": "5174",
+          "test_ms": "6363",
+          "build_ms": "14202",
+          "exits": "0,0,0"
+        },
+        {
+          "exit": 0,
+          "root_tsc_ms": "33594",
+          "workers_tsc_ms": "8769",
+          "test_ms": "9327",
+          "build_ms": "51690",
+          "exits": "0,0,0"
+        },
+        {
+          "exit": 0,
+          "root_tsc_ms": "8413",
+          "workers_tsc_ms": "6744",
+          "test_ms": "9097",
+          "build_ms": "24254",
+          "exits": "0,0,0"
+        },
+        {
+          "exit": 0,
+          "root_tsc_ms": "2451",
+          "workers_tsc_ms": "5613",
+          "test_ms": "8656",
+          "build_ms": "16720",
+          "exits": "0,0,0"
+        }
+      ],
+      "checks": [
+        {
+          "i": 0,
+          "fork_id": "0",
+          "branch": "fork-0",
+          "node_modules": "yes",
+          "boot": "4c31d225"
+        },
+        {
+          "i": 1,
+          "fork_id": "1",
+          "branch": "fork-1",
+          "node_modules": "yes",
+          "boot": "e25a736e"
+        },
+        {
+          "i": 2,
+          "fork_id": "2",
+          "branch": "fork-2",
+          "node_modules": "yes",
+          "boot": "c2610384"
+        },
+        {
+          "i": 3,
+          "fork_id": "3",
+          "branch": "fork-3",
+          "node_modules": "yes",
+          "boot": "b6917c56"
+        },
+        {
+          "i": 4,
+          "fork_id": "4",
+          "branch": "fork-4",
+          "node_modules": "yes",
+          "boot": "5152a172"
+        }
+      ],
+      "independent": true
+    },
+    {
+      "n": 10,
+      "ok": 10,
+      "callMs": {
+        "n": 10,
+        "p50": 1619,
+        "p95": 3185,
+        "max": 3185
+      },
+      "firstCommandMs": {
+        "n": 10,
+        "p50": 3002,
+        "p95": 9230,
+        "max": 9230
+      },
+      "allFirstCommandMs": 9231,
+      "allBuiltMs": 124584,
+      "buildMs": {
+        "n": 10,
+        "p50": 44167,
+        "p95": 113876,
+        "max": 113876
+      },
+      "builds": [
+        {
+          "exit": 0,
+          "root_tsc_ms": "5001",
+          "workers_tsc_ms": "94459",
+          "test_ms": "14416",
+          "build_ms": "113876",
+          "exits": "0,0,0"
+        },
+        {
+          "exit": 0,
+          "root_tsc_ms": "4551",
+          "workers_tsc_ms": "29065",
+          "test_ms": "9391",
+          "build_ms": "43007",
+          "exits": "0,0,0"
+        },
+        {
+          "exit": 0,
+          "root_tsc_ms": "9187",
+          "workers_tsc_ms": "30901",
+          "test_ms": "8524",
+          "build_ms": "48612",
+          "exits": "0,0,0"
+        },
+        {
+          "exit": 0,
+          "root_tsc_ms": "6656",
+          "workers_tsc_ms": "34982",
+          "test_ms": "8481",
+          "build_ms": "50119",
+          "exits": "0,0,0"
+        },
+        {
+          "exit": 0,
+          "root_tsc_ms": "3585",
+          "workers_tsc_ms": "33499",
+          "test_ms": "6699",
+          "build_ms": "43783",
+          "exits": "0,0,0"
+        },
+        {
+          "exit": 0,
+          "root_tsc_ms": "6052",
+          "workers_tsc_ms": "36978",
+          "test_ms": "9722",
+          "build_ms": "52752",
+          "exits": "0,0,0"
+        },
+        {
+          "exit": 0,
+          "root_tsc_ms": "4933",
+          "workers_tsc_ms": "27315",
+          "test_ms": "7744",
+          "build_ms": "39992",
+          "exits": "0,0,0"
+        },
+        {
+          "exit": 0,
+          "root_tsc_ms": "8771",
+          "workers_tsc_ms": "26361",
+          "test_ms": "9065",
+          "build_ms": "44197",
+          "exits": "0,0,0"
+        },
+        {
+          "exit": 0,
+          "root_tsc_ms": "5051",
+          "workers_tsc_ms": "32738",
+          "test_ms": "6378",
+          "build_ms": "44167",
+          "exits": "0,0,0"
+        },
+        {
+          "exit": 0,
+          "root_tsc_ms": "3750",
+          "workers_tsc_ms": "29682",
+          "test_ms": "6559",
+          "build_ms": "39991",
+          "exits": "0,0,0"
+        }
+      ],
+      "checks": [
+        {
+          "i": 0,
+          "fork_id": "0",
+          "branch": "fork-0",
+          "node_modules": "yes",
+          "boot": "afe9a5c1"
+        },
+        {
+          "i": 1,
+          "fork_id": "1",
+          "branch": "fork-1",
+          "node_modules": "yes",
+          "boot": "3c6b5631"
+        },
+        {
+          "i": 2,
+          "fork_id": "2",
+          "branch": "fork-2",
+          "node_modules": "yes",
+          "boot": "34f1dd89"
+        },
+        {
+          "i": 3,
+          "fork_id": "3",
+          "branch": "fork-3",
+          "node_modules": "yes",
+          "boot": "03e661ef"
+        },
+        {
+          "i": 4,
+          "fork_id": "4",
+          "branch": "fork-4",
+          "node_modules": "yes",
+          "boot": "526ccc2f"
+        },
+        {
+          "i": 5,
+          "fork_id": "5",
+          "branch": "fork-5",
+          "node_modules": "yes",
+          "boot": "4c1e0d9a"
+        },
+        {
+          "i": 6,
+          "fork_id": "6",
+          "branch": "fork-6",
+          "node_modules": "yes",
+          "boot": "aebbc700"
+        },
+        {
+          "i": 7,
+          "fork_id": "7",
+          "branch": "fork-7",
+          "node_modules": "yes",
+          "boot": "3ef5a31d"
+        },
+        {
+          "i": 8,
+          "fork_id": "8",
+          "branch": "fork-8",
+          "node_modules": "yes",
+          "boot": "b3761104"
+        },
+        {
+          "i": 9,
+          "fork_id": "9",
+          "branch": "fork-9",
+          "node_modules": "yes",
+          "boot": "b4367408"
+        }
+      ],
+      "independent": true
+    }
+  ],
+  "errors": [],
+  "source": {
+    "createMs": 538,
+    "firstCommandMs": 854,
+    "prepare": {
+      "clone_ms": "5648",
+      "root_ci_ms": "15093",
+      "workers_ci_ms": "45258",
+      "size_kb": "1742888",
+      "files": "88119"
+    },
+    "build": {
+      "root_tsc_ms": "5929",
+      "workers_tsc_ms": "6834",
+      "test_ms": "7060",
+      "build_ms": "19823",
+      "exits": "0,0,0"
+    }
+  },
+  "snapshot": {
+    "ms": 9644,
+    "handle": {
+      "saved": "cfork-cfork-h862x-base"
+    }
+  },
+  "persistence": {
+    "stopMs": 2908,
+    "wakeMs": 2911,
+    "note": "boat stop (disk snapshot, machine released) then resume on a new machine",
+    "before": {
+      "fork_id": "0",
+      "branch": "fork-0",
+      "node_modules": "yes",
+      "boot": "4c31d225"
+    },
+    "after": {
+      "fork_id": "0",
+      "branch": "fork-0",
+      "node_modules": "yes",
+      "boot": "95670b41"
+    },
+    "kept": true
+  },
+  "sourceAfter": {
+    "fork_id": "none",
+    "branch": "main",
+    "node_modules": "yes",
+    "boot": "6c63131b"
+  },
+  "sourceUnaffected": true,
+  "leftovers": [],
+  "finishedAt": "2026-11-06T21:23:41.811Z"
+}
