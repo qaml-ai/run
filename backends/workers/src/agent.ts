@@ -135,7 +135,7 @@ import {
   applyModelReceipt,
   type ModelReceipt,
 } from "./model-metering.ts";
-import { keyServices, type KeyEnv } from "./security-services.ts";
+import { createTenants, keyServices, type KeyEnv } from "./security-services.ts";
 import type { AccountEnv } from "./account-services.ts";
 import { runAdmission, admissionHeaders, admissionError, errorFields, errorHeaders, type RateLimitState } from "./admission.ts";
 import { billingRunStop, isUnbilledLimitMessage } from "./billing-run-stop.ts";
@@ -338,6 +338,7 @@ export class CamelAgent extends DurableObject<Env> {
       if (pending.every(rows => rows.size === 0)) break;
       await this.flushBilling(true);
     }
+    await this.closeWatchers(tenant, id);
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
     await this.ctx.storage.put("deleted", true);
@@ -371,6 +372,7 @@ export class CamelAgent extends DurableObject<Env> {
     await this.env.TENANTS.getByName(receipt.tenant).release(`${receipt.agent}:${receipt.requestId}`);
   });
   private socketsRestored = this.restoreWebSockets();
+  private watcherRecovery?: Promise<void>;
   private delegateWakeLimit = (this.env as Env & { AGENT_WAKES_PER_HOUR?: string }).AGENT_WAKES_PER_HOUR;
   private wakeBudget = new DelegationWakeBudget(this.ctx.storage, this.delegateWakeLimit ? Number(this.delegateWakeLimit) : undefined);
   async admitDelegateWake(id: string): Promise<WakeDecision> {
@@ -3052,6 +3054,7 @@ export class CamelAgent extends DurableObject<Env> {
             throw new Error("Agent shutdown is still settling accepted operations");
           await this.flushBilling(true);
           await this.ctx.storage.put("deleted", true);
+          if (conf) await this.closeWatchers(conf.tenantId, conf.id);
           if (conf)
             await releasePresentedFiles(
               this.ctx.storage,
@@ -3804,6 +3807,7 @@ export class CamelAgent extends DurableObject<Env> {
       await this.markCancelledRequests();
       await this.abortExecutions();
       await this.ctx.storage.put("deleted", true);
+      if (conf) await this.closeWatchers(conf.tenantId, conf.id);
       await this.delegation.destroy();
       await this.harness.session().abort();
       await this.cancelHumanInputs();
@@ -3909,6 +3913,27 @@ export class CamelAgent extends DurableObject<Env> {
     }
     await this.arm();
   }
+  private async recoverWatchers() {
+    this.watcherRecovery ??= (async () => {
+      const conf = await this.ctx.storage.get<Config>("configuration");
+      if (!conf) return;
+      const ids = this.ctx.getWebSockets().filter(socket => socket.readyState === 1)
+        .flatMap(socket => (socket.deserializeAttachment() as EventSubscription)?.watcher?.id ?? []);
+      await this.env.TENANTS.getByName(conf.tenantId).reconcileWatchers(conf.id, ids);
+    })().catch(error => { this.watcherRecovery = undefined; throw error; });
+    return this.watcherRecovery;
+  }
+  private async closeWatchers(tenant: string, agent: string) {
+    for (const socket of this.ctx.getWebSockets()) socket.close(1000, "Agent closed");
+    await this.env.TENANTS.getByName(tenant).reconcileWatchers(agent, []);
+  }
+  private async checkWatchers(tenant: string, agent: string) {
+    await this.recoverWatchers();
+    const limit = (await createTenants(this.env)).maxWatchers(tenant) ?? 1024;
+    if (!await this.env.TENANTS.getByName(tenant).canWatch(limit, agent))
+      throw Object.assign(new Error("This tenant has too many event stream subscribers; retry later"), { status: 429, retryAfter: 5 });
+    return limit;
+  }
   private async webSocketEvents(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const bearer = request.headers.get("authorization") ?? "";
@@ -3932,6 +3957,14 @@ export class CamelAgent extends DurableObject<Env> {
       undefined;
     const takeover = url.searchParams.get("takeover") === "true";
     if (!watch) await this.attached.prepareAttach(previous, takeover);
+    const toolsHash = await digest(JSON.stringify(conf.config.mcp?.tools ?? []));
+    if (watch) {
+      const limit = await this.checkWatchers(conf.tenantId, conf.id), id = crypto.randomUUID();
+      if (!await this.env.TENANTS.getByName(conf.tenantId).acquireWatcher(conf.id, id, limit))
+        throw Object.assign(new Error("This tenant has too many event stream subscribers; retry later"), { status: 429, retryAfter: 5 });
+      subscription.watcher = { tenant: conf.tenantId, id };
+    }
+    try {
     const pair = new WebSocketPair();
     const socket = pair[1];
     this.ctx.acceptWebSocket(socket);
@@ -3964,7 +3997,7 @@ export class CamelAgent extends DurableObject<Env> {
           agentId: conf.id,
           ...(watch ? { watch: true } : {}),
           connection: connection?.id,
-          toolsHash: await digest(JSON.stringify(conf.config.mcp?.tools ?? [])),
+          toolsHash,
         },
         undefined,
         "ready",
@@ -3998,6 +4031,10 @@ export class CamelAgent extends DurableObject<Env> {
       webSocket: pair[0],
       headers: selected ? { "Sec-WebSocket-Protocol": EVENT_PROTOCOL } : {},
     });
+    } catch (error) {
+      if (subscription.watcher) await this.env.TENANTS.getByName(subscription.watcher.tenant).releaseWatcher(subscription.watcher.id);
+      throw error;
+    }
   }
   /** Check ownership before returning the capability response: upgrade failures
    * cannot carry the SDK's typed HTTP refusal. */
@@ -4021,6 +4058,7 @@ export class CamelAgent extends DurableObject<Env> {
     // Directory forwarding strips the public prefix. The capability must point
     // the SDK back through the authenticated public route, not internal /events.
     const conf = await this.config();
+    if (url.searchParams.get("watch") === "1") await this.checkWatchers(conf.tenantId, conf.id);
     return Response.json(
       {
         transport: "websocket",
@@ -4077,7 +4115,8 @@ export class CamelAgent extends DurableObject<Env> {
     socket.close(1008, "Read-only event stream");
   }
   async webSocketClose(socket: WebSocket, code: number) {
-    const attachment = socket.deserializeAttachment();
+    const attachment = socket.deserializeAttachment() as EventSubscription;
+    if (attachment?.watcher) await this.env.TENANTS.getByName(attachment.watcher.tenant).releaseWatcher(attachment.watcher.id);
     if (attachment?.type === "camel.application")
       this.attached.close(attachment.connection);
     try {

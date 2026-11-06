@@ -7,6 +7,7 @@ export type EventSubscription = {
   subagents?: boolean;
   request?: string;
   run?: boolean;
+  watcher?: { tenant: string; id: string };
   connection?: string;
   serving?: boolean;
   initialized?: boolean;

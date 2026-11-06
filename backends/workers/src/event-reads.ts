@@ -1,13 +1,14 @@
 import { createHash } from "node:crypto";
 import { HttpError } from "./errors.ts";
 import { createTenants, type SecurityEnv } from "./security-services.ts";
+import type { TenantAdmission } from "./tenant.ts";
 
 // Like Node's Subscribers, the bound is per serving isolate, shared across all
 // agents of a tenant. Closing, aborting, and failing while loading all release it.
 const watchers = new Map<string, number>();
 const agentWatchers = new Map<string, number>();
 const nodeWatchers = new Map<string, number>();
-export async function eventRead(request: Request, env: SecurityEnv, tenant: string, agentId: string, forward: (request: Request) => Promise<Response>, waitUntil: (task: Promise<unknown>) => void): Promise<Response> {
+export async function eventRead(request: Request, env: SecurityEnv & { TENANTS: DurableObjectNamespace<TenantAdmission> }, tenant: string, agentId: string, forward: (request: Request) => Promise<Response>, waitUntil: (task: Promise<unknown>) => void): Promise<Response> {
   const url = new URL(request.url);
   const watch = url.searchParams.get("watch") === "1";
   const polling = url.searchParams.get("poll") === "1";
@@ -24,6 +25,8 @@ export async function eventRead(request: Request, env: SecurityEnv, tenant: stri
   if ((agentWatchers.get(agent) ?? 0) >= 32) reject("agent");
   if ((watchers.get(key) ?? 0) >= limit) reject("tenant");
   if ((nodeWatchers.get(node) ?? 0) >= 4096) reject("node");
+  const slot = `poll:${crypto.randomUUID()}`, admission = env.TENANTS.getByName(tenant);
+  if (!await admission.acquireWatcher(agentId, slot, limit)) reject("tenant");
   watchers.set(key, (watchers.get(key) ?? 0) + 1);
   agentWatchers.set(agent, (agentWatchers.get(agent) ?? 0) + 1);
   nodeWatchers.set(node, (nodeWatchers.get(node) ?? 0) + 1);
@@ -54,4 +57,5 @@ export async function eventRead(request: Request, env: SecurityEnv, tenant: stri
     release();
     return response;
   } catch (error) { release(); throw error; }
+  finally { await admission.releaseWatcher(slot); }
 }

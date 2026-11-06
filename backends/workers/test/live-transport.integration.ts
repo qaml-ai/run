@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createHash } from "node:crypto";
+import { openEventStream } from "../../../clients/event-transport.ts";
 import { AgentRuntime } from "../../../clients/typescript.ts";
 import WebSocket from "ws";
 import { startFixture } from "./fixture.ts";
@@ -87,4 +89,46 @@ test("browser WebSockets keep filters, redaction, read-only scopes and expiry", 
   });
   assert.equal(write.status, 403);
   assert.equal(await Promise.race([closed, new Promise(resolve => setTimeout(() => resolve("timeout"), 10_000))]), 1008);
+});
+
+
+test("watcher reservations enforce one tenant limit across agents and release on disconnect", { timeout: 45_000 }, async t => {
+  const token = "local-quota-fixture-only-not-a-real-credential", tenant = "socket-quota";
+  const f = await startFixture({ token, tenant, vars: { AGENT_TENANTS_JSON: JSON.stringify({ tenants: {
+    [tenant]: { tokenSha256: createHash("sha256").update(token).digest("hex"), apiKeys: {}, maxWatchers: 2 },
+  } }) } });
+  t.after(() => f.stop());
+  const headers = { authorization: `Bearer ${token}` };
+  const create = async () => (await (await fetch(`${f.url}/v1/agents`, {
+    method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ model: "test/echo", codeMode: false, fileTools: false }),
+  })).json() as { id: string }).id;
+  const a = await create(), b = await create();
+  const controller = new AbortController();
+  t.after(() => controller.abort());
+  const first = await openEventStream(fetch, `${f.url}/v1/agents/${a}/events`, { headers, signal: controller.signal });
+  const second = await openEventStream(fetch, `${f.url}/v1/agents/${b}/events`, { headers, signal: controller.signal });
+  const negotiate = () => fetch(`${f.url}/v1/agents/${a}/events`, { headers: { ...headers, accept: "application/vnd.camelrun.events+json, text/event-stream" } });
+  assert.equal((await negotiate()).status, 429, "different agents share the configured tenant limit");
+  await first.body!.cancel();
+  let released = false;
+  for (let i = 0; i < 100; i++) {
+    if ((await negotiate()).status === 200) { released = true; break; }
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.ok(released, "closing a socket returns its durable reservation");
+  const cursor = (await (await fetch(`${f.url}/v1/agents/${a}/state`, { headers })).json() as { cursor: number }).cursor;
+  const pollAbort = new AbortController();
+  const poll = fetch(`${f.url}/v1/agents/${a}/events?poll=1&snapshot=0&wait=20`, {
+    headers: { ...headers, "last-event-id": String(cursor) }, signal: pollAbort.signal,
+  }).catch(() => undefined);
+  t.after(() => pollAbort.abort());
+  let shared = false;
+  for (let i = 0; i < 100; i++) {
+    if ((await negotiate()).status === 429) { shared = true; break; }
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.ok(shared, "bounded JSON polls and sockets share the same quota");
+  pollAbort.abort();
+  await poll;
+  await second.body!.cancel();
 });
