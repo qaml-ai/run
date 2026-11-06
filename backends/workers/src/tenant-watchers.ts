@@ -6,14 +6,15 @@ export class TenantWatchers {
   initialize() {
     this.sql.exec("CREATE TABLE IF NOT EXISTS event_watchers (id TEXT PRIMARY KEY, agent TEXT NOT NULL)");
   }
-  canWatch(limit: number): boolean {
-    return this.sql.exec<{ count: number }>("SELECT count(*) AS count FROM event_watchers").one().count < limit;
+  canWatch(limit: number, agent?: string): boolean {
+    if (this.sql.exec<{ count: number }>("SELECT count(*) AS count FROM event_watchers").one().count >= limit) return false;
+    return agent === undefined || this.sql.exec<{ count: number }>("SELECT count(*) AS count FROM event_watchers WHERE agent=?", agent).one().count < 32;
   }
   acquire(agent: string, id: string, limit: number): boolean {
     return this.atomic(() => {
       const existing = this.sql.exec<{ agent: string }>("SELECT agent FROM event_watchers WHERE id=?", id).toArray()[0];
       if (existing) return existing.agent === agent;
-      if (!this.canWatch(limit)) return false;
+      if (!this.canWatch(limit, agent)) return false;
       this.sql.exec("INSERT INTO event_watchers VALUES (?,?)", id, agent);
       return true;
     });
@@ -24,7 +25,9 @@ export class TenantWatchers {
   reconcile(agent: string, activeIds: string[]): void {
     const active = new Set(activeIds);
     this.atomic(() => {
-      for (const row of this.sql.exec<{ id: string }>("SELECT id FROM event_watchers WHERE agent=?", agent).toArray()) {
+      // Poll requests release their own reservations in finally. A socket wake
+      // cannot distinguish an active poll from one still returning its result.
+      for (const row of this.sql.exec<{ id: string }>("SELECT id FROM event_watchers WHERE agent=? AND id NOT LIKE 'poll:%'", agent).toArray()) {
         if (!active.has(row.id)) this.release(row.id);
       }
     });

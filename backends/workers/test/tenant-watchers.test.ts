@@ -37,4 +37,13 @@ test("tenant socket quotas survive waking, reconcile only their owner and releas
   db.exec("DROP TABLE event_watchers");
   watchers.initialize();
   assert.equal(watchers.canWatch(1), true, "account purge recreates an empty schema");
+  assert.equal(watchers.acquire("agent-a", "poll:1", 100), true);
+  for (let i = 0; i < 31; i++) assert.equal(watchers.acquire("agent-a", `socket-${i}`, 100), true);
+  assert.equal(watchers.canWatch(100, "agent-a"), false, "polls and sockets share the per-agent cap");
+  assert.equal(watchers.canWatch(100, "agent-b"), true);
+  assert.equal(watchers.acquire("agent-a", "socket-over-limit", 100), false);
+  watchers.reconcile("agent-a", ["socket-0"]);
+  assert.equal(watchers.acquire("agent-b", "poll:1", 100), false, "a socket wake leaves an active poll intact");
+  assert.equal(watchers.canWatch(3), true);
+  assert.equal(watchers.canWatch(2), false);
 });

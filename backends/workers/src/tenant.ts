@@ -51,8 +51,8 @@ export class TenantAdmission extends DurableObject<Record<string, unknown>> {
   async release(id: string): Promise<void> {
     this.ctx.storage.sql.exec("DELETE FROM admitted WHERE id=?", id);
   }
-  async canWatch(limit: number): Promise<boolean> {
-    return this.watchers.canWatch(limit);
+  async canWatch(limit: number, agent?: string): Promise<boolean> {
+    return this.watchers.canWatch(limit, agent);
   }
   async acquireWatcher(agent: string, id: string, limit: number): Promise<boolean> {
     return this.watchers.acquire(agent, id, limit);
