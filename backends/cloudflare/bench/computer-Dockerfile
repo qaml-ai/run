@@ -1,8 +1,0 @@
-FROM node:24-trixie-slim
-COPY --from=docker.io/cloudflare/sandbox:1.0.3 /usr/local/bin/sandbox-shim /usr/local/bin/sandbox-shim
-COPY small /opt/fixtures/small
-COPY large.tar /opt/fixtures/large.tar
-COPY manifest.json /opt/fixtures/manifest.json
-COPY fixture.mjs /opt/fixtures/fixture.mjs
-WORKDIR /
-CMD ["sleep", "infinity"]

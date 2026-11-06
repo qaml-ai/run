@@ -331,7 +331,8 @@ statements. Transaction hold time runs from the successful `BEGIN` response to
 the `COMMIT` or `ROLLBACK` response. Connection acquisition is measured separately.
 The profile contains counts, durations and allowlisted schema labels, never query
 text, parameters or credentials. The switch is enabled only in the pilot config.
-`measurements/turn-db-profile.json` records the phase breakdown and limitations.
+[`turn-db-profile.json`](https://github.com/qaml-ai/run/blob/962e764c37f25477aedea47b21ed09fc6242f914/backends/workers/measurements/turn-db-profile.json) (archived) records the phase
+breakdown and limitations.
 
 Credit settlement still runs in PostgreSQL transactions. The changes combine
 credit-room reads, reuse an already locked end-user row while repeating expiry
@@ -378,7 +379,7 @@ revision is `247cc940`; the final optimized revision is `76f56096`, including
 the merged hardening modules. It was deployed once at 04:55 UTC, after the
 earlier load's cleanup removed all 20 accounts and 500 agents. Neither AWS nor
 the production runtime was changed. The first optimized sample at `f5dac260`
-is retained separately in `measurements/turn-db-after-initial-load.json`.
+is archived in [`turn-db-after-initial-load.json`](https://github.com/qaml-ai/run/blob/962e764c37f25477aedea47b21ed09fc6242f914/backends/workers/measurements/turn-db-after-initial-load.json).
 
 | Concurrent turns | Version | Client errors | Successful turns/s | p50 / p95 / p99 |
 | --- | --- | --- | --- | --- |
@@ -526,8 +527,9 @@ Durable cleanup ran from 05:31:30.790 to 05:46:12.762 UTC. The independent
 with zero API tokens, providers, volumes, end users, holds, pending attempts or
 deletion claims. All 1,750 settled accounting attempts remain. A names-only
 check at 05:47:05.932 found no temporary operator helpers and verified the same
-API version and Hyperdrive settings. See `measurements/turn-db-ps80-load.json`,
-`turn-db-ps80-profile.json` and `turn-db-ps80-cleanup.json`.
+API version and Hyperdrive settings. See the archived raw
+[`turn-db-ps80-load.json`](https://github.com/qaml-ai/run/blob/962e764c37f25477aedea47b21ed09fc6242f914/backends/workers/measurements/turn-db-ps80-load.json), and
+`measurements/turn-db-ps80-profile.json` and `turn-db-ps80-cleanup.json`.
 
 Cloudflare meters for 05:22:22–05:48:00 UTC, including cleanup and helper
 removal, have an estimated $0.70 linear value at paid overage rates. Rounding

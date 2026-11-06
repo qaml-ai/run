@@ -11,10 +11,17 @@ export async function openEventStream(
   offered = "websocket,sse",
   currentAuthorization?: () => string,
 ): Promise<Response> {
-  const headers = new Headers(init.headers);
   const transports = typeof globalThis.WebSocket === "function" ? offered.split(",") : ["sse"];
-  headers.set("Accept", transports.map(value => value === "websocket" ? CAPABILITY : "text/event-stream").join(", "));
-  const response = await fetcher(url, { ...init, headers });
+  const accept = transports.map(value => value === "websocket" ? CAPABILITY : "text/event-stream").join(", ");
+  // The fetcher gets a plain object with the caller's own header names, as before this transport existed: custom
+  // fetchers (the chat proxy's among them) spread `init.headers`, which drops every entry of a Headers instance.
+  const own: Record<string, string> = {};
+  new Headers(init.headers).forEach((value, name) => { own[name] = value; });
+  const named = init.headers && !(init.headers instanceof Headers) && !Array.isArray(init.headers) ? { ...init.headers as Record<string, string> } : own;
+  for (const name of Object.keys(named)) if (name.toLowerCase() === "accept") delete named[name];
+  const headers = new Headers(own);
+  headers.set("Accept", accept);
+  const response = await fetcher(url, { ...init, headers: { ...named, Accept: accept } });
   if (!response.ok || !response.headers.get("content-type")?.startsWith(CAPABILITY)) return response;
   const selection = await response.json() as { transport?: string; url?: string; protocol?: string };
   if (selection.transport !== "websocket" || selection.protocol !== PROTOCOL || typeof selection.url !== "string" || !offered.split(",").includes("websocket")) {

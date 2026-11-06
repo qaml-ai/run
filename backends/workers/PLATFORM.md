@@ -55,8 +55,9 @@ periods, while SSE kept accruing duration. Both connections remained open for
 
 `platform-hibernation-duration-final.json` contains the delayed Cloudflare
 period metrics; `platform-hibernation-summary.json` contains their sums.
-Earlier empty analytics results are retained as evidence of ingestion delay,
-not interpreted as zero. The Worker and namespace were deleted and the final
+Earlier empty analytics results showed ingestion delay and are not read as zero;
+they are kept at the
+[archived revision](https://github.com/qaml-ai/run/tree/962e764c37f25477aedea47b21ed09fc6242f914/backends/workers/measurements). The Worker and namespace were deleted and the final
 inventory is empty in `platform-hibernation-cleanup.json`. Cloudflare bills
 duration while active or unable to hibernate, and does not bill eligible idle
 objects; see its [pricing documentation](https://developers.cloudflare.com/durable-objects/platform/pricing/).

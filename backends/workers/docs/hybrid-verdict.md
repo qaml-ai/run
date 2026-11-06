@@ -1,4 +1,14 @@
-## 5. Verdict, effort and migration gates
+# Hybrid study verdict (archived)
+
+Section 5 of the November 2026 hybrid study of the earlier Cloudflare prototype
+(`backends/cloudflare`, since removed from the tree). This backend
+([../README.md](../README.md)) is that study's follow-up experiment: an
+internal pilot, not a supported deployment. The full study, its measurements
+and spikes stay readable at the
+[archived revision](https://github.com/qaml-ai/run/blob/962e764c37f25477aedea47b21ed09fc6242f914/backends/cloudflare/docs/HYBRID.md); section numbers and file names below
+refer to it.
+
+## Verdict, effort and migration gates
 
 | Area | What gets simpler | What gets harder / recommendation |
 | --- | --- | --- |
@@ -114,25 +124,8 @@ benefits ECS and does not commit the business to a hosting migration.
 
 ### Verification scope
 
-The following checks passed for this study. Commands run in the backend directory
-unless another location is stated. They validate the prototype and evidence;
-they are not ECS production or provider end-to-end qualification.
-
-| Command | Result |
-| --- | --- |
-| `npm run typecheck`; `npm test` | TypeScript passes; 12 unit tests pass. |
-| `npm run test:integration` | 14 local workerd integration tests pass, including hard restart, SSE and hostile codemode. |
-| `npm run build` | Both prototype Worker bundles pass Wrangler dry-run builds. |
-| `npx tsc --noEmit -p spikes/images/tsconfig.json` | Image spike passes its isolated TypeScript check. Its Wrangler dry-run also passes. |
-| `npm test`; `npm run typecheck` in `spikes/hyperdrive` | Real-schema transaction scenarios and isolated TypeScript check pass; local resources removed. |
-| `node spikes/images/local.mjs`; `node spikes/images/remote.mjs` | Measurements, failed cases, service limitations and cleanup are detailed in section 4 and its raw reports. |
-| Independent read-only Cloudflare connector inventory | Both image Worker/DO names and the owned bucket are absent after teardown; recorded in `hybrid-cleanup.json`. |
-| `node backends/cloudflare/studies/check-table-map.mjs backends/cloudflare/docs/hybrid-hyperdrive-results.json` at repository root | 116 created names, 7 dropped and 109 live tables match both migrations and the isolated PostgreSQL catalog. |
-| `node backends/cloudflare/spikes/design/code-estimate.mjs` at repository root | Reproduces source counts and estimate arithmetic, excluding generated directories. |
-| `node backends/cloudflare/studies/build-hybrid.mjs --check` at repository root | This report matches its editable section sources. |
-| `npm run docs` at repository root | Documentation generation passes. |
-| `scripts/sprite-test HEAD node --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-name-pattern=llms.txt tests/docs.test.ts` at repository root | Required documentation tests run off the laptop; 2 pass. |
-
-No current ECS source, sandbox, infrastructure or migration file is changed.
-The whole ECS test suite was not run for this isolated backend study. Production
-databases and AWS operations were not used.
+The study's checks (prototype unit and workerd integration tests, the image and
+Hyperdrive spikes, table-map and code-estimate scripts, docs build) ran against
+the prototype tree and are listed in the
+[archived report](https://github.com/qaml-ai/run/blob/962e764c37f25477aedea47b21ed09fc6242f914/backends/cloudflare/docs/HYBRID.md). They validated the prototype and its
+evidence, not ECS production or provider end-to-end behavior.

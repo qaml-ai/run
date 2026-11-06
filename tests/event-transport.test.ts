@@ -42,6 +42,17 @@ test("SSE Content-Type explicitly selects the current Node stream in one request
   assert.equal(selected, response); assert.equal(calls, 1);
 });
 
+test("a custom fetcher that spreads init.headers keeps the caller's headers and names", async () => {
+  let seen: Record<string, string> = {};
+  const response = new Response("event: ready\ndata: {}\n\n", { headers: { "content-type": "text/event-stream" } });
+  await openEventStream(async (_url, init) => {
+    // As the chat proxy's fetch does: a plain-object spread, then an override by the caller's own header name.
+    seen = { ...init?.headers as Record<string, string>, "X-Own": "1" };
+    return response;
+  }, "https://runtime.test/clients/a/events", { headers: { Accept: "text/event-stream", Authorization: "Bearer secret", "Last-Event-ID": "7" } });
+  assert.deepEqual(seen, { Authorization: "Bearer secret", "Last-Event-ID": "7", Accept: "application/vnd.camelrun.events+json, text/event-stream", "X-Own": "1" });
+});
+
 test("negotiated WebSockets preserve frames and carry credentials outside URLs", async () => {
   const original = globalThis.WebSocket;
   globalThis.WebSocket = Socket as unknown as typeof WebSocket;

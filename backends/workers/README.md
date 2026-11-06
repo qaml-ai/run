@@ -1,5 +1,9 @@
 # Workers-native camelRun experiment
 
+Experimental: an internal pilot, not a supported deployment or a replacement for
+the ECS runtime. Nothing here runs in production; production keeps running the
+Node runtime at the repository root.
+
 An optimistic, independent Workers app, built from `codex/cf-hybrid`. No ECS
 server is needed. No production service is changed. Read
 [ELEGANCE.md](ELEGANCE.md) for measured size, compatibility results and the
@@ -32,6 +36,9 @@ and `code:<JavaScript>` to exercise the actual tool and journal paths.
 
 Do not run `wrangler deploy` with this fixture configuration. No deployment is
 needed for any result in this directory.
+
+Key measured results (hibernation, load stages, parity totals, test timings) are
+summarized in [measurements/README.md](measurements/README.md).
 
 ## Validate
 
@@ -82,8 +89,8 @@ minutes by itself (its agent creation and 81 durable deletion passes are the
 work). With two or more shards the split gives it a shard of its own, so the other
 shards finish in a few minutes and the suite takes as long as that one test.
 
-Compatibility results are in `measurements/compatibility.json`, with individual
-TAP logs. The compatibility command exits nonzero while contract failures
+Compatibility results are in `measurements/compatibility.json`; the individual
+TAP logs are written next to it and not committed. The compatibility command exits nonzero while contract failures
 remain. The adapter swaps the original tests' Node server fixture for Workers
 and preserves their assertions and local fake-model responses. Tests that
 instantiate Node services directly are marked not applicable, not passed. Python

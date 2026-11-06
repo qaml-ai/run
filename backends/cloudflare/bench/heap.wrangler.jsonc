@@ -1,7 +1,0 @@
-{
- "name":"camelrun-proto-r2-heap", "account_id":"85bbd288051330fb51ee1c86031a299b",
- "main":"heap-worker.ts", "compatibility_date":"2026-11-04","compatibility_flags":["nodejs_compat"], "workers_dev":false,"preview_urls":false,
- "observability":{"enabled":true,"head_sampling_rate":1},"ai":{"binding":"AI"},"worker_loaders":[{"binding":"LOADER"}],
- "durable_objects":{"bindings":[{"name":"HEAP","class_name":"camelrun-proto-r2-heap"},{"name":"AGENTS","class_name":"camelrun-proto-r2-heap"},{"name":"CODEMODE_SANDBOX","class_name":"camelrun-proto-r2-sandbox","script_name":"camelrun-proto-r2-sandbox"}]},
- "migrations":[{"tag":"v1","new_sqlite_classes":["camelrun-proto-r2-heap"]}],"vars":{"MODEL":"test/echo","TEST_MODEL":"1"},"limits":{"cpu_ms":30000}
-}

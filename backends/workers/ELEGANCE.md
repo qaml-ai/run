@@ -13,8 +13,9 @@ functionality shrank by the same percentage.
 
 Built on the work from [#635](https://github.com/qaml-ai/run/pull/635) and
 [#644](https://github.com/qaml-ai/run/pull/644). Read the earlier
-[feasibility measurements](../cloudflare/docs/FEASIBILITY.md) and
-[hybrid study](../cloudflare/docs/HYBRID.md) for the cloud evidence this
+[feasibility measurements](https://github.com/qaml-ai/run/blob/962e764c37f25477aedea47b21ed09fc6242f914/backends/cloudflare/docs/FEASIBILITY.md) and
+[hybrid study](https://github.com/qaml-ai/run/blob/962e764c37f25477aedea47b21ed09fc6242f914/backends/cloudflare/docs/HYBRID.md) (archived with the removed prototype; its
+verdict is kept in [docs/hybrid-verdict.md](docs/hybrid-verdict.md)) for the cloud evidence this
 experiment builds on. Model and payment tests use local fake providers. The money track ran a
 bounded deployed crypto/DO crash probe; [MONEY.md](MONEY.md) records its scope and
 cleanup. The platform track ran scoped real Cloudflare volume and hibernation

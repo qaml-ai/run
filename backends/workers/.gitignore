@@ -6,3 +6,5 @@ dist-codemode/
 !.dev.vars.example
 measurements/parity-*.partial.json
 measurements/parity-*.log
+measurements/*.tap
+measurements/*.log

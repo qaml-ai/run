@@ -1,9 +1,0 @@
-{
-  "checkedAt": "2026-11-05T12:04:16.382Z",
-  "method": "Independent read-only Cloudflare connector inventory after the spike runners completed teardown",
-  "names": ["camelrun-proto-hybrid-images", "camelrun-proto-hybrid-images-retry"],
-  "workersRemaining": [],
-  "namespacesRemaining": [],
-  "bucketsRemaining": [],
-  "scope": "Exact owned names; no other prototype resources were mutated by this check"
-}

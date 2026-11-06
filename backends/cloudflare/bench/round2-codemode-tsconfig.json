@@ -1,5 +1,0 @@
-{
- "extends":"../tsconfig.json",
- "compilerOptions":{"types":["@cloudflare/workers-types","node"]},
- "include":["../worker-configuration.d.ts","round2-codemode-worker.ts","round2-codemode-sandbox.ts","heap-worker.ts"]
-}

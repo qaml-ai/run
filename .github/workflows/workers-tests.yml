@@ -1,10 +1,67 @@
 name: Workers tests
+# The experimental Workers backend (backends/workers). Not part of CI's required checks and never gates the ECS deploy.
+# It runs only when something the Workers code imports can change: its own tree, the shared runtime source it imports
+# (most of src/, but not admin, channels, voice or the console's sign-in), the SDK clients, the contract suite and
+# test helpers, migrations and dependencies. Keep this list in step with backends/workers' imports.
 on:
   push:
-    branches: [codex/workers-parity]
+    branches: [main]
+    paths:
+      - backends/workers/**
+      - src/**
+      - "!src/admin-*.ts"
+      - "!src/channels*.ts"
+      - "!src/voice/**"
+      - "!src/voice-*.ts"
+      - "!src/console-auth.ts"
+      - "!src/oauth.ts"
+      - "!src/help*.ts"
+      - "!src/ops-*.ts"
+      - "!src/discord-managed.ts"
+      - "!src/email-accounts.ts"
+      - clients/*.ts
+      - shared/**
+      - tests/contract/**
+      - tests/database.ts
+      - tests/fake-launcher.ts
+      - tests/file-fixtures.ts
+      - tests/runtime-server.ts
+      - tests/event-transport.test.ts
+      - migrations/**
+      - openapi.json
+      - package.json
+      - package-lock.json
+      - .github/workflows/workers-tests.yml
+      - .github/actions/**
   pull_request:
-    branches: [codex/workers-parity]
     types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - backends/workers/**
+      - src/**
+      - "!src/admin-*.ts"
+      - "!src/channels*.ts"
+      - "!src/voice/**"
+      - "!src/voice-*.ts"
+      - "!src/console-auth.ts"
+      - "!src/oauth.ts"
+      - "!src/help*.ts"
+      - "!src/ops-*.ts"
+      - "!src/discord-managed.ts"
+      - "!src/email-accounts.ts"
+      - clients/*.ts
+      - shared/**
+      - tests/contract/**
+      - tests/database.ts
+      - tests/fake-launcher.ts
+      - tests/file-fixtures.ts
+      - tests/runtime-server.ts
+      - tests/event-transport.test.ts
+      - migrations/**
+      - openapi.json
+      - package.json
+      - package-lock.json
+      - .github/workflows/workers-tests.yml
+      - .github/actions/**
   workflow_dispatch:
 permissions:
   contents: read

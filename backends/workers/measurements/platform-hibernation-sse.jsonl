@@ -1,2 +1,0 @@
-{"phase":"idle-start","transport":"sse","startedAt":"2026-11-05T18:37:51.333Z","objectId":"bfac2e1f73d018b2cc3821e50849621415676218c5533d1278d12b896ee18305","name":"idle-sse","initialInstance":"68be4626-22c0-49ce-9cf4-8f902ecb59aa"}
-{"phase":"idle-end","transport":"sse","idleEndedAt":"2026-11-05T18:40:51.682Z","idleMs":180000,"finalInstance":"68be4626-22c0-49ce-9cf4-8f902ecb59aa","hibernated":false,"connected":true,"note":"Compare this objectId and idle window with Cloudflare duration metrics; instance replacement proves eviction only."}

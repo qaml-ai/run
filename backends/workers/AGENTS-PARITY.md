@@ -14,7 +14,8 @@ results below are distinct observations, not a new aggregate score.
 [AGENTS-FAILURES.md](AGENTS-FAILURES.md) lists each remaining observed failure,
 its exact test name, a one-line diagnosis and the source implementation to use
 for the parallel gap-closing runs. The sanitized machine-readable evidence is
-[agents-contract-handoff.json](measurements/agents-contract-handoff.json).
+[agents-contract-handoff.json](https://github.com/qaml-ai/run/blob/962e764c37f25477aedea47b21ed09fc6242f914/backends/workers/measurements/agents-contract-handoff.json)
+(archived; raw dumps are not kept in the tree).
 
 The local branch `wip/agents-unfinished` retains the unverified configuration
 queue, public list/activity/idempotency additions, reasoning retry and web-fetch
@@ -80,8 +81,8 @@ The earlier unchanged-assertion compatibility inventory reached **116 pass /
 workerd and 45 were SDK-only. Python reached 57 pass, 2 fail, 1 voice exclusion.
 The remaining legacy failures concern PDF metadata, two lazy-connection counter
 assertions, end-user credit and key-scope/webhook behavior. That inventory is
-separate from the newer 590-case contract suite. Its adjacent raw logs are older
-prototype snapshots; the JSON summaries identify the latest recorded results.
+separate from the newer 590-case contract suite. Its raw TAP logs are not kept;
+`measurements/compatibility.json` holds the latest recorded results.
 
 ## Delivery validation and cloud evidence
 

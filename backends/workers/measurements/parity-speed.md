@@ -42,9 +42,11 @@ The audits retained 2,516 assertions in 311 ported cases and 620 assertions in
 runner regressions, typecheck and docs checks passed on Sprites.
 
 `parity-speed.json` records the source keys, phase metadata, counts and SHA-256
-digests of sorted `[area, source, name, status]` tuples. `parity-node.json` and
-`parity-workers.json` contain the full final results. The green Node cache is
-`node-baselines/37fe8ceacf3bc0cd00210c288964a3d85119933e53516aa4392d3f40854b56dc.json`.
+digests of sorted `[area, source, name, status]` tuples. The green Node cache was
+[`node-baselines/37fe8cea….json`](https://github.com/qaml-ai/run/blob/962e764c37f25477aedea47b21ed09fc6242f914/backends/workers/measurements/node-baselines/37fe8ceacf3bc0cd00210c288964a3d85119933e53516aa4392d3f40854b56dc.json)
+(archived). `parity-node.json` and `parity-workers.json` next to this file are
+rewritten by every full `npm run parity` and describe the latest run
+([PARITY.md](../PARITY.md)), not this benchmark.
 
 The untouched remote job saved both reports and its 2,602-second timing before
 exiting with the expected assertion failures. Its local driver then reported a

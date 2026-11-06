@@ -225,7 +225,7 @@ export function watchAgent(options: WatchOptions): Watcher {
   async function get(path: string, init: RequestInit = {}, signal?: AbortSignal) {
     for (let attempt = 0; ; attempt++) {
       let response: Response;
-      try { const headers = new Headers(init.headers); headers.set("Authorization", `Bearer ${token}`); response = await doFetch(base + path, { ...init, headers, signal: signal ?? closed.signal }); }
+      try { response = await doFetch(base + path, { ...init, headers: { ...init.headers as Record<string, string>, Authorization: `Bearer ${token}` }, signal: signal ?? closed.signal }); }
       catch (error) {
         if ((signal ?? closed.signal).aborted || !(error instanceof TypeError)) throw error;
         // A browser says only "Failed to fetch" for a network failure and for a CORS refusal alike.
