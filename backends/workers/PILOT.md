@@ -25,7 +25,10 @@ Postgres or use customer credentials. All dates below are UTC.
 | Cron | `*/5 * * * *` | Maintenance and outbox repair |
 | Model secret | `PILOT_OPENROUTER_KEY` | Account secret `CAMELRUN_PILOT_OPENROUTER_KEY`, store `c8c66b0210e64900864182073dcd5e09` |
 
-All three Workers enable persistent logs and traces, with query strings redacted.
+The API enables structured runtime logs. Automatic invocation logs and traces
+are disabled because Cloudflare does not guarantee redaction of the bearer
+credential in a WebSocket subprotocol. The sandbox and fake model Workers enable
+logs and traces. Query strings are redacted.
 The API uses Smart Placement. The database origin is PlanetScale in AWS us-east-1;
 this does not authorize access to the production camelRun AWS account or database.
 
@@ -102,10 +105,13 @@ Run disposable deployed validation:
 
 ```sh
 PILOT_FAKE_URL=https://camelrun-pilot-fakemodel.miguel-85b.workers.dev \
+  PILOT_AGENT_NAMESPACE_ID=b7a05e64caac4a9dbd59df0956a89a5c \
   node --experimental-strip-types backends/workers/scripts/pilot-validate.mjs
-# Add --real-model only after the platform secret is bound.
 PILOT_FAKE_URL=https://camelrun-pilot-fakemodel.miguel-85b.workers.dev \
   node backends/workers/scripts/pilot-load-run.mjs
+# After fake smoke and load results, submit one cheap real-model run.
+PILOT_FAKE_URL=https://camelrun-pilot-fakemodel.miguel-85b.workers.dev \
+  node --experimental-strip-types backends/workers/scripts/pilot-validate.mjs --real-model-only
 ```
 
 Workers live streams are WebSocket-only by CTO decision on 2026-11-05. The SDKs'
@@ -114,6 +120,14 @@ that capability or a WebSocket upgrade fails with HTTP 406, code
 `WEBSOCKET_REQUIRED`, and a message directing the caller to WebSocket. Bounded
 JSON event polling remains available. The Node runtime retains SSE, and the SDKs
 retain their Node compatibility. The pilot idle check uses the default SDK path.
+MCP retains its specification-defined SSE transport. Its stateless endpoint
+returns HTTP 405 for a standalone GET, so there is no idle listening stream;
+an active POST response stream ends with the call.
+
+The real-model check submits one run with `gpt-4o-mini` and a 16-token output
+limit. It records API usage, cost in USD, and durable model-attempt counters
+before deleting the throwaway tenant. Do not manually retry a failed real call:
+inspect those counters first, since the runtime can retry upstream requests.
 
 Twelve exact SSE-dependent cases have been added to the accepted-differences
 registry (17 total). They cover direct SSE attachment, CORS content type, HTTP
