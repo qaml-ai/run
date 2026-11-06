@@ -142,6 +142,7 @@ test("accepted differences are exact reviewed Workers cases and never green Node
     const result = differenceResult(decision);
     assert.equal(result.status, "accepted-difference");
     validateDifferences([result], "workers");
+    assert.throws(() => validateDifferences([{ ...result, status: "pass" }], "workers"), /cannot count as pass/);
     assert.throws(() => validateDifferences([result], "node"), /Unreviewed/);
     assert.throws(() => validateDifferences([{ ...result, reason: "different" }], "workers"), /Unreviewed/);
     assert.throws(() => validateDifferences([{ ...result, source: "another case" }], "workers"), /Unreviewed/);

@@ -31,8 +31,10 @@ export function differenceResult(row) {
 
 export function validateDifferences(rows, backend) {
   for (const row of rows) {
-    if (row.status !== "accepted-difference") continue;
     const decision = acceptedDifference(row, backend);
+    if (decision && row.status !== "accepted-difference")
+      throw new Error(`Reviewed difference cannot count as ${row.status}: ${row.name}`);
+    if (row.status !== "accepted-difference") continue;
     if (!decision || row.backend !== "workers" || row.reason !== decision.reason ||
         row.reviewedBy !== decision.reviewedBy || row.reviewedAt !== decision.reviewedAt)
       throw new Error(`Unreviewed accepted difference: ${row.name}`);
