@@ -94,7 +94,7 @@ export default function pilotOperator(options: Options) {
           return reply(row);
         }
         if (targeted && (!targeted[2] || targeted[2] === "deletion")) {
-          const deletions = accountDeletions(setup, { accounts: services.accounts } as AccountServices);
+          const deletions = accountDeletions(setup, { accounts: services.accounts } as AccountServices, tenant);
           if (request.method === "DELETE" && !targeted[2]) {
             const result = await deletions.request(tenant!, "operator:pilot-bootstrap");
             ctx.waitUntil(deletions.kick());

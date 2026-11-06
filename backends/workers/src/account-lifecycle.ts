@@ -34,7 +34,7 @@ export function accountDeletions(env: AccountLifecycleEnv, service: AccountServi
   const tenantFilter = tenantOnly === undefined ? "" : " and tenant = $1";
   const tenantValues = tenantOnly === undefined ? [] : [tenantOnly];
   return new AccountDeletions({
-    db, accounts: service.accounts, stripe: createStripe(env),
+    db, accounts: service.accounts, stripe: createStripe(env), onlyTenant: tenantOnly,
     storage: { async removeBlobs(prefix) {
       const tenant = prefix.split("/")[1];
       await removePrefix(env, prefix);

@@ -20,6 +20,9 @@ test("a foreground deletion claims only its explicit tenant and respects another
   await db.query("insert into account_deletions(tenant,requested_at,requested_by,claimed_until) values('allowed',1,'test',now()+interval '1 minute'),('unrelated',0,'test',null)");
   const deletions = new AccountDeletions({ db, accounts, storage, deleteAgent: async () => assert.fail("no agents in fixture") });
   assert.equal(await deletions.next("allowed"), false, "a scoped claim does not fall back to the unrelated due deletion");
+  const bounded = new AccountDeletions({ db, accounts, storage, onlyTenant: "allowed", deleteAgent: async () => assert.fail("no agents in fixture") });
+  await bounded.kick();
+  assert.equal((await bounded.status("unrelated"))?.state, "deleting", "background kick inherits the bounded operator's scope too");
   await db.query("update account_deletions set claimed_until=null where tenant='allowed'");
   assert.equal(await deletions.next("allowed"), true);
   assert.equal((await deletions.status("allowed"))?.state, "deleted");
