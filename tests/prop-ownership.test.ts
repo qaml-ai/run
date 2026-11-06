@@ -321,7 +321,9 @@ const commands = weighted<Command>([
 let sim: PgliteDb;
 const real = { setTimeout, clearTimeout, setInterval, clearInterval, now: performance.now };
 before(async () => {
-  sim = await pgliteDb({ migrations: ["001_coordination.sql", "002_node_draining.sql"] });
+  // Every migration that shapes runtime_nodes or actor_owners: one missing fails each registration, and no node ever
+  // holds a claim (the coverage check below catches that).
+  sim = await pgliteDb({ migrations: ["001_coordination.sql", "002_node_draining.sql", "089_memory_retirement.sql"] });
   await sim.db.query("create table effects (id serial primary key, actor text not null, epoch bigint not null, session uuid not null)");
   // Timers and performance.now() resolve to the running node's clocks; everything else keeps the real ones.
   const fake = (name: "setTimeout" | "setInterval") => (callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
@@ -382,4 +384,8 @@ test("ownership: one holder per epoch, epochs only grow, and no claim outlives i
     seen.longestDualMs = Math.max(seen.longestDualMs, world.dualMs);
   })), { runs: 100 });
   console.log(JSON.stringify({ type: "ownership_coverage", ...seen }));
+  // A property no node ever reached a claim in proves nothing: from #419 until this check, every registration failed on
+  // a column the test's schema lacked, so no run took a claim, and nightly PGlite ran out of stack on the errors. (Not
+  // when replaying one case: PROP_PATH.)
+  if (!process.env.PROP_PATH) assert.ok(seen.claims > 0 && seen.committed > 0, `no run took a claim or committed a fenced write: ${JSON.stringify(seen)}`);
 });

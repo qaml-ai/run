@@ -88,15 +88,19 @@ export class SimNet {
     return socket;
   }
 
-  /** The network as `from` sees it. */
-  networkFor(from: string): Network {
+  /**
+   * The network as `from` sees it. Once `dead()` (a crashed process), it opens no connection: code of the process that
+   * was still waiting (on a database answer, a timer) and runs on cannot reach anyone, as the process's database
+   * connections and storage cannot.
+   */
+  networkFor(from: string, dead?: () => boolean): Network {
     const request = ((url: string | URL, options: RequestOptions | ((response: IncomingMessage) => void), callback?: (response: IncomingMessage) => void): ClientRequest => {
       if (typeof options === "function") { callback = options; options = {}; }
       const target = new URL(url);
       return httpRequest(target, {
         ...options,
         createConnection: () => {
-          const socket = this.connect(from, target.hostname);
+          const socket = dead?.() ? "ECONNREFUSED" : this.connect(from, target.hostname);
           return (typeof socket === "string" ? this.failing(socket) : socket) as never;
         },
       }, callback);

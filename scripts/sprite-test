@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # sprite-test [ref] [command...]: run camelRun tests at <ref> on sprites (sprites.dev, Fly.io) leased from a shared pool.
-#   scripts/sprite-test                                   # the full suite at HEAD, as 8 shards on 8 sprites at once (SPRITE_SHARDS)
+#   scripts/sprite-test                                   # the full suite at HEAD (sim files included, as CI runs them), as 8 shards on 8 sprites at once (SPRITE_SHARDS)
 #   scripts/sprite-test origin/fix/x                      # the full suite at a ref
 #   scripts/sprite-test HEAD node --experimental-strip-types --test tests/clients.test.ts   # any command, in the checkout
 #   scripts/sprite-test --warm [ref]                      # prepare every free sprite in the pool not yet at <ref>, ready for runs
@@ -327,7 +327,7 @@ job_for() { # <slot> <lease> <id>: the job script, base64
   elif (( ${#args[@]} )); then
     for arg in "${args[@]}"; do arg=${arg//\{shard\}/$1}; arg=${arg//\{shards\}/$slots}; expanded+=("$arg"); done
     cmd=$(printf '%q ' "${expanded[@]}")
-  else cmd="env TEST_DATABASE_PER_FILE=true TEST_CONCURRENCY=6 npm run -s test:shard -- $1/$slots"; fi
+  else cmd="env TEST_DATABASE_PER_FILE=true TEST_CONCURRENCY=6 TEST_INCLUDE_SIM=true npm run -s test:shard -- $1/$slots"; fi
   printf 'id=%q lease=%q lock=%q v8=%q hours=%q max_age=%q artifacts=%q\nexport CONTRACT_REVISION=%q\nset -- %s\n%s\n' "$3" "$2" "$lock" "$v8" "${SPRITE_RUN_HOURS:-2}" "$max_age" "$artifacts" "$sha" "$cmd" "$JOB" | base64 | tr -d '\n'
 }
 
