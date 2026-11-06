@@ -13,7 +13,7 @@ import { PREPARED_MODEL_CREDENTIALS } from './model-request-auth.ts';
 import { accountingModel, modelCallKind } from './model-call-context.ts';
 import { logUntrustedModelUsage } from './model-usage-log.ts';
 
-export type ModelReceipt = { tenant: string; agent: string; platform: boolean; event: ModelAttemptEvent };
+export type ModelReceipt = { tenant: string; agent: string; platform: boolean; catalogPriced?: boolean; event: ModelAttemptEvent };
 export type ModelBillingContext = {
   tenant: string; agent: string; requestId?: string; subject?: string; bucket?: string; keyScope?: string;
   platform?: boolean; actor?: string; context?: Record<string, unknown>;
@@ -25,7 +25,7 @@ export async function modelAttempts(env: KeyEnv) {
   return new ModelAttempts(accounts.db, accounts, fetch, 0, undefined, new EndUserCredits(accounts.db));
 }
 export async function applyModelReceipt(env: KeyEnv, receipt: ModelReceipt) {
-  return (await modelAttempts(env)).event(receipt.tenant, receipt.agent, receipt.platform, receipt.platform, receipt.event);
+  return (await modelAttempts(env)).event(receipt.tenant, receipt.agent, receipt.platform, receipt.catalogPriced ?? receipt.platform, receipt.event);
 }
 
 /** Every provider call, including Pi's native compaction, uses the source accounting stream. */
@@ -55,7 +55,7 @@ export function meterProvider<P extends Provider<any>>(
         if ('baseUrl' in credentials && credentials.baseUrl && !FETCH_APIS.includes(model.api)) model = { ...model, baseUrl: credentials.baseUrl };
       }
       let limit = await modelSpendLimit(service.db, identity) ?? await service.accounts.runLimit(identity.tenant);
-      if (!limit && identity.subject) {
+      if (!limit && identity.subject && model.api !== "openai-codex-responses") {
         const refused = await new EndUserCredits(service.db).refusal(identity.tenant, identity.subject, identity.bucket ?? 'default');
         if (refused) limit = creditError(refused);
       }
@@ -67,14 +67,15 @@ export function meterProvider<P extends Provider<any>>(
         throw typeof limit === 'string' ? new Error(limit) : limit;
       }
       const platform = options.endpointIdentity ? false : credentials ? credentials.platform : identity.platform !== false;
+      const catalogPriced = await service.accounts.billing.mode(identity.tenant) === "prepaid";
       // Provider generation observations, renewal and settlement share the same
       // mutable holds. Finish must follow every preceding accounting write.
       let pending: Promise<unknown> = Promise.resolve();
       const hook: ModelAttemptHook = event => {
         const next = pending.then(async () => {
           if (event.type === 'finish') {
-            await commit({ tenant: identity.tenant, agent: identity.agent, platform, event });
-            if (platform) logUntrustedModelUsage(identity.tenant, identity.agent, model, event.usage, estimate, event.chars, event.completed);
+            await commit({ tenant: identity.tenant, agent: identity.agent, platform, catalogPriced, event });
+            if (platform && catalogPriced) logUntrustedModelUsage(identity.tenant, identity.agent, model, event.usage, estimate, event.chars, event.completed);
             return true;
           }
           const attributed = event.type === 'begin' ? { ...event,
@@ -85,7 +86,7 @@ export function meterProvider<P extends Provider<any>>(
               } } : {}) },
             ...(identity.subject ? { endUser: { id: identity.subject, bucket: identity.bucket ?? 'default' } } : {}),
           } : event;
-          const answer = await service.event(identity.tenant, identity.agent, platform, platform, attributed);
+          const answer = await service.event(identity.tenant, identity.agent, platform, catalogPriced, attributed);
           return answer;
         });
         pending = next.catch(() => {});

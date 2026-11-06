@@ -129,3 +129,28 @@ test("merge preserves failures and rejects missing, duplicate, stale or extra re
   assert.throws(() => mergeReports([first, second], [a], context), /Unexpected shard case/);
   assert.throws(() => mergeReports([first, { ...second, rows: [] }], [a, b], context), /incomplete inventory/);
 });
+
+test("accepted differences are exact reviewed Workers cases and never green Node evidence", async () => {
+  const { acceptedDifferences, acceptedDifference, differenceResult, validateDifferences, validateDifferenceInventory } = await import("./accepted-differences.mjs");
+  assert.equal(acceptedDifferences.length, 5);
+  validateDifferenceInventory(acceptedDifferences);
+  assert.throws(() => validateDifferenceInventory(acceptedDifferences.slice(1)), /missing or duplicated/);
+  assert.throws(() => validateDifferenceInventory([...acceptedDifferences, acceptedDifferences[0]]), /missing or duplicated/);
+  for (const decision of acceptedDifferences) {
+    assert.equal(acceptedDifference(decision, "node"), undefined);
+    assert.equal(acceptedDifference({ ...decision, name: `${decision.name} extra` }, "workers"), undefined);
+    const result = differenceResult(decision);
+    assert.equal(result.status, "accepted-difference");
+    validateDifferences([result], "workers");
+    assert.throws(() => validateDifferences([{ ...result, status: "pass" }], "workers"), /cannot count as pass/);
+    assert.throws(() => validateDifferences([result], "node"), /Unreviewed/);
+    assert.throws(() => validateDifferences([{ ...result, reason: "different" }], "workers"), /Unreviewed/);
+    assert.throws(() => validateDifferences([{ ...result, source: "another case" }], "workers"), /Unreviewed/);
+    assert.equal(greenFor(green([], { rows: [result] }), [decision], "node-key"), false);
+  }
+  const result = differenceResult(acceptedDifferences[0]);
+  const report = { backend: "workers", nodeKey: "node-key", suiteHash: "suite-hash", rows: [result], shard: { index: 1, total: 1 }, expectedCases: 1 };
+  const context = { backend: "workers", nodeKey: "node-key", suiteHash: "suite-hash" };
+  assert.equal(mergeReports([report], [result], context).rows[0].status, "accepted-difference");
+  assert.throws(() => mergeReports([{ ...report, rows: [{ ...result, reviewedBy: "" }] }], [result], context), /Unreviewed/);
+});

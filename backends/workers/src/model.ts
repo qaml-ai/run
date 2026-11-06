@@ -331,10 +331,10 @@ export function modelRuntime(
     const catalog = new Map<string, Model<Api>>();
     const install = (providerId: string) => {
       if (models.getProvider(providerId)) return;
+      // Resolution selects the fixture protocol; withSettings may subsequently
+      // restore a scope's native API even when an unknown model has no catalog root.
       const serve = (target: Model<Api>, simple: boolean, context: TranscriptContext, options?: StreamOptions) =>
-        target.baseUrl === endpoint.href
-          ? streamApi({ ...target, api: env.TEST_MODEL_API ?? "openai-completions" }, simple, context, options)
-          : streamApi(target, simple, context, options);
+        streamApi(target, simple, context, options);
       models.setProvider(decorate({
         id: providerId, name: "Local compatibility fixture", baseUrl: endpoint.href,
         auth: { apiKey: { name: "Local fixture", resolve: async () => ({ auth: { apiKey: "fixture-model-key" } }) } },

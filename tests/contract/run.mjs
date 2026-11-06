@@ -5,6 +5,7 @@ import path from "node:path";
 import { excludedCases } from "./scopes.mjs";
 import { sourceKeys, caseKey as key, selectCases, partitionFiles, greenFor, loadBaseline, saveBaseline, mergeReports, walk } from "./harness.mjs";
 import { serialFiles } from "./groups.mjs";
+import { acceptedDifference, differenceResult, validateDifferences, validateDifferenceInventory } from "./accepted-differences.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const args = process.argv.slice(2);
@@ -92,6 +93,7 @@ if (pythonInventory.code !== 0) throw new Error(`Cannot load Python inventory: $
 const scope = await excludedCases();
 const allCases = [...inventory.cases, ...pythonInventory.cases, ...scope];
 if (new Set(allCases.map(key)).size !== allCases.length) throw new Error("Contract inventory contains duplicate case identities");
+validateDifferenceInventory(allCases);
 const selected = selectCases(allCases, { area, group, files: selectedFiles });
 if (!selected.length) throw new Error(`No contract cases match the selection`);
 let baseline = await loadBaseline(root, nodeKey, selected);
@@ -122,8 +124,10 @@ function complete(rows, expected, processResult) {
 async function run(which) {
   console.log(`Contract baseline: ${which}${area ? ` / ${area}` : ""} (${manifest.length} cases)`);
   const started = performance.now();
-  const rows = manifest.filter(row => row.file === "scope"), logs = new Map();
-  const files = [...new Set(manifest.filter(row => row.file !== "scope").map(row => row.file))].sort();
+  const differences = manifest.filter(row => acceptedDifference(row, which));
+  const executable = manifest.filter(row => !acceptedDifference(row, which));
+  const rows = [...manifest.filter(row => row.file === "scope"), ...differences.map(differenceResult)], logs = new Map();
+  const files = [...new Set(executable.filter(row => row.file !== "scope").map(row => row.file))].sort();
   const jobs = files.filter(file => !Object.hasOwn(serialFiles, file));
   const serial = files.filter(file => Object.hasOwn(serialFiles, file));
   const concurrency = Number(process.env.CONTRACT_CONCURRENCY ?? (which === "workers" ? 2 : 6));
@@ -132,12 +136,12 @@ async function run(which) {
     for (;;) {
       if (stopping) return;
       const file = jobs.shift(); if (!file) return;
-      const expected = manifest.filter(row => row.file === file);
+      const expected = executable.filter(row => row.file === file);
       console.log(`START ${which} ${file} (${expected.length})`);
       const result = file.endsWith(".py")
         ? await command("python3", [file], { CONTRACT_BACKEND: which, CONTRACT_PYTHON_CONCURRENCY: process.env.CONTRACT_PYTHON_CONCURRENCY ?? (which === "workers" ? "2" : "4"), ...(baseline ? { CONTRACT_NODE_BASELINE: baseline.filename } : {}) }, expected)
         : await command(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", "--test", "--test-concurrency=1", `--test-reporter=${path.join(root, "tests/contract/reporter.mjs")}`,
-          ...((area || group || selectedFiles) ? [`--test-name-pattern=^(?:${expected.map(row => escape(title(row))).join("|")})$`] : []), file], { CONTRACT_BACKEND: which, ...(baseline ? { CONTRACT_NODE_BASELINE: baseline.filename } : {}) }, expected);
+          ...((area || group || selectedFiles || differences.length) ? [`--test-name-pattern=^(?:${expected.map(row => escape(title(row))).join("|")})$`] : []), file], { CONTRACT_BACKEND: which, ...(baseline ? { CONTRACT_NODE_BASELINE: baseline.filename } : {}) }, expected);
       rows.push(...complete(result.rows, expected, result)); logs.set(file, result.log);
       await writeFile(path.join(output, `parity-${which}${suffix}.partial.json`), JSON.stringify({ backend: which, nodeKey, suiteHash, revision, rows }, null, 2) + "\n");
     }
@@ -145,12 +149,13 @@ async function run(which) {
   await Promise.all(Array.from({ length: Math.max(1, Math.min(16, concurrency)) }, next));
   jobs.push(...serial);
   await next();
+  validateDifferences(rows, which);
   rows.sort((a, b) => key(a).localeCompare(key(b)));
   const report = { backend: which, area: area ?? "all", group, nodeKey, suiteHash, revision, shard, durationMs: performance.now() - started, runtime: { node: process.version, platform: process.platform, arch: process.arch }, recordedAt: new Date().toISOString(), expectedCases: manifest.length, rows };
   await writeFile(reportPath(which), JSON.stringify(report, null, 2) + "\n");
   await writeFile(path.join(output, `parity-${which}${suffix}.log`), [...logs].sort(([a], [b]) => a.localeCompare(b)).map(([, log]) => log).join("\n"));
   const count = status => rows.filter(row => row.status === status).length;
-  console.log(`${which}: ${count("pass")} pass, ${count("fail")} fail, ${count("out-of-scope")} out of scope`);
+  console.log(`${which}: ${count("pass")} pass, ${count("accepted-difference")} accepted difference, ${count("fail")} fail, ${count("out-of-scope")} out of scope`);
   if (which === "node") await saveBaseline(root, report);
   return report;
 }
@@ -205,15 +210,15 @@ if (!area && !group && !selectedFiles && !shard && workers) {
   const nodeRows = new Map(node.rows.map(row => [`${row.source}:${row.name}`, row]));
   const areas = [...new Set(workers.rows.map(row => row.area))].sort();
   const count = (rows, status, backend) => rows.filter(row => row.status === status && (!backend || row.backend === backend)).length;
-  const lines = ["# Workers public contract parity", "", `Generated by \`npm run parity\` at ${workers.recordedAt}. Suite SHA-256: \`${suiteHash}\`.`, "", "The same assertions run against Node first, then real local workerd. Each fixture has an isolated migrated database. The fixtures use local services and fake providers; this run may execute on a Sprite. No production credentials or deployed Cloudflare resources are used. SDK-only tests are recorded separately and do not count as backend passes.", "", `**Node: ${count(node.rows, "pass", "node")} HTTP pass, ${count(node.rows, "pass", "sdk-unit")} SDK-only pass, ${count(node.rows, "fail")} fail. Workers: ${count(workers.rows, "pass", "workers")} HTTP pass, ${count(workers.rows, "pass", "sdk-unit")} SDK-only pass, ${count(workers.rows, "fail")} fail. ${count(workers.rows, "out-of-scope")} channel/voice cases are out of scope.**`, "", "| Area | Node HTTP pass | Workers HTTP pass | SDK-only pass | Fail | Out of scope |", "| --- | ---: | ---: | ---: | ---: | ---: |"];
+  const lines = ["# Workers public contract parity", "", `Generated by \`npm run parity\` at ${workers.recordedAt}. Suite SHA-256: \`${suiteHash}\`.`, "", "The same assertions run against Node first, then real local workerd. Each fixture has an isolated migrated database. The fixtures use local services and fake providers; this run may execute on a Sprite. No production credentials or deployed Cloudflare resources are used. SDK-only tests are recorded separately and do not count as backend passes.", "", `**Node: ${count(node.rows, "pass", "node")} HTTP pass, ${count(node.rows, "pass", "sdk-unit")} SDK-only pass, ${count(node.rows, "accepted-difference")} accepted difference, ${count(node.rows, "fail")} fail. Workers: ${count(workers.rows, "pass", "workers")} HTTP pass, ${count(workers.rows, "pass", "sdk-unit")} SDK-only pass, ${count(workers.rows, "accepted-difference")} accepted difference, ${count(workers.rows, "fail")} fail. ${count(workers.rows, "out-of-scope")} channel/voice cases are out of scope.**`, "", "| Area | Node HTTP pass | Workers HTTP pass | SDK-only pass | Accepted difference | Fail | Out of scope |", "| --- | ---: | ---: | ---: | ---: | ---: | ---: |"];
   for (const group of areas) {
     const rs = workers.rows.filter(r => r.area === group);
-    lines.push(`| ${group} | ${rs.filter(r => nodeRows.get(`${r.source}:${r.name}`)?.status === "pass" && nodeRows.get(`${r.source}:${r.name}`)?.backend === "node").length} | ${rs.filter(r => r.status === "pass" && r.backend === "workers").length} | ${rs.filter(r => r.status === "pass" && r.backend === "sdk-unit").length} | ${rs.filter(r => r.status === "fail").length} | ${rs.filter(r => r.status === "out-of-scope").length} |`);
+    lines.push(`| ${group} | ${rs.filter(r => nodeRows.get(`${r.source}:${r.name}`)?.status === "pass" && nodeRows.get(`${r.source}:${r.name}`)?.backend === "node").length} | ${rs.filter(r => r.status === "pass" && r.backend === "workers").length} | ${rs.filter(r => r.status === "pass" && r.backend === "sdk-unit").length} | ${rs.filter(r => r.status === "accepted-difference").length} | ${rs.filter(r => r.status === "fail").length} | ${rs.filter(r => r.status === "out-of-scope").length} |`);
   }
-  lines.push("", "Channels and voice/audio transport are deliberately out of scope. Internal storage/process assertions remain in their source suites; migration coverage and remaining gaps are listed in `tests/contract/COVERAGE.md`.", "", "Run one area with `npm run parity -- --area=history` (Node gate, then Workers), or only the Node baseline with `npm run parity -- --backend=node --area=history`. Full JSON assertion details and raw output are in `backends/workers/measurements/parity-{node,workers}.{json,log}`.");
+  lines.push("", "Accepted differences are explicitly reviewed in `tests/contract/accepted-differences.mjs`. They are not passes or out of scope: Workers does not execute those backend-specific cases, while Node must run and pass every original assertion. Reasons and reviewer metadata are recorded in that single registry.", "", "Channels and voice/audio transport are deliberately out of scope. Internal storage/process assertions remain in their source suites; migration coverage and remaining gaps are listed in `tests/contract/COVERAGE.md`.", "", "Run one area with `npm run parity -- --area=history` (Node gate, then Workers), or only the Node baseline with `npm run parity -- --backend=node --area=history`. Full JSON assertion details and raw output are in `backends/workers/measurements/parity-{node,workers}.{json,log}`.");
   for (const group of areas) {
-    lines.push("", `## ${group}`, "", "| Case / source | Node | Workers | Failure reason |", "| --- | --- | --- | --- |");
-    for (const row of workers.rows.filter(r => r.area === group)) lines.push(`| ${clean(row.name)} (\`${clean(row.source)}\`) | ${nodeRows.get(`${row.source}:${row.name}`)?.status ?? "missing"}${nodeRows.get(`${row.source}:${row.name}`)?.backend === "sdk-unit" ? " (SDK only)" : ""} | ${row.status}${row.backend === "sdk-unit" ? " (SDK only)" : ""} | ${row.status === "fail" ? clean(row.reason) : ""} |`);
+    lines.push("", `## ${group}`, "", "| Case / source | Node | Workers | Failure or accepted-difference reason |", "| --- | --- | --- | --- |");
+    for (const row of workers.rows.filter(r => r.area === group)) lines.push(`| ${clean(row.name)} (\`${clean(row.source)}\`) | ${nodeRows.get(`${row.source}:${row.name}`)?.status ?? "missing"}${nodeRows.get(`${row.source}:${row.name}`)?.backend === "sdk-unit" ? " (SDK only)" : ""} | ${row.status}${row.backend === "sdk-unit" ? " (SDK only)" : ""} | ${["fail", "accepted-difference"].includes(row.status) ? clean(row.reason) : ""} |`);
   }
   await writeFile(path.join(root, "backends/workers/PARITY.md"), lines.join("\n") + "\n");
 }

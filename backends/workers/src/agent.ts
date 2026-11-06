@@ -144,6 +144,7 @@ import { runtimePromptSections } from "./prompt-sections.ts";
 import { projectRunFailure } from "./run-failure.ts";
 import { RunProjection } from "./run-projection.ts";
 import { requestView } from "./request-view.ts";
+import { waitForRequest } from "./request-wait.ts";
 import { AgentHistory } from "./history.ts";
 import type { AgentConfiguration } from "./api-contract.ts";
 import { recordAgentActivity } from "./agent-activity.ts";
@@ -645,7 +646,7 @@ export class CamelAgent extends DurableObject<Env> {
         throw typeof limited === "string"
           ? Object.assign(new Error(limited), { status: 402 })
           : limited;
-      if (conf.config.subject && this.models.resolve(conf.config.model).api !== "openai-codex-responses") {
+      if (conf.config.subject && (conf.resolvedModel ?? this.models.resolve(conf.config.model)).api !== "openai-codex-responses") {
         const broke = await new EndUserCredits(accounts.db).refusal(conf.tenantId, conf.config.subject, bucket ?? conf.config.bucket ?? "default");
         if (broke) throw creditError(broke);
       }
@@ -686,7 +687,7 @@ export class CamelAgent extends DurableObject<Env> {
     return requestView(record).then(value => Response.json(value, { status: this.replayedRequests.has(record) ? 200 : 202, headers }));
   }
   private async endUserLimit(conf: Config, bucket?: string) {
-    if (!conf.config.subject) return;
+    if (!conf.config.subject || conf.resolvedModel?.api === "openai-codex-responses") return;
     const { accounts } = await keyServices(this.env);
     const refusal = await new EndUserCredits(accounts.db).refusal(
       conf.tenantId, conf.config.subject,
@@ -2138,7 +2139,7 @@ export class CamelAgent extends DurableObject<Env> {
     const patched = replacement ? configuration(params, conf.config.model ?? this.env.MODEL).config : await configurationPatch(this.env, conf.tenantId, conf.config, params);
     configuration(patched, conf.config.model ?? this.env.MODEL);
     await validateAgentModel(this.env, conf.tenantId, patched, { reference: conf.config.model, model: conf.resolvedModel });
-    if (params.model !== undefined || params.keyScope !== undefined) {
+    if (replacement && (params.model !== undefined || params.keyScope !== undefined)) {
       try {
         const error = await configurationModelError(this.env, conf.tenantId, patched);
         if (error) throw new BadRequest(error);
@@ -3266,12 +3267,12 @@ export class CamelAgent extends DurableObject<Env> {
       if (path.startsWith("/requests/") && request.method === "GET") {
         const seconds = Number(url.searchParams.get("wait") ?? 0);
         if (!Number.isFinite(seconds) || seconds < 0) throw new BadRequest("wait is a number of seconds");
-        const wait = Math.max(1, Math.min(25000, seconds * 1000));
-        return json(
-          await requestView(
-            await this.settle(decodeURIComponent(path.slice(10)), wait),
-          ),
-        );
+        const id = decodeURIComponent(path.slice(10));
+        const record = await waitForRequest(() => this.settle(id, 1), wake => {
+          this.listeners.add(wake);
+          return () => this.listeners.delete(wake);
+        }, Math.min(25000, seconds * 1000), request.signal);
+        return json(await requestView(record));
       }
       if (path === "/history" && request.method === "GET") {
         const run = url.searchParams.get("run");

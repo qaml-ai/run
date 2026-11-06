@@ -121,7 +121,7 @@ async function forward(request: Request, env: Env, id: string, path: string, ctx
   const url = new URL(request.url);
   url.pathname = path;
   const agent = env.AGENTS.getByName(id);
-  const response = await agent.fetch(new Request(url, request));
+  const response = await agent.fetch(new Request(url, request), { signal: request.signal });
   return relayEvents(response, request.signal, connection => agent.detachEventConnection(connection), task => ctx.waitUntil(task));
 }
 function scopedConfiguration(input: unknown) {
@@ -237,7 +237,7 @@ const worker = {
       let auth = browser ? null : await authenticateMoney(request, env)
         ?? (((env.TEST_MODE === "1" && !bearer?.startsWith("Bearer art_")) || await authorized(request, env.API_TOKEN)) ? await authenticate(request, env) : null);
       if (path === "/mcp") {
-        if (!auth) return agentMcpSignIn(request, publicOrigins(env as unknown as NodeJS.ProcessEnv, url.origin).of(request.headers), "");
+        if (!auth) return agentMcpSignIn(request, publicOrigins(env, url.origin).of(request.headers), "");
         const publicOrigin = env.AGENT_PUBLIC_URL || url.origin;
         return serveHostedMcp(request, { publicOrigin, fetch: (async (input, init) => {
           const local = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
@@ -583,7 +583,7 @@ const worker = {
         request = new Request(request.url, { method: 'POST', headers: request.headers, body: JSON.stringify({ ...input, requestId: request.headers.get('idempotency-key') }) });
       }
       const response = tail === "/events"
-        ? await eventRead(request, env, entry.tenantId, entry.id, request => forward(request, env, entry!.id, tail, ctx))
+        ? await eventRead(request, env, entry.tenantId, entry.id, request => forward(request, env, entry!.id, tail, ctx), task => ctx.waitUntil(task))
         : await forward(request, env, entry.id, tail, ctx);
       return browser ? browserResponse(response, browser, tail) : response;
     } catch (error) {

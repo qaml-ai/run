@@ -1,0 +1,16 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "camelrun-proto-subscriber-fin",
+  "main": "subscriber-probe.ts",
+  "compatibility_date": "2026-11-05",
+  "compatibility_flags": ["nodejs_compat", "enable_request_signal"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "durable_objects": { "bindings": [
+    { "name": "GATE", "class_name": "SubscriberGate" },
+    { "name": "SOURCE", "class_name": "SubscriberSource" }
+  ] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SubscriberGate", "SubscriberSource"] }],
+  "limits": { "cpu_ms": 100 },
+  "observability": { "enabled": false }
+}

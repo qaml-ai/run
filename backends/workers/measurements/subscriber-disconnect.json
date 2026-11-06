@@ -1,0 +1,1023 @@
+{
+  "name": "Deployed subscriber cancellation with real eventRead",
+  "sourceCommit": "f7ea58e5",
+  "sourceSha256": "6618e24170c8b53738d8678ef85cbd6163e54628e5d39d949f5b788c74b68c45",
+  "bundleSha256": "57c0841fe92c67ddbff0ba499f06c239291b6d11066d364809d92b09f58085c4",
+  "build": {
+    "runner": "rt-pool-1",
+    "wrangler": "4.157.0",
+    "compatibilityDate": "2026-11-05",
+    "flags": [
+      "nodejs_compat",
+      "enable_request_signal"
+    ],
+    "minified": true,
+    "temporaryBuildOnlySideEffectsFalse": true,
+    "log": "~/runs/20261105-182458-16143-1.log"
+  },
+  "deployment": {
+    "worker": "camelrun-proto-subscriber-fin",
+    "version": "707e514c5e2f42c5ac126920ce24d473",
+    "createdAt": "2026-11-06T00:26:02.57744Z",
+    "url": "https://camelrun-proto-subscriber-fin.miguel-85b.workers.dev",
+    "bindings": [
+      "SubscriberGate",
+      "SubscriberSource"
+    ],
+    "database": "none; synthetic HYPERDRIVE string only",
+    "providerCredentials": "none"
+  },
+  "method": {
+    "admission": "Import backends/workers/src/event-reads.ts unchanged in a stable Durable Object, forward through a second Durable Object with explicit signal propagation",
+    "tenantMaxWatchers": 1,
+    "sourceSetupDelayMs": 1000,
+    "streamSafetyDeadlineMs": 15000,
+    "close": "TLSSocket.end(), await writable finish, then ordinary TLSSocket.destroy(); never resetAndDestroy",
+    "packetCapture": false,
+    "scope": "One deployed synthetic case. Normal socket close was requested; FIN packet order was not captured on the wire."
+  },
+  "result": {
+    "occupiedStatus": 429,
+    "afterFullCloseStatus": 200,
+    "freedAfterMs": 927,
+    "noResponseDataBeforeClose": true,
+    "abortAfterForwardResponseMs": 8,
+    "runtimeSetupTtlAdded": false,
+    "interpretation": "Full abandonment released 927 ms after closure, when the delayed setup returned. The abort signal arrived 8 ms after the source response. A write-half-close alone kept receiving the stream, so it was not evidence of abandonment."
+  },
+  "cost": {
+    "capUsd": 5,
+    "infrastructure": "One Worker and two temporary SQLite Durable Object namespaces; no storage writes, alarms, or paid provider calls",
+    "estimatedUpperBoundUsd": 0.01,
+    "billedCostObserved": false
+  },
+  "cleanup": {
+    "confirmedAt": "2026-11-06T00:28:16.260Z",
+    "scriptSettingsStatus": 404,
+    "namespaceIds": [
+      "c25ce052d4a740eb953ad8be9723880b",
+      "62f283e5666143ff99f57ee0fee27f1d"
+    ],
+    "namespacePagesChecked": 3,
+    "namespacesRemaining": []
+  },
+  "fullClose": {
+    "startedAt": "2026-11-06T00:27:27.667Z",
+    "url": "https://camelrun-proto-subscriber-fin.miguel-85b.workers.dev",
+    "session": "916c2d6d-e023-40d2-83c4-e778642fb2a2",
+    "occupied": 429,
+    "freedAfterMs": 927,
+    "closeMode": "full-close",
+    "normalFin": true,
+    "events": [
+      {
+        "event": "warm",
+        "at": 1793924848814,
+        "elapsedMs": 1147,
+        "status": 200
+      },
+      {
+        "event": "subscribe-sent",
+        "at": 1793924848831,
+        "elapsedMs": 1164
+      },
+      {
+        "event": "while-open",
+        "at": 1793924851295,
+        "elapsedMs": 3628,
+        "status": 429
+      },
+      {
+        "event": "socket-fin-sent",
+        "at": 1793924851295,
+        "elapsedMs": 3628
+      },
+      {
+        "event": "socket-finish",
+        "at": 1793924851295,
+        "elapsedMs": 3628
+      },
+      {
+        "event": "socket-destroy-after-finish",
+        "at": 1793924851295,
+        "elapsedMs": 3628
+      },
+      {
+        "event": "socket-close",
+        "at": 1793924851296,
+        "elapsedMs": 3629
+      },
+      {
+        "event": "after-fin-0",
+        "at": 1793924851502,
+        "elapsedMs": 3835,
+        "status": 429
+      },
+      {
+        "event": "after-fin-1",
+        "at": 1793924851628,
+        "elapsedMs": 3961,
+        "status": 429
+      },
+      {
+        "event": "after-fin-2",
+        "at": 1793924851761,
+        "elapsedMs": 4094,
+        "status": 429
+      },
+      {
+        "event": "after-fin-3",
+        "at": 1793924851962,
+        "elapsedMs": 4295,
+        "status": 429
+      },
+      {
+        "event": "after-fin-4",
+        "at": 1793924852087,
+        "elapsedMs": 4420,
+        "status": 429
+      },
+      {
+        "event": "after-fin-5",
+        "at": 1793924852222,
+        "elapsedMs": 4555,
+        "status": 200
+      }
+    ],
+    "trace": [
+      {
+        "at": 1793924848433,
+        "id": "warm",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924848433,
+        "id": "warm",
+        "event": "forward-start",
+        "aborted": false
+      },
+      {
+        "at": 1793924848800,
+        "id": "warm",
+        "event": "forward-response",
+        "aborted": false
+      },
+      {
+        "at": 1793924851179,
+        "id": "cancelled",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924851179,
+        "id": "cancelled",
+        "event": "forward-start",
+        "aborted": false
+      },
+      {
+        "at": 1793924851288,
+        "id": "while-open",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924851288,
+        "id": "while-open",
+        "event": "gate-error",
+        "aborted": false
+      },
+      {
+        "at": 1793924851492,
+        "id": "after-fin-0",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924851492,
+        "id": "after-fin-0",
+        "event": "gate-error",
+        "aborted": false
+      },
+      {
+        "at": 1793924851620,
+        "id": "after-fin-1",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924851620,
+        "id": "after-fin-1",
+        "event": "gate-error",
+        "aborted": false
+      },
+      {
+        "at": 1793924851754,
+        "id": "after-fin-2",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924851754,
+        "id": "after-fin-2",
+        "event": "gate-error",
+        "aborted": false
+      },
+      {
+        "at": 1793924851952,
+        "id": "after-fin-3",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924851952,
+        "id": "after-fin-3",
+        "event": "gate-error",
+        "aborted": false
+      },
+      {
+        "at": 1793924852077,
+        "id": "after-fin-4",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924852077,
+        "id": "after-fin-4",
+        "event": "gate-error",
+        "aborted": false
+      },
+      {
+        "at": 1793924852187,
+        "id": "cancelled",
+        "event": "forward-response",
+        "aborted": false
+      },
+      {
+        "at": 1793924852195,
+        "id": "cancelled",
+        "event": "gate-abort",
+        "aborted": true
+      },
+      {
+        "at": 1793924852197,
+        "id": "after-fin-5",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924852197,
+        "id": "after-fin-5",
+        "event": "forward-start",
+        "aborted": false
+      },
+      {
+        "at": 1793924852210,
+        "id": "after-fin-5",
+        "event": "forward-response",
+        "aborted": false
+      }
+    ],
+    "runner": "rt-pool-1",
+    "log": "~/runs/20261105-182709-21832-1.log",
+    "sourceCommit": "cf6e4b58"
+  },
+  "halfCloseControl": {
+    "startedAt": "2026-11-06T00:26:33.500Z",
+    "url": "https://camelrun-proto-subscriber-fin.miguel-85b.workers.dev",
+    "session": "a9f606e8-78d0-48c5-a6c4-65ffab21ee1b",
+    "occupied": 429,
+    "freedAfterMs": null,
+    "normalFin": true,
+    "events": [
+      {
+        "event": "warm",
+        "at": 1793924794442,
+        "elapsedMs": 942,
+        "status": 200
+      },
+      {
+        "event": "subscribe-sent",
+        "at": 1793924794454,
+        "elapsedMs": 954
+      },
+      {
+        "event": "while-open",
+        "at": 1793924794782,
+        "elapsedMs": 1282,
+        "status": 429
+      },
+      {
+        "event": "socket-fin-sent",
+        "at": 1793924794782,
+        "elapsedMs": 1282
+      },
+      {
+        "event": "after-fin-0",
+        "at": 1793924794966,
+        "elapsedMs": 1466,
+        "status": 429
+      },
+      {
+        "event": "after-fin-1",
+        "at": 1793924795144,
+        "elapsedMs": 1644,
+        "status": 429
+      },
+      {
+        "event": "after-fin-2",
+        "at": 1793924795265,
+        "elapsedMs": 1765,
+        "status": 429
+      },
+      {
+        "event": "after-fin-3",
+        "at": 1793924795457,
+        "elapsedMs": 1957,
+        "status": 429
+      },
+      {
+        "event": "after-fin-4",
+        "at": 1793924795581,
+        "elapsedMs": 2081,
+        "status": 429
+      },
+      {
+        "event": "socket-data",
+        "at": 1793924795615,
+        "elapsedMs": 2115,
+        "bytes": 650,
+        "firstLine": "HTTP/1.1 200 OK"
+      },
+      {
+        "event": "after-fin-5",
+        "at": 1793924795701,
+        "elapsedMs": 2201,
+        "status": 429
+      },
+      {
+        "event": "socket-data",
+        "at": 1793924795710,
+        "elapsedMs": 2210,
+        "bytes": 18,
+        "firstLine": "d"
+      },
+      {
+        "event": "socket-data",
+        "at": 1793924795812,
+        "elapsedMs": 2312,
+        "bytes": 18,
+        "firstLine": "d"
+      },
+      {
+        "event": "after-fin-6",
+        "at": 1793924795823,
+        "elapsedMs": 2323,
+        "status": 429
+      },
+      {
+        "event": "socket-data",
+        "at": 1793924795911,
+        "elapsedMs": 2411,
+        "bytes": 18,
+        "firstLine": "d"
+      },
+      {
+        "event": "after-fin-7",
+        "at": 1793924795949,
+        "elapsedMs": 2449,
+        "status": 429
+      },
+      {
+        "event": "socket-data",
+        "at": 1793924796009,
+        "elapsedMs": 2509,
+        "bytes": 18,
+        "firstLine": "d"
+      },
+      {
+        "event": "socket-data",
+        "at": 1793924796111,
+        "elapsedMs": 2611,
+        "bytes": 18,
+        "firstLine": "d"
+      },
+      {
+        "event": "after-fin-8",
+        "at": 1793924796125,
+        "elapsedMs": 2625,
+        "status": 429
+      },
+      {
+        "event": "socket-data",
+        "at": 1793924796210,
+        "elapsedMs": 2710,
+        "bytes": 18,
+        "firstLine": "d"
+      },
+      {
+        "event": "after-fin-9",
+        "at": 1793924796305,
+        "elapsedMs": 2805,
+        "status": 429
+      },
+      {
+        "event": "socket-data",
+        "at": 1793924796312,
+        "elapsedMs": 2812,
+        "bytes": 18,
+        "firstLine": "d"
+      },
+      {
+        "event": "socket-data",
+        "at": 1793924796411,
+        "elapsedMs": 2911,
+        "bytes": 18,
+        "firstLine": "d"
+      },
+      {
+        "event": "after-fin-10",
+        "at": 1793924796425,
+        "elapsedMs": 2925,
+        "status": 429
+      },
+      {
+        "event": "socket-data",
+        "at": 1793924796512,
+        "elapsedMs": 3012,
+        "bytes": 18,
+        "firstLine": "d"
+      },
+      {
+        "event": "after-fin-11",
+        "at": 1793924796607,
+        "elapsedMs": 3107,
+        "status": 429
+      },
+      {
+        "event": "socket-data",
+        "at": 1793924796610,
+        "elapsedMs": 3110,
+        "bytes": 18,
+        "firstLine": "d"
+      },
+      {
+        "event": "socket-data",
+        "at": 1793924796714,
+        "elapsedMs": 3214,
+        "bytes": 18,
+        "firstLine": "d"
+      },
+      {
+        "event": "after-fin-12",
+        "at": 1793924796734,
+        "elapsedMs": 3234,
+        "status": 429
+      },
+      {
+        "event": "socket-data",
+        "at": 1793924796809,
+        "elapsedMs": 3309,
+        "bytes": 18,
+        "firstLine": "d"
+      },
+      {
+        "event": "after-fin-13",
+        "at": 1793924796855,
+        "elapsedMs": 3355,
+        "status": 429
+      },
+      {
+        "event": "socket-data",
+        "at": 1793924796911,
+        "elapsedMs": 3411,
+        "bytes": 18,
+        "firstLine": "d"
+      },
+      {
+        "event": "after-fin-14",
+        "at": 1793924796973,
+        "elapsedMs": 3473,
+        "status": 429
+      },
+      {
+        "event": "socket-data",
+        "at": 1793924797010,
+        "elapsedMs": 3510,
+        "bytes": 18,
+        "firstLine": "d"
+      },
+      {
+        "event": "after-fin-15",
+        "at": 1793924797095,
+        "elapsedMs": 3595,
+        "status": 429
+      },
+      {
+        "event": "socket-data",
+        "at": 1793924797117,
+        "elapsedMs": 3617,
+        "bytes": 18,
+        "firstLine": "d"
+      },
+      {
+        "event": "socket-data",
+        "at": 1793924797211,
+        "elapsedMs": 3711,
+        "bytes": 18,
+        "firstLine": "d"
+      },
+      {
+        "event": "after-fin-16",
+        "at": 1793924797213,
+        "elapsedMs": 3713,
+        "status": 429
+      },
+      {
+        "event": "socket-data",
+        "at": 1793924797310,
+        "elapsedMs": 3810,
+        "bytes": 18,
+        "firstLine": "d"
+      },
+      {
+        "event": "after-fin-17",
+        "at": 1793924797332,
+        "elapsedMs": 3832,
+        "status": 429
+      },
+      {
+        "event": "socket-data",
+        "at": 1793924797414,
+        "elapsedMs": 3914,
+        "bytes": 18,
+        "firstLine": "d"
+      },
+      {
+        "event": "after-fin-18",
+        "at": 1793924797459,
+        "elapsedMs": 3959,
+        "status": 429
+      },
+      {
+        "event": "socket-data",
+        "at": 1793924797512,
+        "elapsedMs": 4012,
+        "bytes": 18,
+        "firstLine": "d"
+      },
+      {
+        "event": "after-fin-19",
+        "at": 1793924797581,
+        "elapsedMs": 4081,
+        "status": 429
+      },
+      {
+        "event": "socket-data",
+        "at": 1793924797611,
+        "elapsedMs": 4111,
+        "bytes": 18,
+        "firstLine": "d"
+      },
+      {
+        "event": "socket-data",
+        "at": 1793924797711,
+        "elapsedMs": 4211,
+        "bytes": 18,
+        "firstLine": "d"
+      },
+      {
+        "event": "after-fin-20",
+        "at": 1793924797760,
+        "elapsedMs": 4260,
+        "status": 429
+      },
+      {
+        "event": "socket-data",
+        "at": 1793924797810,
+        "elapsedMs": 4310,
+        "bytes": 18,
+        "firstLine": "d"
+      },
+      {
+        "event": "after-fin-21",
+        "at": 1793924797882,
+        "elapsedMs": 4382,
+        "status": 429
+      },
+      {
+        "event": "socket-data",
+        "at": 1793924797910,
+        "elapsedMs": 4410,
+        "bytes": 18,
+        "firstLine": "d"
+      },
+      {
+        "event": "after-fin-22",
+        "at": 1793924798011,
+        "elapsedMs": 4511,
+        "status": 429
+      },
+      {
+        "event": "socket-data",
+        "at": 1793924798012,
+        "elapsedMs": 4512,
+        "bytes": 18,
+        "firstLine": "d"
+      },
+      {
+        "event": "socket-data",
+        "at": 1793924798110,
+        "elapsedMs": 4610,
+        "bytes": 18,
+        "firstLine": "d"
+      },
+      {
+        "event": "after-fin-23",
+        "at": 1793924798133,
+        "elapsedMs": 4633,
+        "status": 429
+      },
+      {
+        "event": "socket-data",
+        "at": 1793924798211,
+        "elapsedMs": 4711,
+        "bytes": 18,
+        "firstLine": "d"
+      },
+      {
+        "event": "after-fin-24",
+        "at": 1793924798267,
+        "elapsedMs": 4767,
+        "status": 429
+      },
+      {
+        "event": "socket-data",
+        "at": 1793924798311,
+        "elapsedMs": 4811,
+        "bytes": 18,
+        "firstLine": "d"
+      },
+      {
+        "event": "socket-data",
+        "at": 1793924798410,
+        "elapsedMs": 4910,
+        "bytes": 18,
+        "firstLine": "d"
+      }
+    ],
+    "trace": [
+      {
+        "at": 1793924794087,
+        "id": "warm",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924794087,
+        "id": "warm",
+        "event": "forward-start",
+        "aborted": false
+      },
+      {
+        "at": 1793924794428,
+        "id": "warm",
+        "event": "forward-response",
+        "aborted": false
+      },
+      {
+        "at": 1793924794593,
+        "id": "cancelled",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924794593,
+        "id": "cancelled",
+        "event": "forward-start",
+        "aborted": false
+      },
+      {
+        "at": 1793924794774,
+        "id": "while-open",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924794774,
+        "id": "while-open",
+        "event": "gate-error",
+        "aborted": false
+      },
+      {
+        "at": 1793924794957,
+        "id": "after-fin-0",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924794957,
+        "id": "after-fin-0",
+        "event": "gate-error",
+        "aborted": false
+      },
+      {
+        "at": 1793924795132,
+        "id": "after-fin-1",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924795132,
+        "id": "after-fin-1",
+        "event": "gate-error",
+        "aborted": false
+      },
+      {
+        "at": 1793924795256,
+        "id": "after-fin-2",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924795256,
+        "id": "after-fin-2",
+        "event": "gate-error",
+        "aborted": false
+      },
+      {
+        "at": 1793924795447,
+        "id": "after-fin-3",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924795447,
+        "id": "after-fin-3",
+        "event": "gate-error",
+        "aborted": false
+      },
+      {
+        "at": 1793924795572,
+        "id": "after-fin-4",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924795572,
+        "id": "after-fin-4",
+        "event": "gate-error",
+        "aborted": false
+      },
+      {
+        "at": 1793924795604,
+        "id": "cancelled",
+        "event": "forward-response",
+        "aborted": false
+      },
+      {
+        "at": 1793924795690,
+        "id": "after-fin-5",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924795690,
+        "id": "after-fin-5",
+        "event": "gate-error",
+        "aborted": false
+      },
+      {
+        "at": 1793924795812,
+        "id": "after-fin-6",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924795812,
+        "id": "after-fin-6",
+        "event": "gate-error",
+        "aborted": false
+      },
+      {
+        "at": 1793924795938,
+        "id": "after-fin-7",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924795938,
+        "id": "after-fin-7",
+        "event": "gate-error",
+        "aborted": false
+      },
+      {
+        "at": 1793924796112,
+        "id": "after-fin-8",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924796112,
+        "id": "after-fin-8",
+        "event": "gate-error",
+        "aborted": false
+      },
+      {
+        "at": 1793924796294,
+        "id": "after-fin-9",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924796294,
+        "id": "after-fin-9",
+        "event": "gate-error",
+        "aborted": false
+      },
+      {
+        "at": 1793924796413,
+        "id": "after-fin-10",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924796413,
+        "id": "after-fin-10",
+        "event": "gate-error",
+        "aborted": false
+      },
+      {
+        "at": 1793924796596,
+        "id": "after-fin-11",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924796596,
+        "id": "after-fin-11",
+        "event": "gate-error",
+        "aborted": false
+      },
+      {
+        "at": 1793924796722,
+        "id": "after-fin-12",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924796722,
+        "id": "after-fin-12",
+        "event": "gate-error",
+        "aborted": false
+      },
+      {
+        "at": 1793924796844,
+        "id": "after-fin-13",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924796844,
+        "id": "after-fin-13",
+        "event": "gate-error",
+        "aborted": false
+      },
+      {
+        "at": 1793924796962,
+        "id": "after-fin-14",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924796962,
+        "id": "after-fin-14",
+        "event": "gate-error",
+        "aborted": false
+      },
+      {
+        "at": 1793924797083,
+        "id": "after-fin-15",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924797083,
+        "id": "after-fin-15",
+        "event": "gate-error",
+        "aborted": false
+      },
+      {
+        "at": 1793924797201,
+        "id": "after-fin-16",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924797201,
+        "id": "after-fin-16",
+        "event": "gate-error",
+        "aborted": false
+      },
+      {
+        "at": 1793924797319,
+        "id": "after-fin-17",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924797319,
+        "id": "after-fin-17",
+        "event": "gate-error",
+        "aborted": false
+      },
+      {
+        "at": 1793924797443,
+        "id": "after-fin-18",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924797443,
+        "id": "after-fin-18",
+        "event": "gate-error",
+        "aborted": false
+      },
+      {
+        "at": 1793924797568,
+        "id": "after-fin-19",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924797568,
+        "id": "after-fin-19",
+        "event": "gate-error",
+        "aborted": false
+      },
+      {
+        "at": 1793924797749,
+        "id": "after-fin-20",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924797749,
+        "id": "after-fin-20",
+        "event": "gate-error",
+        "aborted": false
+      },
+      {
+        "at": 1793924797870,
+        "id": "after-fin-21",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924797870,
+        "id": "after-fin-21",
+        "event": "gate-error",
+        "aborted": false
+      },
+      {
+        "at": 1793924797991,
+        "id": "after-fin-22",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924797991,
+        "id": "after-fin-22",
+        "event": "gate-error",
+        "aborted": false
+      },
+      {
+        "at": 1793924798119,
+        "id": "after-fin-23",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924798119,
+        "id": "after-fin-23",
+        "event": "gate-error",
+        "aborted": false
+      },
+      {
+        "at": 1793924798242,
+        "id": "after-fin-24",
+        "event": "gate-enter",
+        "aborted": false
+      },
+      {
+        "at": 1793924798242,
+        "id": "after-fin-24",
+        "event": "gate-error",
+        "aborted": false
+      }
+    ],
+    "runner": "rt-pool-22",
+    "log": "~/runs/20261105-182620-19788-1.log",
+    "sourceCommit": "1585c86e"
+  }
+}
