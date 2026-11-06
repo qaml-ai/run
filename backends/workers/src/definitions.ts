@@ -161,7 +161,7 @@ export async function definitionRoutes(request: Request, env: ControlEnv, auth: 
     const own = Object.fromEntries((agent.config.definitionOverrides ?? []).map(field => [field, agent.config[field as keyof AgentConfiguration]]));
     const cleared = { ...agent.config };
     for (const field of DEFINED) delete cleared[field];
-    const merged = { ...cleared, ...updates, ...own, definition: saved.id, definitionRevision: saved.revision };
+    const merged = { ...cleared, ...updates, ...own, language: own.language ?? updates.language ?? null, definition: saved.id, definitionRevision: saved.revision };
     if (merged.temperature != null && merged.model) {
       const model = resolveModel(merged.model, services.tenants.modelEndpoints(auth.tenantId), await services.modelProviders.resolvable(auth.tenantId, merged.keyScope));
       if (modelSettingsRefusal(model, { ...merged, maxOutputTokens: undefined })) delete merged.temperature;
