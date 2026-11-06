@@ -3,6 +3,7 @@ import { CONTAINER_CA, COMPUTER_LIMITS, TRUST_COMMAND, type EgressGrant } from "
 
 export type ComputerRequest =
   | { op: "exec"; argv: string[]; timeoutMs?: number }
+  | { op: "exec"; command: string; timeoutMs?: number }
   | { op: "read"; path: string }
   | { op: "write"; path: string; content: string }
   | { op: "parse"; path: string; format: "text" | "json" | "csv" | "html" }
@@ -386,7 +387,14 @@ export async function operate(
   parent?: ComputerSnapshot,
 ) {
   switch (request.op) {
-    case "exec":
+    case "exec": {
+      // A shell command is what models write; an argv list given as one JSON string ran as a single word (exit 127).
+      if ("command" in request) {
+        if (typeof request.command !== "string" || !request.command || request.command.includes("\0") || new TextEncoder().encode(request.command).length > 16384)
+          throw new Error("Invalid command");
+        if ("argv" in request) throw new Error("Give command or argv, not both");
+        return provider.exec(["bash", "-lc", request.command], signal);
+      }
       if (
         !Array.isArray(request.argv) ||
         request.argv.length < 1 ||
@@ -400,6 +408,7 @@ export async function operate(
       )
         throw new Error("Invalid argv");
       return provider.exec(request.argv, signal);
+    }
     case "read":
       return {
         content: await provider.readFile(workspacePath(request.path), signal),

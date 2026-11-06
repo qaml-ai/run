@@ -22,6 +22,12 @@ export const computerParameters = union([
   obj({
     provider,
     op: lit("exec"),
+    command: str({ minLength: 1, maxLength: 16384 }),
+    timeoutMs: opt(int({ minimum: 1, maximum: COMPUTER_LIMITS.execMs })),
+  }),
+  obj({
+    provider,
+    op: lit("exec"),
     argv: arr(str({ maxLength: 16384 }), { maxItems: 100, minItems: 1 }),
     timeoutMs: opt(int({ minimum: 1, maximum: COMPUTER_LIMITS.execMs })),
   }),
@@ -61,7 +67,7 @@ export function computerTool(bindings: ComputerBindings, agentId: string, setup?
     parameters: computerParameters,
     replay: "unsafe",
     description:
-      "Linux computer: exec argv (timeoutMs up to 600000), read/write relative /workspace paths, parse text/JSON/CSV/HTML, save/restore a named snapshot, or sleep. Parsing accepts 8 MiB, bounds extracted text and never executes document content; PDF is unsupported. Snapshots capture the whole filesystem. A sub-agent's computer can start as a copy of its parent's: restore with from: \"parent\" and the name of a snapshot the parent saved. Files are separate from agent volumes. Shell syntax requires an explicit shell. " +
+      "Linux computer: exec a shell command (command, run with bash -lc) or an argv list (timeoutMs up to 600000), read/write relative /workspace paths, parse text/JSON/CSV/HTML, save/restore a named snapshot, or sleep. Parsing accepts 8 MiB, bounds extracted text and never executes document content; PDF is unsupported. Snapshots capture the whole filesystem. A sub-agent's computer can start as a copy of its parent's: restore with from: \"parent\" and the name of a snapshot the parent saved. Files are separate from agent volumes. Shell syntax requires an explicit shell. " +
       egressDescription(settings),
     async execute({ provider, ...request }) {
       const namespace = bindings.COMPUTER_CONTAINERS;

@@ -193,3 +193,11 @@ test("restore from the parent boots this computer from the parent's snapshot han
   // The snapshot's machine trusted its own CA; this machine's is trusted again.
   assert.ok(calls.some(call => call[0] === "exec" && (call[1] as string[]).join(" ").includes("update-ca-certificates")));
 });
+
+test("exec takes a shell command, run with bash -lc, as well as an argv list", async () => {
+  const { calls, box, store } = container();
+  await operate(new ContainerProvider(box as never, store), { op: "exec", command: "cd /workspace && git status | head -3" });
+  assert.deepEqual(calls.filter(call => call[0] === "exec").at(-1)![1], ["bash", "-lc", "cd /workspace && git status | head -3"]);
+  await assert.rejects(operate(new ContainerProvider(box as never, store), { op: "exec", command: "" }), /Invalid command/);
+  await assert.rejects(operate(new ContainerProvider(box as never, store), { op: "exec", command: "true", argv: ["true"] } as never), /command or argv/);
+});
