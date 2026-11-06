@@ -13,7 +13,7 @@ import { checkScope } from "./key-scopes.ts";
 import { VOLUME_LIMITS } from "./volume-policy.ts";
 import { attachmentMessages } from "./attachment-markers.ts";
 import { humanInputSettings, type HumanInputSettings } from "./input-policy.ts";
-import { workflowSettings, type WorkflowSettings } from "./workflow-policy.ts";
+import { rejectWorkflow } from "./workflow-refusal.ts";
 
 export interface AgentConfiguration {
   model?: string;
@@ -34,7 +34,6 @@ export interface AgentConfiguration {
   builtins?: string[];
   webSearch?: { providers: string[] };
   delegate?: DelegateSettings;
-  workflow?: WorkflowSettings;
   decide?: boolean;
   mcp?: { tools: ToolDefinition[] };
   mcpServers?: Record<string, unknown>[];
@@ -89,11 +88,13 @@ export async function agentToken(secret: string, id: string, version?: string): 
   return `cat_${[...new Uint8Array(signature)].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
-const BUILTINS = ["file_link", "file_import", "web_fetch", "web_search", "x_search", "schedule", "ask_user", "ask_human", "delegate", "generate_image", "agents", "decide", "workflow"];
+const BUILTINS = ["file_link", "file_import", "web_fetch", "web_search", "x_search", "schedule", "ask_user", "ask_human", "delegate", "generate_image", "agents", "decide"];
 export function configuration(input: unknown, defaultModel: string, operation: "create" | "patch" = "create"): { config: AgentConfiguration; ttlSeconds?: number | null } {
+  // Before the field check, so old workflow input gets its own answer, not "Unknown agent field".
+  rejectWorkflow(input);
   let fields: Record<string, unknown>;
   try {
-    fields = object(input, ["model", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "name", "type", "thinkingLevel", "mcp", "ttlSeconds", "idleTtlSeconds", "builtins", "webSearch", "delegate", "workflow", "decide", "mounts", "maxOutputTokens", "temperature", "dataCollection", "language", "modelHeaders", "runLimits", "initialMessages", "importMessages", "definition", "subject", "context", "keyScope", "spendLimit", "bucket", "humanInput", "subagents", "workspaceId", "remount", "prompt", "mcpServers", "openApi", "definitionRevision", "definitionOverrides"]);
+    fields = object(input, ["model", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "name", "type", "thinkingLevel", "mcp", "ttlSeconds", "idleTtlSeconds", "builtins", "webSearch", "delegate", "decide", "mounts", "maxOutputTokens", "temperature", "dataCollection", "language", "modelHeaders", "runLimits", "initialMessages", "importMessages", "definition", "subject", "context", "keyScope", "spendLimit", "bucket", "humanInput", "subagents", "workspaceId", "remount", "prompt", "mcpServers", "openApi", "definitionRevision", "definitionOverrides"]);
   } catch (error) {
     if (error instanceof BadRequest && error.message.startsWith("Unsupported field: "))
       throw new BadRequest(`Unknown agent field: ${error.message.slice("Unsupported field: ".length).split(", ")[0]}`);
@@ -159,8 +160,6 @@ export function configuration(input: unknown, defaultModel: string, operation: "
     config[field] = fields[field] as Record<string, unknown>[];
   }
   if (fields.humanInput !== undefined) config.humanInput = humanInputSettings(fields.humanInput);
-  const workflow = workflowSettings(config.builtins, fields.workflow);
-  if (workflow !== undefined) config.workflow = workflow;
   for (const field of ["subagents"] as const) if (fields[field] !== undefined) {
     if (!fields[field] || typeof fields[field] !== "object" || Array.isArray(fields[field])) throw new BadRequest(`${field} must be an object`);
     config[field] = fields[field] as Record<string, unknown>;

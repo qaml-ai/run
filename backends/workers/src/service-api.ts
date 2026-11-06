@@ -59,7 +59,7 @@ export async function handleServiceRequest(
     ...(config.codeMode === false ? { codeMode: false } : {}),
     mounts: config.mounts ?? [], keyScope: null, bucket: null, modelHeaders: null,
     builtins: config.builtins ?? [], delegate: config.delegate ?? null,
-    workflow: null, mcpServers: [], decide: null, spendLimit: null, runLimits: null,
+    mcpServers: [], decide: null, spendLimit: null, runLimits: null,
     maxOutputTokens: null, temperature: null, dataCollection: null, language: null,
     cursor: state.cursor, requests: state.requests,
     running: state.requests.some(record => record.state === "running"),

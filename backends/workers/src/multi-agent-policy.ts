@@ -52,9 +52,7 @@ export interface DelegateSettings {
 }
 
 /** Stream events of an agent's children, sent only to subscribers that ask for them (`?subagents=1`). */
-export const SUBAGENT_EVENTS: readonly string[] = ["subagent_start", "subagent_event", "subagent_end", "subagent_message", "subagent_progress",
-  // A workflow's own progress, relayed with its children's events: the same delegation, at plan scale.
-  "workflow_start", "workflow_progress", "workflow_end"];
+export const SUBAGENT_EVENTS: readonly string[] = ["subagent_start", "subagent_event", "subagent_end", "subagent_message", "subagent_progress"];
 /**
  * What a child's run carries in its prompt's metadata: who started it, and where it is in the chain. Where it is counts
  * only with `signature`, the runtime's MAC over it for that agent and run (ClientSessions' `delegation`): a caller's
@@ -171,9 +169,9 @@ export function delegateTool(settings: DelegateSettings, describe: (target: Agen
   const agents = settings.agents ?? [];
   const properties = targetProperties(settings, "delegate to");
   return {
-    name: "delegate", exposure: "direct", callers: ["model"], executionMode: "parallel",
+    name: "delegate", exposure: "direct", callers: ["model", "tools"], executionMode: "parallel",
     description: [
-      "Hand a task to a sub-agent and wait for its answer: its final text, or with `output`, an object in that schema. The sub-agent works on its own (its own tools and history), sees only the task you give it, and its answer comes back as this call's result. Call delegate several times in one response to run tasks in parallel.",
+      "Hand a task to a sub-agent and wait for its answer: its final text, or with `output`, an object in that schema. The sub-agent works on its own (its own tools and history), sees only the task you give it, and its answer comes back as this call's result. Call delegate several times in one response to run tasks in parallel. Scripts can also fan out with await Promise.all(tasks.map(task => tools.delegate({ task }))): a script makes at most 256 calls, 32 out at once (the rest wait their turn), and its time limit does not count the wait.",
       agents.length ? `Agents you can delegate to:\n${listed(agents, describe)}` : "",
       settings.instructions ? `${agents.length ? "Or give" : "Give"} instructions to start a sub-agent of your own design, with your model.` : "",
     ].filter(Boolean).join("\n\n"),

@@ -33,10 +33,9 @@ export interface GoogleUser { sub: string; email: string }
 export type Totals = { responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; platformResponses: number; platformCost: number };
 /**
  * What a tenant owes from a batch: model tokens, and web searches and renders, on the platform's keys
- * (USD, with their counts), tool search's ranking by meaning (at cost, with the searches' count), computer
- * time on the platform's keys (USD, with its seconds), and active agent time.
+ * (USD, with their counts), computer time on the platform's keys (USD, with its seconds), and active agent time.
  */
-type Charge = { platformCost: number; fundingCost: number; activeMs: number; toolCost: number; searches: number; renders: number; toolSearchCost: number; toolSearches: number; transcriptionCost: number; transcriptions: number; audioSeconds: number; imageCost: number; images: number; speechCost: number; speeches: number; speechSeconds: number; decisionCost: number; decisions: number; computerCost: number; computerSeconds: number };
+type Charge = { platformCost: number; fundingCost: number; activeMs: number; toolCost: number; searches: number; renders: number; transcriptionCost: number; transcriptions: number; audioSeconds: number; imageCost: number; images: number; speechCost: number; speeches: number; speechSeconds: number; decisionCost: number; decisions: number; computerCost: number; computerSeconds: number };
 /**
  * Usage recorded and not yet written, applied as one transaction under `id` (a row in
  * `usage_flushes`), so a batch retried after a lost commit acknowledgement is skipped.
@@ -456,8 +455,7 @@ export class Accounts {
     const cost = usageCost(usage).usd;
     // OpenRouter's response cost is in provider credits. Funding those credits is
     // a separate cost, applied only to model calls on our own OpenRouter key.
-    // Tool-search costs already include funding at the reranker's endpoint.
-    const multiplier = message.platform && message.provider === "openrouter" && !message.toolSearch && !message.searches && !message.renders && message.kind !== "transcription" && message.kind !== "image" && message.kind !== "speech"
+    const multiplier = message.platform && message.provider === "openrouter" && !message.searches && !message.renders && message.kind !== "transcription" && message.kind !== "image" && message.kind !== "speech"
       ? this.billing.pricing.openrouterCreditMultiplier : 1;
     // On OpenRouter BYOK, providerCost also includes the separately paid upstream
     // invoice. Only providerCreditCost was paid from OpenRouter credits.
@@ -475,7 +473,7 @@ export class Accounts {
     target.usage.set(key, totals);
     if (message.platform) {
       const charge = this.charge(tenant, target);
-      // Web searches, renders, tool searches, transcriptions and images are counted apart from model tokens, so the hour's ledger entry shows each.
+      // Web searches, renders, transcriptions and images are counted apart from model tokens, so the hour's ledger entry shows each.
       if (message.kind === "decision") {
         // On the platform's OpenRouter key: what the credits cost, funding included.
         charge.decisionCost += fundedCost;
@@ -494,9 +492,6 @@ export class Accounts {
         charge.transcriptionCost += cost;
         charge.transcriptions += message.transcriptions ?? 0;
         charge.audioSeconds += message.audioSeconds ?? 0;
-      } else if (message.toolSearch) {
-        charge.toolSearchCost += cost;
-        charge.toolSearches += message.toolSearches ?? 0;
       } else if (message.searches || message.renders) {
         charge.toolCost += cost;
         charge.searches += message.searches ?? 0;
@@ -522,7 +517,7 @@ export class Accounts {
 
   private charge(tenant: string, target = this.pending) {
     let charge = target.charges.get(tenant);
-    if (!charge) target.charges.set(tenant, charge = { platformCost: 0, fundingCost: 0, activeMs: 0, toolCost: 0, searches: 0, renders: 0, toolSearchCost: 0, toolSearches: 0, transcriptionCost: 0, transcriptions: 0, audioSeconds: 0, imageCost: 0, images: 0, speechCost: 0, speeches: 0, speechSeconds: 0, decisionCost: 0, decisions: 0, computerCost: 0, computerSeconds: 0 });
+    if (!charge) target.charges.set(tenant, charge = { platformCost: 0, fundingCost: 0, activeMs: 0, toolCost: 0, searches: 0, renders: 0, transcriptionCost: 0, transcriptions: 0, audioSeconds: 0, imageCost: 0, images: 0, speechCost: 0, speeches: 0, speechSeconds: 0, decisionCost: 0, decisions: 0, computerCost: 0, computerSeconds: 0 });
     return charge;
   }
 
@@ -533,7 +528,7 @@ export class Accounts {
 
   /** What `charges` come to in micro-USD. */
   private amount(charge: Charge) {
-    return Math.round((charge.platformCost + charge.fundingCost) * MICROS) + Math.round(charge.toolCost * MICROS) + Math.round(charge.toolSearchCost * MICROS) + Math.round(charge.transcriptionCost * MICROS) + Math.round(charge.imageCost * MICROS) + Math.round(charge.speechCost * MICROS) + Math.round(charge.decisionCost * MICROS) + Math.round(charge.computerCost * MICROS) + activeCharge(this.billing.pricing, charge.activeMs);
+    return Math.round((charge.platformCost + charge.fundingCost) * MICROS) + Math.round(charge.toolCost * MICROS) + Math.round(charge.transcriptionCost * MICROS) + Math.round(charge.imageCost * MICROS) + Math.round(charge.speechCost * MICROS) + Math.round(charge.decisionCost * MICROS) + Math.round(charge.computerCost * MICROS) + activeCharge(this.billing.pricing, charge.activeMs);
   }
 
   /** What this node has recorded for `tenant` and not yet written, in micro-USD, as if the tenant were prepaid. */
@@ -613,7 +608,6 @@ export class Accounts {
           tokens: Math.round(charge.platformCost * MICROS), activeMs: Math.round(charge.activeMs),
           ...(charge.fundingCost ? { funding: Math.round((charge.platformCost + charge.fundingCost) * MICROS) - Math.round(charge.platformCost * MICROS) } : {}),
           ...(charge.searches || charge.renders ? { web: Math.round(charge.toolCost * MICROS), searches: charge.searches, renders: charge.renders } : {}),
-          ...(charge.toolSearchCost ? { toolSearch: Math.round(charge.toolSearchCost * MICROS), toolSearches: charge.toolSearches } : {}),
           ...(charge.transcriptions ? { transcription: Math.round(charge.transcriptionCost * MICROS), transcriptions: charge.transcriptions, audioSeconds: charge.audioSeconds } : {}),
           ...(charge.images ? { image: Math.round(charge.imageCost * MICROS), images: charge.images } : {}),
           ...(charge.speeches ? { speech: Math.round(charge.speechCost * MICROS), speeches: charge.speeches, speechSeconds: Math.round(charge.speechSeconds * 100) / 100 } : {}),
@@ -624,6 +618,8 @@ export class Accounts {
     }
     const commit = async (sql: Sql) => {
       if (!(await sql.query("insert into usage_flushes (id) values ($1) on conflict (id) do nothing returning id", [id])).rowCount) return;
+      // Balance rows before the usage rows and the hour's entries, as turn receipts, settlements and holds take them.
+      await lockBalances(sql, billed.map(charge => charge.tenant));
       await applyUsageRows(sql, rows);
       await applyWorkspaceUsage(sql, attributed);
       await accrueUsage(sql, billed);
@@ -727,9 +723,23 @@ export async function applyUsageRows(sql: import("./postgres.ts").Sql, rows: Arr
         insert into usage (tenant, day, model, responses, input, output, cache_read, cache_write, cost, platform_responses, platform_cost)
         select tenant, day::date, model, responses, input, output, "cacheRead", "cacheWrite", cost, "platformResponses", "platformCost"
         from jsonb_to_recordset($1::jsonb) as t(tenant text, day text, model text, responses bigint, input bigint, output bigint, "cacheRead" bigint, "cacheWrite" bigint, cost double precision, "platformResponses" bigint, "platformCost" double precision)
+        order by tenant collate "C", day, model collate "C"
         on conflict (tenant, day, model) do update set
           responses = usage.responses + excluded.responses, input = usage.input + excluded.input, output = usage.output + excluded.output,
           cache_read = usage.cache_read + excluded.cache_read, cache_write = usage.cache_write + excluded.cache_write, cost = usage.cost + excluded.cost,
           platform_responses = usage.platform_responses + excluded.platform_responses, platform_cost = usage.platform_cost + excluded.platform_cost`,
       [JSON.stringify(rows)]);
+}
+
+/**
+ * Lock tenants' balance rows (made when missing), in one order. Every transaction that moves money takes its tenants'
+ * balance rows before anything that hangs off them (usage totals, the hour's usage entry, spend minutes, holds, billing
+ * outboxes), so two of them never hold each other's next row. Several tenants are locked in code point order,
+ * the order JavaScript sorts them in, as other multi-tenant transactions take them.
+ */
+export async function lockBalances(sql: Sql, tenants: string[]) {
+  const sorted = [...new Set(tenants)].sort();
+  if (!sorted.length) return;
+  await sql.query("insert into credit_accounts (tenant) select unnest($1::text[]) on conflict (tenant) do nothing", [sorted]);
+  await sql.query(`select tenant from credit_accounts where tenant = any($1::text[]) order by tenant collate "C" for update`, [sorted]);
 }

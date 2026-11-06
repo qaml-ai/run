@@ -66,6 +66,7 @@ import {
 import { statelessRoutes, agentLifecycleRoutes } from "./agent-routes.ts";
 import { rotateAgentCredentials } from "./agent-credentials.ts";
 import { modelCatalog } from "./model.ts";
+import { rejectWorkflow } from "./workflow-refusal.ts";
 import { providerRoutes } from "./provider-routes.ts";
 import { TENANT_CONFIGURATION_KEYS } from "./access-policy.ts";
 import {
@@ -506,8 +507,9 @@ const worker = {
           throw new BadRequest("Expected configuration object");
         const { requestId, ...params } = next as Record<string, unknown>;
         if (!auth) scopedConfiguration(params);
+        rejectWorkflow(params);
         if (auth) {
-          const allowed = new Set(["model", "systemPrompt", "systemPromptAppend", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "builtins", "decide", "delegate", "workflow", "mcpServers"]);
+          const allowed = new Set(["model", "systemPrompt", "systemPromptAppend", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "builtins", "decide", "delegate", "mcpServers"]);
           const unknown = Object.keys(params).find(field => !allowed.has(field));
           if (unknown) throw new BadRequest(`Unsupported field: ${unknown}`);
         }

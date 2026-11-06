@@ -4,7 +4,6 @@ import { withCompactionPrompt } from "./model-compaction.ts";
 import { takesFiles } from './tool-file-schema.ts';
 import { toolOutputExtension } from "./tool-output.ts";
 import { assertContextRange, contextRangeExtension, contextRangeLimit } from "./context-range.ts";
-import { workflowTools } from "./workflow.ts";
 import { toolCallSite } from "./tool-call-context.ts";
 import { Harness, type ToolRegistration } from "@earendil-works/pi-durable";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
@@ -423,15 +422,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
         name: "camel.linux",
         tools: [computerTool(this.env, this.ctx.id.toString())],
       });
-      const sandbox = new SessionCodemodeSandbox({
-        remote: this.sandboxRemote,
-        workflow: conf.config.type === "workflow",
-      });
-      registry.install({ name: "camel.workflow", tools: await workflowTools({
-        sandbox: new SessionCodemodeSandbox({ remote: this.sandboxRemote, workflow: true }),
-        delegation: this.delegation, settings: conf.config.workflow,
-        context: api => this.currentRun(api), emit: event => this.emit(event),
-      }) });
+      const sandbox = new SessionCodemodeSandbox({ remote: this.sandboxRemote });
       registry.install({
         name: "camel.host-execute",
         tools: [hostExecutionTool(sandbox)],

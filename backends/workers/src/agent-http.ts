@@ -1,11 +1,9 @@
 import { modelCompactionSettings } from "./model-context.ts";
 import { forkSnapshot } from "./fork-snapshot.ts";
 import { seedHistory, writeModelContext } from "./history-seed.ts";
-import { workflowTools } from "./workflow.ts";
 import { errorCode } from "./errors.ts";
 import { withMoneyMetrics } from "./money-metrics.ts";
 import { type Message } from "@earendil-works/pi-ai";
-import { SessionCodemodeSandbox } from "../codemode/sandbox.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { BadRequest, boundedText, object, body } from "./validation.ts";
 import { computerParameters } from "./computers/tool.ts";
@@ -223,11 +221,6 @@ export async function fetchRequestImpl(this: AgentRuntime,
               incoming.config.type === "subagent",
             ),
           });
-          this.registry.install({ name: "camel.workflow", tools: await workflowTools({
-            sandbox: new SessionCodemodeSandbox({ remote: this.sandboxRemote, workflow: true }),
-            delegation: this.delegation, settings: incoming.config.workflow,
-            context: api => this.currentRun(api), emit: event => this.emit(event),
-          }) });
           this.availableTools = prioritizedTools(this.registry.snapshot().tools());
           const enabled = await this.enabledTools(incoming.config);
           await root.configure(
