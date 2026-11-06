@@ -6,7 +6,7 @@ import { once } from 'node:events';
 import { startFixture } from './fixture.ts';
 import { pngBytes } from '../../../tests/file-fixtures.ts';
 
-test('media resolves shared encrypted keys, scoped gateways and source billing ownership', {timeout:90000}, async t => {
+test('media resolves shared encrypted keys, scoped gateways and billing ownership: only the platform key charges', {timeout:90000}, async t => {
   const calls:{authorization?:string;customer?:string}[]=[];
   const server=createServer(async (request,response)=>{
     for await (const _ of request) { /* Drain only synthetic input. */ }
@@ -37,7 +37,7 @@ test('media resolves shared encrypted keys, scoped gateways and source billing o
 
   const initial=await balance();
   await image();assert.ok(calls.at(-1)?.authorization==='Bearer fake-admin-key');
-  assert.equal(await balance(),initial-20000,'admin key is platform usage under source media rules');
+  assert.equal(await balance(),initial,"an operator's entry key (apiKeys) is the tenant's key: never charged to platform credit");
   assert.equal((await request('/v1/providers/openai/key','PUT',{apiKey:'fake-stored-key',verify:false})).status,200);
   const storedBalance=await balance();
   await image();assert.ok(calls.at(-1)?.authorization==='Bearer fake-stored-key');
@@ -56,5 +56,5 @@ test('media resolves shared encrypted keys, scoped gateways and source billing o
   assert.equal((await request('/v1/images','POST',{prompt:'Denied'},'disabled-token')).status,400);
   assert.equal(calls.length,count,'disabled platform keys never reach the provider');
   const usage=(await f.db.query("select responses,platform_responses from usage where tenant=$1 and model='image:openai/gpt-image-2.5-flare'",['camelrun-proto-local'])).rows[0];
-  assert.equal(Number(usage.responses),5);assert.equal(Number(usage.platform_responses),1);
+  assert.equal(Number(usage.responses),5);assert.equal(Number(usage.platform_responses),0,'no call ran on the platform key');
 });

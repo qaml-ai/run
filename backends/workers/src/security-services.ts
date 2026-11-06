@@ -1,4 +1,5 @@
 import { Accounts } from "./accounts.ts";
+import { chargesPlatform } from "../../../src/core/key-source.ts";
 import { Tenants } from "./tenants.ts";
 import { KeyScopes } from "./key-scopes.ts";
 import { ModelProviders } from "./model-providers.ts";
@@ -83,5 +84,5 @@ export async function providerCredentials(services: KeyServices, tenant: string,
   if (scoped) return { ...custom, ...scoped, source: "tenant" as const, platform: false };
   if (custom) return { ...custom, source: "tenant" as const, platform: false };
   const key = await services.accounts.providerKey(tenant, provider);
-  return key && { apiKey: key.key, source: key.source, platform: key.source !== "tenant", ...(key.region ? { region: key.region } : {}), ...(key.bearer ? { bearer: key.bearer } : {}) };
+  return key && { apiKey: key.key, source: key.source, platform: chargesPlatform(key.source), ...(key.region ? { region: key.region } : {}), ...(key.bearer ? { bearer: key.bearer } : {}) };
 }

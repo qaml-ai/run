@@ -15,9 +15,9 @@ token, never AWS access keys); it calls the runtime host's `AWS_REGION`, else
 - An **admin tenant** (`"billing": "none"`, the operator's own, e.g. a product
   built on the runtime) uses them for every provider it has no key for, its own
   or its entry's `apiKeys` (models, web search, page rendering), and is never
-  charged. Its usage is still recorded as the platform's (`platformResponses`
-  and `platformCost` in `/v1/usage`), and its model spend counts in the model-spend
-  metrics and alarms, so the operator sees what it costs.
+  charged. Its usage on the platform's keys is still recorded as the platform's
+  (`platformResponses` and `platformCost` in `/v1/usage`), and its model spend counts
+  in the model-spend metrics and alarms, so the operator sees what it costs.
   An entry with `"platformKeys": false` opts out: that tenant uses only its own
   keys and its `apiKeys`, and a builtin without one tells it which key to add.
   Use it for an outside operator's tenant that should never spend on the platform's
@@ -31,9 +31,20 @@ Which key a model call uses, in order, by tenant:
 | Signed up before billing (unbilled) | key scope's, own; never the platform's |
 | Admin tenant from the tenants file (`billing` `none`) | key scope's, own, the entry's `apiKeys`, platform's (unbilled, recorded as platform usage) |
 | Admin tenant with `"platformKeys": false` | key scope's, own, the entry's `apiKeys`; never the platform's |
-| Admin tenant with `"billing": "prepaid"` | key scope's, own, the entry's `apiKeys`, platform's (charged to credit) |
+| Admin tenant with `"billing": "prepaid"` | key scope's, own, the entry's `apiKeys` (never charged), platform's (charged to credit) |
 
 A provider with the tenant's own key never uses the platform's, whatever the tenant.
+
+**Only the platform's keys charge.** A call is the platform's to fund only when it runs on
+a key from the top-level `platformKeys` (or the platform's Azure deployments or Anthropic
+federation): then a prepaid tenant pays for it from credit, OpenRouter's funding multiplier
+applies, and `/v1/usage` counts it in `platformResponses` and `platformCost`. A key from the
+tenant's entry (`apiKeys`, set by the operator) is the tenant's key, exactly like one the
+tenant stored itself or a key scope's: a call on it never charges credit, never takes the
+funding multiplier and is not platform usage, even for a `"billing": "prepaid"` entry; the
+provider bills whoever owns that key. The rule is the same for model calls (turns,
+compaction, tool ranking), decisions, transcription, images, speech, realtime voice, web
+search and page rendering, on both backends (`chargesPlatform` in `src/core/key-source.ts`).
 
 A **prepaid tenant** pays for:
 

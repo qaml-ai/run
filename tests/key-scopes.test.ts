@@ -67,9 +67,9 @@ test("key scopes store sealed entries, and an agent's calls use its scope's curr
   assert.equal((await r.call("/v1/key-scopes/org_1", { method: "DELETE" })).status, 200);
   assert.deepEqual((await r.call("/v1/key-scopes/org_1")).json, { scope: "org_1", providers: [] });
 
-  // Scope calls are the tenant's own keys: counted in /v1/usage, and not as platform responses, as the four on the admin's key are.
+  // Scope calls, like those on the admin's key (the entry's apiKeys), are the tenant's own: counted in /v1/usage, never as platform responses.
   const usage = (await r.call("/v1/usage")).json;
-  assert.deepEqual([usage.totals.responses, usage.totals.platformResponses], [7, 4], JSON.stringify(usage.totals));
+  assert.deepEqual([usage.totals.responses, usage.totals.platformResponses], [7, 0], JSON.stringify(usage.totals));
 });
 
 test("a scope's model provider need not be the tenant's: an agent may be created on it, and Bedrock takes its key as a bearer token", async t => {
