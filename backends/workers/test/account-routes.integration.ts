@@ -72,7 +72,7 @@ test("deleting an account removes agent spend limits and keeps its credit ledger
   assert.equal(stranded.status, 201);
   // A previous process revoked the row, then failed before the DO acknowledged
   // shutdown. Account deletion must retry that persisted cleanup intent too.
-  await r.db.query("update agents set revoked=true, header=header || '{\"deleted\":true,\"cleanupPending\":true}'::jsonb where id=$1", [stranded.json.id]);
+  await r.db.query("update agents set revoked=true, header=header::jsonb || '{\"deleted\":true,\"cleanupPending\":true}'::jsonb where id=$1", [stranded.json.id]);
   // Directory marks the agent revoked before shutdown. A cold DO must still
   // reopen its harness and read the owned spend counter to finish that shutdown.
   await r.worker.stop(true);
