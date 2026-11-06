@@ -1,13 +1,13 @@
-/** workerd lacks redirect:error; manual plus rejection keeps the source credential boundary. */
+import { fetchWithoutRedirects } from "../../../src/core/no-redirect.ts";
+
+/**
+ * Console, payment and model providers retain the source timeouts and redirect policy. Our own callers use
+ * fetchWithoutRedirects directly (redirect mode "error" is banned in this repo); a library's request for that mode
+ * (model SDKs reach this through model-call-fetch.ts) is mapped to it here, since workerd would throw on it.
+ */
 async function workerFetch(input: RequestInfo | URL, init?: RequestInit) {
   const noRedirect = init?.redirect === "error" || (!init?.redirect && input instanceof Request && input.redirect === "error");
-  const response = await globalThis.fetch(input, noRedirect ? { ...init, redirect: "manual" } : init);
-  if (noRedirect && [301, 302, 303, 307, 308].includes(response.status) && response.headers.has("location")) {
-    await response.body?.cancel();
-    throw new TypeError("Fetch redirect refused");
-  }
-  return response;
+  return noRedirect ? fetchWithoutRedirects(globalThis.fetch, input, init) : globalThis.fetch(input, init);
 }
 
-/** Console and payment providers retain the source timeouts and redirect policy. */
 export const network = () => ({ fetch: workerFetch });

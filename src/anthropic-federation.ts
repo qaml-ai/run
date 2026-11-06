@@ -1,6 +1,7 @@
 import { GetWebIdentityTokenCommand, STSClient } from "@aws-sdk/client-sts";
 import { metricLine } from "./metrics.ts";
 import type { Credentials } from "./protocol.ts";
+import { fetchWithoutRedirects } from "./core/no-redirect.ts";
 
 const IDS = ["FEDERATION_RULE_ID", "ORGANIZATION_ID", "SERVICE_ACCOUNT_ID", "WORKSPACE_ID"] as const;
 export type AnthropicFederationConfig = {
@@ -92,8 +93,8 @@ export class AnthropicFederation {
       if (!result.WebIdentityToken) throw new FederationError("StsResponseError");
       stage = "TokenEndpointError";
       // No retries with this assertion: JWTs containing jti are single-use, even after an ambiguous failure.
-      const response = await (this.options.fetch ?? fetch)("https://api.anthropic.com/v1/oauth/token", {
-        method: "POST", headers: { "content-type": "application/json" }, redirect: "error", signal,
+      const response = await fetchWithoutRedirects(this.options.fetch ?? fetch, "https://api.anthropic.com/v1/oauth/token", {
+        method: "POST", headers: { "content-type": "application/json" }, signal,
         body: JSON.stringify({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion: result.WebIdentityToken, ...ids }),
       });
       if (!response.ok) { await response.body?.cancel(); throw new FederationError(stage); }

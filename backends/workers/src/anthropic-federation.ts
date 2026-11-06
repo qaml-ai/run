@@ -35,16 +35,8 @@ export function federationFor(env: FederationEnv): AnthropicFederation | undefin
     if (!response.ok) { await response.body?.cancel(); throw new Error("STS request failed"); }
     return await response.json() as { WebIdentityToken?: string };
   } : undefined;
-  // Workerd accepts manual/follow, but not the source policy's redirect:error.
-  // Keep its no-redirect promise without forwarding the one-use assertion.
-  const tokenFetch: typeof fetch = async (input, init) => {
-    const response = await fetch(endpoint ? new URL("/v1/oauth/token", endpoint) : input, { ...init, redirect: "manual" });
-    if (response.status >= 300 && response.status < 400) {
-      await response.body?.cancel();
-      throw new Error("Anthropic token endpoint redirected");
-    }
-    return response;
-  };
+  // The policy refuses redirects itself (fetchWithoutRedirects), so the one-use assertion is never forwarded.
+  const tokenFetch: typeof fetch = (input, init) => fetch(endpoint ? new URL("/v1/oauth/token", endpoint) : input, init);
   const federation = anthropicFederationFromEnvironment(config, { ...(send ? { sts: { send } } : {}), fetch: tokenFetch });
   if (federation) {
     if (cache.size >= 16) cache.delete(cache.keys().next().value!);

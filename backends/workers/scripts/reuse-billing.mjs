@@ -10,6 +10,7 @@ for (const name of files) {
   source = source.replaceAll('"./tenants.ts"', '"./billing-host.ts"').replaceAll('"./busy-agents.ts"', '"./billing-host.ts"').replaceAll('"./metrics.ts"', '"./billing-host.ts"');
   source = source.replaceAll('"./journey.ts"', '"./billing-host.ts"').replaceAll('"../shared/storage.ts"', '"./billing-host.ts"').replaceAll('"./storage-usage.ts"', '"./billing-host.ts"');
   source = source.replaceAll('import { network } from "./node-context.ts";', 'import { network } from "./account-network.ts";');
+  source = source.replaceAll('"./core/no-redirect.ts"', '"../../../src/core/no-redirect.ts"');
   source = source.replaceAll('import type { Accounts } from "./accounts.ts";', 'import type { Accounts } from "./billing-host.ts";');
   const output = `// Generated from src/${name}.ts; only host imports/types are adapted.\n// Regenerate with scripts/reuse-billing.mjs; --check rejects policy drift.\n${source}`;
   const path = resolve(here, `../src/${name}.ts`);

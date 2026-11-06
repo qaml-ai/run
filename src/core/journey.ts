@@ -1,4 +1,5 @@
 import { sha256Hex } from "./sha256.ts";
+import { fetchWithoutRedirects } from "./no-redirect.ts";
 
 /** Host services stay outside the shared journey policy. */
 export type Sql = { query<R = any>(text: string, values?: any[]): Promise<{ rows: R[]; rowCount: number | null }> };
@@ -632,8 +633,8 @@ export class Journey {
     for (let cursor: { at: number; id: string } | undefined, pages = 0; ; pages++) {
       if (pages > 10_000) throw new Error("The journey store's export does not end");
       const body = JSON.stringify({ schema_version: JOURNEY_SCHEMA_VERSION, account_ref: accountRef, kind, ...(cursor ? { cursor } : {}) });
-      const response = await (this.options.fetch ?? fetch)(new URL(JOURNEY_EXPORT_PATH, this.options.url), {
-        method: "POST", body, redirect: "error", signal: AbortSignal.timeout(30_000),
+      const response = await fetchWithoutRedirects(this.options.fetch ?? fetch, new URL(JOURNEY_EXPORT_PATH, this.options.url), {
+        method: "POST", body, signal: AbortSignal.timeout(30_000),
         headers: { "Content-Type": "application/json", ...this.options.host.signedHeaders(crypto.randomUUID(), body, [this.options.secret]) },
       });
       const answer = await response.json().catch(() => undefined) as { status?: unknown; kind?: unknown; account?: unknown; consent?: unknown; events?: unknown; touches?: unknown; ga4_copies?: unknown; next_cursor?: { at?: unknown; id?: unknown } | null } | undefined;
@@ -727,8 +728,8 @@ export class Journey {
     const body = JSON.stringify(events ? { schema_version: JOURNEY_SCHEMA_VERSION, events: [row.body] } : row.body);
     let failure: string, refused = false;
     try {
-      const response = await (this.options.fetch ?? fetch)(new URL(events ? JOURNEY_EVENTS_PATH : row.target === "consent" ? JOURNEY_CONSENT_PATH : JOURNEY_RESOLVE_PATH, this.options.url), {
-        method: "POST", body, redirect: "error", signal: AbortSignal.timeout(TIMEOUT_MS),
+      const response = await fetchWithoutRedirects(this.options.fetch ?? fetch, new URL(events ? JOURNEY_EVENTS_PATH : row.target === "consent" ? JOURNEY_CONSENT_PATH : JOURNEY_RESOLVE_PATH, this.options.url), {
+        method: "POST", body, signal: AbortSignal.timeout(TIMEOUT_MS),
         headers: { "Content-Type": "application/json", ...this.options.host.signedHeaders(row.id, body, [this.options.secret]) },
       });
       const answer = await response.json().catch(() => undefined) as { accepted?: unknown; duplicates?: unknown; attribution_id?: unknown } | undefined;

@@ -15,6 +15,7 @@ import { underClaim, type Ownership } from "./ownership.ts";
 import { validFileRef, type FileRef } from "./files.ts";
 import type { Input } from "./inputs.ts";
 import { network } from "./node-context.ts";
+import { fetchWithoutRedirects } from "./core/no-redirect.ts";
 import { DECISION_MODEL, decisionsRequest, type DecisionService } from "./decisions.ts";
 import { FILTERED_DAYS, FILTER_QUESTION, FILTER_TIMEOUT_MS, channelFilter, filterState, type ChannelFilter, type Verdict, type VerdictReason } from "./channel-filter.ts";
 
@@ -215,7 +216,7 @@ export const RETIRED_CHANNEL_MESSAGE = "Discord channels are no longer supported
 
 /** Fetch an attachment from a service's file host: never redirected (a token may go with it), within a time limit. */
 export async function fetchFile(url: string, headers: Record<string, string> = {}) {
-  const response = await network().fetch(url, { headers, redirect: "error", signal: AbortSignal.timeout(CHANNEL_FILE_LIMITS.downloadMs) });
+  const response = await fetchWithoutRedirects(network().fetch, url, { headers, signal: AbortSignal.timeout(CHANNEL_FILE_LIMITS.downloadMs) });
   if (!response.ok || !response.body) throw new Error(`Download failed: HTTP ${response.status}`);
   return { body: response.body as AsyncIterable<Uint8Array>, contentType: response.headers.get("content-type")?.split(";")[0] };
 }
