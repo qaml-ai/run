@@ -32,11 +32,20 @@ test('configuration refreshes delegation tools and deletion cancels an ownerless
   }
   const agent = await call('/v1/agents', { mcpServers: [{ name: 'lifecycle', url: `http://127.0.0.1:${(mcp.address() as any).port}/mcp` }] });
   const base = `/v1/agents/${agent.id}`;
+  const configure = async (params: object) => {
+    const accepted = await call(base + '/configuration', params, 'PATCH');
+    // Configuration admission is asynchronous. Observe its durable completion
+    // before inspecting the registry it installs, as the public API specifies.
+    const completed = await call(`${base}/requests/${accepted.id}?wait=25`);
+    assert.equal(completed.state, 'completed');
+    assert.equal(completed.outcome.error, undefined);
+    assert.equal(completed.outcome.result.configured, true);
+  };
   const hasDelegate = async () => (await call(base)).toolSources.some((source: any) => source.tools.some((tool: any) => tool.name === 'delegate'));
   assert.equal(await hasDelegate(), false);
-  await call(base + '/configuration', { builtins: ['delegate'], delegate: { instructions: true } }, 'PATCH');
+  await configure({ builtins: ['delegate'], delegate: { instructions: true } });
   assert.equal(await hasDelegate(), true, 'updated configuration installs delegation tools');
-  await call(base + '/configuration', { builtins: [], delegate: { maxDepth: 2 } }, 'PATCH');
+  await configure({ builtins: [], delegate: { maxDepth: 2 } });
   assert.equal(await hasDelegate(), false, 'removing the builtin removes its registry tools');
   await call(base + '/requests', { id: 'host-wait', method: 'execute', params: { code: 'return await tools.lifecycle__wait({})' } });
   await Promise.race([called, new Promise((_, reject) => setTimeout(() => reject(new Error('Host tool did not start')), 10_000))]);
