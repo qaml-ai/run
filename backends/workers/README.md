@@ -77,10 +77,17 @@ scripts/sprite-test --shards=4 HEAD bash -lc \
   'cd backends/workers && npm ci && npm run test:integration -- --test-shard={shard}/{shards}'
 ```
 
-One integration test, queued account deletion with 2001 agents, takes about 14
-minutes by itself (its agent creation and 81 durable deletion passes are the
-work). With two or more shards the split gives it a shard of its own, so the other
-shards finish in a few minutes and the suite takes as long as that one test.
+Some tests have a slow variant that runs only with `WORKERS_SLOW_TESTS=1`: the
+"Workers tests" workflow runs them nightly, and on demand (Run workflow with
+`slow: true`). Today that is queued account deletion, which the suite runs at
+101 agents (5 deletion passes with the process killed between them) and the slow
+run at 2001 agents (81 passes, about 8.5 minutes on a Sprite: 4.5 creating the
+agents, 3.7 deleting them):
+
+```sh
+WORKERS_SLOW_TESTS=1 node --import ./test/compat-register.mjs \
+  --experimental-strip-types --test test/account-deletion.integration.ts
+```
 
 Compatibility results are in `measurements/compatibility.json`, with individual
 TAP logs. The compatibility command exits nonzero while contract failures

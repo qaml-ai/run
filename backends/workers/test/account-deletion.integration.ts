@@ -3,7 +3,12 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { startFixture } from "./fixture.ts";
 
-test("queued account deletion resumes after interruption with 2001 agents and retains accounting", { timeout: 900_000 }, async t => {
+// A pass deletes at most 25 agents (agentBatchSize). By default the account is small enough for every pull request
+// and still takes several passes, with the process killed between them. WORKERS_SLOW_TESTS=1 (the nightly Workers
+// run) deletes 2001 agents in 81 passes: about 8.5 minutes on a Sprite, more than half of it creating the agents.
+const AGENTS = process.env.WORKERS_SLOW_TESTS === "1" ? 2001 : 101;
+
+test(`queued account deletion resumes after interruption with ${AGENTS} agents and retains accounting`, { timeout: 900_000 }, async t => {
   const operator = "large-account-deletion-operator-token-32-characters";
   const r = await startFixture({ vars: {
     AGENT_TENANTS_JSON: JSON.stringify({ tenants: { ops: { tokenSha256: createHash("sha256").update(operator).digest("hex"), apiKeys: {} } } }),
@@ -23,13 +28,13 @@ test("queued account deletion resumes after interruption with 2001 agents and re
   const ids = [id];
   let next = 0;
   await Promise.all(Array.from({ length: 10 }, async () => {
-    while (next++ < 2000) {
+    while (next++ < AGENTS - 1) {
       const response = await call("/v1/agents", "POST", r.token, { model: "test/echo", spendLimit: { usd: 3 } });
       assert.equal(response.status, 201);
       ids.push((await response.json() as { id: string }).id);
     }
   }));
-  assert.equal(ids.length, 2001);
+  assert.equal(ids.length, AGENTS);
   const tokenResponse = await call("/v1/tokens", "POST", r.token, { name: "revoked with account" });
   assert.equal(tokenResponse.status, 201);
   const { token } = await tokenResponse.json() as { token: string };
@@ -41,9 +46,9 @@ test("queued account deletion resumes after interruption with 2001 agents and re
   assert.equal((await call("/v1/agents", "GET", token)).status, 401, "credentials stop authenticating before cleanup finishes");
   const count = async () => Number((await r.db.query("select count(*) n from agents where tenant=$1", [tenant])).rows[0].n);
   const firstDeadline = Date.now() + 90_000;
-  while (await count() === 2001 && Date.now() < firstDeadline) await new Promise(resolve => setTimeout(resolve, 100));
+  while (await count() === AGENTS && Date.now() < firstDeadline) await new Promise(resolve => setTimeout(resolve, 100));
   const remaining = await count();
-  assert.ok(remaining > 0 && remaining < 2001, "first bounded queue pass committed progress");
+  assert.ok(remaining > 0 && remaining < AGENTS, "first bounded queue pass committed progress");
   await r.restart({}, true);
   // Advance only the persisted lease clock, avoiding a five-minute test sleep.
   await r.db.query("update account_deletions set claimed_until=now()-interval '1 second' where tenant=$1", [tenant]);
@@ -64,6 +69,6 @@ test("queued account deletion resumes after interruption with 2001 agents and re
   assert.equal((await r.db.query("select balance from credit_accounts where tenant=$1", [tenant])).rows[0].balance, balance);
   assert.equal((await call("/v1/agents", "GET", token)).status, 401);
   const attempts = Number((await r.db.query("select attempts from account_deletions where tenant=$1", [tenant])).rows[0].attempts);
-  assert.ok(attempts >= 80, "thousands of agents were deleted across durable bounded passes");
-  t.diagnostic(`Deleted 2001 agents in ${attempts} passes over ${Date.now() - started} ms, including process interruption`);
+  assert.ok(attempts >= (AGENTS - 1) / 25, "the agents were deleted across durable bounded passes");
+  t.diagnostic(`Deleted ${AGENTS} agents in ${attempts} passes over ${Date.now() - started} ms, including process interruption`);
 });
