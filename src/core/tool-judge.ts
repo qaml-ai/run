@@ -1,12 +1,25 @@
-import type { Decider, Answer, DecisionItem, NoulQuestion } from "../decisions.ts";
 import { JUDGE_LIMITS } from "../limits.ts";
-import type { UsageRecord } from "../client-sessions/state.ts";
-import type { McpResult } from "../mcp-results.ts";
+
+/** Only the decision fields the judge reads; host usage records remain opaque. */
+type NoulQuestion = { type: "noul"; instructions: string; criteria: { true: string; false: string } };
+type JudgeItem = { state: string; questions: Record<string, NoulQuestion> };
+type JudgeAnswer = { type: string; noul?: number };
+type JudgeFailure = { status: number; message: string; code?: string };
+type GateResult = { content?: { type: "text"; text: string }[]; isError?: boolean; resultType?: string; inputRequests?: Record<string, unknown> };
+export interface JudgeDecider<Usage> {
+  estimate(items: JudgeItem[], model: string): number;
+  decide(context: { tenant: string; keyScope?: string; budget?: number; dataCollection?: "deny" | null },
+    request: { items: JudgeItem[]; batch: boolean; model: string }, signal: AbortSignal): Promise<{
+      results: ({ answers: Record<string, JudgeAnswer> } | { error: JudgeFailure })[];
+      usage?: Usage;
+      chargedUsd: number;
+    }>;
+}
 
 /** The host supplies only its model name and error classes; all judgment policy is shared. */
 export type JudgeHost = {
   model: string;
-  failure(error: { status: number; message: string; code?: string }): unknown;
+  failure(error: JudgeFailure): unknown;
   isCreditError(error: unknown): boolean;
 };
 
@@ -106,18 +119,18 @@ function edges(intent: string) {
 }
 
 /** The one item a judged call asks about. Its questions are fixed: a caller cannot ask fewer, or different ones. */
-export function judgeItem(input: JudgeInput): DecisionItem {
+export function judgeItem(input: JudgeInput): JudgeItem {
   return { state: judgeState(input), questions: QUESTIONS };
 }
 
-const probability = (answer: Answer | undefined) => answer?.type === "noul" ? answer.noul : undefined;
+const probability = (answer: JudgeAnswer | undefined) => answer?.type === "noul" ? answer.noul : undefined;
 
 /**
  * The decision a judge's answers call for, as the table above reads: exfiltration denies, anything that may be
  * irreversible asks, an ordinary call allows, and an answer that is not there asks. A high risk denies even when the call
  * also reads as ordinary; a medium one asks even when it does.
  */
-export function judgedOutcome(answers: Record<string, Answer>): Judged {
+export function judgedOutcome(answers: Record<string, JudgeAnswer>): Judged {
   const ordinary = probability(answers.ordinary), irreversible = probability(answers.irreversible), exfiltration = probability(answers.exfiltration);
   if (exfiltration === undefined || irreversible === undefined || ordinary === undefined) return { decision: "ask", risk: "medium", likely: 0 };
   if (exfiltration >= DANGER) return { decision: "deny", risk: "high", likely: exfiltration };
@@ -130,7 +143,7 @@ export function judgedOutcome(answers: Record<string, Answer>): Judged {
 export const UNJUDGED: Judged = Object.freeze({ decision: "ask", risk: "medium", likely: 0 });
 
 /** What a judge is given to answer with: the tenant's key scope, its data policy, its spend limit, and where usage goes. */
-export type JudgeContext = {
+export type JudgeContext<Usage> = {
   tenant: string;
   keyScope?: string;
   /** An agent (or run) that denies data collection: sent on, as `decide` sends it, where the provider takes it. */
@@ -138,7 +151,7 @@ export type JudgeContext = {
   /** What is left of the run's spend limit, in USD: a call that may cost more than this is not sent. */
   budget?: () => Promise<number | undefined>;
   /** Records what the judge cost, as a decision's usage is recorded (billing, `usage.recorded`). */
-  record?: (usage: UsageRecord) => void;
+  record?: (usage: Usage) => void;
   /** When an end user pays: holds the estimate of their credit before the call, then settles or releases it. */
   hold?: (usd: number) => Promise<{ settle(usd: number): Promise<void>; release(): Promise<void> } | undefined>;
   /** A judge that could not answer, for a log line: the error only, never the state it was asked about. */
@@ -152,7 +165,7 @@ export type JudgeContext = {
  * tenant's OpenRouter key, else the platform's. Every failure — no key, a spent budget, the provider down, an answer this
  * cannot read — is `ask`, so the call waits for a person instead of running unjudged.
  */
-export function createToolJudge(decider: Pick<Decider, "decide" | "estimate">, context: JudgeContext, host: JudgeHost): Judge {
+export function createToolJudge<Usage>(decider: JudgeDecider<Usage>, context: JudgeContext<Usage>, host: JudgeHost): Judge {
   /** An answer the judge did not give, and why: counted like any other, so asks are not invisible. */
   const unanswered = (input: JudgeInput, reason: NonNullable<Judged["reason"]>): Judged => {
     const judged = { ...UNJUDGED, reason };
@@ -162,7 +175,7 @@ export function createToolJudge(decider: Pick<Decider, "decide" | "estimate">, c
   return async (input, signal) => {
     // What it cannot see whole, it does not judge: the person decides instead (see judgeable).
     if (!judgeable(input)) return unanswered(input, "unjudgeable");
-    let held: Awaited<ReturnType<NonNullable<JudgeContext["hold"]>>>;
+    let held: Awaited<ReturnType<NonNullable<JudgeContext<Usage>["hold"]>>>;
     try {
       const budget = await context.budget?.();
       if (budget !== undefined && budget <= 0) return unanswered(input, "budget");
@@ -205,7 +218,7 @@ export const DENIED_PERMISSION = (tool: string) =>
 
 
 /** The common source gate: a stopped judgment never executes or asks for a call. */
-export async function gateToolCall(mode: "never" | "always" | "judged", input: JudgeInput, signal: AbortSignal, judge?: Judge): Promise<McpResult | undefined> {
+export async function gateToolCall(mode: "never" | "always" | "judged", input: JudgeInput, signal: AbortSignal, judge?: Judge): Promise<GateResult | undefined> {
   if (mode === "never") return undefined;
   // Only the originating request can authorize a call. A missing request asks the person.
   if (mode === "always" || !judge || !input.intent?.trim()) return APPROVAL_REQUIRED;
@@ -215,4 +228,4 @@ export async function gateToolCall(mode: "never" | "always" | "judged", input: J
   if (judged.decision === "deny") return { content: [{ type: "text", text: DENIED_PERMISSION(input.tool) }], isError: true };
   return APPROVAL_REQUIRED;
 }
-const APPROVAL_REQUIRED: McpResult = { resultType: "input_required", inputRequests: { approval: { method: "agent-runtime/approval", params: {} } } };
+const APPROVAL_REQUIRED: GateResult = { resultType: "input_required", inputRequests: { approval: { method: "agent-runtime/approval", params: {} } } };

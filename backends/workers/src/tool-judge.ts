@@ -1,7 +1,9 @@
-import { DECISION_MODEL, Decider, DecisionFailed } from "./decision-policy.ts";
+import { DECISION_MODEL, DecisionFailed, type Decider } from "./decision-policy.ts";
 import { HttpError } from "./errors.ts";
-import { createToolJudge, type JudgeContext } from "../../../src/core/tool-judge.ts";
+import { createToolJudge, type JudgeContext as SharedJudgeContext } from "../../../src/core/tool-judge.ts";
+import type { UsageRecord } from "./policy-host.ts";
 export * from "../../../src/core/tool-judge.ts";
+export type JudgeContext = SharedJudgeContext<UsageRecord>;
 
 /** Bind the shared judgment policy to the Workers decision service. */
 export function toolJudge(decider: Decider, context: JudgeContext) {
