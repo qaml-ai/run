@@ -12,6 +12,8 @@ import type { Provider } from "@earendil-works/pi-ai/models";
 import { digest, FileError } from "./volume.ts";
 import { imageHeader, imageIntact, IMAGE_DAMAGED } from "../../../src/image-header.ts";
 import { requestImageLimit } from "../../../src/request-images.ts";
+import { makeMarker, parseMarker, type ImageReference } from "./image-request-marker.ts";
+import { streamingFetch } from "./image-request-stream.ts";
 export interface ImageBindings {
   BUCKET: R2Bucket;
   IMAGES: ImagesBinding;
@@ -295,9 +297,10 @@ export function imageReferenceInput(
     })),
   ];
 }
-/** Pi's stable schema stores compact references as typed text, not unsupported
- * custom content blocks. Only the provider adapter expands them, with one budget
- * across the entire retained history. Provider URLs never enter that history. */
+/** Pi's stable schema stores compact references as typed text. At request time
+ * authorized references become tiny PNG markers. The fetch adapter expands
+ * those markers directly from R2 into a known-length JSON body, one image at a
+ * time. The count and byte budget covers the entire retained history. */
 export function withImageReferences<A extends Api>(
   provider: Provider<A>,
   env: ImageBindings,
@@ -324,9 +327,10 @@ export function withImageReferences<A extends Api>(
             locations.push({ message, part, inline: p });
         });
     });
-    if (!locations.length) return context;
+    if (!locations.length) return { context, references: [] as ImageReference[] };
     const tenant = await getTenant(),
       selected = new Map<string, unknown>();
+    const references: ImageReference[] = [];
     let bytes = 0,
       count = 0;
     for (const location of locations.reverse()) {
@@ -336,6 +340,12 @@ export function withImageReferences<A extends Api>(
       let block: any;
       if (location.inline) {
         const inline = location.inline;
+        // A user-provided PNG cannot grant access to an object. Only markers
+        // made below, after tenant/pin checks, receive a request-scoped nonce.
+        if (parseMarker(inline.data)) {
+          selected.set(`${location.message}:${location.part}`, { type: "text", text: "[image omitted: reserved request marker]" });
+          continue;
+        }
         const data = Buffer.from(inline.data, "base64");
         const header = imageHeader(data);
         if (!header || !imageIntact(data, inline.mimeType)) {
@@ -352,10 +362,14 @@ export function withImageReferences<A extends Api>(
           }
         }
       } else if (ref) {
+        if (ref.type !== "image_ref" || ref.tenant !== tenant || !ownedImageKey(tenant, ref.key) || !Number.isSafeInteger(ref.size) || ref.size < 1 || ref.size > IMAGE_LIMITS.derivativeBytes)
+          throw new FileError("Invalid image reference");
         if (ref.key.startsWith("files/") && !await authorizeFile?.(ref.key)) continue;
-        block = (await imageInputs(env, tenant, [ref], env.PUBLIC_BASE_URL ?? "https://localhost.invalid", false))[0];
+        const reference = { key: ref.key, size: ref.size, mimeType: ref.mimeType, nonce: crypto.randomUUID() };
+        references.push(reference);
+        block = { type: "image", mimeType: "image/png", data: makeMarker(reference) };
       }
-      const size = block?.data?.length ?? 0;
+      const size = ref ? 4 * Math.ceil(ref.size / 3) : block?.data?.length ?? 0;
       if (
         count >= requestImageLimit(model) ||
         bytes + size > IMAGE_LIMITS.requestBase64Bytes
@@ -365,7 +379,7 @@ export function withImageReferences<A extends Api>(
       count++;
       bytes += size;
     }
-    return {
+    return { references, context: {
       ...context,
       messages: context.messages.map((m, message) =>
         !Array.isArray(m.content)
@@ -382,19 +396,25 @@ export function withImageReferences<A extends Api>(
               ),
             },
       ),
-    } as TranscriptContext;
+    } as TranscriptContext };
   };
   const defer = (
     model: Model<A>,
     context: TranscriptContext,
-    open: (prepared: TranscriptContext) => AssistantMessageEventStream,
+    open: (prepared: TranscriptContext, fetcher?: typeof fetch) => AssistantMessageEventStream,
+    fetcher?: typeof fetch,
   ) => {
     const output = createAssistantMessageEventStream();
     void (async () => {
       try {
         const prepared = await hydrate(model, context);
-        const source = open(prepared);
+        const allowed = new Set(prepared.references.map(ref => JSON.stringify(ref)));
+        const transport = prepared.references.length ? streamingFetch(fetcher ?? fetch, env.BUCKET, {
+          allowReference: ref => allowed.has(JSON.stringify(ref)),
+        }) : fetcher;
+        const source = open(prepared.context, transport);
         for await (const event of source) output.push(event);
+        output.end(await source.result());
       } catch (error) {
         const message: AssistantMessage = {
           role: "assistant",
@@ -429,11 +449,11 @@ export function withImageReferences<A extends Api>(
   return {
     ...provider,
     stream(model, context, options) {
-      return defer(model, context, (p) => provider.stream(model, p, options));
+      return defer(model, context, (p, fetcher) => provider.stream(model, p, { ...options, ...(fetcher ? { fetch: fetcher } : {}) }), options?.fetch);
     },
     streamSimple(model, context, options) {
-      return defer(model, context, (p) =>
-        provider.streamSimple(model, p, options),
+      return defer(model, context, (p, fetcher) =>
+        provider.streamSimple(model, p, { ...options, ...(fetcher ? { fetch: fetcher } : {}) }), options?.fetch,
       );
     },
   };
