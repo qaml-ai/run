@@ -1,10 +1,13 @@
 import { DurableObject } from "cloudflare:workers";
+import { TenantWatchers } from "./tenant-watchers.ts";
 const agentOf = "CASE WHEN instr(id, ':') > 0 THEN substr(id, 1, instr(id, ':') - 1) ELSE id END";
 
 /** One tenant serializes admission. No fleet registry, heartbeat or PG advisory lock. */
 export class TenantAdmission extends DurableObject<Record<string, unknown>> {
+  private readonly watchers: TenantWatchers;
   constructor(ctx: DurableObjectState, env: Record<string, unknown>) {
     super(ctx, env);
+    this.watchers = new TenantWatchers(ctx.storage.sql, write => ctx.storage.transactionSync(write));
     ctx.storage.sql.exec(
       "CREATE TABLE IF NOT EXISTS admitted (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL)",
     );
@@ -48,6 +51,18 @@ export class TenantAdmission extends DurableObject<Record<string, unknown>> {
   async release(id: string): Promise<void> {
     this.ctx.storage.sql.exec("DELETE FROM admitted WHERE id=?", id);
   }
+  async canWatch(limit: number): Promise<boolean> {
+    return this.watchers.canWatch(limit);
+  }
+  async acquireWatcher(agent: string, id: string, limit: number): Promise<boolean> {
+    return this.watchers.acquire(agent, id, limit);
+  }
+  async releaseWatcher(id: string): Promise<void> {
+    this.watchers.release(id);
+  }
+  async reconcileWatchers(agent: string, activeIds: string[]): Promise<void> {
+    this.watchers.reconcile(agent, activeIds);
+  }
   async rate(key: string, limit = 1000, windowMs = 60_000): Promise<boolean> {
     const window = Math.floor(Date.now() / windowMs);
     return this.ctx.storage.transactionSync(() => {
@@ -72,6 +87,7 @@ export class TenantAdmission extends DurableObject<Record<string, unknown>> {
   async purgeAccountData() {
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
+    this.watchers.initialize();
     // Keep the reusable object's empty schema: old delayed releases stay harmless.
     this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS admitted (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL)");
     this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS creations (token TEXT PRIMARY KEY, id TEXT NOT NULL, expires_at INTEGER NOT NULL)");
