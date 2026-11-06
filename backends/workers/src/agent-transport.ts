@@ -54,7 +54,11 @@ export async function emitImpl(this: AgentRuntime,
           if (visible !== undefined) {
             socket.send(eventFrame(visible, cursor));
             const value = event as { type?: string; id?: string };
-            if (subscription.run && value.type === "response" && value.id === subscription.request) socket.close(1000, "Run completed");
+            if (subscription.run && value.type === "response" && value.id === subscription.request) {
+              // End the readable protocol stream without waiting for the host's TCP close handshake.
+              socket.send(eventFrame({ reason: "completed" }, undefined, "closed"));
+              socket.close(1000, "Run completed");
+            }
           }
         } catch {
           socket.close(1011, "Send failed");
@@ -197,7 +201,10 @@ export async function webSocketEventsImpl(this: AgentRuntime,
     for (const row of replay.events) {
       const visible = subscribedEvent(subscription, row.data);
       if (visible !== undefined) socket.send(eventFrame(visible, row.id));
-      if (runId && (row.data as {type?:string}).type === "response") socket.close(1000, "Run completed");
+      if (runId && (row.data as {type?:string}).type === "response") {
+        socket.send(eventFrame({ reason: "completed" }, undefined, "closed"));
+        socket.close(1000, "Run completed");
+      }
     }
     if (claims) await this.arm();
     const selected = request.headers
