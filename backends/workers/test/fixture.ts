@@ -61,6 +61,7 @@ export async function startFixture(
     vars?: Record<string, string>;
     /** A local-test entrypoint, e.g. the backend-neutral contract fixture wrapper. */
     entrypoint?: string;
+    signal?: AbortSignal;
   } = {},
 ) {
   const token =
@@ -101,14 +102,21 @@ export async function startFixture(
       }
     } finally {
       unregister();
+      options.signal?.removeEventListener("abort", aborted);
     }
     if (failures.length) throw new AggregateError(failures, "Local Worker fixture cleanup failed");
   })();
   // Register before database migration or workerd startup can be interrupted.
   const unregister = registerFixture(stop);
+  const aborted = () => { void stop().catch(error => {
+    console.error(`Local Worker abort cleanup failed: ${error.message}`);
+  }); };
+  options.signal?.addEventListener("abort", aborted, { once: true });
+  if (options.signal?.aborted) aborted();
   const admin = new pg.Client({ connectionString: base });
   cleanups.push(() => admin.end());
   try {
+  if (stopped) throw new Error("Local Worker fixture startup was cancelled");
   await admin.connect();
   await admin.query(`create database ${schema}`);
   cleanups.push(async () => { await admin.query(`drop database ${schema} with (force)`); });
@@ -194,6 +202,7 @@ export async function startFixture(
   startingWorker = worker;
   cleanups.push(() => worker.stop());
   await worker.start();
+  if (stopped) throw new Error("Local Worker fixture startup was cancelled");
   finishStartup();
   if (config.vars.MAIL_TEST_URL && !stopped) {
     // Wrangler does not advance Cron Triggers itself. Tick the production job

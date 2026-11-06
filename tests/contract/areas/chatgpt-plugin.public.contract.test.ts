@@ -33,8 +33,16 @@ for (const split of [false, true]) portedTest("oauth", "tests/chatgpt-plugin.tes
   writeFileSync(password, `${TEST_PASSWORD}\n`, { mode: 0o600 });
   assert.equal((await r.call("/v1/tenants/alice/password", { method: "PUT", body: { email: "reviewer@example.test", password: TEST_PASSWORD } })).status, 200);
   // Not spawnSync: the fake model answers from this process.
-  const { stdout } = await promisify(execFile)(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", "plugins/chatgpt/e2e.ts", r.base],
-    { env: { ...process.env, CAMELRUN_EMAIL: "reviewer@example.test", CAMELRUN_PASSWORD_FILE: password } });
+  const execution = promisify(execFile)(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", "plugins/chatgpt/e2e.ts", r.base],
+    { signal: t.signal, env: { ...process.env, CAMELRUN_EMAIL: "reviewer@example.test", CAMELRUN_PASSWORD_FILE: password } });
+  let progress = "";
+  // The CLI prints only named steps, never credentials. Keep a bounded tail so
+  // a failed or cancelled subprocess identifies its last completed step.
+  execution.child.stdout?.on("data", chunk => { progress = (progress + chunk).slice(-4_000); });
+  const { stdout } = await execution.catch(error => {
+    t.diagnostic(`Plugin CLI progress before failure:\n${progress}`);
+    throw error;
+  });
   if (split) assert.match(stdout, new RegExp(`issuer ${r.base.replace("127.0.0.1", "localhost")}, pages on ${r.base}`));
   assert.match(stdout, /sign-in with an email and password, and consent/);
   assert.match(stdout, /\/v1\/me with the access token: account alice, via oauth/);

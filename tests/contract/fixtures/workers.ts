@@ -15,19 +15,28 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
   let respond = options.respond ?? (() => ({ role: "assistant", content: "ok" }));
   let replyStart = 0;
   const cleanups: Array<() => Promise<void> | void> = [];
+  const startup = new AbortController();
   let closed = false;
-  const close = async () => {
-    if (closed) return;
-    closed = true;
+  const dispose = async () => {
     const failures: unknown[] = [];
-    for (const cleanup of cleanups.reverse()) {
+    for (const cleanup of cleanups.splice(0).reverse()) {
       try { await cleanup(); } catch (error) { failures.push(error); }
     }
     if (failures.length) throw new AggregateError(failures, "Workers fixture cleanup failed");
   };
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    startup.abort();
+    await dispose();
+  };
   t.after(close);
   try {
   const model = await fakeModel({ after: fn => cleanups.push(fn) }, (body, index) => respond(body, index - replyStart));
+  if (closed) {
+    await dispose();
+    throw new Error("Workers fixture startup was cancelled");
+  }
   // Dynamic import keeps workerd's binding types out of the Node TypeScript project.
   const fixtureModule = new URL("../../../backends/workers/test/fixture.ts", import.meta.url).href;
   const { startFixture } = await import(fixtureModule);
@@ -58,6 +67,7 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
   // requests retain their original bearer token and use the real auth service.
   const internalOperator = `contract-internal-${randomUUID()}`;
   const server = await startFixture({
+    signal: startup.signal,
     token: internalOperator,
     tenant: "alice",
     tenants: [],
@@ -81,6 +91,10 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
       TEST_MODEL_API: options.env?.AGENT_BASE_URL ? configuredModel(env).api : "openai-completions",
     },
   });
+  if (closed) {
+    await server.stop();
+    throw new Error("Workers fixture startup was cancelled");
+  }
   cleanups.push(() => server.stop());
   // The local wrapper reads the complete config on each request, corresponding
   // to Node's tenant-file reload. It never substitutes the credential or policy.

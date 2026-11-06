@@ -19,6 +19,34 @@ test("LocalWorker cancellation during port allocation prevents a late spawn", as
   await assert.rejects(starting, /startup was cancelled/);
 });
 
+test("a Workers fixture abort stops a pending worker start before startup settles", async () => {
+  const moduleUrl = new URL("../../backends/workers/test/fixture.ts", import.meta.url).href;
+  const { startFixture } = await import(moduleUrl);
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const controller = new AbortController();
+  const originalStart = LocalWorker.prototype.start;
+  const originalStop = LocalWorker.prototype.stop;
+  let stopped = false;
+  LocalWorker.prototype.start = async function() { entered.resolve(); await release.promise; };
+  LocalWorker.prototype.stop = async function(hard) { stopped = true; await originalStop.call(this, hard); };
+  let fixture: Awaited<ReturnType<typeof startFixture>> | undefined;
+  const starting = startFixture({ signal: controller.signal }).then((value: Awaited<ReturnType<typeof startFixture>>) => { fixture = value; return value; });
+  try {
+    await Promise.race([entered.promise, starting.then(() => { throw new Error("fixture started before its worker barrier"); })]);
+    controller.abort();
+    assert.equal(stopped, true, "abort stops the owned worker before waiting for startup");
+    release.resolve();
+    await assert.rejects(starting, /startup was cancelled/);
+  } finally {
+    release.resolve();
+    await starting.catch(() => {});
+    await fixture?.stop();
+    LocalWorker.prototype.start = originalStart;
+    LocalWorker.prototype.stop = originalStop;
+  }
+});
+
 test("LocalWorker stops its detached descendants after the parent exits, leaving other groups alone", { timeout: 12_000 }, async t => {
   const owned: ChildProcess[] = [];
   t.after(() => {
