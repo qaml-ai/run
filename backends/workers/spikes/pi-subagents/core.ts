@@ -21,6 +21,7 @@ import {
   type Extension,
   Harness,
   type LiveState,
+  LiveDoc,
   ProviderDoc,
   type Report,
   type Storage,
@@ -135,7 +136,7 @@ export type RemoteChildren = {
  */
 export function remoteChildTask(remote: RemoteChildren) {
   type Input = { child: string; requestId: string; task: string };
-  type State = { phase: "start" } | { phase: "wait"; started: number; startMs: number };
+  type State = { phase: "start" } | { phase: "wait"; started: number; startMs: number; polls: number };
   return defineTask<Input, State, { text: string; startMs: number }>({
     name: "spike.remote-child",
     version: 1,
@@ -144,14 +145,15 @@ export function remoteChildTask(remote: RemoteChildren) {
       start: async (task, runtime, taskContext) => {
         const started = Date.now();
         await remote.start(task.input.child, task.input.requestId, task.input.task);
-        await runtime.commit(() => ({ status: "running", checkpoint: { phase: "wait", started, startMs: Date.now() - started } }), taskContext);
+        await runtime.commit(() => ({ status: "running", checkpoint: { phase: "wait", started, startMs: Date.now() - started, polls: 0 } }), taskContext);
       },
       wait: async (task, runtime, taskContext) => {
         // A phase reruns from its top after an eviction, so the poll simply asks again.
         const answer = await remote.wait(task.input.child, task.input.requestId, 20_000);
-        const checkpoint = task.state.checkpoint as { phase: "wait"; started: number; startMs: number };
+        const checkpoint = task.state.checkpoint as { phase: "wait"; started: number; startMs: number; polls: number };
         if (!answer.done) {
-          await runtime.commit(() => ({ status: "running", checkpoint }), taskContext);
+          // Each poll commits a new checkpoint: Pi faults a phase that returns without durable progress.
+          await runtime.commit(() => ({ status: "running", checkpoint: { ...checkpoint, polls: checkpoint.polls + 1 } }), taskContext);
           return;
         }
         await runtime.commit(() => answer.status === "done"
@@ -218,6 +220,10 @@ export function subagentExtension(metrics: Metrics, hooks: Hooks): Extension {
           const record = metrics.children.get(key)!;
           record.answered = Date.now();
           record.status = settled.status === "done" ? "done" : `${settled.status}:${"reason" in settled ? String(settled.reason) : ""}`;
+          if (settled.status !== "done") {
+            const live = await api.snapshot(LiveDoc, child, callContext);
+            record.error = String((live as { runFailure?: { detail?: unknown } } | undefined)?.runFailure?.detail ?? record.status).slice(0, 300);
+          }
           if (settled.status !== "done" || settled.type !== "input") throw new Error(`Subagent ${record.status}`);
           const entry = await api.commit((tx) => tx.entry(AssistantEntry, settled.answer as EntryId), callContext);
           const text = answerText(entry?.model?.[0] as AssistantMessage | undefined);
@@ -313,7 +319,7 @@ export async function openSpike(
   storage: Storage,
   baseUrl: string,
   metrics: Metrics,
-  options: { onWake?: (wake: Wake) => void; fetcher?: typeof fetch; watchChildren?: number; remote?: { children: RemoteChildren; prefix: string } } = {},
+  options: { onWake?: (wake: Wake) => void; fetcher?: typeof fetch; watchChildren?: number; retry?: boolean; remote?: { children: RemoteChildren; prefix: string } } = {},
 ): Promise<Spike> {
   const { models, sessions, ref } = spikeModels(baseUrl, metrics, options.fetcher);
   const registry = createRegistry();
@@ -345,7 +351,7 @@ export async function openSpike(
         const error = (report as { error?: unknown }).error;
         metrics.reports.push(`${report.kind}: ${error instanceof Error ? error.message : String(error ?? "")}`.slice(0, 300));
       },
-      settings: () => ({ compaction: { enabled: false }, retry: { enabled: false } }),
+      settings: () => ({ compaction: { enabled: false }, retry: options.retry ? { enabled: true, maxRetries: 2, baseDelayMs: 500 } : { enabled: false } }),
     } as never,
     context,
   );

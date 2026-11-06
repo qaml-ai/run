@@ -7,7 +7,7 @@ const args = Object.fromEntries(process.argv.slice(2).map(arg => arg.split("="))
 const base = process.env.SPIKE_URL, token = readFileSync(process.env.SPIKE_TOKEN_FILE, "utf8").trim();
 const levels = (args.n ?? "1,5,10,25,50,100").split(",").map(Number);
 const ctx = Number(args.ctx ?? 0), tokens = Number(args.tokens ?? 2000), tools = Number(args.tools ?? 3), tps = Number(args.tps ?? 50);
-const remote = args.remote === "1", crashAt = args.crashAt ? Number(args.crashAt) : undefined;
+const remote = args.remote === "1", retry = args.retry === "1", crashAt = args.crashAt ? Number(args.crashAt) : undefined;
 const limitMs = Number(args.limitMs ?? 8 * 60_000);
 // pollMs: how often the driver asks; each ask is a request to the object, which opens a new invocation (CPU accounting).
 const pollMs = Number(args.pollMs ?? 5_000);
@@ -19,9 +19,9 @@ const call = async (path, method = "GET") => {
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 for (const n of levels) {
-  const name = `${remote ? "r" : "n"}${n}-ctx${ctx}${crashAt ? "-crash" : ""}${args.pollMs ? `-p${pollMs}` : ""}-${Date.now().toString(36)}`;
+  const name = `${remote ? "r" : "n"}${n}-ctx${ctx}${crashAt ? "-crash" : ""}${retry ? "-retry" : ""}${args.pollMs ? `-p${pollMs}` : ""}-${Date.now().toString(36)}`;
   const started = Date.now();
-  const start = await call(`/run/${name}/start?n=${n}&tps=${tps}&tokens=${tokens}&tools=${tools}&ctx=${ctx}&watch=5${remote ? "&remote=1" : ""}`, "POST");
+  const start = await call(`/run/${name}/start?n=${n}&tps=${tps}&tokens=${tokens}&tools=${tools}&ctx=${ctx}&watch=5${remote ? "&remote=1" : ""}${retry ? "&retry=1" : ""}`, "POST");
   const instance = start.json?.instance;
   const timeline = [];
   let crashed = false, lastBeforeReset;

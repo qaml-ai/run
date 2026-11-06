@@ -52,11 +52,12 @@ export class LoadAgent extends DurableObject<Env> {
       const fallback = Date.now() + 60_000;
       const current = await this.ctx.storage.getAlarm();
       if (current === null || current > fallback) await this.ctx.storage.setAlarm(fallback);
-      const mode = await this.ctx.storage.get<{ watch: number; remote: boolean; name: string }>("mode");
+      const mode = await this.ctx.storage.get<{ watch: number; remote: boolean; name: string; retry?: boolean }>("mode");
       const storage = await openDurableObjectSqliteStorage(this.storage() as never);
       const spike = await openSpike(storage, this.env.MODEL_URL, this.metrics, {
         onWake: (wake) => void this.arm(wake).catch(() => this.ctx.abort("Alarm write failed")),
         watchChildren: mode?.watch ?? 0,
+        retry: mode?.retry ?? false,
         ...(mode?.remote ? { remote: { children: this.remote(), prefix: mode.name } } : {}),
       });
       await this.arm(spike.harness.wake());
@@ -133,7 +134,7 @@ export class LoadAgent extends DurableObject<Env> {
     if (action === "start") {
       const number = (key: string, fallback: number) => Number(url.searchParams.get(key) ?? fallback);
       if (await this.ctx.storage.get("mode")) return Response.json({ error: "This object already ran: use a fresh name" }, { status: 409 });
-      await this.ctx.storage.put("mode", { watch: number("watch", 5), remote: url.searchParams.get("remote") === "1", name: url.pathname.split("/").at(-2) });
+      await this.ctx.storage.put("mode", { watch: number("watch", 5), remote: url.searchParams.get("remote") === "1", retry: url.searchParams.get("retry") === "1", name: url.pathname.split("/").at(-2) });
       const spike = await this.open();
       await this.arm({ ...spike.harness.wake(), active: true });
       const run = { n: number("n", 1), tps: number("tps", 50), tokens: number("tokens", 2000), tools: number("tools", 3), ctx: number("ctx", 0), id: crypto.randomUUID() };

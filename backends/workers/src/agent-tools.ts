@@ -407,7 +407,6 @@ export function createHarness(this: AgentRuntime): PiHarness {
               const childSchema = await this.piSubagents?.outputSchema(api);
               if (childSchema) {
                 if (!schemaAccepts(childSchema, args)) throw new Error('Validation failed for tool "final_output": arguments do not match the requested schema');
-                await this.piSubagents!.recordOutput(api, args as JsonValue);
                 return { output: [{ type: "text", text: "Accepted." }], details: { output: args as JsonValue }, control: { terminate: true } };
               }
               const run = await this.currentRun(api);
