@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "types": ["node", "@cloudflare/workers-types"] },
+  "include": [
+    "scripts/pilot-smoke.ts",
+    "pilot-fakemodel/index.ts",
+    "test/pilot-fakemodel.test.ts"
+  ]
+}
