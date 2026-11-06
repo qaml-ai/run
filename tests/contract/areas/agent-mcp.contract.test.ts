@@ -86,7 +86,7 @@ contractTest("agents", "tests/agent-mcp.test.ts:87", "a message streams progress
   }
 });
 
-contractTest("agents", "tests/agent-mcp.test.ts:135", "a turn waiting on a person asks through the client, or says how to answer", async t => {
+contractTest("agents", "tests/agent-mcp.test.ts:139", "a turn waiting on a person asks through the client, or says how to answer", async t => {
   // Asked anything, the model asks which region; told the answer, it deploys there.
   const r = await runtime(t, (body, index) => {
     if (body.messages.at(-1).role !== "tool") return toolCall("ask_user", ASK, `call_ask_${index}`);

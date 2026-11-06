@@ -12,7 +12,7 @@ export class CodemodeSandbox extends CodemodeSandboxDurableObject {
   override async execute(request: CodemodeRemoteRequest, exchange: CodemodeRemoteExchange) {
     if (this.active >= 3) throw new Error("Agent sandbox concurrency limit (3) reached");
     this.active++;
-    try { await super.execute(request, boundedExchange(exchange, (request as CodemodeRemoteRequest & { workflow?: boolean }).workflow === true)); }
+    try { await super.execute(request, boundedExchange(exchange)); }
     finally { this.active--; }
   }
 }

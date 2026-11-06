@@ -7,7 +7,7 @@ import {
   contentText, getCurrentSystemMessage, getCurrentTools, getToolStateChanges, isContextOverflow, isRetryableAssistantError, toToolDeclaration, validateToolArguments,
   type AssistantMessage, type AssistantMessageEventStream, type Message, type SystemMessage, type Tool, type ToolCall, type ToolResultMessage,
 } from "@earendil-works/pi-ai";
-import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
+import { CODEMODE_TOOL_NAME, createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import type { CodemodeTool } from "@earendil-works/pi-codemode/portable";
 import { PiV8Sandbox, type CodeSandboxes } from "./codemode-pi-launcher.ts";
 import type { Outbound } from "./outbound.ts";
@@ -75,7 +75,8 @@ export interface LegacyLog { empty(): Promise<boolean> }
 export interface HostIO {
   emit(event: unknown): void;
   /** Dispatch an application tool through the supervisor, which validates and limits it. */
-  tool(name: string, args: Record<string, unknown>, call?: CallContext): Promise<any>;
+  /** An application tool's call; `signal` cancels this call alone (one a script's Pi task gave up on). */
+  tool(name: string, args: Record<string, unknown>, call?: CallContext, signal?: AbortSignal): Promise<any>;
   /** Abort the application tool calls this agent has in flight. */
   cancelTools(): Promise<unknown>;
   /** Why the running turn must end before its next model request (a reached spend cap, the run's own limits, or its node leaving), if so. */
@@ -108,7 +109,7 @@ export interface HostIO {
 }
 
 /** Tools Pi makes again when a lost node left their call open (`replay: "safe"`), not answered as interrupted: each is keyed by its call (multi-agent.ts). */
-export const RERUN = ["delegate", "run_workflow", "spawn_agent", "wait_agent", "list_agents", "send_message", "interrupt_agent"];
+export const RERUN = ["delegate", "spawn_agent", "wait_agent", "list_agents", "send_message", "interrupt_agent"];
 
 /**
  * A limit's stop as a run's result carries it: its code (its own, else the kind of stop), and the limit, reason, bucket
@@ -473,8 +474,10 @@ export function createAgentHost(hostIO: HostIO) {
             // An error rejects the call in the script with its message, cut to fit what a script gets from a call.
             let data: unknown;
             try {
-              const value = await io.tool(tool.name, args as Record<string, unknown>, { toolCallId: nested.parentCallId, innerCallId: nested.key, ...await scriptMadeAt(nested) });
+              const value = await io.tool(tool.name, args as Record<string, unknown>, { toolCallId: nested.parentCallId, innerCallId: nested.key, ...await scriptMadeAt(nested) }, signal);
               signal?.throwIfAborted();
+              // It waits on a person (inputs.ts): the run ends, and the call starts again with the answer (`DurableAgent.suspend`).
+              if (value?.inputRequired) return { content: value.content, details: { inputRequired: true }, structuredContent: null };
               data = (tool.resultFormat === "content" ? scriptValue(value) : value) ?? null;
             } catch (error) {
               const message = errorText(error);
@@ -506,12 +509,13 @@ export function createAgentHost(hostIO: HostIO) {
   /**
    * Where the agent's code runs (v8-exec, codemode-pi-launcher.ts) under its tenant's limits: CPU per execution, and a
    * deadline (Pi's code mode has none unless a script asks), each admitted only while the node's lease is fresh and the
-   * tenant has a code slot on the node, and measured (`code_execution`).
+   * tenant has a code slot on the node, and measured (`code_execution`). A script waiting on delegate (another agent's
+   * whole turn) holds no slot meanwhile, and the wait is not on its clock.
    */
   function codeSandbox(tools?: CodemodeTool[]): ReturnType<CodeSandboxes> {
     const timeoutMs = Math.min(config.codeLimits?.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs, SANDBOX_LIMITS.maxTimeoutMs);
     const options: Parameters<CodeSandboxes>[0] = {
-      ...tools ? { tools } : {}, cpuMs: Math.min(config.codeLimits?.cpuMs ?? SANDBOX_LIMITS.cpuMs, SANDBOX_LIMITS.maxCpuMs), timeoutMs,
+      ...tools ? { tools } : {}, awaits: ["delegate"], ...config.tenant ? { tenant: config.tenant } : {}, cpuMs: Math.min(config.codeLimits?.cpuMs ?? SANDBOX_LIMITS.cpuMs, SANDBOX_LIMITS.maxCpuMs), timeoutMs,
       acquireSlot: async signal => { await leased(signal); return io.codeSlot ? io.codeSlot(signal) : () => {}; },
       onEnd: ({ ms, cpuMs, error, errorName }) => recordCodeExecution({ tenant: config.tenant, ms, timeoutMs, cpuMs, ...error === undefined ? {} : { error }, ...errorName === undefined ? {} : { errorName } }),
     };
@@ -556,7 +560,7 @@ export function createAgentHost(hostIO: HostIO) {
       codemodeSection = undefined;
       return undefined;
     }
-    const extension = createCodemodeExtension({ sandbox: codeSandbox(), models: false,
+    const extension = createCodemodeExtension({ sandbox: watched(codeSandbox()), models: false,
       namespaces: [...new Set(config.tools.map(tool => namespaceOf(tool.name)).filter(Boolean))].map(name => ({ name, prefix: `${name}__` })) });
     codemodeSection = extension.sections?.find(entry => entry.key === CODEMODE);
     return { ...extension, sections: [], tools: (extension.tools ?? []).map(tool => ({ ...tool, description: codemodeDescription(tool.description), executionMode: "sequential" as const,
@@ -582,8 +586,11 @@ export function createAgentHost(hostIO: HostIO) {
   function codemodeDescription(text: string): string {
     const sandbox = " in a QuickJS sandbox:", saved = " `image()` also saves the image to a temp file and the result names its path.";
     if (!text.includes(sandbox) || !text.includes(saved)) throw new Error("Pi's code mode description changed: review codemodeDescription");
+    // Where the model has the file tools itself, it writes and edits files with them: a file's text inside a script's
+    // string breaks on its backticks, ${ and quotes, and a failed edit ends the script.
+    const files = config.fileTools !== false && scratchMount(config.mounts) ? "\n\nWrite and edit files with the write and edit tools directly, not from a script." : "";
     return text.replace(sandbox, " in a JavaScript sandbox:")
-      .replace(saved, scratchMount(config.mounts) ? " `image()` also saves the image in your workspace (tool-results/), and the result names its path." : "");
+      .replace(saved, scratchMount(config.mounts) ? " `image()` also saves the image in your workspace (tool-results/), and the result names its path." : "") + files;
   }
 
   /**
@@ -601,6 +608,20 @@ export function createAgentHost(hostIO: HostIO) {
         .then(() => ({ ok: true as const, value: undefined }), error => failed(path, error)),
     };
     return files as ExecutionEnv;
+  }
+
+  /** The sandbox's runs, as the agent follows them (`DurableAgent.scriptRun`): their fingerprint and calls. */
+  function watched(sandbox: ReturnType<CodeSandboxes>): ReturnType<CodeSandboxes> {
+    const start = sandbox.start.bind(sandbox);
+    sandbox.start = (code, run) => {
+      const seen = agent?.scriptRun(run.startedAt, run.seed);
+      const started = start(code, { ...run,
+        onStarted: fingerprint => { seen?.started(fingerprint); run.onStarted?.(fingerprint); },
+        onCall: call => { seen?.called(call); run.onCall(call); } });
+      void started.result.finally(() => seen?.ended()).catch(() => {});
+      return started;
+    };
+    return sandbox;
   }
 
   /** Code mode's section for these tools, as Pi renders it from the tools scripts can call; null without code mode or such tools. */
@@ -1007,6 +1028,12 @@ export function createAgentHost(hostIO: HostIO) {
         leading: () => leading(agent ? undefined : tools),
         extensions: codemode ? [codemode] : [],
         env: outputFiles,
+        // A call from code waits on a person: the turn ends suspended on its code mode call, which stays open in Pi's run.
+        onSuspend: async parentCallId => {
+          stopped = { stopped: "input_required" };
+          await journal.await([parentCallId]);
+          await journal.setActive(false);
+        },
         onContextRequest: (held, sent) => contextMetrics.request(held, sent),
         // Pi's journal failed a write or read: what the host holds is no longer known to be stored, as when one of its own
         // writes fails. The run ends with PERSISTENCE_FAILED and the session gives the agent up.
@@ -1030,7 +1057,8 @@ export function createAgentHost(hostIO: HostIO) {
       await journal.attach(() => agent!.journalSession());
       // A run that does not go on here: what Pi settles for it is not history, as the host closed that turn itself, above.
       await requireContextSize();
-      if (!resume || !("continue" in resume)) {
+      // A turn suspended on a call from code keeps its run, Pi's, for the answer (`resume`).
+      if ((!resume || !("continue" in resume)) && !(await codeWaits()).length) {
         await journal.refresh();
         const latest = journal.history.latest, before = agent.latestCursor;
         const waiting = journal.awaiting;
@@ -1094,7 +1122,7 @@ export function createAgentHost(hostIO: HostIO) {
         agent.useExtensions((codemode = codeMode()) ? [codemode] : []);
         agent.state.tools = agentTools(config.tools);
       }
-      if (params.systemPrompt !== undefined || params.systemPromptAppend !== undefined || params.language !== undefined || params.tools !== undefined || params.codeMode !== undefined || params.model !== undefined) await declareConfiguration();
+      if (params.systemPrompt !== undefined || params.systemPromptAppend !== undefined || params.language !== undefined || params.tools !== undefined || params.codeMode !== undefined || params.fileTools !== undefined || params.model !== undefined) await declareConfiguration();
       return { configured: true };
     }
     // Before a stop: index the settled turns, so a page of them needs neither the process nor the journal.
@@ -1159,7 +1187,30 @@ export function createAgentHost(hostIO: HostIO) {
       // Where the run's messages start in the agent's history, so a client can line up its stream with history pages.
       io.emit({ type: "turn_opened", index: journal.total });
       steerable = true;
-      if (method === "resume") {
+      const waiting = await codeWaits();
+      if (method === "resume" && waiting.length) {
+        // The round's direct calls that waited too take their answers first, as a resume without code would settle them;
+        // one still waiting keeps the turn suspended, code's calls with it.
+        const direct = (params.calls ?? []).filter((call: { toolCallId: string }) => !waiting.includes(call.toolCallId.split("/")[0]));
+        if (direct.length) await settle(direct, active.signal);
+        if (!params.close && journal.awaiting.some(id => !waiting.includes(id))) {
+          await journal.setActive(false);
+          return { messages: journal.total, error: null, stopped: "input_required" };
+        }
+        // A call from code waited on a person: its code mode call's run goes on, the call starting again with its answer
+        // (`answerToolCall`), or, closed without the model (expired or cancelled inputs), the run is abandoned.
+        await journal.await(waiting, true);
+        if (params.close) {
+          await agent.discardInterruptedRun();
+          await journal.setActive(false);
+          return { messages: journal.total, error: null };
+        }
+        if (active.signal.aborted) return await abortedBeforeLoop();
+        // Its round's calls are answered now: the end the round decided when they asked does not hold.
+        await agent.reopenRound();
+        await suspendable(agent.continue());
+        if (agent.suspended) return await suspended();
+      } else if (method === "resume") {
         const settled = await settle(params.calls ?? [], active.signal);
         // Closed without the model (expired or cancelled inputs), still waiting, or nothing left to resume.
         if (params.close || journal.awaiting.length || !settled) {
@@ -1170,10 +1221,16 @@ export function createAgentHost(hostIO: HostIO) {
         await agent.continue();
       } else if (method === "continue") {
         if (active.signal.aborted) return await abortedBeforeLoop();
-        await agent.continue();
+        await suspendable(agent.continue());
+        if (agent.suspended) return await suspended();
       }
       else {
-        // A new message supersedes calls still waiting on input: each is closed first, so the model sees why.
+        // A new message supersedes calls still waiting on input: each is closed first, so the model sees why. A code mode
+        // call's run is abandoned (Pi ends the call as aborted).
+        if (waiting.length) {
+          await agent.discardInterruptedRun();
+          await journal.await(waiting, true);
+        }
         if (journal.awaiting.length) {
           await settle(journal.awaiting.map(toolCallId => ({ toolCallId, result: { content: [{ type: "text", text: "Not answered: the user sent a new message instead (next)." }], isError: true } })), active.signal);
         }
@@ -1195,7 +1252,8 @@ export function createAgentHost(hostIO: HostIO) {
         };
         if (params.landOnly) return await land(params.landOnly as RunStop);
         if (notice && active.signal.aborted) return await land(STOPPED_NOTICE as RunStop);
-        await agent.prompt(messages);
+        await suspendable(agent.prompt(messages));
+        if (agent.suspended) return await suspended();
         if (notice && active.signal.aborted && !(await journal.turnMessages()).some(message => (message as { requestId?: string }).requestId === params.requestId)) return await land(STOPPED_NOTICE as RunStop);
       }
       await remindOfOutput(active.signal);
@@ -1248,6 +1306,34 @@ export function createAgentHost(hostIO: HostIO) {
     if (repairs.length) await journal.append(repairs);
     if (journal.active) await journal.setActive(false);
     return { messages: journal.total, error: "The run was aborted", code: "aborted", ...(stopped ?? {}) };
+  }
+
+  /** A run Pi ends by closing, for a call from code that waits on a person (`DurableAgent.suspend`), ends here, as suspended. */
+  const suspendable = (work: Promise<void>) => work.catch(error => {
+    if (!agent?.suspended) throw error;
+    // The close that suspends the run ends it ("Harness is closed"); any other error is kept in the log.
+    if (errorText(error) !== "Harness is closed") console.error(JSON.stringify({ type: "suspended_run_error", agent: config.id, error: safeError(error) }));
+  });
+
+  /**
+   * A run that ended on a call from code waiting on a person: its agent closed with the code mode call open, and is
+   * unloaded (`unload`), so it holds no code slot or memory meanwhile; the answer's run loads it again and goes on.
+   */
+  async function suspended() {
+    await agent!.whenSuspended();
+    const last = agent!.state.messages.findLast(message => message.role === "assistant") as AssistantMessage | undefined;
+    return { messages: journal.total, ...await answer(last), stopped: "input_required", unload: true };
+  }
+
+  /** The calls waiting on a person that are code mode calls: one of their code's calls waits, and their run is Pi's, left open. */
+  async function codeWaits(): Promise<string[]> {
+    const waits: string[] = [];
+    for (const id of journal.awaiting) {
+      const at = journal.callIndex(id);
+      const message = at === undefined ? undefined : (await journal.history.messagesFrom(at, at + 1))?.[0];
+      if (message?.role === "assistant" && message.content.some(part => part.type === "toolCall" && part.id === id && part.name === CODEMODE_TOOL_NAME)) waits.push(id);
+    }
+    return waits;
   }
 
   type Settled = { content: unknown[]; isError?: boolean; details?: unknown };

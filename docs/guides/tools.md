@@ -75,14 +75,14 @@ Code can call your tools with `tools.<name>(args)`, including tools marked
 `toolcall_delta` events. Set `direct` when the model should always see the tool's
 schema, but do not use it to prevent calls from code.
 
-Tools needing approval or human input remain listed and searchable in code.
-Until code can pause for a person, a call that needs their answer fails with a
-message to call the tool directly. Approval policies do not change caller access.
+Tools needing approval or human input are called from code as directly: a call
+that needs a person's answer pauses the turn until they answer, and the script
+goes on from there ([Human input](human-input.md)). Approval policies do not
+change caller access.
 
-Runtime control tools (`codemode`, `final_output`, the delegation and multi-agent
-tools, `run_workflow`, the channel's `send_message`, and `ask_user`) can only be
-called directly by the model. Workflow scripts keep their own `workflow_agent`
-host tool.
+Runtime control tools (`codemode`, `final_output`, the background multi-agent
+tools and the channel's `send_message`) can only be called directly by the
+model. `delegate` is always declared to the model and scripts can call it too.
 
 The console's agent page shows each tool's exposure (**Tools the model gets**),
 and `GET /v1/agents/:id` its `toolSources`. There is no network in the sandbox:
@@ -703,7 +703,7 @@ Tools the runtime answers itself, given to an agent as `builtins` when it is
 made or upserted (`agents.upsert("researcher", { builtins: ["web_search",
 "web_fetch"] })`, or `PATCH /v1/agents/:id/configuration`), or by the definition
 it is made from (whose builtins it then has):
-`"builtins": ["file_link", "file_import", "web_fetch", "web_search", "x_search", "schedule", "ask_user", "delegate", "generate_image", "agents", "decide", "workflow"]`.
+`"builtins": ["file_link", "file_import", "web_fetch", "web_search", "x_search", "schedule", "ask_user", "delegate", "generate_image", "agents", "decide"]`.
 
 - `file_link` (`{path, method, expiresIn?, maxBytes?, contentType?}`) signs a
   GET or PUT URL for another tool to transfer one workspace file. Default
@@ -812,9 +812,9 @@ calls, up to 32 at once.
 
 Scripts can use `console.log`, `text(value)`, `image(...)`, top-level `return`
 and `exit()`. `store(key, value)` and `load(key)` keep JSON values across code
-calls in the agent's conversation. There is no `fs` global. Call the file tools:
+calls in the agent's conversation. Call the file tools:
 `tools.read`, `tools.write`, `tools.ls`, `tools.glob`, `tools.grep`, `tools.edit`,
-`tools.mv` and `tools.cp`.
+`tools.mv` and `tools.cp`. `fs` is js_exec's, kept on the file tools: `await fs.readFile(path)` (UTF-8 text, or base64 with `"base64"`), `fs.writeFile(path, text or a typed array)`, `fs.appendFile`, `fs.readdir`, `fs.exists` and `fs.mkdir`, also as `require("fs")` and `fs.promises`; its synchronous calls are not there.
 
 The model reads Pi's result format: `Script completed` or `Script failed`,
 the wall time, then the output. Text items come first, with the returned value
@@ -828,9 +828,11 @@ the node stopped rejects with an unknown outcome.
 
 Calls from a script use the model's `codemode` call id as `toolCallId` and Pi's
 key (`c1`, `c2`, …) as `innerCallId`. Idempotency keys hash those identities.
-Approval and judged tools, `ask_user`, multi-agent tools and `run_workflow`
-must still be called directly. Scripts cannot pause for a person in this release.
-`run_workflow` keeps its own script engine.
+A call that needs a person (an approval, a judged call the judge escalates,
+`ask_user`, a tool's own question) ends the run `input_required` and the script
+goes on once they answer; see [Human input](human-input.md). Background
+multi-agent tools must still be called directly. Use `tools.delegate` to
+coordinate sub-agents from a script.
 
 `agent.client.execute(code)` and schedules with `code` use the same sandbox
 outside the model's history, without durable replay. Their result remains

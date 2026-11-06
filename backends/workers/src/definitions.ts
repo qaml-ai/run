@@ -8,10 +8,11 @@ import { keyServices } from "./security-services.ts";
 import { modelSettingsRefusal, resolveModel } from "./model-policy.ts";
 import { HttpError } from "./errors.ts";
 import { builtinWarnings } from "./builtin-warnings.ts";
+import { rejectWorkflow } from "./workflow-refusal.ts";
 
 export type Definition = { id: string; tenant: string; name: string; revision: number; spec: AgentConfiguration & { description?: string; applyOnUpdate?: boolean; limits?: { ttlSeconds?: number | null; idleTtlSeconds?: number | null }; webSearch?: { providers: string[] } }; createdAt: number; updatedAt: number };
 const OVERRIDES = ["model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "runLimits"] as const;
-const DEFINED = ["systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "runLimits", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "workflow", "decide"] as const;
+const DEFINED = ["systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "runLimits", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "decide"] as const;
 /** A later agent configuration becomes its own choice when a new definition revision is applied. */
 export function configurationOverrides(config: AgentConfiguration, params: object): AgentConfiguration {
   return { ...config, ...params, ...(config.definition ? { definitionOverrides:[...new Set([...(config.definitionOverrides ?? []), ...OVERRIDES.filter(field=>Object.hasOwn(params,field))])] } : {}) } as AgentConfiguration;
@@ -21,7 +22,7 @@ export async function configurationPatch(env: ControlEnv, tenant: string, config
   const fields=params as Record<string,unknown>, checked = { ...fields };
   if (config.definition) {
     if (fields.mcpServers !== undefined || fields.openApi !== undefined) throw new ApiError(400, "This agent's MCP servers come from its definition; change them there");
-    if (["builtins", "delegate", "workflow", "decide"].some(field => fields[field] !== undefined)) throw new ApiError(400, "This agent's builtins come from its definition; change them there");
+    if (["builtins", "delegate", "decide"].some(field => fields[field] !== undefined)) throw new ApiError(400, "This agent's builtins come from its definition; change them there");
   }
   for (const field of ["mcpServers", "openApi"] as const) if (Object.hasOwn(fields,field)) {
     checked[field] = await prepareSources(env,tenant,undefined,field,fields[field],config[field] as RemoteSource[] | undefined);
@@ -56,10 +57,15 @@ export async function definitionApplication(env: ControlEnv, tenant: string, con
   return merged;
 }
 const reply = (value: unknown, status = 200) => Response.json(value, { status, headers: { "cache-control": "no-store" } });
-const fromRow = (row: Record<string, any>): Definition => ({ id: row.id, tenant: row.tenant, name: row.name, revision: Number(row.revision), spec: row.spec, createdAt: Number(row.created_at), updatedAt: Number(row.updated_at) });
+const fromRow = (row: Record<string, any>): Definition => ({ id: row.id, tenant: row.tenant, name: row.name, revision: Number(row.revision), spec: withoutWorkflow(row.spec), createdAt: Number(row.created_at), updatedAt: Number(row.updated_at) });
+/** Stored workflow settings are ignored; only new API input is refused (workflow-refusal.ts). */
+export function withoutWorkflow<T extends { builtins?: string[] }>(spec: T): T {
+  const { workflow: _workflow, ...rest } = spec as T & { workflow?: unknown };
+  return { ...rest, ...(rest.builtins ? { builtins: rest.builtins.filter(name => name !== "workflow") } : {}) } as T;
+}
 const view = ({ tenant, spec, ...definition }: Definition) => ({ ...definition, ...spec, toolSources: sourceDefinitionViews(spec as never), ...(spec.mcpServers ? { mcpServers: spec.mcpServers.map(x => sourceView(x as RemoteSource)) } : {}), ...(spec.openApi ? { openApi: spec.openApi.map(x => sourceView(x as RemoteSource)) } : {}) });
 export function visibleConfiguration(config: AgentConfiguration) {
-  const { definitionOverrides, definitionRevision, ...visible } = config;
+  const { definitionOverrides, definitionRevision, ...visible } = withoutWorkflow(config);
   return { ...visible, keyScope: config.keyScope ?? null, modelHeaders: config.modelHeaders ?? null, decide: config.decide ?? null, language: config.language ?? null, runLimits: config.runLimits ?? null, tools: config.mcp?.tools ?? [], mcp: config.mcp ?? { tools: [] }, mcpServers: (config.mcpServers ?? []).map(source => sourceView(source as RemoteSource)), openApi: (config.openApi ?? []).map(source => sourceView(source as RemoteSource)) };
 }
 export async function resolveDefinition(env: ControlEnv, tenant: string, ref: string): Promise<Definition> {
@@ -76,7 +82,7 @@ export async function provisionDefinition(env: ControlEnv, tenant: string, input
   }
   if (input.systemPrompt !== undefined) throw new ApiError(400, "Use systemPromptAppend with a definition");
   if (input.decide !== undefined) throw new ApiError(400, "decide is set by the definition");
-  if (["builtins", "delegate", "workflow"].some(field => input[field] !== undefined)) throw new ApiError(400, "builtins come from the definition; change them there");
+  if (["builtins", "delegate"].some(field => input[field] !== undefined)) throw new ApiError(400, "builtins come from the definition; change them there");
   if (input.mcpServers !== undefined || input.openApi !== undefined) throw new ApiError(400, "MCP servers come from the definition; change them there");
   const definition = await resolveDefinition(env, tenant, input.definition);
   const { description, applyOnUpdate, limits, ...spec } = definition.spec;
@@ -89,7 +95,7 @@ export function definitionUpsert(config: Record<string, unknown>, previous?: Age
   if (previous.definition !== config.definition)
     throw new ApiError(409, "An existing agent's definition cannot change");
   const kept = { ...config };
-  for (const field of ["systemPrompt", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "workflow", "decide", "definitionRevision", "mcp"] as const) {
+  for (const field of ["systemPrompt", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "decide", "definitionRevision", "mcp"] as const) {
     if (previous[field] === undefined) delete kept[field];
     else kept[field] = previous[field];
   }
@@ -117,7 +123,9 @@ export async function definitionRoutes(request: Request, env: ControlEnv, auth: 
     return reply({ deleted: true });
   }
   if ((request.method !== "POST" || ref) && (request.method !== "PATCH" || !ref)) throw new ApiError(405, "Method not allowed");
-  const input = object(await body(request, 1024 * 1024), ["name", "revision", "description", "model", "systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "limits", "runLimits", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "workflow", "decide", "applyOnUpdate", "apply"]);
+  const given = await body(request, 1024 * 1024);
+  rejectWorkflow(given);
+  const input = object(given, ["name", "revision", "description", "model", "systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "limits", "runLimits", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "decide", "applyOnUpdate", "apply"]);
   if (input.apply !== undefined && input.apply !== "all") throw new ApiError(400, "apply must be all");
   const key = request.headers.get("Idempotency-Key");
   if (key !== null && !/^[A-Za-z0-9_-]{1,80}$/.test(key)) throw new ApiError(400, "Invalid Idempotency-Key");

@@ -1,4 +1,5 @@
-import { Journey, journeyConfig, journeyApp, emailAt, JOURNEY_META } from "../../../src/core/journey.ts";
+import { Journey, journeyConfig, emailAt, JOURNEY_META } from "../../../src/core/journey.ts";
+import { journeyApp } from "../../../src/journey-app.ts";
 import type { Accounts } from "./accounts.ts";
 import { keyServices, type KeyEnv } from "./security-services.ts";
 import type { ConsoleAuth } from "./account-console-auth.ts";

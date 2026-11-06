@@ -1,5 +1,15 @@
 import { fileToolsFor, type FileToolDefinition } from './file-tool-policy.ts';
 
+/**
+ * The file tools as the policy words them for this configuration: in code mode, read, write and edit say to call them
+ * directly; with fileTools: false, how scripts use them. Pi offers a registration's own description, so the words are
+ * set where the tools are installed (agent-tools.ts, agent-http.ts).
+ */
+export function wordedFileTools<T extends FileToolDefinition>(tools: T[], config: { codeMode?: boolean; fileTools?: boolean }): T[] {
+  const worded = new Map(fileToolsFor(tools, config.fileTools, config.codeMode).map(tool => [tool.name, tool.description]));
+  return tools.map(tool => ({ ...tool, description: worded.get(tool.name) ?? tool.description }));
+}
+
 /** Expose computer tools only when their native binding or attachment is configured. */
 export function selectAgentTools<T extends FileToolDefinition>(
   tools: T[],

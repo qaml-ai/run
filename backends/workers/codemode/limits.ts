@@ -5,12 +5,15 @@ import { SANDBOX_LIMITS } from "../../../src/limits.ts";
 // Keep non-yielding scripts below the isolate CPU reset threshold. This is not a wall-clock CPU limit.
 export const SANDBOX_INTERRUPT_BUDGET = 10_000;
 
-/** Enforce the existing v8 bridge budgets at the remote boundary, before invoking host capabilities. */
-export function boundedExchange(exchange: CodemodeRemoteExchange, workflow = false): CodemodeRemoteExchange {
-  const maxCalls = workflow ? SANDBOX_LIMITS.workflowToolCalls : SANDBOX_LIMITS.toolCalls;
-  const maxConcurrent = workflow ? SANDBOX_LIMITS.workflowConcurrentTools : SANDBOX_LIMITS.concurrentTools;
-  const maxArgs = workflow ? SANDBOX_LIMITS.workflowArgumentBytes : SANDBOX_LIMITS.argumentBytes;
-  const maxResultBytes = workflow ? SANDBOX_LIMITS.workflowToolBytes : SANDBOX_LIMITS.totalToolBytes;
+/**
+ * Enforce the v8 bridge budgets at the remote boundary, before invoking host capabilities. Past `concurrentTools` calls
+ * out at once, a call waits its turn here, as v8-exec queues it in the guest: Promise.all over many calls works within
+ * the script's `toolCalls`.
+ */
+export function boundedExchange(exchange: CodemodeRemoteExchange): CodemodeRemoteExchange {
+  const maxCalls = SANDBOX_LIMITS.toolCalls, maxConcurrent = SANDBOX_LIMITS.concurrentTools;
+  const maxArgs = SANDBOX_LIMITS.argumentBytes, maxResultBytes = SANDBOX_LIMITS.totalToolBytes;
+  const turns: (() => void)[] = [];
   let calls = 0, pending = 0, totalResults = 0, textBytes = 0, outputEvents = 0, cut = false, failed = false, images = 0, imageBytes = 0, imageCut = false;
   const size = (text: string | undefined) => text === undefined ? 0 : new TextEncoder().encode(text).byteLength;
   return async messages => {
@@ -23,8 +26,9 @@ export function boundedExchange(exchange: CodemodeRemoteExchange, workflow = fal
     };
     if (call?.type === "call") {
       if (++calls > maxCalls) return fail("Pi tool call limit or invalid call id");
-      if (pending >= maxConcurrent) return fail("Too many concurrent tool calls");
       if (size(call.args) > maxArgs) return fail("Pi call arguments exceed limit");
+      while (pending >= maxConcurrent) await new Promise<void>(resolve => turns.push(resolve));
+      if (failed) return { type: "stop" };
       pending++;
     }
     const kept: CodemodeRemoteMessage[] = [];
@@ -60,6 +64,6 @@ export function boundedExchange(exchange: CodemodeRemoteExchange, workflow = fal
         if (error) return { ...reply, ok: false, payload: error };
       }
       return reply;
-    } finally { if (call) pending--; }
+    } finally { if (call) { pending--; turns.shift()?.(); } }
   };
 }

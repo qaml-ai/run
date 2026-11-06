@@ -1,5 +1,5 @@
-import { createHash, randomUUID } from "node:crypto";
-import { Hono, type Context } from "hono";
+import { sha256Hex } from "./sha256.ts";
+
 /** Host services stay outside the shared journey policy. */
 export type Sql = { query<R = any>(text: string, values?: any[]): Promise<{ rows: R[]; rowCount: number | null }> };
 export type Db = Sql;
@@ -140,7 +140,7 @@ const ASSISTANT = /(^|\.)(chatgpt\.com|openai\.com|claude\.ai|perplexity\.ai|gem
 const NOT_A_BROWSER = /bot\b|crawl|spider|slurp|preview|monitor|curl|wget|python|node|go-http|headless|scrapy|httpclient|axios|okhttp/i;
 
 /** The journey configuration in the environment, or undefined when AGENT_JOURNEY_URL is not set. `secret` is AGENT_JOURNEY_SECRET or what its ARN holds (secrets.ts). */
-export function journeyConfig(env: NodeJS.ProcessEnv, secret: string | null | undefined): Pick<JourneyOptions, "url" | "secret" | "visitorCookie" | "visitorCookieDomain" | "siteHosts" | "consentCookie" | "collectUnknown" | "retryBaseMs"> & { internalEmailDomains: string[] } | undefined {
+export function journeyConfig(env: Record<string, string | undefined>, secret: string | null | undefined): Pick<JourneyOptions, "url" | "secret" | "visitorCookie" | "visitorCookieDomain" | "siteHosts" | "consentCookie" | "collectUnknown" | "retryBaseMs"> & { internalEmailDomains: string[] } | undefined {
   // Null: the secret is named (AGENT_JOURNEY_SECRET_ARN) and has no value yet (src/secrets.ts). Off until it has.
   if (secret === null) return undefined;
   const raw = env.AGENT_JOURNEY_URL;
@@ -154,7 +154,7 @@ export function journeyConfig(env: NodeJS.ProcessEnv, secret: string | null | un
   // Events and their signatures cross the network: only a store on this machine may be reached without TLS.
   if (url.protocol === "http:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) throw new Error("AGENT_JOURNEY_URL must be https, except for a store on localhost");
   // Standard base64 of at least 16 bytes, as the store reads it.
-  if (!secret || !/^whsec_[A-Za-z0-9+/]+={0,2}$/.test(secret) || Buffer.from(secret.slice(6), "base64").length < 16) throw new Error("AGENT_JOURNEY_URL needs AGENT_JOURNEY_SECRET (or AGENT_JOURNEY_SECRET_ARN): a Standard Webhooks secret, whsec_<base64 of 16 bytes or more>");
+  if (!secret || !/^whsec_[A-Za-z0-9+/]+={0,2}$/.test(secret) || base64Bytes(secret.slice(6)) < 16) throw new Error("AGENT_JOURNEY_URL needs AGENT_JOURNEY_SECRET (or AGENT_JOURNEY_SECRET_ARN): a Standard Webhooks secret, whsec_<base64 of 16 bytes or more>");
   const cookie = (name: string) => {
     const value = env[name];
     if (value !== undefined && !/^[A-Za-z0-9_-]{1,64}$/.test(value)) throw new Error(`${name} must be a cookie name`);
@@ -195,9 +195,12 @@ export function consoleRoute(pathname: string) {
   return "/console/*";
 }
 
+/** The bytes a base64 string decodes to, counted as Buffer does (padding and any final partial group). */
+const base64Bytes = (text: string) => Math.floor(text.replace(/=+$/, "").length * 3 / 4);
+
 /** A UUID from a key, the same each time: an event written again keeps its id. */
 function keyedId(key: string) {
-  const hex = createHash("sha256").update(key).digest("hex");
+  const hex = sha256Hex(key);
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-8${hex.slice(13, 16)}-${(parseInt(hex[16]!, 16) & 3 | 8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
@@ -224,7 +227,7 @@ type About = { accountRef: string | null; visitor: string | null; internal: bool
 async function enqueue<Name extends JourneyEventName>(sql: Sql, name: Name, properties: JourneyProperties[Name], about: About) {
   const now = Date.now();
   const event = {
-    schema_version: JOURNEY_SCHEMA_VERSION, event_id: about.id ?? (about.key === undefined ? randomUUID() : keyedId(about.key)), name, occurred_at: new Date(about.at ?? now).toISOString(),
+    schema_version: JOURNEY_SCHEMA_VERSION, event_id: about.id ?? (about.key === undefined ? crypto.randomUUID() : keyedId(about.key)), name, occurred_at: new Date(about.at ?? now).toISOString(),
     source_app: "run", observed_by: name === "page_viewed" ? "browser" : "server", visitor_id: about.visitor, account_ref: about.accountRef,
     page_host: about.page?.host ?? null, page_path: about.page?.path ?? null, referrer_host: about.page?.referrer ?? null, properties, is_internal: about.internal,
     analytics_consent: about.consent === "granted" ? "granted" : "unknown", ...(about.gaClientId ? { ga_client_id: about.gaClientId } : {}),
@@ -277,7 +280,6 @@ export class Journey {
   private readonly host?: string;
   private readonly secure: boolean;
   private readonly siteHosts: Set<string>;
-  private timers: ReturnType<typeof setInterval>[] = [];
   private sending = false;
   /** What this node has already said of each account's runs: the day it marked active, and whether its first run is behind it. Runs are many; this spares the database all but the first of a day. */
   private readonly runs = new Map<string, { day: string; first: boolean; until?: number }>();
@@ -330,10 +332,10 @@ export class Journey {
       on conflict (tenant) do update set internal = journey_accounts.internal or excluded.internal, consent = coalesce($8::text, journey_accounts.consent),
         ga_client_id = case when $8::text is null then journey_accounts.ga_client_id when $8::text = 'granted' then coalesce($9, journey_accounts.ga_client_id) else null end
       returning account_ref, internal, consent, since_signup, ga_client_id, (select consent from journey_accounts where tenant = $1) as before`,
-    [tenant, randomUUID(), seen.signup?.visitor ?? null, !!this.options.internal?.(tenant, seen.email), !!seen.signup, seen.consent ?? "unknown", Date.now(), seen.consent ?? null, ga])).rows[0];
+    [tenant, crypto.randomUUID(), seen.signup?.visitor ?? null, !!this.options.internal?.(tenant, seen.email), !!seen.signup, seen.consent ?? "unknown", Date.now(), seen.consent ?? null, ga])).rows[0];
     // The account's browser refused: the store is told, when it turns to refusing and at each sign-in that still does (a sign-in is seldom, and a missed word then mends itself).
     if (seen.consent === "denied" && (row.before !== "denied" || seen.signingIn)) {
-      const control = { schema_version: JOURNEY_SCHEMA_VERSION, control_id: randomUUID(), account_ref: row.account_ref as string, visitor_id: seen.refused ?? null, consent: "denied", decided_at: new Date().toISOString() };
+      const control = { schema_version: JOURNEY_SCHEMA_VERSION, control_id: crypto.randomUUID(), account_ref: row.account_ref as string, visitor_id: seen.refused ?? null, consent: "denied", decided_at: new Date().toISOString() };
       await sql.query("insert into journey_outbox (id, target, account_ref, body, due, created_at) values ($1, 'consent', $2, $3, $4, $4)", [control.control_id, row.account_ref, JSON.stringify(control), Date.now()]);
     }
     return {
@@ -363,7 +365,7 @@ export class Journey {
       const referrer = from && from.host !== this.host && from.host !== url.hostname ? from : undefined;
       const param = url.searchParams.get("camel_handoff");
       const handoff = param && UUID.test(param) ? param.toLowerCase() : undefined;
-      const visitor = browser.visitor ?? randomUUID();
+      const visitor = browser.visitor ?? crypto.randomUUID();
       const campaign: Record<string, string> = {};
       for (const key of CAMPAIGN_KEYS) {
         const value = url.searchParams.get(key);
@@ -379,7 +381,7 @@ export class Journey {
         // The touch is what the store keeps of where a visitor came from: worth sending for a new visitor, a campaign or another site, not for our own site's link, which says nothing new.
         if (!browser.visitor || Object.keys(campaign).length || (referrer && !site)) {
           const touch = { attribution_id: visitor, touch: { page_host: host, page_path: path, referrer_host: referrer && !site ? referrer.host : null, campaign, occurred_at: new Date(now).toISOString() } };
-          await sql.query("insert into journey_outbox (id, target, body, due, created_at) values ($1, 'resolve', $2, $3, $3)", [randomUUID(), JSON.stringify(touch), now]);
+          await sql.query("insert into journey_outbox (id, target, body, due, created_at) values ($1, 'resolve', $2, $3, $3)", [crypto.randomUUID(), JSON.stringify(touch), now]);
         }
         await enqueue(sql, "run_arrived", { entry_channel: entry, landing_path: path, ...(handoff ? { handoff_id: handoff } : {}) },
           { accountRef: null, visitor, internal: false, consent: browser.consent, at: now, gaClientId: browser.gaClientId });
@@ -632,7 +634,7 @@ export class Journey {
       const body = JSON.stringify({ schema_version: JOURNEY_SCHEMA_VERSION, account_ref: accountRef, kind, ...(cursor ? { cursor } : {}) });
       const response = await (this.options.fetch ?? fetch)(new URL(JOURNEY_EXPORT_PATH, this.options.url), {
         method: "POST", body, redirect: "error", signal: AbortSignal.timeout(30_000),
-        headers: { "Content-Type": "application/json", ...this.options.host.signedHeaders(randomUUID(), body, [this.options.secret]) },
+        headers: { "Content-Type": "application/json", ...this.options.host.signedHeaders(crypto.randomUUID(), body, [this.options.secret]) },
       });
       const answer = await response.json().catch(() => undefined) as { status?: unknown; kind?: unknown; account?: unknown; consent?: unknown; events?: unknown; touches?: unknown; ga4_copies?: unknown; next_cursor?: { at?: unknown; id?: unknown } | null } | undefined;
       const records = kind === "events" ? answer?.events : answer?.touches, next = answer?.next_cursor;
@@ -694,18 +696,6 @@ export class Journey {
     return found;
   }
 
-  start(intervalMs = 5_000, reconcileMs = 10 * 60_000) {
-    if (this.timers.length) return;
-    const every = (ms: number, type: string, work: () => Promise<unknown>) => {
-      const timer = setInterval(() => void work().catch(error => console.error(JSON.stringify({ type, error: this.options.host.safeError(error) }))), ms);
-      timer.unref();
-      this.timers.push(timer);
-    };
-    every(intervalMs, "journey_scan_failed", () => this.send());
-    every(reconcileMs, "journey_reconcile_failed", () => this.reconcile());
-    void this.reconcile().catch(error => console.error(JSON.stringify({ type: "journey_reconcile_failed", error: this.options.host.safeError(error) })));
-  }
-  stop() { for (const timer of this.timers) clearInterval(timer); this.timers = []; }
 
   /** Deliveries waiting to be sent, how many of them the store has refused, and how long the oldest has waited. */
   async backlog(now = Date.now()) {
@@ -757,38 +747,4 @@ export class Journey {
     await this.db.query("update journey_outbox set due = $2, last_error = $3, rejected_at = case when $4::boolean then $5::bigint else rejected_at end where id = $1", [row.id, Date.now() + delay, failure.slice(0, 500), refused, Date.now()]);
     console.error(JSON.stringify({ type: refused ? "journey_event_rejected" : "journey_delivery_failed", event: what, id: row.id, attempts: row.attempts, error: failure.slice(0, 200) }));
   }
-}
-
-/** Pages a browser may report a minute: the console sends one a page, so this is far past a person and well short of a flood. */
-export const JOURNEY_PAGES_PER_MINUTE = 120;
-
-/**
- * `POST /api/journey/events`: the console's own pages, from its own origin (`auth` is the console's sign-in: a
- * request a page of ours made, and whose session it carries, if any). Mounted only where journey events are on.
- * Each source (`source`: the caller's address as the rate limits know it) may report JOURNEY_PAGES_PER_MINUTE pages
- * a minute, counted on this node and in memory: past it the answer is 429, and nothing is written.
- */
-export function journeyApp(journey: Journey, auth: { allowsMutation(request: Request): boolean; principal(request: Request): Promise<{ tenant: string } | undefined> }, source: (c: Context) => string | undefined = () => undefined, now: () => number = Date.now) {
-  const app = new Hono();
-  const counts = new Map<string, { pages: number; until: number }>();
-  app.post("/api/journey/events", async c => {
-    c.header("Cache-Control", "no-store");
-    if (!auth.allowsMutation(c.req.raw)) return c.json({ error: "Forbidden" }, 403);
-    let body: unknown;
-    try { body = JSON.parse(await journey.readText(c.req.raw.body, 32 * 1024)); }
-    catch { return c.json({ error: "invalid_json" }, 400); }
-    const events = (body as { events?: unknown } | null)?.events;
-    const key = source(c) ?? "unknown", at = now();
-    if (counts.size > 50_000) for (const [name, count] of counts) if (count.until <= at) counts.delete(name);
-    let count = counts.get(key);
-    if (!count || count.until <= at) counts.set(key, count = { pages: 0, until: at + 60_000 });
-    count.pages += Array.isArray(events) ? Math.max(1, events.length) : 1;
-    if (count.pages > JOURNEY_PAGES_PER_MINUTE) {
-      c.header("Retry-After", String(Math.max(1, Math.ceil((count.until - at) / 1000))));
-      return c.json({ error: "rate_limited" }, 429);
-    }
-    const result = await journey.pagesViewed(c.req.raw, (await auth.principal(c.req.raw))?.tenant, body);
-    return c.json(result.body, result.status);
-  });
-  return app;
 }

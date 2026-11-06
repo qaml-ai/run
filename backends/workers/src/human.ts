@@ -7,6 +7,8 @@ import { senderInput } from "./sender.ts";
 import { actorInput } from "./security-policy.ts";
 import { HttpError } from "./errors.ts";
 import { canonical } from "../../../shared/durable-json.ts";
+import { scriptOf } from "./codemode-run.ts";
+import { endScript, waitsOnPerson } from "../codemode/sandbox.ts";
 
 export type HumanInput = {
   question: string; answer?: string; toolCallId?: string;
@@ -19,6 +21,8 @@ export type HumanInput = {
   resumeOnExpire?: boolean;
   requestId?: string;
   conversationId?: number;
+  /** A call from code's: its code mode call's task, which ends with the turn if this input closes without an answer. */
+  parentTask?: string;
 };
 
 export const HumanInputs = defineDoc<{
@@ -47,16 +51,19 @@ export const askHuman = defineTool({
 export async function waitForHuman(input: HumanInput, api: ToolExecutionApi, context: Context, requestKey?: string) {
     const key = requestKey === undefined ? String(api.taskId) : `${api.taskId}:${requestKey}`;
     const owner = await api.snapshot(HostExecutionRequest, api.conversationId, context);
+    // A call from code: its script's VM may stop while the person decides, and that wait is not its time.
+    const script = api.callId.includes("/") ? await scriptOf(api, context) : undefined;
     await api.commit(async (tx) => {
       const doc = await tx.doc(HumanInputs);
       if (!doc.requests[key]) {
         if (Object.keys(doc.requests).length >= 100)
           throw new Error("Human input retention limit reached");
         doc.requests[key] = { ...input, toolCallId: api.callId, conversationId: api.conversationId,
-          ...(owner?.requestId ? { requestId: owner.requestId } : {}),
+          ...(owner?.requestId ? { requestId: owner.requestId } : {}), ...(script ? { parentTask: script.parent } : {}),
           createdAt: api.now(), expiresAt: api.now() + 7 * 86400_000, state: "pending" };
       }
     }, context);
+    const release = script ? waitsOnPerson(script.startedAt, script.seed, script.call) : undefined;
     const watch = (await api.watchDoc(
       HumanInputs,
       context,
@@ -75,8 +82,14 @@ export async function waitForHuman(input: HumanInput, api: ToolExecutionApi, con
           reject(new Error("Human input wait interrupted")),
         );
       });
+      // Closed without an answer (aborted, expired, or a new message came instead): the script goes no further, and
+      // this call is not made. A question's answer, a refusal or an approval is the call's, as the script goes on.
+      const system = answer.answerDetail?.by.system;
+      if (script && system && !(system === "expired" && answer.resumeOnExpire))
+        endScript(script.startedAt, script.seed, `${api.callId.split("/").pop()} waited on a person, and the input was closed without an answer (${system}): the script ended there`);
       return humanInputResult(answer);
     } finally {
+      release?.();
       await watch.stop();
     }
 }
@@ -175,7 +188,13 @@ export function humanInputExtension(): Extension {
       const inputs = Object.entries((await api.snapshot(HumanInputs, context))?.requests ?? {})
         .filter(([key]) => key === prefix || key.startsWith(`${prefix}:`)).map(([, input]) => input);
       const closed = inputs.find(input => input.answerDetail?.by.system);
-      if (!closed) return;
+      if (!closed) {
+        // A code mode call whose script waited on a person, and the input closed without an answer: the script ended
+        // there (endScript), and the turn ends with it, as it does for a direct call.
+        const ended = Object.values((await api.snapshot(HumanInputs, context))?.requests ?? {}).some(input => input.parentTask === prefix
+          && input.answerDetail?.by.system && !(input.answerDetail.by.system === "expired" && input.resumeOnExpire));
+        return ended ? { ...result, isError: true, control: { ...result.control, terminate: true } } : undefined;
+      }
       const terminate = inputs.every(input => input.answerDetail?.by.system && !(input.answerDetail.by.system === "expired" && input.resumeOnExpire));
       return { ...result, ...humanInputResult(closed), control: { ...result.control, terminate } };
     },
@@ -187,9 +206,16 @@ export const askUser: ToolRegistration = {
   description: "Ask the user 1–4 questions with 2–4 options. The turn pauses until the user answers.",
   parameters: { type: "object", required: ["questions"], properties: { questions: { type: "array", minItems: 1, maxItems: 4, items: { type: "object" } } }, additionalProperties: false },
   replay: "safe",
-  callers: ["model"],
+  structuredOutputSchema: {},
+  // From code too: the turn pauses for the answer either way.
+  callers: ["model", "tools"],
   async execute(args, api, context) {
     const questions = questionsInput((args as { questions: unknown }).questions);
-    return waitForHuman({ kind: "question", question: questions.length === 1 ? questions[0].question : `${questions.length} questions`, detail: { questions } }, api, context);
+    const result = await waitForHuman({ kind: "question", question: questions.length === 1 ? questions[0].question : `${questions.length} questions`, detail: { questions } }, api, context);
+    // Code gets the answers themselves (structuredOutput); the model, their text.
+    const text = result.output.length === 1 && result.output[0].type === "text" ? result.output[0].text : undefined;
+    let value: unknown;
+    try { value = text === undefined ? undefined : JSON.parse(text); } catch { value = text; }
+    return { ...result, ...(value !== undefined ? { structuredOutput: value as never } : {}) };
   },
 };

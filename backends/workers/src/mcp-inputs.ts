@@ -1,8 +1,6 @@
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
 import type { McpResult } from "./attached-tools.ts";
-import { toolCallSite } from "./tool-call-context.ts";
-import { HostExecutionRequest } from "./host-execution.ts";
 import { approver, inputRequests, resolution, type InputRow } from "./input-policy.ts";
 import { HumanInputs, humanInputView, waitForHuman, type HumanInput } from "./human.ts";
 
@@ -44,7 +42,6 @@ export async function withToolInputs(call: (reply: ToolInputReply) => Promise<Mc
   for (let round = 0; round < 32; round++) {
     const result = await call(reply);
     if (result.resultType !== "input_required") return withInputNote(result, reply);
-    if ((await toolCallSite(api, context)).innerCallId && !(await api.snapshot(HostExecutionRequest, api.conversationId, context))?.requestId) throw new Error(`${tool?.name ?? "This tool"} needs the user's input: call ${tool?.name ?? "it"} directly`);
     const requests = inputRequests(result);
     // Commit all requests before waiting, so the caller can answer a batch atomically.
     await Promise.all(requests.map(async request => {

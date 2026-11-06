@@ -246,8 +246,6 @@ test("remote code limits reject excessive calls and arguments and bound each res
   const counted = boundedExchange(async messages => messages[0]?.type === "call" ? { type: "result", id: messages[0].id, ok: true, payload: "null" } : null);
   for (let i = 1; i <= 256; i++) assert.equal((await counted([{ type: "call", target: "tool", id: i, name: "echo", args: "{}" }]))?.type, "result");
   assert.deepEqual(await counted([{ type: "call", target: "tool", id: 257, name: "echo", args: "{}" }]), { type: "stop" });
-  const workflow = boundedExchange(async messages => messages[0]?.type === "call" ? { type: "result", id: messages[0].id, ok: true, payload: "null" } : null, true);
-  for (let i = 1; i <= 257; i++) assert.equal((await workflow([{ type: "call", target: "tool", id: i, name: "delegate", args: "{}" }]))?.type, "result");
 });
 
 test("remote output preserves bounded UTF-8 text and limits image output", async () => {

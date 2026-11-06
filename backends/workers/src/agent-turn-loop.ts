@@ -378,7 +378,13 @@ export async function onHumanImpl(this: AgentRuntime,
         }
         const live = (await this.harness.session().watch()).value.docs["pi.live"] as LiveState | undefined;
         const waiting = new Set(bound.map(([, input]) => input.toolCallId));
-        if (live?.tools?.some(tool => tool.status !== "done" && !waiting.has(tool.callId))) continue;
+        // A code mode call waits on people once every call its script still has out does (its VM stops meanwhile:
+        // codemode/sandbox.ts); calls already under way beside them finish first, as main's do.
+        const scripts = new Set((live?.tools ?? []).filter(tool => tool.status !== "done" && !waiting.has(tool.callId)).filter(tool => {
+          const out = (live?.nestedTools ?? []).filter(slot => slot.parentCallId === tool.callId && slot.status !== "done");
+          return out.length > 0 && out.every(slot => waiting.has(slot.callId));
+        }).map(tool => tool.callId));
+        if (live?.tools?.some(tool => tool.status !== "done" && !waiting.has(tool.callId) && !scripts.has(tool.callId))) continue;
         const conf = await this.config();
         record.state = "completed";
         record.status = "input_required";
@@ -413,6 +419,8 @@ export async function onHumanImpl(this: AgentRuntime,
         });
         await this.flushBilling();
         await this.flushTerminalEvents();
+        // Suspended from code, the agent holds no VM and runs nothing until the answer (main unloads it at once).
+        if (scripts.size) await this.ctx.storage.put("unloaded-at", Date.now());
       }
     }
     if (deadlines.length) await this.ctx.storage.put("human-input-deadline", Math.min(...deadlines));

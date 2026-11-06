@@ -35,6 +35,8 @@ export interface ContractFixture {
   setScheduleDueAt(agent: string, schedule: string, dueAt: number): Promise<void>;
   setScheduleLegacyHistory(agent: string, schedule: string, history: "none"): Promise<void>;
   resetChildSettlement(parent: string): Promise<void>;
+  /** A definition as stored before the workflow builtin was removed (#624): its builtins and settings name it. */
+  seedLegacyWorkflowDefinition(definition: string): Promise<void>;
   countOAuthRefreshTokens(): Promise<number>;
   ageUsedOAuthRefreshToken(token: string, milliseconds: number): Promise<void>;
   revokeOAuthGrants(): Promise<void>;

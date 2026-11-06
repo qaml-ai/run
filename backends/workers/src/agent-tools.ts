@@ -4,7 +4,6 @@ import { withCompactionPrompt } from "./model-compaction.ts";
 import { takesFiles } from './tool-file-schema.ts';
 import { toolOutputExtension } from "./tool-output.ts";
 import { assertContextRange, contextRangeExtension, contextRangeLimit } from "./context-range.ts";
-import { workflowTools } from "./workflow.ts";
 import { toolCallSite } from "./tool-call-context.ts";
 import { Harness, type ToolRegistration } from "@earendil-works/pi-durable";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
@@ -35,7 +34,7 @@ import { senderExtension } from "./sender-extension.ts";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { agentBuiltins } from "./agent-builtins.ts";
 import { writtenFile, presentedFile } from "./file-output.ts";
-import { selectAgentTools } from "./file-tool-selection.ts";
+import { selectAgentTools, wordedFileTools } from "./file-tool-selection.ts";
 import { Env } from "./agent-types.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
 
@@ -309,9 +308,10 @@ export function createHarness(this: AgentRuntime): PiHarness {
         })),
       );
       this.workspaceToolNames = tools.map((tool) => tool.name);
+      this.workspaceFileTools = tools;
       registry.install({
         name: "camel.files",
-        tools,
+        tools: wordedFileTools(tools, conf.config),
         sections: [],
       });
       registry.install({ name: "camel.human", tools: [askHuman, askUser] });
@@ -423,15 +423,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
         name: "camel.linux",
         tools: [computerTool(this.env, this.ctx.id.toString())],
       });
-      const sandbox = new SessionCodemodeSandbox({
-        remote: this.sandboxRemote,
-        workflow: conf.config.type === "workflow",
-      });
-      registry.install({ name: "camel.workflow", tools: await workflowTools({
-        sandbox: new SessionCodemodeSandbox({ remote: this.sandboxRemote, workflow: true }),
-        delegation: this.delegation, settings: conf.config.workflow,
-        context: api => this.currentRun(api), emit: event => this.emit(event),
-      }) });
+      const sandbox = new SessionCodemodeSandbox({ remote: this.sandboxRemote });
       registry.install({
         name: "camel.host-execute",
         tools: [hostExecutionTool(sandbox)],

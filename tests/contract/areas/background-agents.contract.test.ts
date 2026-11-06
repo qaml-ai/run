@@ -164,7 +164,7 @@ contractTest("delegation", "tests/background-agents.test.ts:131", "two agents wa
   assert.equal(history.at(-1).source?.kind, "agent", "the last landed with no reply");
 }, { timeout: 60_000 });
 
-contractTest("delegation", "tests/background-agents.test.ts:154", "a child's spend is charged to its parent when its notification lands, and a parent at its spend limit gets no turn", async t => {
+contractTest("delegation", "tests/background-agents.test.ts:157", "a child's spend is charged to its parent when its notification lands, and a parent at its spend limit gets no turn", async t => {
   // Each response costs $0.15 (5000 input tokens of openai/gpt-5.5-pro).
   const usage = { prompt_tokens: 5000, completion_tokens: 0 };
   const r = await runtime(t, body => {
@@ -193,7 +193,7 @@ contractTest("delegation", "tests/background-agents.test.ts:154", "a child's spe
   assert.equal(agent.spendLimit.spent.toFixed(2), "0.45");
 });
 
-contractTest("delegation", "tests/background-agents.test.ts:183", "aborting a parent while a child's notification waits keeps the notification: it lands without a turn", async t => {
+contractTest("delegation", "tests/background-agents.test.ts:186", "aborting a parent while a child's notification waits keeps the notification: it lands without a turn", async t => {
   // The worker answers only once the parent's long turn is running, and that turn only once the parent is aborted: the
   // notification is queued behind the turn when the abort comes, whatever the timing.
   let finishWork!: () => void, finishBusy!: () => void, busyCalled!: () => void;
@@ -223,7 +223,7 @@ contractTest("delegation", "tests/background-agents.test.ts:183", "aborting a pa
   assert.ok(!history.some((message: any) => message.role === "assistant" && text(message) === "heard"), "no turn ran for it");
 });
 
-contractTest("delegation","tests/background-agents.test.ts:213","children started together share what the parent may spend, and limits alone bound a tool's spawns without a tool for the model",async t => {
+contractTest("delegation","tests/background-agents.test.ts:216","children started together share what the parent may spend, and limits alone bound a tool's spawns without a tool for the model",async t => {
   const r = await runtime(t, body => {
     if (roleText(body).includes("SLOW")) return { role: "assistant", content: "slow", delayMs: 2_000 };
     if (lastUser(body).includes("<agent_notification")) return { role: "assistant", content: "heard" };

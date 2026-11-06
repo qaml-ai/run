@@ -131,12 +131,14 @@ async function startChild(ctx: ChildrenContext, session: Session, run: RequestRe
   let { agent } = child;
   const { made, task, output } = child;
   if (chain.includes(agent)) throw new Error(`${child.base} is already working on this task's chain`);
-  const row = await childRow(ctx, session, { id: requestId, child: agent, name: child.name, ...(child.preferred ? { preferred: child.preferred } : {}), base: child.base, depth, root: chain[0], run: run.id, toolCallId, made }, settings?.maxParallel ?? MULTI_AGENT_LIMITS.maxParallel);
+  const { row, fresh } = await childRow(ctx, session, { id: requestId, child: agent, name: child.name, ...(child.preferred ? { preferred: child.preferred } : {}), base: child.base, depth, root: chain[0], run: run.id, toolCallId, made }, settings?.maxParallel ?? MULTI_AGENT_LIMITS.maxParallel);
   if (row.state !== "running" && row.status === "failed" && !row.ended_at) throw new Error("This sub-agent could not be started");
   (session.children ??= new Map()).set(toolCallId, { agent, requestId, made, done: true });
   const at = { toolCallId, agentId: agent, requestId };
   ctx.publish(session, { type: "event", requestId: run.id, event: { type: "subagent_start", ...at, name: row.name, depth, background: true } });
-  let record = await delegation.requestOf(ctx, agent, tenant, requestId, 0, call.signal).catch(error => { if ((error as HttpError).status === 404) return undefined; throw error; });
+  // A row this call just wrote has no request yet (the request is only sent after its row): asking the child would load it
+  // for nothing, and a failure there would leave the row running though the call failed, until the sweep's start grace.
+  let record = fresh ? undefined : await delegation.requestOf(ctx, agent, tenant, requestId, 0, call.signal).catch(error => { if ((error as HttpError).status === 404) return undefined; throw error; });
   if (!record) {
     try {
       if (child.make) agent = await child.make(depth);
@@ -182,7 +184,7 @@ export async function toolSpawn(ctx: ChildrenContext, session: Session, call: To
 }
 
 /**
- * The row of a spawn_agent call's child, written first: the existing one when the call is made again. One call at a
+ * The row of a spawn_agent call's child, written first: the existing one when the call is made again (`fresh` false). One call at a
  * time per parent (only its owner runs its turns), so `max` running children holds. A name is unique among the running
  * ones: the default is the target's name and the next number.
  */
@@ -195,7 +197,7 @@ async function childRow(ctx: ChildrenContext, session: Session, child: { id: str
     const parent = session.header.id;
     const found = async () => (await ctx.db.query("select * from agent_children where id = $1", [child.id])).rows[0];
     const existing = await found();
-    if (existing) return existing;
+    if (existing) return { row: existing, fresh: false };
     // Children running: one waiting on a person (a resume row) is not.
     const running = Number((await ctx.db.query("select count(distinct child) as n from agent_children where parent = $1 and state = 'running' and ended_at is null and kind in ('spawn', 'message')", [parent])).rows[0].n);
     if (running >= max) throw new Error(`${running} sub-agents are running, this agent's most at once: wait for one to finish (wait_agent) before starting another`);
@@ -206,7 +208,7 @@ async function childRow(ctx: ChildrenContext, session: Session, child: { id: str
       const now = Date.now();
       const { rows } = await underClaim(ctx.db, session.claim, sql => sql.query(`insert into agent_children (id, tenant, parent, child, request_id, name, depth, root, parent_run, tool_call_id, made, checked_at, created_at, updated_at)
         values ($1, $2, $3, $4, $1, $5, $6, $7, $8, $9, $10, $11, $11, $11) on conflict do nothing returning *`, [child.id, session.header.tenant, parent, child.child, name, child.depth, child.root, child.run, child.toolCallId, child.made, now]));
-      if (rows[0]) return rows[0];
+      if (rows[0]) return { row: rows[0], fresh: true };
       if (child.name) throw new Error(`A sub-agent named ${child.name} is running: pick another name`);
     }
     throw new Error("Could not name the sub-agent: give it a name");

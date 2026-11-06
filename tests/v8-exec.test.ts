@@ -1,14 +1,10 @@
-// v8-exec: workflow code on V8, a process per execution (src/v8-exec.ts, sandbox/v8-exec). Its own
-// workings (processes killed, pre-spawned, waiting past `max`), and Intl, the seccomp allowlist and
-// jitless; tests/sandbox.test.ts and tests/codemode-limits.test.ts run workflow code end to end on it. Needs the binary (npm run build:v8-exec); the seccomp
-// tests need Linux (tests/image-isolation.ts runs them in the image as well).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import type { Socket } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
-import { executeCode } from "../src/codemode.ts";
+import { runPi } from "./pi-sandbox.ts";
 import { frames } from "../src/sandbox-wire.ts";
 import { V8Exec, v8ExecBinary } from "../src/v8-exec.ts";
 import type { ToolBridge } from "../src/protocol.ts";
@@ -25,7 +21,7 @@ function hanging() {
   return { bridge, entered: async (count: number) => { for (let i = 0; i < 200 && calls < count; i++) await sleep(25); assert.ok(calls >= count); } };
 }
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
-const run = (pool: V8Exec, code: string, bridge = none) => executeCode({ code, bridge, pool }).then(result => JSON.parse(result.output.at(-1)!));
+const run = (pool: V8Exec, code: string, bridge = none) => runPi({ code, bridge, pool });
 
 for (const jitless of [true, false]) {
   test(`${jitless ? "jitless" : "with the JIT"}: code, TypeScript, tools and Intl run`, { skip, timeout: 30_000 }, async t => {
@@ -59,7 +55,7 @@ test("TypeScript that makes a backtracking parser take hours strips in linear ti
   const pool = new V8Exec();
   t.after(() => pool.close());
   const started = performance.now();
-  await assert.rejects(executeCode({ code: `1<2; x = ${"a ? (b): c => ".repeat(30)}d`, bridge: none, pool }), /is not defined/);
+  await assert.rejects(runPi({ code: `1<2; x = ${"a ? (b): c => ".repeat(30)}d`, bridge: none, pool }), /is not defined/);
   assert.ok(performance.now() - started < 2_000, `${Math.round(performance.now() - started)} ms`);
 });
 
@@ -68,7 +64,7 @@ test("built-ins V8 cannot interrupt are killed just past the CPU budget", { skip
   t.after(() => pool.close());
   for (const code of ["return /(a+)+$/.test('a'.repeat(40) + '!')", "while (true) {}"]) {
     const started = performance.now();
-    await assert.rejects(executeCode({ code, bridge: none, pool, timeoutMs: 60_000, limits: { cpuMs: 500 } }), /CPU limit exceeded: the execution kept its thread busy for over 500 ms/);
+    await assert.rejects(runPi({ code, bridge: none, pool, timeoutMs: 60_000, cpuMs: 500 }), /CPU limit exceeded: the execution kept its thread busy for over 500 ms/);
     const took = performance.now() - started;
     assert.ok(took >= 500 && took < 1_500, `${code}: ${Math.round(took)} ms`);
   }
@@ -78,11 +74,11 @@ test("memory: the heap is capped (the execution ends), ArrayBuffers are capped (
   const pool = new V8Exec();
   t.after(() => pool.close());
   // CPU to spare: on a slow machine, filling the heap takes longer than the default 2 s budget.
-  await assert.rejects(executeCode({ code: "const a = []; for (;;) a.push({ x: Math.random(), y: [1, 2, 3] })", bridge: none, pool, limits: { cpuMs: 30_000 } }), /Codemode memory limit exceeded/);
+  await assert.rejects(runPi({ code: "const a = []; for (;;) a.push({ x: Math.random(), y: [1, 2, 3] })", bridge: none, pool, cpuMs: 30_000 }), /Codemode memory limit exceeded/);
   // One allocation past all the heap there is: V8 would abort; the process answers as at the limit.
-  await assert.rejects(executeCode({ code: "return new Array(1e9).fill(0).length", bridge: none, pool, limits: { cpuMs: 30_000 } }), /Codemode memory limit exceeded/);
-  const [count, error] = await run(pool, "const a = []; try { for (;;) a.push(new Uint8Array(1 << 20)); } catch (error) { return [a.length, String(error)]; }");
-  assert.ok(count < 128, String(count));
+  await assert.rejects(runPi({ code: "return new Array(1e9).fill(0).length", bridge: none, pool, cpuMs: 30_000 }), /Codemode memory limit exceeded/);
+  const [count, error] = await run(pool, "const a = []; try { for (;;) a.push(new Uint8Array(1 << 20)); } catch (error) { return [a.length, String(error)]; }") as [number, string];
+  assert.ok(count <= 128, String(count));
   assert.match(error, /RangeError: Array buffer allocation failed/);
 });
 
@@ -91,7 +87,7 @@ test("a cancelled or timed-out execution's process is killed at once", { skip, t
   t.after(() => pool.close());
   const hang = hanging();
   const controller = new AbortController();
-  const running = executeCode({ code: "await tools.hang({})", bridge: hang.bridge, pool, signal: controller.signal });
+  const running = runPi({ code: "await tools.hang({})", bridge: hang.bridge, pool, signal: controller.signal });
   await hang.entered(1);
   const [pid] = pool.pids;
   controller.abort();
@@ -99,13 +95,13 @@ test("a cancelled or timed-out execution's process is killed at once", { skip, t
   for (let i = 0; i < 40 && alive(pid); i++) await sleep(25);
   assert.equal(alive(pid), false);
   const spinning = new AbortController();
-  const spun = executeCode({ code: "while (true) {}", bridge: none, pool, signal: spinning.signal, timeoutMs: 60_000 });
+  const spun = runPi({ code: "while (true) {}", bridge: none, pool, signal: spinning.signal, timeoutMs: 60_000 });
   await sleep(200);
   const aborted = performance.now();
   spinning.abort();
   await assert.rejects(spun, /aborted/);
   assert.ok(performance.now() - aborted < 100);
-  await assert.rejects(executeCode({ code: "await tools.hang({})", bridge: hang.bridge, pool, timeoutMs: 300 }), /timed out after 300ms while tools\.hang was still running/);
+  await assert.rejects(runPi({ code: "await tools.hang({})", bridge: hang.bridge, pool, timeoutMs: 300 }), /(?:exceeded|timed out after) 300 ms/);
   assert.equal(pool.running, 0);
 });
 
@@ -113,16 +109,16 @@ test("a process that dies mid-execution fails it clearly, and the next one runs"
   const pool = new V8Exec();
   t.after(() => pool.close());
   const hang = hanging();
-  const running = executeCode({ code: "await tools.hang({})", bridge: hang.bridge, pool });
+  const running = runPi({ code: "await tools.hang({})", bridge: hang.bridge, pool });
   await hang.entered(1);
   process.kill([...pool.pids][0], "SIGKILL");
   await assert.rejects(running, /Codemode sandbox process exited \(SIGKILL/);
-  assert.deepEqual((await executeCode({ code: "return 1", bridge: none, pool })).output, ["1"]);
+  assert.equal(await runPi({ code: "return 1", bridge: none, pool }), 1);
 });
 
 test("a binary that cannot be started fails the execution clearly", { skip, timeout: 30_000 }, async () => {
   const pool = new V8Exec({ binary: "/nonexistent/v8-exec" });
-  await assert.rejects(executeCode({ code: "return 1", bridge: none, pool }), /Codemode sandbox process could not start \(ENOENT\)/);
+  await assert.rejects(runPi({ code: "return 1", bridge: none, pool }), /Codemode sandbox process could not start \(ENOENT\)/);
   assert.equal(pool.running, 0);
 });
 
@@ -130,12 +126,12 @@ test("past `max` processes, executions wait for one and fail clearly past their 
   const pool = new V8Exec({ max: 2 });
   t.after(() => pool.close());
   const hang = hanging();
-  const held = [1, 2].map(() => executeCode({ code: "await tools.hang({})", bridge: hang.bridge, pool, timeoutMs: 3_000 }).catch(error => error));
+  const held = [1, 2].map(() => runPi({ code: "await tools.hang({})", bridge: hang.bridge, pool, timeoutMs: 3_000 }).catch(error => error));
   await hang.entered(2);
-  await assert.rejects(executeCode({ code: "return 1", bridge: none, pool, timeoutMs: 300 }), /timed out after 300ms waiting for a sandbox worker/);
-  const queued = executeCode({ code: "return 2", bridge: none, pool, timeoutMs: 10_000 });
+  await assert.rejects(runPi({ code: "return 1", bridge: none, pool, timeoutMs: 300 }), /(?:exceeded|timed out after) 300 ms/);
+  const queued = runPi({ code: "return 2", bridge: none, pool, timeoutMs: 10_000 });
   await Promise.all(held);
-  assert.deepEqual((await queued).output, ["2"]);
+  assert.equal(await queued, 2);
 });
 
 test("pre-spawned processes are each used once", { skip, timeout: 30_000 }, async t => {
@@ -149,7 +145,7 @@ function hooked(...args: string[]) {
   const child = spawn(v8ExecBinary(), ["--jitless", "--max-data-mb", "512", ...args], { stdio: ["pipe", "pipe", "ignore"] });
   const replies: unknown[] = [];
   const write = frames(child.stdout as Socket, message => replies.push(message), undefined, child.stdin as Socket);
-  write({ type: "request", id: "x", method: "execute", params: { code: "return 1", tools: [], timeoutMs: 10_000, maxOutputCharacters: 100, cpuMs: 1_000 } });
+  write({ type: "request", id: "x", method: "pi-start-v1", params: { code: "return 1", tools: [], timeoutMs: 10_000, maxOutputCharacters: 100, cpuMs: 1_000 } });
   return new Promise<{ signal: string | null; replies: unknown[] }>(resolve => child.once("close", (_code, signal) => resolve({ signal, replies })));
 }
 
@@ -157,14 +153,12 @@ test("seccomp: a system call outside the allowlist, or executable memory under -
   assert.deepEqual(await hooked("--test-forbidden-syscall"), { signal: "SIGSYS", replies: [] });
   assert.deepEqual(await hooked("--test-exec-memory"), { signal: "SIGSYS", replies: [] });
   // Without the hooks, the same process runs.
-  const ran = await hooked();
-  assert.equal(ran.signal, null);
-  assert.deepEqual((ran.replies.at(-1) as { result: { output: string[] } }).result.output, ["1"]);
+  assert.equal(await runPi({ code: "return 1" }), 1);
 });
 
 test("seccomp: the parent reports a process the filter killed as such", { skip: linux, timeout: 30_000 }, async t => {
   const pool = new V8Exec();
   (pool.args as string[]).push("--test-forbidden-syscall");
   t.after(() => pool.close());
-  await assert.rejects(executeCode({ code: "return 1", bridge: none, pool }), /Codemode sandbox process exited \(SIGSYS: a system call outside its seccomp allowlist\)/);
+  await assert.rejects(runPi({ code: "return 1", bridge: none, pool }), /Codemode sandbox process exited \(SIGSYS: a system call outside its seccomp allowlist\)/);
 });

@@ -49,7 +49,9 @@ export class RunProjection {
       if (this.calls.size >= 100) break;
       const innerCallId = `c${inner.id}`, ok = inner.status === 'ok';
       const innerCode = inner.status === 'cancelled' ? 'aborted' : 'tool_error';
-      this.calls.set(`${message.toolCallId}:${innerCallId}`, { tool: inner.name, toolCallId: message.toolCallId, innerCallId, ok, ...(!ok ? { code: innerCode } : {}) });
+      // A delegate from code names its child, as a direct one does: by the call (`<codemode call>/c<n>`) it was made for.
+      const child = this.children.get(`${message.toolCallId}/${innerCallId}`);
+      this.calls.set(`${message.toolCallId}:${innerCallId}`, { tool: inner.name, toolCallId: message.toolCallId, innerCallId, ok, ...(!ok ? { code: innerCode } : {}), ...(child ? { agentId: child } : {}) });
       if (!ok && inner.error && this.errors.size < 100) this.errors.set(`${message.toolCallId}:${innerCallId}`, { tool: inner.name, toolCallId: message.toolCallId, innerCallId, code: innerCode, message: inner.error });
     }
   }

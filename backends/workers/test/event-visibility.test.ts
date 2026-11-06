@@ -3,7 +3,7 @@ import test from 'node:test';
 import { visibleEvent, visibleReplay } from '../src/event-visibility.ts';
 import { SUBAGENT_EVENTS } from '../src/multi-agent-policy.ts';
 
-test('child and workflow events require an explicit subscription', () => {
+test('child events require an explicit subscription', () => {
   for (const type of SUBAGENT_EVENTS) {
     const frame = { type: 'event', requestId: 'parent', event: { type } };
     assert.equal(visibleEvent(frame, false), false, type);

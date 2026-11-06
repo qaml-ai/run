@@ -55,8 +55,8 @@ print(run.text)
   only a request can authorize a call, so without one the person decides. A
   judged call is never allowed unjudged. Judged calls are billed as decisions
   are (`kind: "decision"`), an end user's credit holds and settles them the same
-  way, and a denial shows in a run's outcome as `tool_error`. Judged tools keep their configured exposure and remain searchable in code.
-  A call that needs a person must be made directly until code can pause.
+  way, and a denial shows in a run's outcome as `tool_error`. Judged tools keep their configured exposure, and a
+  call from code that needs a person pauses the turn as a direct call does.
 - **Questions.** The `ask_user` built-in (`"builtins": ["ask_user"]` on the
   agent or its definition) lets the model ask 1 to 4 multiple-choice questions, with free text
   allowed where it says so.
@@ -78,10 +78,17 @@ const deleteApp = tool({
 });
 ```
 
-Code in `codemode` cannot wait for days: a call from code that would ask fails
-with "needs the user's input: call it directly". Tools that ask remain listed and searchable in code; approval and human input
-do not change caller access. Set `exposure: "direct"` to always declare such a
-tool to the model as well.
+A call from code asks the same way. The run ends `input_required` on that call
+(its input's `toolCallId` is `<codemode call>/c<n>`), and the agent unloads while
+it waits: no code slot, no memory, no model call. Once the person answers, the
+script goes on from where it was: calls it had finished are not made again, and
+the call that asked starts again with the answer (an approved call runs, a
+question's call returns the answer, a tool gets its answers as above). Calls
+from the same script that ask at once are one suspension, answered together.
+Inputs closed without an answer (an abort, expiry) end the `codemode` call as
+aborted, and a new message instead of an answer does the same. A script's own
+`timeout_ms` counts the wait; the runtime's deadline does not. Set
+`exposure: "direct"` to always declare such a tool to the model as well.
 
 ## Answering
 

@@ -157,7 +157,7 @@ export async function usageForRequestImpl(this: AgentRuntime,
       auxiliaryRunCosts(this.env, conf.tenantId, conf.id, id),
       this.delegation.cost(id),
     ]);
-    const children = new Map((await this.delegation.children()).filter(child => child.parentRequestId === id).map(child => [child.toolCallId, child.id]));
+    const children = new Map((await this.delegation.children()).filter(child => child.parentRequestId === id).map(child => [child.callId ?? child.toolCallId, child.id]));
     const projection = new RunProjection(id, children);
     let cursor,
       active: string | undefined,
