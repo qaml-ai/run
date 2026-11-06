@@ -58,6 +58,8 @@ export function endScript(startedAt: number, seed: number, message: string) {
   found.ended ??= message;
   clearTimeout(found.expires);
   found.expires = setTimeout(() => { found.ended = undefined; forget(key); }, 10 * 60_000);
+  // Under Node (tests, the local fixture) a ten-minute mark must not keep the process alive after its work is done.
+  (found.expires as { unref?: () => void }).unref?.();
   for (const run of found.runs) run.end(message);
 }
 
