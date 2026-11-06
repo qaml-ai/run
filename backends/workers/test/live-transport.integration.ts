@@ -9,9 +9,16 @@ test("negotiated WebSocket stays connected when idle and streams the next turn",
   const f = await startFixture();
   t.after(() => f.stop());
   let negotiations = 0;
-  const fetcher: typeof fetch = (url, init) => {
+  let socketsSelected = 0;
+  const fetcher: typeof fetch = async (url, init) => {
     if (String(url).includes("/events")) negotiations++;
-    return fetch(url, init);
+    const response = await fetch(url, init);
+    if (response.headers.get("content-type")?.startsWith("application/vnd.camelrun.events+json")) {
+      const selection = await response.clone().json() as { transport: string };
+      assert.equal(selection.transport, "websocket");
+      socketsSelected++;
+    }
+    return response;
   };
   const runtime = new AgentRuntime({ url: f.url, apiKey: f.token, fetch: fetcher });
   const credentials = await (await fetch(f.url + "/v1/agents", {
@@ -23,6 +30,7 @@ test("negotiated WebSocket stays connected when idle and streams the next turn",
   const client = await runtime.connectAgent(credentials, { attach: false, onEvent: event => { events.push(event); }, onError: error => { errors.push(error.message); } });
   t.after(() => client.close());
   assert.equal(negotiations, 1);
+  assert.equal(socketsSelected, 1, "the unchanged SDK's default offer selects a WebSocket");
   // More than the old SSE watchdog (20s): an idle hibernatable socket must stay open.
   await new Promise(resolve => setTimeout(resolve, 22_000));
   assert.equal(negotiations, 1, `idle WebSocket must not reconnect on the SSE heartbeat watchdog: ${errors.join("; ")}`);

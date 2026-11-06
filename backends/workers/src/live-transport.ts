@@ -5,9 +5,8 @@ export const EVENT_CAPABILITY = "application/vnd.camelrun.events+json";
 export function negotiateEvents(request: Request): Response | undefined {
   const offered = request.headers.get("accept")?.split(",").map(value => value.trim().split(";")[0]);
   if (!offered?.includes(EVENT_CAPABILITY)) return;
-  // Keep HTTP stream interception and proxy fallback available when the client
-  // offers SSE. A caller that explicitly asks for WebSocket still negotiates it.
-  if (offered.includes("text/event-stream")) return;
+  // Prefer hibernatable WebSockets when offered. SSE-only clients still receive
+  // the existing event stream, including clients without a WebSocket runtime.
   const url = new URL(request.url);
   return Response.json({ transport: "websocket", protocol: EVENT_PROTOCOL, url: url.pathname + url.search }, {
     headers: { "content-type": EVENT_CAPABILITY, "cache-control": "no-store", vary: "Accept" },

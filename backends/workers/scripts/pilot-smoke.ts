@@ -48,15 +48,7 @@ export async function runSmoke(options: { apiKey: string; baseUrl: string; fakeU
     });
     await check("typescript-websocket-stream", async () => {
       const before = sockets;
-      // The parity backend deliberately selects SSE when both are offered.
-      // Exercise the SDK's WebSocket path by explicitly offering only it.
-      const websocketFetch: typeof fetch = (input, init) => {
-        const target = input instanceof Request ? input.url : String(input);
-        const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
-        if (new URL(target).pathname.endsWith("/events")) headers.set("accept", "application/vnd.camelrun.events+json");
-        return fetch(input, { ...init, headers });
-      };
-      const streamingClient = new Agents({ url: baseUrl, apiKey, pollMs: 200, fetch: websocketFetch });
+      const streamingClient = new Agents({ url: baseUrl, apiKey, pollMs: 200 });
       try {
         const streamingAgent = await streamingClient.get(agent.id);
         const parts: string[] = [];
@@ -119,7 +111,7 @@ export async function runSmoke(options: { apiKey: string; baseUrl: string; fakeU
     });
     await check("idle-websocket-reconnect", async () => {
       const path = `/v1/agents/${agent.id}/events`;
-      const response = await fetch(baseUrl + path, { headers: { authorization: `Bearer ${apiKey}`, accept: "application/vnd.camelrun.events+json" } });
+      const response = await fetch(baseUrl + path, { headers: { authorization: `Bearer ${apiKey}`, accept: "application/vnd.camelrun.events+json, text/event-stream" } });
       assert.equal(response.status, 200);
       const selected = await response.json() as { transport: string; protocol: string; url: string };
       assert.equal(selected.transport, "websocket");

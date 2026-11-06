@@ -18,6 +18,17 @@ class Socket extends EventTarget {
   message(value: unknown) { this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(value) })); }
 }
 
+test("Workers prefer WebSocket in either offer order and preserve explicit SSE", async () => {
+  for (const accept of ["application/vnd.camelrun.events+json, text/event-stream", "text/event-stream, application/vnd.camelrun.events+json"]) {
+    const response = negotiateEvents(new Request("https://runtime.test/events", { headers: { accept } }));
+    assert.ok(response);
+    assert.equal((await response.json()).transport, "websocket");
+  }
+  for (const accept of ["text/event-stream", "application/json", "*/*"]) {
+    assert.equal(negotiateEvents(new Request("https://runtime.test/events", { headers: { accept } })), undefined);
+  }
+});
+
 test("SSE Content-Type explicitly selects the current Node stream in one request", async () => {
   let calls = 0;
   const response = new Response("event: ready\ndata: {}\n\n", { headers: { "content-type": "text/event-stream" } });
