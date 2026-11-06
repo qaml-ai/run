@@ -7,7 +7,11 @@ import { OPERATOR, lastUser, passwordSession, runtime } from "./runtime-server.t
 
 const PUBLIC = "https://agents.example.test";
 const REDIRECT = "http://127.0.0.1:43210/callback";
-const TOOLS = ["signups_daily", "accounts", "activation", "agents", "usage_daily", "usage_models", "spend", "balances", "storage", "oauth_grants", "trend", "health"];
+const TOOLS = [
+  "signups_daily", "accounts", "activation", "agents", "usage_daily", "usage_models", "spend", "balances", "storage",
+  "oauth_grants", "trend", "usage_tenants", "tenant", "retention", "time_to_value", "channels", "schedules",
+  "integrations", "help_requests", "health",
+];
 
 /** An MCP client of /v1/ops/mcp with `token`, and a call that gives each tool's JSON. */
 async function connect(t: { after(fn: () => unknown): void }, base: string, token: string) {
@@ -149,4 +153,118 @@ test("the tools: read-only rows a dashboard charts, and a token that works here 
   // Stateless: only POST answers.
   assert.equal((await fetch(`${r.base}/v1/ops/mcp`, { headers: { Authorization: `Bearer ${tokens.access_token}` } })).status, 405);
   assert.equal((await fetch(`${r.base}/v1/ops/mcp`, { method: "DELETE", headers: { Authorization: `Bearer ${tokens.access_token}` } })).status, 405);
+});
+
+/** An ops access token for alice, signed in through the consent page as the third test does. */
+async function opsToken(t: { after(fn: () => unknown): void }, r: { base: string }) {
+  const { cookie, query, post, client, verifier } = await session(r, `${PUBLIC}/v1/ops/mcp`);
+  assert.equal((await fetch(`${r.base}/oauth/authorize?${query}`, { headers: { Cookie: cookie } })).status, 200);
+  const allowed = await post("/oauth/authorize", { ...Object.fromEntries(query), decision: "allow" }, { Cookie: cookie, Origin: r.base });
+  assert.equal(allowed.status, 302);
+  const code = new URL(allowed.headers.get("location")!).searchParams.get("code")!;
+  const exchange = await post("/oauth/token", { client_id: client.client_id, grant_type: "authorization_code", code, redirect_uri: REDIRECT, code_verifier: verifier });
+  assert.equal(exchange.status, 200);
+  return (await exchange.json() as any).access_token as string;
+}
+
+test("the account, channel, schedule and support tools answer one tenant's shape, and never its secrets", async t => {
+  const r = await runtime(t, body => ({ role: "assistant", content: `echo: ${lastUser(body)}` }), { AGENT_OPS_ADMINS: "alice" });
+  const token = await opsToken(t, r);
+  const call = await connect(t, r.base, token);
+
+  // An account made 20 days ago, with a token minted half a day later and two days of use.
+  const now = Date.now();
+  const day = 86_400_000;
+  await r.db.query("insert into tenants (id, github, github_id, created_at, billing) values ('tnc_a', 'tnc-a', 12345, $1, 'prepaid')", [now - 20 * day]);
+  await r.db.query("insert into api_tokens (sha256, id, tenant, name, prefix, created_at) values ('hash-a', '00000000-0000-0000-0000-0000000000a1', 'tnc_a', 'laptop', 'arr_', $1)", [now - 19.5 * day]);
+  await r.db.query("insert into usage (tenant, day, model, responses, input, output, cost, platform_cost, platform_responses) values ('tnc_a', current_date - 20, 'test-model', 4, 100, 20, 0.5, 0.25, 2), ('tnc_a', current_date, 'test-model', 2, 10, 5, 0.1, 0, 0)");
+  await r.db.query("insert into credit_accounts (tenant, balance, purchased) values ('tnc_a', 5000000, 10000000)");
+  // A Telegram channel with one conversation and two inbound messages, and everything an account can connect.
+  await r.db.query(`insert into channels (id, tenant, channel, created_at) values ('chn_1', 'tnc_a', '{"type":"telegram","name":"Support","account":{"bot":"@support"}}', $1)`, [now]);
+  await r.db.query("insert into channel_conversations (channel, conversation, agent, generation) values ('chn_1', 'conv_1', 'agt_1', 1)");
+  await r.db.query("insert into channel_seen (channel, message) values ('chn_1', 'msg_1'), ('chn_1', 'msg_2')");
+  // Two schedules, both still ahead (a due one would run and be gone while the test reads): one recurring, one once.
+  await r.db.query("insert into schedules (id, agent, tenant, text, due_at, every_seconds, created_at) values ('00000000-0000-0000-0000-0000000000b1', 'agt_1', 'tnc_a', 'daily report', $1, 3600, $2), ('00000000-0000-0000-0000-0000000000b2', 'agt_1', 'tnc_a', 'one off', $3, null, $2)", [now + 3_600_000, now, now + 7_200_000]);
+  await r.db.query("insert into provider_keys (tenant, provider, sealed, last4, set_at) values ('tnc_a', 'openai', '{\"sealed\":\"secret\"}', '1234', $1)", [now]);
+  await r.db.query("insert into model_providers (tenant, name, config, sealed, last4, set_at) values ('tnc_a', 'mine', '{\"type\":\"openai\"}', '{\"sealed\":\"secret\"}', '5678', $1)", [now]);
+  await r.db.query("insert into webhook_endpoints (id, tenant, url, events, secret, created_at) values ('whk_1', 'tnc_a', 'https://hooks.example.test/x?token=secret', '{run.completed}', '{\"sealed\":\"secret\"}', $1)", [now]);
+  await r.db.query("insert into volumes (id, tenant, name, created_at) values ('vol_1', 'tnc_a', 'data', $1)", [now]);
+  await r.db.query("insert into help_requests (id, tenant, reference, payload_sha256, email_hash, status, created_at, updated_at) values ('00000000-0000-0000-0000-0000000000c1', 'tnc_a', 'HR-0001', 'abc', 'def', 'delivered', $1, $1)", [now]);
+
+  // Model use by tenant: what it spent, on which days, and what its balance buys at that rate.
+  const use = await call("usage_tenants", { days: 30 });
+  assert.equal(use.isError, false, use.text);
+  const account = use.json.rows.find((row: any) => row.tenant === "tnc_a");
+  assert.deepEqual(
+    [account.responses, account.cost_usd, account.platform_cost_usd, account.active_days, account.models, account.balance_usd, account.purchased_usd],
+    [6, 0.6, 0.25, 2, 1, 5, 10]);
+  assert.equal(account.daily_usd, 0.02, "0.6 over 30 days");
+  assert.equal(account.runway_days, 250, "5 dollars at 0.02 a day");
+
+  // One account in full.
+  const profile = await call("tenant", { tenant: "tnc_a" });
+  assert.equal(profile.isError, false, profile.text);
+  const [row] = profile.json.rows;
+  assert.deepEqual(
+    [row.tenant, row.sign_in, row.deleted, row.tokens, row.schedules, row.channels, row.volumes, row.provider_keys, row.model_providers, row.webhook_endpoints, row.help_requests, row.responses_30d, row.cost_30d_usd, row.balance_usd],
+    ["tnc_a", "github", false, 1, 2, 1, 1, 1, 1, 1, 1, 6, 0.6, 5]);
+  assert.equal(row.billing, "prepaid");
+  assert.equal(profile.json.channels[0].type, "telegram");
+  assert.equal(profile.json.channels[0].conversations, 1);
+  assert.deepEqual((await call("tenant", { tenant: "nobody" })).json.rows, []);
+  assert.equal((await call("tenant", { tenant: "" })).isError, true, "an empty id is refused");
+
+  // Weekly retention: the cohort holds one account, active in its own week.
+  const kept = await call("retention", { weeks: 8 });
+  assert.equal(kept.isError, false, kept.text);
+  const own = kept.json.rows.find((entry: any) => entry.week_offset === 0 && entry.cohort_size === 1);
+  assert.equal(own.active, 1);
+  assert.equal(own.pct, 1);
+  assert.match(kept.json.incomplete_week, /^\d{4}-\d{2}-\d{2}$/);
+
+  // Time to value: a token half a day after sign-up, a response the next day.
+  const value = await call("time_to_value", { days: 90 });
+  assert.equal(value.isError, false, value.text);
+  assert.equal(value.json.rows[0].accounts, 1);
+  assert.equal(value.json.rows[0].with_token, 1);
+  assert.equal(value.json.rows[0].with_response, 1);
+  assert.equal(value.json.rows[0].with_purchase, 0);
+  assert.equal(value.json.rows[0].p50_token_hours, 12);
+  assert.equal(value.json.rows[0].p50_response_days, 0, "the day of the response, from the start of that day");
+
+  // Channels: the provider, the conversation, the messages kept, and who has them.
+  const channel = await call("channels", { days: 30 });
+  assert.equal(channel.isError, false, channel.text);
+  assert.deepEqual(channel.json.totals, { channels: 1, tenants: 1, conversations: 1 });
+  assert.deepEqual(channel.json.rows[0], { type: "telegram", channels: 1, tenants: 1, conversations: 1 });
+  assert.equal(channel.json.daily.length, 7, "channel_seen keeps seven days, whatever days asks for");
+  assert.equal(channel.json.daily.at(-1).messages, 2);
+  assert.deepEqual(channel.json.tenants[0], { tenant: "tnc_a", channels: 1, conversations: 1 });
+
+  // Schedules: recurring against once, the backlog, and what was created.
+  const schedule = await call("schedules", { days: 7 });
+  assert.equal(schedule.isError, false, schedule.text);
+  assert.deepEqual(schedule.json.totals, { schedules: 2, tenants: 1, due_now: 0 });
+  assert.deepEqual(
+    [schedule.json.rows[0].schedules, schedule.json.rows[0].recurring, schedule.json.rows[0].once, schedule.json.rows[0].due_now, schedule.json.rows[0].agents],
+    [2, 1, 1, 0, 1]);
+  assert.equal(schedule.json.daily.at(-1).created, 2);
+
+  // Integrations: what accounts connect, and how many use any.
+  const connected = await call("integrations");
+  assert.equal(connected.isError, false, connected.text);
+  assert.equal(connected.json.rows.find((entry: any) => entry.integration === "channels").tenants, 1);
+  assert.equal(connected.json.rows.find((entry: any) => entry.integration === "provider_keys").total, 1);
+  assert.equal(connected.json.totals.tenants, 1);
+
+  // Help requests: the count, and where delivery stands.
+  const help = await call("help_requests", { days: 7 });
+  assert.equal(help.isError, false, help.text);
+  assert.equal(help.json.totals.requests, 1);
+  assert.deepEqual([help.json.rows.at(-1).requests, help.json.rows.at(-1).delivered, help.json.rows.at(-1).failed], [1, 1, 0]);
+
+  // Nothing here answers a credential, a URL, a message or a person.
+  for (const result of [use, profile, channel, schedule, connected, help, await call("agents")]) {
+    assert.doesNotMatch(result.text, /secret|hooks\.example|1234|5678|\@support|msg_1|daily report|hash-a/, result.text.slice(0, 400));
+  }
 });

@@ -55,6 +55,8 @@ const days = (fallback: number) => z.number().int().min(1).max(MAX_DAYS).optiona
   .describe(`How many UTC days to answer, ending today (default ${fallback}, at most ${MAX_DAYS})`);
 const limit = (fallback: number) => z.number().int().min(1).max(500).optional()
   .describe(`How many rows to answer (default ${fallback}, at most 500)`);
+const weeks = (fallback: number) => z.number().int().min(1).max(26).optional()
+  .describe(`How many sign-up weeks to answer, ending this week (default ${fallback}, at most 26)`);
 
 /** The tools, in the order tools/list gives them: each answers a chart's rows, and nothing that changes anything. */
 export function opsTools(db: Db): OpsTool[] {
@@ -124,6 +126,54 @@ export function opsTools(db: Db): OpsTool[] {
       description: "Sign-ups and returning active accounts (accounts made before the day whose agents got a model response on it) by UTC day, as the admin site's chart draws them, and the day still going where the range has it.",
       input: { days: days(14) },
       run: args => reports.trend(db, { days: args.days ?? 14 }),
+    },
+    {
+      name: "usage_tenants", title: "Model use by tenant",
+      description: "Model use over the range, by tenant, most dollars first: responses, tokens, the part on the platform's own keys, the days it was active and the models it used; beside them its live agents, credit balance and, at the range's daily rate, the days that balance buys (runway_days; null when it spent nothing or has nothing left). The tenant id, never the person. The tool to ask who is spending, and who is about to run out.",
+      input: { days: days(30), limit: limit(25) },
+      run: args => reports.usageTenants(db, { days: args.days ?? 30, limit: args.limit ?? 25 }),
+    },
+    {
+      name: "tenant", title: "One account in full",
+      description: "One account by its tenant id (the id the API takes), and how far it got: when it was made, how it signed up, whether it is erased, its plan and limits, tokens, agents by type (live and revoked), schedules, channels, volumes, storage bytes, its own provider keys and model providers, webhooks, help requests, paid checkouts, its use over 30 days (responses, dollars, last active day) and what it can spend. rows is empty when no account has that id. Never the person: no address, login, prompt or message.",
+      input: { tenant: z.string().min(1).describe("The tenant id, as the API takes it") },
+      run: args => reports.tenant(db, { tenant: args.tenant }),
+    },
+    {
+      name: "retention", title: "Weekly retention",
+      description: "Of the accounts made in each sign-up week (live, from the tenants table), how many had a model response in that week and in each week after: cohort_week, cohort_size, week_offset, active and its pct. One row per cohort and week, so it charts as a heatmap; incomplete_week is the week still going (its week 0 is the days so far). A count per cohort, never which account.",
+      input: { weeks: weeks(8) },
+      run: args => reports.retention(db, { weeks: args.weeks ?? 8 }),
+    },
+    {
+      name: "time_to_value", title: "Time to value",
+      description: "Of the live self-serve accounts made in the range: how many minted a token, got a model response and paid, and the median (p50) and 90th percentile hours from sign-up to the first token, and days to the first model response and the first purchase. A count and a duration, never an account.",
+      input: { days: days(90) },
+      run: args => reports.timeToValue(db, { days: args.days ?? 90 }),
+    },
+    {
+      name: "channels", title: "Channels",
+      description: "Channels let people talk to agents through Telegram, Slack, Discord, GitHub, email or a webhook. By provider: how many channels, how many accounts have them, and how many conversations they answer; the inbound messages per UTC day; and the accounts with channels, most used first. Inbound messages are kept 7 days, so daily is at most 7 rows whatever days asks for. Counts only: never a credential, a definition or a message.",
+      input: { days: days(7), limit: limit(25) },
+      run: args => reports.channels(db, { days: args.days ?? 7, limit: args.limit ?? 25 }),
+    },
+    {
+      name: "schedules", title: "Schedules",
+      description: "The schedules that wake agents, by tenant, most first: how many, how many recur and how many run once, how many are due now, the agents they wake and the next due time; the platform's totals; and how many were created per UTC day. A count: never what a schedule says.",
+      input: { days: days(30), limit: limit(25) },
+      run: args => reports.schedules(db, { days: args.days ?? 30, limit: args.limit ?? 25 }),
+    },
+    {
+      name: "integrations", title: "Integrations",
+      description: "What accounts connect to their agents, and how many of each: API tokens, their own provider keys, their own model providers, webhook endpoints, volumes and channels, as integration, tenants and total; and totals.tenants, how many accounts use any of them. Counts only: never a token, a key, a URL or a header.",
+      input: {},
+      run: () => reports.integrations(db),
+    },
+    {
+      name: "help_requests", title: "Help requests",
+      description: "Get help requests from the console, per UTC day: how many were sent, how many were delivered, failed or are still pending, and how many accounts sent one; and the totals. A day's statuses are those requests' status now. The request's text and context are never read: this counts rows.",
+      input: { days: days(30) },
+      run: args => reports.helpRequests(db, { days: args.days ?? 30 }),
     },
     {
       name: "health", title: "Platform health",
