@@ -28,13 +28,14 @@ export async function runSmoke(options: { apiKey: string; baseUrl: string; fakeU
     console.log(JSON.stringify({ check: name, status: "pass", ms: result.ms }));
   };
   let sockets = 0;
+  const openedSockets: WebSocket[] = [];
   const OriginalWebSocket = globalThis.WebSocket;
   globalThis.WebSocket = class extends OriginalWebSocket {
-    constructor(url: string | URL, protocols?: string | string[]) { super(url, protocols); sockets++; }
+    constructor(url: string | URL, protocols?: string | string[]) { super(url, protocols); sockets++; openedSockets.push(this); }
   };
   const agents = new Agents({ url: baseUrl, apiKey, pollMs: 200 });
   const handles: Awaited<ReturnType<Agents["upsert"]>>[] = [];
-  let idle: { agentId: string; startedAt: string; endedAt: string; elapsedMs: number; frames: number } | undefined;
+  let idle: { agentId: string; startedAt: string; endedAt: string; elapsedMs: number; frames: number; transport: string; connection: string } | undefined;
   try {
     await request("/v1/providers/pilot-fake", fakeProvider(fakeUrl), "PUT");
     const make = async (key: string, config = {}) => {
@@ -109,25 +110,30 @@ export async function runSmoke(options: { apiKey: string; baseUrl: string; fakeU
         child.on("exit", code => code === 0 ? resolve() : reject(new Error(`Python SDK smoke failed (${code}); ${stderr.replaceAll(apiKey, "[redacted]").slice(-1500)}`)));
       });
     });
-    await check("idle-websocket-reconnect", async () => {
-      const path = `/v1/agents/${agent.id}/events`;
-      const response = await fetch(baseUrl + path, { headers: { authorization: `Bearer ${apiKey}`, accept: "application/vnd.camelrun.events+json, text/event-stream" } });
-      assert.equal(response.status, 200);
-      const selected = await response.json() as { transport: string; protocol: string; url: string };
-      assert.equal(selected.transport, "websocket");
-      const endpoint = new URL(selected.url, baseUrl); endpoint.protocol = "wss:";
-      const socket = new OriginalWebSocket(endpoint, [selected.protocol, `bearer.${Buffer.from(apiKey).toString("base64url")}`]);
-      let frames = 0; socket.addEventListener("message", () => frames++);
+    await check("idle-default-sdk-websocket", async () => {
+      const beforeSockets = openedSockets.length;
+      // Eager keeps the SDK subscriber open between turns. Negotiation remains
+      // the SDK default, with no custom fetch or hand-built WebSocket.
+      const idleClient = new Agents({ url: baseUrl, apiKey, connection: "eager", pollMs: 200 });
       try {
-        await new Promise<void>((resolve, reject) => { socket.addEventListener("open", () => resolve(), { once: true }); socket.addEventListener("error", () => reject(new Error("Idle WebSocket failed to open")), { once: true }); });
+        const idleAgent = await idleClient.get(agent.id);
+        assert.equal((await idleAgent.run("pilot:idle-ready")).text, "Echo: pilot:idle-ready");
+        assert.equal(openedSockets.length, beforeSockets + 1, "Default SDK negotiated one WebSocket");
+        const socket = openedSockets[beforeSockets];
+        assert.equal(socket.readyState, 1, "SDK subscriber socket is open");
+        let frames = 0; socket.addEventListener("message", () => frames++);
         await delay(1000); const beforeFrames = frames; const start = Date.now();
         const startedAt = new Date(start).toISOString();
+        console.log(JSON.stringify({ check: "idle-default-sdk-websocket", phase: "idle-start", agentId: agent.id, startedAt }));
         await delay(options.idleMs ?? 90000);
-        idle = { agentId: agent.id, startedAt, endedAt: new Date().toISOString(), elapsedMs: Date.now() - start, frames: frames - beforeFrames };
+        idle = { agentId: agent.id, startedAt, endedAt: new Date().toISOString(), elapsedMs: Date.now() - start, frames: frames - beforeFrames, transport: "sdk-default-websocket", connection: "eager" };
         assert.equal(socket.readyState, 1, "Idle WebSocket stayed open");
+        assert.equal(openedSockets.length, beforeSockets + 1, "SDK did not reconnect while idle");
         assert.equal(idle.frames, 0, "No keepalive frames woke the object while idle");
-        assert.equal((await agent.run("pilot:wake")).text, "Echo: pilot:wake");
-      } finally { socket.close(); }
+        console.log(JSON.stringify({ check: "idle-default-sdk-websocket", phase: "idle-end", ...idle }));
+        assert.equal((await idleAgent.run("pilot:wake")).text, "Echo: pilot:wake");
+        assert.equal(socket.readyState, 1, "Same SDK socket receives the wake turn");
+      } finally { await idleClient.close(); }
     });
     return { startedAt: new Date().toISOString(), checks, websocketConnections: sockets, idle, note: "Idle socket lifetime is observed here; use Cloudflare DO duration metrics for billing proof." };
   } finally {

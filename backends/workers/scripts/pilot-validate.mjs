@@ -12,7 +12,7 @@ const tenant = `pilot-smoke-${randomBytes(6).toString("hex")}`;
 try {
   const result = await withPilotOperator({ tenantIds: [tenant] }, async operator => {
     let created = false;
-    const report = { tenant, startedAt: new Date().toISOString() };
+    const report = { tenant, startedAt: new Date().toISOString(), ...(process.env.PILOT_AGENT_NAMESPACE_ID ? { agentNamespaceId: process.env.PILOT_AGENT_NAMESPACE_ID } : {}) };
     try {
       const account = await operator.request("/v1/tenants", { body: { id: tenant, tokenName: "Throwaway pilot smoke key" } });
       created = true;
