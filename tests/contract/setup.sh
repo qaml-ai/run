@@ -7,11 +7,20 @@ contract_cache=${CONTRACT_SETUP_CACHE:-${HOME}/rt-cache/contract/setup}
 mkdir -p "$contract_cache"
 contract_python_key=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()+sys.version.encode()).hexdigest())' "$contract_root/clients/python/requirements.txt")
 contract_python="$contract_cache/python-$contract_python_key"
-if [[ ! -f $contract_python/.ready || ! -x $contract_python/bin/python3 ]]; then
+contract_python_valid=false
+if [[ -f $contract_python/.ready && -x $contract_python/bin/python3 ]]; then
+  if python3 "$contract_root/tests/contract/python_cache.py" "$contract_python"; then
+    contract_python_valid=true
+  else
+    echo '== contract setup: rebuilding corrupt Python dependency cache'
+  fi
+fi
+if [[ $contract_python_valid != true ]]; then
   echo '== contract setup: installing Python requirements'
   rm -rf "$contract_python"
   python3 -m venv "$contract_python"
   "$contract_python/bin/python3" -m pip install --quiet -r "$contract_root/clients/python/requirements.txt"
+  python3 "$contract_root/tests/contract/python_cache.py" "$contract_python"
   touch "$contract_python/.ready"
 else
   echo '== contract setup: reusing Python requirements'

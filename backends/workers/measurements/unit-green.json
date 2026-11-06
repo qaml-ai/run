@@ -19,7 +19,7 @@
       "failedParentContainers": 2
     }
   },
-  "counting": "51 baseline failing leaf tests or failed module loads, plus 8 additionally exposed tests, for 59 classified records. Two failing parent containers duplicate their failed subtests and are not classified again. Additional records cover the restored agent-tools assertion, Node startup readiness, durable-clock time limits, OAuth cancellation ownership, aborted fake-model uploads, run-stream completion, an unreproduced native fixture startup exit, and a malformed release-note heading caught by CI. Unknown original causes remain explicit.",
+  "counting": "51 baseline failing leaf tests or failed module loads, plus 28 additionally exposed tests, for 79 classified records. Two failing parent containers duplicate their failed subtests and are not classified again. Additional records cover the restored agent-tools assertion, Node startup readiness, durable-clock time limits, OAuth cancellation ownership, aborted fake-model uploads, run-stream completion, an unreproduced native fixture startup exit, and a malformed release-note heading caught by CI. Unknown original causes remain explicit. A later full parity run exposed 20 synthetic Python case failures from two truncated cached native modules; one cache-integrity guard addresses all 20 without changing their assertions.",
   "tests": [
     {
       "file": "backends/workers/test/admission.test.ts",
@@ -1015,6 +1015,1226 @@
         "exitCode": 0,
         "artifacts": "/tmp/workers-docs-git-validation/shard-1"
       }
+    },
+    {
+      "file": "tests/contract/python.py",
+      "test": "PythonSDKTest.test_projects_publish_checked_snapshots_and_the_tool_finds_the_project_from_identity",
+      "classification": "b",
+      "suite": "contract-node",
+      "discovered": "final full parity after docs commit d60c4f66",
+      "resolution": "Verified cached native wheel truncation; no original SDK or runtime assertion failed. The external cause of truncation is unconfirmed.",
+      "reason": "The rt-pool-6 cached Python environment had native extension files truncated to exactly 4194304 bytes. cryptography expected 12805312 bytes and pydantic_core expected 4782760 bytes; both failed wheel RECORD hashes and differed from fresh pinned wheels. A selected ServeTools case exited SIGBUS (-7) before reporting any result; faulthandler identified cryptography native-module import during TestRuntime setup. setup.sh trusted .ready and the interpreter executable, allowing the corrupt cache to be reused.",
+      "change": "Validate every hashed installed wheel RECORD file size and digest before cache reuse, rebuild an invalid cache before tests, and validate a fresh installation before writing .ready. Preserve all original Python assertions and deadlines; add deterministic truncated-file, same-size hash-corruption, missing-file and absent-record regressions.",
+      "evidence": [
+        "tests/contract/setup.sh:10-28",
+        "tests/contract/python_cache.py:9-50",
+        "tests/contract/python_runner_test.py:29-65",
+        "clients/python/camelai_run/__init__.py:3390-3394",
+        "tests/python_sdk.py:1346-1347",
+        "backends/workers/measurements/runs/2026-11-06T05-47-41-736Z-46725/node/shard-1/parity-node-shard-1-of-6.json"
+      ],
+      "observations": {
+        "sprite": "rt-pool-6",
+        "job": "20261105-234741-46753-1",
+        "selectedCaseExitCode": -7,
+        "selectedCaseStdoutBytes": 0,
+        "selectedCaseStderrBytes": 0,
+        "installedNativeBytes": 4194304,
+        "cryptographyFreshBytes": 12805312,
+        "pydanticCoreFreshBytes": 4782760,
+        "kernelOom": 0,
+        "kernelOomKill": 0
+      },
+      "validation": {
+        "repairedOriginalCases": {
+          "revision": "d60c4f66",
+          "sprite": "rt-pool-6",
+          "job": "20261105-235247-58083-1",
+          "command": "node tests/contract/run.mjs --backend=node --area=python --output-dir=.contract-artifacts",
+          "counts": {
+            "pass": 56,
+            "fail": 0,
+            "out-of-scope": 4,
+            "accepted-difference": 0
+          },
+          "originalFailedCasesNowPassed": 20,
+          "exitCode": 0,
+          "artifact": "/tmp/workers-python-cache-repair/shard-1/parity-node-python.json"
+        },
+        "guard": {
+          "snapshot": "7618bb7b3553c903cb3e2d003c4005ac19cf356c",
+          "sprite": "rt-pool-1",
+          "job": "20261105-235328-58827-1",
+          "unitTestsPassed": 8,
+          "unitTestsFailed": 0,
+          "bashSyntax": "pass",
+          "actualValidCache": "pass",
+          "actualPreservedCorruptCache": "rejected exactly the two truncated native files",
+          "exitCode": 0
+        },
+        "repairedFilesVerified": 1006,
+        "nativeCryptoAndPydanticImport": "pass",
+        "finalFullParity": "pending"
+      }
+    },
+    {
+      "file": "tests/contract/python.py",
+      "test": "PythonSDKTest.test_run_with_output_returns_a_pydantic_model_or_the_json_schema_value",
+      "classification": "b",
+      "suite": "contract-node",
+      "discovered": "final full parity after docs commit d60c4f66",
+      "resolution": "Verified cached native wheel truncation; no original SDK or runtime assertion failed. The external cause of truncation is unconfirmed.",
+      "reason": "The rt-pool-6 cached Python environment had native extension files truncated to exactly 4194304 bytes. cryptography expected 12805312 bytes and pydantic_core expected 4782760 bytes; both failed wheel RECORD hashes and differed from fresh pinned wheels. A selected ServeTools case exited SIGBUS (-7) before reporting any result; faulthandler identified cryptography native-module import during TestRuntime setup. setup.sh trusted .ready and the interpreter executable, allowing the corrupt cache to be reused.",
+      "change": "Validate every hashed installed wheel RECORD file size and digest before cache reuse, rebuild an invalid cache before tests, and validate a fresh installation before writing .ready. Preserve all original Python assertions and deadlines; add deterministic truncated-file, same-size hash-corruption, missing-file and absent-record regressions.",
+      "evidence": [
+        "tests/contract/setup.sh:10-28",
+        "tests/contract/python_cache.py:9-50",
+        "tests/contract/python_runner_test.py:29-65",
+        "clients/python/camelai_run/__init__.py:3390-3394",
+        "tests/python_sdk.py:1346-1347",
+        "backends/workers/measurements/runs/2026-11-06T05-47-41-736Z-46725/node/shard-1/parity-node-shard-1-of-6.json"
+      ],
+      "observations": {
+        "sprite": "rt-pool-6",
+        "job": "20261105-234741-46753-1",
+        "selectedCaseExitCode": -7,
+        "selectedCaseStdoutBytes": 0,
+        "selectedCaseStderrBytes": 0,
+        "installedNativeBytes": 4194304,
+        "cryptographyFreshBytes": 12805312,
+        "pydanticCoreFreshBytes": 4782760,
+        "kernelOom": 0,
+        "kernelOomKill": 0
+      },
+      "validation": {
+        "repairedOriginalCases": {
+          "revision": "d60c4f66",
+          "sprite": "rt-pool-6",
+          "job": "20261105-235247-58083-1",
+          "command": "node tests/contract/run.mjs --backend=node --area=python --output-dir=.contract-artifacts",
+          "counts": {
+            "pass": 56,
+            "fail": 0,
+            "out-of-scope": 4,
+            "accepted-difference": 0
+          },
+          "originalFailedCasesNowPassed": 20,
+          "exitCode": 0,
+          "artifact": "/tmp/workers-python-cache-repair/shard-1/parity-node-python.json"
+        },
+        "guard": {
+          "snapshot": "7618bb7b3553c903cb3e2d003c4005ac19cf356c",
+          "sprite": "rt-pool-1",
+          "job": "20261105-235328-58827-1",
+          "unitTestsPassed": 8,
+          "unitTestsFailed": 0,
+          "bashSyntax": "pass",
+          "actualValidCache": "pass",
+          "actualPreservedCorruptCache": "rejected exactly the two truncated native files",
+          "exitCode": 0
+        },
+        "repairedFilesVerified": 1006,
+        "nativeCryptoAndPydanticImport": "pass",
+        "finalFullParity": "pending"
+      }
+    },
+    {
+      "file": "tests/contract/python.py",
+      "test": "PythonSDKTest.test_stateless_runs_one_call_stream_get_abort_and_no_agent_left",
+      "classification": "b",
+      "suite": "contract-node",
+      "discovered": "final full parity after docs commit d60c4f66",
+      "resolution": "Verified cached native wheel truncation; no original SDK or runtime assertion failed. The external cause of truncation is unconfirmed.",
+      "reason": "The rt-pool-6 cached Python environment had native extension files truncated to exactly 4194304 bytes. cryptography expected 12805312 bytes and pydantic_core expected 4782760 bytes; both failed wheel RECORD hashes and differed from fresh pinned wheels. A selected ServeTools case exited SIGBUS (-7) before reporting any result; faulthandler identified cryptography native-module import during TestRuntime setup. setup.sh trusted .ready and the interpreter executable, allowing the corrupt cache to be reused.",
+      "change": "Validate every hashed installed wheel RECORD file size and digest before cache reuse, rebuild an invalid cache before tests, and validate a fresh installation before writing .ready. Preserve all original Python assertions and deadlines; add deterministic truncated-file, same-size hash-corruption, missing-file and absent-record regressions.",
+      "evidence": [
+        "tests/contract/setup.sh:10-28",
+        "tests/contract/python_cache.py:9-50",
+        "tests/contract/python_runner_test.py:29-65",
+        "clients/python/camelai_run/__init__.py:3390-3394",
+        "tests/python_sdk.py:1346-1347",
+        "backends/workers/measurements/runs/2026-11-06T05-47-41-736Z-46725/node/shard-1/parity-node-shard-1-of-6.json"
+      ],
+      "observations": {
+        "sprite": "rt-pool-6",
+        "job": "20261105-234741-46753-1",
+        "selectedCaseExitCode": -7,
+        "selectedCaseStdoutBytes": 0,
+        "selectedCaseStderrBytes": 0,
+        "installedNativeBytes": 4194304,
+        "cryptographyFreshBytes": 12805312,
+        "pydanticCoreFreshBytes": 4782760,
+        "kernelOom": 0,
+        "kernelOomKill": 0
+      },
+      "validation": {
+        "repairedOriginalCases": {
+          "revision": "d60c4f66",
+          "sprite": "rt-pool-6",
+          "job": "20261105-235247-58083-1",
+          "command": "node tests/contract/run.mjs --backend=node --area=python --output-dir=.contract-artifacts",
+          "counts": {
+            "pass": 56,
+            "fail": 0,
+            "out-of-scope": 4,
+            "accepted-difference": 0
+          },
+          "originalFailedCasesNowPassed": 20,
+          "exitCode": 0,
+          "artifact": "/tmp/workers-python-cache-repair/shard-1/parity-node-python.json"
+        },
+        "guard": {
+          "snapshot": "7618bb7b3553c903cb3e2d003c4005ac19cf356c",
+          "sprite": "rt-pool-1",
+          "job": "20261105-235328-58827-1",
+          "unitTestsPassed": 8,
+          "unitTestsFailed": 0,
+          "bashSyntax": "pass",
+          "actualValidCache": "pass",
+          "actualPreservedCorruptCache": "rejected exactly the two truncated native files",
+          "exitCode": 0
+        },
+        "repairedFilesVerified": 1006,
+        "nativeCryptoAndPydanticImport": "pass",
+        "finalFullParity": "pending"
+      }
+    },
+    {
+      "file": "tests/contract/python.py",
+      "test": "ServeToolsTest.test_a_confirmation_takes_true_or_false",
+      "classification": "b",
+      "suite": "contract-node",
+      "discovered": "final full parity after docs commit d60c4f66",
+      "resolution": "Verified cached native wheel truncation; no original SDK or runtime assertion failed. The external cause of truncation is unconfirmed.",
+      "reason": "The rt-pool-6 cached Python environment had native extension files truncated to exactly 4194304 bytes. cryptography expected 12805312 bytes and pydantic_core expected 4782760 bytes; both failed wheel RECORD hashes and differed from fresh pinned wheels. A selected ServeTools case exited SIGBUS (-7) before reporting any result; faulthandler identified cryptography native-module import during TestRuntime setup. setup.sh trusted .ready and the interpreter executable, allowing the corrupt cache to be reused.",
+      "change": "Validate every hashed installed wheel RECORD file size and digest before cache reuse, rebuild an invalid cache before tests, and validate a fresh installation before writing .ready. Preserve all original Python assertions and deadlines; add deterministic truncated-file, same-size hash-corruption, missing-file and absent-record regressions.",
+      "evidence": [
+        "tests/contract/setup.sh:10-28",
+        "tests/contract/python_cache.py:9-50",
+        "tests/contract/python_runner_test.py:29-65",
+        "clients/python/camelai_run/__init__.py:3390-3394",
+        "tests/python_sdk.py:1346-1347",
+        "backends/workers/measurements/runs/2026-11-06T05-47-41-736Z-46725/node/shard-1/parity-node-shard-1-of-6.json"
+      ],
+      "observations": {
+        "sprite": "rt-pool-6",
+        "job": "20261105-234741-46753-1",
+        "selectedCaseExitCode": -7,
+        "selectedCaseStdoutBytes": 0,
+        "selectedCaseStderrBytes": 0,
+        "installedNativeBytes": 4194304,
+        "cryptographyFreshBytes": 12805312,
+        "pydanticCoreFreshBytes": 4782760,
+        "kernelOom": 0,
+        "kernelOomKill": 0
+      },
+      "validation": {
+        "repairedOriginalCases": {
+          "revision": "d60c4f66",
+          "sprite": "rt-pool-6",
+          "job": "20261105-235247-58083-1",
+          "command": "node tests/contract/run.mjs --backend=node --area=python --output-dir=.contract-artifacts",
+          "counts": {
+            "pass": 56,
+            "fail": 0,
+            "out-of-scope": 4,
+            "accepted-difference": 0
+          },
+          "originalFailedCasesNowPassed": 20,
+          "exitCode": 0,
+          "artifact": "/tmp/workers-python-cache-repair/shard-1/parity-node-python.json"
+        },
+        "guard": {
+          "snapshot": "7618bb7b3553c903cb3e2d003c4005ac19cf356c",
+          "sprite": "rt-pool-1",
+          "job": "20261105-235328-58827-1",
+          "unitTestsPassed": 8,
+          "unitTestsFailed": 0,
+          "bashSyntax": "pass",
+          "actualValidCache": "pass",
+          "actualPreservedCorruptCache": "rejected exactly the two truncated native files",
+          "exitCode": 0
+        },
+        "repairedFilesVerified": 1006,
+        "nativeCryptoAndPydanticImport": "pass",
+        "finalFullParity": "pending"
+      }
+    },
+    {
+      "file": "tests/contract/python.py",
+      "test": "ServeToolsTest.test_a_function_of_identity_lists_each_caller_its_own_tools",
+      "classification": "b",
+      "suite": "contract-node",
+      "discovered": "final full parity after docs commit d60c4f66",
+      "resolution": "Verified cached native wheel truncation; no original SDK or runtime assertion failed. The external cause of truncation is unconfirmed.",
+      "reason": "The rt-pool-6 cached Python environment had native extension files truncated to exactly 4194304 bytes. cryptography expected 12805312 bytes and pydantic_core expected 4782760 bytes; both failed wheel RECORD hashes and differed from fresh pinned wheels. A selected ServeTools case exited SIGBUS (-7) before reporting any result; faulthandler identified cryptography native-module import during TestRuntime setup. setup.sh trusted .ready and the interpreter executable, allowing the corrupt cache to be reused.",
+      "change": "Validate every hashed installed wheel RECORD file size and digest before cache reuse, rebuild an invalid cache before tests, and validate a fresh installation before writing .ready. Preserve all original Python assertions and deadlines; add deterministic truncated-file, same-size hash-corruption, missing-file and absent-record regressions.",
+      "evidence": [
+        "tests/contract/setup.sh:10-28",
+        "tests/contract/python_cache.py:9-50",
+        "tests/contract/python_runner_test.py:29-65",
+        "clients/python/camelai_run/__init__.py:3390-3394",
+        "tests/python_sdk.py:1346-1347",
+        "backends/workers/measurements/runs/2026-11-06T05-47-41-736Z-46725/node/shard-1/parity-node-shard-1-of-6.json"
+      ],
+      "observations": {
+        "sprite": "rt-pool-6",
+        "job": "20261105-234741-46753-1",
+        "selectedCaseExitCode": -7,
+        "selectedCaseStdoutBytes": 0,
+        "selectedCaseStderrBytes": 0,
+        "installedNativeBytes": 4194304,
+        "cryptographyFreshBytes": 12805312,
+        "pydanticCoreFreshBytes": 4782760,
+        "kernelOom": 0,
+        "kernelOomKill": 0
+      },
+      "validation": {
+        "repairedOriginalCases": {
+          "revision": "d60c4f66",
+          "sprite": "rt-pool-6",
+          "job": "20261105-235247-58083-1",
+          "command": "node tests/contract/run.mjs --backend=node --area=python --output-dir=.contract-artifacts",
+          "counts": {
+            "pass": 56,
+            "fail": 0,
+            "out-of-scope": 4,
+            "accepted-difference": 0
+          },
+          "originalFailedCasesNowPassed": 20,
+          "exitCode": 0,
+          "artifact": "/tmp/workers-python-cache-repair/shard-1/parity-node-python.json"
+        },
+        "guard": {
+          "snapshot": "7618bb7b3553c903cb3e2d003c4005ac19cf356c",
+          "sprite": "rt-pool-1",
+          "job": "20261105-235328-58827-1",
+          "unitTestsPassed": 8,
+          "unitTestsFailed": 0,
+          "bashSyntax": "pass",
+          "actualValidCache": "pass",
+          "actualPreservedCorruptCache": "rejected exactly the two truncated native files",
+          "exitCode": 0
+        },
+        "repairedFilesVerified": 1006,
+        "nativeCryptoAndPydanticImport": "pass",
+        "finalFullParity": "pending"
+      }
+    },
+    {
+      "file": "tests/contract/python.py",
+      "test": "ServeToolsTest.test_a_token_from_another_tenant_is_refused_and_tenant_is_required",
+      "classification": "b",
+      "suite": "contract-node",
+      "discovered": "final full parity after docs commit d60c4f66",
+      "resolution": "Verified cached native wheel truncation; no original SDK or runtime assertion failed. The external cause of truncation is unconfirmed.",
+      "reason": "The rt-pool-6 cached Python environment had native extension files truncated to exactly 4194304 bytes. cryptography expected 12805312 bytes and pydantic_core expected 4782760 bytes; both failed wheel RECORD hashes and differed from fresh pinned wheels. A selected ServeTools case exited SIGBUS (-7) before reporting any result; faulthandler identified cryptography native-module import during TestRuntime setup. setup.sh trusted .ready and the interpreter executable, allowing the corrupt cache to be reused.",
+      "change": "Validate every hashed installed wheel RECORD file size and digest before cache reuse, rebuild an invalid cache before tests, and validate a fresh installation before writing .ready. Preserve all original Python assertions and deadlines; add deterministic truncated-file, same-size hash-corruption, missing-file and absent-record regressions.",
+      "evidence": [
+        "tests/contract/setup.sh:10-28",
+        "tests/contract/python_cache.py:9-50",
+        "tests/contract/python_runner_test.py:29-65",
+        "clients/python/camelai_run/__init__.py:3390-3394",
+        "tests/python_sdk.py:1346-1347",
+        "backends/workers/measurements/runs/2026-11-06T05-47-41-736Z-46725/node/shard-1/parity-node-shard-1-of-6.json"
+      ],
+      "observations": {
+        "sprite": "rt-pool-6",
+        "job": "20261105-234741-46753-1",
+        "selectedCaseExitCode": -7,
+        "selectedCaseStdoutBytes": 0,
+        "selectedCaseStderrBytes": 0,
+        "installedNativeBytes": 4194304,
+        "cryptographyFreshBytes": 12805312,
+        "pydanticCoreFreshBytes": 4782760,
+        "kernelOom": 0,
+        "kernelOomKill": 0
+      },
+      "validation": {
+        "repairedOriginalCases": {
+          "revision": "d60c4f66",
+          "sprite": "rt-pool-6",
+          "job": "20261105-235247-58083-1",
+          "command": "node tests/contract/run.mjs --backend=node --area=python --output-dir=.contract-artifacts",
+          "counts": {
+            "pass": 56,
+            "fail": 0,
+            "out-of-scope": 4,
+            "accepted-difference": 0
+          },
+          "originalFailedCasesNowPassed": 20,
+          "exitCode": 0,
+          "artifact": "/tmp/workers-python-cache-repair/shard-1/parity-node-python.json"
+        },
+        "guard": {
+          "snapshot": "7618bb7b3553c903cb3e2d003c4005ac19cf356c",
+          "sprite": "rt-pool-1",
+          "job": "20261105-235328-58827-1",
+          "unitTestsPassed": 8,
+          "unitTestsFailed": 0,
+          "bashSyntax": "pass",
+          "actualValidCache": "pass",
+          "actualPreservedCorruptCache": "rejected exactly the two truncated native files",
+          "exitCode": 0
+        },
+        "repairedFilesVerified": 1006,
+        "nativeCryptoAndPydanticImport": "pass",
+        "finalFullParity": "pending"
+      }
+    },
+    {
+      "file": "tests/contract/python.py",
+      "test": "ServeToolsTest.test_a_tool_answers_with_a_spawn_directive_and_notices_are_told_apart",
+      "classification": "b",
+      "suite": "contract-node",
+      "discovered": "final full parity after docs commit d60c4f66",
+      "resolution": "Verified cached native wheel truncation; no original SDK or runtime assertion failed. The external cause of truncation is unconfirmed.",
+      "reason": "The rt-pool-6 cached Python environment had native extension files truncated to exactly 4194304 bytes. cryptography expected 12805312 bytes and pydantic_core expected 4782760 bytes; both failed wheel RECORD hashes and differed from fresh pinned wheels. A selected ServeTools case exited SIGBUS (-7) before reporting any result; faulthandler identified cryptography native-module import during TestRuntime setup. setup.sh trusted .ready and the interpreter executable, allowing the corrupt cache to be reused.",
+      "change": "Validate every hashed installed wheel RECORD file size and digest before cache reuse, rebuild an invalid cache before tests, and validate a fresh installation before writing .ready. Preserve all original Python assertions and deadlines; add deterministic truncated-file, same-size hash-corruption, missing-file and absent-record regressions.",
+      "evidence": [
+        "tests/contract/setup.sh:10-28",
+        "tests/contract/python_cache.py:9-50",
+        "tests/contract/python_runner_test.py:29-65",
+        "clients/python/camelai_run/__init__.py:3390-3394",
+        "tests/python_sdk.py:1346-1347",
+        "backends/workers/measurements/runs/2026-11-06T05-47-41-736Z-46725/node/shard-1/parity-node-shard-1-of-6.json"
+      ],
+      "observations": {
+        "sprite": "rt-pool-6",
+        "job": "20261105-234741-46753-1",
+        "selectedCaseExitCode": -7,
+        "selectedCaseStdoutBytes": 0,
+        "selectedCaseStderrBytes": 0,
+        "installedNativeBytes": 4194304,
+        "cryptographyFreshBytes": 12805312,
+        "pydanticCoreFreshBytes": 4782760,
+        "kernelOom": 0,
+        "kernelOomKill": 0
+      },
+      "validation": {
+        "repairedOriginalCases": {
+          "revision": "d60c4f66",
+          "sprite": "rt-pool-6",
+          "job": "20261105-235247-58083-1",
+          "command": "node tests/contract/run.mjs --backend=node --area=python --output-dir=.contract-artifacts",
+          "counts": {
+            "pass": 56,
+            "fail": 0,
+            "out-of-scope": 4,
+            "accepted-difference": 0
+          },
+          "originalFailedCasesNowPassed": 20,
+          "exitCode": 0,
+          "artifact": "/tmp/workers-python-cache-repair/shard-1/parity-node-python.json"
+        },
+        "guard": {
+          "snapshot": "7618bb7b3553c903cb3e2d003c4005ac19cf356c",
+          "sprite": "rt-pool-1",
+          "job": "20261105-235328-58827-1",
+          "unitTestsPassed": 8,
+          "unitTestsFailed": 0,
+          "bashSyntax": "pass",
+          "actualValidCache": "pass",
+          "actualPreservedCorruptCache": "rejected exactly the two truncated native files",
+          "exitCode": 0
+        },
+        "repairedFilesVerified": 1006,
+        "nativeCryptoAndPydanticImport": "pass",
+        "finalFullParity": "pending"
+      }
+    },
+    {
+      "file": "tests/contract/python.py",
+      "test": "ServeToolsTest.test_a_tool_asks_the_user_and_runs_again_with_each_answer",
+      "classification": "b",
+      "suite": "contract-node",
+      "discovered": "final full parity after docs commit d60c4f66",
+      "resolution": "Verified cached native wheel truncation; no original SDK or runtime assertion failed. The external cause of truncation is unconfirmed.",
+      "reason": "The rt-pool-6 cached Python environment had native extension files truncated to exactly 4194304 bytes. cryptography expected 12805312 bytes and pydantic_core expected 4782760 bytes; both failed wheel RECORD hashes and differed from fresh pinned wheels. A selected ServeTools case exited SIGBUS (-7) before reporting any result; faulthandler identified cryptography native-module import during TestRuntime setup. setup.sh trusted .ready and the interpreter executable, allowing the corrupt cache to be reused.",
+      "change": "Validate every hashed installed wheel RECORD file size and digest before cache reuse, rebuild an invalid cache before tests, and validate a fresh installation before writing .ready. Preserve all original Python assertions and deadlines; add deterministic truncated-file, same-size hash-corruption, missing-file and absent-record regressions.",
+      "evidence": [
+        "tests/contract/setup.sh:10-28",
+        "tests/contract/python_cache.py:9-50",
+        "tests/contract/python_runner_test.py:29-65",
+        "clients/python/camelai_run/__init__.py:3390-3394",
+        "tests/python_sdk.py:1346-1347",
+        "backends/workers/measurements/runs/2026-11-06T05-47-41-736Z-46725/node/shard-1/parity-node-shard-1-of-6.json"
+      ],
+      "observations": {
+        "sprite": "rt-pool-6",
+        "job": "20261105-234741-46753-1",
+        "selectedCaseExitCode": -7,
+        "selectedCaseStdoutBytes": 0,
+        "selectedCaseStderrBytes": 0,
+        "installedNativeBytes": 4194304,
+        "cryptographyFreshBytes": 12805312,
+        "pydanticCoreFreshBytes": 4782760,
+        "kernelOom": 0,
+        "kernelOomKill": 0
+      },
+      "validation": {
+        "repairedOriginalCases": {
+          "revision": "d60c4f66",
+          "sprite": "rt-pool-6",
+          "job": "20261105-235247-58083-1",
+          "command": "node tests/contract/run.mjs --backend=node --area=python --output-dir=.contract-artifacts",
+          "counts": {
+            "pass": 56,
+            "fail": 0,
+            "out-of-scope": 4,
+            "accepted-difference": 0
+          },
+          "originalFailedCasesNowPassed": 20,
+          "exitCode": 0,
+          "artifact": "/tmp/workers-python-cache-repair/shard-1/parity-node-python.json"
+        },
+        "guard": {
+          "snapshot": "7618bb7b3553c903cb3e2d003c4005ac19cf356c",
+          "sprite": "rt-pool-1",
+          "job": "20261105-235328-58827-1",
+          "unitTestsPassed": 8,
+          "unitTestsFailed": 0,
+          "bashSyntax": "pass",
+          "actualValidCache": "pass",
+          "actualPreservedCorruptCache": "rejected exactly the two truncated native files",
+          "exitCode": 0
+        },
+        "repairedFilesVerified": 1006,
+        "nativeCryptoAndPydanticImport": "pass",
+        "finalFullParity": "pending"
+      }
+    },
+    {
+      "file": "tests/contract/python.py",
+      "test": "ServeToolsTest.test_a_tool_that_needs_approval_asks_first_and_runs_once_approved",
+      "classification": "b",
+      "suite": "contract-node",
+      "discovered": "final full parity after docs commit d60c4f66",
+      "resolution": "Verified cached native wheel truncation; no original SDK or runtime assertion failed. The external cause of truncation is unconfirmed.",
+      "reason": "The rt-pool-6 cached Python environment had native extension files truncated to exactly 4194304 bytes. cryptography expected 12805312 bytes and pydantic_core expected 4782760 bytes; both failed wheel RECORD hashes and differed from fresh pinned wheels. A selected ServeTools case exited SIGBUS (-7) before reporting any result; faulthandler identified cryptography native-module import during TestRuntime setup. setup.sh trusted .ready and the interpreter executable, allowing the corrupt cache to be reused.",
+      "change": "Validate every hashed installed wheel RECORD file size and digest before cache reuse, rebuild an invalid cache before tests, and validate a fresh installation before writing .ready. Preserve all original Python assertions and deadlines; add deterministic truncated-file, same-size hash-corruption, missing-file and absent-record regressions.",
+      "evidence": [
+        "tests/contract/setup.sh:10-28",
+        "tests/contract/python_cache.py:9-50",
+        "tests/contract/python_runner_test.py:29-65",
+        "clients/python/camelai_run/__init__.py:3390-3394",
+        "tests/python_sdk.py:1346-1347",
+        "backends/workers/measurements/runs/2026-11-06T05-47-41-736Z-46725/node/shard-1/parity-node-shard-1-of-6.json"
+      ],
+      "observations": {
+        "sprite": "rt-pool-6",
+        "job": "20261105-234741-46753-1",
+        "selectedCaseExitCode": -7,
+        "selectedCaseStdoutBytes": 0,
+        "selectedCaseStderrBytes": 0,
+        "installedNativeBytes": 4194304,
+        "cryptographyFreshBytes": 12805312,
+        "pydanticCoreFreshBytes": 4782760,
+        "kernelOom": 0,
+        "kernelOomKill": 0
+      },
+      "validation": {
+        "repairedOriginalCases": {
+          "revision": "d60c4f66",
+          "sprite": "rt-pool-6",
+          "job": "20261105-235247-58083-1",
+          "command": "node tests/contract/run.mjs --backend=node --area=python --output-dir=.contract-artifacts",
+          "counts": {
+            "pass": 56,
+            "fail": 0,
+            "out-of-scope": 4,
+            "accepted-difference": 0
+          },
+          "originalFailedCasesNowPassed": 20,
+          "exitCode": 0,
+          "artifact": "/tmp/workers-python-cache-repair/shard-1/parity-node-python.json"
+        },
+        "guard": {
+          "snapshot": "7618bb7b3553c903cb3e2d003c4005ac19cf356c",
+          "sprite": "rt-pool-1",
+          "job": "20261105-235328-58827-1",
+          "unitTestsPassed": 8,
+          "unitTestsFailed": 0,
+          "bashSyntax": "pass",
+          "actualValidCache": "pass",
+          "actualPreservedCorruptCache": "rejected exactly the two truncated native files",
+          "exitCode": 0
+        },
+        "repairedFilesVerified": 1006,
+        "nativeCryptoAndPydanticImport": "pass",
+        "finalFullParity": "pending"
+      }
+    },
+    {
+      "file": "tests/contract/python.py",
+      "test": "ServeToolsTest.test_anything_but_the_runtimes_token_for_this_server_is_refused",
+      "classification": "b",
+      "suite": "contract-node",
+      "discovered": "final full parity after docs commit d60c4f66",
+      "resolution": "Verified cached native wheel truncation; no original SDK or runtime assertion failed. The external cause of truncation is unconfirmed.",
+      "reason": "The rt-pool-6 cached Python environment had native extension files truncated to exactly 4194304 bytes. cryptography expected 12805312 bytes and pydantic_core expected 4782760 bytes; both failed wheel RECORD hashes and differed from fresh pinned wheels. A selected ServeTools case exited SIGBUS (-7) before reporting any result; faulthandler identified cryptography native-module import during TestRuntime setup. setup.sh trusted .ready and the interpreter executable, allowing the corrupt cache to be reused.",
+      "change": "Validate every hashed installed wheel RECORD file size and digest before cache reuse, rebuild an invalid cache before tests, and validate a fresh installation before writing .ready. Preserve all original Python assertions and deadlines; add deterministic truncated-file, same-size hash-corruption, missing-file and absent-record regressions.",
+      "evidence": [
+        "tests/contract/setup.sh:10-28",
+        "tests/contract/python_cache.py:9-50",
+        "tests/contract/python_runner_test.py:29-65",
+        "clients/python/camelai_run/__init__.py:3390-3394",
+        "tests/python_sdk.py:1346-1347",
+        "backends/workers/measurements/runs/2026-11-06T05-47-41-736Z-46725/node/shard-1/parity-node-shard-1-of-6.json"
+      ],
+      "observations": {
+        "sprite": "rt-pool-6",
+        "job": "20261105-234741-46753-1",
+        "selectedCaseExitCode": -7,
+        "selectedCaseStdoutBytes": 0,
+        "selectedCaseStderrBytes": 0,
+        "installedNativeBytes": 4194304,
+        "cryptographyFreshBytes": 12805312,
+        "pydanticCoreFreshBytes": 4782760,
+        "kernelOom": 0,
+        "kernelOomKill": 0
+      },
+      "validation": {
+        "repairedOriginalCases": {
+          "revision": "d60c4f66",
+          "sprite": "rt-pool-6",
+          "job": "20261105-235247-58083-1",
+          "command": "node tests/contract/run.mjs --backend=node --area=python --output-dir=.contract-artifacts",
+          "counts": {
+            "pass": 56,
+            "fail": 0,
+            "out-of-scope": 4,
+            "accepted-difference": 0
+          },
+          "originalFailedCasesNowPassed": 20,
+          "exitCode": 0,
+          "artifact": "/tmp/workers-python-cache-repair/shard-1/parity-node-python.json"
+        },
+        "guard": {
+          "snapshot": "7618bb7b3553c903cb3e2d003c4005ac19cf356c",
+          "sprite": "rt-pool-1",
+          "job": "20261105-235328-58827-1",
+          "unitTestsPassed": 8,
+          "unitTestsFailed": 0,
+          "bashSyntax": "pass",
+          "actualValidCache": "pass",
+          "actualPreservedCorruptCache": "rejected exactly the two truncated native files",
+          "exitCode": 0
+        },
+        "repairedFilesVerified": 1006,
+        "nativeCryptoAndPydanticImport": "pass",
+        "finalFullParity": "pending"
+      }
+    },
+    {
+      "file": "tests/contract/python.py",
+      "test": "ServeToolsTest.test_attached_calls_carry_the_identity_the_runtime_sent",
+      "classification": "b",
+      "suite": "contract-node",
+      "discovered": "final full parity after docs commit d60c4f66",
+      "resolution": "Verified cached native wheel truncation; no original SDK or runtime assertion failed. The external cause of truncation is unconfirmed.",
+      "reason": "The rt-pool-6 cached Python environment had native extension files truncated to exactly 4194304 bytes. cryptography expected 12805312 bytes and pydantic_core expected 4782760 bytes; both failed wheel RECORD hashes and differed from fresh pinned wheels. A selected ServeTools case exited SIGBUS (-7) before reporting any result; faulthandler identified cryptography native-module import during TestRuntime setup. setup.sh trusted .ready and the interpreter executable, allowing the corrupt cache to be reused.",
+      "change": "Validate every hashed installed wheel RECORD file size and digest before cache reuse, rebuild an invalid cache before tests, and validate a fresh installation before writing .ready. Preserve all original Python assertions and deadlines; add deterministic truncated-file, same-size hash-corruption, missing-file and absent-record regressions.",
+      "evidence": [
+        "tests/contract/setup.sh:10-28",
+        "tests/contract/python_cache.py:9-50",
+        "tests/contract/python_runner_test.py:29-65",
+        "clients/python/camelai_run/__init__.py:3390-3394",
+        "tests/python_sdk.py:1346-1347",
+        "backends/workers/measurements/runs/2026-11-06T05-47-41-736Z-46725/node/shard-1/parity-node-shard-1-of-6.json"
+      ],
+      "observations": {
+        "sprite": "rt-pool-6",
+        "job": "20261105-234741-46753-1",
+        "selectedCaseExitCode": -7,
+        "selectedCaseStdoutBytes": 0,
+        "selectedCaseStderrBytes": 0,
+        "installedNativeBytes": 4194304,
+        "cryptographyFreshBytes": 12805312,
+        "pydanticCoreFreshBytes": 4782760,
+        "kernelOom": 0,
+        "kernelOomKill": 0
+      },
+      "validation": {
+        "repairedOriginalCases": {
+          "revision": "d60c4f66",
+          "sprite": "rt-pool-6",
+          "job": "20261105-235247-58083-1",
+          "command": "node tests/contract/run.mjs --backend=node --area=python --output-dir=.contract-artifacts",
+          "counts": {
+            "pass": 56,
+            "fail": 0,
+            "out-of-scope": 4,
+            "accepted-difference": 0
+          },
+          "originalFailedCasesNowPassed": 20,
+          "exitCode": 0,
+          "artifact": "/tmp/workers-python-cache-repair/shard-1/parity-node-python.json"
+        },
+        "guard": {
+          "snapshot": "7618bb7b3553c903cb3e2d003c4005ac19cf356c",
+          "sprite": "rt-pool-1",
+          "job": "20261105-235328-58827-1",
+          "unitTestsPassed": 8,
+          "unitTestsFailed": 0,
+          "bashSyntax": "pass",
+          "actualValidCache": "pass",
+          "actualPreservedCorruptCache": "rejected exactly the two truncated native files",
+          "exitCode": 0
+        },
+        "repairedFilesVerified": 1006,
+        "nativeCryptoAndPydanticImport": "pass",
+        "finalFullParity": "pending"
+      }
+    },
+    {
+      "file": "tests/contract/python.py",
+      "test": "ServeToolsTest.test_each_call_is_answered_as_the_user_the_token_names",
+      "classification": "b",
+      "suite": "contract-node",
+      "discovered": "final full parity after docs commit d60c4f66",
+      "resolution": "Verified cached native wheel truncation; no original SDK or runtime assertion failed. The external cause of truncation is unconfirmed.",
+      "reason": "The rt-pool-6 cached Python environment had native extension files truncated to exactly 4194304 bytes. cryptography expected 12805312 bytes and pydantic_core expected 4782760 bytes; both failed wheel RECORD hashes and differed from fresh pinned wheels. A selected ServeTools case exited SIGBUS (-7) before reporting any result; faulthandler identified cryptography native-module import during TestRuntime setup. setup.sh trusted .ready and the interpreter executable, allowing the corrupt cache to be reused.",
+      "change": "Validate every hashed installed wheel RECORD file size and digest before cache reuse, rebuild an invalid cache before tests, and validate a fresh installation before writing .ready. Preserve all original Python assertions and deadlines; add deterministic truncated-file, same-size hash-corruption, missing-file and absent-record regressions.",
+      "evidence": [
+        "tests/contract/setup.sh:10-28",
+        "tests/contract/python_cache.py:9-50",
+        "tests/contract/python_runner_test.py:29-65",
+        "clients/python/camelai_run/__init__.py:3390-3394",
+        "tests/python_sdk.py:1346-1347",
+        "backends/workers/measurements/runs/2026-11-06T05-47-41-736Z-46725/node/shard-1/parity-node-shard-1-of-6.json"
+      ],
+      "observations": {
+        "sprite": "rt-pool-6",
+        "job": "20261105-234741-46753-1",
+        "selectedCaseExitCode": -7,
+        "selectedCaseStdoutBytes": 0,
+        "selectedCaseStderrBytes": 0,
+        "installedNativeBytes": 4194304,
+        "cryptographyFreshBytes": 12805312,
+        "pydanticCoreFreshBytes": 4782760,
+        "kernelOom": 0,
+        "kernelOomKill": 0
+      },
+      "validation": {
+        "repairedOriginalCases": {
+          "revision": "d60c4f66",
+          "sprite": "rt-pool-6",
+          "job": "20261105-235247-58083-1",
+          "command": "node tests/contract/run.mjs --backend=node --area=python --output-dir=.contract-artifacts",
+          "counts": {
+            "pass": 56,
+            "fail": 0,
+            "out-of-scope": 4,
+            "accepted-difference": 0
+          },
+          "originalFailedCasesNowPassed": 20,
+          "exitCode": 0,
+          "artifact": "/tmp/workers-python-cache-repair/shard-1/parity-node-python.json"
+        },
+        "guard": {
+          "snapshot": "7618bb7b3553c903cb3e2d003c4005ac19cf356c",
+          "sprite": "rt-pool-1",
+          "job": "20261105-235328-58827-1",
+          "unitTestsPassed": 8,
+          "unitTestsFailed": 0,
+          "bashSyntax": "pass",
+          "actualValidCache": "pass",
+          "actualPreservedCorruptCache": "rejected exactly the two truncated native files",
+          "exitCode": 0
+        },
+        "repairedFilesVerified": 1006,
+        "nativeCryptoAndPydanticImport": "pass",
+        "finalFullParity": "pending"
+      }
+    },
+    {
+      "file": "tests/contract/python.py",
+      "test": "ServeToolsTest.test_protected_resource_metadata_and_post_only",
+      "classification": "b",
+      "suite": "contract-node",
+      "discovered": "final full parity after docs commit d60c4f66",
+      "resolution": "Verified cached native wheel truncation; no original SDK or runtime assertion failed. The external cause of truncation is unconfirmed.",
+      "reason": "The rt-pool-6 cached Python environment had native extension files truncated to exactly 4194304 bytes. cryptography expected 12805312 bytes and pydantic_core expected 4782760 bytes; both failed wheel RECORD hashes and differed from fresh pinned wheels. A selected ServeTools case exited SIGBUS (-7) before reporting any result; faulthandler identified cryptography native-module import during TestRuntime setup. setup.sh trusted .ready and the interpreter executable, allowing the corrupt cache to be reused.",
+      "change": "Validate every hashed installed wheel RECORD file size and digest before cache reuse, rebuild an invalid cache before tests, and validate a fresh installation before writing .ready. Preserve all original Python assertions and deadlines; add deterministic truncated-file, same-size hash-corruption, missing-file and absent-record regressions.",
+      "evidence": [
+        "tests/contract/setup.sh:10-28",
+        "tests/contract/python_cache.py:9-50",
+        "tests/contract/python_runner_test.py:29-65",
+        "clients/python/camelai_run/__init__.py:3390-3394",
+        "tests/python_sdk.py:1346-1347",
+        "backends/workers/measurements/runs/2026-11-06T05-47-41-736Z-46725/node/shard-1/parity-node-shard-1-of-6.json"
+      ],
+      "observations": {
+        "sprite": "rt-pool-6",
+        "job": "20261105-234741-46753-1",
+        "selectedCaseExitCode": -7,
+        "selectedCaseStdoutBytes": 0,
+        "selectedCaseStderrBytes": 0,
+        "installedNativeBytes": 4194304,
+        "cryptographyFreshBytes": 12805312,
+        "pydanticCoreFreshBytes": 4782760,
+        "kernelOom": 0,
+        "kernelOomKill": 0
+      },
+      "validation": {
+        "repairedOriginalCases": {
+          "revision": "d60c4f66",
+          "sprite": "rt-pool-6",
+          "job": "20261105-235247-58083-1",
+          "command": "node tests/contract/run.mjs --backend=node --area=python --output-dir=.contract-artifacts",
+          "counts": {
+            "pass": 56,
+            "fail": 0,
+            "out-of-scope": 4,
+            "accepted-difference": 0
+          },
+          "originalFailedCasesNowPassed": 20,
+          "exitCode": 0,
+          "artifact": "/tmp/workers-python-cache-repair/shard-1/parity-node-python.json"
+        },
+        "guard": {
+          "snapshot": "7618bb7b3553c903cb3e2d003c4005ac19cf356c",
+          "sprite": "rt-pool-1",
+          "job": "20261105-235328-58827-1",
+          "unitTestsPassed": 8,
+          "unitTestsFailed": 0,
+          "bashSyntax": "pass",
+          "actualValidCache": "pass",
+          "actualPreservedCorruptCache": "rejected exactly the two truncated native files",
+          "exitCode": 0
+        },
+        "repairedFilesVerified": 1006,
+        "nativeCryptoAndPydanticImport": "pass",
+        "finalFullParity": "pending"
+      }
+    },
+    {
+      "file": "tests/contract/python.py",
+      "test": "ServeToolsTest.test_the_hosted_runtime_signs_as_agents_camelai_dev_at_either_url",
+      "classification": "b",
+      "suite": "contract-node",
+      "discovered": "final full parity after docs commit d60c4f66",
+      "resolution": "Verified cached native wheel truncation; no original SDK or runtime assertion failed. The external cause of truncation is unconfirmed.",
+      "reason": "The rt-pool-6 cached Python environment had native extension files truncated to exactly 4194304 bytes. cryptography expected 12805312 bytes and pydantic_core expected 4782760 bytes; both failed wheel RECORD hashes and differed from fresh pinned wheels. A selected ServeTools case exited SIGBUS (-7) before reporting any result; faulthandler identified cryptography native-module import during TestRuntime setup. setup.sh trusted .ready and the interpreter executable, allowing the corrupt cache to be reused.",
+      "change": "Validate every hashed installed wheel RECORD file size and digest before cache reuse, rebuild an invalid cache before tests, and validate a fresh installation before writing .ready. Preserve all original Python assertions and deadlines; add deterministic truncated-file, same-size hash-corruption, missing-file and absent-record regressions.",
+      "evidence": [
+        "tests/contract/setup.sh:10-28",
+        "tests/contract/python_cache.py:9-50",
+        "tests/contract/python_runner_test.py:29-65",
+        "clients/python/camelai_run/__init__.py:3390-3394",
+        "tests/python_sdk.py:1346-1347",
+        "backends/workers/measurements/runs/2026-11-06T05-47-41-736Z-46725/node/shard-1/parity-node-shard-1-of-6.json"
+      ],
+      "observations": {
+        "sprite": "rt-pool-6",
+        "job": "20261105-234741-46753-1",
+        "selectedCaseExitCode": -7,
+        "selectedCaseStdoutBytes": 0,
+        "selectedCaseStderrBytes": 0,
+        "installedNativeBytes": 4194304,
+        "cryptographyFreshBytes": 12805312,
+        "pydanticCoreFreshBytes": 4782760,
+        "kernelOom": 0,
+        "kernelOomKill": 0
+      },
+      "validation": {
+        "repairedOriginalCases": {
+          "revision": "d60c4f66",
+          "sprite": "rt-pool-6",
+          "job": "20261105-235247-58083-1",
+          "command": "node tests/contract/run.mjs --backend=node --area=python --output-dir=.contract-artifacts",
+          "counts": {
+            "pass": 56,
+            "fail": 0,
+            "out-of-scope": 4,
+            "accepted-difference": 0
+          },
+          "originalFailedCasesNowPassed": 20,
+          "exitCode": 0,
+          "artifact": "/tmp/workers-python-cache-repair/shard-1/parity-node-python.json"
+        },
+        "guard": {
+          "snapshot": "7618bb7b3553c903cb3e2d003c4005ac19cf356c",
+          "sprite": "rt-pool-1",
+          "job": "20261105-235328-58827-1",
+          "unitTestsPassed": 8,
+          "unitTestsFailed": 0,
+          "bashSyntax": "pass",
+          "actualValidCache": "pass",
+          "actualPreservedCorruptCache": "rejected exactly the two truncated native files",
+          "exitCode": 0
+        },
+        "repairedFilesVerified": 1006,
+        "nativeCryptoAndPydanticImport": "pass",
+        "finalFullParity": "pending"
+      }
+    },
+    {
+      "file": "tests/contract/python.py",
+      "test": "ServeToolsTest.test_verify_file_url_checks_the_url_is_the_runtimes_for_a_file_of_the_agent",
+      "classification": "b",
+      "suite": "contract-node",
+      "discovered": "final full parity after docs commit d60c4f66",
+      "resolution": "Verified cached native wheel truncation; no original SDK or runtime assertion failed. The external cause of truncation is unconfirmed.",
+      "reason": "The rt-pool-6 cached Python environment had native extension files truncated to exactly 4194304 bytes. cryptography expected 12805312 bytes and pydantic_core expected 4782760 bytes; both failed wheel RECORD hashes and differed from fresh pinned wheels. A selected ServeTools case exited SIGBUS (-7) before reporting any result; faulthandler identified cryptography native-module import during TestRuntime setup. setup.sh trusted .ready and the interpreter executable, allowing the corrupt cache to be reused.",
+      "change": "Validate every hashed installed wheel RECORD file size and digest before cache reuse, rebuild an invalid cache before tests, and validate a fresh installation before writing .ready. Preserve all original Python assertions and deadlines; add deterministic truncated-file, same-size hash-corruption, missing-file and absent-record regressions.",
+      "evidence": [
+        "tests/contract/setup.sh:10-28",
+        "tests/contract/python_cache.py:9-50",
+        "tests/contract/python_runner_test.py:29-65",
+        "clients/python/camelai_run/__init__.py:3390-3394",
+        "tests/python_sdk.py:1346-1347",
+        "backends/workers/measurements/runs/2026-11-06T05-47-41-736Z-46725/node/shard-1/parity-node-shard-1-of-6.json"
+      ],
+      "observations": {
+        "sprite": "rt-pool-6",
+        "job": "20261105-234741-46753-1",
+        "selectedCaseExitCode": -7,
+        "selectedCaseStdoutBytes": 0,
+        "selectedCaseStderrBytes": 0,
+        "installedNativeBytes": 4194304,
+        "cryptographyFreshBytes": 12805312,
+        "pydanticCoreFreshBytes": 4782760,
+        "kernelOom": 0,
+        "kernelOomKill": 0
+      },
+      "validation": {
+        "repairedOriginalCases": {
+          "revision": "d60c4f66",
+          "sprite": "rt-pool-6",
+          "job": "20261105-235247-58083-1",
+          "command": "node tests/contract/run.mjs --backend=node --area=python --output-dir=.contract-artifacts",
+          "counts": {
+            "pass": 56,
+            "fail": 0,
+            "out-of-scope": 4,
+            "accepted-difference": 0
+          },
+          "originalFailedCasesNowPassed": 20,
+          "exitCode": 0,
+          "artifact": "/tmp/workers-python-cache-repair/shard-1/parity-node-python.json"
+        },
+        "guard": {
+          "snapshot": "7618bb7b3553c903cb3e2d003c4005ac19cf356c",
+          "sprite": "rt-pool-1",
+          "job": "20261105-235328-58827-1",
+          "unitTestsPassed": 8,
+          "unitTestsFailed": 0,
+          "bashSyntax": "pass",
+          "actualValidCache": "pass",
+          "actualPreservedCorruptCache": "rejected exactly the two truncated native files",
+          "exitCode": 0
+        },
+        "repairedFilesVerified": 1006,
+        "nativeCryptoAndPydanticImport": "pass",
+        "finalFullParity": "pending"
+      }
+    },
+    {
+      "file": "tests/contract/python.py",
+      "test": "WsgiServeToolsTest.test_a_real_wsgi_server_runs_plain_tools_in_the_request_thread",
+      "classification": "b",
+      "suite": "contract-node",
+      "discovered": "final full parity after docs commit d60c4f66",
+      "resolution": "Verified cached native wheel truncation; no original SDK or runtime assertion failed. The external cause of truncation is unconfirmed.",
+      "reason": "The rt-pool-6 cached Python environment had native extension files truncated to exactly 4194304 bytes. cryptography expected 12805312 bytes and pydantic_core expected 4782760 bytes; both failed wheel RECORD hashes and differed from fresh pinned wheels. A selected ServeTools case exited SIGBUS (-7) before reporting any result; faulthandler identified cryptography native-module import during TestRuntime setup. setup.sh trusted .ready and the interpreter executable, allowing the corrupt cache to be reused.",
+      "change": "Validate every hashed installed wheel RECORD file size and digest before cache reuse, rebuild an invalid cache before tests, and validate a fresh installation before writing .ready. Preserve all original Python assertions and deadlines; add deterministic truncated-file, same-size hash-corruption, missing-file and absent-record regressions.",
+      "evidence": [
+        "tests/contract/setup.sh:10-28",
+        "tests/contract/python_cache.py:9-50",
+        "tests/contract/python_runner_test.py:29-65",
+        "clients/python/camelai_run/__init__.py:3390-3394",
+        "tests/python_sdk.py:1346-1347",
+        "backends/workers/measurements/runs/2026-11-06T05-47-41-736Z-46725/node/shard-1/parity-node-shard-1-of-6.json"
+      ],
+      "observations": {
+        "sprite": "rt-pool-6",
+        "job": "20261105-234741-46753-1",
+        "selectedCaseExitCode": -7,
+        "selectedCaseStdoutBytes": 0,
+        "selectedCaseStderrBytes": 0,
+        "installedNativeBytes": 4194304,
+        "cryptographyFreshBytes": 12805312,
+        "pydanticCoreFreshBytes": 4782760,
+        "kernelOom": 0,
+        "kernelOomKill": 0
+      },
+      "validation": {
+        "repairedOriginalCases": {
+          "revision": "d60c4f66",
+          "sprite": "rt-pool-6",
+          "job": "20261105-235247-58083-1",
+          "command": "node tests/contract/run.mjs --backend=node --area=python --output-dir=.contract-artifacts",
+          "counts": {
+            "pass": 56,
+            "fail": 0,
+            "out-of-scope": 4,
+            "accepted-difference": 0
+          },
+          "originalFailedCasesNowPassed": 20,
+          "exitCode": 0,
+          "artifact": "/tmp/workers-python-cache-repair/shard-1/parity-node-python.json"
+        },
+        "guard": {
+          "snapshot": "7618bb7b3553c903cb3e2d003c4005ac19cf356c",
+          "sprite": "rt-pool-1",
+          "job": "20261105-235328-58827-1",
+          "unitTestsPassed": 8,
+          "unitTestsFailed": 0,
+          "bashSyntax": "pass",
+          "actualValidCache": "pass",
+          "actualPreservedCorruptCache": "rejected exactly the two truncated native files",
+          "exitCode": 0
+        },
+        "repairedFilesVerified": 1006,
+        "nativeCryptoAndPydanticImport": "pass",
+        "finalFullParity": "pending"
+      }
+    },
+    {
+      "file": "tests/contract/python.py",
+      "test": "WsgiServeToolsTest.test_anything_but_the_runtimes_token_for_this_server_is_refused",
+      "classification": "b",
+      "suite": "contract-node",
+      "discovered": "final full parity after docs commit d60c4f66",
+      "resolution": "Verified cached native wheel truncation; no original SDK or runtime assertion failed. The external cause of truncation is unconfirmed.",
+      "reason": "The rt-pool-6 cached Python environment had native extension files truncated to exactly 4194304 bytes. cryptography expected 12805312 bytes and pydantic_core expected 4782760 bytes; both failed wheel RECORD hashes and differed from fresh pinned wheels. A selected ServeTools case exited SIGBUS (-7) before reporting any result; faulthandler identified cryptography native-module import during TestRuntime setup. setup.sh trusted .ready and the interpreter executable, allowing the corrupt cache to be reused.",
+      "change": "Validate every hashed installed wheel RECORD file size and digest before cache reuse, rebuild an invalid cache before tests, and validate a fresh installation before writing .ready. Preserve all original Python assertions and deadlines; add deterministic truncated-file, same-size hash-corruption, missing-file and absent-record regressions.",
+      "evidence": [
+        "tests/contract/setup.sh:10-28",
+        "tests/contract/python_cache.py:9-50",
+        "tests/contract/python_runner_test.py:29-65",
+        "clients/python/camelai_run/__init__.py:3390-3394",
+        "tests/python_sdk.py:1346-1347",
+        "backends/workers/measurements/runs/2026-11-06T05-47-41-736Z-46725/node/shard-1/parity-node-shard-1-of-6.json"
+      ],
+      "observations": {
+        "sprite": "rt-pool-6",
+        "job": "20261105-234741-46753-1",
+        "selectedCaseExitCode": -7,
+        "selectedCaseStdoutBytes": 0,
+        "selectedCaseStderrBytes": 0,
+        "installedNativeBytes": 4194304,
+        "cryptographyFreshBytes": 12805312,
+        "pydanticCoreFreshBytes": 4782760,
+        "kernelOom": 0,
+        "kernelOomKill": 0
+      },
+      "validation": {
+        "repairedOriginalCases": {
+          "revision": "d60c4f66",
+          "sprite": "rt-pool-6",
+          "job": "20261105-235247-58083-1",
+          "command": "node tests/contract/run.mjs --backend=node --area=python --output-dir=.contract-artifacts",
+          "counts": {
+            "pass": 56,
+            "fail": 0,
+            "out-of-scope": 4,
+            "accepted-difference": 0
+          },
+          "originalFailedCasesNowPassed": 20,
+          "exitCode": 0,
+          "artifact": "/tmp/workers-python-cache-repair/shard-1/parity-node-python.json"
+        },
+        "guard": {
+          "snapshot": "7618bb7b3553c903cb3e2d003c4005ac19cf356c",
+          "sprite": "rt-pool-1",
+          "job": "20261105-235328-58827-1",
+          "unitTestsPassed": 8,
+          "unitTestsFailed": 0,
+          "bashSyntax": "pass",
+          "actualValidCache": "pass",
+          "actualPreservedCorruptCache": "rejected exactly the two truncated native files",
+          "exitCode": 0
+        },
+        "repairedFilesVerified": 1006,
+        "nativeCryptoAndPydanticImport": "pass",
+        "finalFullParity": "pending"
+      }
+    },
+    {
+      "file": "tests/contract/python.py",
+      "test": "WsgiServeToolsTest.test_each_call_is_answered_as_the_user_the_token_names",
+      "classification": "b",
+      "suite": "contract-node",
+      "discovered": "final full parity after docs commit d60c4f66",
+      "resolution": "Verified cached native wheel truncation; no original SDK or runtime assertion failed. The external cause of truncation is unconfirmed.",
+      "reason": "The rt-pool-6 cached Python environment had native extension files truncated to exactly 4194304 bytes. cryptography expected 12805312 bytes and pydantic_core expected 4782760 bytes; both failed wheel RECORD hashes and differed from fresh pinned wheels. A selected ServeTools case exited SIGBUS (-7) before reporting any result; faulthandler identified cryptography native-module import during TestRuntime setup. setup.sh trusted .ready and the interpreter executable, allowing the corrupt cache to be reused.",
+      "change": "Validate every hashed installed wheel RECORD file size and digest before cache reuse, rebuild an invalid cache before tests, and validate a fresh installation before writing .ready. Preserve all original Python assertions and deadlines; add deterministic truncated-file, same-size hash-corruption, missing-file and absent-record regressions.",
+      "evidence": [
+        "tests/contract/setup.sh:10-28",
+        "tests/contract/python_cache.py:9-50",
+        "tests/contract/python_runner_test.py:29-65",
+        "clients/python/camelai_run/__init__.py:3390-3394",
+        "tests/python_sdk.py:1346-1347",
+        "backends/workers/measurements/runs/2026-11-06T05-47-41-736Z-46725/node/shard-1/parity-node-shard-1-of-6.json"
+      ],
+      "observations": {
+        "sprite": "rt-pool-6",
+        "job": "20261105-234741-46753-1",
+        "selectedCaseExitCode": -7,
+        "selectedCaseStdoutBytes": 0,
+        "selectedCaseStderrBytes": 0,
+        "installedNativeBytes": 4194304,
+        "cryptographyFreshBytes": 12805312,
+        "pydanticCoreFreshBytes": 4782760,
+        "kernelOom": 0,
+        "kernelOomKill": 0
+      },
+      "validation": {
+        "repairedOriginalCases": {
+          "revision": "d60c4f66",
+          "sprite": "rt-pool-6",
+          "job": "20261105-235247-58083-1",
+          "command": "node tests/contract/run.mjs --backend=node --area=python --output-dir=.contract-artifacts",
+          "counts": {
+            "pass": 56,
+            "fail": 0,
+            "out-of-scope": 4,
+            "accepted-difference": 0
+          },
+          "originalFailedCasesNowPassed": 20,
+          "exitCode": 0,
+          "artifact": "/tmp/workers-python-cache-repair/shard-1/parity-node-python.json"
+        },
+        "guard": {
+          "snapshot": "7618bb7b3553c903cb3e2d003c4005ac19cf356c",
+          "sprite": "rt-pool-1",
+          "job": "20261105-235328-58827-1",
+          "unitTestsPassed": 8,
+          "unitTestsFailed": 0,
+          "bashSyntax": "pass",
+          "actualValidCache": "pass",
+          "actualPreservedCorruptCache": "rejected exactly the two truncated native files",
+          "exitCode": 0
+        },
+        "repairedFilesVerified": 1006,
+        "nativeCryptoAndPydanticImport": "pass",
+        "finalFullParity": "pending"
+      }
+    },
+    {
+      "file": "tests/contract/python.py",
+      "test": "WsgiServeToolsTest.test_verify_file_url_is_synchronous",
+      "classification": "b",
+      "suite": "contract-node",
+      "discovered": "final full parity after docs commit d60c4f66",
+      "resolution": "Verified cached native wheel truncation; no original SDK or runtime assertion failed. The external cause of truncation is unconfirmed.",
+      "reason": "The rt-pool-6 cached Python environment had native extension files truncated to exactly 4194304 bytes. cryptography expected 12805312 bytes and pydantic_core expected 4782760 bytes; both failed wheel RECORD hashes and differed from fresh pinned wheels. A selected ServeTools case exited SIGBUS (-7) before reporting any result; faulthandler identified cryptography native-module import during TestRuntime setup. setup.sh trusted .ready and the interpreter executable, allowing the corrupt cache to be reused.",
+      "change": "Validate every hashed installed wheel RECORD file size and digest before cache reuse, rebuild an invalid cache before tests, and validate a fresh installation before writing .ready. Preserve all original Python assertions and deadlines; add deterministic truncated-file, same-size hash-corruption, missing-file and absent-record regressions.",
+      "evidence": [
+        "tests/contract/setup.sh:10-28",
+        "tests/contract/python_cache.py:9-50",
+        "tests/contract/python_runner_test.py:29-65",
+        "clients/python/camelai_run/__init__.py:3390-3394",
+        "tests/python_sdk.py:1346-1347",
+        "backends/workers/measurements/runs/2026-11-06T05-47-41-736Z-46725/node/shard-1/parity-node-shard-1-of-6.json"
+      ],
+      "observations": {
+        "sprite": "rt-pool-6",
+        "job": "20261105-234741-46753-1",
+        "selectedCaseExitCode": -7,
+        "selectedCaseStdoutBytes": 0,
+        "selectedCaseStderrBytes": 0,
+        "installedNativeBytes": 4194304,
+        "cryptographyFreshBytes": 12805312,
+        "pydanticCoreFreshBytes": 4782760,
+        "kernelOom": 0,
+        "kernelOomKill": 0
+      },
+      "validation": {
+        "repairedOriginalCases": {
+          "revision": "d60c4f66",
+          "sprite": "rt-pool-6",
+          "job": "20261105-235247-58083-1",
+          "command": "node tests/contract/run.mjs --backend=node --area=python --output-dir=.contract-artifacts",
+          "counts": {
+            "pass": 56,
+            "fail": 0,
+            "out-of-scope": 4,
+            "accepted-difference": 0
+          },
+          "originalFailedCasesNowPassed": 20,
+          "exitCode": 0,
+          "artifact": "/tmp/workers-python-cache-repair/shard-1/parity-node-python.json"
+        },
+        "guard": {
+          "snapshot": "7618bb7b3553c903cb3e2d003c4005ac19cf356c",
+          "sprite": "rt-pool-1",
+          "job": "20261105-235328-58827-1",
+          "unitTestsPassed": 8,
+          "unitTestsFailed": 0,
+          "bashSyntax": "pass",
+          "actualValidCache": "pass",
+          "actualPreservedCorruptCache": "rejected exactly the two truncated native files",
+          "exitCode": 0
+        },
+        "repairedFilesVerified": 1006,
+        "nativeCryptoAndPydanticImport": "pass",
+        "finalFullParity": "pending"
+      }
+    },
+    {
+      "file": "tests/contract/python.py",
+      "test": "WsgiServeToolsTest.test_verify_runtime_token_is_synchronous_and_takes_a_list_of_audiences",
+      "classification": "b",
+      "suite": "contract-node",
+      "discovered": "final full parity after docs commit d60c4f66",
+      "resolution": "Verified cached native wheel truncation; no original SDK or runtime assertion failed. The external cause of truncation is unconfirmed.",
+      "reason": "The rt-pool-6 cached Python environment had native extension files truncated to exactly 4194304 bytes. cryptography expected 12805312 bytes and pydantic_core expected 4782760 bytes; both failed wheel RECORD hashes and differed from fresh pinned wheels. A selected ServeTools case exited SIGBUS (-7) before reporting any result; faulthandler identified cryptography native-module import during TestRuntime setup. setup.sh trusted .ready and the interpreter executable, allowing the corrupt cache to be reused.",
+      "change": "Validate every hashed installed wheel RECORD file size and digest before cache reuse, rebuild an invalid cache before tests, and validate a fresh installation before writing .ready. Preserve all original Python assertions and deadlines; add deterministic truncated-file, same-size hash-corruption, missing-file and absent-record regressions.",
+      "evidence": [
+        "tests/contract/setup.sh:10-28",
+        "tests/contract/python_cache.py:9-50",
+        "tests/contract/python_runner_test.py:29-65",
+        "clients/python/camelai_run/__init__.py:3390-3394",
+        "tests/python_sdk.py:1346-1347",
+        "backends/workers/measurements/runs/2026-11-06T05-47-41-736Z-46725/node/shard-1/parity-node-shard-1-of-6.json"
+      ],
+      "observations": {
+        "sprite": "rt-pool-6",
+        "job": "20261105-234741-46753-1",
+        "selectedCaseExitCode": -7,
+        "selectedCaseStdoutBytes": 0,
+        "selectedCaseStderrBytes": 0,
+        "installedNativeBytes": 4194304,
+        "cryptographyFreshBytes": 12805312,
+        "pydanticCoreFreshBytes": 4782760,
+        "kernelOom": 0,
+        "kernelOomKill": 0
+      },
+      "validation": {
+        "repairedOriginalCases": {
+          "revision": "d60c4f66",
+          "sprite": "rt-pool-6",
+          "job": "20261105-235247-58083-1",
+          "command": "node tests/contract/run.mjs --backend=node --area=python --output-dir=.contract-artifacts",
+          "counts": {
+            "pass": 56,
+            "fail": 0,
+            "out-of-scope": 4,
+            "accepted-difference": 0
+          },
+          "originalFailedCasesNowPassed": 20,
+          "exitCode": 0,
+          "artifact": "/tmp/workers-python-cache-repair/shard-1/parity-node-python.json"
+        },
+        "guard": {
+          "snapshot": "7618bb7b3553c903cb3e2d003c4005ac19cf356c",
+          "sprite": "rt-pool-1",
+          "job": "20261105-235328-58827-1",
+          "unitTestsPassed": 8,
+          "unitTestsFailed": 0,
+          "bashSyntax": "pass",
+          "actualValidCache": "pass",
+          "actualPreservedCorruptCache": "rejected exactly the two truncated native files",
+          "exitCode": 0
+        },
+        "repairedFilesVerified": 1006,
+        "nativeCryptoAndPydanticImport": "pass",
+        "finalFullParity": "pending"
+      }
     }
   ],
   "validation": {
@@ -1232,10 +2452,10 @@
   },
   "countsByClassification": {
     "a": 42,
-    "b": 12,
+    "b": 32,
     "c": 5
   },
-  "classifiedTests": 59,
+  "classifiedTests": 79,
   "realBugs": [
     {
       "issue": "Creation accepted null keyScope; clearing a scope also needed removal before stored-configuration revalidation.",
@@ -1264,6 +2484,10 @@
     {
       "issue": "An existing Workers release-note fragment omitted the section heading required by the release-note parser.",
       "tests": 1
+    },
+    {
+      "issue": "The Python dependency cache trusted its ready marker while two native wheel files were truncated, causing SIGBUS before 20 contract cases could report results. Validate installed wheel sizes and hashes before reusing the cache. The external truncation cause is unknown.",
+      "tests": 20
     }
   ],
   "countsBySuite": {
@@ -1274,7 +2498,7 @@
     },
     "contract-node": {
       "a": 0,
-      "b": 0,
+      "b": 20,
       "c": 1
     },
     "contract-workers": {
@@ -1294,5 +2518,5 @@
     }
   },
   "baselineClassifiedTests": 51,
-  "additionalExposedTests": 8
+  "additionalExposedTests": 28
 }
