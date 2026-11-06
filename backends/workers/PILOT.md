@@ -16,6 +16,9 @@ Postgres or use customer credentials. All dates below are UTC.
 | Agent objects | `AGENTS` / `CamelAgent` | Durable journal, runs, schedules, human input, hibernatable sockets |
 | Tenant objects | `TENANTS` / `TenantAdmission` | Admission and counters |
 | Volume objects | `VOLUMES` / `Volume` | Ordered file metadata |
+| Code-mode binding | `CODEMODE_SANDBOX` | External `CodemodeSandbox` class on `camelrun-pilot-codemode` |
+| Sandbox objects | `SANDBOX` / `CodemodeSandbox` | Local binding in the sandbox Worker |
+| Static assets | `PUBLIC_ASSETS` | Bundled API documentation and console assets |
 | Hyperdrive | `3e6d68e844ec480589e766119f52dead` | PlanetScale `camelrun-proto`; caching disabled |
 | R2 | `camelrun-pilot-files` / `BUCKET` | Files, images, stored derivatives |
 | Queue | `camelrun-pilot-delivery` / `WEBHOOKS` | Delivery and retry; consumed by API Worker |
@@ -24,6 +27,11 @@ Postgres or use customer credentials. All dates below are UTC.
 | Email Sending | `EMAIL` | Sender restricted to `camelrun@staging.camelai.dev` |
 | Cron | `*/5 * * * *` | Maintenance and outbox repair |
 | Model secret | `PILOT_OPENROUTER_KEY` | Account secret `CAMELRUN_PILOT_OPENROUTER_KEY`, store `c8c66b0210e64900864182073dcd5e09` |
+| Runtime secrets | `API_TOKEN`, `FILE_SIGNING_SECRET`, `AGENT_SECRETS_KEY` | Stable authentication, signing and encryption keys; values never displayed |
+
+The verified API version is `8fc0599b-260d-4c64-aa30-4d8bf705ea99`.
+The sandbox version is `79f58b3f-7dfe-4dc0-90b4-fd972a5aaed8`; the fake
+provider version is `0ec52245-f557-437a-90ab-0f12732a2305`.
 
 The API enables structured runtime logs. Automatic invocation logs and traces
 are disabled because Cloudflare does not guarantee redaction of the bearer
@@ -54,11 +62,12 @@ Cloudflare rejects a binding to a nonexistent secret (error 10182).
 
 ## Operator key and model key
 
-Create the account secret yourself; Wrangler prompts privately for its value:
+The secret already exists. For a fresh setup, create it yourself; Wrangler
+prompts privately for its value in the pinned pilot account:
 
 ```sh
 cd backends/workers
-node_modules/.bin/wrangler secrets-store secret create c8c66b0210e64900864182073dcd5e09 \
+node_modules/.bin/wrangler secrets-store secret create c8c66b0210e64900864182073dcd5e09 -c wrangler.pilot.jsonc \
   --name CAMELRUN_PILOT_OPENROUTER_KEY --scopes workers --remote
 cd ../..
 scripts/pilot-deploy
@@ -69,7 +78,7 @@ The secret already exists; skip its creation on repeat deployments. The names-on
 
 ```sh
 backends/workers/node_modules/.bin/wrangler secrets-store secret list \
-  c8c66b0210e64900864182073dcd5e09 --per-page 100 --remote
+  c8c66b0210e64900864182073dcd5e09 -c backends/workers/wrangler.pilot.jsonc --per-page 100 --remote
 ```
 
 The admin command must run in your interactive terminal. It creates `pilot-admin`
@@ -97,12 +106,17 @@ curl https://run-pilot.camelai.dev/v1/agents \
 
 ## Validation
 
-The baseline remains 519/524 Workers HTTP passes, five reviewed differences,
-zero failures, and 66 SDK-only passes. It is a local workerd contract result,
-not a deployed-pilot result. See `PARITY.md` and
-`tests/contract/accepted-differences.mjs` for the five cases: three ECS-specific
-recovery/history checks, V8 versus QuickJS code mode, and ECS load-balancer
-keep-alive/drain behavior.
+The final full comparison passed **507/524 Workers HTTP cases**, with **17
+accepted differences, 66 SDK-only passes and zero failures**. Node passed all
+524 HTTP and 66 SDK-only cases, including the original assertions for every
+accepted difference. These are local workerd/Node contract results on Sprites;
+deployed-pilot results follow below. `PARITY.md` records the exact tested
+revisions and later helper-only validation.
+
+The starting baseline was 519/524 Workers HTTP passes and five differences:
+three ECS-specific recovery/history checks, V8 versus QuickJS code mode, and
+ECS load-balancer keep-alive/drain behavior. Twelve exact SSE cases were added
+by the CTO decision. See `tests/contract/accepted-differences.mjs`.
 
 Run disposable deployed validation:
 
@@ -244,6 +258,14 @@ attempts settled. This is below the stop threshold but is not an error-free
 250-turn result. Higher stages were not repeated; the highest observed
 zero-error concurrency remains 100.
 
+The retuned IAD pool used three connections, averaged 81.56 waiting clients and
+peaked at 150. Completed uncached queries averaged 610 ms connection latency
+and 614 ms query latency; transactions averaged 2,413 ms and 4 ms respectively.
+No Hyperdrive error-status query group was returned. Durable Object invocation
+telemetry recorded 3,743 successes and 54 `clientDisconnected` results in this
+window. These disconnections are not a count of failed turns. See
+`measurements/pilot-load-hd16-telemetry.json`.
+
 The repeat's foreground cleanup removed all 20 tenants and 250 agents, verified
 all 20 credentials rejected with HTTP 401, and left no user data, holds or pending
 attempts. Its tenant active-time charge was $0.033961. The two main load runs
@@ -258,6 +280,28 @@ model request inside the agent. OpenAI-compatible endpoints (including
 OpenRouter), Anthropic and Google use it. Native Bedrock and Workers AI retain
 the bounded materialization path. Existing limits remain 40 images and 20 MiB of
 base64 image data per model request.
+
+## Observed cost
+
+For 01:35–03:04 UTC on 2026-11-06, the recorded pilot meters have an approximate
+**$0.80 linear value at paid overage rates**, before included allowances and
+billable-unit rounding. This is an estimate, not an invoice: the billing API
+rejects this OAuth token. The largest components are 640,818 SQLite row writes
+($0.641) and 9,811.12 Durable Object GB-s ($0.123). The estimate also includes
+SQLite reads, available DO request counts, the three Workers' requests and CPU,
+and a conservative value for all returned observability events. The complete
+four-namespace duration metrics report zero CPU-limit, memory-limit and fatal
+internal errors.
+
+Volume-namespace request telemetry was rate limited. Temporary bootstrap
+Workers, R2, Images, Queue, Analytics Engine, storage and existing plan charges
+are not itemized. Included account allowances may absorb these meters; invoice
+rounding and shared-account allocation prevent deriving an exact incremental
+bill here. See `measurements/pilot-cost.json` and Cloudflare's
+[Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/)
+and [Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/).
+Fake-model provider cost was zero. The one real-model call reported $0.00002745
+of model usage; its total internal tenant debit was $0.000042.
 
 ## Verified source checks
 
