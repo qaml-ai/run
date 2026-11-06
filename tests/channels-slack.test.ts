@@ -73,7 +73,7 @@ async function fakeSlack(t: T) {
   };
 }
 
-async function setup(t: T) {
+async function setup(t: T, settings?: Record<string, unknown>) {
   const api = await fakeSlack(t);
   const { db } = await testDatabase();
   const accounts = new Accounts({ tenants: new Tenants({ read: async () => JSON.stringify({ tenants: {} }) }), db, secretsKey: randomBytes(32).toString("hex") });
@@ -96,7 +96,7 @@ async function setup(t: T) {
       return { id: request.id, method: "prompt", fingerprint: "", state: "running" };
     },
   });
-  const channel = await channels.create("default", { type: "slack", credentials: { botToken: BOT_TOKEN, signingSecret: SIGNING_SECRET }, access: { allow: ["U_ADA"] } });
+  const channel = await channels.create("default", { type: "slack", credentials: { botToken: BOT_TOKEN, signingSecret: SIGNING_SECRET }, access: { allow: ["U_ADA", "U_BOB"] }, ...(settings ? { settings } : {}) });
   /** Deliver a payload as Slack would: signed with the signing secret over the timestamp and raw body. */
   const post = (payload: object, options: { secret?: string; timestamp?: number } = {}) => {
     const body = JSON.stringify(payload);
@@ -241,4 +241,55 @@ test("a Slack send to a channel that is gone is not retried", async t => {
   await until(() => r.api.calls.some(call => call.method === "chat.postMessage"), "the send");
   await until(async () => (await r.db.query("select count(*)::int as count from channel_items")).rows[0].count === 0, "the item dropped");
   assert.equal(r.api.calls.filter(call => call.method === "chat.postMessage").length, 1);
+});
+
+test("conversation: channel makes a Slack channel one agent: each thread is part of it, and each reply goes to its own thread", async t => {
+  await assert.rejects(setup(t, { conversation: "workspace" }), /settings.conversation is "thread"/);
+  const r = await setup(t, { conversation: "channel" });
+  assert.deepEqual(r.channel.settings, { conversation: "channel" });
+  // Two mentions in the channel, two people, two threads: one agent, which sees each message's thread.
+  await r.event({ type: "app_mention", channel: "C1", ts: "100.0001", text: "<@UBOT> add a badge" });
+  await r.event({ type: "app_mention", channel: "C1", ts: "200.0002", text: "<@UBOT> fix the build", user: "U_BOB" });
+  await until(() => r.api.posts().length === 2, "both replies");
+  assert.equal(r.prompts[1].agent, r.prompts[0].agent);
+  assert.deepEqual(r.prompts.map(p => p.from), [{ id: "slack:U_ADA", thread: "100.0001" }, { id: "slack:U_BOB", thread: "200.0002" }]);
+  assert.deepEqual(r.api.posts().map(post => [post.channel, post.thread_ts]).sort(), [["C1", "100.0001"], ["C1", "200.0002"]]);
+
+  // A reply in a thread the agent was brought into reaches it without a mention, and is answered there.
+  await r.event({ type: "message", channel_type: "channel", channel: "C1", ts: "100.0005", thread_ts: "100.0001", text: "also the docs" });
+  await until(() => r.api.posts().length === 3, "the follow-up's reply");
+  assert.equal(r.prompts[2].agent, r.prompts[0].agent);
+  assert.deepEqual(r.prompts[2].from, { id: "slack:U_ADA", thread: "100.0001" });
+  assert.equal(r.api.posts()[2].thread_ts, "100.0001");
+  // Threads it was never brought into, and plain channel chatter, are not its.
+  await r.event({ type: "message", channel_type: "channel", channel: "C1", ts: "300.0002", thread_ts: "300.0001", text: "unrelated" });
+  await r.event({ type: "message", channel_type: "channel", channel: "C1", ts: "301.0001", text: "chatter" });
+  // A DM is still a conversation of its own.
+  await r.event({ type: "message", channel_type: "im", channel: "D1", ts: "400.0001", text: "hello in private" });
+  await until(() => r.api.posts().length === 4, "the DM reply");
+  assert.notEqual(r.prompts[3].agent, r.prompts[0].agent);
+  assert.equal("thread_ts" in r.api.posts()[3], false);
+  await sleep(200);
+  assert.equal(r.prompts.length, 4);
+  assert.deepEqual((await r.db.query("select conversation from channel_conversations order by conversation")).rows.map(row => row.conversation), ["C1", "D1"]);
+
+  // send_message: by default to the thread of the run it is called in; or to a named thread, or a new message of its own.
+  const lead = { id: r.prompts[0].agent, tenant: "default" };
+  const run = async (replyTo: string) => (await r.db.query("select run from channel_replies where reply_to = $1", [replyTo])).rows[0].run as string;
+  const inbound = await run("C1-200.0002");
+  await r.channels.sendMessage(lead, { text: "working on it" }, inbound);
+  await r.channels.sendMessage(lead, { text: "PR for the badge: https://example.test/pull/1", thread: "100.0001" });
+  await r.channels.sendMessage(lead, { text: "Daily check-in", thread: "new" });
+  await assert.rejects(r.channels.sendMessage(lead, { text: "x", thread: "../C2" }), /thread is a Slack thread/);
+  await until(() => r.api.posts().length === 7, "the three messages");
+  assert.deepEqual(r.api.posts().slice(4).map(post => [post.text, post.thread_ts]), [["working on it", "200.0002"], ["PR for the badge: https://example.test/pull/1", "100.0001"], ["Daily check-in", undefined]]);
+
+  // A sub-agent's notice is answered in the thread of the run that started the sub-agent.
+  const started = await run("C1-100.0001");
+  const now = Date.now();
+  await r.db.query(`insert into agent_children (id, tenant, parent, child, request_id, name, depth, root, parent_run, tool_call_id, state, checked_at, created_at, updated_at)
+    values ('ch1', 'default', $1, 'client_worker', 'spawn_1', 'worker', 1, $1, $2, 'call_1', 'notified', $3, $3, $3)`, [lead.id, started, now]);
+  r.channels.hooks.runEnded!(lead, { id: "child_spawn_1", method: "prompt", fingerprint: "", state: "completed", outcome: { result: { reply: "The badge PR is open." } } } as never);
+  await until(() => r.api.posts().length === 8, "the notice's reply");
+  assert.deepEqual([r.api.posts()[7].text, r.api.posts()[7].thread_ts], ["The badge PR is open.", "100.0001"]);
 });

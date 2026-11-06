@@ -27,6 +27,14 @@ export class AgentChannels {
 
   private channels() { return workerChannels(this.env, work => this.ctx.waitUntil(work)); }
 
+  /** For a sub-agent's notice (request child_…), the sub-agent: its outbox entry (delegation-notifications.ts) names it. */
+  private async notifier(request: string): Promise<string | undefined> {
+    if (!request.startsWith("child_")) return undefined;
+    const notices = await this.ctx.storage.list<{ request?: { id?: string }; notice?: { source?: { agentId?: string } } }>({ prefix: "delegation-notice:" });
+    for (const pending of notices.values()) if (pending.request?.id === request) return pending.notice?.source?.agentId;
+    return undefined;
+  }
+
   /** An event the agent committed: a turn's start shows typing, its end settles the reply. */
   observe(owner: Owner | undefined, event: { type?: string; event?: { type?: string } }, record: Run | undefined) {
     if (owner?.config.type !== "channel" || !record) return;
@@ -35,7 +43,8 @@ export class AgentChannels {
     this.stopTyping();
     if (!REPLYING.has(record.method)) return;
     const run: ChannelRun = { id: record.id, method: record.method, state: "completed", ...(record.outcome ? { outcome: record.outcome } : {}) };
-    this.ctx.waitUntil(this.channels().then(channels => channels.settle({ id: owner.id, tenant: owner.tenantId }, run))
+    this.ctx.waitUntil(this.notifier(record.id).then(agentId => agentId ? { ...run, metadata: { agentId } } : run)
+      .then(settled => this.channels().then(channels => channels.settle({ id: owner.id, tenant: owner.tenantId }, settled)))
       .catch(error => console.error(JSON.stringify({ type: "channel_reply_failed", agent: owner.id, request: record.id, error: safeError(error) }))));
   }
 
@@ -59,14 +68,14 @@ export class AgentChannels {
   }
 
   /** send_message, for a channel's agents: updates and files before the final reply. */
-  tool(agent: () => Promise<{ id: string; tenantId: string }>): ToolRegistration {
+  tool(agent: () => Promise<{ id: string; tenantId: string }>, run?: (api: unknown) => Promise<string | undefined>): ToolRegistration {
     return {
       name: SEND_MESSAGE_TOOL.name, description: SEND_MESSAGE_TOOL.description,
       parameters: structuredClone(SEND_MESSAGE_TOOL.parameters) as never,
       callers: ["model"], replay: "unsafe",
-      execute: async (args: Record<string, unknown>) => {
+      execute: async (args: Record<string, unknown>, api: unknown) => {
         const owner = await agent();
-        const sent = await (await this.channels()).sendMessage({ id: owner.id, tenant: owner.tenantId }, args ?? {});
+        const sent = await (await this.channels()).sendMessage({ id: owner.id, tenant: owner.tenantId }, args ?? {}, await run?.(api));
         return { output: [{ type: "text", text: JSON.stringify(sent) }] };
       },
     } as ToolRegistration;

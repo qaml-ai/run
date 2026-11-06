@@ -46,6 +46,13 @@ export interface Inbound {
   followUp?: boolean;
   /** What to call the conversation's agent when it is made (a pull request's title), instead of the sender. */
   title?: string;
+  /**
+   * In a conversation that spans threads (a Slack channel answered by one agent): the thread this message is in, as the
+   * model sees it (`from.thread`, and send_message's `thread`); `replyTo`, where its turn's reply goes (the provider's
+   * target, default the conversation); `threadKey`, the thread as the channel remembers it, so a `continuation` (a
+   * reply in the thread without a mention) is let in only in threads the agent was brought into.
+   */
+  thread?: string; replyTo?: string; threadKey?: string;
   /** Vouched for by the provider under the channel's settings (a repository's member), so let in without the allowlist. */
   trusted?: boolean;
   /**
@@ -104,6 +111,11 @@ export interface ChannelProvider {
   /** The largest attachment a bot may download, when the service caps it below CHANNEL_FILE_LIMITS.fileBytes. */
   readonly maxDownloadBytes?: number;
   send(credentials: Credentials, conversationId: string, text: string): Promise<void>;
+  /**
+   * Where send_message's `thread` posts in a conversation: a thread the model saw (`from.thread`) or "new" (a message of
+   * its own, which starts one). Throws for a thread it cannot be. A provider without it takes no `thread`.
+   */
+  threadTarget?(conversationId: string, thread: string): string;
   sendFile(credentials: Credentials, conversationId: string, file: OutboundFile, caption?: string): Promise<void>;
   /** The largest file the service takes from a bot; larger ones are sent as a link. */
   readonly maxFileBytes: number;
@@ -160,14 +172,16 @@ export type Item = {
   inbound?: Inbound;
   /** The channel filter's answer, once asked: a retake does not ask again. */
   verdict?: Verdict;
-  agent?: string; prompt?: { text: string; from?: { id: string; name?: string; username?: string }; files?: { path: string }[] };
+  agent?: string; prompt?: { text: string; from?: { id: string; name?: string; username?: string; thread?: string }; files?: { path: string }[] };
+  /** Where this item's text and files are sent, when not to the conversation itself (a thread of it). */
+  replyTo?: string;
   /** What to send: the text's parts, then each file; `sent` counts the steps done. */
   text?: string; files?: Presented[]; sent?: number; attempts?: number;
 };
 /** An item as last written; the next write is conditional on its revision. */
 export type Held = { item: Item; revision: number };
 /** A run as the host's agents record it: enough to know its reply. */
-export interface ChannelRun { id: string; method: string; state: string; outcome?: { result?: unknown; error?: unknown } }
+export interface ChannelRun { id: string; method: string; state: string; outcome?: { result?: unknown; error?: unknown }; metadata?: Record<string, unknown> }
 /** An input an agent waits on, as the host's inputs list it. */
 export interface PendingInput { id: string; requestId?: string; kind: string; message: string; detail: Record<string, any> }
 /** An agent, as the host's hooks name it; `claim` is the host's own (a Node node's hold on the agent). */
@@ -185,6 +199,7 @@ export const SEND_MESSAGE_TOOL = {
   parameters: { type: "object", properties: {
     text: { type: "string", maxLength: 16_000 },
     files: { type: "array", maxItems: 10, items: { type: "string" }, description: "Paths of files in your mounts to send, e.g. /workspace/report.pdf" },
+    thread: { type: "string", maxLength: 200, description: "Only where messages carry from.thread (one conversation of many threads): the thread to write in, or \"new\" for a message of its own. Default: the thread you are answering" },
   }, additionalProperties: false },
 } as const;
 /**
@@ -228,6 +243,8 @@ export const sizeText = (bytes: number) => bytes >= 1024 * 1024 ? `${(bytes / 10
 
 const sha = sha256Hex;
 export const seenKey = (messageId: string) => sha(messageId).slice(0, 40);
+/** A thread an agent was brought into, kept with the seen messages (and pruned with them). */
+export const threadSeenKey = (threadKey: string) => seenKey(`thread:${threadKey}`);
 /** An inbound message's item id, which is also its run's id. */
 export const inboundItemId = (channel: string, messageId: string) => `in_${sha(`${channel}:${messageId}`).slice(0, 40)}`;
 const held = (row: any): Held => ({ item: { ...row.item, due: Number(row.due) }, revision: row.revision });
@@ -318,6 +335,11 @@ export interface ChannelsHost {
   recheckMs?: number;
   /** An error as logs may show it: its class and codes, never its text (which may hold a message's content). */
   safeError(error: unknown): string;
+  /**
+   * The run of `agent` that started the sub-agent whose ending `run` notifies (a `child_` request), so the notice's
+   * reply goes to the thread that run answered. Hosts without it reply to the conversation.
+   */
+  parentRun?(agent: ChannelAgent, run: ChannelRun): Promise<string | undefined>;
 }
 
 export class Channels {
@@ -430,7 +452,7 @@ export class Channels {
     // through it again. Together, since a retried account deletion only finds channels that still exist.
     await this.host.transaction(async sql => {
       await sql.query("delete from channels where id = $1 and tenant = $2", [id, tenant]);
-      for (const table of ["channel_seen", "channel_counts", "email_threads", "email_messages"]) await sql.query(`delete from ${table} where channel = $1`, [id]);
+      for (const table of ["channel_seen", "channel_counts", "channel_replies", "email_threads", "email_messages"]) await sql.query(`delete from ${table} where channel = $1`, [id]);
       await sql.query("delete from channel_items where item->>'channel' = $1", [id]);
     });
     // A definition made for the channel goes with it, unless another channel took it up.
@@ -581,7 +603,9 @@ export class Channels {
       return;
     }
     if (inbound.continuation) {
-      const known = await this.host.sql.query("select 1 from channel_conversations where channel = $1 and conversation = $2", [channel.id, inbound.conversationId]);
+      const known = inbound.threadKey
+        ? await this.host.sql.query("select 1 from channel_seen where channel = $1 and message = $2", [channel.id, threadSeenKey(inbound.threadKey)])
+        : await this.host.sql.query("select 1 from channel_conversations where channel = $1 and conversation = $2", [channel.id, inbound.conversationId]);
       if (!known.rowCount) return;
     }
     const recorded = await this.record(channel, inbound);
@@ -607,12 +631,19 @@ export class Channels {
     const now = Date.now();
     const item: Item = {
       id: inboundItemId(channel.id, inbound.messageId), channel: channel.id, tenant: channel.tenant, conversationId: inbound.conversationId,
-      createdAt: now, state: "received", due: now + (inbound.coalesce?.debounceMs ?? 0), inbound,
+      createdAt: now, state: "received", due: now + (inbound.coalesce?.debounceMs ?? 0), inbound, ...(inbound.replyTo ? { replyTo: inbound.replyTo } : {}),
     };
     // The seen marker and the item commit together, so a retried delivery finds one or the other.
     return this.host.transaction(async sql => {
       const seen = await sql.query("insert into channel_seen (channel, message) values ($1, $2) on conflict do nothing", [channel.id, seenKey(inbound.messageId)]);
       if (!seen.rowCount) return undefined;
+      // Where this message's run answers, kept after its item is gone (see replyTarget).
+      if (inbound.replyTo)
+        await sql.query("insert into channel_replies (channel, run, reply_to) values ($1, $2, $3) on conflict do nothing", [channel.id, item.id, inbound.replyTo]);
+      // A thread the agent was brought into (a mention): later replies in it reach the agent without one, for as long
+      // as it stays seen (each message in it renews that).
+      if (inbound.threadKey)
+        await sql.query("insert into channel_seen (channel, message) values ($1, $2) on conflict (channel, message) do update set seen_at = now()", [channel.id, threadSeenKey(inbound.threadKey)]);
       if (!inbound.coalesce) return this.insert(sql, item);
       // One not yet started with the same key takes this message instead (keeping its id), and waits again.
       const { rows } = await sql.query(`
@@ -677,6 +708,8 @@ export class Channels {
     this.prunedAt = Date.now();
     await this.host.sql.query(`delete from channel_seen where seen_at < now() - interval '${SEEN_DAYS} days' and (verdict is null or seen_at < now() - interval '${FILTERED_DAYS} days')`);
     await this.host.sql.query("delete from channel_counts where created_at < now() - interval '2 days'");
+    // A sub-agent's notice can come days after the message that started it; a month covers long work.
+    await this.host.sql.query("delete from channel_replies where created_at < now() - interval '30 days'");
   }
 
   /**
@@ -907,7 +940,7 @@ export class Channels {
     const { credentials } = this.secrets(channel);
     const item = current.item;
     const steps = [
-      ...chunks(item.text ?? "", provider.maxMessageLength).map(part => () => provider.send(credentials, item.conversationId, part)),
+      ...chunks(item.text ?? "", provider.maxMessageLength).map(part => () => provider.send(credentials, item.replyTo ?? item.conversationId, part)),
       ...(item.files ?? []).map(file => () => this.sendFile(provider, credentials, item, file)),
     ];
     for (let index = item.sent ?? 0; index < steps.length; index++) {
@@ -948,21 +981,21 @@ export class Channels {
         }
         return data;
       };
-      return provider.sendFile(credentials, item.conversationId, { name, contentType: file.contentType, size: file.size, blob }, caption);
+      return provider.sendFile(credentials, item.replyTo ?? item.conversationId, { name, contentType: file.contentType, size: file.size, blob }, caption);
     }
     const link = files && item.agent ? await files.link(item.agent, item.tenant, file.path).catch(() => undefined) : undefined;
     const text = link ? `${name} (${sizeText(file.size)}, too large to send here; the link works for 24 hours): ${link}` : `(${name} could not be sent)`;
-    await provider.send(credentials, item.conversationId, caption ? `${caption}\n${text}` : text);
+    await provider.send(credentials, item.replyTo ?? item.conversationId, caption ? `${caption}\n${text}` : text);
   }
 
   /**
    * Queue an agent's message to its conversation and try to send it now. Queued under
    * the agent's claim, so a node that lost the agent mid-turn sends nothing more for it.
    */
-  private async enqueue(agent: ChannelAgent, binding: Binding, id: string, text: string, files: Presented[] = []) {
+  private async enqueue(agent: ChannelAgent, binding: Binding, id: string, text: string, files: Presented[] = [], replyTo?: string) {
     const now = Date.now();
     const write = (sql: Sql) => this.insert(sql, {
-      id, channel: binding.channel, tenant: binding.tenant, conversationId: binding.conversationId, createdAt: now,
+      id, channel: binding.channel, tenant: binding.tenant, conversationId: binding.conversationId, createdAt: now, ...(replyTo ? { replyTo } : {}),
       state: "sending", agent: agent.id, text, ...(files.length ? { files } : {}), sent: 0, attempts: 0, due: now,
     });
     const created = this.host.underClaim ? await this.host.underClaim(agent, write) : await write(this.host.sql);
@@ -1043,9 +1076,15 @@ export class Channels {
   }
 
   /** send_message: queue a message (text, files from the agent's mounts) to the agent's conversation. Undefined for an agent of no channel. */
-  async sendMessage(agent: ChannelAgent, args: Record<string, unknown>): Promise<{ sent: true }> {
+  async sendMessage(agent: ChannelAgent, args: Record<string, unknown>, run?: string): Promise<{ sent: true }> {
     const binding = await this.binding(agent.id);
     if (!binding) throw new Error("This agent answers no channel conversation");
+    let replyTo: string | undefined;
+    if (args.thread !== undefined) {
+      const provider = this.provider((await this.read(binding.channel))?.type ?? "");
+      if (typeof args.thread !== "string" || !args.thread || !provider.threadTarget) throw new Error("This conversation has no threads to choose: leave thread out");
+      replyTo = provider.threadTarget(binding.conversationId, args.thread);
+    } else if (run) replyTo = await this.replyTarget(agent, { id: run, method: "prompt", state: "running" });
     const text = typeof args.text === "string" ? args.text.trim() : "";
     const paths = Array.isArray(args.files) ? args.files.map(String) : [];
     if (!text && !paths.length) throw new Error("send_message needs text or files");
@@ -1053,7 +1092,7 @@ export class Channels {
     if (paths.length && !files) throw new Error("This runtime cannot send files");
     // Each must be a file in the agent's mounts; its reference pins the version sent.
     const refs = await Promise.all(paths.map(path => files!.ref(agent.id, agent.tenant, path)));
-    await this.enqueue(agent, binding, `msg_${crypto.randomUUID().replaceAll("-", "")}`, text, refs);
+    await this.enqueue(agent, binding, `msg_${crypto.randomUUID().replaceAll("-", "")}`, text, refs, replyTo);
     return { sent: true };
   }
 
@@ -1065,6 +1104,17 @@ export class Channels {
     const item = requestId?.startsWith("in_") ? (await this.host.sql.query("select item from channel_items where id = $1", [requestId])).rows[0]?.item as Item | undefined : undefined;
     const sender = item?.agent === agent.id ? item.inbound?.sender : undefined;
     return { channel: { id: binding.channel, type: channel?.type }, conversationId: binding.conversationId, ...(sender ? { sender: item!.inbound!.unverified ? { ...sender, unverified: true } : sender } : {}) };
+  }
+
+  /**
+   * Where a run's messages go when it names no thread: the thread of the message that started it, or for a sub-agent's
+   * notice, of the run that started the sub-agent; undefined for the conversation itself.
+   */
+  private async replyTarget(agent: ChannelAgent, run: ChannelRun): Promise<string | undefined> {
+    const started = run.id.startsWith("in_") ? run.id : run.id.startsWith("child_") ? await this.host.parentRun?.(agent, run).catch(() => undefined) : undefined;
+    if (!started?.startsWith("in_")) return undefined;
+    const binding = await this.binding(agent.id);
+    return binding ? (await this.host.sql.query("select reply_to from channel_replies where channel = $1 and run = $2", [binding.channel, started])).rows[0]?.reply_to as string | undefined : undefined;
   }
 
   /** A channel agent's turn ended: its reply goes to the conversation, and the first input it waits on, if any. */
@@ -1082,8 +1132,8 @@ export class Channels {
         console.log(JSON.stringify({ type: "channel_turn_over_limit", channel: channel.id, agent: agent.id, request: record.id }));
         return;
       }
-      // They reply to the conversation too.
-      if (!empty) await this.enqueue(agent, binding, `out_${sha(`${agent.id}:${record.id}`).slice(0, 40)}`, reply.text, reply.files);
+      // They reply to the conversation too: a sub-agent's notice, to the thread its parent run answered.
+      if (!empty) await this.enqueue(agent, binding, `out_${sha(`${agent.id}:${record.id}`).slice(0, 40)}`, reply.text, reply.files, await this.replyTarget(agent, record));
       return;
     }
     for (let attempt = 0; attempt < 10; attempt++) {
@@ -1116,7 +1166,8 @@ const decodeBase64 = (text: string) => {
 /** A message as a prompt: its text with notes on files left out, and its sender apart from what they wrote. */
 export function promptOf(type: string, inbound: Inbound, files: { path: string }[], notes: string[]) {
   const { id, name, username } = inbound.sender;
-  const from = { id: `${type}:${inbound.unverified ? "unverified:" : ""}${id}`, ...(name ? { name: name.slice(0, 200) } : {}), ...(username ? { username: username.slice(0, 200) } : {}) };
+  const from = { id: `${type}:${inbound.unverified ? "unverified:" : ""}${id}`, ...(name ? { name: name.slice(0, 200) } : {}), ...(username ? { username: username.slice(0, 200) } : {}),
+    ...(inbound.thread ? { thread: inbound.thread.slice(0, 200) } : {}) };
   const text = [inbound.text, ...notes].filter(Boolean).join("\n") || (files.length === 1 ? "(sent a file)" : files.length ? `(sent ${files.length} files)` : "");
   return { text, from, ...(files.length ? { files } : {}) };
 }

@@ -12,13 +12,15 @@ const TRANSIENT = new Set(["ratelimited", "internal_error", "fatal_error", "serv
 
 /**
  * A conversation is a thread: `<channel>-<thread ts>`. A direct message is its own
- * conversation, `<channel>`, answered in place.
+ * conversation, `<channel>`, answered in place. With the setting `conversation: "channel"`
+ * a Slack channel is one conversation (one agent) and each thread in it a part of it.
  */
 const conversation = (channel: string, thread?: string) => thread ? `${channel}-${thread}` : channel;
 const target = (conversationId: string) => {
   const [channel, thread] = conversationId.split("-", 2);
   return { channel, ...(thread ? { thread_ts: thread } : {}) };
 };
+const TS = /^\d{1,12}\.\d{1,9}$/;
 /** Slack reads `&`, `<` and `>` as markup in message text. */
 const escape = (text: string) => text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
@@ -83,16 +85,38 @@ export function slack(options: { apiUrl?: string; fetch: typeof fetch; maxFileBy
       const expected = `v0=${toHex(await hmacSha256(signingSecret(credentials), `v0:${timestamp}:${body}`))}`;
       return sameText(headers.get("x-slack-signature") ?? "", expected);
     },
+    settings(input, current) {
+      const merged = { ...current, ...input };
+      const unknown = Object.keys(merged).find(key => key !== "conversation");
+      if (unknown) throw new HttpError(400, `Unknown Slack setting ${unknown}`);
+      if (merged.conversation !== undefined && merged.conversation !== "thread" && merged.conversation !== "channel")
+        throw new HttpError(400, 'settings.conversation is "thread" (default: one agent per thread) or "channel" (one agent per Slack channel, each thread part of its conversation)');
+      return merged.conversation === "channel" ? { conversation: "channel" } : {};
+    },
+    // A thread of a channel conversation, or "new": the channel itself, where a message of the bot's own starts a thread.
+    threadTarget(conversationId, thread) {
+      const { channel } = target(conversationId);
+      if (thread === "new") return channel;
+      if (!TS.test(thread)) throw new Error('thread is a Slack thread from a message\'s from.thread (like 1730000000.123456), or "new"');
+      return conversation(channel, thread);
+    },
     handshake(payload: any) {
       return payload?.type === "url_verification" && typeof payload.challenge === "string" ? { challenge: payload.challenge } : undefined;
     },
-    parse(payload: any): Inbound | undefined {
+    parse(payload: any, context?: { settings?: Record<string, unknown> }): Inbound | undefined {
       const event = payload?.event;
       if (payload?.type !== "event_callback" || !event || typeof event.channel !== "string" || typeof event.user !== "string" || typeof event.ts !== "string") return undefined;
       // Bots (this one included) and edits, deletions and joins are not messages to answer.
       if (event.bot_id || (event.subtype && event.subtype !== "file_share")) return undefined;
       let conversationId: string, continuation = false;
-      if (event.type === "app_mention") conversationId = conversation(event.channel, event.thread_ts ?? event.ts);
+      const wholeChannel = context?.settings?.conversation === "channel" && event.channel_type !== "im";
+      let thread: string | undefined;
+      if (wholeChannel && (event.type === "app_mention" || (event.type === "message" && typeof event.thread_ts === "string" && event.thread_ts !== event.ts))) {
+        // One conversation per Slack channel: the thread is where this message is, and where its reply goes.
+        conversationId = conversation(event.channel);
+        thread = event.thread_ts ?? event.ts;
+        continuation = event.type === "message";
+      } else if (event.type === "app_mention") conversationId = conversation(event.channel, event.thread_ts ?? event.ts);
       else if (event.type === "message" && event.channel_type === "im") conversationId = conversation(event.channel);
       // A reply in a thread the bot is already in, without a mention (that one comes as app_mention too).
       else if (event.type === "message" && typeof event.thread_ts === "string" && event.thread_ts !== event.ts) {
@@ -112,6 +136,7 @@ export function slack(options: { apiUrl?: string; fetch: typeof fetch; maxFileBy
         messageId: `${event.channel}:${event.ts}`,
         sender: { id: event.user }, text, files,
         ...(continuation ? { continuation } : {}),
+        ...(thread ? { thread, replyTo: conversation(event.channel, thread), threadKey: conversation(event.channel, thread) } : {}),
       };
     },
     async download(credentials, file) {

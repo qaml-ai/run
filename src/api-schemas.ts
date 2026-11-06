@@ -435,6 +435,7 @@ export const PromptInput = z.object({
     id: z.string().openapi({ description: "The sender's id in your app; the model may rely on it" }),
     name: z.string().optional().openapi({ description: "Display name, chosen by the sender" }),
     username: z.string().optional().openapi({ description: "Handle, chosen by the sender" }),
+    thread: z.string().optional().openapi({ description: "The thread of a shared conversation the message was written in (a channel sets it: a Slack thread's ts in a channel answered by one agent). The model sees it with the sender, and its reply goes there" }),
   }).optional().openapi({ description: "Who sent this message. The model sees it in a block only the runtime can write; `from.id` is also the turn's actor unless `actor` is given" }),
   requestId: z.string().optional().openapi({ description: "Idempotency: retrying with the same id returns the same request. The user message records it, so a UI can match its own bubble" }),
   allowDisconnected: z.boolean().optional().openapi({ description: "Run even though the agent's tools need its application and none is connected (else 409 APPLICATION_NOT_CONNECTED): its calls then fail as not connected" }),
@@ -613,7 +614,7 @@ export const AgentCreated = z.looseObject({
   warnings: z.array(z.string()).optional().openapi({ description: "Builtins the agent has that its tenant cannot use yet, and how to fix it: web_search without a key for any of its search providers (add one with PUT /v1/providers/{provider}/key)" }),
 }).openapi("AgentCreated");
 
-const Sender = z.strictObject({ id: z.string(), name: z.string().optional(), username: z.string().optional() });
+const Sender = z.strictObject({ id: z.string(), name: z.string().optional(), username: z.string().optional(), thread: z.string().optional() });
 
 const RunInputPart = z.union([
   z.strictObject({ type: z.literal("text"), text: z.string() }),
