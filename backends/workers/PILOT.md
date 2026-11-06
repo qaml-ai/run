@@ -537,32 +537,42 @@ not an invoice or a guaranteed upper bound. Included allowances, shared-account
 allocation and unitemized services still apply. The window recorded zero
 Durable Object CPU-limit, memory-limit or fatal errors and zero Worker errors.
 
-### Scaling validation and integration gate
+### Scaling validation after the harness rebase
 
-The merged runtime passed Workers typechecking and 20 focused profile, RPC
-boundary, storage, alarm and crash-recovery checks on Sprites. Shared
-typechecking and all ten documentation tests passed. The affected Workers
-groups passed billing 44, model routing 58, accounts/auth 39 plus two accepted
-differences, webhooks 10, and delegation 39. Lifecycle had 99 passes, two
-accepted differences and one time-limit test timeout.
+The branch was rebased onto `codex/workers-parity` at `9de3ed55`, including
+PR #668's fixture startup, Python wheel integrity, cancellation and WebSocket
+completion fixes. The modular watchdog, billing and durable deletion changes
+were preserved. This validation did not redeploy the pilot or rerun load; the
+measurements above still describe the deployed API at `76f56096`.
 
-The full comparison on `76f56096` passed all 590 Node cases. Workers reported
-548 passes, 17 accepted differences and 25 failures; both reports retain the
-same 380 existing scope exclusions. Three Workers failures were JavaScript
-test timeouts. The other 22 were Python missing-result or timeout failures,
-including SDK-only cases. These are not presented as a zero-failure result.
-The first Python attempt was lost to a Sprite restart; its replacement also
-failed, so the failures cannot all be attributed to the restart.
-`measurements/workers-parity-diagnostics.json` records their classifications
-and the unresolved cause of the Python failures.
+One full parity invocation ran on six newly created Sprites, with source frozen
+at `e6e9a8a7` and automatic retries disabled. It completed in 586.654 seconds:
+Node passed 590 cases (524 HTTP and 66 SDK); Workers passed 573 (507 HTTP and
+66 SDK), with 17 accepted differences and zero failures. Both reports retain
+380 existing scope exclusions. All 12 raw shard reports agree with the
+canonical reports. See `PARITY.md` and `measurements/workers-rebase-parity.json`.
 
-The lifetime and language cases that timed out passed unchanged in a combined
-probe in 14.471 seconds. Readiness took 5.919 and 6.292 seconds; no HTTP request
-exceeded 465 ms. `measurements/workers-startup-trace.json` records that evidence
-and its limits. The coordinator directed this run to leave the shared startup
-waiter and clock fixes to `codex/workers-unit-green`, then deploy and measure.
-The coordinator owns the full integration parity rerun after both PRs merge.
-No fixture fix or weakened assertion was added for these failures.
+The Workers unit suite passed all 518 tests. Ten runner and contract-harness
+checks also passed, along with root and Workers typechecking. A workerd
+integration case created 2,001 agents and verified deletion across 81 durable
+passes after a forced process interruption. Deletion took 502.415 seconds;
+the entire case, including setup and creation, took 815.238 seconds. It checked
+token revocation, spend-limit removal and unchanged balance and ledger.
+The complete integration results are in
+`measurements/workers-rebase-suites.json`.
+
+The native Docker computer case has an explicit skip on Sprites because their
+kernel cannot host the required OCI runtime. Forcing that case failed with the
+same host-restriction assertion on both `e6e9a8a7` and upstream `9de3ed55`.
+The Ubuntu Workers integration CI job requires Docker and does not allow this
+skip. The Sprite result is not evidence that the native Docker case passed.
+
+The previous full comparison on `76f56096` had 25 Workers failures: three
+JavaScript timeouts and 22 Python missing-result or timeout failures. None
+recurred after this rebase. The earlier non-reproducing timing probes and
+failure classifications remain in `measurements/workers-startup-trace.json`
+and `measurements/workers-parity-diagnostics.json`. No competing fixture fix
+or weakened assertion was added here.
 
 The broader source suite also reproduced its existing UI gzip budget failure
 on base `20443b49`: 9,729 bytes exceeds 9,216. No UI source changed in this work.
