@@ -8,7 +8,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "clients", "python"))
 import httpx
 from websockets.asyncio.server import serve
-from camelai_run.event_transport import event_stream, event_stream_sync, _frame, _selection
+from camelai_run.event_transport import event_stream, event_stream_sync, _frame, _selection, _SocketResponse
 
 
 class EventTransport(unittest.IsolatedAsyncioTestCase):
@@ -54,6 +54,27 @@ class EventTransport(unittest.IsolatedAsyncioTestCase):
                     with event_stream_sync(client, f"http://127.0.0.1:{port}/events", headers={"Authorization": "Bearer fixture"}) as response:
                         return list(response.iter_bytes())
             self.assertEqual(await asyncio.to_thread(run), [b"event: ready\ndata: {}\n\n"])
+
+    async def test_closed_control_ends_async_stream_before_native_close(self):
+        async def handler(socket):
+            await socket.send(json.dumps({"event": "closed", "data": {"reason": "expired"}}))
+            # The server waits for the client; it sends no native close frame.
+            await socket.wait_closed()
+        async with serve(handler, "127.0.0.1", 0, subprotocols=["camelrun.events.v1"]) as server:
+            port = server.sockets[0].getsockname()[1]
+            def handle(request):
+                return httpx.Response(200, headers={"content-type": "application/vnd.camelrun.events+json"}, json={"transport": "websocket", "protocol": "camelrun.events.v1", "url": "/events"})
+            async def read():
+                async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+                    async with event_stream(client, f"http://127.0.0.1:{port}/events", headers={"Authorization": "Bearer fixture"}) as response:
+                        return [part async for part in response.aiter_bytes()]
+            self.assertEqual(await asyncio.wait_for(read(), 2), [b'event: closed\ndata: {"reason":"expired"}\n\n'])
+
+    async def test_closed_control_ends_sync_stream_without_another_socket_read(self):
+        def socket_frames():
+            yield json.dumps({"event": "closed", "data": {"reason": "expired"}})
+            raise AssertionError("Read another socket frame after the closed control")
+        self.assertEqual(list(_SocketResponse(socket_frames()).iter_bytes()), [b'event: closed\ndata: {"reason":"expired"}\n\n'])
 
     async def test_invalid_frames_and_cross_origin_are_rejected(self):
         with self.assertRaises(ValueError):
