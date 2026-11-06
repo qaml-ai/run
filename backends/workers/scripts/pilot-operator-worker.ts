@@ -5,6 +5,7 @@ import { keyServices, type SecurityEnv } from "../src/security-services.ts";
 import { accountDeletions, type AccountLifecycleEnv } from "../src/account-lifecycle.ts";
 import type { AccountServices } from "../src/account-services.ts";
 import { withSql } from "../src/postgres.ts";
+import type { CamelAgent } from "../src/agent.ts";
 
 type Options = { tokenHash: string; tenantIds: string[]; expiresAt: number };
 type Env = SecurityEnv & AccountLifecycleEnv;
@@ -34,6 +35,14 @@ export default function pilotOperator(options: Options) {
             const activity = await sql.query("select state, backend_type, application_name, count(*)::int as connections from pg_stat_activity where datname=current_database() group by state,backend_type,application_name order by state,backend_type,application_name");
             return { settings: Object.fromEntries(settings.rows.map(row => [row.name, Number(row.setting)])), activity: activity.rows };
           }));
+        }
+        if (path === "/pilot/database-profile" && request.method === "POST") {
+          const input = await request.json() as { tenant?: string; agent?: string; reset?: boolean };
+          if (!input.tenant || !allowed.has(input.tenant)) return reply({ error: "Tenant outside bootstrap scope" }, 403);
+          if (!input.agent || !(await services.accounts.db.query("select 1 from agents where tenant=$1 and id=$2", [input.tenant, input.agent])).rowCount)
+            return reply({ error: "Agent outside bootstrap scope" }, 403);
+          const agents = env.AGENTS as DurableObjectNamespace<CamelAgent>;
+          return reply(await agents.getByName(input.agent).databaseProfile(input.reset === true));
         }
         const targeted = /^\/v1\/tenants\/([a-z0-9-]+)(?:\/(limits|deletion))?$/.exec(path);
         const tokens = /^\/v1\/tenants\/([a-z0-9-]+)\/tokens(?:\/([a-f0-9-]{36}))?$/.exec(path);

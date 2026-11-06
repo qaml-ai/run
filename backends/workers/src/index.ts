@@ -1,5 +1,6 @@
 import { serveToolFile } from './tool-files.ts';
 import { withMoneyMetrics } from "./money-metrics.ts";
+import { profileHttp } from "./db-profile.ts";
 import { publicRoutes, publicPageHeaders, authenticationHint } from "./public-http.ts";
 import { firstPrompt } from "./first-prompt.ts";
 import { builtinWarnings } from "./builtin-warnings.ts";
@@ -187,7 +188,7 @@ const worker = {
     env: Env,
     ctx: ExecutionContext,
   ): Promise<Response> {
-    return withMoneyMetrics(env, async () => publicPageHeaders(request, corsResponse(request, await (async () => {
+    return profileHttp(env.PILOT_DB_PROFILE === "1", () => withMoneyMetrics(env, async () => publicPageHeaders(request, corsResponse(request, await (async () => {
     try {
       request = websocketAuthorization(request);
       if (request.method === "OPTIONS" && (/^\/v1\/agents\/client_[a-f0-9]{40}\/mcp$/.test(new URL(request.url).pathname) || new URL(request.url).pathname === "/mcp")) return agentMcpPreflight();
@@ -580,7 +581,7 @@ const worker = {
     } catch (error) {
       return httpFailure(error, env);
     }
-    })())));
+    })()))));
   },
   async queue(batch: MessageBatch<DeliveryMessage>, env: Env) {
     return withMoneyMetrics(env, async () => {

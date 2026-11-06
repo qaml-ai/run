@@ -65,6 +65,7 @@ export async function stageWebhook(tx: Pick<DurableObjectTransaction, "get" | "p
 export class AgentWebhooks {
   private pending: Promise<void> = Promise.resolve();
   constructor(private readonly storage: DurableObjectStorage, private readonly env: WebhookEnv) {}
+  settled(): Promise<void> { return this.pending; }
   flush(): Promise<void> {
     const next = this.pending.then(async () => {
       let published = false;

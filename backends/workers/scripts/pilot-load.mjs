@@ -63,6 +63,22 @@ export function loadTenantIds(runId, count = 20) {
   return Array.from({ length: count }, (_, i) => `pilot-load-${runId}-${i}`);
 }
 
+export function mergeDbProfiles(values) {
+  const result = { phases: {}, operations: {} };
+  for (const value of values) {
+    for (const [phase, count] of Object.entries(value?.operations ?? {})) result.operations[phase] = (result.operations[phase] ?? 0) + count;
+    for (const [phase, metrics] of Object.entries(value?.phases ?? {})) {
+      const target = result.phases[phase] ??= {};
+      for (const [key, number] of Object.entries(metrics)) {
+        if (Array.isArray(number)) (target[key] ??= []).push(...number);
+        else if (key.endsWith('MaxMs')) target[key] = Math.max(target[key] ?? 0, number);
+        else target[key] = (target[key] ?? 0) + number;
+      }
+    }
+  }
+  return result;
+}
+
 export async function runPilotLoad(options) {
   const { operatorBaseUrl, operatorToken, tenantIds, fakeBaseUrl } = options;
   const baseUrl = options.baseUrl ?? PILOT;
@@ -82,6 +98,7 @@ export async function runPilotLoad(options) {
     if (report.errorSamples.length < 20) report.errorSamples.push({ at: new Date().toISOString(), classification: name, ...(error?.route ? { route: error.route } : {}), ...(error?.ray ? { ray: error.ray } : {}) });
     return name;
   };
+  let edgeProfiles;
   const request = async (base, token, path, init = {}) => {
     const response = await fetch(base + path, {
       method: init.method ?? (init.body === undefined ? 'GET' : 'POST'),
@@ -89,6 +106,9 @@ export async function runPilotLoad(options) {
       ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
       signal: AbortSignal.timeout(init.timeoutMs ?? 120_000),
     });
+    if (edgeProfiles && base === baseUrl) {
+      try { const profile = JSON.parse(response.headers.get('x-pilot-db-profile') ?? 'null'); if (profile) edgeProfiles.push(profile); } catch { /* profiling must not alter the workload */ }
+    }
     const data = await response.json().catch(() => null);
     if (!response.ok) {
       const route = path.replace(/\/agents\/[^/]+/, '/agents/:id').replace(/\/end-users\/[^/]+/, '/end-users/:id').replace(/\/requests\/[^?]+/, '/requests/:id').split('?')[0];
@@ -131,6 +151,12 @@ export async function runPilotLoad(options) {
 
     for (const concurrency of stages) {
       if (interrupted) break;
+      // Reset after provisioning and the prior stage. Diagnostics are outside
+      // the timed workload and return aggregate counters only.
+      const stageAgents = agents.slice(0, concurrency);
+      const profiles = reset => mapLimit(stageAgents, 10, ({ id, tenant }) => admin('/pilot/database-profile', { body: { tenant: tenant.id, agent: id, reset } }));
+      const beforeProfiles = await profiles(true);
+      edgeProfiles = [];
       const begunAt = performance.now();
       const stage = { concurrency, startedAt: new Date().toISOString(), completed: 0, failed: 0, accepted: 0, maxClientInFlight: 0, maxEndUserHolds: 0, maxEndUserHeldMicros: 0, samples: [], errors: {} };
       let inFlight = 0, watching = true;
@@ -181,6 +207,9 @@ export async function runPilotLoad(options) {
       stage.turnLatency = latency(turnTimes);
       stage.after = await inspect();
       stage.origin = await admin('/pilot/database-status');
+      const afterProfiles = await profiles(false);
+      stage.databaseProfile = { agent: mergeDbProfiles(afterProfiles), edge: mergeDbProfiles(edgeProfiles), objectRestarts: afterProfiles.filter((p, i) => p.epoch !== beforeProfiles[i].epoch).length };
+      edgeProfiles = undefined;
       report.stages.push(stage);
       emit({ type: 'load_stage_result', ...stage, samples: stage.samples.length });
       // Give already accepted work its result, then stop the next ramp immediately.

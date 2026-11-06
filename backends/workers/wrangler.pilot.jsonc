@@ -106,6 +106,7 @@
     ]
   },
   "vars": {
+    "PILOT_DB_PROFILE": "1",
     "MODEL": "openrouter/openai/gpt-4.1-nano",
     "AGENT_PUBLIC_URL": "https://run-pilot.camelai.dev",
     "PUBLIC_URL": "https://run-pilot.camelai.dev",

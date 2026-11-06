@@ -22,6 +22,7 @@ import { RecentEvents } from "./recent-events.ts";
 import { tenantRunCaps } from "./tenant-run-caps.ts";
 import { toolCallSite } from "./tool-call-context.ts";
 import { withMoneyMetrics } from "./money-metrics.ts";
+import { DbProfile, dbPhase } from "./db-profile.ts";
 import { DurableObject } from "cloudflare:workers";
 import { type Message, type AssistantMessage } from "@earendil-works/pi-ai";
 import {
@@ -292,6 +293,7 @@ export interface Env
   AGENT_PUBLIC_URL?: string;
   PUBLIC_ASSETS?: Fetcher;
   TEST_MODEL?: string;
+  PILOT_DB_PROFILE?: string;
   TEST_MODEL_BASE_URL?: string;
   TEST_TURN_COST_MICROS?: string;
   TENANT_MAX_ACTIVE?: string;
@@ -324,6 +326,14 @@ type Child = {
 const reqKey = (id: string) => `request:${id}`;
 
 export class CamelAgent extends DurableObject<Env> {
+  private readonly dbProfile = new DbProfile(this.env.PILOT_DB_PROFILE === "1");
+  /** Binding-only pilot diagnostics, without SQL, identifiers or values. */
+  async databaseProfile(reset = false) {
+    await this.serial;
+    await this.eventsProcessed;
+    await this.webhooks.settled();
+    return { epoch: this.instanceId, ...this.dbProfile.snapshot(reset) };
+  }
   /** Erase a revoked account's journal only after the normal shutdown completed. */
   async purgeAccountData(tenant: string, id: string) {
     await this.admission;
@@ -634,6 +644,9 @@ export class CamelAgent extends DurableObject<Env> {
     );
   }
   private async admitRequest(conf: Config, id: string, bucket?: string) {
+    return this.dbProfile.run("admission", () => this.admitRequestProfiled(conf, id, bucket));
+  }
+  private async admitRequestProfiled(conf: Config, id: string, bucket?: string) {
     let acquired = false;
     try {
       const rate = await runAdmission(this.env, conf.tenantId);
@@ -667,7 +680,7 @@ export class CamelAgent extends DurableObject<Env> {
           status: 429,
           code: "BUSY_AGENT_LIMIT",
         });
-      await reserveTurn(this.env, conf.tenantId, conf.id, id);
+      await dbPhase("hold", () => reserveTurn(this.env, conf.tenantId, conf.id, id));
     } catch (error) {
       if (acquired)
         await this.env.TENANTS.getByName(conf.tenantId).release(
@@ -826,7 +839,7 @@ export class CamelAgent extends DurableObject<Env> {
           async (receipt) => {
             const key = `model-billing:${receipt.event.id}`;
             await this.ctx.storage.put(key, receipt);
-            await applyModelReceipt(this.env, receipt);
+            await this.dbProfile.run("settle", () => applyModelReceipt(this.env, receipt));
             await this.ctx.storage.delete(key);
           },
           async (context, stop) => {
@@ -835,6 +848,7 @@ export class CamelAgent extends DurableObject<Env> {
               await this.emit({ type: "event", requestId: context.requestId, event: { type: "spend_limit_reached", message: stop.error } });
             }
           },
+          action => this.dbProfile.run("admission", action),
         ),
       settings: async () => {
         const conf = await this.config();
@@ -1229,7 +1243,7 @@ export class CamelAgent extends DurableObject<Env> {
     await work;
     const value = event as any;
     if (webhook || value.type === "response" || ["agent_start", "input_required"].includes(value.event?.type))
-      this.ctx.waitUntil(this.webhooks.flush());
+      this.ctx.waitUntil(this.dbProfile.run("webhooks", () => this.webhooks.flush()));
   }
   private async flushTerminalEvents() {
     if (
@@ -1244,7 +1258,7 @@ export class CamelAgent extends DurableObject<Env> {
     }))
       for (let index = pending.next; index < pending.events.length; index++)
         await this.emit(pending.events[index], { key, index });
-    await this.webhooks.flush();
+    await this.dbProfile.run("webhooks", () => this.webhooks.flush());
   }
   private lastEntry = 0;
   private messageProjection = new MessageProjection();
@@ -2873,7 +2887,7 @@ export class CamelAgent extends DurableObject<Env> {
   }
 
   async fetch(request: Request): Promise<Response> {
-    return withMoneyMetrics(this.env, () => this.fetchRequest(request));
+    return this.dbProfile.run(new URL(request.url).pathname === "/history" ? "history" : "other", () => withMoneyMetrics(this.env, () => this.fetchRequest(request)));
   }
   private async fetchRequest(request: Request): Promise<Response> {
     try {
@@ -3589,7 +3603,7 @@ export class CamelAgent extends DurableObject<Env> {
       prefix: "model-billing:",
     })) {
       try {
-        await applyModelReceipt(this.env, receipt);
+        await this.dbProfile.run("settle", () => applyModelReceipt(this.env, receipt));
         await this.ctx.storage.delete(key);
       } catch (error) {
         await this.arm(Date.now() + 1000);
@@ -3601,7 +3615,7 @@ export class CamelAgent extends DurableObject<Env> {
       limit: 100,
     })) {
       try {
-        await settleTurn(this.env, receipt);
+        await this.dbProfile.run("settle", () => settleTurn(this.env, receipt));
         if (await this.ctx.storage.get("test:crash-settlement")) {
           await this.ctx.storage.transaction(async (tx) => {
             await tx.delete("test:crash-settlement");
@@ -3753,7 +3767,7 @@ export class CamelAgent extends DurableObject<Env> {
       });
   }
   async onStart() {
-    return withMoneyMetrics(this.env, () => this.restorePending());
+    return this.dbProfile.run("other", () => withMoneyMetrics(this.env, () => this.restorePending()));
   }
   private async restorePending() {
     this.configurationQueue.kick();
@@ -3780,9 +3794,9 @@ export class CamelAgent extends DurableObject<Env> {
     this.ctx.waitUntil(this.flushTerminalEvents());
   }
   async onJob(context: { job: { fn: string } }) {
-    return withMoneyMetrics(this.env, async () => {
+    return this.dbProfile.run("other", () => withMoneyMetrics(this.env, async () => {
       if (context.job.fn === "camel-wake") await this.wake();
-    });
+    }));
   }
   private async wake() {
     for (const socket of this.ctx.getWebSockets()) {

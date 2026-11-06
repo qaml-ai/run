@@ -1,5 +1,6 @@
 import { createAssistantMessageEventStream, type Model } from '@earendil-works/pi-ai';
 import type { Provider } from '@earendil-works/pi-ai/models';
+import { dbPhase } from './db-profile.ts';
 import { ModelAttempts } from './model-attempts.ts';
 import { EndUserCredits, creditError } from './end-user-credits.ts';
 import { attemptStream } from './model-attempt-stream.ts';
@@ -33,10 +34,11 @@ export function meterProvider<P extends Provider<any>>(
   provider: P, env: KeyEnv, context: () => Promise<ModelBillingContext>,
   commit: (receipt: ModelReceipt) => Promise<void>,
   stopped?: (context: ModelBillingContext, stop: BillingRunStop) => Promise<void>,
+  profile: <T>(action: () => T) => T = action => action(),
 ): P {
   const wrap = (stream: P['stream']) => ((model: Model<any>, transcript: any, options: any = {}) => {
     const output = createAssistantMessageEventStream();
-    void (async () => {
+    void profile(async () => {
       const identity = await context();
       const service = await modelAttempts(env);
       const credentials = Object.hasOwn(options, PREPARED_MODEL_CREDENTIALS)
@@ -86,7 +88,7 @@ export function meterProvider<P extends Provider<any>>(
               } } : {}) },
             ...(identity.subject ? { endUser: { id: identity.subject, bucket: identity.bucket ?? 'default' } } : {}),
           } : event;
-          const answer = await service.event(identity.tenant, identity.agent, platform, catalogPriced, attributed);
+          const answer = await dbPhase(event.type === "begin" ? "hold" : event.type === "progress" ? "renew" : "other", () => service.event(identity.tenant, identity.agent, platform, catalogPriced, attributed));
           return answer;
         });
         pending = next.catch(() => {});
@@ -107,7 +109,7 @@ export function meterProvider<P extends Provider<any>>(
         if (event.type === 'done' || event.type === 'error') await refusal;
         output.push(event);
       }
-    })().catch(error => {
+    }).catch(error => {
       output.push({ type: 'error', reason: 'error', error: { role: 'assistant', api: model.api, provider: model.provider, model: model.id,
         content: [], timestamp: Date.now(), stopReason: 'error', errorMessage: error instanceof Error ? error.message : 'Accounting failed',
         usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } } });
