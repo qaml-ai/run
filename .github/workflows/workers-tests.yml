@@ -62,31 +62,31 @@ on:
       - package-lock.json
       - .github/workflows/workers-tests.yml
       - .github/actions/**
+  # The slow job runs nightly and on demand (Run workflow with slow: true).
+  schedule: [{ cron: "47 6 * * *" }]
   workflow_dispatch:
+    inputs:
+      slow: { description: "Run only the slow tests (WORKERS_SLOW_TESTS=1) instead of the suites", type: boolean, default: false }
 permissions:
   contents: read
 concurrency:
-  group: workers-tests-${{ github.event.pull_request.number || github.ref }}
+  group: workers-tests-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name == 'schedule' || inputs.slow == true }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   test:
     name: Workers ${{ matrix.suite }}${{ matrix.shard && format(' (shard {0}/3)', matrix.shard) || '' }}
-    runs-on: ${{ matrix.runner || 'ubuntu-latest' }}
+    if: github.event_name != 'schedule' && inputs.slow != true
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        # Integration shard 1 holds only the 2001-agent account deletion test (see weight in
-        # backends/workers/scripts/run-tests.mjs): it needs a runner to itself to finish inside its 900 s timeout.
         include:
           - suite: unit
             command: test
           - suite: integration
             command: test:integration
             shard: 1
-            # About 12 minutes of agent creation and deletion passes against a 15 minute timeout: it hung at the limit twice
-            # on a 2 vCPU runner (and once on codex/workers-scale), so it gets a faster one.
-            runner: blacksmith-4vcpu-ubuntu-2404
           - suite: integration
             command: test:integration
             shard: 2
@@ -120,6 +120,40 @@ jobs:
           AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ steps.postgres.outputs.port }}/postgres
           WRANGLER_SEND_METRICS: "false"
           WORKERS_REQUIRE_DOCKER: ${{ matrix.suite == 'integration' && '1' || '0' }}
+      - name: Stop test Postgres
+        if: always() && steps.postgres.outputs.container != ''
+        run: docker rm -f '${{ steps.postgres.outputs.container }}'
+
+  # Tests too slow for every pull request, each read from WORKERS_SLOW_TESTS: today the account deletion test at 2001
+  # agents and 81 deletion passes (the suites run it at 101 agents), about 8.5 minutes on a Sprite.
+  slow:
+    name: Workers slow tests
+    if: github.event_name == 'schedule' || inputs.slow == true
+    # The 2001-agent deletion test has timed out on 2-vCPU runners; nightly only, so the bigger runner costs little.
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/node-dependencies
+      - uses: actions/cache@v4
+        id: workers-dependencies
+        with:
+          path: backends/workers/node_modules
+          key: workers-node-modules-${{ runner.os }}-${{ runner.arch }}-22-${{ hashFiles('backends/workers/package-lock.json', 'backends/workers/package.json', 'backends/workers/.npmrc') }}
+      - if: steps.workers-dependencies.outputs.cache-hit != 'true'
+        run: npm ci
+        working-directory: backends/workers
+      - name: Start test Postgres
+        id: postgres
+        uses: ./.github/actions/test-postgres
+      - name: Run the slow tests
+        run: node --import ./test/compat-register.mjs --experimental-strip-types --test test/account-deletion.integration.ts
+        working-directory: backends/workers
+        env:
+          WORKERS_SLOW_TESTS: "1"
+          AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ steps.postgres.outputs.port }}/postgres
+          WRANGLER_SEND_METRICS: "false"
+          WORKERS_REQUIRE_DOCKER: "0"
       - name: Stop test Postgres
         if: always() && steps.postgres.outputs.container != ''
         run: docker rm -f '${{ steps.postgres.outputs.container }}'

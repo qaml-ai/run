@@ -30,11 +30,8 @@ const suites = {
       "test/billing-alerts.test.ts",
     ],
   },
-  integration: { loader: "./test/compat-register.mjs", suffix: ".integration.ts", cpus: 4, least: 2, memory: 2 * 1024 ** 3, quiet: [],
-    // One test creates 2001 agents and deletes them in 81 durable passes: 14 minutes of the 15 minutes this suite takes
-    // on one Sprite. Sharding deals it a shard to itself so the other shards can finish in minutes.
-    weight: { "test/account-deletion.integration.ts": 1000 },
-  },
+  // A file that takes far longer than the rest can be given a `weight` (its share of a shard; 1 by default).
+  integration: { loader: "./test/compat-register.mjs", suffix: ".integration.ts", cpus: 4, least: 2, memory: 2 * 1024 ** 3, quiet: [] },
 };
 const [name, ...rest] = process.argv.slice(2);
 const suite = suites[name];
