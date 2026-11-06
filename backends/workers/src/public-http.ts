@@ -53,7 +53,7 @@ export async function publicRoutes(request: Request, env: PublicEnv): Promise<Re
     });
   }
   if (read && path === "/") {
-    const origins = publicOrigins(env, url.origin);
+    const origins = publicOrigins({ AGENT_PUBLIC_URL: env.AGENT_PUBLIC_URL, AGENT_PUBLIC_ALIASES: env.AGENT_PUBLIC_ALIASES, AGENT_ISSUER: env.AGENT_ISSUER }, url.origin);
     return Response.redirect(origins.alias(request.headers) ? `${origins.canonical}/${url.search}` : `${url.origin}/console`, 302);
   }
   // Unknown non-API URLs carry the same useful 404 even without credentials.

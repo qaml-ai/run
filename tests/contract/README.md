@@ -102,6 +102,12 @@ ignored `backends/workers/measurements/runs/`. Failures, missing results, and
 process cleanup failures remain failures. SDK-only cases never increase the
 backend HTTP pass count; channel and voice/audio cases are out of scope.
 
+`accepted-difference` is a separate, reviewed Workers status. The exact cases,
+CTO review and reasons live in `accepted-differences.mjs`. Workers records those
+cases without executing their backend-specific assertions; Node still runs and
+must pass them. Neither HTTP passes nor out-of-scope counts include them. The
+runner rejects unreviewed, renamed or stale difference records when merging.
+
 For an already prepared machine or Sprite:
 
 ```sh
