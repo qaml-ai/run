@@ -6,7 +6,7 @@ import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamable
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { Accounts, Sealed } from "./accounts.ts";
 import type { ToolDefinition } from "./protocol.ts";
-import { DENIED_PERMISSION, type Judge, type JudgeInput } from "./tool-judge.ts";
+import { gateToolCall, type Judge, type JudgeInput } from "./tool-judge.ts";
 import { errorText } from "./protocol.ts";
 import { safeError } from "./metrics.ts";
 import { HttpError } from "./http.ts";
@@ -288,13 +288,9 @@ function approvalFor(policy: ApprovalPolicy | undefined, tool: string, destructi
   if (policy?.default === "judged") return "judged";
   return policy?.default === "destructive" && destructive ? "always" : "never";
 }
-/** Whether a source's policy asks someone before a call of `tool`: a person, or the judge. */
-const asksBefore = (mode: Exclude<ApprovalMode, "destructive">) => mode !== "never";
 /** Approval changes the call policy, not the tool's callers or advertisement. */
 const gated = (tool: ToolDefinition, mode: Exclude<ApprovalMode, "destructive">): ToolDefinition =>
   mode === "never" ? tool : { ...tool, ...(mode === "judged" ? { judged: true } : { needsApproval: true }) };
-/** What a gated tool answers before it is approved: the runtime's approval request, as MCP's `input_required`. */
-const APPROVAL_REQUIRED: McpResult = { resultType: "input_required", inputRequests: { approval: { method: "agent-runtime/approval", params: {} } } };
 
 /** What callers see of an OpenAPI source: its tools' names, never its credentials. */
 export const openApiView = ({ sealed: _sealed, operations: list, ...source }: OpenApiSpec) => ({ ...source, tools: list.map(operation => operation.name) });
@@ -460,16 +456,7 @@ export class ToolSources {
    * the judge could not answer. A judged source with no judge asks: a call is never allowed unjudged.
    */
   private async gate(context: SourceContext, mode: Exclude<ApprovalMode, "destructive">, input: JudgeInput, signal: AbortSignal): Promise<McpResult | undefined> {
-    if (!asksBefore(mode)) return undefined;
-    // Only a request can authorize a call, so a turn that has none — a prompt sent with no text — is not judged at all:
-    // the person decides, as they do for a call the judge cannot read.
-    if (mode === "always" || !context.judge || !input.intent?.trim()) return APPROVAL_REQUIRED;
-    const judged = await context.judge(input, signal);
-    // A turn stopped while the judge was deciding runs nothing and asks nothing, whatever the answer was.
-    signal.throwIfAborted();
-    if (judged.decision === "allow") return undefined;
-    if (judged.decision === "deny") return { content: [{ type: "text", text: DENIED_PERMISSION(input.tool) }], isError: true };
-    return APPROVAL_REQUIRED;
+    return gateToolCall(mode, input, signal, context.judge);
   }
 
   private offered(spec: McpServerSpec, tool: Tool) {

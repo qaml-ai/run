@@ -6,7 +6,7 @@ import { legacyMcpRequest } from "./legacy-mcp.ts";
 import { pacedProgress, progressEvent, silenceDeadline, type Progress, type ToolProgressEvent } from "./mcp-progress.ts";
 import { Outbound } from "./security-outbound.ts";
 import { ownAudience, mcpToolName } from "./source-input-policy.ts";
-import { DENIED_PERMISSION, type JudgeInput, type Judged } from "./tool-judge.ts";
+import { gateToolCall, type JudgeInput, type Judged } from "./tool-judge.ts";
 import { approvalFor } from "./tool-call-policy.ts";
 import { toolCallMeta, toolCallSite, type ToolCallSite } from "./tool-call-context.ts";
 import type { ToolRegistration, ToolExecutionApi } from "@earendil-works/pi-durable";
@@ -441,12 +441,10 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
       const mode = approvalFor(source.approval, tool, destructive, method);
       if (mode !== "never") {
         const identityValue = mode === "judged" ? await identity?.(api) : undefined;
-        if (mode === "judged" && judge && identityValue?.intent?.trim()) {
-          const verdict = await judge({ tool: `${source.name}__${tool}`, args: args as Record<string, unknown>, description: description.slice(0, 4000), ...(identityValue?.intent ? { intent: identityValue.intent } : {}) }, api, context);
-          context.abortSignal?.throwIfAborted();
-          if (verdict.decision === "allow") return { reply: {} };
-          if (verdict.decision === "deny") return { result: { isError: true, content: [{ type: "text", text: DENIED_PERMISSION(`${source.name}__${tool}`) }] } };
-        }
+        const gated = await gateToolCall(mode, { tool: `${source.name}__${tool}`, args: args as Record<string, unknown>, description: description.slice(0, 4000), ...(identityValue?.intent ? { intent: identityValue.intent } : {}) }, context.abortSignal ?? new AbortController().signal,
+          judge ? (input, _signal) => judge(input, api, context) : undefined);
+        if (!gated) return { reply: {} };
+        if (gated.resultType !== "input_required") return { result: gated };
         if ((await toolCallSite(api, context)).innerCallId && !(await api.snapshot(HostExecutionRequest, api.conversationId, context))?.requestId) throw new Error(`${source.name}__${tool} needs the user's approval: call ${source.name}__${tool} directly`);
         const input = { name: `${source.name}__${tool}`, args, kind: "approval" as const, message: `Allow ${source.name}__${tool} to run?`, detail: { tool: `${source.name}__${tool}`, source: source.name, arguments: args } };
         if (approve) await approve(input);
