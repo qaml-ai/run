@@ -54,6 +54,34 @@ Postgres database. This matters: Hyperdrive local mode strips the connection
 URL's startup `options`; a URL-level `search_path` did not isolate these
 fixtures.
 
+`npm test` and `npm run test:integration` run through `scripts/run-tests.mjs`,
+which runs test files side by side. Every file is isolated: its own Postgres
+database, its own ports and its own Wrangler state directory. A database is a
+copy of a template that holds the migrated schema; the template is built once
+per migration set, so no test applies the migrations again. Unit files run one
+per CPU (at most 8). An integration fixture is a Wrangler plus a workerd, so
+those run two at a time, or more on a larger machine (one per 4 CPUs and
+2 GB of memory: starving them fails tests that have real deadlines). Override with
+`--concurrency=N`; any other option goes to `node --test`:
+
+```sh
+npm run test:integration -- --concurrency=2
+npm test -- --test-shard=1/3          # a third of the files
+```
+
+To spread a suite over Sprites, let `scripts/sprite-test` start one command per
+shard (the repository root's `scripts/sprite-test` leases the Sprites):
+
+```sh
+scripts/sprite-test --shards=4 HEAD bash -lc \
+  'cd backends/workers && npm ci && npm run test:integration -- --test-shard={shard}/{shards}'
+```
+
+One integration test, queued account deletion with 2001 agents, takes about 14
+minutes by itself (its agent creation and 81 durable deletion passes are the
+work). With two or more shards the split gives it a shard of its own, so the other
+shards finish in a few minutes and the suite takes as long as that one test.
+
 Compatibility results are in `measurements/compatibility.json`, with individual
 TAP logs. The compatibility command exits nonzero while contract failures
 remain. The adapter swaps the original tests' Node server fixture for Workers

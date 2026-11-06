@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { createHash, randomBytes } from "node:crypto";
 import pg from "pg";
 import { LocalWorker, unusedPort } from "./local-worker.ts";
-import { migrate } from "../scripts/migrate.mjs";
+import { createMigratedDatabase } from "./migrated-database.ts";
 import { publicAssets } from "../scripts/public-assets.mjs";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const activeFixtures = new Set<() => Promise<void>>();
@@ -118,7 +118,7 @@ export async function startFixture(
   try {
   if (stopped) throw new Error("Local Worker fixture startup was cancelled");
   await admin.connect();
-  await admin.query(`create database ${schema}`);
+  await createMigratedDatabase(admin, base, schema);
   cleanups.push(async () => { await admin.query(`drop database ${schema} with (force)`); });
   // Hyperdrive validates a password even when isolated local Postgres uses trust auth.
   if (!parsed.password) parsed.password = "local-only-unused";
@@ -127,11 +127,6 @@ export async function startFixture(
   const databaseUrl = parsed.toString(),
     db = new pg.Pool({ connectionString: databaseUrl });
   cleanups.push(() => closePool(db));
-  // Role settings belong to the cluster. The migration's advisory lock in each
-  // isolated database cannot serialize ALTER ROLE against another fixture.
-  await admin.query("select pg_advisory_lock(hashtext('agent-runtime:role-settings'))");
-  try { await migrate(db); }
-  finally { await admin.query("select pg_advisory_unlock(hashtext('agent-runtime:role-settings'))"); }
   for (const item of options.tenants ?? [{ id: tenant, token }]) {
     await db.query(
       "insert into tenants(id,created_at,billing) values($1,$2,$3) on conflict do nothing",
