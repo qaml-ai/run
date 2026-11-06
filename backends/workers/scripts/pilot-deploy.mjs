@@ -8,6 +8,9 @@ import { tmpdir } from 'node:os';
 const cwd = fileURLToPath(new URL('../', import.meta.url));
 const bin = resolve(cwd, 'node_modules/wrangler/bin/wrangler.js');
 const account = '85bbd288051330fb51ee1c86031a299b';
+const originLimit = Number(process.env.PILOT_ORIGIN_CONNECTION_LIMIT ?? 12);
+if (!Number.isInteger(originLimit) || originLimit < 5 || originLimit > 100)
+  throw new Error('PILOT_ORIGIN_CONNECTION_LIMIT must be an integer from 5 to 100');
 async function run(args, { input, quiet = false } = {}) {
   return new Promise((yes, no) => {
     const child = spawn(process.execPath, [bin, ...args], { cwd,
@@ -27,6 +30,7 @@ const buckets = await run(['r2', 'bucket', 'list'], { quiet: true });
 if (!buckets.includes('camelrun-pilot-files')) await run(['r2', 'bucket', 'create', 'camelrun-pilot-files']);
 const queues = await run(['queues', 'list'], { quiet: true });
 if (!queues.includes('camelrun-pilot-delivery')) await run(['queues', 'create', 'camelrun-pilot-delivery']);
+await run(['hyperdrive', 'update', '3e6d68e844ec480589e766119f52dead', '--origin-connection-limit', String(originLimit), '--caching-disabled', 'true'], { quiet: true });
 await run(['deploy', '-c', 'codemode/wrangler.pilot.jsonc']);
 await run(['deploy', '-c', 'pilot-fakemodel/wrangler.jsonc']);
 await run(['deploy', '-c', 'wrangler.pilot.jsonc']);
