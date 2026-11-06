@@ -280,6 +280,16 @@ export interface ChannelFiles {
   link(agent: string, tenant: string, path: string): Promise<string>;
 }
 
+/**
+ * The provisioning key of a conversation's agent: `<type>-<channel>-<conversation>[-<generation>]`, which must be an agent
+ * id's shape (letters, digits, `_` and `-`, at most 80). A conversation id that would not fit, a Slack thread's `C1-100.0001`
+ * or a long or dotted webhook key, is replaced by its hash, the same one every time, so the conversation keeps its agent.
+ */
+export function conversationAgentKey(type: string, channel: string, conversation: string, generation = 0) {
+  const key = `${type}-${channel}-${conversation}${generation ? `-${generation}` : ""}`;
+  return /^[A-Za-z0-9_-]{1,80}$/.test(key) ? key : `${type}-${channel}-${createHash("sha256").update(key).digest("hex").slice(0, 32)}`;
+}
+
 export class Channels {
   readonly db: Db;
   private readonly options: ChannelsOptions;
@@ -953,7 +963,7 @@ export class Channels {
       // A conversation outlives any session TTL: its agent lives until deleted (DELETE /v1/agents/:id).
       ttlSeconds: null,
     };
-    const key = `${channel.type}-${channel.id}-${conversationId}${generation ? `-${generation}` : ""}`;
+    const key = conversationAgentKey(channel.type, channel.id, conversationId, generation);
     // Bound first: the agent lists its tools (send_message among them) as it starts.
     const id = this.options.agentId(channel.tenant, key);
     const binding: Binding = { channel: channel.id, tenant: channel.tenant, conversationId };
