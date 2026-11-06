@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { unstable_dev, unstable_DevEnv } from "wrangler";
 
 const [config, port, inspectorPort, persistTo] = process.argv.slice(2);
-const { name } = JSON.parse(await readFile(config, "utf8"));
+const { name, containers } = JSON.parse(await readFile(config, "utf8"));
 const dispatch = unstable_DevEnv.prototype.dispatch;
 
 // Wrangler's browser-development proxy rewrites response URLs and waits for an
@@ -24,7 +24,13 @@ const worker = await unstable_dev(undefined, {
   port: Number(port),
   inspectorPort: Number(inspectorPort),
   persistTo,
-  experimental: { disableExperimentalWarning: true, showInteractiveDevSession: false, testScheduled: true },
+  experimental: {
+    disableExperimentalWarning: true,
+    showInteractiveDevSession: false,
+    testScheduled: true,
+    // unstable_dev defaults this off, even when the config declares containers.
+    enableContainers: Boolean(containers?.length),
+  },
 });
 const stop = async () => { await worker.stop(); process.exit(0); };
 process.once("SIGTERM", stop);

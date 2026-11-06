@@ -51,6 +51,7 @@ jobs:
         env:
           AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ steps.postgres.outputs.port }}/postgres
           WRANGLER_SEND_METRICS: "false"
+          WORKERS_REQUIRE_DOCKER: ${{ matrix.suite == 'integration' && '1' || '0' }}
       - name: Stop test Postgres
         if: always() && steps.postgres.outputs.container != ''
         run: docker rm -f '${{ steps.postgres.outputs.container }}'
