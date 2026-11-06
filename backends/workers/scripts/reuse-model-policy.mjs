@@ -23,6 +23,7 @@ outputs.set('anthropic-federation-policy.ts', banner + (await source('src/anthro
  .replace('import { GetWebIdentityTokenCommand, STSClient } from "@aws-sdk/client-sts";', 'class GetWebIdentityTokenCommand { readonly input: { Audience: string[]; SigningAlgorithm: string; DurationSeconds: number }; constructor(input: GetWebIdentityTokenCommand["input"]) { this.input = input; } }')
  .replace('import { metricLine } from "./metrics.ts";\n', '')
  .replace('import type { Credentials } from "./protocol.ts";', 'type Credentials = { apiKey: string; bearer?: true };')
+ .replace('"./core/no-redirect.ts"', '"../../../src/core/no-redirect.ts"')
  .replace('env: NodeJS.ProcessEnv)', 'env: Record<string, string | undefined>, options: Options = {})')
  .replace('region: env.AGENT_ANTHROPIC_FEDERATION_STS_REGION?.trim() || env.AWS_REGION?.trim() || "us-west-2" });', 'region: env.AGENT_ANTHROPIC_FEDERATION_STS_REGION?.trim() || env.AWS_REGION?.trim() || "us-west-2" }, options);')
  .replace(/const emit = \(event: Event\) => console\.log\(metricLine[\s\S]*?\n\}\)\);/, 'const emit = (event: Event) => console.log(JSON.stringify(event));')

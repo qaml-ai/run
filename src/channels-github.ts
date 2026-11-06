@@ -2,6 +2,7 @@ import { createHmac, createPrivateKey, sign, timingSafeEqual, type KeyObject } f
 import { HttpError } from "./http.ts";
 import { fetchFile, SendError, type ChannelProvider, type ChannelSettings, type Inbound, type InboundFile, type ParseContext } from "./channels.ts";
 import { network } from "./node-context.ts";
+import { fetchWithoutRedirects } from "./core/no-redirect.ts";
 
 /** What can start a turn: pull request activity, and comments that @mention the app. */
 export const GITHUB_EVENTS = [
@@ -75,9 +76,9 @@ export function github(options: { apiUrl?: string } = {}): ChannelProvider {
   });
 
   async function call(auth: string, method: string, path: string, body?: unknown) {
-    const response = await network().fetch(`${base}${path}`, {
+    const response = await fetchWithoutRedirects(network().fetch, `${base}${path}`, {
       method, headers: { ...headers(auth), ...(body ? { "Content-Type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}),
-      redirect: "error", signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(15_000),
     }).catch(error => { throw new SendError(`GitHub ${method} ${path.split("/").slice(0, 3).join("/")} failed: ${error instanceof Error ? error.name : "network error"}`, false); });
     const answer = await response.json().catch(() => ({})) as Record<string, any>;
     if (response.ok) return answer;

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { adminDays, type AdminRange } from "./admin-signals.ts";
 import { safeError } from "./metrics.ts";
 import { signedHeaders } from "./webhooks.ts";
+import { fetchWithoutRedirects } from "./core/no-redirect.ts";
 
 /**
  * A report of the journey store's (the operator's own analytics store, which src/journey.ts sends events to), asked
@@ -63,9 +64,9 @@ export async function adminReport(request: AdminReportRequest, source: AdminRepo
   if (!source) return { status: 503, body: { error: "report_not_configured" } };
   const raw = JSON.stringify(request);
   try {
-    const response = await fetcher(source.url, {
+    const response = await fetchWithoutRedirects(fetcher, source.url, {
       method: "POST", headers: { "content-type": "application/json", ...signedHeaders(randomUUID(), raw, [source.secret]) }, body: raw,
-      redirect: "error", signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
     });
     const data = JSON.parse(await boundedText(response, RESPONSE_BYTES));
     if (!response.ok) {

@@ -25,6 +25,7 @@ import { credentialExchange, CredentialExchangeError, type ExchangeAuth } from "
 import { COMPUTER_TOOLS } from "./computers/policy.ts";
 import { fileToolsFor } from "./file-tool-policy.ts";
 import { network } from "./account-network.ts";
+import { fetchWithoutRedirects } from "../../../src/core/no-redirect.ts";
 
 type Env = { API_TOKEN: string; TEST_MODE?: string } & Partial<IdentityEnv>;
 type Approval = { default?: "never" | "always" | "destructive" | "judged"; tools?: Record<string, "never" | "always" | "judged">; methods?: string[] };
@@ -522,7 +523,7 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
           }
         }
         await outbound(env).reachable(url);
-        const response = await network().fetch(url, { method: operation.method, headers: sent, body, redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(source.timeoutMs ?? 30_000), ...(context?.abortSignal ? [context.abortSignal] : [])]) });
+        const response = await fetchWithoutRedirects(network().fetch, url, { method: operation.method, headers: sent, body, signal: AbortSignal.any([AbortSignal.timeout(source.timeoutMs ?? 30_000), ...(context?.abortSignal ? [context.abortSignal] : [])]) });
         const contentType = response.headers.get('content-type')?.split(';')[0] ?? '';
         if (response.ok && contentType && !textual(contentType) && files) {
           const name = /filename\*?=(?:UTF-8''|"?)([^";]+)/i.exec(response.headers.get('content-disposition') ?? '')?.[1] ?? url.pathname.split('/').pop() ?? 'output';

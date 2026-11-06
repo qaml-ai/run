@@ -6,6 +6,7 @@ import { HttpError, readText } from "./http.ts";
 import { readableText } from "./html-text.ts";
 import { errorText } from "./protocol.ts";
 import { safeError } from "./metrics.ts";
+import { fetchWithoutRedirects } from "./core/no-redirect.ts";
 import { SendError, type Channel, type ChannelProvider, type Channels, type ChannelSettings, type InboundFile, type Sender } from "./channels.ts";
 
 /**
@@ -353,7 +354,7 @@ export async function verifySns(message: SnsMessage, fetcher: typeof fetch = fet
   let key = certificates.get(url.href);
   if (!key) {
     if (certificates.size > 20) certificates.clear();
-    key = fetcher(url, { redirect: "error", signal: AbortSignal.timeout(10_000) }).then(async response => {
+    key = fetchWithoutRedirects(fetcher, url, { signal: AbortSignal.timeout(10_000) }).then(async response => {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       return new X509Certificate(await response.text()).publicKey;
     });
@@ -502,7 +503,7 @@ export function emailReceiver(channels: Channels, options: EmailOptions) {
     if (message.Type === "SubscriptionConfirmation") {
       const confirm = snsUrl(message.SubscribeURL);
       if (!confirm) return c.body(null, 400);
-      const response = await fetcher(confirm, { redirect: "error", signal: AbortSignal.timeout(10_000) }).catch(() => undefined);
+      const response = await fetchWithoutRedirects(fetcher, confirm, { signal: AbortSignal.timeout(10_000) }).catch(() => undefined);
       log({ subscription: response?.ok ? "confirmed" : "failed", topic: message.TopicArn });
       return c.body(null, response?.ok ? 200 : 502);
     }

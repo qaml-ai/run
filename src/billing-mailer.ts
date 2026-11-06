@@ -6,6 +6,7 @@ import { billingEmail, type BillingEmail, type BillingEmailInput } from "./billi
 import { verifySns } from "./channels-email.ts";
 import { readText } from "./http.ts";
 import { MailTransport } from "./mail-transport.ts";
+import { fetchWithoutRedirects } from "./core/no-redirect.ts";
 
 export interface BillingMailOptions {
   db: Db; alerts: BillingAlerts; origin: string; from: string; displayName?: string; configurationSet?: string; topics?: string[]; region?: string;
@@ -89,7 +90,7 @@ export class BillingMailer {
         let url: URL;
         try { url = new URL(message.SubscribeURL); } catch { return c.body(null, 400); }
         if (url.protocol !== "https:" || ![`sns.${region}.amazonaws.com`, `sns.${region}.amazonaws.com.cn`].includes(url.hostname) || url.port || url.username || url.password || url.searchParams.get("Action") !== "ConfirmSubscription" || url.searchParams.get("TopicArn") !== message.TopicArn) return c.body(null, 400);
-        const result = await fetcher(url, { redirect: "error", signal: AbortSignal.timeout(10_000) }).catch(() => undefined);
+        const result = await fetchWithoutRedirects(fetcher, url, { signal: AbortSignal.timeout(10_000) }).catch(() => undefined);
         return c.body(null, result?.ok ? 200 : 502);
       }
       if (message.Type !== "Notification") return c.body(null, 200);

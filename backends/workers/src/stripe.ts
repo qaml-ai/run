@@ -2,6 +2,7 @@
 // Regenerate with scripts/reuse-billing.mjs; --check rejects policy drift.
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { network } from "./account-network.ts";
+import { fetchWithoutRedirects } from "../../../src/core/no-redirect.ts";
 
 /**
  * The few Stripe calls credit purchases need, over plain fetch against the REST API
@@ -75,8 +76,8 @@ export class Stripe {
     const url = new URL(path, this.options.apiUrl ?? "https://api.stripe.com");
     const form = formEncode(params);
     if (method === "GET") url.search = form.toString();
-    const response = await network().fetch(url, {
-      method, ...(method === "POST" ? { body: form } : {}), signal: AbortSignal.timeout(15_000), redirect: "error",
+    const response = await fetchWithoutRedirects(network().fetch, url, {
+      method, ...(method === "POST" ? { body: form } : {}), signal: AbortSignal.timeout(15_000),
       headers: {
         Authorization: `Bearer ${this.options.secretKey}`, "Content-Type": "application/x-www-form-urlencoded", "Stripe-Version": STRIPE_API_VERSION,
         ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
