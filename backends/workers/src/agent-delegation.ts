@@ -255,7 +255,7 @@ export function createPiSubagents(this: AgentRuntime): PiSubagents | undefined {
       const builtins = (config.builtins as string[] | undefined) ?? [];
       const allowed = new Set([...this.workspaceToolNames, "codemode", "final_output", "report_progress", "send_message",
         ...web.filter(name => builtins.includes(name)), ...builtins.flatMap(name => multi[name] ?? [])]);
-      const enabled = await this.enabledTools({ ...(await this.config()).config, ...config } as never);
+      const enabled = await this.enabledTools({ ...(await this.config()).config, ...config, type: "subagent" } as never);
       return { tools: enabled.tools.filter(tool => allowed.has(tool.name)) };
     },
     emit: (event) => this.emit(event),

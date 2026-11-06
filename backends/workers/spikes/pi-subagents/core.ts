@@ -15,6 +15,7 @@ import {
   configure,
   createRegistry,
   defineExtension,
+  defineTask,
   defineTool,
   type EntryId,
   type Extension,
@@ -44,6 +45,12 @@ export class Metrics {
   statements = 0;
   parentDone?: number;
   peakHeap = 0;
+  /** Model requests made and not ended; of those, ones receiving tokens. */
+  requested = 0;
+  streaming = 0;
+  maxStreaming = 0;
+  /** [ms since start, requested, streaming] every second. */
+  concurrency: [number, number, number][] = [];
 
   delta(conversation: string | undefined) {
     this.deltas++;
@@ -91,6 +98,8 @@ export class Metrics {
       parentDoneMs: this.parentDone === undefined ? null : this.parentDone - this.startedAt,
       ...(this.peakHeap ? { peakHeapMiB: Math.round((this.peakHeap / 1048576) * 10) / 10 } : {}),
       reports: this.reports.slice(0, 10),
+      maxStreaming: this.maxStreaming,
+      concurrency: this.concurrency.filter((_, index) => index % 5 === 0),
     };
   }
 }
@@ -106,11 +115,61 @@ function answerText(message: AssistantMessage | undefined) {
   return (message?.content ?? []).flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
 }
 
-export type Hooks = { sessions: Map<string, string>; watch?: (id: ConversationId) => Promise<void> };
+export type Hooks = {
+  sessions: Map<string, string>;
+  watch?: (id: ConversationId) => Promise<void>;
+  remote?: { task: ReturnType<typeof remoteChildTask>; prefix: string };
+};
+
+/** How the parent reaches a child object: start (idempotent by request id), long-poll its answer, and abort it. */
+export type RemoteChildren = {
+  start(child: string, requestId: string, task: string): Promise<void>;
+  wait(child: string, requestId: string, timeoutMs: number): Promise<{ done: boolean; status?: string; text?: string }>;
+  abort(child: string, requestId: string): Promise<void>;
+};
+
+/**
+ * The middle ground's remote child task: owned by the delegate call's task, so Pi's abort cascade, idle waits and
+ * replay apply to it. `start` asks the child object to run the conversation (its own Pi submission, deduplicated by the
+ * stable request id), `wait` long-polls it and commits the answer, and the abort handler aborts the child.
+ */
+export function remoteChildTask(remote: RemoteChildren) {
+  type Input = { child: string; requestId: string; task: string };
+  type State = { phase: "start" } | { phase: "wait"; started: number; startMs: number };
+  return defineTask<Input, State, { text: string; startMs: number }>({
+    name: "spike.remote-child",
+    version: 1,
+    initial: () => ({ phase: "start" }),
+    phases: {
+      start: async (task, runtime, taskContext) => {
+        const started = Date.now();
+        await remote.start(task.input.child, task.input.requestId, task.input.task);
+        await runtime.commit(() => ({ status: "running", checkpoint: { phase: "wait", started, startMs: Date.now() - started } }), taskContext);
+      },
+      wait: async (task, runtime, taskContext) => {
+        // A phase reruns from its top after an eviction, so the poll simply asks again.
+        const answer = await remote.wait(task.input.child, task.input.requestId, 20_000);
+        const checkpoint = task.state.checkpoint as { phase: "wait"; started: number; startMs: number };
+        if (!answer.done) {
+          await runtime.commit(() => ({ status: "running", checkpoint }), taskContext);
+          return;
+        }
+        await runtime.commit(() => answer.status === "done"
+          ? { status: "terminal", outcome: { status: "completed", result: { text: answer.text ?? "", startMs: checkpoint.startMs } } }
+          : { status: "terminal", outcome: { status: "failed", error: { message: `child ${answer.status}` } } }, taskContext);
+      },
+    },
+    abort: async (task, runtime, taskContext) => {
+      await remote.abort(task.input.child, task.input.requestId);
+      await runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), taskContext);
+    },
+  });
+}
 
 export function subagentExtension(metrics: Metrics, hooks: Hooks): Extension {
   const extension: Extension = defineExtension({
     name: "spike.subagent",
+    tasks: hooks.remote ? [hooks.remote.task] : [],
     tools: [
       defineTool({
         name: "subagent",
@@ -119,6 +178,23 @@ export function subagentExtension(metrics: Metrics, hooks: Hooks): Extension {
         replay: "safe",
         execute: async (args, api: ToolExecutionApi, callContext: Context) => {
           const ctxTokens = Number(/ctx=(\d+)/.exec(args.task)?.[1] ?? 0);
+          if (hooks.remote) {
+            // The middle ground: the call owns a RemoteChild task, which runs the conversation in a Durable Object of
+            // its own. A rerun finds the task by its memo; the task's abort handler reaches the remote child.
+            const key = `remote-${api.taskId}`;
+            if (!metrics.children.has(key)) metrics.children.set(key, { created: Date.now(), deltas: 0 });
+            const content = ctxTokens > 0 ? `${filler(ctxTokens)}\n\n${args.task}` : args.task;
+            const task = (await api.memo<number>("remote", callContext)) ?? (await api.memo("remote",
+              Number(await api.createTask(hooks.remote.task, { child: `${hooks.remote.prefix}-t${api.taskId}`, requestId: `subagent:${api.taskId}`, task: content }, { ownership: { kind: "task", taskId: api.taskId } }, callContext)), callContext));
+            const settled = await api.waitForTask(task as never, callContext);
+            const record = metrics.children.get(key)!;
+            record.answered = Date.now();
+            const outcome = settled.state.outcome as { status: string; result?: { text: string; startMs: number } };
+            record.status = outcome.status === "completed" ? "done" : outcome.status;
+            if (outcome.result) record.firstDelta = record.created + outcome.result.startMs;
+            if (outcome.status !== "completed") throw new Error(`Subagent ${outcome.status}`);
+            return { output: [{ type: "text", text: `${outcome.result!.text.length} characters` }] };
+          }
           // The ownership index remembers the child, so a rerun after a crash reuses it.
           const child = await api.commit(async (tx) => {
             const existing = (await tx.scanConversations({ ownerTaskId: api.taskId }, 1)).items[0];
@@ -184,11 +260,27 @@ export function spikeModels(baseUrl: string, metrics: Metrics, fetcher?: typeof 
     const original = stream[Symbol.asyncIterator].bind(stream);
     (stream as unknown as { [Symbol.asyncIterator]: () => AsyncIterator<unknown> })[Symbol.asyncIterator] = () => {
       const iterator = original() as AsyncIterator<unknown>;
+      let streaming = false, ended = false;
+      metrics.requested++;
+      const end = () => {
+        if (ended) return;
+        ended = true;
+        metrics.requested--;
+        if (streaming) metrics.streaming--;
+      };
       return {
         next: async () => {
-          const result = await iterator.next();
+          const result = await iterator.next().catch((error: unknown) => { end(); throw error; });
           const type = (result.value as { type?: string } | undefined)?.type;
-          if (!result.done && (type === "text_delta" || type === "toolcall_delta")) metrics.delta(sessionId ? sessions.get(sessionId) : undefined);
+          if (!result.done && (type === "text_delta" || type === "toolcall_delta")) {
+            if (!streaming) {
+              streaming = true;
+              metrics.streaming++;
+              metrics.maxStreaming = Math.max(metrics.maxStreaming, metrics.streaming);
+            }
+            metrics.delta(sessionId ? sessions.get(sessionId) : undefined);
+          }
+          if (result.done || type === "done" || type === "error") end();
           return result;
         },
         ...(iterator.return ? { return: iterator.return.bind(iterator) } : {}),
@@ -221,7 +313,7 @@ export async function openSpike(
   storage: Storage,
   baseUrl: string,
   metrics: Metrics,
-  options: { onWake?: (wake: Wake) => void; fetcher?: typeof fetch; watchChildren?: number } = {},
+  options: { onWake?: (wake: Wake) => void; fetcher?: typeof fetch; watchChildren?: number; remote?: { children: RemoteChildren; prefix: string } } = {},
 ): Promise<Spike> {
   const { models, sessions, ref } = spikeModels(baseUrl, metrics, options.fetcher);
   const registry = createRegistry();
@@ -241,7 +333,8 @@ export async function openSpike(
       if ((call.value.docs["pi.live"] as LiveState | undefined)?.generation) metrics.seen(key);
     });
   };
-  registry.install(subagentExtension(metrics, { sessions, watch }));
+  const remote = options.remote ? { task: remoteChildTask(options.remote.children), prefix: options.remote.prefix } : undefined;
+  registry.install(subagentExtension(metrics, { sessions, watch, ...(remote ? { remote } : {}) }));
   harness = await Harness.open(
     storage,
     {
@@ -278,6 +371,7 @@ export function lagProbe(metrics: Metrics, stopAfterMs: number, onTick?: () => v
   const tick = () => {
     const now = Date.now();
     metrics.lag.push(Math.max(0, now - expected));
+    if (metrics.lag.length % 10 === 0) metrics.concurrency.push([now - metrics.startedAt, metrics.requested, metrics.streaming]);
     onTick?.();
     if (now > until) return;
     expected = now + 100;
@@ -290,7 +384,7 @@ export function lagProbe(metrics: Metrics, stopAfterMs: number, onTick?: () => v
 export async function usageByConversation(spike: Spike, ids: string[]) {
   const out: Record<string, unknown> = {};
   for (const id of ids) {
-    const conversation = await spike.harness.conversation(id as ConversationId, context);
+    const conversation = await spike.harness.conversation(Number(id) as unknown as ConversationId, context);
     const watch = await conversation?.watch(context, { min: 1, max: 1 });
     out[id] = watch?.value.docs["pi.usage"];
     await watch?.stop();

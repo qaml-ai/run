@@ -216,8 +216,12 @@ export async function refreshComputerToolsImpl(this: AgentRuntime) {
 
 export async function enabledToolsImpl(this: AgentRuntime,
   config: AgentConfiguration) {
+    // SPIKE: the Pi subagents' child-only tools are installed with the agent's own; only children are given them.
+    const childOnly = this.piSubagents && config.type !== "subagent"
+      ? new Set(["report_progress", ...(config.builtins?.includes("agents") ? [] : ["send_message"])])
+      : undefined;
     return selectAgentTools(
-      this.availableTools,
+      childOnly ? this.availableTools.filter(tool => !childOnly.has(tool.name)) : this.availableTools,
       new Set(this.workspaceToolNames),
       config,
       await this.computerNames(),
@@ -399,6 +403,13 @@ export function createHarness(this: AgentRuntime): PiHarness {
             callers: ["model"],
             replay: "safe",
             execute: async (args, api) => {
+              // SPIKE: a Pi child conversation answers in the schema its delegate call asked for.
+              const childSchema = await this.piSubagents?.outputSchema(api);
+              if (childSchema) {
+                if (!schemaAccepts(childSchema, args)) throw new Error('Validation failed for tool "final_output": arguments do not match the requested schema');
+                await this.piSubagents!.recordOutput(api, args as JsonValue);
+                return { output: [{ type: "text", text: "Accepted." }], details: { output: args as JsonValue }, control: { terminate: true } };
+              }
               const run = await this.currentRun(api);
               const schema = (
                 "params" in run ? run.params?.output : undefined

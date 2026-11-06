@@ -54,6 +54,9 @@ type Subagent = {
   background: boolean;
   systemPrompt?: string;
   delegate?: DelegateSettings;
+  /** The JSON Schema a delegate call asked the answer in, and the answer final_output gave. */
+  output?: Record<string, unknown>;
+  outputValue?: unknown;
 };
 export const SubagentDoc = defineDoc<{ value: any }>({
   kind: "camel.subagent", version: 1, scope: "conversation", history: "latest", fork: "initial",
@@ -63,7 +66,7 @@ export const SubagentDoc = defineDoc<{ value: any }>({
 type ChildRow = {
   conversationId: string; agentId: string; name: string; parent: string; runId: string; toolCallId: string;
   background: boolean; createdAt: number; status: "running" | "completed" | "failed" | "aborted";
-  endedAt?: number; text?: string; error?: string; costUsd?: number; reporter?: string;
+  endedAt?: number; text?: string; output?: unknown; error?: string; costUsd?: number; reporter?: string;
   /** Who took the latest answer: a wait_agent result or a notification. Decided in one Pi commit. */
   landedBy?: "wait" | "notice"; requestId: string; progress?: { text: string; at: number; sequence: number }; progressShown?: number;
 };
@@ -89,6 +92,8 @@ export interface PiSubagentsHost {
   messageParent(from: { agentId: string; name: string }, text: string, requestId: string): Promise<unknown>;
 }
 
+/** Pi conversation ids are numbers; the documents keep them as strings (record keys). */
+const cid = (id: string) => Number(id) as unknown as ConversationId;
 const synthetic = (agent: string, conversation: string) => `${agent}-c${conversation}`;
 const textOf = (message: AssistantMessage | undefined) => (message?.content ?? []).flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
 const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
@@ -99,7 +104,7 @@ const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, 
 
 /** A child's cost so far, its own children's included: Pi keeps usage per conversation. */
 async function costOf(harness: Harness, rows: Record<string, ChildRow>, conversation: string): Promise<number> {
-  const usage = await harness.snapshot(UsageDoc, conversation as unknown as ConversationId, context);
+  const usage = await harness.snapshot(UsageDoc, cid(conversation), context);
   let total = 0;
   for (const bucket of Object.values(usage?.models ?? {})) total += (bucket as { cost?: { total?: number } }).cost?.total ?? 0;
   for (const row of Object.values(rows)) if (row.parent === conversation) total += await costOf(harness, rows, row.conversationId);
@@ -124,6 +129,15 @@ export class PiSubagents {
     if (session === this.rootSession) return false;
     await this.remap();
     return this.sessions.has(session);
+  }
+
+  /** The schema a child's answer must take, when its delegate call gave one. */
+  async outputSchema(api: ToolExecutionApi) {
+    return ((await api.snapshot(SubagentDoc, api.conversationId, context))?.value as Subagent | null)?.output;
+  }
+
+  async recordOutput(api: ToolExecutionApi, value: unknown) {
+    await api.commit(async (tx) => { const doc = await tx.doc(SubagentDoc, api.conversationId); doc.value = { ...doc.value, outputValue: value }; }, context);
   }
 
   /** The system prompt section of a child conversation: its own, not the parent agent's. */
@@ -158,13 +172,13 @@ export class PiSubagents {
   async abortBackground() {
     const pi = await this.host.pi();
     for (const row of Object.values(await this.rows())) if (row.background && row.status === "running")
-      await (await pi.conversation(row.conversationId as unknown as ConversationId, context))?.abort(context);
+      await (await pi.conversation(cid(row.conversationId), context))?.abort(context);
   }
 
   async remap() {
     const pi = await this.host.pi();
     for (const row of Object.values(await this.rows())) {
-      const provider = await pi.snapshot(ProviderDoc, row.conversationId as unknown as ConversationId, context);
+      const provider = await pi.snapshot(ProviderDoc, cid(row.conversationId), context);
       if (provider) this.sessions.set(provider.sessionId, row.conversationId);
     }
   }
@@ -217,14 +231,14 @@ export class PiSubagents {
         const conversation = String(created.id);
         const delegate = childConf.delegate as DelegateSettings | undefined;
         await configure(tx, created.id, { model, instructions: null, ...(tools.tools ? { tools: tools.tools } : {}) });
-        const subagent: Subagent = { name, agentId: synthetic(id, conversation), depth, maxDepth, runId, parent: String(api.conversationId), background, systemPrompt: (childConf.systemPrompt as string | undefined), ...(delegate ? { delegate } : {}) };
+        const subagent: Subagent = { name, agentId: synthetic(id, conversation), depth, maxDepth, runId, parent: String(api.conversationId), background, systemPrompt: (childConf.systemPrompt as string | undefined), ...(delegate ? { delegate } : {}), ...(args.output !== undefined ? { output: args.output as Record<string, unknown> } : {}) };
         (await tx.doc(SubagentDoc, created.id)).value = subagent;
         const row: ChildRow = { conversationId: conversation, agentId: subagent.agentId, name, parent: subagent.parent, runId, toolCallId: api.callId, background, createdAt: Date.now(), status: "running", requestId: `${background ? "spawn" : "delegate"}_${anchor}` };
         doc.children[conversation] = row;
         return row;
       }, context);
       if (admitted) {
-        const provider = await pi.snapshot(ProviderDoc, admitted.conversationId as unknown as ConversationId, context);
+        const provider = await pi.snapshot(ProviderDoc, cid(admitted.conversationId), context);
         if (provider) this.sessions.set(provider.sessionId, admitted.conversationId);
         const task = args.instructions === undefined ? args.task : roleAndTask(args.instructions as string, args.task);
         return { row: admitted, task: task as string };
@@ -238,6 +252,7 @@ export class PiSubagents {
     const answer = settled.status === "done" && settled.type === "input" ? await root.commit((tx) => tx.entry(AssistantEntry, settled.answer as EntryId), context) : undefined;
     const rows = await this.rows();
     const costUsd = await costOf(pi, rows, conversation);
+    const own = (await pi.snapshot(SubagentDoc, cid(conversation), context))?.value as Subagent | null;
     return root.commit(async (tx) => {
       const doc = await tx.doc(ChildrenDoc, root.id);
       const row = doc.children[conversation]!;
@@ -245,6 +260,7 @@ export class PiSubagents {
       row.status = settled.status === "done" ? "completed" : settled.reason === "aborted" ? "aborted" : "failed";
       row.endedAt = Date.now();
       row.text = textOf(answer?.model?.[0] as AssistantMessage | undefined);
+      if (own?.outputValue !== undefined) row.output = own.outputValue;
       if (row.status === "failed") row.error = String(settled.reason ?? "failed");
       row.costUsd = costUsd;
       if (landedBy) row.landedBy = landedBy;
@@ -253,10 +269,12 @@ export class PiSubagents {
   }
 
   private answer(row: ChildRow) {
-    return { agentId: row.agentId, requestId: row.requestId, name: row.name, status: row.status, ...(row.text ? { text: row.text } : {}), ...(row.error ? { error: row.error } : {}) };
+    return { agentId: row.agentId, requestId: row.requestId, name: row.name, status: row.status, ...(row.text ? { text: row.text } : {}), ...(row.output !== undefined ? { output: row.output } : {}), ...(row.error ? { error: row.error } : {}) };
   }
 
   private async event(row: ChildRow, type: "subagent_start" | "subagent_end") {
+    // The child's run is open (the separate-agent design relays the child's own turn_opened).
+    if (type === "subagent_start") await this.host.emit({ type: "event", requestId: row.runId, event: { type: "subagent_event", toolCallId: row.toolCallId, agentId: row.agentId, requestId: row.requestId, event: { type: "turn_opened", index: 0 } } });
     await this.host.emit({ type: "event", requestId: row.runId, event: { type, toolCallId: row.toolCallId, agentId: row.agentId, requestId: row.requestId, name: row.name, ...(type === "subagent_start" ? { depth: 1 } : { status: row.status, ...(row.error ? { error: row.error } : {}) }), ...(row.background ? { background: true } : {}) } });
   }
 
@@ -280,7 +298,7 @@ export class PiSubagents {
     initial: () => ({ phase: "deliver" }),
     phases: {
       deliver: async (task, runtime, taskContext) => {
-        const child = (await runtime.conversation(task.input.conversation as unknown as ConversationId, taskContext))!;
+        const child = (await runtime.conversation(cid(task.input.conversation), taskContext))!;
         const submission = await child.submit({ type: "input", content: task.input.message, requestId: task.input.requestId, whenBusy: task.input.followUp ? "followUp" : "steer" }, taskContext);
         const settled = await submission.wait(taskContext);
         const ended = await this.finish(task.input.conversation, settled as never);
@@ -324,7 +342,12 @@ export class PiSubagents {
       structuredOutputSchema: {}, replay: "safe",
       execute: async (args: Record<string, unknown>, api: ToolExecutionApi, callContext: Context) => {
         const signal = callContext.abortSignal ?? new AbortController().signal;
-        return this.execute(definition.name, args, api, callContext, signal);
+        try {
+          return await this.execute(definition.name, args, api, callContext, signal);
+        } catch (error) {
+          console.error(JSON.stringify({ type: "pi_subagent_tool_failed", tool: definition.name, error: error instanceof Error ? `${error.name}: ${error.message}` : String(error), stack: error instanceof Error ? error.stack?.split("\n").slice(0, 6).join(" | ") : undefined }));
+          throw error;
+        }
       },
     }) as ToolRegistration);
   }
@@ -334,7 +357,7 @@ export class PiSubagents {
     if (name === "delegate") {
       const { row, task } = await this.start(args, api, signal, false, async () => api.taskId);
       await this.event(row, "subagent_start");
-      const child = (await api.conversation(row.conversationId as unknown as ConversationId, callContext))!;
+      const child = (await api.conversation(cid(row.conversationId), callContext))!;
       // The stable request id makes a rerun after a crash find the submission it made.
       const settled = await (await child.submit({ type: "input", content: task, requestId: `delegate:${api.taskId}` }, callContext)).wait(callContext);
       const ended = await this.finish(row.conversationId, settled as never, "wait");
@@ -391,7 +414,7 @@ export class PiSubagents {
     if (name === "interrupt_agent") {
       const row = find(args.agent);
       if (!row) throw new HttpError(404, "Unknown sub-agent");
-      await (await api.conversation(row.conversationId as unknown as ConversationId, callContext))?.abort(callContext);
+      await (await api.conversation(cid(row.conversationId), callContext))?.abort(callContext);
       return this.withUpdates({ agentId: row.agentId, interrupted: true }, api);
     }
     if (name === "wait_agent") {

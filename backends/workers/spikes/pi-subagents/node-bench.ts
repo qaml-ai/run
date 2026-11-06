@@ -42,12 +42,19 @@ lagProbe(metrics, 30 * 60_000, () => {
   metrics.peakHeap = Math.max(metrics.peakHeap, memory.heapUsed);
   peakRss = Math.max(peakRss, memory.rss);
 });
+// The live set mid-run, after a full collection: what a 128 MB isolate must hold, rather than GC-dependent peaks.
+const live: number[] = [];
+for (const at of [15_000, 25_000, 35_000]) setTimeout(() => { gc?.(); live.push(process.memoryUsage().heapUsed); }, at);
+const cpuStart = process.cpuUsage();
 const spike = await openSpike(await openNodeSqliteStorage(join(directory, "session.sqlite")), `http://127.0.0.1:${port}/v1`, metrics, { watchChildren: 5 });
 spike.harness.resume();
 const submission = await startRun(spike, metrics, run);
 await submission.wait(context);
 await spike.harness.waitForIdle(context);
 const summary = metrics.summary();
+// Process CPU, the fake model's loopback server included (an upper bound for the agent's own share).
+const cpu = process.cpuUsage(cpuStart);
+const cpuMs = Math.round((cpu.user + cpu.system) / 1000);
 const size = (await stat(join(directory, "session.sqlite"))).size + (await stat(join(directory, "session.sqlite-wal")).catch(() => ({ size: 0 }))).size;
 for (const watch of spike.watches) await watch.stop();
 await spike.harness.close(context);
@@ -58,6 +65,9 @@ console.log(JSON.stringify({
   ...summary,
   baselineHeapMiB: Math.round(baseline.heapUsed / 104857.6) / 10,
   peakHeapMiB: Math.round(metrics.peakHeap / 104857.6) / 10,
+  cpuMs,
+  cpuUsPerDelta: summary.deltas ? Math.round((cpuMs * 1000) / summary.deltas) : null,
+  liveHeapMiB: live.map((bytes) => Math.round(bytes / 104857.6) / 10),
   peakRssMiB: Math.round(peakRss / 104857.6) / 10,
   databaseMiB: Math.round(size / 104857.6) / 10,
 }));
