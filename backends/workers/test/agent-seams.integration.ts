@@ -83,6 +83,42 @@ test(
 );
 
 test(
+  "a run refused at the tenant's busy limit is refused whole, and its retry with the same key runs once a slot frees",
+  { timeout: 60000 },
+  async (t) => {
+    const f = await startFixture({ vars: { TENANT_MAX_ACTIVE: "1" } });
+    t.after(() => f.stop());
+    const call = client(f);
+    const a = (await call("/v1/agents", { model: "test/echo" })).body.id;
+    assert.equal(
+      (await call(`/v1/agents/${a}/requests`, { id: "blocking", method: "prompt", params: { text: "slow:1500:hold the slot" } })).status,
+      202,
+    );
+    const run = { model: "test/echo", input: "after the slot frees" };
+    const refused = await call("/v1/runs", run, { "Idempotency-Key": "busy-retry" });
+    assert.equal(refused.status, 429, JSON.stringify(refused.body));
+    assert.equal(refused.body.code, "BUSY_AGENT_LIMIT");
+    // Refused before it was accepted: no run is left to fail later, and a key-less read finds none.
+    for (let i = 0; i < 200; i++) {
+      if ((await call(`/v1/agents/${a}/requests/blocking?wait=1`)).body.state === "completed") break;
+      await delay(20);
+    }
+    // The client does what the 429 says: it retries, with the same key, once the slot is free.
+    let retried: Awaited<ReturnType<typeof call>> | undefined;
+    for (let i = 0; i < 50; i++) {
+      retried = await call("/v1/runs?wait=20", run, { "Idempotency-Key": "busy-retry" });
+      if (retried.status !== 429) break;
+      await delay(100);
+    }
+    assert.equal(retried!.status, 200, JSON.stringify(retried!.body));
+    assert.equal(retried!.body.status, "completed", JSON.stringify(retried!.body));
+    // The same key names that run from now on.
+    const again = await call("/v1/runs", run, { "Idempotency-Key": "busy-retry" });
+    assert.equal(again.body.id, retried!.body.id);
+  },
+);
+
+test(
   "human pauses release admission and account each resumed segment once",
   { timeout: 60000 },
   async (t) => {

@@ -148,12 +148,14 @@ export class Delegation {
       return cancelled;
     }
     if (stored?.accepted || (stored && stored.status !== 'running')) { this.follow(stored); return stored; }
-    // Creation and submit use deterministic keys; replay an interrupted acceptance safely.
-    if (stored) await this.host.storage.delete(prefix + key);
+    // An interrupted start (the parent evicted or redeployed after admitting the child, its call replayed) goes on with
+    // the admission it made: creation and submit use deterministic keys, and the child dedupes only the very same request,
+    // so the replay sends what the first try may have sent already, its spend limit included, never a recomputed one.
+    const resumed = stored;
     const place = await this.place(id, run, settings);
     const maxParallel = settings.maxParallel ?? MULTI_AGENT_LIMITS.maxParallel;
     let group: { messageIndex: number; delegates: number } | undefined;
-    if (!background && !override && site && !site.innerCallId && api?.commit) {
+    if (!resumed && !background && !override && site && !site.innerCallId && api?.commit) {
       if (site.assistant !== undefined) {
         const entry = await api.commit(tx => tx.entry(site.assistant as never), BACKGROUND_CONTEXT);
         let delegates = 0;
@@ -162,14 +164,14 @@ export class Delegation {
         group = { messageIndex: site.assistant, delegates: Math.max(1, delegates) };
       }
     }
-    let held: number | undefined;
+    let held = resumed?.held;
     // Slot and budget reservation are one SQLite transaction. No model call can race them.
     for (;;) {
       signal.throwIfAborted();
-      const available = this.host.remainingBudget
+      const available = resumed ? undefined : this.host.remainingBudget
         ? await this.host.remainingBudget(background, api)
         : finiteBudget(run.params?.spendLimit?.usd) ?? finiteBudget(config.spendLimit?.usd);
-      const admitted = await this.host.storage.transaction(async tx => {
+      const admitted = resumed ?? await this.host.storage.transaction(async tx => {
         const all = [...(await tx.list<DelegatedChild>({ prefix })).values()];
         const children = all.filter(child => child.parentRequestId === run.id);
         const scope = background ? all.filter(child => child.background) : children;
