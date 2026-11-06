@@ -36,8 +36,13 @@ test("human answers enforce source identity and produce source question metadata
   assert.equal(humanInputResult(cancelledHumanInput(bound)).isError, true);
   assert.equal(humanInputResult(cancelledHumanInput(bound)).control?.terminate, true);
   const expired = { ...bound, ...systemHumanAnswer("expired") };
-  assert.equal(humanInputResult(expired).control?.terminate, true);
-  assert.equal(humanInputResult({ ...expired, resumeOnExpire: true }).control?.terminate, false);
+  assert.equal(bound.resumeOnExpire, true, "an input no one answers in time resumes the turn by default");
+  assert.equal(humanInputResult(expired).control?.terminate, false);
+  const auto = JSON.parse(humanInputResult(expired).output[0].text);
+  assert.deepEqual([auto.answers, auto.timedOut, auto.answeredBy], [{}, true, "the runtime"]);
+  assert.match(auto.message, /^The user did not respond in a timely manner\. Continue\. \(An automatic answer from the runtime/);
+  const closing = bindHumanInput(input, "run-a", "alice", { onExpire: "close" }, null);
+  assert.equal(humanInputResult({ ...closing, ...systemHumanAnswer("expired") }).control?.terminate, true);
   assert.match(humanInputResult({ ...bound, ...systemHumanAnswer("superseded") }).output[0].text, /sent a new message instead/);
 });
 

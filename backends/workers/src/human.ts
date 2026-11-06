@@ -1,7 +1,7 @@
 import { defineDoc, defineTool, hook, ToolTask, type Extension, type Harness, type ToolExecutionApi, type ToolRegistration, type ToolTaskInput } from "@earendil-works/pi-durable";
 import { obj, str } from "@earendil-works/pi-schema";
 import type { Context } from "@earendil-works/chord";
-import { answerInput, expiresAt, mayAnswer, questionsInput, resolution, type Answer, type HumanInputSettings, type InputRow, type Responder } from "./input-policy.ts";
+import { answerInput, expiresAt, INPUT_LIMITS, mayAnswer, questionsInput, resolution, resumesOnExpire, settledAlready, type Answer, type HumanInputSettings, type InputRow, type Responder } from "./input-policy.ts";
 import { HostExecutionRequest } from "./host-execution.ts";
 import { senderInput } from "./sender.ts";
 import { actorInput } from "./security-policy.ts";
@@ -60,7 +60,7 @@ export async function waitForHuman(input: HumanInput, api: ToolExecutionApi, con
           throw new Error("Human input retention limit reached");
         doc.requests[key] = { ...input, toolCallId: api.callId, conversationId: api.conversationId,
           ...(owner?.requestId ? { requestId: owner.requestId } : {}), ...(script ? { parentTask: script.parent } : {}),
-          createdAt: api.now(), expiresAt: api.now() + 7 * 86400_000, state: "pending" };
+          createdAt: api.now(), expiresAt: api.now() + INPUT_LIMITS.defaultExpiresSeconds * 1000, state: "pending" };
       }
     }, context);
     const release = script ? waitsOnPerson(script.startedAt, script.seed, script.call) : undefined;
@@ -112,7 +112,7 @@ export function bindHumanInput(item: HumanInput, requestId: string, actor: strin
   if (item.policyBound) return item;
   return { ...item, requestId, responders: actor ? { audience: [actor] } : {},
     expiresAt: expiresAt(settings, agentExpiresAt, item.createdAt), policyBound: true,
-    ...(settings?.onExpire === "resume" ? { resumeOnExpire: true } : {}) };
+    ...(resumesOnExpire(settings) ? { resumeOnExpire: true } : {}) };
 }
 
 /** Question answers are model results; external tools retain their retry payload. */
@@ -137,7 +137,7 @@ export function answerHuman(item: HumanInput, body: unknown, via: Responder["via
   const value = body as Record<string, unknown>;
   const by: Responder = { via, ...(value?.actor !== undefined ? { actor: actorInput(value.actor) } : {}), ...(value?.from !== undefined ? { from: senderInput(value.from) } : {}) };
   if (!mayAnswer({ responders: item.responders ?? {} }, by, approvers)) throw new HttpError(403, "This person may not answer this input");
-  if (item.answer === undefined && item.expiresAt !== undefined && item.expiresAt <= Date.now()) throw new HttpError(409, "This input is expired");
+  if (item.answer === undefined && item.expiresAt !== undefined && item.expiresAt <= Date.now()) throw new HttpError(409, settledAlready({ state: "expired", answer: { action: "cancel", by: { system: "expired" }, at: item.expiresAt } }));
   if (typeof value?.answer === "string") {
     if (value.answer.length > 4096) throw new HttpError(400, "Answer exceeds 4096 characters");
     return { answer: value.answer, state: "answered" as const, answerDetail: { action: "accept" as const, content: value.answer, by, at: Date.now() } };
