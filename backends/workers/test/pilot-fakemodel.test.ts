@@ -19,12 +19,15 @@ test("pilot fake issues each tool once, then includes its result", () => {
     const called = reply({ messages });
     assert.ok("tool_calls" in called);
     assert.equal(called.tool_calls[0].function.name, name);
-    assert.equal(reply({ messages: [...messages, { role: "tool", content: "finished" }] }).content, "Tool result: finished");
+    const returned = reply({ messages: [...messages, { role: "tool", content: "finished" }] });
+    assert.ok("content" in returned);
+    assert.equal(returned.content, "Tool result: finished");
   }
 });
 
 test("pilot fake verifies image delivery without retaining image bytes", () => {
   const result = reply({ messages: [{ role: "user", content: [{ type: "text", text: "pilot:images" }, { type: "image_url", image_url: { url: "data:image/png;base64,c2FmZQ==" } }] }] });
+  assert.ok("content" in result);
   assert.equal(result.content, "Images received: 1; inline: 1");
 });
 

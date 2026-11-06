@@ -1,6 +1,6 @@
 {
-  "extends": "./tsconfig.json",
-  "compilerOptions": { "types": ["node", "@cloudflare/workers-types"] },
+  "extends": "../../tsconfig.json",
+  "compilerOptions": { "types": ["node"], "lib": ["ES2024", "DOM", "DOM.Iterable"] },
   "include": [
     "scripts/pilot-smoke.ts",
     "pilot-fakemodel/index.ts",
