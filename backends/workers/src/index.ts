@@ -63,6 +63,7 @@ import {
   provisionDefinition,
   visibleConfiguration,
   configurationPatch,
+  withoutOnExpire,
 } from "./definitions.ts";
 import { statelessRoutes, agentLifecycleRoutes } from "./agent-routes.ts";
 import { rotateAgentCredentials } from "./agent-credentials.ts";
@@ -516,7 +517,7 @@ const worker = {
         }
         if (requestId !== undefined && (typeof requestId !== "string" || !requestId.length))
           throw new BadRequest("requestId must be a nonempty string");
-        const patched = configuration({ ...entry.config, ...params }, entry.config.model ?? env.MODEL, "patch").config;
+        const patched = configuration({ ...withoutOnExpire(entry.config), ...params }, entry.config.model ?? env.MODEL, "patch").config;
         if (Object.hasOwn(params, "model") || Object.hasOwn(params, "keyScope")) {
           try {
             const modelError = await configurationModelError(env, entry.tenantId, patched);

@@ -53,7 +53,7 @@ export interface DefinitionSpec {
   builtins?: string[];
   /** The search providers web_search tries, in order, instead of the runtime's (AGENT_WEB_SEARCH_PROVIDERS). */
   webSearch?: { providers: string[] };
-  /** Human input: how long inputs wait (expiresInSeconds), what happens when they expire (onExpire), who else may answer (approvers). */
+  /** Human input: how long inputs wait (expiresInSeconds) before the runtime answers for the person, and who else may answer (approvers). */
   humanInput?: HumanInputSettings;
   /** With the delegate or agents builtin: the agents its agents may start or message, and how deep and wide (multi-agent.ts). */
   delegate?: DelegateSettings;
@@ -121,7 +121,7 @@ export class Definitions {
   }
 
   private row(row: any): Definition {
-    return { id: row.id, tenant: row.tenant, name: row.name, revision: row.revision, spec: withoutWorkflow(row.spec), createdAt: row.created_at, updatedAt: row.updated_at };
+    return { id: row.id, tenant: row.tenant, name: row.name, revision: row.revision, spec: withoutOnExpire(withoutWorkflow(row.spec)), createdAt: row.created_at, updatedAt: row.updated_at };
   }
   async read(tenant: string, id: string): Promise<Definition> {
     const row = validId(id) ? (await this.db.query("select * from definitions where id = $1 and tenant = $2", [id, tenant])).rows[0] : undefined;
@@ -353,6 +353,14 @@ export class Definitions {
 }
 
 /** Stored workflow settings are ignored; only new API input is refused. */
+/** A stored definition's `humanInput.onExpire`, from before every expired input resumed the turn: ignored. */
+function withoutOnExpire(spec: DefinitionSpec): DefinitionSpec {
+  const humanInput = spec.humanInput as (HumanInputSettings & { onExpire?: unknown }) | undefined;
+  if (!humanInput || !("onExpire" in humanInput)) return spec;
+  const { onExpire: _onExpire, ...rest } = humanInput;
+  return { ...spec, humanInput: rest };
+}
+
 function withoutWorkflow(spec: DefinitionSpec): DefinitionSpec {
   const { workflow: _workflow, ...rest } = spec as DefinitionSpec & { workflow?: unknown };
   return { ...rest, ...(rest.builtins ? { builtins: rest.builtins.filter(name => name !== "workflow") } : {}) };

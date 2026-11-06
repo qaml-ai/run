@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { AgentRuntime, schema, tool } from "../clients/typescript.ts";
 import { lastUser, listen, OPERATOR, runtime, toolCall, toolResults, until, watchEvents, type T } from "./runtime-server.ts";
 import { mayAnswer } from "../src/inputs.ts";
+import { resumeId } from "../src/client-sessions/inputs.ts";
 
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
 
@@ -53,7 +54,7 @@ test("ask_user suspends the turn; the answer, after the agent unloaded, resumes 
   assert.equal(input.message, "Which region?");
   assert.equal(input.toolCallId, "call_ask");
   assert.deepEqual(input.detail.questions[0].options.map((option: any) => option.label), ["EU", "US"]);
-  assert.ok(input.expiresAt - Date.now() > 6 * 86_400_000, "inputs wait 7 days by default");
+  assert.ok(Math.abs(input.expiresAt - Date.now() - 15 * 60_000) < 60_000, "inputs wait 15 minutes by default");
   assert.equal(r.model.bodies.length, 1, "the model is not called while the turn waits");
   const system = r.model.bodies[0].messages.find((message: any) => message.role === "system" || message.role === "developer").content;
   assert.match(system, /ask them with ask_user; your turn pauses until they answer/);
@@ -99,8 +100,8 @@ test("a new message supersedes a waiting input; its call is closed and the promp
   assert.equal((await r.call(`/v1/agents/${agent}/inputs/${input.id}`, { body: { action: "accept", content: { answers: { "Which region?": "EU" } } } })).status, 409);
 });
 
-test("abort cancels waiting inputs and closes the turn without the model; expiry does the same", async t => {
-  const r = await runtime(t, () => toolCall("ask_user", ASK));
+test("abort cancels waiting inputs and closes the turn without the model; expiry instead answers for the person, and the model goes on", async t => {
+  const r = await runtime(t, (_body, index) => index < 2 ? toolCall("ask_user", ASK) : { role: "assistant", content: "Going on without it" });
   const agent = await asker(r);
   await r.prompt(agent, "Deploy it");
   assert.equal((await r.call(`/v1/agents/${agent}/abort`, { method: "POST" })).status, 200);
@@ -110,12 +111,113 @@ test("abort cancels waiting inputs and closes the turn without the model; expiry
   assert.match((await r.call(`/v1/agents/${agent}/history`)).json.messages.at(-1).content[0].text, /Cancelled by the application/);
   assert.equal(r.model.bodies.length, 1);
 
-  // Expired inputs (made due here) are closed by the scheduler, again without the model.
+  // An expired input (made due here) is answered by the runtime, and the model goes on with the turn.
   await r.prompt(agent, "Deploy it again");
   await r.db.query("update agent_inputs set expires_at = 0 where state = 'pending'");
   await until(async () => (await r.call(`/v1/agents/${agent}/inputs`)).json[0].state === "expired", "the input to expire");
-  await until(async () => /expired/.test((await r.call(`/v1/agents/${agent}/history`)).json.messages.at(-1)?.content?.[0]?.text ?? ""), "the call to be closed");
+  await until(() => r.model.bodies.length === 3, "the model to go on");
+  assert.match(toolResults(r.model.bodies[2]).at(-1), /did not respond in a timely manner/);
+  await until(async () => (await r.call(`/v1/agents/${agent}/history`)).json.messages.at(-1)?.content?.[0]?.text === "Going on without it", "the turn to end");
+  assert.equal(r.model.bodies.length, 3);
+});
+
+/** Make an agent's pending inputs due now: the scheduler then answers them for the person, as it would after their time. */
+const expireNow = (r: Awaited<ReturnType<typeof runtime>>, agent: string) => r.db.query("update agent_inputs set expires_at = 0 where agent = $1 and state = 'pending'", [agent]);
+const NO_RESPONSE = /^The user did not respond in a timely manner/;
+
+test("no answer in time: the runtime answers ask_user for the person, marked as its own, and the turn goes on", async t => {
+  const r = await runtime(t, (body, index) => index === 0 ? toolCall("ask_user", ASK, "call_ask") : { role: "assistant", content: "Going on without a region" });
+  const agent = await asker(r);
+  const watcher = await watchEvents(t, `${r.base}/v1/agents/${agent}/events`, { Authorization: `Bearer ${OPERATOR}` }, { query: "snapshot=0" });
+  const [input] = (await r.prompt(agent, "Deploy it")).outcome.result.inputs;
+  await expireNow(r, agent);
+  const resumed = await request(r, agent, resumeId(input.requestId));
+  assert.equal(resumed.outcome.result.reply, "Going on without a region");
+  const result = JSON.parse(toolResults(r.model.bodies[1]).at(-1));
+  assert.deepEqual(result.answers, {});
+  assert.equal(result.timedOut, true);
+  assert.match(result.message, NO_RESPONSE);
+  assert.match(result.message, /\. Continue\. \(An automatic answer from the runtime after \d+s without a response: the user did not write this\.\)$/);
+  assert.equal(result.answeredBy, "the runtime");
+  assert.equal(r.model.bodies[1].messages.filter((message: any) => message.role === "user").length, 1, "the automatic answer is the call's result, not a message from the user");
+
+  // Shown as expired, answered by the runtime: in the input, and on the agent's stream.
+  const settled = (await r.call(`/v1/agents/${agent}/inputs`)).json.find((entry: any) => entry.id === input.id);
+  assert.equal(settled.state, "expired");
+  assert.deepEqual([settled.answer.action, settled.answer.by], ["cancel", { system: "expired" }]);
+  await until(() => watcher.frames.some(frame => frame.data.type === "event" && frame.data.event.type === "input_resolved" && frame.data.event.id === input.id), "input_resolved on the stream");
+  const event = watcher.frames.find(frame => frame.data.event?.type === "input_resolved" && frame.data.event.id === input.id)!.data.event;
+  assert.deepEqual([event.state, event.by], ["expired", { system: "expired" }]);
+
+  // A late answer is refused, and changes nothing.
+  const late = await r.call(`/v1/agents/${agent}/inputs/${input.id}`, { body: { action: "accept", content: { answers: { "Which region?": "EU" } } } });
+  assert.equal(late.status, 409);
+  assert.match(late.json.error, /expired: no one answered in time/);
+  assert.equal(late.json.input.state, "expired");
   assert.equal(r.model.bodies.length, 2);
+});
+
+test("no answer in time: an approval is never given; the call does not run and the model goes on", async t => {
+  const text = (value: string) => ({ content: [{ type: "text", text: value }] });
+  const shop = await rawMcp(t, { delete_item: { annotations: { destructiveHint: true }, call: args => text(`deleted ${args.id}`) } });
+  const r = await runtime(t, (body, index) => index === 0 ? toolCall("shop__delete_item", { id: "a" }, "call_a") : { role: "assistant", content: `Skipped: ${toolResults(body).at(-1)}` }, LOCAL);
+  const definition = (await r.call("/v1/definitions", { body: { name: "Shop", humanInput: { expiresInSeconds: 600 }, mcpServers: [{ name: "shop", url: shop.url, auth: { type: "runtime" }, approval: { default: "destructive" } }] } })).json;
+  const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id;
+  const [input] = (await r.prompt(agent, "Delete item a")).outcome.result.inputs;
+  assert.equal(input.kind, "approval");
+  assert.ok(Math.abs(input.expiresAt - Date.now() - 600_000) < 60_000, "the definition's expiresInSeconds");
+  await expireNow(r, agent);
+  const resumed = await request(r, agent, resumeId(input.requestId));
+  assert.match(resumed.outcome.result.reply, /^Skipped: The user did not respond in a timely manner, so this call was not approved and did not run\. Continue without it, or ask again later\. \(An automatic answer from the runtime/);
+  assert.equal(shop.calls.length, 0, "the call never ran");
+  const history = (await r.call(`/v1/agents/${agent}/history`)).json.messages;
+  assert.equal(history.find((message: any) => message.role === "toolResult").isError, true);
+  assert.equal((await r.call(`/v1/agents/${agent}/inputs/${input.id}`, { body: { action: "accept" } })).status, 409, "a late approval is refused");
+  assert.equal(shop.calls.length, 0);
+});
+
+test("no answer in time: a tool's own request (an MCP form) is cancelled with the same answer; the tool is not called again", async t => {
+  const form = { mode: "form", message: "New name?", requestedSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } };
+  const server = await rawMcp(t, { rename: { call: () => ({ resultType: "input_required", inputRequests: { name: { method: "elicitation/create", params: form } } }) } });
+  const r = await runtime(t, (body, index) => index === 0 ? toolCall("tools__rename", {}, "call_rename") : { role: "assistant", content: toolResults(body).at(-1) }, LOCAL);
+  const definition = (await r.call("/v1/definitions", { body: { name: "Tools", humanInput: {}, mcpServers: [{ name: "tools", url: server.url, exposure: "direct" }] } })).json;
+  const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id;
+  const [input] = (await r.prompt(agent, "Rename it")).outcome.result.inputs;
+  assert.equal(input.kind, "form");
+  await expireNow(r, agent);
+  const resumed = await request(r, agent, resumeId(input.requestId));
+  assert.match(resumed.outcome.result.reply, /^The user did not respond in a timely manner, so this request was cancelled and the call did not finish\. Continue without it, or ask again later\./);
+  assert.equal(server.calls.length, 1, "the tool was not called again");
+});
+
+test("no answer in time from code: the waiting call gets the runtime's answer as a decline or an answer would, and the script goes on", async t => {
+  const text = (value: string) => ({ content: [{ type: "text", text: value }] });
+  const server = await rawMcp(t, { remove: { annotations: { destructiveHint: true }, call: args => text(`removed ${args.id}`) } });
+  const script = `let removed;
+try { removed = await tools.s__remove({ id: "a" }); } catch (error) { removed = "refused: " + error.message; }
+const asked = await tools.ask_user(${JSON.stringify(ASK)});
+return { removed, region: asked.answers["Which region?"] ?? "none", timedOut: asked.timedOut };`;
+  const r = await runtime(t, (body, index) => index === 0 ? toolCall("codemode", { code: script }, "code") : { role: "assistant", content: toolResults(body).at(-1) }, LOCAL);
+  const definition = (await r.call("/v1/definitions", { body: { name: "Code waits", builtins: ["ask_user"], mcpServers: [{ name: "s", url: server.url, exposure: "codemode", approval: { default: "destructive" } }] } })).json;
+  const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id;
+
+  const first = await r.prompt(agent, "Clean up");
+  const [approval] = first.outcome.result.inputs;
+  assert.deepEqual([approval.kind, approval.toolCallId], ["approval", "code/c1"]);
+  await expireNow(r, agent);
+  // The script goes on past the refused call, to its question, which waits in turn.
+  const second = await request(r, agent, resumeId(approval.requestId));
+  assert.equal(second.outcome.result.stopped, "input_required", JSON.stringify(second.outcome));
+  const [question] = second.outcome.result.inputs;
+  assert.deepEqual([question.kind, question.toolCallId], ["question", "code/c2"]);
+  await expireNow(r, agent);
+  const done = await request(r, agent, resumeId(question.requestId));
+  assert.equal(done.outcome.error, undefined, JSON.stringify(done.outcome));
+  const value = JSON.parse(done.outcome.result.reply.split("\n").at(-1));
+  assert.match(value.removed, /^refused: The user did not respond in a timely manner, so this call was not approved and did not run/);
+  assert.deepEqual([value.region, value.timedOut], ["none", true]);
+  assert.equal(server.calls.length, 0, "the unapproved call never ran");
+  assert.equal(r.model.bodies.length, 2, "the model is asked only to start and to answer");
 });
 
 test("only whoever started the turn, or an approver, may answer", async t => {
@@ -411,4 +513,24 @@ test("recording a call's inputs again (a retry whose answer was lost) returns th
   const again = await inputs.create(base, requests);
   assert.deepEqual(again.map(input => input.id), first.map(input => input.id));
   assert.equal(Number((await db.query("select count(*) from agent_inputs where agent = 'a1'")).rows[0].count), 1);
+});
+
+test("humanInput.onExpire is gone: new input with it is refused; a definition stored with it loads without it, and its inputs resume the turn", async t => {
+  const r = await runtime(t, (_body, index) => index === 0 ? toolCall("ask_user", ASK) : { role: "assistant", content: "Going on without it" });
+  const refused = await r.call("/v1/definitions", { body: { name: "Closer", builtins: ["ask_user"], humanInput: { onExpire: "close" } } });
+  assert.equal(refused.status, 400);
+  assert.match(refused.json.error, /humanInput/);
+
+  const definition = (await r.call("/v1/definitions", { body: { name: "Closer", builtins: ["ask_user"], humanInput: { expiresInSeconds: 600 } } })).json;
+  await r.db.query(`update definitions set spec = (spec::jsonb || '{"humanInput":{"expiresInSeconds":600,"onExpire":"close"}}'::jsonb)::json where id = $1`, [definition.id]);
+  assert.deepEqual((await r.call(`/v1/definitions/${definition.id}`)).json.humanInput, { expiresInSeconds: 600 }, "the stored field is ignored");
+  const patched = await r.call(`/v1/definitions/${definition.id}`, { method: "PATCH", body: { description: "Asks" } });
+  assert.equal(patched.status, 200, patched.text);
+
+  const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id;
+  const [input] = (await r.prompt(agent, "Deploy it")).outcome.result.inputs;
+  await expireNow(r, agent);
+  const resumed = await request(r, agent, resumeId(input.requestId));
+  assert.equal(resumed.outcome.result.reply, "Going on without it");
+  assert.match(toolResults(r.model.bodies[1]).at(-1), /did not respond in a timely manner/);
 });

@@ -7,7 +7,7 @@ import { type McpResult } from "../mcp-results.ts";
 import { actorInput } from "../identity.ts";
 import { senderInput } from "../sender.ts";
 import { type ToolCall } from "../tool-servers.ts";
-import { answerInput, argumentsHash, expiresAt, INPUT_LIMITS, inputRequests, inputView, mayAnswer, type Answer, type Input, type InputRow, type Responder } from "../inputs.ts";
+import { answerInput, argumentsHash, settledAlready, expiresAt, INPUT_LIMITS, inputRequests, inputView, mayAnswer, type Answer, type Input, type InputRow, type Responder } from "../inputs.ts";
 import { type Session, type ClientSessionOptions } from "./state.ts";
 
 export type InputContext = {
@@ -141,7 +141,7 @@ export async function answer(ctx: InputContext, id: string, tenant: string, answ
     // Settled already: a retry of these answers is 200; anything else conflicts, showing what was recorded.
     const current = await Promise.all(checked.map(({ input }) => inputs.get(input.id))) as InputRow[];
     const same = current.every((row, index) => row.answer && !row.answer.by.system && row.answer.action === checked[index].answer.action && canonical(row.answer.content ?? null) === canonical(checked[index].answer.content ?? null));
-    if (!same) throw Object.assign(new HttpError(409, current.length === 1 ? `This input is already ${current[0].state}` : "An input is already settled"), { input: current.length === 1 ? inputView(current[0]) : current.map(inputView) });
+    if (!same) throw Object.assign(new HttpError(409, current.length === 1 ? settledAlready(current[0]) : current.some(row => row.answer?.by.system === "expired") ? settledAlready(current.find(row => row.answer?.by.system === "expired")!) : "An input is already settled"), { input: current.length === 1 ? inputView(current[0]) : current.map(inputView) });
     return { status: 200, inputs: current.map(inputView), requests: await resumeAnywhere(ctx, id, tenant, suspensions) };
   }
   // Announced here when this node serves the agent; otherwise its resume run announces them.
@@ -168,7 +168,7 @@ export async function inbox(ctx: InputContext, tenant: string, state?: string) {
 
 /**
  * Expire inputs past their time, on any node: each suspension whose last input expired is resumed
- * on the node serving its agent, which closes the turn (or, with `onExpire: "resume"`, asks the model).
+ * on the node serving its agent, which gives each call the runtime's answer and asks the model.
  */
 export async function expireInputs(ctx: InputContext, now = Date.now()) {
   const inputs = ctx.options.inputs;

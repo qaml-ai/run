@@ -21,13 +21,13 @@ test("default candidates preserve virtual names and reject misspelled operator f
 test("configuration validates prompt, human input and exclusive lifetimes", () => {
   assert.throws(() => configuration({systemPrompt:" "},"test/echo"), /1–32000/);
   assert.throws(() => configuration({systemPromptAppend:"x".repeat(32001)},"test/echo"), /32000/);
-  assert.throws(() => configuration({humanInput:{onExpire:"silence"}},"test/echo"), /onExpire/);
+  assert.throws(() => configuration({humanInput:{onExpire:"resume"}},"test/echo"), /humanInput is \{ expiresInSeconds\?, approvers\? \}/, "onExpire is gone");
   assert.throws(() => configuration({humanInput:{expiresInSeconds:59}},"test/echo"), /expiresInSeconds/);
   assert.throws(() => configuration({ttlSeconds:3600,idleTtlSeconds:600},"test/echo"), /not both/);
-  const idle = configuration({idleTtlSeconds:600,humanInput:{onExpire:"resume"}},"test/echo");
+  const idle = configuration({idleTtlSeconds:600,humanInput:{expiresInSeconds:600}},"test/echo");
   assert.equal(idle.ttlSeconds,600);
   assert.equal(idle.config.idleTtlSeconds,600);
-  assert.deepEqual(idle.config.humanInput,{onExpire:"resume"});
+  assert.deepEqual(idle.config.humanInput,{expiresInSeconds:600});
 });
 
 test("configuration retains provider settings, imports history and rejects reserved headers", () => {

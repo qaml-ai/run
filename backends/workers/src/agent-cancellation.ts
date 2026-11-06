@@ -199,7 +199,7 @@ export async function cancelHumanInputsImpl(this: AgentRuntime,
       for (const { key } of cancelled) doc.requests[key] = cancelledHumanInput(doc.requests[key]);
     }, BACKGROUND_CONTEXT);
     for (const { key, owner } of cancelled)
-      await this.emit({ type: "event", requestId: owner, event: { type: "input_resolved", id: key, state: "cancelled" } });
+      await this.emit({ type: "event", requestId: owner, event: { type: "input_resolved", id: key, state: "cancelled", by: { system: "aborted" } } });
   }
 
 export async function startHostRequestImpl(this: AgentRuntime,

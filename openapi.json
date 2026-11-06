@@ -5935,7 +5935,8 @@
               "cancelled",
               "expired",
               "superseded"
-            ]
+            ],
+            "description": "expired: no one answered by expiresAt, so the runtime answered for the person (answer.by.system \"expired\"; an approval is not given) and the agent went on without them"
           },
           "answer": {
             "type": "object",
@@ -9457,15 +9458,7 @@
                 "type": "integer",
                 "minimum": 60,
                 "maximum": 2592000,
-                "description": "How long an input waits for an answer: 7 days by default, at most 30, and never past the agent's own expiry"
-              },
-              "onExpire": {
-                "type": "string",
-                "enum": [
-                  "close",
-                  "resume"
-                ],
-                "description": "close (default): an expired input closes its call and the turn without the model; resume: the model is told and continues"
+                "description": "How long an input waits for an answer before the runtime answers for the person: 900 (15 minutes) by default, 60 to 2592000 (30 days), and never past the agent's own expiry"
               },
               "approvers": {
                 "type": "array",
@@ -9855,15 +9848,7 @@
                 "type": "integer",
                 "minimum": 60,
                 "maximum": 2592000,
-                "description": "How long an input waits for an answer: 7 days by default, at most 30, and never past the agent's own expiry"
-              },
-              "onExpire": {
-                "type": "string",
-                "enum": [
-                  "close",
-                  "resume"
-                ],
-                "description": "close (default): an expired input closes its call and the turn without the model; resume: the model is told and continues"
+                "description": "How long an input waits for an answer before the runtime answers for the person: 900 (15 minutes) by default, 60 to 2592000 (30 days), and never past the agent's own expiry"
               },
               "approvers": {
                 "type": "array",
@@ -10419,15 +10404,7 @@
                 "type": "integer",
                 "minimum": 60,
                 "maximum": 2592000,
-                "description": "How long an input waits for an answer: 7 days by default, at most 30, and never past the agent's own expiry"
-              },
-              "onExpire": {
-                "type": "string",
-                "enum": [
-                  "close",
-                  "resume"
-                ],
-                "description": "close (default): an expired input closes its call and the turn without the model; resume: the model is told and continues"
+                "description": "How long an input waits for an answer before the runtime answers for the person: 900 (15 minutes) by default, 60 to 2592000 (30 days), and never past the agent's own expiry"
               },
               "approvers": {
                 "type": "array",

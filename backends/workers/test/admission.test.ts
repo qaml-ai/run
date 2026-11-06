@@ -1,9 +1,17 @@
-import { test } from "node:test";
+import { afterEach, beforeEach, mock, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { apiRequest, createAdmission, runAdmission, admissionHeaders, admissionError, RateLimited, errorHeaders, sweepAdmission } from "../src/admission.ts";
 import { keyServices } from "../src/security-services.ts";
 import { testDatabase } from "./billing-database.ts";
+
+// Tenant windows are fixed to the UTC clock minute (src/rate-limits.ts), so a test that counts across :59 and :00 sees a fresh
+// window and fails (CI run 42272366906). Every test starts ten seconds into a minute, on a clock that stands still.
+beforeEach(() => {
+  const now = Date.now();
+  mock.timers.enable({ apis: ["Date"], now: now - (now % 60_000) + 10_000 });
+});
+afterEach(() => mock.timers.reset());
 
 async function fixture(extra: Record<string, string> = {}) {
   const { db, url } = await testDatabase();

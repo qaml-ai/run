@@ -3,7 +3,7 @@ import { type RuntimeNotice, type NoticeRequest, type WakeDecision } from "./del
 import type { ChildProgressReport } from "./delegation.ts";
 import { Env } from "./agent-types.ts";
 import { AgentRuntime } from "./agent-runtime.ts";
-import { ARM_AGENT } from "./agent-internals.ts";
+import { ARM_AGENT, DUE_HUMAN_INPUTS } from "./agent-internals.ts";
 export type { Env } from "./agent-types.ts";
 export { json } from "./agent-types.ts";
 
@@ -20,6 +20,10 @@ export class CamelAgent extends DurableObject<Env> {
 
   protected [ARM_AGENT](retry?: number) {
     return this.#runtime.arm(retry);
+  }
+
+  protected [DUE_HUMAN_INPUTS](at: number) {
+    return this.#runtime.dueHumanInputs(at);
   }
 
   purgeAccountData(tenant: string, id: string) {

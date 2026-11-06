@@ -181,6 +181,10 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
     signFileToken: (grant, expiresAt) => fixtureSigner(server.db, env.AGENT_SECRETS_KEY, server.url).fileToken(grant, expiresAt),
     signIdentityToken: (audience, claims) => fixtureSigner(server.db, env.AGENT_SECRETS_KEY, server.url).token(audience, claims),
     get logs() { return server.worker.logs().split("\n"); },
+    async expireInputs(agent) {
+      const result = await call(`/v1/agents/${agent}/__test/contract-inputs-due`, { body: {} });
+      if (result.status !== 200) throw new Error(`Inputs fixture: ${result.status} ${result.text}`);
+    },
     async setScheduleDueAt(agent, schedule, dueAt) {
       const result = await call(`/v1/agents/${agent}/__test/contract-schedule-due`, { body: { id: schedule, dueAt } });
       if (result.status !== 200) throw new Error(`Schedule fixture: ${result.status} ${result.text}`);
