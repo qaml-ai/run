@@ -431,11 +431,16 @@ emailTest("tests/channels-email.test.ts:391", "replies: { to } mails only that a
 function inboundLog(r: ContractFixture) {
   let taken = 0;
   // Each decision is one JSON object on a line; workerd may color a line or split a long one, so only whole objects count.
-  const all = () => r.logs.flatMap(line => {
-    const found = /\{"type":"email_(?:inbound|outbound)".*\}/.exec(line);
-    if (!found) return [];
-    try { return [JSON.parse(found[0])]; } catch { return []; }
-  });
+  // The Workers fixture keeps only the tail of its log, so decisions are collected as they appear (each names its mail).
+  const seen: unknown[] = [], known = new Set<string>();
+  const all = () => {
+    for (const line of r.logs) {
+      const found = /\{"type":"email_(?:inbound|outbound)".*\}/.exec(line);
+      if (!found || known.has(found[0])) continue;
+      try { seen.push(JSON.parse(found[0])); known.add(found[0]); } catch { /* a partial line */ }
+    }
+    return seen as Record<string, unknown>[];
+  };
   return {
     /** The decisions logged since the last call, once there are `count` of them. */
     async reasons(count = 1) {
