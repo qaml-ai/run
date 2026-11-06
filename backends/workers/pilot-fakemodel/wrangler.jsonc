@@ -6,6 +6,14 @@
   "compatibility_date": "2026-11-05",
   "workers_dev": true,
   "preview_urls": false,
-  "observability": { "enabled": true, "traces": { "enabled": true } },
-  "limits": { "cpu_ms": 10000 }
+  "observability": {
+    "enabled": true,
+    "traces": {
+      "enabled": true
+    },
+    "redact_query_string": true
+  },
+  "limits": {
+    "cpu_ms": 10000
+  }
 }

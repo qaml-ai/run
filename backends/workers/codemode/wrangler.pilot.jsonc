@@ -28,6 +28,7 @@
     "enabled": true,
     "traces": {
       "enabled": true
-    }
+    },
+    "redact_query_string": true
   }
 }
