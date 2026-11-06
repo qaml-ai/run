@@ -93,7 +93,7 @@ test("on a platform key a response is billed at the catalog's price, whatever th
 });
 
 for (const keyScope of [undefined, "without-provider-key"]) {
-  test(`a prepaid tenant's operator-configured model key keeps platform billing through ${keyScope ? "scope fallback" : "direct resolution"}`, async t => {
+  test(`a prepaid tenant's operator-configured model key (its entry's apiKeys) is its own, never charged, through ${keyScope ? "scope fallback" : "direct resolution"}`, async t => {
     const r = await runtime(t, () => ({ role: "assistant", content: "done", usage: { prompt_tokens: 5000, completion_tokens: 0 } }), env, {
       ...tenantsFile,
       tenants: { ...tenantsFile.tenants, payg: { ...tenantsFile.tenants.payg, apiKeys: { openrouter: "fixture-admin-model-key" } } },
@@ -103,12 +103,12 @@ for (const keyScope of [undefined, "without-provider-key"]) {
     assert.equal(made.status, 201, made.text);
     assert.equal((await r.prompt(made.json.id, "go", PAYG)).outcome.result.reply, "done");
     assert.deepEqual(r.model.keys, ["Bearer fixture-admin-model-key"], "the operator-configured key answered, not the platform key");
-    const charged = funded(5000 * catalog.cost.input / 1e6);
-    const billing = (await r.call("/v1/billing", { token: PAYG })).json;
-    assert.equal(billing.balance, micros(1) - charged, "current model policy charges catalog fallback plus funding on admin keys");
-    const usage = (await r.call("/v1/usage", { token: PAYG })).json.totals;
-    assert.deepEqual([usage.responses, usage.platformResponses], [1, 1]);
-    assert.equal(micros(usage.platformCost), charged);
+    const usage = await until(async () => {
+      const totals = (await r.call("/v1/usage", { token: PAYG })).json.totals;
+      return totals.responses === 1 && totals;
+    }, "the usage");
+    assert.deepEqual([usage.platformResponses, usage.platformCost], [0, 0], "not the platform's response");
+    assert.equal((await r.call("/v1/billing", { token: PAYG })).json.balance, micros(1), "no credit, no funding multiplier, on the entry's key");
   });
 }
 

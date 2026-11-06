@@ -108,6 +108,21 @@ test("a tenant's own OpenRouter key answers its decisions, and is not charged", 
   assert.equal(openrouter.requests.at(-1)!.key, "Bearer own-openrouter-key");
 });
 
+test("a prepaid tenant's operator-configured decision key never spends platform credit", async t => {
+  const openrouter = await fakeOpenRouter(t, 0.01);
+  const r = await runtime(t, free(() => ({ role: "assistant", content: "ok" })), {
+    AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_DECISIONS_URL: openrouter.base,
+    AGENT_BILLING_ADMINS: "ops", AGENT_PRICE_AGENT_HOUR_USD: "0", AGENT_OPENROUTER_CREDIT_MULTIPLIER: "1.2",
+  }, { ...tenantsFile, tenants: { ...tenantsFile.tenants, own: { ...tenantsFile.tenants.own, platformKeys: true, billing: "prepaid" } } });
+  assert.equal((await r.call("/v1/billing/adjustments", { body: { tenant: "own", amount: 1_000_000, reason: "test" }, token: OPS })).status, 201);
+  const answered = await r.call("/v1/decisions", { body: { state: "hello", questions: { is_support: QUESTIONS.is_support } }, token: OWN });
+  assert.equal(answered.status, 200, answered.text);
+  assert.equal(openrouter.requests.at(-1)!.key, "Bearer own-openrouter-key");
+  const usage = await until(async () => (await r.call("/v1/usage", { token: OWN })).json.days.find((day: any) => day.kind === "decision"), "the decision's usage");
+  assert.deepEqual([usage.responses, usage.platformResponses, usage.platformCost], [1, 0, 0]);
+  assert.equal((await r.call("/v1/billing", { token: OWN })).json.balance, 1_000_000, "the provider bills the tenant's own key");
+});
+
 /** A model that runs a batch through codemode, then a decision directly, then says what came back. */
 function decider(body: any) {
   const results = toolResults(body);

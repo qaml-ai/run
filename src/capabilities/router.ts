@@ -1,3 +1,4 @@
+import { chargesPlatform } from "../core/key-source.ts";
 import type { Accounts } from "../accounts.ts";
 import type { UsageRecord } from "../client-sessions/state.ts";
 
@@ -36,7 +37,7 @@ export function httpAttempt(provider: string, status: number, what: { one: strin
 export async function resolveKey(accounts: Pick<Accounts, "providerKey" | "billing">, tenant: string, provider: string): Promise<KeyedCredential | undefined> {
   const resolved = await accounts.providerKey(tenant, provider);
   if (!resolved) return undefined;
-  const platform = resolved.source === "platform";
+  const platform = chargesPlatform(resolved.source);
   if (platform) { const limited = await accounts.billing.creditLimit(tenant); if (limited) throw limited; }
   return { key: resolved.key, platform };
 }

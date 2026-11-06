@@ -18,6 +18,7 @@ import { runAdmission, type AdmissionEnv } from './admission.ts';
 import { metric } from './observability.ts';
 import { mediaAzure, azureCredentials, type MediaAzureEnv } from './media-azure.ts';
 import type { AuthContext } from './control.ts';
+import { chargesPlatform } from '../../../src/core/key-source.ts';
 
 export type MediaBindings = Omit<FileBindings, 'HYPERDRIVE'> & WebhookEnv & Omit<AdmissionEnv, 'HYPERDRIVE'> & MediaAzureEnv & {
   PLATFORM_OPENAI_KEY?: string;
@@ -48,10 +49,11 @@ export async function mediaKey(env: MediaBindings, tenant: string, scope: string
   };
   const resolved = await accounts.providerKey(tenant, provider);
   if (resolved) {
-    if (resolved.source === 'platform') { const limited = await accounts.billing.creditLimit(tenant); if (limited) throw limited; }
-    const azure = resolved.source === 'platform' && provider === 'openai' && azureDeployment ? mediaAzure(env) : undefined;
+    const platform = chargesPlatform(resolved.source);
+    if (platform) { const limited = await accounts.billing.creditLimit(tenant); if (limited) throw limited; }
+    const azure = platform && provider === 'openai' && azureDeployment ? mediaAzure(env) : undefined;
     if (azure && azureDeployment) return { ...azureCredentials(azure, azureDeployment, { apiKey: resolved.key }), platform: true };
-    return { apiKey: resolved.key, platform: resolved.source !== 'tenant' };
+    return { apiKey: resolved.key, platform };
   }
   // Keep old local fixtures usable; production keys come from the shared store.
   const configured = testConfig(env).tenants?.[tenant];
