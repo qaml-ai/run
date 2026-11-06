@@ -73,7 +73,8 @@
     "consumers": [
       {
         "queue": "camelrun-proto-workers-webhooks",
-        "max_batch_size": 10,
+        // Deletion passes can be slow. Let independent messages run separately.
+        "max_batch_size": 1,
         "max_batch_timeout": 1,
         "max_retries": 3
       }
