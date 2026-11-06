@@ -35,9 +35,27 @@ in shared logic. Passing a port contract does not by itself prove an ECS fix is 
 | Queued configuration delays an end-user-change 409 | No | `reconfiguration` validates immutable subject/context before it queues configuration. New probe blocks a model call, queues two configurations, and requires the changed subject to return 409 within three seconds while that call remains blocked. | None |
 | Completion is visible before billing releases the busy slot | No | Main awaits `releaseBusy` before publishing the completed request in `src/client-sessions.ts`. `tests/busy-release.test.ts` covers success, failure, abort, acceptance races and repeated next-agent admission. Port correction `39c6ade4` drains its own receipt outbox. | None |
 | Credit refusals lose their structured reason through the model stream | No | `src/agent-host.ts` installs the synchronous credit-stop callback, preserving reason, bucket and end-user fields. `tests/end-user-reasons.test.ts` covers all refusal reasons and SDK propagation; `tests/end-user-runs.test.ts` covers mid-stream exhaustion and no retry. | None |
-| A tenant's own decision key is treated as platform credit | **Yes: operator-configured keys** | The shared auxiliary credential helper in `src/node.ts` used `source !== "tenant"`, misclassifying `source: "admin"`. The failing-first prepaid test recorded `[responses, platformResponses, platformCost] = [1, 1, 0.012]` for a $0.01 call on the tenant's own key. Expected `[1, 0, 0]` and unchanged credit. Stored tenant keys already worked. | `codex/ecs-auxiliary-key-billing`: classify only `source === "platform"` as platform-owned. The helper also serves image, speech and transcription calls; normal model pricing is unchanged. |
+| A tenant's own decision key is treated as platform credit | **Yes: operator-configured keys; policy decision pending** | The shared auxiliary credential helper in `src/node.ts` used `source !== "tenant"`, misclassifying `source: "admin"`. The failing-first prepaid test recorded `[responses, platformResponses, platformCost] = [1, 1, 0.012]` for a $0.01 call on the tenant's own key. Expected `[1, 0, 0]` and unchanged credit. Stored tenant keys already worked. | [#663](https://github.com/qaml-ai/run/pull/663): classify only `source === "platform"` as platform-owned. The helper also serves image, speech and transcription calls; normal model pricing is unchanged. |
 | A tenant's own search key is treated as platform credit | No | Search already tests `source === "platform"` in `src/capabilities/router.ts`. `tests/web-search.test.ts` explicitly covers operator-configured tenant keys as well as stored keys and platform fallback. | None |
 | Browser chat-store bundle exceeds its budget by 504 bytes | No | #651 reports 9,720 bytes after the integration-only WebSocket change `443b17cd`, against 9,216. Main has no `clients/event-transport.ts` import and its unchanged browser bundle test passes. Do not increase the budget on main. | None |
+
+## Open billing decision: operator-configured keys
+
+The coordinator has put #663 on hold while the CTO chooses the billing semantics.
+The inconsistency is confirmed, but this audit does not decide which behavior is the
+intended contract. Do not change the normal model path or treat #663 as cleared to merge.
+Line numbers below refer to audited main `1c4b59cb` and the unchanged model paths in #663.
+
+| Path | Current treatment of `source: "admin"` | Source | Tests |
+| --- | --- | --- | --- |
+| Web search/render/X search | Not platform-owned | `src/capabilities/router.ts:39`: `resolved.source === "platform"` | `tests/capability-router.test.ts:82` and `tests/web-search.test.ts:305` check operator keys; `tests/web-search.test.ts:319` checks own-key precedence and platform fallback. |
+| Auxiliary decisions/media on main | Platform-owned | `src/node.ts:421`: `resolved.source !== "tenant"` | Existing `tests/decisions-api.test.ts:104` checks an unbilled own-key tenant, so it does not distinguish a prepaid debit. |
+| Auxiliary decisions/media with #663 | Not platform-owned | `src/node.ts:421`: `resolved.source === "platform"` | New `tests/decisions-api.test.ts:111` in #663 checks a prepaid operator key, zero platform usage and unchanged credit; media API suites check shared-helper behavior. |
+| Normal model key (`apiKeyFor`) | Platform-owned | `src/node.ts:876`: `resolved.source !== "tenant"` | `tests/key-scopes.test.ts:70-72` expects four admin-key responses to count as platform responses. `tests/model-pricing-trust.test.ts:95` checks provider-reported cost for an unbilled admin; that does not establish prepaid semantics. `tests/model-pricing-trust.test.ts:96` now pins prepaid admin-key platform attribution and the catalog-plus-funding debit for direct resolution. |
+| Per-call model key resolution (`scopedKey`, fallback when the scope has no entry) | Platform-owned | `src/node.ts:890`: `resolved.source !== "tenant"` | Existing key-scope tests cover explicit scoped entries as non-platform and admin defaults; `tests/model-pricing-trust.test.ts:96` now repeats the prepaid billing assertion with an empty scope, exercising this fallback. |
+
+The model-path tests pin existing behavior, not a proposed policy change. The normal
+model helper and scoped fallback remain unchanged pending the coordinator's decision.
 
 ## Other fixes and findings inventoried
 
@@ -80,5 +98,19 @@ home-directory Sprite wrapper was absent; the repository's `scripts/sprite-test`
   job `20261105-213308-84734-1`. Another eight media API tests pass on the same
   Sprite, job `20261105-213422-93589-1`.
 
-Full main and fixed-branch suites, final documentation checks and PR links are recorded
-below once complete. No merge or production rollout is part of this audit.
+- Full main process suite: 2,558 passed, three skipped, zero failed across eight Sprites,
+  run prefix `20261105-213014-59852`.
+- Full fixed-branch process suite: all eight shards pass at `0012d938`, run prefix
+  `20261105-213324-86096`.
+- Decision suite in inline hosting: 6/6, `rt-pool-17`, job
+  `20261105-213736-14293-1`.
+- Full audit process suite: 2,560 passed, three skipped, zero failed at `50754878`,
+  run prefix `20261105-213732-13114` (before adding the two model-policy probes).
+- Both new model-policy probes and the rest of `model-pricing-trust.test.ts`: 7/7,
+  `rt-pool-7`, job `20261105-214042-37855-1`, test-only commit `3d9b3b05`.
+- Audit documentation build, two llms tests, typecheck and both new lifecycle probes pass at
+  `50754878`, `rt-pool-6`, job `20261105-213728-12553-1`.
+
+The proposed auxiliary change is in [#663](https://github.com/qaml-ai/run/pull/663),
+on hold for the CTO billing decision despite green tests.
+No merge or production rollout is part of this audit.
