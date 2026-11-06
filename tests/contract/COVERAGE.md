@@ -128,11 +128,12 @@ without synthesizing missing metadata.
 
 The public documentation cases (`docs.test.ts:11`, `:49`, `:69`, `:104`)
 cover anonymous Markdown/skill routes, redirects, crawler headers, traversal
-rejection and helpful 401/404 responses. The three `ops-mcp.test.ts` cases cover
-OAuth metadata, admin admission, token separation and read-only reporting tools.
+rejection and helpful 401/404 responses. The four `ops-mcp.test.ts` cases cover
+OAuth metadata, admin admission, token separation, the read-only reporting tools and the per-account tools
+(usage, account, retention, channels, schedules, integrations, help requests).
 `admin-site.test.ts:25` covers hostname isolation, Access JWT verification and
-cross-tenant reporting with a local signing-key server. These ten cases retain
-all 135 original assertion expressions.
+cross-tenant reporting with a local signing-key server. These eleven cases retain
+all original public assertion expressions.
 
 These cover lazy connections, direct SDK calls, portability, client/server tool
 protocols, token rotation, watch/reconnect behavior, CORS and UI transports. Some
@@ -246,7 +247,7 @@ original suite.
 | `model-pricing-trust.test.ts` | 3 / 5 |
 | `model-settings.test.ts` | 3 / 4 |
 | `multi-agent.test.ts` | 9 / 10 |
-| `ops-mcp.test.ts` | 3 / 3 |
+| `ops-mcp.test.ts` | 4 / 4 |
 | `openrouter-hosts.test.ts` | 3 / 4 |
 | `openrouter-model.test.ts` | 2 / 5 |
 | `outbound-origins.test.ts` | 1 / 1 |

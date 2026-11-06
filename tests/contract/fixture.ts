@@ -43,6 +43,8 @@ export interface ContractFixture {
   ageUsedOAuthRefreshToken(token: string, milliseconds: number): Promise<void>;
   revokeOAuthGrants(): Promise<void>;
   seedOAuthAccessToken(grant: { grantId: string; tenant: string; clientId: string; clientName: string; login: string; scope: string; resource: string; token: string; expiresAt: number }): Promise<void>;
+  /** One self-serve account with use, credit, a channel, schedules and what it can connect (fixtures/ops-seed.ts). */
+  seedOpsAccount(now: number): Promise<void>;
   expireAccountEmailLinks(): Promise<void>;
   seedConsoleIdentity(tenant: string, identity: { method: "google" | "github"; subject: string | number; email?: string; login: string }): Promise<string>;
   seedEndUserUsage(usage: { tenant: string; endUser: string; bucket: string; amount: number; key: string; metadata?: Record<string, unknown>; at: number }): Promise<void>;

@@ -1,4 +1,5 @@
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
+import { seedOpsAccount } from "./ops-seed.ts";
 import { fileURLToPath } from "node:url";
 import { EndUserCredits } from "../../../src/end-user-credits.ts";
 import { configuredModel } from "../../../src/model.ts";
@@ -216,6 +217,7 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
       await server.db.query("insert into oauth_grants(id,tenant,client_id,client_name,login,scope,resource,created_at) values($1,$2,$3,$4,$5,$6,$7,$8)", [grant.grantId, grant.tenant, grant.clientId, grant.clientName, grant.login, grant.scope, grant.resource, Date.now()]);
       await server.db.query("insert into oauth_tokens(sha256,kind,grant_id,expires_at) values($1,'access',$2,$3)", [createHash("sha256").update(grant.token).digest("hex"), grant.grantId, grant.expiresAt]);
     },
+    async seedOpsAccount(now) { await seedOpsAccount((text, values) => server.db.query(text, values), now); },
     async expireAccountEmailLinks() { await server.db.query("update account_email_links set expires_at=$1", [Date.now() - 1]); },
     async seedConsoleIdentity(tenant, identity) {
       const now = Date.now(), raw = randomBytes(32).toString("base64url");
