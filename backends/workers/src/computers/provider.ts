@@ -1,12 +1,20 @@
 import { workspacePath } from "../validation.ts";
+import { CONTAINER_CA, COMPUTER_LIMITS, TRUST_COMMAND, type EgressGrant } from "./egress.ts";
 
 export type ComputerRequest =
   | { op: "exec"; argv: string[]; timeoutMs?: number }
   | { op: "read"; path: string }
   | { op: "write"; path: string; content: string }
   | { op: "parse"; path: string; format: "text" | "json" | "csv" | "html" }
-  | { op: "snapshot" | "restore"; name: string }
+  | { op: "snapshot"; name: string }
+  | { op: "restore"; name: string; from?: "parent" }
   | { op: "sleep" };
+/**
+ * How a computer starts its container: HTTPS egress per granted host (each a gateway the container's traffic to that
+ * host is intercepted into), and the idle time before it stops. `key` names the grants; a running container started
+ * with other grants is replaced, so a definition change takes effect on the next operation.
+ */
+export type ComputerNetwork = { key: string; egress: { grant: EgressGrant; gateway: Fetcher }[]; idleMs: number };
 export interface ComputerProvider {
   exec(
     argv: string[],
@@ -26,6 +34,7 @@ export interface ComputerProvider {
   }>;
   snapshot(name: string, signal: AbortSignal): Promise<ComputerSnapshot>;
   restore(name: string, signal: AbortSignal): Promise<ComputerSnapshot>;
+  startFrom(handle: ComputerSnapshot, signal: AbortSignal): Promise<ComputerSnapshot>;
   sleep(): Promise<void>;
 }
 export interface SnapshotStore {
@@ -41,6 +50,7 @@ export type ContainerApi = Pick<
   | "exec"
   | "destroy"
   | "snapshotContainer"
+  | "interceptOutboundHttps"
 >;
 
 export const INSTANCE_TYPES = [
@@ -161,21 +171,48 @@ export async function readBounded(
 // Files and parsing run as node processes in the image (exec with bounded
 // stdout/stdin), so the image needs nothing but Node.
 export class ContainerProvider implements ComputerProvider {
-  readonly sleepAfter = 60_000;
   protected container: ContainerApi;
   protected store: SnapshotStore;
   protected spec: ComputerSpec;
   protected now: () => number;
+  protected network: ComputerNetwork;
   constructor(
     container: ContainerApi,
     store: SnapshotStore,
     spec: ComputerSpec = DEFAULT_SPEC,
     now: () => number = Date.now,
+    network?: ComputerNetwork,
   ) {
     this.container = container;
     this.store = store;
     this.spec = spec;
     this.now = now;
+    this.network = network ?? { key: "", egress: [], idleMs: COMPUTER_LIMITS.idleSeconds.default * 1000 };
+  }
+  get sleepAfter() {
+    return this.network.idleMs;
+  }
+  /** Starts the container with the Internet off, each granted host intercepted into its gateway. */
+  protected async boot(from: { image: string } | { containerSnapshot: { id: string } }) {
+    const egress = this.network.egress;
+    this.container.start({
+      ...from,
+      instance: this.spec.instance,
+      enableInternet: false,
+      ...(egress.length ? { env: { NODE_EXTRA_CA_CERTS: CONTAINER_CA, GIT_TERMINAL_PROMPT: "0" } } : {}),
+    } as ContainerStartupOptions);
+    for (const { grant, gateway } of egress)
+      await this.container.interceptOutboundHttps(grant.host, gateway);
+    await this.store.put("network", this.network.key);
+  }
+  /**
+   * Each container has its own interception CA, and a snapshot carries the one its machine trusted: trust this one.
+   * Unread output pipes would hold the process open (update-ca-certificates warns on stderr), so they are ignored.
+   */
+  protected async trust() {
+    if (!this.network.egress.length) return;
+    const trust = await this.container.exec(["sh", "-c", TRUST_COMMAND], { signal: AbortSignal.timeout(30_000), stdout: "ignore", stderr: "ignore" });
+    if (await trust.exitCode) throw new Error("Computer could not trust the egress certificate authority");
   }
   /** This deployment's digest-pinned reference for the spec's image. */
   protected image() {
@@ -184,13 +221,12 @@ export class ContainerProvider implements ComputerProvider {
     return image;
   }
   protected async ready() {
+    // Grants changed since this container started: replace it, so no host stays reachable that the definition dropped.
+    if (this.container.running && (await this.store.get<string>("network") ?? "") !== this.network.key)
+      await this.container.destroy();
     if (!this.container.running) {
       const image = this.image();
-      this.container.start({
-        image,
-        instance: this.spec.instance,
-        enableInternet: false,
-      });
+      await this.boot({ image });
       await this.store.put(IMAGE_KEY, image);
       // start() returns before the container is up and exec waits for a
       // starting container, so this first command is the readiness check. It
@@ -200,6 +236,7 @@ export class ContainerProvider implements ComputerProvider {
       });
       if (await init.exitCode)
         throw new Error("Computer workspace initialization failed");
+      await this.trust();
     }
     await this.container.setInactivityTimeout(this.sleepAfter);
   }
@@ -329,11 +366,8 @@ export class ContainerProvider implements ComputerProvider {
       );
     signal.throwIfAborted();
     if (this.container.running) await this.container.destroy();
-    this.container.start({
-      containerSnapshot: { id: snapshot.id },
-      instance: this.spec.instance,
-      enableInternet: false,
-    });
+    await this.boot({ containerSnapshot: { id: snapshot.id } });
+    await this.trust();
     await this.store.put(IMAGE_KEY, snapshot.image);
     await this.container.setInactivityTimeout(this.sleepAfter);
     const restored = { ...snapshot, expiresAt: this.now() + SNAPSHOT_TTL_MS };
@@ -349,6 +383,7 @@ export async function operate(
   provider: ComputerProvider,
   request: ComputerRequest,
   signal: AbortSignal = AbortSignal.timeout(30_000),
+  parent?: ComputerSnapshot,
 ) {
   switch (request.op) {
     case "exec":
@@ -393,8 +428,12 @@ export async function operate(
     case "restore":
       if (!SNAPSHOT_NAME.test(request.name))
         throw new Error("Invalid snapshot name");
-      await provider[request.op](request.name, signal);
-      return { [request.op]: request.name };
+      if (request.op === "restore" && (request.from === "parent") !== !!parent)
+        throw new Error("A restore from the parent needs the parent's snapshot");
+      // A disk fork's stand-in: a sub-agent's own machine starts from its parent's snapshot, found by the runtime.
+      if (parent) await provider.startFrom(parent, signal);
+      else await provider[request.op](request.name, signal);
+      return { [request.op]: request.name, ...(parent ? { from: "parent" } : {}) };
     case "sleep":
       await provider.sleep();
       return { sleeping: true };

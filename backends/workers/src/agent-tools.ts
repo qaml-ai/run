@@ -12,6 +12,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord";
 import { PiHarness } from "agents/harness/pi";
 import { computerTool } from "./computers/tool.ts";
+import { computerSetup } from "./computers/agent-setup.ts";
 import { askHuman, askUser, humanInputExtension } from "./human.ts";
 import { volumeTools, type Mount } from "./files.ts";
 import { attachedComputerTools } from "./computers/agent-tools.ts";
@@ -421,7 +422,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
       });
       registry.install({
         name: "camel.linux",
-        tools: [computerTool(this.env, this.ctx.id.toString())],
+        tools: [computerTool(this.env, this.ctx.id.toString(), async () => computerSetup(this.env, await this.config()), conf.config.computer)],
       });
       const sandbox = new SessionCodemodeSandbox({ remote: this.sandboxRemote });
       registry.install({

@@ -1,3 +1,4 @@
+import { computerSetup } from "./computers/agent-setup.ts";
 import { modelCompactionSettings } from "./model-context.ts";
 import { forkSnapshot } from "./fork-snapshot.ts";
 import { seedHistory, writeModelContext } from "./history-seed.ts";
@@ -663,7 +664,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
         if (!namespace)
           return json({ error: "Optional computer is not configured" }, 501);
         return json(
-          await namespace.getByName(this.ctx.id.toString()).operate(input),
+          await namespace.getByName(this.ctx.id.toString()).operate(input as never, await computerSetup(this.env, await this.config())),
         );
       }
       if (

@@ -54,7 +54,7 @@ export function sourceUrl(value: unknown, env: Pick<Env, "TEST_MODE" | "AGENT_OU
   catch (error) { throw bad(error instanceof Error ? error.message : String(error)); }
 }
 
-async function fetchSource(env: Pick<Env, "TEST_MODE">, url: string | URL, init: RequestInit, max = MAX_BYTES, complete?: (text: string) => boolean) {
+export async function fetchSource(env: Pick<Env, "TEST_MODE">, url: string | URL, init: RequestInit, max = MAX_BYTES, complete?: (text: string) => boolean) {
   let current = sourceUrl(String(url), env);
   await outbound(env).reachable(current);
   for (let count = 0; count < 6; count++) {

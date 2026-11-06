@@ -3,11 +3,20 @@ import {
   ContainerProvider,
   computerSpec,
   operate,
+  type ComputerNetwork,
   type ComputerRequest,
   type ComputerSnapshot,
 } from "./provider.ts";
+import { COMPUTER_LIMITS, type ComputerSetup } from "./egress.ts";
+import type { EgressProps } from "./egress-gateway.ts";
 
-type ComputerObjectEnv = { COMPUTER_IMAGE?: string; COMPUTER_INSTANCE?: string };
+type ComputerObjectEnv = { COMPUTER_IMAGE?: string; COMPUTER_INSTANCE?: string; COMPUTER_CONTAINERS?: DurableObjectNamespace<ContainerComputer> };
+/**
+ * What the agent sends with an operation: its definition's computer settings and identity, and, for a sub-agent, the
+ * name of its parent's computer object, which the runtime takes from the signed parent link.
+ */
+export type OperateSetup = ComputerSetup & { parent?: string };
+type EgressBinding = (options: { props: EgressProps }) => Fetcher;
 
 // An optional, dedicated per-agent computer, not the agent's own DO. It owns
 // one container through ctx.container (Cloudflare's `durable_object` scheduling
@@ -15,13 +24,27 @@ type ComputerObjectEnv = { COMPUTER_IMAGE?: string; COMPUTER_INSTANCE?: string }
 // simultaneous writes while taking or restoring a snapshot.
 export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
   private queue: Promise<unknown> = Promise.resolve();
-  private provider() {
+  private network(setup?: OperateSetup): ComputerNetwork {
+    const idleMs = (setup?.settings.idleSeconds ?? COMPUTER_LIMITS.idleSeconds.default) * 1000;
+    const grants = setup?.settings.egress ?? [];
+    if (!grants.length) return { key: "", egress: [], idleMs };
+    const gateway = (this.ctx as unknown as { exports: { ComputerEgress: EgressBinding } }).exports.ComputerEgress;
+    return {
+      // The identity is part of the key: a gateway's props carry it, so a new one needs new intercepts.
+      key: JSON.stringify([grants, setup!.identity.claims]),
+      egress: grants.map(grant => ({ grant, gateway: gateway({ props: { grant, identity: setup!.identity } }) })),
+      idleMs,
+    };
+  }
+  private provider(setup?: OperateSetup) {
     if (!this.ctx.container)
       throw new Error("Computer container binding unavailable");
     return new ContainerProvider(
       this.ctx.container,
       this.ctx.storage,
       computerSpec(this.env),
+      Date.now,
+      this.network(setup),
     );
   }
   private serial<T>(run: () => Promise<T>) {
@@ -29,13 +52,20 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
     this.queue = result.catch(() => {});
     return result;
   }
-  operate(request: ComputerRequest) {
-    return this.serial(() => {
+  operate(request: ComputerRequest, setup?: OperateSetup) {
+    return this.serial(async () => {
       const timeout =
         request.op === "exec" ? (request.timeoutMs ?? 30_000) : 30_000;
-      if (!Number.isInteger(timeout) || timeout < 1 || timeout > 30_000)
+      if (!Number.isInteger(timeout) || timeout < 1 || timeout > COMPUTER_LIMITS.execMs)
         throw new Error("Invalid computer timeout");
-      return operate(this.provider(), request, AbortSignal.timeout(timeout));
+      let parent: ComputerSnapshot | undefined;
+      if (request.op === "restore" && request.from === "parent") {
+        // The parent is the runtime's signed link, never the model's choice; its handle is a plain value.
+        if (!setup?.parent || !this.env.COMPUTER_CONTAINERS) throw new Error("This agent has no parent computer to restore from");
+        try { parent = await this.env.COMPUTER_CONTAINERS.getByName(setup.parent).snapshotHandle(request.name); }
+        catch { throw new Error(`The parent's computer has no snapshot named ${request.name}: the parent saves one with snapshot first`); }
+      }
+      return operate(this.provider(setup), request, AbortSignal.timeout(timeout), parent);
     });
   }
   /** Take a snapshot now and return its handle. */
