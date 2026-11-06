@@ -81,7 +81,12 @@ export const MAX_RESUMES = 2;
  */
 export const RUN_START_ATTEMPTS = 5;
 const RUN_START_BACKOFF_MS = 5_000;
-const transientStart = (error: unknown) => databaseRetryable(error) || databaseUnavailable(error) || (error as { status?: number }).status === 503;
+/**
+ * What a run's start waits out and tries again (`startStep`): the database refusing for now or unreachable, a node
+ * answering 503, and its tenant's agents on this node at their quota (`makeRoom`'s 429, "retry when one finishes"): the
+ * run was accepted already, and an agent of the tenant going idle or ending a moment later frees the slot.
+ */
+const transientStart = (error: unknown) => databaseRetryable(error) || databaseUnavailable(error) || (error as { status?: number }).status === 503 || !!(error as { tenantFull?: boolean }).tenantFull;
 /** A run's latest hand-offs its record keeps (`handoffs`): one per deploy or drain it outlived. */
 const MAX_HANDOFFS_KEPT = 20;
 
@@ -775,7 +780,7 @@ export class ClientSessions {
     const reject = (status: 429 | 503, limit: string, value: number, message: string) => {
       console.log(JSON.stringify({ type: "quota_rejected", level: "info", tenant, agent: id, limit, value, source: limit === "agentsPerTenant" ? source : "node", status }));
       // The node's own limits (its count, its memory), which a peer with room does not share (see `run`).
-      return Object.assign(new HttpError(status, message), status === 503 ? { nodeFull: true } : {});
+      return Object.assign(new HttpError(status, message), status === 503 ? { nodeFull: true } : limit === "agentsPerTenant" ? { tenantFull: true } : {});
     };
     for (;;) {
       if (this.supervisor.reserved.has(id) || this.supervisor.agents.has(id) || this.supervisor.starting.has(id)) return;
@@ -2082,8 +2087,8 @@ export class ClientSessions {
   }
 
   /**
-   * A step of a run's start, tried again when the database refuses it for now or cannot be reached, or a node answers
-   * 503: RUN_START_ATTEMPTS times in all, waiting RUN_START_BACKOFF_MS, doubling, with jitter, between tries; past that,
+   * A step of a run's start, tried again when the database refuses it for now or cannot be reached, a node answers
+   * 503, or the tenant's agents fill its quota on this node (`transientStart`): RUN_START_ATTEMPTS times in all, waiting RUN_START_BACKOFF_MS, doubling, with jitter, between tries; past that,
    * or on any other error, the error goes to the run, which fails with it. `work` answers whether the run goes on; so
    * does this, false too when the session was given up, moved or the run stopped while it waited.
    */

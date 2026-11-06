@@ -250,6 +250,15 @@ test("a notification whose landing the database refuses for now is landed when t
   assert.deepEqual(result.failures, []);
 });
 
+test("a run whose start meets its tenant's agent quota on the node waits for a slot, not failed at once (seed 130748089)", async () => {
+  // Seed 130748089: a run accepted while its tenant's agents filled the node's quota for it (AGENT_MAX_AGENTS_PER_TENANT)
+  // failed at its start with "This tenant already has 4 agents running; retry when one finishes", on the first try:
+  // the start's retry (startStep) took only database refusals and 503s as transient. A moment later a slot was free.
+  const plan: Plan = JSON.parse(readFileSync(new URL("./sim/cases/run-start-tenant-quota.json", import.meta.url), "utf8"));
+  const result = await runPlan(plan, { quiet: true });
+  assert.deepEqual(result.failures, []);
+});
+
 test("a notification an abort reaches before its turn lands without one, not lost (seed 23594457)", async () => {
   // Minimized from seed 23594457: the parent was aborted while a child's notification run waited to land; the run ended
   // aborted after its row was marked landed, and the message never reached history. An abort now lands a notification
