@@ -29,7 +29,6 @@
     "sim:mcp": "node --experimental-strip-types --disable-warning=ExperimentalWarning tests/sim/mcp.ts",
     "bench:sim-hooks": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-sim-hooks.ts",
     "bench:search": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-search.ts",
-    "bench:codemode": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-codemode.ts",
     "test:studio": "node --experimental-strip-types --disable-warning=ExperimentalWarning studio/smoke.ts",
     "check:core": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/check-core.ts && tsc -p tsconfig.core.json",
     "parity": "node tests/contract/sprites.mjs"
