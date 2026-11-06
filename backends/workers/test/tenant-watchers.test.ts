@@ -47,12 +47,12 @@ test("tenant socket quotas survive waking, reconcile only their owner and releas
   assert.equal(watchers.acquire("agent-b", "poll:1", 100), false, "a socket wake leaves an active poll intact");
   assert.equal(watchers.canWatch(3), true);
   assert.equal(watchers.canWatch(2), false);
-  clock.now += 119_999;
+  clock.now += 29_999;
   assert.equal(watchers.canWatch(2), false, "a poll stays reserved throughout its bounded HTTP wait");
   clock.now++;
   assert.equal(watchers.canWatch(2), true, "an abandoned poll expires without a heartbeat");
   assert.equal(watchers.canWatch(1), false, "the socket remains reserved after the poll expires");
   assert.equal(watchers.acquire("agent-a", "poll:2", 2), true);
-  clock.now += 120_000;
+  clock.now += 30_000;
   assert.equal(watchers.acquire("agent-b", "socket-new", 2), true, "acquiring also prunes abandoned polls");
 });

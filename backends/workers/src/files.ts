@@ -11,6 +11,7 @@ import {
 } from "./file-policy.ts";
 import { uploadFile } from "./file-upload.ts";
 import { assertStorageWrite } from "./storage-quota.ts";
+import type { NativeStorageBindings } from "./tenant-storage.ts";
 import type { FileVersions } from "./file-versions.ts";
 import { signVolumeLink, verifyVolumeLink } from "./file-links.ts";
 import { ARCHIVE_LIMITS, READ_ALL_LIMITS } from "./volume-policy.ts";
@@ -56,7 +57,7 @@ export async function handleSignedFileRequest(
     return fileFailure(error);
   }
 }
-export interface FileBindings extends ImageBindings, SecurityEnv {
+export interface FileBindings extends ImageBindings, SecurityEnv, NativeStorageBindings {
   VOLUMES: DurableObjectNamespace<Volume>;
   HYPERDRIVE: {
     connectionString: string;

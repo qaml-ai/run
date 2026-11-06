@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { HttpError } from "./errors.ts";
+import { deleteNativeFile, recordNativeFile, type NativeStorageBindings } from "./tenant-storage.ts";
 import {
   normalizePath as sourceNormalizePath,
   labelsInput as sourceLabelsInput,
@@ -19,7 +20,7 @@ export const normalizePath = (value: unknown) =>
   policy(() => sourceNormalizePath(value));
 const labelsInput = (value: unknown) => policy(() => sourceLabelsInput(value));
 const globRegex = (value: string) => policy(() => sourceGlobRegex(value));
-export interface VolumeBindings {
+export interface VolumeBindings extends NativeStorageBindings {
   BUCKET: R2Bucket;
 }
 export type FileEntry = {
@@ -288,6 +289,7 @@ export class Volume extends DurableObject<VolumeBindings> {
         if (!object) throw new FileError("Copy source object missing", 503);
         const key = await this.beginUpload();
         await this.env.BUCKET.put(key, object.body, { httpMetadata: { contentType: entry.contentType } });
+        await recordNativeFile(this.env, this.meta("tenant")!, key, object.size);
         this.commitUpload(entry.path, key, entry.size, hash, entry.contentType, 0);
       }
       if (failAfter === index + 1) throw new FileError("Injected fork interruption after a file", 503);
@@ -432,6 +434,7 @@ export class Volume extends DurableObject<VolumeBindings> {
     const key = this.freshKey(await digest(bytes));
     this.sql().exec("INSERT INTO objects VALUES(?,?)", key, Date.now());
     await this.env.BUCKET.put(key, bytes, { httpMetadata: { contentType } });
+    await recordNativeFile(this.env, this.meta("tenant")!, key, bytes.byteLength);
     await this.scheduleCollection();
     return {
       path: "/",
@@ -688,6 +691,7 @@ export class Volume extends DurableObject<VolumeBindings> {
       await this.env.BUCKET.put(key, object.body, {
         httpMetadata: { contentType: entry.contentType },
       });
+      await recordNativeFile(this.env, this.meta("tenant")!, key, object.size);
       this.sql().exec(
         "INSERT INTO files(path,version,size,key,contentType,updatedAt,sha256) VALUES(?,?,?,?,?,?,?)",
         entry.path,
@@ -769,6 +773,7 @@ export class Volume extends DurableObject<VolumeBindings> {
     );
     for (const row of stale) {
       await this.env.BUCKET.delete(row.key);
+      await deleteNativeFile(this.env, this.meta("tenant")!, row.key);
       this.sql().exec("DELETE FROM objects WHERE key=?", row.key);
       this.sql().exec("DELETE FROM gc_candidates WHERE key=?", row.key);
     }

@@ -20,7 +20,7 @@ export function connectionInput(value: unknown, managedEnabled: boolean) {
     return { ...connection, credentials: {}, leaseSeconds, dailySeconds, managed: true };
   }
   if (connection.provider === 'lambda' || connection.provider === 'container') throw new HttpError(400, 'This provider uses runtime credentials');
-  const expected = connection.provider === 'modal' ? ['tokenId','tokenSecret'] : connection.provider === 'tunnel' ? ['apiKey','url'] : ['apiKey'];
+  const expected = connection.provider === 'tunnel' ? ['apiKey','url'] : ['apiKey'];
   const credentials = connection.credentials;
   if (!credentials || expected.some(k => !credentials[k]?.trim()) || Object.keys(credentials).some(k => ![...expected, ...(connection.provider === 'browserbase' ? ['projectId'] : [])].includes(k)) || Object.values(credentials).some(v => v.length > 16000)) throw new HttpError(400, `Credentials require ${expected.join(', ')}`);
   if (connection.provider === 'tunnel') {

@@ -1,0 +1,43 @@
+{
+  "sourceRevision": "4ca8ede08e41db53f4d84529a026fe3245868d0f",
+  "suiteHash": "7849fdcd027197c96656c4f64050beda9e9cde632ce4fa15921f4301531dc54d",
+  "nodeKey": "4de4ef84d890f68586734a76a524ed57efb8daf57b69a6bfa4d31d52a54e7d2e",
+  "parityRecordedAt": "2026-11-06T04:06:02.890Z",
+  "node": {
+    "pass:node": 524,
+    "pass:sdk-unit": 66
+  },
+  "workers": {
+    "pass:workers": 507,
+    "pass:sdk-unit": 66,
+    "accepted-difference:workers": 17
+  },
+  "failures": 0,
+  "refactor": {
+    "originalAgentLines": 4186,
+    "agentLines": 70,
+    "unchangedMethodBodies": 84,
+    "orderedStateFields": 49,
+    "stringEntryPoints": 12
+  },
+  "validation": {
+    "workersTypecheck": "pass",
+    "workerAndCodemodeBuilds": "pass",
+    "documentation": "pass",
+    "focusedRegressionsBeforeSplit": 39,
+    "finalBoundaryAndExpiryRegressions": 7,
+    "existingUnitFailuresConfirmedAt109d0aaf": 30,
+    "existingIntegrationFailuresConfirmedAt109d0aaf": 2
+  },
+  "pilot": {
+    "url": "https://run-pilot.camelai.dev",
+    "apiVersion": "102ab697-ff46-423d-8852-d43c4f5d873d",
+    "codemodeVersion": "23b3d532-733f-4637-9456-a1ccc0f0a3d1",
+    "fakeModelVersion": "da870c3e-d37c-4fcb-a787-b9ae9c81e17e",
+    "health": {
+      "ok": true,
+      "backend": "workers-native",
+      "experimental": true
+    }
+  }
+}

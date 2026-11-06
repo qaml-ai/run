@@ -37,8 +37,8 @@ async function agent(r: Runtime, body: object = { name: "Echo", systemPrompt: "Y
 const ASK = { questions: [{ question: "Which region?", header: "Region", options: [{ label: "EU" }, { label: "US" }] }] };
 
 contractTest("agents", "tests/agent-mcp.test.ts:87", "a message streams progress, is sent once when called again, and a full queue is busy", async t => {
-  let hold = 0;
-  const r = await runtime(t, body => ({ role: "assistant", content: `echo: ${lastUser(body)}`, ...(lastUser(body) === "hold" ? { delayMs: hold } : {}) }));
+  const heldReply = Promise.withResolvers<void>();
+  const r = await runtime(t, body => ({ role: "assistant", content: `echo: ${lastUser(body)}`, ...(lastUser(body) === "hold" ? { wait: heldReply.promise } : {}) }));
   const echo = await agent(r);
   const { message, progress } = await connect(t, r, echo.id, OPERATOR);
 
@@ -71,15 +71,19 @@ contractTest("agents", "tests/agent-mcp.test.ts:87", "a message streams progress
   assert.equal(r.model.bodies.length, before + 1);
 
   // As with the prompt API, messages queue behind a running turn, up to the agent's limit: past it, the agent is busy.
-  hold = 5_000;
-  const held = await r.call(`/v1/agents/${echo.id}/prompt`, { body: { text: "hold" } });
-  await until(async () => (await r.call(`/v1/agents/${echo.id}/requests/${held.json.id}`)).json.began, "the held turn to begin");
-  const queued = [held, ...await Promise.all(Array.from({ length: 31 }, (_, index) => r.call(`/v1/agents/${echo.id}/prompt`, { body: { text: `queued ${index}` } })))];
-  assert.ok(queued.every(entry => entry.status === 202), queued.map(entry => entry.text).join());
-  const busy = await message("one more");
-  assert.equal(busy.isError, true);
-  assert.match(busy.text, /^The agent is busy: Too many requests queued/);
-  assert.equal((await r.call(`/v1/agents/${echo.id}`, { method: "DELETE" })).status, 200, "rather than wait for the queue at shutdown");
+  // Keep the turn running until the assertions finish, regardless of admission latency.
+  try {
+    const held = await r.call(`/v1/agents/${echo.id}/prompt`, { body: { text: "hold" } });
+    await until(async () => (await r.call(`/v1/agents/${echo.id}/requests/${held.json.id}`)).json.began, "the held turn to begin");
+    const queued = [held, ...await Promise.all(Array.from({ length: 31 }, (_, index) => r.call(`/v1/agents/${echo.id}/prompt`, { body: { text: `queued ${index}` } })))];
+    assert.ok(queued.every(entry => entry.status === 202), queued.map(entry => entry.text).join());
+    const busy = await message("one more");
+    assert.equal(busy.isError, true);
+    assert.match(busy.text, /^The agent is busy: Too many requests queued/);
+    assert.equal((await r.call(`/v1/agents/${echo.id}`, { method: "DELETE" })).status, 200, "rather than wait for the queue at shutdown");
+  } finally {
+    heldReply.resolve();
+  }
 });
 
 contractTest("agents", "tests/agent-mcp.test.ts:135", "a turn waiting on a person asks through the client, or says how to answer", async t => {
