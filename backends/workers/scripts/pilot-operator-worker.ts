@@ -4,6 +4,7 @@ import { billingRoutes } from "../src/billing-routes.ts";
 import { keyServices, type SecurityEnv } from "../src/security-services.ts";
 import { accountDeletions, type AccountLifecycleEnv } from "../src/account-lifecycle.ts";
 import type { AccountServices } from "../src/account-services.ts";
+import { withSql } from "../src/postgres.ts";
 
 type Options = { tokenHash: string; tenantIds: string[]; expiresAt: number };
 type Env = SecurityEnv & AccountLifecycleEnv;
@@ -27,6 +28,13 @@ export default function pilotOperator(options: Options) {
       try {
         const setup = { ...env, AGENT_BILLING_ADMINS: "pilot-bootstrap" };
         const services = await keyServices(setup);
+        if (path === "/pilot/database-status" && request.method === "GET") {
+          return reply(await withSql(env, async sql => {
+            const settings = await sql.query("select name, setting from pg_settings where name in ('max_connections','superuser_reserved_connections')");
+            const activity = await sql.query("select state, backend_type, application_name, count(*)::int as connections from pg_stat_activity where datname=current_database() group by state,backend_type,application_name order by state,backend_type,application_name");
+            return { settings: Object.fromEntries(settings.rows.map(row => [row.name, Number(row.setting)])), activity: activity.rows };
+          }));
+        }
         const targeted = /^\/v1\/tenants\/([a-z0-9-]+)(?:\/(limits|deletion))?$/.exec(path);
         const inspect = path === "/pilot/inspect" && request.method === "GET";
         let tenant: string | undefined;
