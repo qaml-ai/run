@@ -1,12 +1,10 @@
 /** Local-only fixture adapter. It is never referenced by a deployment config. */
 import application from "../src/index.ts";
 import { CamelAgent as RuntimeAgent } from "../src/agent.ts";
-import { ARM_AGENT } from "../src/agent-internals.ts";
+import { ARM_AGENT, DUE_HUMAN_INPUTS } from "../src/agent-internals.ts";
 import type { Env } from "../src/agent.ts";
 import type { DelegatedChild } from "../src/delegation.ts";
 import { databaseUnavailable, withSql } from "../src/postgres.ts";
-import { HumanInputs } from "../src/human.ts";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 export * from "../src/index.ts";
 
 const resizeFailureKey = "contract-fixture/image-resize-failures";
@@ -132,16 +130,8 @@ export class CamelAgent extends RuntimeAgent {
     if (this.env.TEST_MODE === "1" && new URL(request.url).pathname === "/__test/contract-inputs-due" && request.method === "POST") {
       // Match the Node fixture's due inputs: each pending input's time is up now. The runtime's own alarm then expires
       // them, as it would after their wait.
-      const now = Date.now();
-      const root = await (await this.harness.pi()).root(BACKGROUND_CONTEXT);
-      let due = 0;
-      await root.commit(async tx => {
-        const doc = await tx.doc(HumanInputs);
-        for (const input of Object.values(doc.requests)) if (input.answer === undefined) { input.expiresAt = now; due++; }
-      }, BACKGROUND_CONTEXT);
+      const due = await this[DUE_HUMAN_INPUTS](Date.now());
       if (!due) return Response.json({ error: "Fixture inputs not found" }, { status: 404 });
-      await this.ctx.storage.put("human-input-deadline", now);
-      await this[ARM_AGENT]();
       return Response.json({ updated: due });
     }
     if (this.env.TEST_MODE === "1" && new URL(request.url).pathname === "/__test/contract-schedule-due" && request.method === "POST") {

@@ -35,7 +35,7 @@ import { DurableFileVersions } from "./file-versions.ts";
 import { AgentWebhooks } from "./run-webhooks.ts";
 import type { WebhookEvent } from "./webhook-policy.ts";
 import { Config, RequestRecord, Env, Child } from "./agent-types.ts";
-import { currentRunImpl, recordsImpl, markBeganImpl, observeImpl, requestForInputsImpl, runningRequestImpl, projectMessageImpl, reconcileSteeringImpl, steeringOwnerImpl, onViewImpl, onHumanImpl, trackImpl, settleImpl, submitImpl, answerHumanInputsImpl, closeHumanInputsImpl } from "./agent-turn-loop.ts";
+import { currentRunImpl, recordsImpl, markBeganImpl, observeImpl, requestForInputsImpl, runningRequestImpl, projectMessageImpl, reconcileSteeringImpl, steeringOwnerImpl, onViewImpl, onHumanImpl, trackImpl, settleImpl, submitImpl, answerHumanInputsImpl, closeHumanInputsImpl, dueHumanInputsImpl } from "./agent-turn-loop.ts";
 import { abortRequestsImpl, resumeKeptQueueImpl, cancelRequestImpl, resumeCancellationImpl, restoreCancellationsImpl, abortExecutionsImpl, markCancelledRequestsImpl, cancelHostIntentImpl, cancelHumanInputsImpl, startHostRequestImpl, restoreHostAdmissionsImpl } from "./agent-cancellation.ts";
 import { releaseConfigurationWaitersImpl, configureRequestImpl, acceptConfigurationRequestImpl, applyConfigurationRequestImpl, requireApplicationImpl, admitImpl, createConfigurationQueue } from "./agent-admission.ts";
 import { imageToolsImpl, sourceIdentityImpl, fileRequestIdImpl } from "./agent-attachments.ts";
@@ -427,6 +427,10 @@ export class AgentRuntime extends AgentContext {
 
   closeHumanInputs(system: "expired" | "superseded") {
     return closeHumanInputsImpl.call(this, system);
+  }
+
+  dueHumanInputs(at: number) {
+    return dueHumanInputsImpl.call(this, at);
   }
 
   fetch(request: Request): Promise<Response> {
