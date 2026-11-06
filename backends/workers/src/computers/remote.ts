@@ -1,5 +1,5 @@
 import { HttpError } from '../errors.ts';
-import { boundedCommand, output, type ComputerDriver, type Credentials, type Provider } from './policy.ts';
+import { PROVIDERS, boundedCommand, output, type ComputerDriver, type Credentials, type Provider } from './policy.ts';
 import { boundedResponse, microvmDriver, testEndpoint, type Fetcher, type MicrovmBindings } from './microvm.ts';
 import type { ComputerBindings } from './tool.ts';
 
@@ -15,6 +15,7 @@ class ProviderHttpError extends Error {
   constructor(status: number) { super(`Computer provider HTTP ${status}`); this.status = status; }
 }
 export function remoteDriver(env: RemoteBindings, tenant: string, agent: string, provider: Provider | 'container', credentials: Credentials, send: Fetcher = request => fetch(request)): ComputerDriver {
+  if (provider !== 'container' && !PROVIDERS.includes(provider)) throw new HttpError(400, 'Unsupported computer provider');
   if (provider === 'lambda') return microvmDriver(env, tenant, send);
   if (provider === 'container') {
     const namespace = env.COMPUTER_CONTAINERS;
@@ -115,8 +116,7 @@ export function remoteDriver(env: RemoteBindings, tenant: string, agent: string,
       throw new Error('Computer cleanup not confirmed');
     },
   };
-  // Modal needs its Node HTTP/2 gRPC transport. A
-  // service binding keeps those SDKs out of the agent isolate; no public URL can
+  // A service binding keeps optional provider SDKs out of the agent isolate; no public URL can
   // turn the gateway into an arbitrary credential-forwarding proxy.
   const gateway = env.COMPUTER_PROVIDER_GATEWAY;
   if (!gateway) throw new HttpError(503, `${provider} provider transport is not configured`);

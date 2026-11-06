@@ -106,6 +106,10 @@ curl https://run-pilot.camelai.dev/v1/agents \
 
 ## Validation
 
+Modal was dropped from the Workers computer providers by CTO decision. New
+Modal connections and stored Modal connections cannot invoke a provider gateway.
+The Node runtime's provider list is unchanged.
+
 The final full comparison passed **507/524 Workers HTTP cases**, with **17
 accepted differences, 66 SDK-only passes and zero failures**. Node passed all
 524 HTTP and 66 SDK-only cases, including the original assertions for every
