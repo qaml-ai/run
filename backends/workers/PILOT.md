@@ -29,7 +29,7 @@ Postgres or use customer credentials. All dates below are UTC.
 | Model secret | `PILOT_OPENROUTER_KEY` | Account secret `CAMELRUN_PILOT_OPENROUTER_KEY`, store `c8c66b0210e64900864182073dcd5e09` |
 | Runtime secrets | `API_TOKEN`, `FILE_SIGNING_SECRET`, `AGENT_SECRETS_KEY` | Stable authentication, signing and encryption keys; values never displayed |
 
-The verified API version is `102ab697-ff46-423d-8852-d43c4f5d873d`.
+The verified API version is `e19b0ab2-743b-4f63-80ca-3998c1deda77`.
 The sandbox version is `23b3d532-733f-4637-9456-a1ccc0f0a3d1`; the fake
 provider version is `da870c3e-d37c-4fcb-a787-b9ae9c81e17e`.
 
@@ -110,8 +110,8 @@ Modal was dropped from the Workers computer providers by CTO decision. New
 Modal connections and stored Modal connections cannot invoke a provider gateway.
 The Node runtime's provider list is unchanged.
 
-The final full comparison passed **507/524 Workers HTTP cases**, with **17
-accepted differences, 66 SDK-only passes and zero failures**. Node passed all
+The hardening comparison before the scaling work passed **507/524 Workers HTTP
+cases**, with **17 accepted differences, 66 SDK-only passes and zero failures**. Node passed all
 524 HTTP and 66 SDK-only cases, including the original assertions for every
 accepted difference. These are local workerd/Node contract results on Sprites;
 deployed-pilot results follow below. `PARITY.md` records the exact tested
@@ -348,8 +348,9 @@ retrying unacknowledged financial receipts.
 
 Account deletion now uses the existing delivery Queue. The request persists its
 intent and enqueues work before returning HTTP 202. Each consumer pass revokes
-and purges at most 25 agents. It enqueues the next pass before acknowledging the
-current message. PostgreSQL leases serialize duplicate deliveries; the five-minute
+up to 25 live agents and purges up to 25 revoked journals. It enqueues the next
+pass before acknowledging the current message. PostgreSQL leases serialize
+duplicate deliveries; the five-minute
 Cron repairs a lost enqueue or exhausted delivery retries. Accounting records
 remain retained. A workerd test created 2,001 agents through the API, interrupted
 the process during deletion, and verified all agents removed across 81 persisted
@@ -357,7 +358,8 @@ passes, with the original balance and ledger preserved and the token rejected.
 The deletion portion took 531.905 seconds on the Sprite test database.
 The Queue delivers one message per invocation, so independent accounts do not
 wait behind a batch of long deletion passes. This setting was reduced from ten
-after the measured load stages, during their durable cleanup.
+after the first optimized load stages. The final repeat used one message per
+invocation throughout.
 
 The load orchestrator pins both the temporary operator helper and the Sprite
 runner to one commit. Its temporary checkout contains source and dependency
@@ -365,53 +367,123 @@ links; credentials still travel only through the pipe and kernel FIFO. Cleanup
 posts one deletion request, polls its durable status and checks token revocation.
 
 The comparison uses 20 tenants, the same 15-second fake model and the same load
-runner at 100, 250 and 500 concurrent turns. Hyperdrive remains at an origin
-limit of 16 and the database remains at 25 connection slots. The baseline API
-revision is `247cc940`; the optimized revision is `f5dac260`. Neither AWS nor the
-production runtime was changed.
+runner at 100, 250 and 500 concurrent turns. All measured stages used a Hyperdrive
+origin limit of 16 and a database with 25 connection slots. The baseline API
+revision is `247cc940`; the final optimized revision is `76f56096`, including
+the merged hardening modules. It was deployed once at 04:55 UTC, after the
+earlier load's cleanup removed all 20 accounts and 500 agents. Neither AWS nor
+the production runtime was changed. The first optimized sample at `f5dac260`
+is retained separately in `measurements/turn-db-after-initial-load.json`.
 
 | Concurrent turns | Version | Client errors | Successful turns/s | p50 / p95 / p99 |
 | --- | --- | --- | --- | --- |
 | 100 | Before | 0/100 | 2.607 | 36.436 / 37.712 / 37.869 s |
-| 100 | After | 0/100 | 2.725 | 33.090 / 34.971 / 35.333 s |
+| 100 | After | 0/100 | 2.808 | 32.378 / 34.233 / 34.725 s |
 | 250 | Before | 2/250 (0.8%) | 3.598 | 65.368 / 66.717 / 66.921 s |
-| 250 | After | 2/250 (0.8%) | 3.976 | 56.448 / 60.652 / 60.849 s |
+| 250 | After | 1/250 (0.4%) | 4.131 | 55.469 / 58.412 / 58.774 s |
 | 500 | Before | 313/500 (62.6%) | 1.331 | 115.439 / 120.151 / 121.184 s |
-| 500 | After | 249/500 (49.8%) | 2.340 | 97.563 / 105.519 / 106.564 s |
+| 500 | After | 280/500 (56.0%) | 2.036 | 92.735 / 103.700 / 105.272 s |
 
 Latencies include the fake model delay and describe observed completed turns.
-Client failures, mostly timeouts, do not imply the same number of failed model
-attempts. The raw reports retain admission, HTTP-error and financial counters.
+Client failures do not imply the same number of failed model attempts. All
+281 final client errors were timeouts; there were no HTTP 500 or 503 responses.
+The final 500-turn window created 500 model-attempt records and observed 499 settle,
+about 4.62 settlements per second, with one financial tail still pending at the
+snapshot. That is separate from successful-client throughput. The raw reports
+retain admission, HTTP-error and financial counters. A scoped check at
+05:03:21 UTC found all 850 attempts settled and no remaining credit holds.
+Durable cleanup completed at 05:13:35 UTC. An independent check at 05:13:58
+confirmed all 20 accounts deleted and no remaining agents, volumes, end users,
+API tokens, deletion claims, pending attempts or credit holds. Retained
+accounting records still contain all 850 settled attempts and the original
+ledger totals. See `measurements/turn-db-after-cleanup.json`.
+
+For this scaling run, Cloudflare meters from 03:30 through 05:14:30 UTC have a
+linear value of about $1.17 at paid overage rates. Rounding each measured meter
+up to its billing unit and adding a $2 reserve gives a conservative $15.98
+budget scenario, below the $30 task limit. This is not an invoice or a guaranteed
+upper bound: included allowances, shared-account allocation, unitemized services
+and billing rounding affect the charge. See
+`measurements/turn-db-cost-telemetry.json`.
 
 The 100-turn samples had no detected object recreation. Observed PostgreSQL
-round trips per requested turn fell **24.65%**, from **288.97 to 217.73**:
+round trips per requested turn fell **24.13%**, from **288.97 to 219.23**:
 
 | Phase | Before | After |
 | --- | ---: | ---: |
 | Admission | 26.00 | 24.00 |
 | Hold | 14.00 | 12.00 |
 | Renew | 0 | 0 |
-| Settle | 47.70 | 36.68 |
+| Settle | 47.70 | 36.38 |
 | Usage | 3.00 | 3.00 |
-| Webhooks | 14.32 | 7.28 |
+| Webhooks | 14.32 | 7.23 |
 | History | 0 | 0 |
-| Other, including live limit checks | 175.10 | 127.03 |
-| Public API authentication and lookup | 8.85 | 7.74 |
+| Other, including live limit checks | 175.10 | 129.45 |
+| Public API authentication and lookup | 8.85 | 7.17 |
+
+The complete 100-turn samples' transaction hold p95 values were:
+
+| Transaction phase | Before | After |
+| --- | ---: | ---: |
+| Admission | 100 ms | 99 ms |
+| Hold | 427 ms | 382 ms |
+| Settle | 1,146 ms | 944 ms |
+| Other | 107 ms | 101 ms |
 
 The runner does not request history; Workers history uses DO SQLite. The baseline
 500-turn profile lost counters when 499 objects were recreated. The optimized
-250-turn profile detected two recreations, and its 500-turn snapshot still had
+250-turn profile detected one recreation, and its 500-turn snapshot still had
 one pending attempt. Those profiles are partial. Counts are observed query
 dispatches, not a proof that every operation completed inside the snapshot:
 in-flight SQL can also understate the recorded timing at reset boundaries.
 
 The largest remaining group is live limits: each tick verifies ownership,
 refreshes the agent spend counter and reads tenant caps. Financial writes remain
-in PostgreSQL. The results still reject 500 concurrent turns on this database.
+in PostgreSQL. The measured IAD Hyperdrive pool had three connections despite
+the configured global limit of 16. The results still reject 500 concurrent turns
+on this database.
+
 For a next CTO-approved capacity trial, about 64 origin connections backed by
 80–100 database slots is a reasonable starting point. That is a rough fourfold
-capacity hypothesis, not a measured guarantee; regional pool allocation, query
-cost and database CPU still need validation. The current database was not resized.
+capacity hypothesis for the 250-turn load. At 500 concurrent turns, matching the
+15-second fake-model delay requires 33.3 turns/s, about eight times the measured
+peak client throughput. If scaling were linear, that suggests roughly 128
+origin connections and 160–200 database slots for that target. Neither estimate is a measured
+guarantee: regional pool allocation, query cost, locking and database CPU need
+validation. This run did not resize the database or change the origin limit.
+After final cleanup, the CTO started a separate upgrade from PS-5 to PS-80 ARM
+single-node (one vCPU, 8 GB). That upgrade is outside these measurements; no load
+was rerun and no Hyperdrive change was made after it was announced.
+
+### Scaling validation and integration gate
+
+The merged runtime passed Workers typechecking and 20 focused profile, RPC
+boundary, storage, alarm and crash-recovery checks on Sprites. Shared
+typechecking and all ten documentation tests passed. The affected Workers
+groups passed billing 44, model routing 58, accounts/auth 39 plus two accepted
+differences, webhooks 10, and delegation 39. Lifecycle had 99 passes, two
+accepted differences and one time-limit test timeout.
+
+The full comparison on `76f56096` passed all 590 Node cases. Workers reported
+548 passes, 17 accepted differences and 25 failures; both reports retain the
+same 380 existing scope exclusions. Three Workers failures were JavaScript
+test timeouts. The other 22 were Python missing-result or timeout failures,
+including SDK-only cases. These are not presented as a zero-failure result.
+The first Python attempt was lost to a Sprite restart; its replacement also
+failed, so the failures cannot all be attributed to the restart.
+`measurements/workers-parity-diagnostics.json` records their classifications
+and the unresolved cause of the Python failures.
+
+The lifetime and language cases that timed out passed unchanged in a combined
+probe in 14.471 seconds. Readiness took 5.919 and 6.292 seconds; no HTTP request
+exceeded 465 ms. `measurements/workers-startup-trace.json` records that evidence
+and its limits. The coordinator directed this run to leave the shared startup
+waiter and clock fixes to `codex/workers-unit-green`, then deploy and measure.
+The coordinator owns the full integration parity rerun after both PRs merge.
+No fixture fix or weakened assertion was added for these failures.
+
+The broader source suite also reproduced its existing UI gzip budget failure
+on base `20443b49`: 9,729 bytes exceeds 9,216. No UI source changed in this work.
 
 ## Limits and rollback
 
