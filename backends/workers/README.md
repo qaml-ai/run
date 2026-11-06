@@ -54,6 +54,16 @@ default `lite`) at every start. The container has no Internet and stops after
 files run small Node programs in the image (file content travels over the exec's
 stdin and stdout), so the image needs only Node.
 
+Container time is metered (`src/computers/meter.ts`): each call's setup names
+its payer (the identity's tenant and agent), and each container session, from
+start until destroyed or idled out (its idle timeout after the last use), is
+charged as platform usage (`kind: "computer"`, model `cloudflare/<instance>`)
+at Cloudflare's list rate for the instance's provisioned vCPU, memory and disk;
+a session in constant use is charged every 5 minutes. Every operation is
+refused once a prepaid tenant's credit is spent or an agent spend limit is
+reached. Sessions wait in DO storage until their charge commits; the DO alarm
+settles idled-out sessions and retries failed charges.
+
 Snapshots are Cloudflare filesystem snapshots (`snapshotContainer`, restored by
 `start({ containerSnapshot })`). The DO keeps each as a handle in its storage:
 `{ id, name, size, image, createdAt, expiresAt }`, where `image` is the digest
@@ -61,10 +71,15 @@ the filesystem came from and `expiresAt` is 30 days after creation or the latest
 restore made here. Restoring a handle from another image digest, or past
 `expiresAt`, is refused before anything starts. The handle is plain data, so any
 computer DO can start from another's (`takeSnapshot`, `snapshotHandle`,
-`startFromSnapshot` RPCs): the base of forking a computer. Deleting an agent
-calls `purge()`, which stops its container and drops its handles. Snapshots are
-tags in the application's image repository; deleting that repository deletes
-them.
+`startFromSnapshot` RPCs): the base of forking a computer. A restore runs a
+command before it reports success, so one that does not come up throws. A
+restored filesystem lasts while that container runs: after `sleep` or the idle
+stop, the next operation starts from the base image again. Deleting an agent
+calls `purge()` (after its session is aborted), which stops its container,
+charges its time and drops its handles. The snapshots themselves stay on
+Cloudflare until their 30-day expiry: the API cannot delete one, so a deleted
+agent's computer files can outlive it by up to 30 days. Snapshots are tags in
+the application's image repository; deleting that repository deletes them.
 
 `wrangler.computers.test.jsonc` binds the computer for
 `test/computers.integration.ts` (Docker required) and the pilot binds it too

@@ -133,6 +133,15 @@ export function snapshotHandle(value: unknown): ComputerSnapshot {
 // The image the current filesystem descends from. A container started from a
 // snapshot reports no image (inspect() gives ""), so the lineage is kept here.
 const IMAGE_KEY = "computer:image";
+/** Container time for whoever pays for this computer (computers/meter.ts); without one nothing is metered. */
+export interface ProviderMeter {
+  /** Before every paid operation: throws when the payer may not use compute. */
+  admit(): Promise<void>;
+  /** Just before a container starts, with the idle timeout it starts with. */
+  started(instance: InstanceType, idleMs: number): Promise<void>;
+  used(): Promise<void>;
+  stopped(): Promise<void>;
+}
 const OUTPUT_LIMIT = 64 * 1024;
 const FILE_LIMIT = 1024 * 1024;
 
@@ -177,18 +186,21 @@ export class ContainerProvider implements ComputerProvider {
   protected spec: ComputerSpec;
   protected now: () => number;
   protected network: ComputerNetwork;
+  protected meter?: ProviderMeter;
   constructor(
     container: ContainerApi,
     store: SnapshotStore,
     spec: ComputerSpec = DEFAULT_SPEC,
     now: () => number = Date.now,
     network?: ComputerNetwork,
+    meter?: ProviderMeter,
   ) {
     this.container = container;
     this.store = store;
     this.spec = spec;
     this.now = now;
     this.network = network ?? { key: "", egress: [], idleMs: COMPUTER_LIMITS.idleSeconds.default * 1000 };
+    this.meter = meter;
   }
   get sleepAfter() {
     return this.network.idleMs;
@@ -196,15 +208,40 @@ export class ContainerProvider implements ComputerProvider {
   /** Starts the container with the Internet off, each granted host intercepted into its gateway. */
   protected async boot(from: { image: string } | { containerSnapshot: { id: string } }) {
     const egress = this.network.egress;
+    // Metered from before start(): a DO that dies in between leaves a session, not an unmetered container.
+    await this.meter?.started(this.spec.instance, this.sleepAfter);
     this.container.start({
       ...from,
       instance: this.spec.instance,
       enableInternet: false,
       ...(egress.length ? { env: { NODE_EXTRA_CA_CERTS: CONTAINER_CA, GIT_TERMINAL_PROMPT: "0" } } : {}),
     } as ContainerStartupOptions);
+    await this.container.setInactivityTimeout(this.sleepAfter);
     for (const { grant, gateway } of egress)
       await this.container.interceptOutboundHttps(grant.host, gateway);
     await this.store.put("network", this.network.key);
+  }
+  /**
+   * Start a container and wait until it runs `init`: start() returns before the container is up (a failure shows only
+   * later) and exec waits for a starting one, so `init` is the readiness check. A container that does not come up is
+   * destroyed, never left running without its idle timeout, its first command or its egress trust.
+   */
+  protected async bootReady(from: { image: string } | { containerSnapshot: { id: string } }, init: string[]) {
+    try {
+      await this.boot(from);
+      const ready = await this.container.exec(init, { signal: AbortSignal.timeout(30_000), stdout: "ignore", stderr: "ignore" });
+      if (await ready.exitCode) throw new Error("Computer did not start");
+      await this.trust();
+    } catch (error) {
+      if (this.container.running) await this.container.destroy().catch(() => {});
+      await this.meter?.stopped();
+      throw error;
+    }
+  }
+  /** Destroy the running container, ending its metered session. */
+  protected async stop() {
+    await this.container.destroy();
+    await this.meter?.stopped();
   }
   /**
    * Each container has its own interception CA, and a snapshot carries the one its machine trusted: trust this one.
@@ -222,24 +259,19 @@ export class ContainerProvider implements ComputerProvider {
     return image;
   }
   protected async ready() {
+    // Every operation is admitted, as web calls are: a session spends while it runs.
+    await this.meter?.admit();
     // Grants changed since this container started: replace it, so no host stays reachable that the definition dropped.
     if (this.container.running && (await this.store.get<string>("network") ?? "") !== this.network.key)
-      await this.container.destroy();
+      await this.stop();
     if (!this.container.running) {
       const image = this.image();
-      await this.boot({ image });
+      // The readiness command also puts /workspace in the writable layer, which snapshots capture.
+      await this.bootReady({ image }, ["mkdir", "-p", "/workspace"]);
       await this.store.put(IMAGE_KEY, image);
-      // start() returns before the container is up and exec waits for a
-      // starting container, so this first command is the readiness check. It
-      // also puts /workspace in the writable layer, which snapshots capture.
-      const init = await this.container.exec(["mkdir", "-p", "/workspace"], {
-        signal: AbortSignal.timeout(30_000),
-      });
-      if (await init.exitCode)
-        throw new Error("Computer workspace initialization failed");
-      await this.trust();
     }
     await this.container.setInactivityTimeout(this.sleepAfter);
+    await this.meter?.used();
   }
   protected async run(
     argv: string[],
@@ -278,6 +310,11 @@ export class ContainerProvider implements ComputerProvider {
     } catch (error) {
       process.kill(9);
       throw error;
+    } finally {
+      // Never let metering replace the command's own outcome; the session was marked used before it ran.
+      await this.meter?.used().catch((error) =>
+        console.error(JSON.stringify({ type: "computer_meter_failed", error: error instanceof Error ? error.message.slice(0, 200) : "unknown" })),
+      );
     }
   }
   exec(argv: string[], signal: AbortSignal) {
@@ -366,17 +403,17 @@ export class ContainerProvider implements ComputerProvider {
         "Computer snapshot was taken from another image version; take a new snapshot",
       );
     signal.throwIfAborted();
-    if (this.container.running) await this.container.destroy();
-    await this.boot({ containerSnapshot: { id: snapshot.id } });
-    await this.trust();
+    await this.meter?.admit();
+    if (this.container.running) await this.stop();
+    // A restore that does not come up throws here: no caller gets a blank computer it thinks was restored.
+    await this.bootReady({ containerSnapshot: { id: snapshot.id } }, ["true"]);
     await this.store.put(IMAGE_KEY, snapshot.image);
-    await this.container.setInactivityTimeout(this.sleepAfter);
     const restored = { ...snapshot, expiresAt: this.now() + SNAPSHOT_TTL_MS };
     await this.store.put(`snapshot:${snapshot.name}`, restored);
     return restored;
   }
   async sleep() {
-    await this.container.destroy();
+    await this.stop();
   }
 }
 

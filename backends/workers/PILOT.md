@@ -593,7 +593,9 @@ into, snapshots and stops through `ctx.container` under Cloudflare's
 the `workspace` entry of the `images` map, which a deploy builds from
 `computers/Dockerfile` and pins by digest) and the size (`COMPUTER_INSTANCE`,
 `standard-1`) at each start; a container stops after 60 s idle. Agents with code
-mode see the `computer` tool. A deploy needs Docker on the deploying machine. A
+mode see the `computer` tool; its container time is charged as platform usage
+(`computer` kind, `cloudflare/standard-1`, about $0.074 an hour while running).
+A deploy needs Docker on the deploying machine. A
 new image digest makes earlier snapshots unusable (they are refused, not
 restored); snapshots expire 30 days after creation or their latest restore.
 Managed computers (`/v1/computers` with runtime credentials), external computer

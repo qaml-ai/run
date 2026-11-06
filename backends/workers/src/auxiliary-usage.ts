@@ -8,7 +8,7 @@ export type AuxiliaryCall = {
   requestId?: string;
   /** Pi's durable tool call ID, including the run ID if the provider reuses call IDs. */
   callId: string;
-  kind: "decision" | "web_search" | "x_search" | "web_fetch" | "image" | "transcription";
+  kind: "decision" | "web_search" | "x_search" | "web_fetch" | "image" | "transcription" | "computer";
   /** Captured before the external call, so a late answer cannot charge a reset budget. */
   startedAt: number;
 };

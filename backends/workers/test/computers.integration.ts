@@ -331,6 +331,15 @@ test(
         headers: { authorization: `Bearer ${token}` },
       });
       assert.equal(removed.status, 200, await removed.clone().text());
+      // Every container session (the agent's own and the three forks) was metered as platform-paid computer time.
+      const usage = await fetch(`${server.url}/v1/usage?days=1`, { headers: { authorization: `Bearer ${token}` } });
+      assert.equal(usage.status, 200, await usage.clone().text());
+      const computer = ((await usage.json()) as { days: { kind: string; model: string; cost: number; platformCost: number; responses: number }[] })
+        .days.filter((row) => row.kind === "computer");
+      assert.deepEqual(computer.map((row) => row.model), ["cloudflare/lite"], JSON.stringify(computer));
+      assert.ok(computer[0].cost > 0 && computer[0].platformCost === computer[0].cost, JSON.stringify(computer));
+      assert.equal(computer[0].responses, 0, "container time is not a model response");
+      t.diagnostic(`computer_cost_usd=${computer[0].cost}`);
     } catch (error) {
       t.diagnostic(server.logs());
       throw error;
