@@ -27,7 +27,7 @@ scripts/sprite-test --warm                               # prepare every free sp
 A run gets the tree from `git archive` (never the working directory: `.env` and ignored files stay on the laptop), then
 Postgres 16 in `/tmp` with `fsync` off, `npm ci` when `package-lock.json` changed, and a v8-exec rebuild when
 `sandbox/v8-exec` changed. `--dirty` sends the working tree as a temporary commit: staged, unstaged and untracked files (what `.gitignore` keeps out stays out), without touching your index.
-`SPRITE_SHARDS` sets the shards (default 8), `SPRITE_NAME` pins sprites, `SPRITE_POOL` the pool size (default 40).
+`SPRITE_SHARDS` sets the shards (default 8), `SPRITE_NAME` pins sprites, `SPRITE_POOL` the pool size (default 42).
 
 Fan out by starting several and waiting — each leases its own sprite:
 
