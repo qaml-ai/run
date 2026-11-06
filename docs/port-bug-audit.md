@@ -44,14 +44,15 @@ in shared logic. Passing a port contract does not by itself prove an ECS fix is 
 The coordinator has put #663 on hold while the CTO chooses the billing semantics.
 The inconsistency is confirmed, but this audit does not decide which behavior is the
 intended contract. Do not change the normal model path or treat #663 as cleared to merge.
-Line numbers below refer to audited main `1c4b59cb` and the unchanged model paths in #663.
+Source line numbers below refer to audited main `1c4b59cb` and the unchanged model
+paths in #663. New test references use their audit or #663 branch, as indicated.
 
 | Path | Current treatment of `source: "admin"` | Source | Tests |
 | --- | --- | --- | --- |
 | Web search/render/X search | Not platform-owned | `src/capabilities/router.ts:39`: `resolved.source === "platform"` | `tests/capability-router.test.ts:82` and `tests/web-search.test.ts:305` check operator keys; `tests/web-search.test.ts:319` checks own-key precedence and platform fallback. |
 | Auxiliary decisions/media on main | Platform-owned | `src/node.ts:421`: `resolved.source !== "tenant"` | Existing `tests/decisions-api.test.ts:104` checks an unbilled own-key tenant, so it does not distinguish a prepaid debit. |
 | Auxiliary decisions/media with #663 | Not platform-owned | `src/node.ts:421`: `resolved.source === "platform"` | New `tests/decisions-api.test.ts:111` in #663 checks a prepaid operator key, zero platform usage and unchanged credit; media API suites check shared-helper behavior. |
-| Normal model key (`apiKeyFor`) | Platform-owned | `src/node.ts:876`: `resolved.source !== "tenant"` | `tests/key-scopes.test.ts:70-72` expects four admin-key responses to count as platform responses. `tests/model-pricing-trust.test.ts:95` checks provider-reported cost for an unbilled admin; that does not establish prepaid semantics. `tests/model-pricing-trust.test.ts:96` now pins prepaid admin-key platform attribution and the catalog-plus-funding debit for direct resolution. |
+| Normal model key (`apiKeyFor`) | Platform-owned | `src/node.ts:876`: `resolved.source !== "tenant"` | `tests/key-scopes.test.ts:70-72` expects four admin-key responses to count as platform responses. The existing main test at `tests/model-pricing-trust.test.ts:95` checks provider-reported cost for an unbilled admin; that does not establish prepaid semantics. `tests/model-pricing-trust.test.ts:96` now pins prepaid admin-key platform attribution and the catalog-plus-funding debit for direct resolution. |
 | Per-call model key resolution (`scopedKey`, fallback when the scope has no entry) | Platform-owned | `src/node.ts:890`: `resolved.source !== "tenant"` | Existing key-scope tests cover explicit scoped entries as non-platform and admin defaults; `tests/model-pricing-trust.test.ts:96` now repeats the prepaid billing assertion with an empty scope, exercising this fallback. |
 
 The model-path tests pin existing behavior, not a proposed policy change. The normal
@@ -108,6 +109,9 @@ home-directory Sprite wrapper was absent; the repository's `scripts/sprite-test`
   run prefix `20261105-213732-13114` (before adding the two model-policy probes).
 - Both new model-policy probes and the rest of `model-pricing-trust.test.ts`: 7/7,
   `rt-pool-7`, job `20261105-214042-37855-1`, test-only commit `3d9b3b05`.
+- Disposable mutation checks confirm each new probe reaches its named path: changing only
+  `apiKeyFor` fails direct resolution (`1cbd4f2f`), while changing only `scopedKey` fails
+  scope fallback (`79a23a34`). Neither source mutation is retained.
 - Audit documentation build, two llms tests, typecheck and both new lifecycle probes pass at
   `50754878`, `rt-pool-6`, job `20261105-213728-12553-1`.
 
