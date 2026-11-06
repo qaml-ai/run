@@ -47,12 +47,17 @@ export async function runSmoke(options: { apiKey: string; baseUrl: string; fakeU
       assert.match(JSON.stringify(await agent.history()), /pilot:hello/);
     });
     await check("typescript-websocket-stream", async () => {
-      const before = sockets; const parts: string[] = [];
-      const stream = agent.stream("pilot:stream");
-      for await (const part of stream) if (part.type === "text") parts.push(part.text);
-      assert.equal(parts.join(""), "Echo: pilot:stream");
-      assert.equal((await stream.result()).status, "completed");
-      assert.ok(sockets > before, "The SDK opened a real WebSocket");
+      const before = sockets;
+      const streamingClient = new Agents({ url: baseUrl, apiKey, pollMs: 200 });
+      try {
+        const streamingAgent = await streamingClient.get(agent.id);
+        const parts: string[] = [];
+        const stream = streamingAgent.stream("pilot:stream");
+        for await (const part of stream) if (part.type === "text") parts.push(part.text);
+        assert.equal(parts.join(""), "Echo: pilot:stream");
+        assert.equal((await stream.result()).status, "completed");
+        assert.ok(sockets > before, "The SDK opened a real WebSocket");
+      } finally { await streamingClient.close(); }
     });
     await check("human-input", async () => {
       const human = await agent.run("pilot:human");
@@ -75,7 +80,7 @@ export async function runSmoke(options: { apiKey: string; baseUrl: string; fakeU
     });
     await check("image-attachment-streaming-and-history", async () => {
       const result = await agent.run("pilot:images", { files: [{ name: "pilot.png", data: PNG, contentType: "image/png" }] });
-      assert.equal(result.text, "Images received: 1; inline: 1");
+      assert.equal(result.text, `Images received: 1; inline: 1; markers: 0; bytes: ${PNG.length}`);
       const history = JSON.stringify(await agent.history());
       assert.ok(!history.includes(PNG.toString("base64")), "Image bytes are absent from journal history");
       assert.match(history, /pilot.png/);

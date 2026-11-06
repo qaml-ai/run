@@ -28,7 +28,7 @@ test("pilot fake issues each tool once, then includes its result", () => {
 test("pilot fake verifies image delivery without retaining image bytes", () => {
   const result = reply({ messages: [{ role: "user", content: [{ type: "text", text: "pilot:images" }, { type: "image_url", image_url: { url: "data:image/png;base64,c2FmZQ==" } }] }] });
   assert.ok("content" in result);
-  assert.equal(result.content, "Images received: 1; inline: 1");
+  assert.equal(result.content, "Images received: 1; inline: 1; markers: 0; bytes: 4");
 });
 
 test("pilot fake bounds requests and rejects malformed payloads", async () => {

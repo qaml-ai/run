@@ -44,6 +44,7 @@ try {
         }
         report.afterCleanup = await operator.request("/pilot/inspect");
         report.cleanup = "completed";
+        console.log(JSON.stringify({ tenant, cleanup: report.cleanup, afterCleanup: report.afterCleanup }));
       }
     }
     return report;

@@ -16,7 +16,9 @@ export function reply(body: RequestBody) {
   if (prompt.startsWith("pilot:images")) {
     const images = messages.flatMap(message => Array.isArray(message.content) ? message.content : []).filter(part => part.type === "image_url");
     const inline = images.filter(part => part.image_url?.url.startsWith("data:image/"));
-    return { role: "assistant", content: `Images received: ${images.length}; inline: ${inline.length}` };
+    const bytes = inline.map(part => atob(part.image_url!.url.split(",")[1]));
+    const markers = bytes.filter(data => data.includes("camelrun:image:v1:")).length;
+    return { role: "assistant", content: `Images received: ${images.length}; inline: ${inline.length}; markers: ${markers}; bytes: ${bytes.map(data => data.length).join(",")}` };
   }
   return { role: "assistant", content: `Echo: ${prompt}` };
 }
