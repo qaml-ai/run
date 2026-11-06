@@ -36,16 +36,28 @@ export default function pilotOperator(options: Options) {
           }));
         }
         const targeted = /^\/v1\/tenants\/([a-z0-9-]+)(?:\/(limits|deletion))?$/.exec(path);
+        const tokens = /^\/v1\/tenants\/([a-z0-9-]+)\/tokens(?:\/([a-f0-9-]{36}))?$/.exec(path);
         const inspect = path === "/pilot/inspect" && request.method === "GET";
         const cleanup = path === "/pilot/cleanup" && request.method === "POST";
         let tenant: string | undefined;
         if (targeted) tenant = targeted[1];
+        else if (tokens) tenant = tokens[1];
         else if (inspect) tenant = url.searchParams.get("tenant") ?? undefined;
         else if (cleanup || (path === "/v1/tenants" || path === "/v1/billing/adjustments") && request.method === "POST") {
           const body = await request.clone().json() as { id?: string; tenant?: string };
           tenant = path === "/v1/tenants" ? body.id : body.tenant;
         } else return reply({ error: "Not found" }, 404);
         if ((!tenant || !allowed.has(tenant)) && !(inspect && tenant === undefined)) return reply({ error: "Tenant outside bootstrap scope" }, 403);
+
+        if (tokens) {
+          if (!await services.accounts.exists(tenant!) || await accountDeletions(setup, { accounts: services.accounts } as AccountServices, tenant).status(tenant!))
+            return reply({ error: "Tenant is missing or deleting" }, 409);
+          if (!(request.method === "POST" && !tokens[2] || request.method === "DELETE" && tokens[2])) return reply({ error: "Not found" }, 404);
+          const target = new URL(request.url);
+          target.pathname = `/v1/tokens${tokens[2] ? `/${tokens[2]}` : ""}`;
+          return await keyRoutes(new Request(target, request), setup, { ...principal, tenantId: tenant! }, services)
+            ?? reply({ error: "Not found" }, 404);
+        }
 
         if (cleanup) {
           // Foreground I/O may outlive waitUntil's post-response window. Both

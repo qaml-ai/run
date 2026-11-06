@@ -13,7 +13,7 @@ function wrangler(args, directory) {
   return new Promise((resolveRun, reject) => {
     const child = spawn(process.execPath, [join(workers, "node_modules/wrangler/bin/wrangler.js"), ...args], {
       cwd: workers,
-      env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: PILOT_ACCOUNT, WRANGLER_SEND_METRICS: "false", WRANGLER_LOG_PATH: join(directory, "wrangler.log"), CI: "true" },
+      env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: PILOT_ACCOUNT, WRANGLER_SEND_METRICS: "false", WRANGLER_LOG_SANITIZE: "true", WRANGLER_LOG: "info", WRANGLER_LOG_PATH: join(directory, "wrangler.log"), CI: "true" },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let output = "";
@@ -55,7 +55,14 @@ export async function withPilotOperator(options, callback) {
   await writeFile(configPath, JSON.stringify(config, null, 2));
   let uploaded = false;
   try {
-    const output = await wrangler(["deploy", "--config", configPath], directory);
+    let output;
+    try { output = await wrangler(["deploy", "--config", configPath], directory); }
+    catch {
+      // An upload can succeed before a later deployment step fails.
+      try { await wrangler(["delete", name, "--config", configPath], directory); }
+      catch { throw new Error(`Pilot bootstrap deploy failed; check and delete ${name} in account ${PILOT_ACCOUNT} if it remains. Its credential expires within one hour.`); }
+      throw new Error(`Pilot bootstrap deployment failed; ${name} was removed.`);
+    }
     uploaded = true;
     const baseUrl = output.match(/https:\/\/[a-z0-9.-]+\.workers\.dev\b/)?.[0];
     if (!baseUrl) throw new Error(`Could not determine ${name}'s workers.dev URL.`);
