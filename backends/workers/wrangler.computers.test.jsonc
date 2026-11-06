@@ -36,10 +36,6 @@
       {
         "name": "COMPUTER_CONTAINERS",
         "class_name": "ContainerComputer"
-      },
-      {
-        "name": "COMPUTER_SANDBOXES",
-        "class_name": "SandboxComputer"
       }
     ]
   },
@@ -55,8 +51,7 @@
     {
       "tag": "v2",
       "new_sqlite_classes": [
-        "ContainerComputer",
-        "SandboxComputer"
+        "ContainerComputer"
       ]
     }
   ],
@@ -71,10 +66,6 @@
     {
       "binding": "BUCKET",
       "bucket_name": "camelrun-proto-workers-files"
-    },
-    {
-      "binding": "COMPUTER_BACKUPS",
-      "bucket_name": "camelrun-proto-workers-computer-backups"
     }
   ],
   "images": {
@@ -119,15 +110,6 @@
   "containers": [
     {
       "class_name": "ContainerComputer",
-      "scheduling_policy": "durable_object",
-      "images": {
-        "workspace": {
-          "dockerfile": "./computers/Dockerfile"
-        }
-      }
-    },
-    {
-      "class_name": "SandboxComputer",
       "scheduling_policy": "durable_object",
       "images": {
         "workspace": {

@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ContainerProvider,
-  SandboxProvider,
+  SNAPSHOT_TTL_MS,
+  computerSpec,
   operate,
+  type ComputerSnapshot,
   type SnapshotStore,
 } from "../src/computers/provider.ts";
 const encoder = new TextEncoder();
@@ -84,27 +86,91 @@ function fixture() {
   };
 }
 
-test("native lifecycle blocks egress; snapshots survive reopen; failed capture preserves prior handle", async () => {
+test("native lifecycle picks image and size at start, blocks egress; snapshots survive reopen; failed capture preserves prior handle", async () => {
   const f = fixture(),
-    p = new ContainerProvider(f.container, f.store);
+    p = new ContainerProvider(f.container, f.store, {
+      image: "workspace",
+      instance: "standard-1",
+    });
   await operate(p, { op: "exec", argv: ["echo", "x"] });
-  assert.equal(f.starts[0].enableInternet, false);
+  assert.deepEqual(f.starts[0], {
+    image: "test-image",
+    instance: "standard-1",
+    enableInternet: false,
+  });
   assert.ok(f.signal());
   await operate(p, { op: "snapshot", name: "save" });
+  const saved = f.data.get("snapshot:save") as ComputerSnapshot;
   f.failCapture();
   await assert.rejects(
     operate(p, { op: "snapshot", name: "save" }),
     /capture failed/,
   );
+  assert.deepEqual(f.data.get("snapshot:save"), saved);
   await operate(p, { op: "sleep" });
   await operate(new ContainerProvider(f.container, f.store), {
     op: "restore",
     name: "save",
   });
   assert.deepEqual(f.starts.at(-1), {
-    containerSnapshot: { id: "snapshot-1", size: 42 },
+    containerSnapshot: { id: "snapshot-1" },
+    instance: "lite",
     enableInternet: false,
   });
+});
+
+test("a snapshot handle records its image and TTL; another computer starts from it (fork)", async () => {
+  let now = 1_000;
+  const clock = () => now;
+  const origin = fixture(),
+    p = new ContainerProvider(origin.container, origin.store, undefined, clock);
+  const handle = await p.snapshot("base", AbortSignal.timeout(1000));
+  assert.deepEqual(handle, {
+    id: "snapshot-1",
+    name: "base",
+    size: 42,
+    image: "test-image",
+    createdAt: 1_000,
+    expiresAt: 1_000 + SNAPSHOT_TTL_MS,
+  });
+  // A fork: a different DO (its own container and storage) starts from the handle.
+  const target = fixture();
+  target.container.running = true;
+  const fork = new ContainerProvider(target.container, target.store, undefined, clock);
+  now = 5_000;
+  const restored = await fork.startFrom(handle, AbortSignal.timeout(1000));
+  assert.equal(target.starts.length, 1, "a running container is replaced");
+  assert.deepEqual(target.starts[0].containerSnapshot, { id: "snapshot-1" });
+  assert.equal(restored.expiresAt, 5_000 + SNAPSHOT_TTL_MS, "a restore refreshes the 30-day TTL");
+  assert.deepEqual(target.data.get("snapshot:base"), restored);
+  // A snapshot of the forked computer keeps the original image lineage.
+  const again = await fork.snapshot("child", AbortSignal.timeout(1000));
+  assert.equal(again.image, "test-image");
+  // Image coupling: after a deploy changes the image digest, old snapshots are refused.
+  const updated = fixture();
+  updated.container.images = { workspace: "test-image-v2" };
+  await assert.rejects(
+    new ContainerProvider(updated.container, updated.store, undefined, clock).startFrom(handle, AbortSignal.timeout(1000)),
+    /another image version/,
+  );
+  // Expiry awareness: past its TTL a handle is refused before any start.
+  now = handle.expiresAt;
+  const late = fixture();
+  await assert.rejects(
+    new ContainerProvider(late.container, late.store, undefined, clock).startFrom(handle, AbortSignal.timeout(1000)),
+    /expired/,
+  );
+  await assert.rejects(
+    fork.startFrom({ ...handle, id: "" }, AbortSignal.timeout(1000)),
+    /Invalid computer snapshot/,
+  );
+  assert.equal(updated.starts.length + late.starts.length, 0);
+});
+
+test("the deployment's variables select image and instance; unknown sizes fall back", () => {
+  assert.deepEqual(computerSpec({}), { image: "workspace", instance: "lite" });
+  assert.deepEqual(computerSpec({ COMPUTER_IMAGE: "big", COMPUTER_INSTANCE: "standard-4" }), { image: "big", instance: "standard-4" });
+  assert.deepEqual(computerSpec({ COMPUTER_INSTANCE: "basic" }), { image: "workspace", instance: "lite" });
 });
 
 test("native output is bounded and the process is killed on overflow", async () => {
@@ -118,53 +184,6 @@ test("native output is bounded and the process is killed on overflow", async () 
     /output limit/,
   );
   assert.equal(f.killed(), true);
-});
-
-test("SDK provider restores a durable R2 record and delegates files through the SDK interface", async () => {
-  const f = fixture(),
-    files = new Map<string, string>();
-  const snapshots = new Map<string, Map<string, string>>();
-  const sdkFiles = {
-    async readFile(path: string) {
-      return new Response(files.get(path));
-    },
-    async writeFile(path: string, content: unknown) {
-      files.set(path, String(content));
-    },
-    async mkdir() {},
-  };
-  const backup = {
-    id: "backup-1",
-    dir: "/workspace",
-    size: 10,
-    sha256: "fake",
-    format: "tar+zstd/1" as const,
-  };
-  const backups = {
-    async backup() {
-      snapshots.set(backup.id, new Map(files));
-      return backup;
-    },
-    async restore(record: typeof backup) {
-      assert.deepEqual(record, backup);
-      files.clear();
-      for (const [k, v] of snapshots.get(record.id)!) files.set(k, v);
-    },
-  };
-  const p = new SandboxProvider(f.container, f.store, sdkFiles, backups);
-  await operate(p, { op: "write", path: "file.txt", content: "saved" });
-  await operate(p, { op: "snapshot", name: "backup" });
-  await operate(p, { op: "write", path: "file.txt", content: "changed" });
-  await operate(p, { op: "sleep" });
-  const reopened = new SandboxProvider(f.container, f.store, sdkFiles, backups);
-  await operate(reopened, { op: "restore", name: "backup" });
-  assert.deepEqual(await operate(reopened, { op: "read", path: "file.txt" }), {
-    content: "saved",
-  });
-  assert.equal(
-    f.starts.every((x) => x.enableInternet === false),
-    true,
-  );
 });
 
 test("invalid paths, snapshot names and commands are refused before starting a VM", async () => {

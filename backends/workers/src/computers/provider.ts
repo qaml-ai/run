@@ -1,8 +1,3 @@
-import type {
-  Files,
-  DirectoryBackup,
-  DirectoryBackupRecord,
-} from "@cloudflare/sandbox";
 import { workspacePath } from "../validation.ts";
 
 export type ComputerRequest =
@@ -29,8 +24,8 @@ export interface ComputerProvider {
     text: string;
     truncated: boolean;
   }>;
-  snapshot(name: string, signal: AbortSignal): Promise<void>;
-  restore(name: string, signal: AbortSignal): Promise<void>;
+  snapshot(name: string, signal: AbortSignal): Promise<ComputerSnapshot>;
+  restore(name: string, signal: AbortSignal): Promise<ComputerSnapshot>;
   sleep(): Promise<void>;
 }
 export interface SnapshotStore {
@@ -47,6 +42,86 @@ export type ContainerApi = Pick<
   | "destroy"
   | "snapshotContainer"
 >;
+
+export const INSTANCE_TYPES = [
+  "lite",
+  "standard-1",
+  "standard-2",
+  "standard-3",
+  "standard-4",
+] as const;
+export type InstanceType = (typeof INSTANCE_TYPES)[number];
+/**
+ * What a computer starts from. Under Cloudflare's `durable_object` scheduling
+ * policy this code picks it at every start: a named image from the Wrangler
+ * `images` map (digest-pinned per deployment) and an instance size.
+ */
+export interface ComputerSpec {
+  image: string;
+  instance: InstanceType;
+}
+export const DEFAULT_SPEC: ComputerSpec = {
+  image: "workspace",
+  instance: "lite",
+};
+/** The spec a deployment's variables select; unknown values fall back to the defaults. */
+export function computerSpec(env: {
+  COMPUTER_IMAGE?: string;
+  COMPUTER_INSTANCE?: string;
+}): ComputerSpec {
+  const instance = INSTANCE_TYPES.find((type) => type === env.COMPUTER_INSTANCE);
+  return {
+    image: env.COMPUTER_IMAGE || DEFAULT_SPEC.image,
+    instance: instance ?? DEFAULT_SPEC.instance,
+  };
+}
+/** Cloudflare keeps a snapshot for 30 days from its creation or latest restore. */
+export const SNAPSHOT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+/**
+ * A computer's filesystem snapshot as DO storage keeps it. It is a plain value,
+ * so any computer DO can start from it: the base of "fork a computer".
+ */
+export interface ComputerSnapshot {
+  /** Cloudflare's snapshot id, all a restore needs. */
+  id: string;
+  name: string;
+  size: number;
+  /** The digest-pinned image the filesystem came from; it restores only onto that image version. */
+  image: string;
+  createdAt: number;
+  /** When Cloudflare may have deleted it: 30 days after creation or the latest restore made here. */
+  expiresAt: number;
+}
+export const SNAPSHOT_NAME = /^[a-zA-Z0-9_-]{1,80}$/;
+/** Check a snapshot handle's shape before a computer starts from it. */
+export function snapshotHandle(value: unknown): ComputerSnapshot {
+  const v = value as Partial<ComputerSnapshot> | null;
+  if (
+    !v ||
+    typeof v.id !== "string" ||
+    !v.id ||
+    v.id.length > 256 ||
+    typeof v.name !== "string" ||
+    !SNAPSHOT_NAME.test(v.name) ||
+    typeof v.image !== "string" ||
+    !v.image ||
+    !Number.isSafeInteger(v.size) ||
+    !Number.isSafeInteger(v.createdAt) ||
+    !Number.isSafeInteger(v.expiresAt)
+  )
+    throw new Error("Invalid computer snapshot");
+  return {
+    id: v.id,
+    name: v.name,
+    size: v.size!,
+    image: v.image,
+    createdAt: v.createdAt!,
+    expiresAt: v.expiresAt!,
+  };
+}
+// The image the current filesystem descends from. A container started from a
+// snapshot reports no image (inspect() gives ""), so the lineage is kept here.
+const IMAGE_KEY = "computer:image";
 const OUTPUT_LIMIT = 64 * 1024;
 const FILE_LIMIT = 1024 * 1024;
 
@@ -81,24 +156,45 @@ export async function readBounded(
   return new TextDecoder().decode(bytes);
 }
 
-// Native Container API. Lifecycle uses setInactivityTimeout, the native
-// counterpart of the legacy Container class's sleepAfter property.
+// A container owned by its Durable Object through ctx.container, under the
+// `durable_object` scheduling policy. setInactivityTimeout stops it when idle.
+// Files and parsing run as node processes in the image (exec with bounded
+// stdout/stdin), so the image needs nothing but Node.
 export class ContainerProvider implements ComputerProvider {
   readonly sleepAfter = 60_000;
   protected container: ContainerApi;
   protected store: SnapshotStore;
-  constructor(container: ContainerApi, store: SnapshotStore) {
+  protected spec: ComputerSpec;
+  protected now: () => number;
+  constructor(
+    container: ContainerApi,
+    store: SnapshotStore,
+    spec: ComputerSpec = DEFAULT_SPEC,
+    now: () => number = Date.now,
+  ) {
     this.container = container;
     this.store = store;
+    this.spec = spec;
+    this.now = now;
+  }
+  /** This deployment's digest-pinned reference for the spec's image. */
+  protected image() {
+    const image = this.container.images[this.spec.image];
+    if (!image) throw new Error("Computer image is not configured");
+    return image;
   }
   protected async ready() {
     if (!this.container.running) {
+      const image = this.image();
       this.container.start({
-        image: this.container.images.workspace,
+        image,
+        instance: this.spec.instance,
         enableInternet: false,
       });
-      // Create the backup target in the writable layer. Renaming a directory
-      // from an image's lower overlay layer fails with EXDEV during restore.
+      await this.store.put(IMAGE_KEY, image);
+      // start() returns before the container is up and exec waits for a
+      // starting container, so this first command is the readiness check. It
+      // also puts /workspace in the writable layer, which snapshots capture.
       const init = await this.container.exec(["mkdir", "-p", "/workspace"], {
         signal: AbortSignal.timeout(30_000),
       });
@@ -196,71 +292,56 @@ export class ContainerProvider implements ComputerProvider {
   async snapshot(name: string, signal: AbortSignal) {
     await this.ready();
     signal.throwIfAborted();
-    const snapshot = await this.container.snapshotContainer({ name });
+    const image = (await this.store.get<string>(IMAGE_KEY)) ?? this.image();
+    const taken = await this.container.snapshotContainer({ name });
+    const createdAt = this.now();
+    const snapshot: ComputerSnapshot = {
+      id: taken.id,
+      name,
+      size: taken.size,
+      image,
+      createdAt,
+      expiresAt: createdAt + SNAPSHOT_TTL_MS,
+    };
     await this.store.put(`snapshot:${name}`, snapshot);
+    return snapshot;
+  }
+  /** A snapshot this computer took or started from, by name. */
+  async snapshotNamed(name: string) {
+    const snapshot = await this.store.get<ComputerSnapshot>(`snapshot:${name}`);
+    if (!snapshot) throw new Error("Unknown computer snapshot");
+    return snapshot;
   }
   async restore(name: string, signal: AbortSignal) {
-    const snapshot = await this.store.get<ContainerSnapshot>(
-      `snapshot:${name}`,
-    );
-    if (!snapshot) throw new Error("Unknown computer snapshot");
+    return this.startFrom(await this.snapshotNamed(name), signal);
+  }
+  /**
+   * Replace this computer's filesystem with a snapshot's, taken here or by
+   * another computer's DO, and keep the refreshed handle under its name.
+   */
+  async startFrom(handle: ComputerSnapshot, signal: AbortSignal) {
+    const snapshot = snapshotHandle(handle);
+    if (snapshot.expiresAt <= this.now())
+      throw new Error("Computer snapshot expired; take a new snapshot");
+    if (snapshot.image !== this.image())
+      throw new Error(
+        "Computer snapshot was taken from another image version; take a new snapshot",
+      );
     signal.throwIfAborted();
-    await this.container.destroy();
+    if (this.container.running) await this.container.destroy();
     this.container.start({
-      containerSnapshot: snapshot,
+      containerSnapshot: { id: snapshot.id },
+      instance: this.spec.instance,
       enableInternet: false,
     });
+    await this.store.put(IMAGE_KEY, snapshot.image);
     await this.container.setInactivityTimeout(this.sleepAfter);
+    const restored = { ...snapshot, expiresAt: this.now() + SNAPSHOT_TTL_MS };
+    await this.store.put(`snapshot:${snapshot.name}`, restored);
+    return restored;
   }
   async sleep() {
     await this.container.destroy();
-  }
-}
-
-// SDK 1.0 keeps execution on the native Container API and adds structured files
-// and portable directory backups. It no longer exports the 0.x Sandbox class.
-export class SandboxProvider extends ContainerProvider {
-  private files: Pick<Files, "readFile" | "writeFile" | "mkdir">;
-  private backups: Pick<DirectoryBackup, "backup" | "restore">;
-  constructor(
-    container: ContainerApi,
-    store: SnapshotStore,
-    files: Pick<Files, "readFile" | "writeFile" | "mkdir">,
-    backups: Pick<DirectoryBackup, "backup" | "restore">,
-  ) {
-    super(container, store);
-    this.files = files;
-    this.backups = backups;
-  }
-  override async readFile(path: string, signal: AbortSignal) {
-    await this.ready();
-    const response = await this.files.readFile(path, { signal });
-    return readBounded(response.body, FILE_LIMIT);
-  }
-  override async writeFile(path: string, content: string, signal: AbortSignal) {
-    await this.ready();
-    await this.files.mkdir(path.slice(0, path.lastIndexOf("/")), {
-      recursive: true,
-      signal,
-    });
-    await this.files.writeFile(path, content, { signal });
-  }
-  override async snapshot(name: string, signal: AbortSignal) {
-    await this.ready();
-    const backup = await this.backups.backup({
-      dir: "/workspace",
-      name,
-      signal,
-    });
-    await this.store.put(`backup:${name}`, backup);
-  }
-  override async restore(name: string, signal: AbortSignal) {
-    const backup = await this.store.get<DirectoryBackupRecord>(
-      `backup:${name}`,
-    );
-    if (!backup) throw new Error("Unknown computer backup");
-    await this.ready();
-    await this.backups.restore(backup, { signal });
   }
 }
 
@@ -310,7 +391,7 @@ export async function operate(
       );
     case "snapshot":
     case "restore":
-      if (!/^[a-zA-Z0-9_-]{1,80}$/.test(request.name))
+      if (!SNAPSHOT_NAME.test(request.name))
         throw new Error("Invalid snapshot name");
       await provider[request.op](request.name, signal);
       return { [request.op]: request.name };

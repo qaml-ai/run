@@ -9,13 +9,12 @@ import {
   str,
   union,
 } from "@earendil-works/pi-schema";
-import type { ContainerComputer, SandboxComputer } from "./objects.ts";
+import type { ContainerComputer } from "./objects.ts";
 
 export interface ComputerBindings {
   COMPUTER_CONTAINERS?: DurableObjectNamespace<ContainerComputer>;
-  COMPUTER_SANDBOXES?: DurableObjectNamespace<SandboxComputer>;
 }
-const provider = oneOf(["container", "sandbox"]);
+const provider = oneOf(["container"]);
 export const computerParameters = union([
   obj({
     provider,
@@ -49,12 +48,9 @@ export function computerTool(bindings: ComputerBindings, agentId: string) {
     parameters: computerParameters,
     replay: "unsafe",
     description:
-      "Linux computer: exec argv, read/write relative /workspace paths, parse text/JSON/CSV/HTML, save/restore a named snapshot, or sleep. Parsing accepts 8 MiB, bounds extracted text and never executes document content; PDF is unsupported. Choose container (whole filesystem snapshot) or sandbox (directory backup to R2). Files are separate from agent volumes. Shell syntax requires an explicit shell. No Internet access.",
+      "Linux computer: exec argv, read/write relative /workspace paths, parse text/JSON/CSV/HTML, save/restore a named snapshot, or sleep. Parsing accepts 8 MiB, bounds extracted text and never executes document content; PDF is unsupported. Snapshots capture the whole filesystem. Files are separate from agent volumes. Shell syntax requires an explicit shell. No Internet access.",
     async execute({ provider, ...request }) {
-      const namespace =
-        provider === "container"
-          ? bindings.COMPUTER_CONTAINERS
-          : bindings.COMPUTER_SANDBOXES;
+      const namespace = bindings.COMPUTER_CONTAINERS;
       if (!namespace)
         throw new Error(`Optional ${provider} computer is not configured`);
       const result = await namespace.getByName(agentId).operate(request);

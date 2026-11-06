@@ -26,6 +26,7 @@ export async function purgeAccountDataImpl(this: AgentRuntime,
       if (pending.every(rows => rows.size === 0)) break;
       await this.flushBilling(true);
     }
+    await this.env.COMPUTER_CONTAINERS?.getByName(this.ctx.id.toString()).purge();
     await this.closeWatchers(tenant, id);
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();

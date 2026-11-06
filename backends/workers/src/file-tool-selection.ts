@@ -16,10 +16,10 @@ export function selectAgentTools<T extends FileToolDefinition>(
   fileNames: ReadonlySet<string>,
   config: { codeMode?: boolean; fileTools?: boolean; builtins?: readonly string[] },
   computers: ReadonlySet<string>,
-  nativeBindings: { COMPUTER_CONTAINERS?: unknown; COMPUTER_SANDBOXES?: unknown },
+  nativeBindings: { COMPUTER_CONTAINERS?: unknown },
 ): { tools: T[]; modelTools: T[] } {
   const nativeComputer = config.codeMode !== false &&
-    !!(nativeBindings.COMPUTER_CONTAINERS || nativeBindings.COMPUTER_SANDBOXES);
+    !!nativeBindings.COMPUTER_CONTAINERS;
   const disabled = new Set([
     'host_execute', 'exec',
     ...(!nativeComputer ? ['computer'] : []),
