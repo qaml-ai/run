@@ -31,7 +31,7 @@ type Stored = Pick<Input, "message" | "detail" | "responders"> & {
 export type InputRow = Input & { stored: Stored };
 /** How a call is run again once its inputs are answered: with the approval's proof, and the tool's requests' answers. */
 export type RetryPlan = { argumentsHash: string; approval?: { input: string; by: Responder; at: number }; inputResponses?: Record<string, unknown>; requestState?: string; note: string };
-export type HumanInputSettings = { expiresInSeconds?: number; onExpire?: "close" | "resume"; approvers?: string[] };
+export type HumanInputSettings = { expiresInSeconds?: number; approvers?: string[] };
 export const INPUT_LIMITS = Object.freeze({ defaultExpiresSeconds: 15 * 60, maxExpiresSeconds: 30 * 86_400, perCall: 8, text: 4_000, arguments: 4_000 });
 const clip = (text: unknown, max: number = INPUT_LIMITS.text) => String(text ?? "").slice(0, max);
 
@@ -139,9 +139,6 @@ const CLOSED: Record<"aborted" | "superseded", string> = {
   superseded: "Not answered: the user sent a new message instead (next).",
 };
 
-/** Whether an expired input's turn goes on with the model (the default) or ends with its call (`onExpire: "close"`). */
-export const resumesOnExpire = (settings: HumanInputSettings | undefined) => settings?.onExpire !== "close";
-
 /**
  * The runtime's automatic answer to an input no one answered in time, as the model reads it: never an approval (the
  * call did not run), and marked as the runtime's, not the user's.
@@ -213,10 +210,9 @@ export function expiresAt(settings: HumanInputSettings | undefined, agentExpires
 
 /** A definition's `humanInput` settings, checked. */
 export function humanInputSettings(value: unknown): HumanInputSettings {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => !["expiresInSeconds", "onExpire", "approvers"].includes(key))) throw new HttpError(400, "humanInput is { expiresInSeconds?, onExpire?, approvers? }");
-  const { expiresInSeconds, onExpire, approvers } = value as Record<string, unknown>;
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => !["expiresInSeconds", "approvers"].includes(key))) throw new HttpError(400, "humanInput is { expiresInSeconds?, approvers? }");
+  const { expiresInSeconds, approvers } = value as Record<string, unknown>;
   if (expiresInSeconds !== undefined && (!Number.isInteger(expiresInSeconds) || (expiresInSeconds as number) < 60 || (expiresInSeconds as number) > INPUT_LIMITS.maxExpiresSeconds)) throw new HttpError(400, `humanInput.expiresInSeconds is an integer from 60 to ${INPUT_LIMITS.maxExpiresSeconds}`);
-  if (onExpire !== undefined && onExpire !== "close" && onExpire !== "resume") throw new HttpError(400, "humanInput.onExpire is close or resume");
   if (approvers !== undefined && (!Array.isArray(approvers) || approvers.length > 100 || approvers.some(entry => typeof entry !== "string" || !entry.trim() || entry.length > 200))) throw new HttpError(400, "humanInput.approvers is a list of at most 100 ids (an actor, or a channel sender like slack:U0123)");
   return value as HumanInputSettings;
 }

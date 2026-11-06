@@ -45,7 +45,7 @@ async function asker(r: Awaited<ReturnType<typeof runtime>>, humanInput?: object
 const request = (r: ContractFixture, agent: string, id: string) =>
   until(async () => { const record = (await r.call(`/v1/agents/${agent}/requests/${id}`)).json; return record.state === "completed" && record; }, `request ${id}`);
 
-contractTest("human-input", "tests/human-input.test.ts:235", "an approval policy asks before a gated tool runs: the approved call runs once, with proof; a declined one never runs", async (t)=>{
+contractTest("human-input", "tests/human-input.test.ts:237", "an approval policy asks before a gated tool runs: the approved call runs once, with proof; a declined one never runs", async (t)=>{
   const text = (value: string) => ({ content: [{ type: "text", text: value }] });
   const shop = await rawMcp(t, {
     read_item: { annotations: { readOnlyHint: true }, call: args => text(`item ${args.id}`) },
@@ -95,7 +95,7 @@ contractTest("human-input", "tests/human-input.test.ts:235", "an approval policy
   assert.equal(shop.calls.length, 1);
 });
 
-contractTest("human-input", "tests/human-input.test.ts:327", "an agent with no one to ask does not tell servers it can elicit", async (t)=>{
+contractTest("human-input", "tests/human-input.test.ts:329", "an agent with no one to ask does not tell servers it can elicit", async (t)=>{
   const server = await rawMcp(t, { plain: { call: () => ({ content: [{ type: "text", text: "ok" }] }) } });
   const r = await runtime(t, (_body, index) => index === 0 ? toolCall("tools__plain", {}) : { role: "assistant", content: "done" }, LOCAL);
   const definition = (await r.call("/v1/definitions", { body: { name: "Headless", mcpServers: [{ name: "tools", url: server.url, exposure: "direct" }] } })).json;
@@ -103,7 +103,7 @@ contractTest("human-input", "tests/human-input.test.ts:327", "an agent with no o
   assert.equal(server.calls[0].params._meta?.["io.modelcontextprotocol/clientCapabilities"], undefined);
 });
 
-contractTest("human-input", "tests/human-input.test.ts:335", "an attached tool asks with ctx.confirm and ctx.ask: the call runs again with the answers, everything before an ask included", async (t)=>{
+contractTest("human-input", "tests/human-input.test.ts:337", "an attached tool asks with ctx.confirm and ctx.ask: the call runs again with the answers, everything before an ask included", async (t)=>{
   const r = await runtime(t, (body, index) => index === 0 ? toolCall("delete_app", { app: "shop" }, "call_delete") : { role: "assistant", content: toolResults(body).at(-1) });
   let runs = 0;
   const deleted: string[] = [];
@@ -134,7 +134,7 @@ contractTest("human-input", "tests/human-input.test.ts:335", "an attached tool a
   assert.equal(runs, 3, "the code before each ask ran again on every retry");
 });
 
-contractTest("human-input", "tests/human-input.test.ts:366", "inputs from parallel calls are one suspension: answered together, all or none, and listed in the tenant's inbox", async (t)=>{
+contractTest("human-input", "tests/human-input.test.ts:368", "inputs from parallel calls are one suspension: answered together, all or none, and listed in the tenant's inbox", async (t)=>{
   const call = (id: string, question: string, index: number) => ({ index, id, type: "function", function: { name: "ask_user", arguments: JSON.stringify({ questions: [{ question, header: "Q", options: [{ label: "A" }, { label: "B" }] }] }) } });
   const r = await runtime(t, (body, index) => index === 0 ? { role: "assistant", tool_calls: [call("call_1", "First?", 0), call("call_2", "Second?", 1)] }
     : { role: "assistant", content: toolResults(body).map((result: string) => Object.values(JSON.parse(result).answers)[0]).join("+") });
@@ -158,7 +158,7 @@ contractTest("human-input", "tests/human-input.test.ts:366", "inputs from parall
   assert.deepEqual((await r.call("/v1/inputs?state=pending")).json, []);
 });
 
-contractTest("human-input", "tests/human-input.test.ts:390", "an application answers with onInput, from its SDK", async (t)=>{
+contractTest("human-input", "tests/human-input.test.ts:392", "an application answers with onInput, from its SDK", async (t)=>{
   const r = await runtime(t, (body, index) => index === 0 ? toolCall("wipe", { disk: "d1" }) : { role: "assistant", content: toolResults(body).at(-1) });
   const wiped: string[] = [];
   const seen: any[] = [];
@@ -175,7 +175,7 @@ contractTest("human-input", "tests/human-input.test.ts:390", "an application ans
   assert.deepEqual((await agent.inputs())[0].answer?.by, { via: "agent", actor: "ops" });
 });
 
-contractTest("human-input", "tests/human-input.test.ts:407", "a remote MCP tool sets its own exposure in _meta, over its source's; approval keeps its exposure", async (t)=>{
+contractTest("human-input", "tests/human-input.test.ts:409", "a remote MCP tool sets its own exposure in _meta, over its source's; approval keeps its exposure", async (t)=>{
   const plain = { call: () => ({ content: [{ type: "text", text: "ok" }] }) };
   const exposure = (value: string) => ({ ...plain, _meta: { "agent-runtime/exposure": value } });
   const server = await rawMcp(t, { key: exposure("direct"), hidden: exposure("codemode"), gated: exposure("codemode"), plain });
@@ -186,7 +186,7 @@ contractTest("human-input", "tests/human-input.test.ts:407", "a remote MCP tool 
   assert.deepEqual(tools, { s__key: "direct", s__hidden: "codemode", s__gated: "codemode", s__plain: "codemode" });
 });
 
-contractTest("human-input", "tests/human-input.test.ts:418", "an input for particular people must be answered naming who answers", async (t)=>{
+contractTest("human-input", "tests/human-input.test.ts:420", "an input for particular people must be answered naming who answers", async (t)=>{
   const r = await runtime(t, (body, index) => index === 0 ? toolCall("ask_user", ASK, "call_ask") : { role: "assistant", content: "ok" });
   const agent = await asker(r);
   const accepted = await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "Deploy it", from: { id: "u1" } } });
@@ -201,7 +201,7 @@ contractTest("human-input", "tests/human-input.test.ts:418", "an input for parti
   assert.equal((await r.call(`/v1/agents/${agent}/inputs/${input.id}`, { body: { ...answer, from: { id: "u1" } } })).status, 202);
 });
 
-contractTest("human-input", "tests/human-input.test.ts:434", "code's calls that ask at once are one suspension: an approved one runs, a declined one rejects in the script", async (t)=>{
+contractTest("human-input", "tests/human-input.test.ts:436", "code's calls that ask at once are one suspension: an approved one runs, a declined one rejects in the script", async (t)=>{
   const text = (value: string) => ({ content: [{ type: "text", text: value }] });
   const server = await rawMcp(t, { remove: { annotations: { destructiveHint: true }, call: args => text(`removed ${args.id}`) } });
   const script = `const results = await Promise.allSettled([tools.s__remove({ id: "a" }), tools.s__remove({ id: "b" })]);
@@ -221,7 +221,7 @@ return results.map(result => result.status === "fulfilled" ? result.value : "ref
   assert.deepEqual(server.calls.map(call => call.params.arguments.id), ["a"], "the declined call never ran");
 });
 
-contractTest("human-input", "tests/human-input.test.ts:454", "code pauses for people: an approval, a question and an MCP form, a run each, and every finished call runs once", async (t)=>{
+contractTest("human-input", "tests/human-input.test.ts:456", "code pauses for people: an approval, a question and an MCP form, a run each, and every finished call runs once", async (t)=>{
   const text = (value: string) => ({ content: [{ type: "text", text: value }] });
   const form = { mode: "form", message: "New name?", requestedSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } };
   const server = await rawMcp(t, {
@@ -270,9 +270,9 @@ return { removed, region: asked.answers["Which region?"], renamed };`;
   assert.equal(server.calls.find(call => call.params.name === "remove")!.params._meta["agent-runtime/approval"].input, approval.id, "the approved call carries its proof");
 });
 
-contractTest("human-input", "tests/human-input.test.ts:103", "abort cancels waiting inputs and closes the turn without the model; with onExpire close, expiry does the same", async (t)=>{
-  const r = await runtime(t, () => toolCall("ask_user", ASK));
-  const agent = await asker(r, { expiresInSeconds: 60, onExpire: "close" });
+contractTest("human-input", "tests/human-input.test.ts:103", "abort cancels waiting inputs and closes the turn without the model; expiry instead answers for the person, and the model goes on", async (t)=>{
+  const r = await runtime(t, (_body, index) => index < 2 ? toolCall("ask_user", ASK) : { role: "assistant", content: "Going on without it" });
+  const agent = await asker(r, { expiresInSeconds: 60 });
   await r.prompt(agent, "Deploy it");
   assert.equal((await r.call(`/v1/agents/${agent}/abort`, { method: "POST" })).status, 200);
   const cancelled = (await r.call(`/v1/agents/${agent}/inputs`)).json[0];
@@ -281,12 +281,14 @@ contractTest("human-input", "tests/human-input.test.ts:103", "abort cancels wait
   assert.match((await r.call(`/v1/agents/${agent}/history`)).json.messages.at(-1).content[0].text, /Cancelled by the application/);
   assert.equal(r.model.bodies.length, 1);
 
-  // Expired inputs (made due here) are closed by the scheduler, again without the model.
+  // An expired input (made due here) is answered by the runtime, and the model goes on with the turn.
   await r.prompt(agent, "Deploy it again");
   await r.advanceTime(60_100);
   await until(async () => (await r.call(`/v1/agents/${agent}/inputs`)).json[0].state === "expired", "the input to expire");
-  await until(async () => /did not respond in a timely manner/.test((await r.call(`/v1/agents/${agent}/history`)).json.messages.at(-1)?.content?.[0]?.text ?? ""), "the call to be closed");
-  assert.equal(r.model.bodies.length, 2);
+  await until(() => r.model.bodies.length === 3, "the model to go on");
+  assert.match(toolResults(r.model.bodies[2]).at(-1), /did not respond in a timely manner/);
+  await until(async () => (await r.call(`/v1/agents/${agent}/history`)).json.messages.at(-1)?.content?.[0]?.text === "Going on without it", "the turn to end");
+  assert.equal(r.model.bodies.length, 3);
 });
 
 /** The run that resumes a suspension (`resume_` and the first 40 hex of its run's SHA-256): the same on both backends. */
@@ -296,7 +298,7 @@ const NO_RESPONSE = /^The user did not respond in a timely manner/;
 const afterExpiry = (r: ContractFixture, agent: string, id: string) =>
   until(async () => { const record = (await r.call(`/v1/agents/${agent}/requests/${id}`)).json; return record?.state === "completed" && record; }, `request ${id}`, 15_000, { pendingResources: [`/v1/agents/${agent}/requests/${id}`] });
 
-contractTest("human-input", "tests/human-input.test.ts:126", "no answer in time: the runtime answers ask_user for the person, marked as its own, and the turn goes on", async (t)=>{
+contractTest("human-input", "tests/human-input.test.ts:128", "no answer in time: the runtime answers ask_user for the person, marked as its own, and the turn goes on", async (t)=>{
   const r = await runtime(t, (body, index) => index === 0 ? toolCall("ask_user", ASK, "call_ask") : { role: "assistant", content: "Going on without a region" });
   const agent = await asker(r);
   const watcher = await watchEvents(t, `${r.base}/v1/agents/${agent}/events`, { Authorization: `Bearer ${OPERATOR}` }, { query: "snapshot=0" });
@@ -328,7 +330,7 @@ contractTest("human-input", "tests/human-input.test.ts:126", "no answer in time:
   assert.equal(r.model.bodies.length, 2);
 });
 
-contractTest("human-input", "tests/human-input.test.ts:158", "no answer in time: an approval is never given; the call does not run and the model goes on", async (t)=>{
+contractTest("human-input", "tests/human-input.test.ts:160", "no answer in time: an approval is never given; the call does not run and the model goes on", async (t)=>{
   const text = (value: string) => ({ content: [{ type: "text", text: value }] });
   const shop = await rawMcp(t, { delete_item: { annotations: { destructiveHint: true }, call: args => text(`deleted ${args.id}`) } });
   const r = await runtime(t, (body, index) => index === 0 ? toolCall("shop__delete_item", { id: "a" }, "call_a") : { role: "assistant", content: `Skipped: ${toolResults(body).at(-1)}` }, LOCAL);
@@ -347,7 +349,7 @@ contractTest("human-input", "tests/human-input.test.ts:158", "no answer in time:
   assert.equal(shop.calls.length, 0);
 });
 
-contractTest("human-input", "tests/human-input.test.ts:177", "no answer in time: a tool's own request (an MCP form) is cancelled with the same answer; the tool is not called again", async (t)=>{
+contractTest("human-input", "tests/human-input.test.ts:179", "no answer in time: a tool's own request (an MCP form) is cancelled with the same answer; the tool is not called again", async (t)=>{
   const form = { mode: "form", message: "New name?", requestedSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } };
   const server = await rawMcp(t, { rename: { call: () => ({ resultType: "input_required", inputRequests: { name: { method: "elicitation/create", params: form } } }) } });
   const r = await runtime(t, (body, index) => index === 0 ? toolCall("tools__rename", {}, "call_rename") : { role: "assistant", content: toolResults(body).at(-1) }, LOCAL);
@@ -361,7 +363,7 @@ contractTest("human-input", "tests/human-input.test.ts:177", "no answer in time:
   assert.equal(server.calls.length, 1, "the tool was not called again");
 });
 
-contractTest("human-input", "tests/human-input.test.ts:191", "no answer in time from code: the waiting call gets the runtime's answer as a decline or an answer would, and the script goes on", async (t)=>{
+contractTest("human-input", "tests/human-input.test.ts:193", "no answer in time from code: the waiting call gets the runtime's answer as a decline or an answer would, and the script goes on", async (t)=>{
   const text = (value: string) => ({ content: [{ type: "text", text: value }] });
   const server = await rawMcp(t, { remove: { annotations: { destructiveHint: true }, call: args => text(`removed ${args.id}`) } });
   const script = `let removed;
@@ -391,7 +393,7 @@ return { removed, region: asked.answers["Which region?"] ?? "none", timedOut: as
   assert.equal(r.model.bodies.length, 2, "the model is asked only to start and to answer");
 });
 
-contractTest("human-input", "tests/human-input.test.ts:221", "only whoever started the turn, or an approver, may answer", async (t)=>{
+contractTest("human-input", "tests/human-input.test.ts:223", "only whoever started the turn, or an approver, may answer", async (t)=>{
   const r = await runtime(t, (_body, index) => index === 0 ? toolCall("ask_user", ASK) : { role: "assistant", content: "done" });
   const agent = await asker(r, { approvers: ["boss"] });
   const accepted = await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "Deploy", from: { id: "alice" } } });
@@ -404,7 +406,7 @@ contractTest("human-input", "tests/human-input.test.ts:221", "only whoever start
   assert.equal((await answer({ id: "alice" })).status, 202);
 });
 
-contractTest("human-input", "tests/human-input.test.ts:285", "an MCP server's input_required (form and url, and the older -32042) suspends the call; the retry carries the answers and its state", async (t)=>{
+contractTest("human-input", "tests/human-input.test.ts:287", "an MCP server's input_required (form and url, and the older -32042) suspends the call; the retry carries the answers and its state", async (t)=>{
   const text = (value: string) => ({ content: [{ type: "text", text: value }] });
   const form = { mode: "form", message: "New name?", requestedSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } };
   const server = await rawMcp(t, {

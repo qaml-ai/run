@@ -6,7 +6,7 @@ import { claimAgentWorkspace, claimFork, copyAgentWorkspace, forkWorkspaceMounts
 import { Workspaces } from "./workspaces.ts";
 import { database } from "./postgres.ts";
 import type { FileBindings } from "./files.ts";
-import { provisionDefinition, visibleConfiguration } from "./definitions.ts";
+import { provisionDefinition, visibleConfiguration, withoutOnExpire } from "./definitions.ts";
 import { canonical } from "../../../shared/durable-json.ts";
 import { runInput } from "./run-input.ts";
 import { inheritHistoryPins } from "./history-pins.ts";
@@ -137,7 +137,7 @@ export async function agentLifecycleRoutes(request: Request, env: ControlEnv & F
     const { key: _key, atMessage: _at, ...settings } = input;
     if (input.name !== undefined && typeof input.name !== "string") throw new ApiError(400, "name must be text");
     const workspace = await forkWorkspaceMounts(entry.config.mounts, entry.id, targetId);
-    const config = { ...entry.config, ...settings, name: input.name as string | undefined ?? (entry.config.name ? `${entry.config.name} (fork)`.slice(0, 120) : undefined), mounts: workspace.mounts, initialMessages, idleTtlSeconds: null, ttlSeconds: input.ttlSeconds === undefined ? (suppliedKey ? null : 86400) : input.ttlSeconds };
+    const config = { ...withoutOnExpire(entry.config), ...settings, name: input.name as string | undefined ?? (entry.config.name ? `${entry.config.name} (fork)`.slice(0, 120) : undefined), mounts: workspace.mounts, initialMessages, idleTtlSeconds: null, ttlSeconds: input.ttlSeconds === undefined ? (suppliedKey ? null : 86400) : input.ttlSeconds };
     configuration(config, env.MODEL);
     const fingerprint = await digest(canonical(JSON.parse(JSON.stringify({ sourceId: entry.id, atMessage: at, config }))));
     const ttl = env.TEST_MODE === "1" && request.headers.get("x-camel-test-fork-short-ttl") === "1" ? 1000 : 86400_000;

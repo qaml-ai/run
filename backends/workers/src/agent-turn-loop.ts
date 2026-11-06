@@ -353,7 +353,7 @@ export async function onHumanImpl(this: AgentRuntime,
           const doc = await tx.doc(HumanInputs);
           for (const [key, input] of bound) {
             const current = doc.requests[key];
-            if (current && !current.policyBound) Object.assign(current, { requestId: input.requestId, responders: input.responders, expiresAt: input.expiresAt, policyBound: true, ...(input.resumeOnExpire ? { resumeOnExpire: true } : {}) });
+            if (current && !current.policyBound) Object.assign(current, { requestId: input.requestId, responders: input.responders, expiresAt: input.expiresAt, policyBound: true });
           }
         }, BACKGROUND_CONTEXT);
       }

@@ -100,9 +100,9 @@ test("a new message supersedes a waiting input; its call is closed and the promp
   assert.equal((await r.call(`/v1/agents/${agent}/inputs/${input.id}`, { body: { action: "accept", content: { answers: { "Which region?": "EU" } } } })).status, 409);
 });
 
-test("abort cancels waiting inputs and closes the turn without the model; with onExpire close, expiry does the same", async t => {
-  const r = await runtime(t, () => toolCall("ask_user", ASK));
-  const agent = await asker(r, { onExpire: "close" });
+test("abort cancels waiting inputs and closes the turn without the model; expiry instead answers for the person, and the model goes on", async t => {
+  const r = await runtime(t, (_body, index) => index < 2 ? toolCall("ask_user", ASK) : { role: "assistant", content: "Going on without it" });
+  const agent = await asker(r);
   await r.prompt(agent, "Deploy it");
   assert.equal((await r.call(`/v1/agents/${agent}/abort`, { method: "POST" })).status, 200);
   const cancelled = (await r.call(`/v1/agents/${agent}/inputs`)).json[0];
@@ -111,12 +111,14 @@ test("abort cancels waiting inputs and closes the turn without the model; with o
   assert.match((await r.call(`/v1/agents/${agent}/history`)).json.messages.at(-1).content[0].text, /Cancelled by the application/);
   assert.equal(r.model.bodies.length, 1);
 
-  // Expired inputs (made due here) are closed by the scheduler, again without the model.
+  // An expired input (made due here) is answered by the runtime, and the model goes on with the turn.
   await r.prompt(agent, "Deploy it again");
   await r.db.query("update agent_inputs set expires_at = 0 where state = 'pending'");
   await until(async () => (await r.call(`/v1/agents/${agent}/inputs`)).json[0].state === "expired", "the input to expire");
-  await until(async () => /did not respond in a timely manner/.test((await r.call(`/v1/agents/${agent}/history`)).json.messages.at(-1)?.content?.[0]?.text ?? ""), "the call to be closed");
-  assert.equal(r.model.bodies.length, 2);
+  await until(() => r.model.bodies.length === 3, "the model to go on");
+  assert.match(toolResults(r.model.bodies[2]).at(-1), /did not respond in a timely manner/);
+  await until(async () => (await r.call(`/v1/agents/${agent}/history`)).json.messages.at(-1)?.content?.[0]?.text === "Going on without it", "the turn to end");
+  assert.equal(r.model.bodies.length, 3);
 });
 
 /** Make an agent's pending inputs due now: the scheduler then answers them for the person, as it would after their time. */
@@ -511,4 +513,24 @@ test("recording a call's inputs again (a retry whose answer was lost) returns th
   const again = await inputs.create(base, requests);
   assert.deepEqual(again.map(input => input.id), first.map(input => input.id));
   assert.equal(Number((await db.query("select count(*) from agent_inputs where agent = 'a1'")).rows[0].count), 1);
+});
+
+test("humanInput.onExpire is gone: new input with it is refused; a definition stored with it loads without it, and its inputs resume the turn", async t => {
+  const r = await runtime(t, (_body, index) => index === 0 ? toolCall("ask_user", ASK) : { role: "assistant", content: "Going on without it" });
+  const refused = await r.call("/v1/definitions", { body: { name: "Closer", builtins: ["ask_user"], humanInput: { onExpire: "close" } } });
+  assert.equal(refused.status, 400);
+  assert.match(refused.json.error, /humanInput/);
+
+  const definition = (await r.call("/v1/definitions", { body: { name: "Closer", builtins: ["ask_user"], humanInput: { expiresInSeconds: 600 } } })).json;
+  await r.db.query(`update definitions set spec = (spec::jsonb || '{"humanInput":{"expiresInSeconds":600,"onExpire":"close"}}'::jsonb)::json where id = $1`, [definition.id]);
+  assert.deepEqual((await r.call(`/v1/definitions/${definition.id}`)).json.humanInput, { expiresInSeconds: 600 }, "the stored field is ignored");
+  const patched = await r.call(`/v1/definitions/${definition.id}`, { method: "PATCH", body: { description: "Asks" } });
+  assert.equal(patched.status, 200, patched.text);
+
+  const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id;
+  const [input] = (await r.prompt(agent, "Deploy it")).outcome.result.inputs;
+  await expireNow(r, agent);
+  const resumed = await request(r, agent, resumeId(input.requestId));
+  assert.equal(resumed.outcome.result.reply, "Going on without it");
+  assert.match(toolResults(r.model.bodies[1]).at(-1), /did not respond in a timely manner/);
 });

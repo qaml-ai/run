@@ -2145,9 +2145,9 @@ question's call returns the answer, a tool gets its answers as above). Calls
 from the same script that ask at once are one suspension, answered together.
 An input no one answers in time gets the runtime's answer there, and the script
 goes on: an approval's call rejects as a declined one does, and `ask_user`
-returns `{answers: {}, timedOut: true, message}`. Inputs closed by an abort (or
-expiry with `onExpire: "close"`) end the `codemode` call as aborted, and a new
-message instead of an answer does the same. A script's own
+returns `{answers: {}, timedOut: true, message}`. Inputs closed by an abort end
+the `codemode` call as aborted, and a new message instead of an answer does the
+same. A script's own
 `timeout_ms` counts the wait; the runtime's deadline does not. Set
 `exposure: "direct"` to always declare such a tool to the model as well.
 
@@ -2216,8 +2216,7 @@ no way to answer.
   The input's `state` is `expired`, its `answer.by` is `{system: "expired"}`, and
   the agent's `input_resolved` event and the `input.resolved` webhook say the
   same. An answer that comes later is a 409 (`This input expired: no one answered
-  in time…`); send a new message instead. With `humanInput.onExpire: "close"`, an
-  expired input instead closes its call and the turn without calling the model.
+  in time…`); send a new message instead.
 
 ```json
 {"name": "Ops", "builtins": ["ask_user"], "humanInput": {"expiresInSeconds": 86400, "approvers": ["slack:U0123"]},

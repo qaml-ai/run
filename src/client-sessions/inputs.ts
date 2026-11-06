@@ -168,7 +168,7 @@ export async function inbox(ctx: InputContext, tenant: string, state?: string) {
 
 /**
  * Expire inputs past their time, on any node: each suspension whose last input expired is resumed
- * on the node serving its agent, which closes the turn (or, with `onExpire: "resume"`, asks the model).
+ * on the node serving its agent, which gives each call the runtime's answer and asks the model.
  */
 export async function expireInputs(ctx: InputContext, now = Date.now()) {
   const inputs = ctx.options.inputs;

@@ -5936,7 +5936,7 @@
               "expired",
               "superseded"
             ],
-            "description": "expired: no one answered by expiresAt, so the runtime answered for the person (answer.by.system \"expired\"; an approval is not given) and, unless the definition's humanInput.onExpire is close, the agent went on without them"
+            "description": "expired: no one answered by expiresAt, so the runtime answered for the person (answer.by.system \"expired\"; an approval is not given) and the agent went on without them"
           },
           "answer": {
             "type": "object",
@@ -9460,14 +9460,6 @@
                 "maximum": 2592000,
                 "description": "How long an input waits for an answer before the runtime answers for the person: 900 (15 minutes) by default, 60 to 2592000 (30 days), and never past the agent's own expiry"
               },
-              "onExpire": {
-                "type": "string",
-                "enum": [
-                  "close",
-                  "resume"
-                ],
-                "description": "What happens when no one answers in time. resume (default): the runtime answers for the person (an approval is not given and the call does not run; a question gets \"The user did not respond in a timely manner. Continue.\"), and the model continues the turn; close: the call and the turn close without the model"
-              },
               "approvers": {
                 "type": "array",
                 "items": {
@@ -9857,14 +9849,6 @@
                 "minimum": 60,
                 "maximum": 2592000,
                 "description": "How long an input waits for an answer before the runtime answers for the person: 900 (15 minutes) by default, 60 to 2592000 (30 days), and never past the agent's own expiry"
-              },
-              "onExpire": {
-                "type": "string",
-                "enum": [
-                  "close",
-                  "resume"
-                ],
-                "description": "What happens when no one answers in time. resume (default): the runtime answers for the person (an approval is not given and the call does not run; a question gets \"The user did not respond in a timely manner. Continue.\"), and the model continues the turn; close: the call and the turn close without the model"
               },
               "approvers": {
                 "type": "array",
@@ -10421,14 +10405,6 @@
                 "minimum": 60,
                 "maximum": 2592000,
                 "description": "How long an input waits for an answer before the runtime answers for the person: 900 (15 minutes) by default, 60 to 2592000 (30 days), and never past the agent's own expiry"
-              },
-              "onExpire": {
-                "type": "string",
-                "enum": [
-                  "close",
-                  "resume"
-                ],
-                "description": "What happens when no one answers in time. resume (default): the runtime answers for the person (an approval is not given and the call does not run; a question gets \"The user did not respond in a timely manner. Continue.\"), and the model continues the turn; close: the call and the turn close without the model"
               },
               "approvers": {
                 "type": "array",

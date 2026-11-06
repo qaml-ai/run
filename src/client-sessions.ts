@@ -38,7 +38,7 @@ import { metadataInput, senderInput } from "./sender.ts";
 import { CodeGate, DEFAULT_CODE_CAPACITY } from "./codemode.ts";
 import { fileResponse, type FileRef } from "./files.ts";
 import { AgentHistory, PAGE_BYTES, type HistoryPage } from "./history-pages.ts";
-import { inputView, resolution, resumesOnExpire, type Input, type Responder } from "./inputs.ts";
+import { inputView, resolution, type Input, type Responder } from "./inputs.ts";
 import { recordBillingFailure, recordHandoff, recordStart, safeError, Steps } from "./metrics.ts";
 import { PARENT_KEYS, type DelegateSettings } from "./multi-agent.ts";
 import { clock, random } from "./node-context.ts";
@@ -1021,7 +1021,7 @@ export class ClientSessions {
 
   /**
    * Expire inputs past their time, on any node: each suspension whose last input expired is resumed
-   * on the node serving its agent, which closes the turn (or, with `onExpire: "resume"`, asks the model).
+   * on the node serving its agent, which gives each call the runtime's answer and asks the model.
    */
   async expireInputs(now = Date.now()) { return humanInput.expireInputs(this.inputsContext, now); }
 
@@ -1999,9 +1999,8 @@ export class ClientSessions {
   /**
    * What a `resume` run tells its agent: each suspended call's result (an answer, or why there is
    * none), or that it runs again (`session.retries` says how), and whether to close the turn
-   * without the model: every input closed by the runtime (cancelled by an abort, or expired when the
-   * definition says `onExpire: "close"`; by default an expired input's call gets the runtime's answer
-   * and the model goes on).
+   * without the model: every input cancelled by the runtime (an abort). An expired input's call gets
+   * the runtime's answer, and the model goes on.
    */
   private async resumeParams(session: Session, suspension: string) {
     const inputs = this.options.inputs!;
@@ -2009,7 +2008,6 @@ export class ClientSessions {
     if (rows.some(row => row.state === "pending")) throw new Error("Inputs of this turn are still waiting for an answer");
     // Inputs settled away from this node (expired, or answered in a channel) are announced here, on the agent's stream.
     for (const row of rows) if (row.state === "expired" || row.answer?.by.via === "channel") humanInput.resolved(this.inputsContext, session, row);
-    const resumes = resumesOnExpire(session.header.sources?.humanInput);
     const calls: { toolCallId: string; result?: unknown; retry?: true }[] = [];
     session.retries = new Map();
     for (const toolCallId of new Set(rows.map(row => row.toolCallId))) {
@@ -2021,7 +2019,7 @@ export class ClientSessions {
         calls.push({ toolCallId, result: resolved.result });
       }
     }
-    const close = rows.every(row => row.answer?.by.system && !(row.answer.by.system === "expired" && resumes));
+    const close = rows.every(row => row.answer?.by.system && row.answer.by.system !== "expired");
     return { calls, close };
   }
 
