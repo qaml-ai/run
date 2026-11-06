@@ -1,6 +1,6 @@
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
-  "name": "camelrun-proto-platform-container",
+  "name": "camelrun-probe-do-computer",
   "main": "worker.ts",
   "compatibility_date": "2026-11-05",
   "compatibility_flags": ["nodejs_compat"],
@@ -9,10 +9,11 @@
   "durable_objects": { "bindings": [{ "name": "COMPUTERS", "class_name": "ContainerComputer" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ContainerComputer"] }],
   "containers": [{
-    "name": "camelrun-proto-platform-container",
+    "name": "camelrun-probe-do-computer",
     "class_name": "ContainerComputer",
     "scheduling_policy": "durable_object",
     "images": { "workspace": { "dockerfile": "../../computers/Dockerfile" } }
   }],
+  "vars": { "COMPUTER_INSTANCE": "standard-1" },
   "observability": { "enabled": false }
 }

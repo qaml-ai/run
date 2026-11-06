@@ -78,8 +78,7 @@ import {
 export { CamelAgent };
 export { TenantAdmission } from "./tenant.ts";
 export { Volume } from "./volume.ts";
-export { ContainerComputer, SandboxComputer } from "./computers/objects.ts";
-export { DirectoryBackupGateway } from "@cloudflare/sandbox";
+export { ContainerComputer } from "./computers/objects.ts";
 
 function result<T>(value: T | DirectoryFailure): T {
   if (

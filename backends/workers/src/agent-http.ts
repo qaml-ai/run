@@ -260,6 +260,8 @@ export async function fetchRequestImpl(this: AgentRuntime,
             await this.serializeComputer(() =>
               new ComputerService(this.env, conf.tenantId).removeAgent(conf.id),
             );
+          // The native computer: its container and snapshot handles.
+          await this.env.COMPUTER_CONTAINERS?.getByName(this.ctx.id.toString()).purge();
           await this.delegation.destroy();
           await this.harness.session().abort();
           await this.cancelHumanInputs();
@@ -344,6 +346,29 @@ export async function fetchRequestImpl(this: AgentRuntime,
         return json({
           pending: (await this.ctx.storage.list({ prefix: "billing:" })).size,
         });
+      }
+      if (
+        path === "/__test/computer-fork" &&
+        this.env.TEST_HOOKS === "1" &&
+        request.method === "POST"
+      ) {
+        // Fork this agent's computer from a named snapshot into other computer
+        // DOs, as the fork primitive will, and read a file back from each.
+        const namespace = this.env.COMPUTER_CONTAINERS;
+        if (!namespace) return json({ error: "Optional computer is not configured" }, 501);
+        const input = (await body(request)) as { name: string; into: string[]; path: string };
+        const handle = await namespace.getByName(this.ctx.id.toString()).snapshotHandle(input.name);
+        const forks = await Promise.all(input.into.map(async (name) => {
+          const computer = namespace.getByName(`${this.ctx.id.toString()}:fork:${name}`);
+          try {
+            const restored = await computer.startFromSnapshot(handle);
+            const read = (await computer.operate({ op: "read", path: input.path })) as { content: string };
+            return { restored, content: read.content };
+          } finally {
+            await computer.purge();
+          }
+        }));
+        return json({ handle, forks });
       }
       if (
         path === "/__test/settlement-state" &&
@@ -634,10 +659,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
         if (!compile(computerParameters).check(inputBody))
           throw new BadRequest("Invalid computer request");
         const { provider, ...input } = inputBody;
-        const namespace =
-          provider === "container"
-            ? this.env.COMPUTER_CONTAINERS
-            : this.env.COMPUTER_SANDBOXES;
+        const namespace = this.env.COMPUTER_CONTAINERS;
         if (!namespace)
           return json({ error: "Optional computer is not configured" }, 501);
         return json(

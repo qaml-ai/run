@@ -15,8 +15,6 @@ test("native computer tools require a configured provider and enabled codemode",
   const ordinary = { tools: ["codemode", "lookup"], modelTools: ["codemode", "lookup"] };
   assert.deepEqual(selected([]), ordinary, "an unconfigured native tool stays hidden");
   const native = { tools: ["computer", "codemode", "lookup"], modelTools: ["computer", "codemode", "lookup"] };
-  for (const bindings of [["COMPUTER_CONTAINERS"], ["COMPUTER_SANDBOXES"], ["COMPUTER_CONTAINERS", "COMPUTER_SANDBOXES"]]) {
-    assert.deepEqual(selected(bindings), native, "either configured native provider enables the registered tool");
-    assert.deepEqual(selected(bindings, { codeMode: false }), { tools: ["lookup"], modelTools: ["lookup"] }, "disabling codemode also hides the native tool");
-  }
+  assert.deepEqual(selected(["COMPUTER_CONTAINERS"]), native, "the configured native computer enables the registered tool");
+  assert.deepEqual(selected(["COMPUTER_CONTAINERS"], { codeMode: false }), { tools: ["lookup"], modelTools: ["lookup"] }, "disabling codemode also hides the native tool");
 });

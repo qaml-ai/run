@@ -79,7 +79,7 @@ async function egressImageWithoutSocketMatch(t: { after(fn: () => Promise<void>)
 }
 
 test(
-  "optional native Container and Sandbox SDK providers in local Docker",
+  "the native computer: a container its Durable Object drives (durable_object scheduling policy) in local Docker",
   // On a sprite with a cold image cache, pulling and building every image inside this test took 206 s of the old 240.
   { timeout: 360_000, skip: requireDocker ? false : unavailable },
   async (t) => {
@@ -101,7 +101,7 @@ test(
           ...server
             .logs()
             .matchAll(
-              /containerName = (workerd-camelrun-proto-workers-computers-local-(?:ContainerComputer|SandboxComputer)-[a-f0-9]{64})/g,
+              /containerName = (workerd-camelrun-proto-workers-computers-local-ContainerComputer-[a-f0-9]{64})/g,
             ),
         ].map((match) => match[1]),
       );
@@ -158,7 +158,7 @@ test(
         );
         return (await response.json()) as Record<string, any>;
       };
-      for (const provider of ["container", "sandbox"])
+      for (const provider of ["container"])
         await t.test(provider, async (t) => {
           const start = performance.now();
           const result = await call(provider, {
@@ -299,8 +299,32 @@ test(
           t.diagnostic(
             `restore_and_read_ms=${Math.round(performance.now() - resume)}`,
           );
+          // Fork: three other computer DOs start from the snapshot handle at once.
+          const forkStart = performance.now();
+          const forked = await fetch(`${server.url}/experimental/agents/${id}/__test/computer-fork`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+            body: JSON.stringify({ name: "saved", into: ["a", "b", "c"], path: "test.txt" }),
+            signal: AbortSignal.timeout(120000),
+          });
+          assert.equal(forked.status, 200, `${await forked.clone().text()}\n${server.logs()}`);
+          const fork = (await forked.json()) as { handle: { id: string; image: string }; forks: { content: string; restored: { id: string } }[] };
+          assert.ok(fork.handle.image, "the handle records its image");
+          assert.equal(fork.forks.length, 3);
+          for (const each of fork.forks) {
+            assert.equal(each.content, "persistent snapshot content");
+            assert.equal(each.restored.id, fork.handle.id);
+          }
+          t.diagnostic(`fork_into_3_ms=${Math.round(performance.now() - forkStart)}`);
           await call(provider, { op: "sleep" });
         });
+      // Deleting the agent purges its computer: container and snapshot handles.
+      await call("container", { op: "exec", argv: ["true"] });
+      const removed = await fetch(`${server.url}/v1/agents/${id}`, {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${token}` },
+      });
+      assert.equal(removed.status, 200, await removed.clone().text());
     } catch (error) {
       t.diagnostic(server.logs());
       throw error;

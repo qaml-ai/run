@@ -16,6 +16,7 @@ Postgres or use customer credentials. All dates below are UTC.
 | Agent objects | `AGENTS` / `CamelAgent` | Durable journal, runs, schedules, human input, hibernatable sockets |
 | Tenant objects | `TENANTS` / `TenantAdmission` | Admission and counters |
 | Volume objects | `VOLUMES` / `Volume` | Ordered file metadata |
+| Computer objects | `COMPUTER_CONTAINERS` / `ContainerComputer` | One container per agent through `ctx.container` (`durable_object` scheduling policy, `standard-1`); image `workspace` from `computers/Dockerfile` |
 | Code-mode binding | `CODEMODE_SANDBOX` | External `CodemodeSandbox` class on `camelrun-pilot-codemode` |
 | Sandbox objects | `SANDBOX` / `CodemodeSandbox` | Local binding in the sandbox Worker |
 | Static assets | `PUBLIC_ASSETS` | Bundled API documentation and console assets |
@@ -585,8 +586,20 @@ on base `20443b49`: 9,729 bytes exceeds 9,216. No UI source changed in this work
 
 ## Limits and rollback
 
-Computers, Containers and the PDF parser container are off. No computer provider
-credentials or container bindings are provisioned. Channels and voice transport
+The native computer is on: `COMPUTER_CONTAINERS` binds `ContainerComputer`
+(migration `v2`), one container per agent that its Durable Object starts, execs
+into, snapshots and stops through `ctx.container` under Cloudflare's
+`durable_object` scheduling policy. The code picks the image (`COMPUTER_IMAGE`,
+the `workspace` entry of the `images` map, which a deploy builds from
+`computers/Dockerfile` and pins by digest) and the size (`COMPUTER_INSTANCE`,
+`standard-1`) at each start; a container stops after 60 s idle. Agents with code
+mode see the `computer` tool. A deploy needs Docker on the deploying machine. A
+new image digest makes earlier snapshots unusable (they are refused, not
+restored); snapshots expire 30 days after creation or their latest restore.
+Managed computers (`/v1/computers` with runtime credentials), external computer
+provider credentials and the PDF parser container stay off. To turn the native
+computer off, remove the binding and container entry and add a migration with
+`"deleted_classes": ["ContainerComputer"]`. Channels and voice transport
 remain outside this port's parity scope. The fake provider is public and has no
 upstream credentials; never use it as a real model proxy.
 
@@ -615,11 +628,12 @@ Deleting a Worker alone does not delete its Durable Object storage. Before
 deleting the Workers, remove any temporary `camelrun-pilot-bootstrap-*` Workers
 and any other external bindings to the pilot's classes. Prepare temporary copies
 of the API and sandbox Wrangler configurations with a no-op Worker entry point,
-no Durable Object bindings, no routes, no cron triggers, and no queue bindings.
-Retain their existing `v1` migrations and append these migrations respectively:
+no Durable Object bindings, no `containers`, no routes, no cron triggers, and no
+queue bindings. Retain their existing migrations (`v1`, and the API's `v2`) and
+append these migrations respectively:
 
 ```json
-{ "tag": "pilot-teardown-v2", "deleted_classes": ["CamelAgent", "TenantAdmission", "Volume"] }
+{ "tag": "pilot-teardown-v3", "deleted_classes": ["CamelAgent", "TenantAdmission", "Volume", "ContainerComputer"] }
 ```
 
 ```json
@@ -630,7 +644,11 @@ Remove the class exports from those temporary entry points as well. Deploy the
 API teardown configuration first: this removes its external binding to
 `camelrun-pilot-codemode`. Then deploy the sandbox teardown configuration. These
 [deletion migrations](https://developers.cloudflare.com/durable-objects/reference/durable-object-class-migrations-legacy/)
-permanently remove all four namespaces and their stored data. Verify success
+permanently remove all five namespaces and their stored data. Delete the
+computer's container application and its image repository too (`wrangler
+containers list`, `wrangler containers delete`, `wrangler containers images
+list` and `delete`): computer snapshots are `rootfs-snapshot-*` tags in that
+repository and go with it. Verify success
 before deleting either Worker. Do not run `scripts/pilot-deploy` afterward;
 the original configuration is for an active pilot, not a retired deployment.
 

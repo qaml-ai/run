@@ -50,6 +50,10 @@
         "name": "CODEMODE_SANDBOX",
         "class_name": "CodemodeSandbox",
         "script_name": "camelrun-pilot-codemode"
+      },
+      {
+        "name": "COMPUTER_CONTAINERS",
+        "class_name": "ContainerComputer"
       }
     ]
   },
@@ -61,6 +65,28 @@
         "TenantAdmission",
         "Volume"
       ]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": [
+        "ContainerComputer"
+      ]
+    }
+  ],
+  // Agent computers: one container per ContainerComputer DO, started and
+  // stopped by its code through ctx.container. Under the durable_object policy
+  // the code picks the image (from this map, pinned by digest at deploy) and the
+  // instance size (COMPUTER_INSTANCE) at each start; there is no max_instances.
+  // Deploying builds the Dockerfile, so the deploying machine needs Docker.
+  "containers": [
+    {
+      "class_name": "ContainerComputer",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "workspace": {
+          "dockerfile": "./computers/Dockerfile"
+        }
+      }
     }
   ],
   "hyperdrive": [
@@ -117,7 +143,9 @@
     "AGENT_OPEN_SIGNUP": "false",
     "AGENT_MAX_AGENTS": "2100",
     "AGENT_MAX_AGENTS_PER_TENANT": "2100",
-    "TENANT_MAX_ACTIVE": "2100"
+    "TENANT_MAX_ACTIVE": "2100",
+    "COMPUTER_IMAGE": "workspace",
+    "COMPUTER_INSTANCE": "standard-1"
   },
   "account_id": "85bbd288051330fb51ee1c86031a299b",
   "routes": [
