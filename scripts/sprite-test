@@ -15,7 +15,8 @@
 #   --contract-baselines                                 # include validated local Node report caches in the archive
 #
 # The pool is rt-pool-1..SPRITE_POOL (default 42) in the Fly org SPRITE_ORG (default camelai: `sprite login -o camelai`).
-# Each sprite keeps a checkout in ~/rt with node_modules and the v8-exec build, and Postgres 16. A sleeping sprite costs
+# Each sprite keeps a checkout in ~/rt with node_modules and the v8-exec build, Postgres 16, and Docker with Buildx for
+# the Workers backend's native container tests (set up once per sprite, see docker_up below). A sleeping sprite costs
 # nothing and wakes on the next exec, so a warm pool is free to keep. A pool sprite that does not exist yet is created
 # when every existing one is busy, and sets itself up on its first run.
 #
@@ -244,12 +245,96 @@ trap stop_job TERM INT HUP
 job_pid=$$
 (while kill -0 "$job_pid" 2>/dev/null && [ ! -e ~/runs/$id.exit ] && [ "$(cut -d' ' -f1 ~/lease/owner 2>/dev/null)" = "$lease" ] && [ "$SECONDS" -lt "$max_age" ]; do touch -c ~/lease; $api curl -X PUT /v1/tasks/sprite-test -d '{"expire":"5m"}' >/dev/null 2>&1; sleep 60; done) & hold=$!
 export AGENT_TEST_DATABASE_URL=postgres://postgres:test@127.0.0.1:5432/postgres
+# Docker, for the Workers backend's native Container and Sandbox SDK computer tests (Wrangler builds the image, workerd
+# runs it), set up as camel-bots' sprite-test does it: a sprite has no systemd, so dockerd is a sprite-env service (it
+# starts at boot and restarts on a crash), with overlay2 on the sprite's own /var/lib/docker volume and the classic image
+# store. Unlike camel-bots, the default bridge stays and the runtime is runc 1.1: workerd puts each container behind an
+# egress sidecar on the bridge network with a published port, and runs the container itself in the sidecar's network
+# namespace. Measured on 2026-11-06 (kernel 6.12.115-fly, Docker 29.1.3), with plain
+# containers, `--network container:<id>` ones and `docker exec` as root and as uid 1000:
+#   Ubuntu's runc 1.4 (and 1.2.8, 1.3.3): bridge works; a joined-namespace container fails ("error spawning mount
+#     remapping thread: ... open /proc/<pid>/ns/mnt: permission denied": the sprite's root has no CAP_SYS_PTRACE).
+#   crun 1.21 --cgroup-manager=disabled (camel-bots' choice): joined works; a bridge container hangs in Created, and
+#     exec as non-root fails the same way. crun with cgroups fails at once (the sprite's cgroup is threaded: no io).
+#   runc 1.1.15 (the last 1.1, without that mount-source thread): all of them work, but only once the container's own
+#     process runs. Until then its init is runc's, which is not dumpable, so opening its /proc/<pid>/ns/* needs
+#     CAP_SYS_PTRACE as well: an exec in that window fails ("failed to open /proc/<pid>/ns/ipc: Permission denied", then
+#     "error executing setns process"), and on a sprite the window lasts from under a second to several. workerd execs
+#     at once after start, so it always lost, and then waited forever on an exec that never ran.
+# So runc 1.1.15, from its GitHub release and checked against the release's checksum, is the default runtime, behind a
+# wrapper whose `start` returns once the container's process has started (what start means anyway). For the same
+# reason an exec into a container whose own process is not root still fails (probe readiness over TCP), and a bridge
+# container whose image starts as non-root does not start ("bind-mount /proc/<pid>/ns/net ... permission denied"). The
+# socket belongs to this user's group, so tests run `docker` without sudo. The daemon's configuration and the wrapper are
+# the marker: a sprite whose /etc/docker/daemon.json or wrapper differs (none yet, or older ones) is set up again. See
+# backends/workers/README.md, "Docker on a sprite".
+docker_up() {
+  dir=/usr/local/lib/sprite-docker; runc=$dir/runc-1.1.15
+  want=$(printf '{\n  "group": "%s",\n  "features": { "containerd-snapshotter": false },\n  "storage-driver": "overlay2",\n  "runtimes": { "runc-1.1": { "path": "%s" } },\n  "default-runtime": "runc-1.1",\n  "live-restore": true,\n  "log-driver": "local",\n  "log-opts": { "max-size": "10m", "max-file": "3" }\n}' "$(id -gn)" "$dir/runc")
+  wrapper=$(cat <<'WRAPPER'
+#!/bin/sh
+# Docker's runtime on a sprite (scripts/sprite-test): runc 1.1.15, whose `start` returns once the container's process
+# runs, so an exec right after it can join the container's namespaces (see docker_up in scripts/sprite-test).
+runc=/usr/local/lib/sprite-docker/runc-1.1.15
+sub= root= skip= last=
+for arg in "$@"; do
+  last=$arg
+  if [ -n "$skip" ]; then [ "$skip" = root ] && root=$arg; skip=; continue; fi
+  [ -z "$sub" ] || continue
+  case $arg in
+    --root) skip=root ;;
+    --log|--log-format|--criu|--rootless) skip=1 ;;
+    -*) ;;
+    *) sub=$arg ;;
+  esac
+done
+[ "$sub" = start ] || exec "$runc" "$@"
+"$runc" "$@" || exit
+pid=$("$runc" ${root:+--root "$root"} state "$last" 2>/dev/null | sed -n 's/^ *"pid": *\([0-9]*\).*/\1/p')
+[ -n "$pid" ] || exit 0
+# Until it execs the container's process, runc's init is named runc:[2:INIT] (its comm, readable without ptrace).
+for _ in $(seq 200); do case $(cat "/proc/$pid/comm" 2>/dev/null) in runc:*) sleep 0.05 ;; *) exit 0 ;; esac; done
+exit 0
+WRAPPER
+)
+  if [ "$(cat /etc/docker/daemon.json 2>/dev/null)" != "$want" ] || [ "$(cat "$dir/runc" 2>/dev/null)" != "$wrapper" ] || [ ! -x "$runc" ] \
+    || ! command -v docker >/dev/null || ! docker buildx version >/dev/null 2>&1; then
+    echo '== setting up Docker on this sprite'
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io docker-buildx >/dev/null 2>&1 \
+      || { sudo apt-get update -qq >/dev/null 2>&1 && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io docker-buildx >/dev/null 2>&1; } \
+      || { echo '== apt could not install Docker'; return 1; }
+    case $(uname -m) in
+      x86_64) sum=d218e1f8be4dcb1f288dea754faee342375a36f695eac5ab37fc8b7270a78763 arch=amd64 ;;
+      aarch64) sum=c680f8c470ffb228944ca80e1a4dbb6768b3ad97057350852e128847f9dd10bc arch=arm64 ;;
+      *) echo "== no runc 1.1.15 for $(uname -m)"; return 1 ;;
+    esac
+    echo "$sum  $runc" | sha256sum -c --quiet >/dev/null 2>&1 \
+      || { sudo mkdir -p "$dir" && sudo curl -fsSL -o "$runc.new" "https://github.com/opencontainers/runc/releases/download/v1.1.15/runc.$arch" \
+        && echo "$sum  $runc.new" | sha256sum -c --quiet && sudo chmod 755 "$runc.new" && sudo mv "$runc.new" "$runc"; } \
+      || { echo '== could not install runc 1.1.15'; sudo rm -f "$runc.new"; return 1; }
+    printf '%s\n' "$wrapper" | sudo tee "$dir/runc" >/dev/null && sudo chmod 755 "$dir/runc" || return 1
+    # Stop whatever runs now (the service, or a daemon validate-sprite.sh once started by hand on vfs), then start the
+    # service on the new configuration.
+    $api services stop docker >/dev/null 2>&1; sudo pkill -x dockerd 2>/dev/null; sleep 1
+    sudo mkdir -p /etc/docker && printf '%s\n' "$want" | sudo tee /etc/docker/daemon.json >/dev/null || return 1
+    $api services get docker >/dev/null 2>&1 \
+      || $api services create docker --cmd /usr/bin/sudo --args /usr/bin/dockerd --no-stream >/dev/null 2>&1
+    $api services start docker >/dev/null 2>&1
+  fi
+  for i in $(seq 60); do timeout -k 2 10 docker info >/dev/null 2>&1 && break; [ "$i" != 10 ] || $api services start docker >/dev/null 2>&1; sleep 1; done
+  timeout -k 2 10 docker info >/dev/null 2>&1 \
+    || { echo '== Docker is not running (sprite-env services list; /.sprite/logs/services/docker.log)'; return 1; }
+  # The lease owns the sprite: any container still here is an earlier run's.
+  ids=$(docker ps -aq); [ -z "$ids" ] || timeout -k 2 60 docker rm -f $ids >/dev/null 2>&1 || true
+}
 prepare() {
   [ -f ~/.setup ] || { echo '== setting up this sprite: Postgres'; sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq postgresql >/dev/null 2>&1 \
     && sudo service postgresql start >/dev/null && sudo -u postgres psql -qc "ALTER USER postgres PASSWORD 'test'" && touch ~/.setup; } || return 1
   # The base image's ~/.bashrc binds keys even when not interactive, so every `bash -l` warns on stderr (and tests that
   # read a login shell's stderr fail): bind only in interactive shells.
   sed -i "s/^bind '/[[ \$- == *i* ]] \&\& bind '/" ~/.bashrc
+  # Only the Workers container tests need Docker; without it they fail under WORKERS_REQUIRE_DOCKER=1 and skip otherwise.
+  docker_up || echo '== Docker is not available on this sprite'
   # The cluster lives on /tmp, the sprite's local disk: the root file system syncs about 7x slower, and per-file databases
   # on it timed tests out (camel-bots). With fsync off a crash or restart can leave a cluster that won't start, or one
   # that starts and then hangs (a DROP DATABASE waited 17 minutes on a checkpoint that could not flush). Its data is

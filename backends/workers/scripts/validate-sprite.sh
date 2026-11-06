@@ -25,26 +25,13 @@ if [[ ! -x node_modules/.bin/wrangler || $(cat "$HOME/.workers-lock" 2>/dev/null
   printf '%s' "$lock" > "$HOME/.workers-lock"
 fi
 if [[ $mode == integration || $mode == compat ]]; then
-  if ! command -v docker >/dev/null || ! docker buildx version >/dev/null 2>&1; then
-    sudo apt-get update -qq
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io docker-buildx
+  # scripts/sprite-test sets Docker up on every pool sprite (docker_up there; README.md, "Docker on a sprite"), so the
+  # native computer tests run here as on CI, which allows them no skip.
+  if ! docker info >/dev/null 2>&1 || ! docker buildx version >/dev/null 2>&1; then
+    echo "Docker with Buildx is not running on this sprite; run this through scripts/sprite-test, which sets it up." >&2
+    exit 1
   fi
-  if ! docker info >/dev/null 2>&1; then
-    if ! sudo service docker start; then
-      sudo sh -c 'nohup dockerd --storage-driver=vfs > /tmp/workers-dockerd.log 2>&1 < /dev/null &'
-      for _ in $(seq 60); do
-        if sudo docker info >/dev/null 2>&1; then break; fi
-        sleep 1
-      done
-      if ! sudo docker info >/dev/null 2>&1; then
-        tail -40 /tmp/workers-dockerd.log >&2
-        exit 1
-      fi
-    fi
-    sudo chgrp "$(id -gn)" /var/run/docker.sock
-    sudo chmod g+rw /var/run/docker.sock
-  fi
-  docker info >/dev/null
+  export WORKERS_REQUIRE_DOCKER=1
 fi
 if [[ $mode == python || $mode == contract ]]; then
   if [[ ! -x "$HOME/.workers-python/bin/python3" ]]; then

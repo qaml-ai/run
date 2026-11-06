@@ -29,6 +29,16 @@ Postgres 16 in `/tmp` with `fsync` off, `npm ci` when `package-lock.json` change
 `sandbox/v8-exec` changed. `--dirty` sends the working tree as a temporary commit: staged, unstaged and untracked files (what `.gitignore` keeps out stays out), without touching your index.
 `SPRITE_SHARDS` sets the shards (default 8), `SPRITE_NAME` pins sprites, `SPRITE_POOL` the pool size (default 42).
 
+Every pool sprite also has Docker with Buildx (set up once per sprite by `docker_up` in the script), so the Workers
+backend's native container tests run there as on CI, `WORKERS_REQUIRE_DOCKER=1` included:
+`scripts/sprite-test --shards=3 HEAD bash backends/workers/scripts/validate-sprite.sh integration '{shard}/{shards}'`.
+It differs from a stock host in three ways, all because a sprite's root has no `CAP_SYS_PTRACE` and its kernel no
+`xt_socket`: runc 1.1.15 instead of Ubuntu's 1.4 (1.2+ cannot start a container in another's network namespace; crun
+hangs bridge containers), a runc wrapper whose `start` waits for the container's process (an exec before then fails),
+and the Workers test's egress sidecar without its `-m socket` rule. Bridge networking, `-p`/`-P` and `docker build` work;
+a bridge container whose image starts as non-root does not start, and `docker exec` into a container whose process is
+not root fails. Details: `backends/workers/README.md`, "Docker on a sprite".
+
 Fan out by starting several and waiting — each leases its own sprite:
 
 ```sh
