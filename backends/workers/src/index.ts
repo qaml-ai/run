@@ -121,7 +121,7 @@ async function forward(request: Request, env: Env, id: string, path: string, ctx
   const url = new URL(request.url);
   url.pathname = path;
   const agent = env.AGENTS.getByName(id);
-  const response = await agent.fetch(new Request(url, request));
+  const response = await agent.fetch(new Request(url, request), { signal: request.signal });
   return relayEvents(response, request.signal, connection => agent.detachEventConnection(connection), task => ctx.waitUntil(task));
 }
 function scopedConfiguration(input: unknown) {
