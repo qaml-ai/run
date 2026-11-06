@@ -102,27 +102,27 @@ test("templates, filters and keys are small pure functions", () => {
   assert.deepEqual(webhookSettings({ key: "k" }, { signature: { type: "token", header: "X-Token" }, prompt: "p" }), { signature: { type: "token", header: "x-token" }, key: "k", prompt: "p" });
 });
 
-test("each signature mode accepts good deliveries and refuses bad or stale ones", () => {
+test("each signature mode accepts good deliveries and refuses bad or stale ones", async () => {
   const body = '{"a":1}';
   const now = Date.now();
   const ts = String(Math.floor(now / 1000));
   const std = (secret: string, timestamp = ts) => new Headers({ "webhook-id": "m1", "webhook-timestamp": timestamp, "webhook-signature": `v1,wrong v1,${createHmac("sha256", Buffer.from(secret.slice(6), "base64")).update(`m1.${timestamp}.${body}`).digest("base64")}` });
-  assert.ok(verifySignature({ type: "standard" }, SECRET, std(SECRET), body, now), "any of several signatures");
-  assert.ok(!verifySignature({ type: "standard" }, SECRET, std("whsec_" + randomBytes(24).toString("base64")), body, now));
-  assert.ok(!verifySignature({ type: "standard" }, SECRET, std(SECRET, String(Math.floor(now / 1000) - 600)), body, now), "stale");
-  assert.ok(!verifySignature({ type: "standard" }, SECRET, std(SECRET), '{"a":2}', now), "tampered body");
+  assert.ok(await verifySignature({ type: "standard" }, SECRET, std(SECRET), body, now), "any of several signatures");
+  assert.ok(!await verifySignature({ type: "standard" }, SECRET, std("whsec_" + randomBytes(24).toString("base64")), body, now));
+  assert.ok(!await verifySignature({ type: "standard" }, SECRET, std(SECRET, String(Math.floor(now / 1000) - 600)), body, now), "stale");
+  assert.ok(!await verifySignature({ type: "standard" }, SECRET, std(SECRET), '{"a":2}', now), "tampered body");
 
   const hmac = { type: "hmac-sha256" as const, header: "x-hub-signature-256", prefix: "sha256=" };
   const digest = createHmac("sha256", PLAIN).update(body).digest("hex");
-  assert.ok(verifySignature(hmac, PLAIN, new Headers({ "X-Hub-Signature-256": `sha256=${digest}` }), body));
-  assert.ok(!verifySignature(hmac, PLAIN, new Headers({ "X-Hub-Signature-256": digest }), body), "prefix required");
-  assert.ok(!verifySignature(hmac, PLAIN, new Headers({ "X-Hub-Signature-256": `sha256=${digest}` }), '{"a":2}'));
+  assert.ok(await verifySignature(hmac, PLAIN, new Headers({ "X-Hub-Signature-256": `sha256=${digest}` }), body));
+  assert.ok(!await verifySignature(hmac, PLAIN, new Headers({ "X-Hub-Signature-256": digest }), body), "prefix required");
+  assert.ok(!await verifySignature(hmac, PLAIN, new Headers({ "X-Hub-Signature-256": `sha256=${digest}` }), '{"a":2}'));
   const b64 = { type: "hmac-sha256" as const, header: "linear-signature", encoding: "base64" as const };
-  assert.ok(verifySignature(b64, PLAIN, new Headers({ "Linear-Signature": createHmac("sha256", PLAIN).update(body).digest("base64") }), body));
+  assert.ok(await verifySignature(b64, PLAIN, new Headers({ "Linear-Signature": createHmac("sha256", PLAIN).update(body).digest("base64") }), body));
 
-  assert.ok(verifySignature({ type: "token", header: "x-token" }, PLAIN, new Headers({ "X-Token": PLAIN }), body));
-  assert.ok(!verifySignature({ type: "token", header: "x-token" }, PLAIN, new Headers({ "X-Token": PLAIN + "x" }), body));
-  assert.ok(!verifySignature({ type: "token", header: "x-token" }, PLAIN, new Headers(), body));
+  assert.ok(await verifySignature({ type: "token", header: "x-token" }, PLAIN, new Headers({ "X-Token": PLAIN }), body));
+  assert.ok(!await verifySignature({ type: "token", header: "x-token" }, PLAIN, new Headers({ "X-Token": PLAIN + "x" }), body));
+  assert.ok(!await verifySignature({ type: "token", header: "x-token" }, PLAIN, new Headers(), body));
 });
 
 test("a webhook channel is public by default, masks its secret and takes only valid settings", async t => {
@@ -198,5 +198,5 @@ test("with a replyUrl the reply is posted there, signed with the channel's secre
   const post = await until(() => target.posts[0], "the reply");
   assert.deepEqual(JSON.parse(post.body), { type: "message", conversationId: "default", text: "Triaged." });
   const headers = new Headers(post.headers as Record<string, string>);
-  assert.ok(verifySignature({ type: "standard" }, SECRET, headers, post.body), "signed per Standard Webhooks");
+  assert.ok(await verifySignature({ type: "standard" }, SECRET, headers, post.body), "signed per Standard Webhooks");
 });

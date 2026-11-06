@@ -385,7 +385,7 @@ assertions; its internal `model_cost` log wait remains in the source. DeepSeek's
 runtime cases remain here, while direct `explicitKeyStream()` unit cases stay in
 the original suite and are not counted as backend passes.
 
-Channels and voice are deliberately out of scope. Other original cases not in
+Voice is deliberately out of scope; channels are covered below. Other original cases not in
 this inventory must be assessed separately; this document does not count them as
 covered merely because a related endpoint has a case.
 

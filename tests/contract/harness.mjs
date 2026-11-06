@@ -98,7 +98,7 @@ export async function sourceKeys(root, { details = false } = {}) {
     }
   }
   // Scope inventory reads these source files without importing them.
-  for (const file of await readdir(path.join(root, "tests"))) if (/^(?:channels?|voice|speech|transcription).*\.test\.ts$/.test(file)) nodeFiles.add(`tests/${file}`);
+  for (const file of await readdir(path.join(root, "tests"))) if (/^(?:voice|speech|transcription).*\.test\.ts$/.test(file)) nodeFiles.add(`tests/${file}`);
   const nodeKey = await contentHash(root, nodeFiles);
   const workerFiles = ["backends/workers/package.json", "backends/workers/package-lock.json", "backends/workers/wrangler.test.jsonc", "backends/workers/codemode/wrangler.jsonc", "tests/contract/fixtures/workers.ts"];
   for (const directory of ["backends/workers/src", "backends/workers/test", "backends/workers/codemode", "backends/workers/scripts", "backends/workers/computers"]) workerFiles.push(...await walk(root, directory));

@@ -316,6 +316,8 @@ export function createHarness(this: AgentRuntime): PiHarness {
         sections: [],
       });
       registry.install({ name: "camel.human", tools: [askHuman, askUser] });
+      // A channel's agents send updates and files to their conversation before the final reply.
+      registry.install({ name: "camel.channels", tools: conf.config.type === "channel" ? [this.channels.tool(async () => this.config())] : [] });
       registry.install({
         name: "camel.images",
         tools: await this.imageTools(),

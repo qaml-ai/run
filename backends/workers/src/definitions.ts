@@ -12,7 +12,7 @@ import { rejectWorkflow } from "./workflow-refusal.ts";
 import { computerSettingsInput } from "./computers/egress.ts";
 import { sourceUrl } from "./tool-sources.ts";
 
-export type Definition = { id: string; tenant: string; name: string; revision: number; spec: AgentConfiguration & { description?: string; applyOnUpdate?: boolean; limits?: { ttlSeconds?: number | null; idleTtlSeconds?: number | null }; webSearch?: { providers: string[] } }; createdAt: number; updatedAt: number };
+export type Definition = { id: string; tenant: string; name: string; revision: number; spec: AgentConfiguration & { description?: string; applyOnUpdate?: boolean; limits?: { ttlSeconds?: number | null; idleTtlSeconds?: number | null }; webSearch?: { providers: string[] }; /** The channel this definition was made for (deleted with it). */ channel?: string }; createdAt: number; updatedAt: number };
 const OVERRIDES = ["model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "runLimits"] as const;
 const DEFINED = ["systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "runLimits", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "decide", "computer"] as const;
 /** A later agent configuration becomes its own choice when a new definition revision is applied. */
@@ -73,7 +73,8 @@ export function withoutWorkflow<T extends { builtins?: string[] }>(spec: T): T {
   const { workflow: _workflow, ...rest } = spec as T & { workflow?: unknown };
   return { ...rest, ...(rest.builtins ? { builtins: rest.builtins.filter(name => name !== "workflow") } : {}) } as T;
 }
-const view = ({ tenant, spec, ...definition }: Definition) => ({ ...definition, ...spec, toolSources: sourceDefinitionViews(spec as never), ...(spec.mcpServers ? { mcpServers: spec.mcpServers.map(x => sourceView(x as RemoteSource)) } : {}), ...(spec.openApi ? { openApi: spec.openApi.map(x => sourceView(x as RemoteSource)) } : {}) });
+// `channel` marks a definition a channel made for itself (src/definitions.ts): internal, never shown.
+const view = ({ tenant, spec: { channel: _channel, ...spec }, ...definition }: Definition) => ({ ...definition, ...spec, toolSources: sourceDefinitionViews(spec as never), ...(spec.mcpServers ? { mcpServers: spec.mcpServers.map(x => sourceView(x as RemoteSource)) } : {}), ...(spec.openApi ? { openApi: spec.openApi.map(x => sourceView(x as RemoteSource)) } : {}) });
 export function visibleConfiguration(config: AgentConfiguration) {
   const { definitionOverrides, definitionRevision, ...visible } = withoutOnExpire(withoutWorkflow(config));
   return { ...visible, keyScope: config.keyScope ?? null, modelHeaders: config.modelHeaders ?? null, decide: config.decide ?? null, language: config.language ?? null, runLimits: config.runLimits ?? null, tools: config.mcp?.tools ?? [], mcp: config.mcp ?? { tools: [] }, mcpServers: (config.mcpServers ?? []).map(source => sourceView(source as RemoteSource)), openApi: (config.openApi ?? []).map(source => sourceView(source as RemoteSource)) };
@@ -96,7 +97,7 @@ export async function provisionDefinition(env: ControlEnv, tenant: string, input
   if (["builtins", "delegate"].some(field => input[field] !== undefined)) throw new ApiError(400, "builtins come from the definition; change them there");
   if (input.mcpServers !== undefined || input.openApi !== undefined) throw new ApiError(400, "MCP servers come from the definition; change them there");
   const definition = await resolveDefinition(env, tenant, input.definition);
-  const { description, applyOnUpdate, limits, ...spec } = definition.spec;
+  const { description, applyOnUpdate, limits, channel: _channel, ...spec } = definition.spec;
   const lifetime = input.ttlSeconds !== undefined || input.idleTtlSeconds !== undefined;
   return { ...(lifetime ? {} : limits), ...spec, name: definition.name, ...input, definition: definition.id, definitionRevision: definition.revision, definitionOverrides: OVERRIDES.filter(field => Object.hasOwn(input, field)) };
 }
@@ -125,11 +126,16 @@ export async function definitionRoutes(request: Request, env: ControlEnv, auth: 
       return reply(view(definition));
     }
     const rows = (await withSql(env, sql => sql.query("select * from definitions where tenant=$1 order by created_at,id", [auth.tenantId]))).rows;
-    const used = url.searchParams.get("unused") === "true" ? new Set((await directory.list()).map(agent => agent.config.definition)) : undefined;
+    // Unused: no live agent and no channel is made from it, as src/definitions.ts lists them.
+    const used = url.searchParams.get("unused") === "true" ? new Set([...(await directory.list()).map(agent => agent.config.definition),
+      ...(await withSql(env, sql => sql.query("select channel->>'definition' as definition from channels where tenant=$1", [auth.tenantId]))).rows.map(row => row.definition as string)]) : undefined;
     return reply(rows.map(fromRow).filter(def => !used?.has(def.id)).map(view));
   }
   if (request.method === "DELETE" && ref) {
     const definition = await resolveDefinition(env, auth.tenantId, ref);
+    // As src/definitions.ts: a channel's agents are made from it, so it stays until the channel points elsewhere.
+    const used = (await withSql(env, sql => sql.query("select id from channels where tenant=$1 and channel->>'definition'=$2 limit 1", [auth.tenantId, definition.id]))).rows[0];
+    if (used) throw new ApiError(409, `Channel ${used.id} uses this definition; point it at another first`, "CONFLICT");
     await withSql(env, sql => sql.query("delete from definitions where tenant=$1 and id=$2", [auth.tenantId, definition.id]));
     return reply({ deleted: true });
   }
@@ -150,7 +156,7 @@ export async function definitionRoutes(request: Request, env: ControlEnv, auth: 
   const changes = Object.fromEntries(Object.entries(input).filter(([key]) => !["name", "revision", "apply", "applyOnUpdate", "description", "limits"].includes(key)));
   const raw = request.method === "PATCH" ? { ...existing?.spec, ...changes } : changes;
   for (const [field, value] of Object.entries(raw)) if (value === null) delete raw[field];
-  const { mcpServers, openApi, description: _description, applyOnUpdate: _applyOnUpdate, limits: _limits, computer, ...rest } = raw;
+  const { mcpServers, openApi, description: _description, applyOnUpdate: _applyOnUpdate, limits: _limits, computer, channel: madeFor, ...rest } = raw as Record<string, unknown>;
   const spec = configuration(rest, env.MODEL).config as Definition["spec"];
   if (computer !== undefined) spec.computer = computerSettingsInput(computer, value => sourceUrl(value, env), auth.tenantId);
   if (raw.model === undefined) delete spec.model;
@@ -183,6 +189,8 @@ export async function definitionRoutes(request: Request, env: ControlEnv, auth: 
   if (input.description !== undefined && input.description !== null) { if (typeof input.description !== "string" || !input.description.trim() || input.description.length > 1000) throw new ApiError(400, "description must contain 1–1000 characters"); spec.description = input.description; }
   else if (request.method === "PATCH" && existing?.spec.description) spec.description = existing.spec.description;
   if (input.description === null) delete spec.description;
+  // A channel's own definition stays its own across edits.
+  if (typeof madeFor === "string") (spec as Record<string, unknown>).channel = madeFor;
   if (input.applyOnUpdate !== undefined && input.applyOnUpdate !== null) { if (typeof input.applyOnUpdate !== "boolean") throw new ApiError(400, "applyOnUpdate must be boolean"); if (input.applyOnUpdate) spec.applyOnUpdate = true; }
   else if (request.method === "PATCH" && existing?.spec.applyOnUpdate) spec.applyOnUpdate = true;
   if (input.applyOnUpdate === null || input.applyOnUpdate === false) delete spec.applyOnUpdate;

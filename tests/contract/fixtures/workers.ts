@@ -6,6 +6,8 @@ import { configuredModel } from "../../../src/model.ts";
 import { modelReference } from "../../../src/virtual-models.ts";
 import { tenantsFromEnvironment } from "../../../src/tenants.ts";
 import { seedJourneyAccount } from "./journey-state.ts";
+import { channelQuery } from "./channel-state.ts";
+import { dkimSigner } from "./email.ts";
 import { fakeModel, OPERATOR, OTHER_OPERATOR, until, untilRequestState, type T } from "../http.ts";
 import type { ContractFixture, FixtureOptions, TenantSeed } from "../fixture.ts";
 import { fixtureSigner } from "./signing.ts";
@@ -49,6 +51,8 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
     AGENT_OUTBOUND_ALLOW_HTTP: "false", AGENT_OUTBOUND_ALLOW_CIDRS: "",
     ...options.env,
   };
+  // Email channels: mail reaches the Email Worker through workerd's local trigger, DKIM-signed as SES's verdicts say.
+  const dkim = env.AGENT_EMAIL_DOMAIN ? await dkimSigner({ after: fn => cleanups.push(fn) }) : undefined;
   let configuredTenants = options.tenants;
   if (env.AGENT_TENANTS_FILE === "" && env.AGENT_TENANT) {
     // Use the source parser, then express the same seeded tenant through the
@@ -85,6 +89,9 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
       // EmailMessageBuilder payload is not an SES envelope: no fixture code
       // invents EmailTags, ConfigurationSetName, or sender formatting for it.
       ...(env.AWS_ENDPOINT_URL_SESV2 && !env.MAIL_TEST_URL ? { MAIL_TEST_URL: new URL("/v2/email/outbound-emails", env.AWS_ENDPOINT_URL_SESV2).href } : {}),
+      // Channel replies go through Cloudflare Email Service; locally the same sink takes them as JSON.
+      ...(env.AWS_ENDPOINT_URL_SESV2 ? { TEST_CHANNEL_MAIL_URL: new URL("/channel-mail", env.AWS_ENDPOINT_URL_SESV2).href } : {}),
+      ...(dkim ? { AGENT_EMAIL_DNS_URL: dkim.url } : {}),
       TEST_MODE: "1", TEST_MODEL: "1", MODEL: modelReference(configuredModel(env)),
       ...(options.failImageResizeOnce ? { TEST_IMAGE_RESIZE_FAILURE_ONCE: "1" } : {}),
       // An explicitly supplied gateway speaks the configured provider API.
@@ -242,6 +249,20 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
     },
     async updateLegacyUsageWebhook(url) { await server.db.query("update usage_webhooks set url=$1 where tenant='alice'", [url]); },
     seedJourneyAccount: input => seedJourneyAccount(server.db, input),
+    channelQuery: channelQuery(server.db),
+    async deliverEmail(raw, receipt = {}) {
+      if (!dkim) throw new Error("Email channel cases set AGENT_EMAIL_DOMAIN");
+      const { raw: delivered, envelope } = dkim.prepare(raw, receipt);
+      const recipients = receipt.recipients ?? [`support@${env.AGENT_EMAIL_DOMAIN}`];
+      let status = 200;
+      // Email Routing hands the Worker one message per recipient.
+      for (const to of recipients) {
+        const response = await fetch(`${server.url}/cdn-cgi/local/email?${new URLSearchParams({ from: envelope, to })}`, { method: "POST", body: delivered });
+        await response.arrayBuffer();
+        if (!response.ok) status = response.status;
+      }
+      return status;
+    },
     async drain() { throw new Error("Unsupported fixture lifecycle: deployed Workers have no Node SIGTERM/HTTP server drain boundary"); },
     async waitForAgentIdle(agent) {
       await until(async () => {

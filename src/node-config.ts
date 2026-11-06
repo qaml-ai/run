@@ -165,6 +165,7 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     firecrawlUrl: env.AGENT_FIRECRAWL_SCRAPE_URL,
     usageWebhookRetryMs: optional("AGENT_USAGE_WEBHOOK_RETRY_MS"),
     channelRetryMs: optional("AGENT_CHANNEL_RETRY_MS"),
+    channelRecheckMs: optional("AGENT_CHANNEL_RECHECK_MS"),
     runOverrunMs: optional("AGENT_RUN_OVERRUN_MS"),
     snapshotBytes: optional("AGENT_SNAPSHOT_BYTES"),
     idempotencyLockMs: optional("AGENT_IDEMPOTENCY_LOCK_MS"),
@@ -173,7 +174,7 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
       domain: env.AGENT_EMAIL_DOMAIN, topics: (env.AGENT_EMAIL_SNS_TOPICS ?? "").split(",").map(topic => topic.trim()).filter(Boolean),
       ...(env.AGENT_EMAIL_BUCKET ? { bucket: env.AGENT_EMAIL_BUCKET } : {}), region: env.AGENT_EMAIL_REGION ?? env.AWS_REGION,
     } : undefined,
-    channelApis: { telegram: env.AGENT_TELEGRAM_API_URL, slack: env.AGENT_SLACK_API_URL, github: env.AGENT_GITHUB_API_URL },
+    channelApis: { telegram: env.AGENT_TELEGRAM_API_URL, slack: env.AGENT_SLACK_API_URL, github: env.AGENT_GITHUB_API_URL, slackMaxFileBytes: Number(env.AGENT_TEST_SLACK_MAX_FILE_BYTES) || undefined },
     // Voice sessions (src/voice-sessions.ts): on with AGENT_VOICE=true; live ones per tenant, and the most one node holds.
     voice: {
       enabled: env.AGENT_VOICE === "true",

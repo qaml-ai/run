@@ -9,6 +9,8 @@ import pg from "pg";
 import { migrate } from "../../../src/db.ts";
 import { EndUserCredits } from "../../../src/end-user-credits.ts";
 import { seedJourneyAccount } from "./journey-state.ts";
+import { channelQuery } from "./channel-state.ts";
+import { EMAIL_TOPIC, snsSigner } from "./email.ts";
 import { runtime } from "../../runtime-server.ts";
 import { fakeLauncher } from "../../fake-launcher.ts";
 import { OPERATOR, OTHER_OPERATOR, sleep, until, untilRequestState, type T } from "../http.ts";
@@ -57,6 +59,8 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
     bob: { tokenSha256: hash(OTHER_OPERATOR), apiKeys: { openrouter: "fixture-model-key" } },
   } });
   let r: Awaited<ReturnType<typeof runtime>>;
+  let sns: ReturnType<typeof snsSigner> | undefined;
+  const execArgv: string[] = [];
   const priorModels: ContractFixture["model"][] = [];
   let db: pg.Pool;
   try {
@@ -93,10 +97,17 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
       runtimeEnv.AGENT_SANDBOX_DIR = launcher.dir;
     }
     if (options.anthropicFederationEndpoint) runtimeEnv.TEST_ANTHROPIC_FEDERATION_ENDPOINT = options.anthropicFederationEndpoint;
+    // Email channels: SES's notifications arrive through SNS, signed with a certificate the runtime fetches from the fixture.
+    if (runtimeEnv.AGENT_EMAIL_DOMAIN) {
+      sns = snsSigner();
+      cleanups.push(sns.cleanup);
+      Object.assign(runtimeEnv, { AGENT_EMAIL_SNS_TOPICS: EMAIL_TOPIC, TEST_SNS_CERT_FILE: sns.certFile, AGENT_EMAIL_REGION: "us-west-2",
+        AWS_ACCESS_KEY_ID: "fixture", AWS_SECRET_ACCESS_KEY: "fixture-secret", ...options.env });
+      execArgv.push("--import", new URL("./sns-fetch.mjs", import.meta.url).href);
+    }
+    if (options.anthropicFederationEndpoint) execArgv.push("--import", new URL("../../fixtures/anthropic-federation.mjs", import.meta.url).href);
     r = await runtime({ after: fn => cleanups.push(fn) }, scriptedReply, runtimeEnv,
-      tenants, { databaseUrl: databaseUrl.href, ...(options.anthropicFederationEndpoint ? {
-        execArgv: ["--import", new URL("../../fixtures/anthropic-federation.mjs", import.meta.url).href],
-      } : {}) });
+      tenants, { databaseUrl: databaseUrl.href, ...(execArgv.length ? { execArgv } : {}) });
   } catch (error) {
     try { await close(); }
     catch (cleanupError) { throw new AggregateError([error, cleanupError], "Node fixture startup and cleanup failed"); }
@@ -132,7 +143,7 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
     runtimeEnv.AGENT_DATA_DIR ??= previous.root;
     index = 0;
     r = await runtime({ after: fn => cleanups.push(fn) }, scriptedReply, runtimeEnv,
-      tenants, { databaseUrl: previous.databaseUrl });
+      tenants, { databaseUrl: previous.databaseUrl, ...(execArgv.length ? { execArgv } : {}) });
   };
   const model: ContractFixture["model"] = {
     get url() { return r.model.url; },
@@ -246,6 +257,13 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
     },
     async updateLegacyUsageWebhook(url) { await db.query("update usage_webhooks set url=$1 where tenant='alice'", [url]); },
     seedJourneyAccount: input => seedJourneyAccount(db, input),
+    channelQuery: channelQuery(db),
+    async deliverEmail(raw, receipt = {}) {
+      if (!sns) throw new Error("Email channel cases set AGENT_EMAIL_DOMAIN");
+      const response = await fetch(`${r.base}/channels/email/inbound`, { method: "POST", headers: { "Content-Type": "text/plain; charset=UTF-8" }, body: JSON.stringify(sns.notification(raw, receipt, runtimeEnv.AGENT_EMAIL_DOMAIN)) });
+      await response.arrayBuffer();
+      return response.status;
+    },
     async drain() {
       const exited = once(r.child, "exit");
       r.child.kill("SIGTERM");

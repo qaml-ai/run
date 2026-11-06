@@ -391,10 +391,15 @@ export async function onHumanImpl(this: AgentRuntime,
         record.status = "input_required";
         record.endedAt = Date.now();
         const usage = await this.usageForRequest(record.piId ?? id);
+        // What the model said beside the call that asks, as the Node runtime reports it.
+        const said = usage.last && usage.last.stopReason !== "error"
+          ? usage.last.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n").trim() : "";
         record.outcome = {
-          result: { stopped: "input_required", inputs, reply: "", messages: this.nextMessage, usage: this.requestUsage(record, usage),
+          result: { stopped: "input_required", inputs, reply: said, messages: this.nextMessage, usage: this.requestUsage(record, usage),
             ...(usage.toolCalls?.length ? { toolCalls: usage.toolCalls.map(call => waiting.has(call.toolCallId) ? { ...call, ok: false, code: "input_required" } : call) } : {}),
             ...(usage.toolErrors?.length ? { toolErrors: usage.toolErrors } : {}),
+            // Files presented before the question go out with it.
+            ...(await fileOutputs(this.ctx.storage, id)),
           },
         };
         await this.ctx.storage.transaction(async (tx) => {
@@ -571,7 +576,8 @@ export async function settleImpl(this: AgentRuntime,
         : runCompleted
           ? {
               result: {
-                reply: result.text ?? "",
+                // A resume closed without the model (its inputs superseded or expired) says nothing new.
+                reply: record.method === "resume" && runUsage.responses === 0 ? "" : result.text ?? "",
                 error: null,
                 usage: runUsage,
                 servedModel: usage.last
@@ -722,7 +728,7 @@ function settledMessage(inputs: HumanInput[]) {
 
 export async function answerHumanInputsImpl(this: AgentRuntime,
   answers: Array<{ id: string; body: unknown }>,
-  via: "api" | "agent",
+  via: "api" | "agent" | "channel",
   system?: "expired" | "superseded") {
     if (!answers.length || answers.length > 100 || new Set(answers.map(entry => entry.id)).size !== answers.length)
       throw Object.assign(new Error("Answer 1 to 100 different inputs"), { status: 400 });

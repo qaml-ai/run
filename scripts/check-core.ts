@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { parse } from "@babel/parser";
 
-const PURE_PACKAGES = new Set(["zod"]);
+const PURE_PACKAGES = new Set(["zod", "postal-mime"]);
 const NODE_GLOBALS = new Set(["Buffer", "process", "global", "NodeJS", "require", "__dirname", "__filename", "setImmediate", "clearImmediate"]);
 const within = (root: string, path: string) => {
   const part = relative(root, path);

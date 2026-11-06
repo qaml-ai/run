@@ -33,6 +33,7 @@ import { DurableEventLog, type TerminalDelivery } from "./event-log.ts";
 import { type ScheduleToolsHost } from "./agent-schedules.ts";
 import { DurableFileVersions } from "./file-versions.ts";
 import { AgentWebhooks } from "./run-webhooks.ts";
+import { AgentChannels } from "./agent-channels.ts";
 import type { WebhookEvent } from "./webhook-policy.ts";
 import { Config, RequestRecord, Env, Child } from "./agent-types.ts";
 import { currentRunImpl, recordsImpl, markBeganImpl, observeImpl, requestForInputsImpl, runningRequestImpl, projectMessageImpl, reconcileSteeringImpl, steeringOwnerImpl, onViewImpl, onHumanImpl, trackImpl, settleImpl, submitImpl, answerHumanInputsImpl, closeHumanInputsImpl, dueHumanInputsImpl } from "./agent-turn-loop.ts";
@@ -261,6 +262,8 @@ export class AgentRuntime extends AgentContext {
   }
 
   readonly webhooks = new AgentWebhooks(this.ctx.storage, this.env);
+  /** A channel agent's typing indicator, replies and send_message (agent-channels.ts). */
+  readonly channels = new AgentChannels(this.ctx, this.env);
   emit(event: unknown, delivery?: TerminalDelivery, webhook?: WebhookEvent) {
     return emitImpl.call(this, event, delivery, webhook);
   }
@@ -421,7 +424,7 @@ export class AgentRuntime extends AgentContext {
     return historyImpl.call(this, url);
   }
 
-  answerHumanInputs(answers: Array<{ id: string; body: unknown }>, via: "api" | "agent", system?: "expired" | "superseded") {
+  answerHumanInputs(answers: Array<{ id: string; body: unknown }>, via: "api" | "agent" | "channel", system?: "expired" | "superseded") {
     return answerHumanInputsImpl.call(this, answers, via, system);
   }
 

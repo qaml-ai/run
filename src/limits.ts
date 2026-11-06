@@ -98,31 +98,7 @@ export const IMAGE_LIMITS = Object.freeze({
 
 export { JUDGE_LIMITS } from "./core/limits.ts";
 
-/**
- * Decisions (decisions.ts): typed questions about one state, answered by a decision model. A request asks about one state
- * or a batch of `items`; each item is one provider call. Characters, not tokens, so the arithmetic is the same for every
- * provider (Jev takes about 32k tokens of state and question, which `itemChars` stays well under).
- */
-export const DECISION_LIMITS = Object.freeze({
-  items: 100, questions: 32, idChars: 64, instructionChars: 4_000, criterionChars: 1_000, choices: 255, levels: 10,
-  stateChars: 64_000, itemChars: 96_000,
-  /** A request's JSON body (a batch's states are about 20,000 characters each at most). */
-  requestBytes: 2 * 1024 * 1024,
-  /**
-   * Provider calls at once: a tenant's on one node (by default: a tenant's own, its tier's, override it), and the
-   * node's (AGENT_DECISION_NODE_CONCURRENCY; the outbound pool keeps 64 connections an origin, so more would wait
-   * there); past them calls wait, at most `queued` a tenant. A tenant's queue and characters scale with its concurrency.
-   */
-  tenantConcurrent: 16, nodeConcurrent: 64, queued: 1_000,
-  /** Characters of state and question held by requests in flight on a node: a tenant's, and all of them (then 429). */
-  tenantChars: 8_000_000, nodeChars: 32_000_000,
-  /** A request whose calls waited this long for a slot logs `decision_wait`. */
-  waitLogMs: 250,
-  /** Attempts of a call a provider failed for now (rate limited, overloaded, 5xx), backing off from `backoffMs`. */
-  attempts: 3, backoffMs: 250,
-  /** One provider call (Jev answers in 70–500 ms), and a whole request with its waits and retries. */
-  callTimeoutMs: 10_000, requestTimeoutMs: 60_000,
-});
+export { DECISION_LIMITS } from "./core/limits.ts";
 
 /** Transient provider failures (overload, rate limit, 5xx, network) are retried with backoff. */
 export const DEFAULT_RETRY = Object.freeze({ maxAttempts: 3, baseDelayMs: 2_000 });
