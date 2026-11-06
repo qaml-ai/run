@@ -40,6 +40,40 @@ needed for any result in this directory.
 Key measured results (hibernation, load stages, parity totals, test timings) are
 summarized in [measurements/README.md](measurements/README.md).
 
+## Computers
+
+The optional native computer (`computer` tool, `src/computers/objects.ts`) is a
+`ContainerComputer` Durable Object per agent that owns one container through
+`ctx.container`, under Cloudflare Containers' `durable_object` scheduling
+policy; the legacy `Container` class and the Sandbox SDK are not used. Its code
+picks the image (`COMPUTER_IMAGE`: a name in the Wrangler `images` map, built
+from `computers/Dockerfile` and pinned by digest at deploy; default `workspace`)
+and the size (`COMPUTER_INSTANCE`: `lite`, `standard-1` to `standard-4`;
+default `lite`) at every start. The container has no Internet and stops after
+60 s idle. Commands are `exec` with bounded output. Reading, writing and parsing
+files run small Node programs in the image (file content travels over the exec's
+stdin and stdout), so the image needs only Node.
+
+Snapshots are Cloudflare filesystem snapshots (`snapshotContainer`, restored by
+`start({ containerSnapshot })`). The DO keeps each as a handle in its storage:
+`{ id, name, size, image, createdAt, expiresAt }`, where `image` is the digest
+the filesystem came from and `expiresAt` is 30 days after creation or the latest
+restore made here. Restoring a handle from another image digest, or past
+`expiresAt`, is refused before anything starts. The handle is plain data, so any
+computer DO can start from another's (`takeSnapshot`, `snapshotHandle`,
+`startFromSnapshot` RPCs): the base of forking a computer. Deleting an agent
+calls `purge()`, which stops its container and drops its handles. Snapshots are
+tags in the application's image repository; deleting that repository deletes
+them.
+
+`wrangler.computers.test.jsonc` binds the computer for
+`test/computers.integration.ts` (Docker required) and the pilot binds it too
+(`PILOT.md`). `wrangler.jsonc` and `wrangler.test.jsonc` leave it out, so
+`npm run dev` and the other suites build no container image.
+`node probes/computers/remote.mjs` deploys a throwaway probe on Cloudflare,
+measures start, snapshot and restore into three DOs, and deletes everything
+(`PLATFORM.md`, "Live experiments").
+
 ## Validate
 
 ```sh

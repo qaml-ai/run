@@ -9,7 +9,7 @@ sessions are excluded. Standalone speech and transcription are included.
 | Surface | Implementation and evidence |
 | --- | --- |
 | Files and projects | R2 multipart uploads; volume DO write ordering, CAS, snapshots, labels, pins and two-pass GC; keyed volumes; archives; source `publishTool`; signed downloads/uploads; mounts, persistent presented-file outputs and durable stale-write guards. Four unchanged project tests and two unchanged file HTTP tests pass. |
-| Computers | Public creation, agent computer tools, inherited settings, lifecycle cleanup; Lambda API SigV4 via aws4fetch; Sprites, Tunnel and Daytona REST; E2B SDK; optional Container and Sandbox SDK providers. Fake endpoints only for external providers; local Docker and one real Cloudflare Container lifecycle verified. Three of seven unchanged computer API cases pass. |
+| Computers | Public creation, agent computer tools, inherited settings, lifecycle cleanup; Lambda API SigV4 via aws4fetch; Sprites, Tunnel and Daytona REST; E2B SDK; an optional native computer: a container its Durable Object drives through `ctx.container` (`durable_object` scheduling policy), with snapshot handles any computer can start from. Fake endpoints only for external providers; local Docker and real Cloudflare start, snapshot and restore into three DOs verified. Three of seven unchanged computer API cases pass. |
 | Media | Source image generation/editing, transcription and standalone speech providers and validation, streamed PCM/WAV, volume image output, usage and end-user holds. Provider/policy copies have a drift check. Local fake-provider integration passes. Existing R2 image transport is retained for the separate streaming-image track. |
 | Schedules | Source calendar and repeat policy; DO alarm wake-up; durable SQL email intents; Queue repair; verified/suppressed recipient rules; delivery leases, receipts and bounded retries. No real email sent. |
 | Admin/service | Ten read admin endpoints reuse source SQL behind an explicit account allowlist. Account-only `/registry` list/detail/request bridge rejects browser Origins. |
@@ -36,13 +36,32 @@ removed them. A 6,291,463-byte multipart upload retained its SHA-256 and took
 2,262 ms. The temporary Worker, namespace, objects and bucket were deleted and
 their absence independently checked.
 
-`measurements/platform-container-cloud.json` records a real Cloudflare Container
-using the existing `ContainerComputer` and Dockerfile. Node execution and a
-write/read of a synthetic file passed; startup through the first command took
-7,090 ms. This was one `lite` instance (1/16 vCPU, 256 MiB memory, 2 GB disk).
-The Worker, DO namespace, container application and image were deleted; final
-inventories were empty and the deleted application returned 404. The bounded
-probe is reproducible with `node probes/computers/remote.mjs`.
+`measurements/computer-snapshot-cloud.json` (2026-11-06) records the actual
+`ContainerComputer` and Dockerfile on Cloudflare under the `durable_object`
+scheduling policy, `standard-1` (1/2 vCPU, 4 GiB, 8 GB), in a throwaway Worker
+(`camelrun-probe-do-computer`). Each of three runs started one computer, ran a
+command, wrote a file, took a snapshot, then started three other computer DOs
+from that snapshot at once and read the file back in each:
+
+| Run | Start through first command | Snapshot | Restore into 3 DOs (wall) | Each restore through first read |
+| --- | --- | --- | --- | --- |
+| 1 (first after deploy) | 4,894 ms | 3,579 ms | 3,067 ms | 3,041 / 841 / 1,613 ms |
+| 2 | 1,007 ms | 3,497 ms | 3,718 ms | 756 / 819 / 3,679 ms |
+| 3 | 675 ms | 4,254 ms | 827 ms | 661 / 786 / 725 ms |
+
+Median restore through first read: 819 ms (9 restores). The snapshot of this
+small change reported 4,272 bytes. In the original and in every restored
+container `/` is btrfs on a block device (`/dev/vdb on / type btrfs
+(rw,relatime,compress=zstd:3,space_cache=v2,subvol=/rootfs)`; `df -T` says
+`btrfs`, 8 GB), with `/workspace` on it: no overlay or FUSE. Snapshots appear
+in the account's container registry as `rootfs-snapshot-*` tags of the
+application's image repository, so deleting that repository deletes them.
+The Worker, DO namespace, container application and image repository (with its
+snapshots) were deleted; final inventories were empty and the Worker returned
+404. Reproduce with `node probes/computers/remote.mjs` (`--cleanup` reruns only
+the teardown). The earlier one-computer record,
+`measurements/platform-container-cloud.json` (2026-11-05, `lite`), took 7,090 ms
+through the first command.
 
 `spikes/hibernation/` deploys the actual CamelAgent without Postgres or model
 bindings. `measurements/platform-hibernation.jsonl` records an idle socket kept

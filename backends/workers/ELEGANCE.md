@@ -44,7 +44,7 @@ flowchart TB
     V --> R2[(R2: immutable file contents and images)]
     API --> IMG[Images binding: stored derivative]
     IMG --> R2
-    TOOLS --> LINUX[Container or Sandbox SDK: Linux computers and parsing]
+    TOOLS --> LINUX[ContainerComputer DO + ctx.container: Linux computers, parsing, snapshots]
     LINUX --> BACKUP[(Native snapshot / R2 directory backup)]
     PG --> Q[Queues: webhook and account email delivery]
     CRON[Cron: repair fan-out and expiry] --> PG
@@ -263,7 +263,7 @@ three tracks. Passing these tests does not establish paid production parity.
 | Hyperdrive/Postgres           | Directory and relational authority; short-lived `pg` clients, no session locks or transactions across model calls                                                     |
 | R2 and Images                 | Immutable contents, snapshots/backups and bounded stored image derivatives                                                                                            |
 | Queues and Cron               | Delivery plus repair of the SQL-to-Queue publication gap and periodic expiry                                                                                          |
-| Containers / Sandbox SDK      | Optional Linux exec, files, parsing and persistence tests                                                                                                             |
+| Containers (DO policy)        | Optional Linux exec, files, parsing and snapshot tests                                                                                                                  |
 | Hibernatable WebSockets | Workers live streams prefer WebSockets. SSE clients are served by the front Worker over the object's hibernatable WebSocket (`sse-bridge.ts`), so the object never holds an SSE response. |
 | Analytics Engine              | Structured source metric names; real duration probe; alert evaluator exists, query/delivery service remains missing                                                              |
 | Rate Limiting binding         | Optional fast HTTP throttle hook; durable tenant admission remains authoritative; no real cloud binding is provisioned                                                |
