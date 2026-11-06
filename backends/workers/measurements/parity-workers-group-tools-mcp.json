@@ -1,0 +1,774 @@
+{
+  "backend": "workers",
+  "area": "all",
+  "group": "tools-mcp",
+  "nodeKey": "09d28ad8e5892cc12f4358519386a2f8a41b0c98f62e7d6402e1a18090e8576d",
+  "suiteHash": "9f9b5201334635a44cee7cade5cf866f2e736ab5a6c1c9608a7b550045f864cb",
+  "revision": "e9f27c128cb3f6a7100a50f42c9ccb59d932fd72",
+  "durationMs": 154729.78471799998,
+  "runtime": {
+    "node": "v24.22.1",
+    "platform": "linux",
+    "arch": "x64"
+  },
+  "recordedAt": "2026-11-06T12:06:21.897Z",
+  "expectedCases": 79,
+  "rows": [
+    {
+      "area": "agents",
+      "source": "tests/agent-mcp.test.ts:139",
+      "name": "a turn waiting on a person asks through the client, or says how to answer",
+      "status": "pass",
+      "durationMs": 8780.319457,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agent-mcp.test.ts:33",
+      "name": "an agent's MCP endpoint takes whatever may prompt it, and no other tenant's token",
+      "status": "pass",
+      "durationMs": 8782.372278,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "agents",
+      "source": "tests/agent-mcp.test.ts:87",
+      "name": "a message streams progress, is sent once when called again, and a full queue is busy",
+      "status": "pass",
+      "durationMs": 27301.21823,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "decisions",
+      "source": "tests/decisions-api.test.ts:104",
+      "name": "a tenant's own OpenRouter key answers its decisions, and is not charged",
+      "status": "pass",
+      "durationMs": 4326.325059,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "decisions",
+      "source": "tests/decisions-api.test.ts:130",
+      "name": "the decide builtin answers from codemode in batches and directly, billed to the run and the agent",
+      "status": "pass",
+      "durationMs": 5867.055528,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "decisions",
+      "source": "tests/decisions-api.test.ts:151",
+      "name": "an agent that denies data collection has decide by default, its calls sent with that data policy",
+      "status": "pass",
+      "durationMs": 4957.701779,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "decisions",
+      "source": "tests/decisions-api.test.ts:164",
+      "name": "decide is every agent's by default, and opts out with decide: false on the agent, its update or its definition; a toolless run and a tenant without an OpenRouter key have none",
+      "status": "pass",
+      "durationMs": 12210.796148,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "decisions",
+      "source": "tests/decisions-api.test.ts:60",
+      "name": "POST /v1/decisions answers one state or a batch on the platform's OpenRouter key, bills what OpenRouter charged, and logs no state",
+      "status": "pass",
+      "durationMs": 18858.555704,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "human-input",
+      "source": "tests/human-input.test.ts:102",
+      "name": "abort cancels waiting inputs and closes the turn without the model; expiry does the same",
+      "status": "pass",
+      "durationMs": 66876.033842,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "human-input",
+      "source": "tests/human-input.test.ts:121",
+      "name": "only whoever started the turn, or an approver, may answer",
+      "status": "pass",
+      "durationMs": 6292.38255,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "human-input",
+      "source": "tests/human-input.test.ts:135",
+      "name": "an approval policy asks before a gated tool runs: the approved call runs once, with proof; a declined one never runs",
+      "status": "pass",
+      "durationMs": 18140.149386,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "human-input",
+      "source": "tests/human-input.test.ts:185",
+      "name": "an MCP server's input_required (form and url, and the older -32042) suspends the call; the retry carries the answers and its state",
+      "status": "pass",
+      "durationMs": 7555.61401,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "human-input",
+      "source": "tests/human-input.test.ts:227",
+      "name": "an agent with no one to ask does not tell servers it can elicit",
+      "status": "pass",
+      "durationMs": 8257.481032,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "human-input",
+      "source": "tests/human-input.test.ts:235",
+      "name": "an attached tool asks with ctx.confirm and ctx.ask: the call runs again with the answers, everything before an ask included",
+      "status": "pass",
+      "durationMs": 6507.886768,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "human-input",
+      "source": "tests/human-input.test.ts:266",
+      "name": "inputs from parallel calls are one suspension: answered together, all or none, and listed in the tenant's inbox",
+      "status": "pass",
+      "durationMs": 6139.979776,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "human-input",
+      "source": "tests/human-input.test.ts:290",
+      "name": "an application answers with onInput, from its SDK",
+      "status": "pass",
+      "durationMs": 9829.843477,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "human-input",
+      "source": "tests/human-input.test.ts:307",
+      "name": "a remote MCP tool sets its own exposure in _meta, over its source's; approval keeps its exposure",
+      "status": "pass",
+      "durationMs": 5795.355171,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "human-input",
+      "source": "tests/human-input.test.ts:318",
+      "name": "an input for particular people must be answered naming who answers",
+      "status": "pass",
+      "durationMs": 5739.531493,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "human-input",
+      "source": "tests/human-input.test.ts:334",
+      "name": "code's calls that ask at once are one suspension: an approved one runs, a declined one rejects in the script",
+      "status": "pass",
+      "durationMs": 6150.723948,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "human-input",
+      "source": "tests/human-input.test.ts:354",
+      "name": "code pauses for people: an approval, a question and an MCP form, a run each, and every finished call runs once",
+      "status": "fail",
+      "durationMs": 6881.264084,
+      "reason": "The input did not match the regular expression /\"removed\":\"removed a\"[\\s\\S]*\"region\":\"EU\"[\\s\\S]*\"renamed\":\"renamed to Bob/. Input: 'Script failed\\n' + 'Wall time 1.0 seconds\\n' + 'Output:\\n' + '\\n' + 'Script error:\\n' + \"TypeError: cannot read property 'Which region?' of undefined\\n\" + ' at <anonymous> (codemode.js:110:27)\\n' + '\\n' + 'Tool calls made before the failure (they are not undone): s__read (ok), s__remove (ok), ask_user (ok), s__rename (ok)'",
+      "error": {
+        "message": "The input did not match the regular expression /\"removed\":\"removed a\"[\\s\\S]*\"region\":\"EU\"[\\s\\S]*\"renamed\":\"renamed to Bob/. Input:\n\n'Script failed\\n' +\n  'Wall time 1.0 seconds\\n' +\n  'Output:\\n' +\n  '\\n' +\n  'Script error:\\n' +\n  \"TypeError: cannot read property 'Which region?' of undefined\\n\" +\n  '    at <anonymous> (codemode.js:110:27)\\n' +\n  '\\n' +\n  'Tool calls made before the failure (they are not undone): s__read (ok), s__remove (ok), ask_user (ok), s__rename (ok)'\n",
+        "stack": "AssertionError [ERR_ASSERTION]: The input did not match the regular expression /\"removed\":\"removed a\"[\\s\\S]*\"region\":\"EU\"[\\s\\S]*\"renamed\":\"renamed to Bob/. Input:\n\n'Script failed\\n' +\n  'Wall time 1.0 seconds\\n' +\n  'Output:\\n' +\n  '\\n' +\n  'Script error:\\n' +\n  \"TypeError: cannot read property 'Which region?' of undefined\\n\" +\n  '    at <anonymous> (codemode.js:110:27)\\n' +\n  '\\n' +\n  'Tool calls made before the failure (they are not undone): s__read (ok), s__remove (ok), ask_user (ok), s__rename (ok)'\n\n    at file:///home/sprite/rt/tests/contract/areas/human-input.dynamic.contract.test.ts:266:10\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/support.ts:24:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)",
+        "expected": {},
+        "actual": "Script failed\nWall time 1.0 seconds\nOutput:\n\nScript error:\nTypeError: cannot read property 'Which region?' of undefined\n    at <anonymous> (codemode.js:110:27)\n\nTool calls made before the failure (they are not undone): s__read (ok), s__remove (ok), ask_user (ok), s__rename (ok)",
+        "operator": "match"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "human-input",
+      "source": "tests/human-input.test.ts:45",
+      "name": "ask_user suspends the turn; the answer, after the agent unloaded, resumes it with the answer as the call's result",
+      "status": "pass",
+      "durationMs": 7559.014138,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "human-input",
+      "source": "tests/human-input.test.ts:91",
+      "name": "a new message supersedes a waiting input; its call is closed and the prompt runs",
+      "status": "pass",
+      "durationMs": 4711.874805,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "human-input",
+      "source": "tests/judged-approval.test.ts:105",
+      "name": "a judge that cannot answer asks the person rather than letting the call run",
+      "status": "pass",
+      "durationMs": 5634.4691,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "human-input",
+      "source": "tests/judged-approval.test.ts:113",
+      "name": "an approval mode that is not one of the four is refused when the definition is saved",
+      "status": "pass",
+      "durationMs": 5537.770585,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "human-input",
+      "source": "tests/judged-approval.test.ts:120",
+      "name": "after an approval, a judged call in the resumed turn is still judged against the request that started it",
+      "status": "pass",
+      "durationMs": 7329.389328,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "human-input",
+      "source": "tests/judged-approval.test.ts:137",
+      "name": "a description longer than the model sees is cut for the judge, not refused",
+      "status": "pass",
+      "durationMs": 6077.899781,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "human-input",
+      "source": "tests/judged-approval.test.ts:62",
+      "name": "a judged call the judge calls ordinary runs with nobody asked, and the judge sees the request and the arguments",
+      "status": "pass",
+      "durationMs": 8723.090092,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "human-input",
+      "source": "tests/judged-approval.test.ts:81",
+      "name": "a judged call the judge calls exfiltration does not run, and the model reads the denial as the call's result",
+      "status": "pass",
+      "durationMs": 6244.898123,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "human-input",
+      "source": "tests/judged-approval.test.ts:89",
+      "name": "a judged call the judge is unsure about asks the person, and the approved call runs without a second judgement",
+      "status": "pass",
+      "durationMs": 6146.814596,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "mcp",
+      "source": "tests/hosted-mcp.test.ts",
+      "name": "a tool's result is cut at MAX_RESULT characters, saying so",
+      "status": "pass",
+      "durationMs": 319.049233,
+      "reason": "",
+      "backend": "sdk-unit"
+    },
+    {
+      "area": "mcp",
+      "source": "tests/hosted-mcp.test.ts",
+      "name": "AGENT_ISSUER must be one of the origins served",
+      "status": "pass",
+      "durationMs": 2.502555,
+      "reason": "",
+      "backend": "sdk-unit"
+    },
+    {
+      "area": "mcp",
+      "source": "tests/hosted-mcp.test.ts",
+      "name": "an alias serves everything, names MCP resources as reached, keeps the issuer, and sends browser pages to the public URL",
+      "status": "pass",
+      "durationMs": 5654.1677,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "mcp",
+      "source": "tests/hosted-mcp.test.ts",
+      "name": "MCP clients sign in with OAuth: registration, consent, PKCE, rotating refresh tokens, revocation",
+      "status": "pass",
+      "durationMs": 9208.130675,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "mcp",
+      "source": "tests/hosted-mcp.test.ts",
+      "name": "the hosted MCP endpoint runs the CLI's tools as the caller, and reads no files or environment",
+      "status": "pass",
+      "durationMs": 19523.908606,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "mcp",
+      "source": "tests/hosted-mcp.test.ts",
+      "name": "the OpenAI apps domain challenge is served as plain text from AGENT_OPENAI_APPS_CHALLENGE",
+      "status": "pass",
+      "durationMs": 3873.610199,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "ops",
+      "source": "tests/ops-mcp.test.ts:38",
+      "name": "the operations endpoint names its own protected resource, and answers nobody who is not signed in",
+      "status": "pass",
+      "durationMs": 4950.129653,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "ops",
+      "source": "tests/ops-mcp.test.ts:59",
+      "name": "only the tenants on AGENT_OPS_ADMINS connect: anyone else is refused at consent, and /mcp is untouched",
+      "status": "pass",
+      "durationMs": 3749.229442,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "ops",
+      "source": "tests/ops-mcp.test.ts:86",
+      "name": "the tools: read-only rows a dashboard charts, and a token that works here works nowhere else",
+      "status": "pass",
+      "durationMs": 4762.910219,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "search",
+      "source": "tests/web-render.test.ts",
+      "name": "web_fetch has Firecrawl render JavaScript shells, and only those, charging a platform render",
+      "status": "pass",
+      "durationMs": 10119.595193,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "search",
+      "source": "tests/web-search.test.ts",
+      "name": "a definition pins web_search's providers; a platform search is charged at the answering provider's price and counted in the hour's ledger entry",
+      "status": "pass",
+      "durationMs": 6998.706745,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "search",
+      "source": "tests/web-search.test.ts",
+      "name": "a search key the operator set for a tenant (its apiKeys) is used, and is not counted as the platform's",
+      "status": "pass",
+      "durationMs": 6209.501185,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "search",
+      "source": "tests/web-search.test.ts",
+      "name": "an operator's tenant without a key of its own searches on the platform's, recorded as platform usage and never charged; its own key wins; platformKeys: false keeps the refusal",
+      "status": "pass",
+      "durationMs": 12372.115992,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "search",
+      "source": "tests/web-search.test.ts",
+      "name": "codemode's searches on the platform's key stop once the tenant's credit is spent, without waiting for the next model request",
+      "status": "pass",
+      "durationMs": 6888.698384,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "search",
+      "source": "tests/web-search.test.ts",
+      "name": "web_search uses the tenant's own search key, else the platform's billed to credit, and pairs with web_fetch",
+      "status": "pass",
+      "durationMs": 12122.918957,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "search",
+      "source": "tests/x-search.test.ts",
+      "name": "X search works in agents and stateless runs, uses tenant keys first and bills only platform requests",
+      "status": "pass",
+      "durationMs": 11300.787586,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "tools",
+      "source": "tests/attach.test.ts:31",
+      "name": "the application's own connection still answers a replay gap with 409 unless it asks for a snapshot, as relays that do not read snapshots expect",
+      "file": "tests/contract/areas/attach.contract.test.ts",
+      "status": "accepted-difference",
+      "backend": "workers",
+      "reason": "Workers is WebSocket-only for live streams by CTO decision (2026-11-05); SSE keeps Durable Objects billed while idle",
+      "reviewedBy": "CTO",
+      "reviewedAt": "2026-11-05"
+    },
+    {
+      "area": "tools",
+      "source": "tests/attach.test.ts:43",
+      "name": "a run for an agent whose tools need its application is refused while none is connected, after a short wait for one reconnecting",
+      "status": "pass",
+      "durationMs": 14966.57586,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "tools",
+      "source": "tests/attach.test.ts:69",
+      "name": "the application's ready event carries the hash of the tools it last declared, so an SDK reconfigures only on a change; a run's outcome carries its usage",
+      "status": "pass",
+      "durationMs": 4877.398161,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "tools",
+      "source": "tests/attach.test.ts:6",
+      "name": "one application serves an agent's tools at a time: another connection is refused unless it takes over, and the replaced one is told why",
+      "file": "tests/contract/areas/attach.contract.test.ts",
+      "status": "accepted-difference",
+      "backend": "workers",
+      "reason": "Workers is WebSocket-only for live streams by CTO decision (2026-11-05); SSE keeps Durable Objects billed while idle",
+      "reviewedBy": "CTO",
+      "reviewedAt": "2026-11-05"
+    },
+    {
+      "area": "tools",
+      "source": "tests/attach.test.ts:89",
+      "name": "a connection that holds an agent but no longer answers (half-open) is replaced without a takeover",
+      "status": "pass",
+      "durationMs": 6517.603148,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "tools",
+      "source": "tests/builtins.test.ts:117",
+      "name": "an agent takes builtins without a definition: at creation, by upsert and by configuration, and only from its tenant",
+      "status": "pass",
+      "durationMs": 6051.63368,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "tools",
+      "source": "tests/builtins.test.ts:18",
+      "name": "web_fetch reads public pages as text, from the model and codemode, and never reaches inside",
+      "status": "pass",
+      "durationMs": 8025.961584,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "tools",
+      "source": "tests/builtins.test.ts:46",
+      "name": "web_fetch refuses internal addresses when nothing is allowed",
+      "status": "pass",
+      "durationMs": 4466.062134,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "tools",
+      "source": "tests/builtins.test.ts:55",
+      "name": "an agent schedules, lists and cancels its own wake-ups, and wakes up",
+      "status": "pass",
+      "durationMs": 6968.590957,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "tools",
+      "source": "tests/builtins.test.ts:85",
+      "name": "a schedule of an agent at its spend limit records the 402 and moves to its next occurrence instead of retrying",
+      "status": "pass",
+      "durationMs": 4177.714679,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "tools",
+      "source": "tests/code-engine.test.ts:21",
+      "name": "codemode runs on V8 for every tenant, and the limits API refuses an engine",
+      "file": "tests/contract/areas/code-engine.public.contract.test.ts",
+      "status": "accepted-difference",
+      "backend": "workers",
+      "reason": "Workers code mode uses Pi’s QuickJS remote sandbox by CTO decision; Node uses V8.",
+      "reviewedBy": "CTO",
+      "reviewedAt": "2026-11-05"
+    },
+    {
+      "area": "tools",
+      "source": "tests/inline-mcp-servers.test.ts:131",
+      "name": "an upsert's mcpServers are part of its configuration and configHash",
+      "status": "pass",
+      "durationMs": 8208.363741,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "tools",
+      "source": "tests/inline-mcp-servers.test.ts:158",
+      "name": "a stateless run calls its own MCP servers",
+      "status": "pass",
+      "durationMs": 7865.174989,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "tools",
+      "source": "tests/inline-mcp-servers.test.ts:42",
+      "name": "an agent without a definition has MCP servers of its own, called with identity tokens that name it and no definition",
+      "status": "pass",
+      "durationMs": 25042.316276,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "tools",
+      "source": "tests/inline-mcp-servers.test.ts:93",
+      "name": "an agent's or run's own MCP servers take no credentials, and an agent from a definition takes none of its own",
+      "status": "pass",
+      "durationMs": 6276.552693,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "tools",
+      "source": "tests/mcp.test.ts:101",
+      "name": "tool lists refresh when the server says they changed, and edits keep sealed credentials",
+      "status": "pass",
+      "durationMs": 8998.187985,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "tools",
+      "source": "tests/mcp.test.ts:130",
+      "name": "applying a definition lists its servers afresh: a tool added without a list_changed notice reaches the agent at once",
+      "status": "pass",
+      "durationMs": 7472.480867,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "tools",
+      "source": "tests/mcp.test.ts:156",
+      "name": "an agent shows every tool source and what its model gets, connecting to MCP servers only when asked",
+      "status": "pass",
+      "durationMs": 6876.569304,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "tools",
+      "source": "tests/mcp.test.ts:206",
+      "name": "MCP servers must be on public addresses, checked when saved and again when connecting",
+      "status": "pass",
+      "durationMs": 6541.783145,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "tools",
+      "source": "tests/mcp.test.ts:224",
+      "name": "a server that only speaks the older SSE transport is reached through it",
+      "status": "pass",
+      "durationMs": 5734.777703,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "tools",
+      "source": "tests/mcp.test.ts:270",
+      "name": "tool servers get the model's call id, codemode's too, and the actor; their progress reaches the event stream",
+      "status": "pass",
+      "durationMs": 5884.969904,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "tools",
+      "source": "tests/mcp.test.ts:297",
+      "name": "a burst of progress is coalesced per call: the stream gets the first, then the latest of each window, and the last before the result",
+      "status": "pass",
+      "durationMs": 8186.211245,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "tools",
+      "source": "tests/mcp.test.ts:312",
+      "name": "a call that keeps reporting progress outlasts its timeout, which limits only silence",
+      "status": "pass",
+      "durationMs": 7511.507336,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "tools",
+      "source": "tests/mcp.test.ts:61",
+      "name": "an MCP server's tools reach the model and codemode; its credentials are sealed and go only to it",
+      "status": "pass",
+      "durationMs": 13327.155304,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "tools",
+      "source": "tests/tool-calls.test.ts:121",
+      "name": "a tool source that cannot be listed is named in every run's outcome",
+      "status": "pass",
+      "durationMs": 5884.435889,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "tools",
+      "source": "tests/tool-calls.test.ts:136",
+      "name": "an MCP server is listed when its definition is saved: refused credentials are a 400 then, and what it lists or why it could not is in the answer",
+      "status": "pass",
+      "durationMs": 4666.784429,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "tools",
+      "source": "tests/tool-calls.test.ts:160",
+      "name": "a direct tool's large result is cut for the model, as codemode's output is, with the whole of it saved to the workspace",
+      "status": "pass",
+      "durationMs": 6651.047781,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "tools",
+      "source": "tests/tool-calls.test.ts:187",
+      "name": "history and forks keep capped tool details and deduplicated prompts without changing model content",
+      "status": "pass",
+      "durationMs": 7096.244031,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "tools",
+      "source": "tests/tool-calls.test.ts:28",
+      "name": "every tool call carries a stable idempotency key: MCP servers in _meta, OpenAPI operations as an Idempotency-Key header",
+      "status": "pass",
+      "durationMs": 20104.806529,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "tools",
+      "source": "tests/tool-calls.test.ts:55",
+      "name": "calls whose ids repeat across turns (as providers that number calls per response give them) get keys of their own",
+      "status": "pass",
+      "durationMs": 7691.451577,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "tools",
+      "source": "tests/tool-calls.test.ts:67",
+      "name": "a run's outcome lists its tool calls, those from code too, by name and id with how each went, the first 100 only",
+      "status": "pass",
+      "durationMs": 8136.024355,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "tools",
+      "source": "tests/tool-calls.test.ts:96",
+      "name": "an attached tool's own timeoutMs bounds its call; progress extends it; a timeout is an unknown outcome, in the run's outcome too",
+      "status": "pass",
+      "durationMs": 12900.462913,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "tools",
+      "source": "tests/webmcp.test.ts:38",
+      "name": "the console registers the tools with the browser, runs them as the signed-in tenant, and unregisters on sign-out",
+      "status": "pass",
+      "durationMs": 17566.360789,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "tools",
+      "source": "tests/webmcp.test.ts:63",
+      "name": "in the console, the tools authenticate with the session cookie and the console header, not a key",
+      "status": "pass",
+      "durationMs": 7546.095366,
+      "reason": "",
+      "backend": "workers"
+    }
+  ],
+  "shards": [
+    {
+      "index": 1,
+      "total": 6,
+      "durationMs": 154729.78471799998
+    },
+    {
+      "index": 2,
+      "total": 6,
+      "durationMs": 70966.303078
+    },
+    {
+      "index": 3,
+      "total": 6,
+      "durationMs": 73377.361751
+    },
+    {
+      "index": 4,
+      "total": 6,
+      "durationMs": 56419.99019699999
+    },
+    {
+      "index": 5,
+      "total": 6,
+      "durationMs": 52842.509326
+    },
+    {
+      "index": 6,
+      "total": 6,
+      "durationMs": 41404.823569
+    }
+  ]
+}

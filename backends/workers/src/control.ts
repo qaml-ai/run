@@ -15,7 +15,7 @@ import {
   type Sql,
 } from "./postgres.ts";
 import { postLedger, accrueUsage, BillingSpendable } from "./billing-sql.ts";
-import { EndUserCredits, lastCallMin, settleUsage, utcDay } from "./end-user-credits.ts";
+import { EndUserCredits, lastCallMin, lockEndUser, settleUsage, utcDay } from "./end-user-credits.ts";
 import { CreditHolds } from "./credit-holds.ts";
 import { keyServices, type KeyEnv } from "./security-services.ts";
 import { defaultModelFor, validateAgentModel } from "./default-model.ts";
@@ -470,6 +470,9 @@ export async function settleTurn(
     // Admin tenants can run on their own keys without a prepaid account row.
     // Serialize all of their receipts too, without manufacturing a credit balance.
     await sql.query("select pg_advisory_xact_lock(hashtextextended($1,0))", [`turn-receipts:${receipt.tenantId}`]);
+    // End user, then balance, then the rows under them: model settlement (model-attempts.ts) takes the same order.
+    const endUser = receipt.subject && !receipt.modelMetered
+      ? { sql, user: await lockEndUser(sql, receipt.tenantId, receipt.subject) } : undefined;
     if (prepaid) await lockAccount(sql, receipt.tenantId);
     const prior = (
       await sql.query(
@@ -494,7 +497,7 @@ export async function settleTurn(
       await applyUsageRows(sql, [totals]);
       await applyWorkspaceUsage(sql, [{ ...totals, agent: receipt.agentId, timestamp: receipt.startedAt ?? Date.now() }]);
       if (receipt.subject) await settleUsage(sql, { tenant: receipt.tenantId, endUser: receipt.subject, bucket: receipt.bucket ?? "default",
-        day: totals.day, raw: receipt.costMicros, key, metadata: { requestId: receipt.requestId, agent: receipt.agentId } });
+        day: totals.day, raw: receipt.costMicros, key, metadata: { requestId: receipt.requestId, agent: receipt.agentId } }, Date.now(), endUser);
     }
     await sql.query("insert into usage_flushes(id) values($1)", [id]);
     await sql.query(

@@ -17,9 +17,8 @@ import { keyServices } from "./security-services.ts";
 import { admissionHeaders, admissionError, errorFields, errorHeaders } from "./admission.ts";
 import { requestView } from "./request-view.ts";
 import { waitForRequest } from "./request-wait.ts";
-import type { AgentConfiguration } from "./api-contract.ts";
-import { configuration } from "./api-contract.ts";
 import { wordedFileTools } from "./file-tool-selection.ts";
+import type { DefinitionTarget } from "./definitions.ts";
 import { prioritizedTools } from "./tool-priority.ts";
 import { sourceTools, toolSourceViews } from "./tool-sources.ts";
 import { resolveCustomProviders } from "./model-credentials.ts";
@@ -108,9 +107,9 @@ export async function fetchRequestImpl(this: AgentRuntime,
       if ((path === "/configuration" || path === "/configuration-target" || path === "/upsert") && request.method === "POST") {
         let record: RequestRecord;
         if (path === "/configuration-target") {
-          const target = await body(request) as { id: string; config: AgentConfiguration; origin?: string };
-          configuration(target.config, this.env.MODEL);
-          record = await this.configureRequest({ id: target.id, method: 'configure', params: target.config }, true, target.origin);
+          // A definition revision, merged with this agent's configuration when it applies (applyConfigurationRequest).
+          const target = await body(request) as { id: string; definition: DefinitionTarget; origin?: string };
+          record = await this.configureRequest({ id: target.id, method: 'configure', params: { applyDefinition: target.definition } }, true, target.origin);
         } else {
           record = await this.configureRequest(await body(request, (path === "/configuration" ? 17 : 6) * 1024 * 1024), true);
         }

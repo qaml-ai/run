@@ -13,7 +13,7 @@ import { replacementConfiguration } from "./replacement-configuration.ts";
 import { digest, configuration } from "./api-contract.ts";
 import { configurationModelError, validateAgentModel } from "./default-model.ts";
 import { MAX_OPEN_REQUESTS } from "./access-policy.ts";
-import { configurationPatch, definitionUpsert } from "./definitions.ts";
+import { configurationPatch, definitionApplication, definitionUpsert, type DefinitionTarget } from "./definitions.ts";
 import { executionParams } from "./host-execution.ts";
 import { outputInput } from "./output-validation.ts";
 import { runLimitsInput } from "./model-policy.ts";
@@ -77,7 +77,12 @@ export async function acceptConfigurationRequestImpl(this: AgentRuntime,
     if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new BadRequest('Invalid request id');
     if (!replacement && !Object.keys(request.params).length) throw new BadRequest("Give at least one configuration field");
     const conf = await this.config();
-    const params = request.params as Record<string, unknown>;
+    const given = request.params as Record<string, unknown>;
+    // A definition revision (only from the directory's /configuration-target) is checked against the configuration
+    // now, and merged with the configuration it finds when it applies.
+    const params = replacement && given.applyDefinition !== undefined
+      ? await definitionApplication(this.env, conf.tenantId, conf.config, given.applyDefinition as DefinitionTarget) as Record<string, unknown>
+      : given;
     if (params.subject !== undefined && params.subject !== conf.config.subject)
       throw Object.assign(new Error("An agent's subject cannot change"), { status: 409 });
     const patched = replacement ? configuration(params, conf.config.model ?? this.env.MODEL).config : await configurationPatch(this.env, conf.tenantId, conf.config, params);
@@ -97,7 +102,7 @@ export async function acceptConfigurationRequestImpl(this: AgentRuntime,
       if (Object.hasOwn(request.params, 'spendLimit'))
         await setAgentSpendLimit(this.env, conf.tenantId, conf.id, (request.params as Record<string, unknown>).spendLimit);
     }
-    return this.configurationQueue.enqueue({ id, method: 'configure', params }, replacement, origin);
+    return this.configurationQueue.enqueue({ id, method: 'configure', params: given }, replacement, origin);
   }
 
 export async function applyConfigurationRequestImpl(this: AgentRuntime,
@@ -113,12 +118,16 @@ export async function applyConfigurationRequestImpl(this: AgentRuntime,
       });
     if (!request.params || typeof request.params !== "object" || Array.isArray(request.params))
       throw new BadRequest("Expected configuration object");
-    const params = request.params as Record<string, unknown>;
+    const given = request.params as Record<string, unknown>;
     const conf = await this.config();
     const replacement = (await this.ctx.storage.get<RequestRecord>(reqKey(id)))?.replaceConfiguration === true;
-    // Definition applications carry their target; keyed upserts inherit the
-    // definition revision that is applied when they reach the queue's head.
-    const replacementInput = replacement && params.definition !== undefined && origin === undefined
+    // A definition application merges its revision with the configuration as it is now, at the head of the queue, so
+    // configuration queued before it stays. Keyed upserts inherit the definition revision the agent has by then.
+    const applying = replacement && given.applyDefinition !== undefined;
+    const params = applying
+      ? await definitionApplication(this.env, conf.tenantId, conf.config, given.applyDefinition as DefinitionTarget) as Record<string, unknown>
+      : given;
+    const replacementInput = replacement && params.definition !== undefined && !applying
       ? definitionUpsert(params, conf.config) : params;
     const replacementParams = replacement ? replacementConfiguration(conf.config, replacementInput) : params;
     const patched = configuration(replacement ? replacementParams : { ...conf.config, ...params }, conf.config.model ?? this.env.MODEL, replacement ? "create" : "patch").config;
