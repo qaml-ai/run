@@ -56,6 +56,11 @@ Repeat deploys preserve those secrets and set the measured Hyperdrive limit to
 operator reviews database capacity. Never rotate `AGENT_SECRETS_KEY` casually:
 it encrypts stored provider credentials. Never put secrets in `vars`.
 
+The CTO subsequently approved a larger pilot database and a 100-connection
+Hyperdrive origin limit, as measured below. An approved redeploy must set
+`PILOT_ORIGIN_CONNECTION_LIMIT=100` to preserve that setting; the script's
+default remains 16. The larger-database measurement did not redeploy the API.
+
 The platform model secret was created by the CTO on 2026-11-06. Deployments
 now require the real Secrets Store binding. No fallback manifest is used.
 Cloudflare rejects a binding to a nonexistent secret (error 10182).
@@ -450,10 +455,87 @@ capacity hypothesis for the 250-turn load. At 500 concurrent turns, matching the
 peak client throughput. If scaling were linear, that suggests roughly 128
 origin connections and 160–200 database slots for that target. Neither estimate is a measured
 guarantee: regional pool allocation, query cost, locking and database CPU need
-validation. This run did not resize the database or change the origin limit.
-After final cleanup, the CTO started a separate upgrade from PS-5 to PS-80 ARM
-single-node (one vCPU, 8 GB). That upgrade is outside these measurements; no load
-was rerun and no Hyperdrive change was made after it was announced.
+validation. The initial run did not resize the database or change the origin
+limit. After its cleanup, the CTO started a separate upgrade from PS-5 to PS-80
+ARM single-node (one vCPU, 8 GB). The completed upgrade and follow-up are recorded
+below; they do not change the conditions of the initial comparison.
+
+### Bigger database
+
+After the CTO completed the upgrade, the follow-up used PS-80 ARM single-node
+(one vCPU, 8 GB), `max_connections=150` and Hyperdrive origin limit 100 with
+caching disabled. The API stayed on `76f56096`, version
+`e19b0ab2-743b-4f63-80ca-3998c1deda77`; no API redeploy was needed. The runner
+and temporary operator used `18daa03f`. The workload still used 20 accounts,
+the 15-second fake model and simultaneous admission of every turn in a stage.
+
+The runner gained an opt-in stop when actual errors exceed 5%. It aborts
+unfinished and late-accepted turns, records harness cancellations separately,
+and marks stopped-stage timing as censored. All three stages stayed below that
+threshold, so no early stop or harness cancellation occurred. Three focused
+runner tests passed on a Sprite, including the stop boundary, late admission,
+body-read cancellation and durable cleanup. Five-second target connection
+sampling added two observer SQL statements per sample; the recorded intervals
+include observer latency.
+
+| Concurrent turns | Client errors | Successful turns/s | p50 / p95 / p99 |
+| --- | --- | --- | --- |
+| 250 | 0/250 | 8.356 | 26.714 / 28.173 / 28.805 s |
+| 500 | 0/500 | 12.554 | 35.114 / 37.143 / 38.092 s |
+| 1,000 | 5/1,000 (0.5%) | 16.020 | 55.335 / 61.016 / 61.418 s |
+
+The five errors were client timeouts. All 1,750 model attempts settled with no
+pending attempts or credit holds after the stages. The 250- and 500-turn
+profiles were complete, at 216.532 and 213.878 PostgreSQL queries per turn.
+The 1,000-turn profile detected 135 object recreations and is a lower bound.
+Observed client latency and throughput do not depend on those profile counters.
+
+All 1,000 prompts were accepted, so the five timeouts occurred during the
+40-second status-poll requests. They did not leave five unfinished model turns.
+PostgreSQL samples peaked at 102 client backends against the 150-connection
+setting in every stage. Active-backend peaks were 73, 63 and 73; idle-in-transaction
+peaks were 20, 67 and 75. These peaks occurred in different samples and must not
+be added together. Application names can survive Hyperdrive connection reuse,
+so they do not identify which pool owns a backend.
+
+The settled Hyperdrive aggregates for the exact stage windows were:
+
+| Concurrent turns | IAD waiting clients, average / maximum | Maximum IAD pool |
+| --- | --- | --- |
+| 250 | 16.67 / 106 | 20 |
+| 500 | 75.00 / 268 | 20 |
+| 1,000 | 241.50 / 287 | 20 |
+
+The 1,000-turn window averaged zero available IAD slots. These are sampled
+regional aggregates, not a complete per-second series. The global origin limit
+of 100 does not mean 100 connections were available to this regional pool.
+
+The coordinator's PlanetScale export reports primary CPU samples of 15.85%,
+23.02%, 92.65% and 100% for the 05:28, 05:29, 05:30 and 05:31 UTC minute bins.
+The exact stage windows were 05:28:48.676–05:29:18.594 for 250,
+05:29:25.870–05:30:05.699 for 500 and 05:30:20.076–05:31:22.187 for 1,000.
+These one-minute bins overlap adjacent stages, profiling and cleanup; they
+are not exclusive stage averages or instantaneous peaks. The queueing and CPU
+pressure are consistent with the longer 1,000-turn latency, but do not identify
+the cause of each of the five timeouts. The export is retained in
+`measurements/planetscale-cpu-bigger-db.json`; aligned metrics and limitations
+are in `measurements/turn-db-bigger-telemetry.json`.
+
+Durable cleanup ran from 05:31:30.790 to 05:46:12.762 UTC. The independent
+05:46:36.756 check confirmed all 20 benchmark accounts and 1,000 agents removed,
+with zero API tokens, providers, volumes, end users, holds, pending attempts or
+deletion claims. All 1,750 settled accounting attempts remain. A names-only
+check at 05:47:05.932 found no temporary operator helpers and verified the same
+API version and Hyperdrive settings. See `measurements/turn-db-ps80-load.json`,
+`turn-db-ps80-profile.json` and `turn-db-ps80-cleanup.json`.
+
+Cloudflare meters for 05:22:22–05:48:00 UTC, including cleanup and helper
+removal, have an estimated $0.70 linear value at paid overage rates. Rounding
+each measured meter up to its billing unit and adding a $2 reserve gives a
+$15.974 budget scenario, below the $20 follow-up limit. This is an estimate,
+not an invoice or a guaranteed upper bound. Included allowances, shared-account
+allocation and unitemized services still apply. The window recorded zero
+Durable Object CPU-limit, memory-limit or fatal errors and zero Worker errors.
 
 ### Scaling validation and integration gate
 
