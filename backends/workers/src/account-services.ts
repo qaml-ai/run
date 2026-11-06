@@ -61,6 +61,9 @@ export function accountServices(env: AccountEnv, accounts: Accounts, fallbackOri
   const origin = origins.canonical;
   const secret = env.AGENT_SESSION_SECRET || env.API_TOKEN;
   if (!secret || secret.length < 32) throw new Error("Set AGENT_SESSION_SECRET to at least 32 random characters");
+  // The auth service lives with the isolate; tenant limits use this request's
+  // accounts so an operator update is visible across API and agent DOs.
+  const limits = accountRateLimits(env as AccountEnv & import("./postgres.ts").PostgresEnv & Record<string, unknown>, accounts, secret);
   const cached = cache.get(env)?.get(origin);
   if (cached) return cached;
   const openSignup = env.AGENT_OPEN_SIGNUP === "true";
@@ -74,7 +77,6 @@ export function accountServices(env: AccountEnv, accounts: Accounts, fallbackOri
   const passwords = new Passwords(accounts.db);
   const mail = (env.EMAIL || (env.TEST_MODE === "1" && env.MAIL_TEST_URL)) && (env.AGENT_ACCOUNT_EMAIL_FROM || env.EMAIL_FROM)
     ? new AccountMail(env, origin) : undefined;
-  const limits = accountRateLimits(env as AccountEnv & import("./postgres.ts").PostgresEnv & Record<string, unknown>, accounts, secret);
   const client = (c: Context) => limits.client(name => c.req.header(name), undefined).key;
   const test = env.TEST_MODE === "1";
   const journey = createJourney(env, accounts, origin);

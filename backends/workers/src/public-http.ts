@@ -1,7 +1,8 @@
 import openapi from "../../../openapi.json";
 import { publicDocs } from "./public-docs.ts";
+import { publicOrigins } from "./account-origins.ts";
 
-type PublicEnv = { AGENT_PUBLIC_URL?: string; PUBLIC_ASSETS?: Fetcher };
+type PublicEnv = { AGENT_PUBLIC_URL?: string; AGENT_PUBLIC_ALIASES?: string; AGENT_ISSUER?: string; PUBLIC_ASSETS?: Fetcher };
 const docsOrigin = "https://run.camelai.com";
 const browserPages = /^(?:\/$|\/console(?:\/|$)|\/oauth\/authorize$)/;
 
@@ -51,7 +52,10 @@ export async function publicRoutes(request: Request, env: PublicEnv): Promise<Re
       "Access-Control-Allow-Origin": "*",
     });
   }
-  if (read && path === "/") return Response.redirect(`${url.origin}/console`, 302);
+  if (read && path === "/") {
+    const origins = publicOrigins(env, url.origin);
+    return Response.redirect(origins.alias(request.headers) ? `${origins.canonical}/${url.search}` : `${url.origin}/console`, 302);
+  }
   // Unknown non-API URLs carry the same useful 404 even without credentials.
   if (!/^\/(?:v1(?:\/|$)|clients(?:\/|$)|experimental(?:\/|$)|registry(?:\/|$)|console(?:\/|$)|oauth(?:\/|$)|\.well-known(?:\/|$)|mcp$|healthz$|__test(?:\/|$))/.test(path)) return unknownRoute(origin);
 }
