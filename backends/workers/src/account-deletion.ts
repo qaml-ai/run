@@ -150,8 +150,9 @@ export class AccountDeletions {
       await db.query("delete from channel_conversations where channel = $1", [id]);
     }
     await this.options.removeComputers?.(tenant);
-    // Agents are revoked where they run, then purged (their logs, history, files' pins, schedules and threads).
-    for (const id of await ids("select id from agents where tenant = $1 and not revoked")) await this.options.deleteAgent(id, tenant);
+    // Workers revoke before the DO drains. Retry a revoked row whose shutdown
+    // failed before purged_at was written; it still has its durable cleanup intent.
+    for (const id of await ids("select id from agents where tenant = $1 and (not revoked or purged_at is null)")) await this.options.deleteAgent(id, tenant);
     // A purged agent's tombstone no longer names its tenant.
     if ((await db.query("select 1 from agents where tenant = $1 limit 1", [tenant])).rowCount) {
       await this.options.purgeAgents?.();
