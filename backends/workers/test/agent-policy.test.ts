@@ -8,6 +8,7 @@ import type { ToolExecutionApi } from '@earendil-works/pi-durable';
 
 const questions = { valid: { type: 'noul' as const, instructions: 'Is valid?' } };
 const signal = () => new AbortController().signal;
+const toolApi = (callId: string) => ({ callId, getTask: async () => undefined }) as unknown as ToolExecutionApi;
 test('stock decision policy validates before sending and enforces maxUsd', async () => {
   let calls = 0;
   const decider = new Decider({ key: async () => ({ apiKey: 'fixture', platform: false }), provider: { id: 'fixture', async decide() { calls++; return { answers: { valid: { noul: 1 } }, inputTokens: 1, outputTokens: 1 }; } } });
@@ -38,16 +39,41 @@ test('stock delegation configuration validates named targets and depth ceilings'
 });
 function fixture() {
   const values = new Map<string, unknown>();
-  const storage = { get: async (key: string) => values.get(key), put: async (key: string, value: unknown) => { values.set(key, structuredClone(value)); }, delete: async (key: string) => values.delete(key), list: async ({ prefix }: { prefix: string }) => new Map([...values].filter(([key]) => key.startsWith(prefix))), transaction: async (run: (tx: unknown) => unknown) => run(storage) };
+  let transaction = Promise.resolve<unknown>(undefined);
+  const storage = {
+    get: async (key: string) => structuredClone(values.get(key)),
+    put: async (key: string, value: unknown) => { values.set(key, structuredClone(value)); },
+    delete: async (key: string) => values.delete(key),
+    list: async ({ prefix }: { prefix: string }) => new Map([...values].filter(([key]) => key.startsWith(prefix)).map(([key, value]) => [key, structuredClone(value)])),
+    transaction: (run: (tx: unknown) => unknown) => {
+      const pending = transaction.then(() => run(storage));
+      transaction = pending.catch(() => {});
+      return pending;
+    },
+  };
   const events: any[] = [], submitted: any[] = [], tasks: Promise<unknown>[] = [];
+  const sockets = new Map<string, Set<EventTarget>>();
+  const send = (id: string, frame: object) => {
+    for (const socket of sockets.get(id) ?? []) socket.dispatchEvent(Object.assign(new Event('message'), { data: JSON.stringify(frame) }));
+  };
   let run: any = { id: 'parent-run' }, made = 0, parentId = 'parent';
   const host: DelegationHost = {
     storage: storage as unknown as DurableObjectStorage, secret: 'test-only-delegation-secret',
     context: async () => ({ id: parentId, config: { model: 'test/echo', delegate: { instructions: true, maxDepth: 2, maxParallel: 2 }, spendLimit: { usd: 0.1 } }, run }),
     create: async () => ({ id: `child-${++made}` }), target: async () => { throw new Error('unexpected target'); },
-    fetch: async (_id, request) => {
-      if (new URL(request.url).pathname === '/events') return new Response('');
+    fetch: async (id, request) => {
+      if (new URL(request.url).pathname === '/events') {
+        assert.equal(request.headers.get('Upgrade'), 'websocket');
+        const socket = Object.assign(new EventTarget(), {
+          accept() { queueMicrotask(() => send(id, { event: 'ready', data: {} })); },
+          close() { sockets.get(id)?.delete(socket); },
+        });
+        const active = sockets.get(id) ?? new Set<EventTarget>();
+        sockets.set(id, active); active.add(socket);
+        return { status: 101, webSocket: socket } as unknown as Response;
+      }
       if (request.method === 'POST') { submitted.push(await request.json()); return Response.json({ state: 'running' }); }
+      queueMicrotask(() => send(id, { data: { type: 'response', id: new URL(request.url).pathname.split('/').at(-1) } }));
       return Response.json({ state: 'completed', status: 'completed', outcome: { result: { reply: 'helped', usage: { costUsd: 0.01 } } } });
     },
     emit: async event => { events.push(event); }, waitUntil: promise => { tasks.push(promise); },
@@ -55,7 +81,7 @@ function fixture() {
   return { delegation: new Delegation(host), host, events, submitted, tasks, setRun: (value: unknown) => { run = value; }, setId: (value: string) => { parentId = value; }, values };
 }
 test('decision and delegation tools resolve context from the executing conversation', async () => {
-  const api = { callId: 'host-call', conversationId: 42 } as ToolExecutionApi;
+  const api = { ...toolApi('host-call'), conversationId: 42 } as ToolExecutionApi;
   let recorded: unknown;
   const decision = new DecisionRuntime({
     key: async () => ({ apiKey: 'fixture', platform: false }),
@@ -318,7 +344,9 @@ test('cancellation racing an accepted child is reasserted after its submit finis
 test('targeted cancellation includes queued requests of named agents and survives restart', async () => {
   const f = fixture(), cancelled: string[] = [];
   f.host.cancelRequest = async (_agent, request) => { cancelled.push(request); };
-  f.values.set('delegation:queued', { id: 'shared-agent', key: 'queued', requestId: 'owned-request', parentRequestId: 'parent-run', status: 'running', made: false, accepted: true });
+  // Background cancellation persists the request and recovery follows its ending.
+  // Direct delegates are already drained by cancel() before it returns.
+  f.values.set('delegation:queued', { id: 'shared-agent', key: 'queued', requestId: 'owned-request', parentRequestId: 'parent-run', status: 'running', made: false, background: true, accepted: true });
   await f.delegation.cancel('parent-run');
   assert.deepEqual(cancelled, ['owned-request']);
   await new Delegation(f.host).recover();
@@ -344,7 +372,7 @@ test('signed children can message their parent with bounded idempotent request i
   const f = await childFixture(), sent: any[] = [];
   f.host.sendMessage = async (...args) => { sent.push(args); };
   const send = f.delegation.tools({}, [], true).find(tool => tool.name === 'send_message')!;
-  const invoke = (callId: string) => (send.execute as any)({ to: 'parent', text: 'Need a choice' }, { callId }, { abortSignal: signal() });
+  const invoke = (callId: string) => (send.execute as any)({ to: 'parent', text: 'Need a choice' }, toolApi(callId), { abortSignal: signal() });
   await invoke('first'); await invoke('first');
   assert.equal(sent[0][0], 'parent');
   assert.equal(sent[0][1].id, sent[1][1].id);
@@ -359,7 +387,7 @@ test('public metadata cannot forge a parent for agent messages or progress', asy
   f.host.sendMessage = f.host.reportProgress = async () => { sent = true; };
   for (const name of ['send_message', 'report_progress']) {
     const tool = f.delegation.tools({}, [], true).find(tool => tool.name === name)!;
-    await assert.rejects((tool.execute as any)({ to: 'parent', text: 'fake' }, { callId: name }, { abortSignal: signal() }), /no parent/);
+    await assert.rejects((tool.execute as any)({ to: 'parent', text: 'fake' }, toolApi(name), { abortSignal: signal() }), /no parent/);
   }
   assert.equal(sent, false);
 });
@@ -368,15 +396,18 @@ test('a message folded into a running child keeps its original answer for wait_a
   f.values.set('delegation:original', { id: 'child', key: 'original', requestId: 'child-run', parentRequestId: 'parent-run', toolCallId: 'spawn', task: 'work', name: 'worker', depth: 1, createdAt: 1, status: 'completed', background: true, accepted: true, made: true, outcome: { result: { reply: 'the full answer' } } });
   let submitted = '';
   f.host.sendMessage = async (_id, request) => { submitted = request.id; };
-  f.host.fetch = async () => Response.json({ state: 'queued', steer: 'accepted', steeredInto: 'child-run' });
+  const fetch = f.host.fetch;
+  f.host.fetch = async (id, request) => new URL(request.url).pathname.startsWith('/requests/')
+    ? Response.json({ state: new URL(request.url).searchParams.has('wait') ? 'completed' : 'queued', steer: 'accepted', steeredInto: 'child-run' })
+    : fetch(id, request);
   const tools = f.delegation.tools({ instructions: true }, ['agents']);
   const send = tools.find(tool => tool.name === 'send_message')!;
-  const result = await (send.execute as any)({ to: 'worker', text: 'also this' }, { callId: 'send' }, { abortSignal: signal() });
+  const result = await (send.execute as any)({ to: 'worker', text: 'also this' }, toolApi('send'), { abortSignal: signal() });
   assert.match(submitted, /^msg_/);
   assert.match(result.output[0].text, /^\{"sent":true/);
   assert.equal(JSON.parse(result.output[0].text).into, 'its running turn');
   const wait = tools.find(tool => tool.name === 'wait_agent')!;
-  const waited = await (wait.execute as any)({ agents: ['worker'] }, { callId: 'wait' }, { abortSignal: signal() });
+  const waited = await (wait.execute as any)({ agents: ['worker'] }, toolApi('wait'), { abortSignal: signal() });
   assert.equal(JSON.parse(waited.output[0].text).agents[0].text, 'the full answer');
   await Promise.all(f.tasks);
 });
@@ -385,17 +416,17 @@ test('progress is idempotent, shown once in tool results, and never starts a tur
   parent.values.set('delegation:live', { id: 'child', key: 'live', requestId: 'child-run', parentRequestId: 'parent-run', toolCallId: 'spawn', task: 'go', name: 'helper', depth: 1, createdAt: 1, status: 'running', made: true, background: true, accepted: true });
   child.host.reportProgress = async (id, report) => { assert.equal(id, 'parent'); await parent.delegation.recordProgress(report); };
   const progress = child.delegation.tools({}, [], true).find(tool => tool.name === 'report_progress')!;
-  await (progress.execute as any)({ text: 'Read the first source' }, { callId: 'progress' }, { abortSignal: signal() });
-  await (progress.execute as any)({ text: 'Read the first source' }, { callId: 'progress' }, { abortSignal: signal() });
+  await (progress.execute as any)({ text: 'Read the first source' }, toolApi('progress'), { abortSignal: signal() });
+  await (progress.execute as any)({ text: 'Read the first source' }, toolApi('progress'), { abortSignal: signal() });
   assert.equal(parent.events.length, 1);
   assert.equal((parent.events[0] as any).event.type, 'subagent_progress');
   assert.equal(parent.submitted.length, 0);
   const list = parent.delegation.tools({ instructions: true }, ['agents']).find(tool => tool.name === 'list_agents')!;
-  const first = await (list.execute as any)({}, { callId: 'list' }, { abortSignal: signal() });
+  const first = await (list.execute as any)({}, toolApi('list'), { abortSignal: signal() });
   assert.deepEqual(JSON.parse(first.output[0].text).agents.map((entry: any) => [entry.name, entry.status, entry.progress]), [['helper', 'running', 'Read the first source']]);
   assert.equal(first.output[1].agentUpdates, true);
   assert.match(first.output[1].text, /Read the first source/);
-  const second = await (list.execute as any)({}, { callId: 'list2' }, { abortSignal: signal() });
+  const second = await (list.execute as any)({}, toolApi('list2'), { abortSignal: signal() });
   assert.equal(second.output.length, 1);
   await assert.rejects(parent.delegation.recordProgress({ agentId: 'stranger', requestId: 'child-run', callId: 'fake', text: 'fake' }), /Unknown sub-agent/);
 });
@@ -405,9 +436,9 @@ test('wait_agent takes a background ending exactly once and excludes direct dele
   f.values.set('delegation:background', { ...base, key: 'background', background: true });
   f.values.set('delegation:direct', { ...base, id: 'direct', key: 'direct', background: false });
   const wait = f.delegation.tools({ instructions: true }, ['agents']).find(tool => tool.name === 'wait_agent')!;
-  const first = await (wait.execute as any)({}, { callId: 'wait' }, { abortSignal: signal() });
+  const first = await (wait.execute as any)({}, toolApi('wait'), { abortSignal: signal() });
   assert.deepEqual(JSON.parse(first.output[0].text).agents.map((entry: any) => [entry.name, entry.text]), [['helper', 'done']]);
   assert.equal((f.values.get('delegation:background') as any).landedBy, 'wait');
-  const second = await (wait.execute as any)({}, { callId: 'again' }, { abortSignal: signal() });
+  const second = await (wait.execute as any)({}, toolApi('again'), { abortSignal: signal() });
   assert.deepEqual(JSON.parse(second.output[0].text).agents, []);
 });

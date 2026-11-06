@@ -4,6 +4,7 @@ import { connectionInput } from '../src/computers/service.ts';
 import { microvmApi, microvmDriver, testEndpoint, boundedResponse } from '../src/computers/microvm.ts';
 import { remoteDriver } from '../src/computers/remote.ts';
 import { observe, microvmCost } from '../src/computers/microvm-policy.ts';
+import { PROVIDERS, type Provider } from '../src/computers/policy.ts';
 
 const fakeEnv = { AWS_ACCESS_KEY_ID: 'test-access', AWS_SECRET_ACCESS_KEY: 'test-secret', AWS_SESSION_TOKEN: 'test-session', AWS_REGION: 'us-west-2', MICROVM_IMAGE: 'fixture-image', TEST_MODE: '1', TEST_MICROVM_ENDPOINT: 'http://127.0.0.1:9999' };
 test('computer connection credentials, provider limits and managed admission match the API contract', () => {
@@ -15,10 +16,17 @@ test('computer connection credentials, provider limits and managed admission mat
   }
   assert.throws(() => connectionInput({ agent: 'agent', provider: 'lambda' }, false), /not available/);
   assert.throws(() => connectionInput({ agent: 'agent', provider: 'lambda', credentials: { apiKey: 'no' } }, true));
-  assert.equal(connectionInput({ agent: 'agent', provider: 'modal', credentials: { tokenId: 'id', tokenSecret: 'fixture' } }, false).managed, false);
   for (const url of ['http://example.com', 'https://localhost', 'https://127.0.0.1', 'https://example.com/path', 'https://user@example.com']) assert.throws(() => connectionInput({ agent: 'agent', provider: 'tunnel', credentials: { apiKey: 'fixture', url } }, false));
   assert.equal(connectionInput({ agent: 'agent', provider: 'lambda', subagents: false }, true).subagents, false);
   assert.throws(() => connectionInput({ agent: 'agent', provider: 'sprites', credentials: { apiKey: 'fixture' }, leaseSeconds: 901 }, false));
+});
+test('Workers rejects the dropped Modal provider before contacting a provider gateway', () => {
+  assert.equal(PROVIDERS.includes('modal' as Provider), false);
+  assert.throws(() => connectionInput({ agent: 'agent', provider: 'modal', credentials: { tokenId: 'id', tokenSecret: 'fixture' } }, false), /Invalid computer connection/);
+  let contacted = false;
+  const env = { COMPUTER_PROVIDER_GATEWAY: { async fetch() { contacted = true; return Response.json({}); } } };
+  assert.throws(() => remoteDriver(env, 'tenant', 'agent', 'modal' as Provider, { tokenId: 'id', tokenSecret: 'fixture' }), /Unsupported computer provider/);
+  assert.equal(contacted, false);
 });
 test('Lambda API signs every operation for lambda, bounds replies, and rejects unsafe fake endpoints', async () => {
   const requests: Request[] = [];

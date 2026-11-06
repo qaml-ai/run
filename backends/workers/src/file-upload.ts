@@ -4,6 +4,7 @@ import { declaredType, sniffContentType } from "./file-policy.ts";
 import { VOLUME_LIMITS } from "./volume-policy.ts";
 import type { FileBindings } from "./files.ts";
 import { storageFull, storageQuota } from "./storage-quota.ts";
+import { recordNativeFile } from "./tenant-storage.ts";
 /** Upload with at most one 5 MiB part buffered, including requests without Content-Length. */
 export async function uploadFile(
   env: FileBindings,
@@ -67,6 +68,7 @@ export async function uploadFile(
       await env.BUCKET.put(key, part.slice(0, filled), {
         httpMetadata: { contentType: type },
       });
+    await recordNativeFile(env, tenant, key, size);
     return await v.commitUpload(
       path,
       key,

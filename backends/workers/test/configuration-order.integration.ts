@@ -3,6 +3,26 @@ import test from 'node:test';
 import { createWorkersFixture } from '../../../tests/contract/fixtures/workers.ts';
 import { lastUser, until } from '../../../tests/contract/http.ts';
 
+test('configuration patches remove key scopes while creation rejects null', { timeout: 90_000 }, async t => {
+  const fixture = await createWorkersFixture(t);
+  const rejected = await fixture.call('/v1/agents', { body: { keyScope: null } });
+  assert.equal(rejected.status, 400, rejected.text);
+  const created = await fixture.call('/v1/agents', { body: { keyScope: 'org-1' } });
+  assert.equal(created.status, 201, created.text);
+  const path = `/v1/agents/${created.json.id}`;
+  assert.equal((await fixture.call(path)).json.keyScope, 'org-1');
+  const accepted = await fixture.call(`${path}/configuration`, { method: 'PATCH', body: { keyScope: null } });
+  assert.equal(accepted.status, 202, accepted.text);
+  const completed = await until(async () => {
+    const response = await fixture.call(`${path}/requests/${accepted.json.id}`);
+    assert.equal(response.status, 200, response.text);
+    return response.json.state === 'completed' && response.json;
+  }, 'key scope removal');
+  assert.equal(completed.outcome.error, undefined);
+  assert.equal(completed.outcome.result.configured, true);
+  assert.equal((await fixture.call(path)).json.keyScope, null);
+});
+
 test('prompts submitted between upserts use their preceding configuration', { timeout: 90_000 }, async t => {
   const gate = Promise.withResolvers<void>();
   t.after(() => gate.resolve());

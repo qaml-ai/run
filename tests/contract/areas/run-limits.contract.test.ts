@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 
 import {createHash} from "node:crypto";
 
-import {OPERATOR, toolCall, until} from "../support.ts";
+import {OPERATOR, listen, toolCall, until} from "../support.ts";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 
@@ -115,11 +115,38 @@ contractTest("runs", "tests/run-limits.test.ts:94", "a definition's run limits r
 });
 
 contractTest("runs", "tests/run-limits.test.ts:111", "a run stops at its time limit before its next model request", async t => {
-  // Its first step alone (the tool call) outlasts the 1 s limit, however fast the runner: the check before the second
-  // model request stops it, so there is exactly one response. The clock starts when the run begins, agent start included.
-  const r = await runtime(t, (_body, index) => ({ ...toolCall("codemode", { code: "const start = Date.now(); while (Date.now() - start < 1500) {} return 1" }, `call_${index}`), usage: { prompt_tokens: 10, completion_tokens: 1 } }));
-  const { id } = (await r.call("/v1/agents", { body: { runLimits: { maxSeconds: 1 } } })).json;
-  const run = await r.prompt(id, "go");
+  // Durable QuickJS advances its virtual clock only when a host result arrives; Date.now cannot time a busy loop.
+  // Hold the first tool at an I/O barrier, cross the run's 1 s limit, and only then let it return.
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
+  const api = await listen(t, async (req, res) => {
+    for await (const _chunk of req) { /* consume the request */ }
+    if (req.url === "/openapi.json") {
+      res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({
+        openapi: "3.0.3", info: { title: "Clock barrier", version: "1" },
+        servers: [{ url: `http://${req.headers.host}` }],
+        paths: { "/wait": { post: { operationId: "wait", responses: { 200: { description: "released" } } } } },
+      }));
+      return;
+    }
+    entered.resolve();
+    await release.promise;
+    res.writeHead(200, { "Content-Type": "application/json" }).end("1");
+  });
+  const r = await runtime(t, (_body, index) => ({ ...toolCall("codemode", { code: "return await tools.clock__wait({})" }, `call_${index}`), usage: { prompt_tokens: 10, completion_tokens: 1 } }), {
+    AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32",
+  });
+  const definition = await r.call("/v1/definitions", { body: { name: "Clock barrier", openApi: [{ name: "clock", spec: `${api}/openapi.json` }] } });
+  assert.equal(definition.status, 201, definition.text);
+  const created = await r.call("/v1/agents", { body: { runLimits: { maxSeconds: 1 }, definition: definition.json.id } });
+  assert.equal(created.status, 201, created.text);
+  const { id } = created.json;
+  const pending = r.prompt(id, "go");
+  await Promise.race([entered.promise, pending.then(() => { throw new Error("The run ended before its first tool reached the barrier"); })]);
+  await r.advanceTime(1_000);
+  release.resolve();
+  const run = await pending;
   assert.equal(run.outcome.result.stopped, "turn_limit");
   assert.equal(run.outcome.result.error, "This run stopped at its time limit of 1 second. Send another message to continue");
   assert.equal(r.model.bodies.length, 1, "no model request after the limit passed");

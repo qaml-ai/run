@@ -139,7 +139,8 @@ test(
       tools: {},
       ...project.mount("/project"),
     });
-    const agentPath = `${fixture.url}/v1/agents/${builder.session.id}`;
+    // Agent credentials use the /clients surface; /v1/agents requires an account key.
+    const agentPath = `${fixture.url}/clients/${builder.session.id}`;
     const agentCall = (tail: string, init: RequestInit = {}) =>
       fetch(agentPath + tail, {
         ...init,

@@ -1,5 +1,27 @@
 import { fileToolsFor, type FileToolDefinition } from './file-tool-policy.ts';
 
+/** Expose computer tools only when their native binding or attachment is configured. */
+export function selectAgentTools<T extends FileToolDefinition>(
+  tools: T[],
+  fileNames: ReadonlySet<string>,
+  config: { codeMode?: boolean; fileTools?: boolean; builtins?: readonly string[] },
+  computers: ReadonlySet<string>,
+  nativeBindings: { COMPUTER_CONTAINERS?: unknown; COMPUTER_SANDBOXES?: unknown },
+): { tools: T[]; modelTools: T[] } {
+  const nativeComputer = config.codeMode !== false &&
+    !!(nativeBindings.COMPUTER_CONTAINERS || nativeBindings.COMPUTER_SANDBOXES);
+  const disabled = new Set([
+    'host_execute', 'exec',
+    ...(!nativeComputer ? ['computer'] : []),
+    ...(config.codeMode === false ? ['codemode'] : []),
+    ...(!config.builtins?.includes('ask_user') ? ['ask_user'] : []),
+    ...(!config.builtins?.includes('ask_human') ? ['ask_human'] : []),
+  ]);
+  const available = tools.filter(tool => !disabled.has(tool.name) &&
+    (!/^(computer_|browser_)/.test(tool.name) || computers.has(tool.name)));
+  return selectFileTools(available, fileNames, config);
+}
+
 /** Apply the source file-tool policy through Pi's separate enabled and model filters. */
 export function selectFileTools<T extends FileToolDefinition>(
   tools: T[],

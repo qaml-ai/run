@@ -78,8 +78,8 @@ No temporary cloud resources remain.
   regular-expression grep remain absent. Regex grep returns an explicit 501.
   Snapshot metadata is bounded at 16 MiB; forks copy independently owned bytes.
 - Computers: managed Lambda creation is test-only until metering, holds and
-  settlement join the money track. Native Modal requires its HTTP/2 client;
-  Workers supports it only through a configured provider gateway. Four original
+  settlement join the money track. Modal has been dropped from Workers by CTO
+  decision. Four original
   cases still stop at missing agent request/tool-result features. No claim is
   made about real AWS or provider execution.
 - Media: all four original image API/SDK cases and the standalone transcription
@@ -103,8 +103,8 @@ No temporary cloud resources remain.
   external infrastructure concerns.
 
 These are migration gates, not requests to enable production. The next design
-decisions are the managed-computer metering/recovery integration, a Modal
-gateway versus a different provider, the `/computer` mount bridge, and the alert
+decisions are the managed-computer metering/recovery integration, the
+`/computer` mount bridge, and the alert
 query/delivery service. See `src/alarm-policy.ts` for exact source thresholds and
 gaps.
 

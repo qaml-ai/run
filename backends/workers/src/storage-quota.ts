@@ -9,18 +9,10 @@ export async function storageQuota(env: FileBindings, tenant: string) {
   const { accounts } = await keyServices(env);
   const limit = await accounts.billing.storageLimit(tenant);
   if (limit === undefined) return undefined;
-  let used = await new StorageUsage(database(env)).tenantUsed(tenant);
+  const used = await new StorageUsage(database(env)).tenantUsed(tenant)
+    + await env.TENANTS.getByName(tenant).nativeStorageUsed(tenant);
   // Files retain replaced contents until volume GC, just as source chunks retain
   // their bytes until collection. Include those objects as well as the live tree.
-  let cursor: string | undefined;
-  do {
-    const page = await env.BUCKET.list({
-      prefix: `files/${encodeURIComponent(tenant)}/`,
-      ...(cursor ? { cursor } : {}),
-    });
-    used += page.objects.reduce((sum, object) => sum + object.size, 0);
-    cursor = page.truncated ? page.cursor : undefined;
-  } while (cursor);
   return { limit, used };
 }
 

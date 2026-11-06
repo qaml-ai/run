@@ -27,6 +27,8 @@ export async function configurationPatch(env: ControlEnv, tenant: string, config
     checked[field] = await prepareSources(env,tenant,undefined,field,fields[field],config[field] as RemoteSource[] | undefined);
   }
   const updated=configurationOverrides(config,checked);
+  // A patch removes the scope before the resulting configuration is provisioned.
+  if (fields.keyScope === null) delete updated.keyScope;
   const duplicate=updated.mcpServers?.find(source=>updated.openApi?.some(other=>other.name===source.name));
   if(duplicate) throw new ApiError(400,`${duplicate.name} names both an MCP server and an OpenAPI source`);
   return updated;

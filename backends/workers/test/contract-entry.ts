@@ -1,6 +1,7 @@
 /** Local-only fixture adapter. It is never referenced by a deployment config. */
 import application from "../src/index.ts";
 import { CamelAgent as RuntimeAgent } from "../src/agent.ts";
+import { ARM_AGENT } from "../src/agent-internals.ts";
 import type { Env } from "../src/agent.ts";
 import type { DelegatedChild } from "../src/delegation.ts";
 import { databaseUnavailable, withSql } from "../src/postgres.ts";
@@ -123,7 +124,7 @@ export class CamelAgent extends RuntimeAgent {
           charged: undefined,
         });
       });
-      await (this as unknown as { arm(at: number): Promise<void> }).arm(Date.now() + 300);
+      await this[ARM_AGENT](Date.now() + 300);
       return Response.json({ updated: children.size });
     }
     if (this.env.TEST_MODE === "1" && new URL(request.url).pathname === "/__test/contract-schedule-due" && request.method === "POST") {
@@ -133,9 +134,9 @@ export class CamelAgent extends RuntimeAgent {
       const schedule = await this.ctx.storage.get<Record<string, unknown>>(key);
       if (!schedule) return Response.json({ error: "Unknown schedule" }, { status: 404 });
       await this.ctx.storage.put(key, { ...schedule, dueAt, ...(history === undefined ? {} : { history }) });
-      // arm is intentionally private to the runtime. Only this non-deployed test
-      // subclass prepares due times; it must not duplicate the alarm implementation.
-      await (this as unknown as { arm(): Promise<void> }).arm();
+      // The subclass capability prepares due times through the same runtime alarm
+      // implementation without exposing a string-addressable RPC method.
+      await this[ARM_AGENT]();
       return Response.json({ updated: true });
     }
     return super.fetch(request);

@@ -513,7 +513,7 @@ const worker = {
         }
         if (requestId !== undefined && (typeof requestId !== "string" || !requestId.length))
           throw new BadRequest("requestId must be a nonempty string");
-        const patched = configuration({ ...entry.config, ...params }, entry.config.model ?? env.MODEL).config;
+        const patched = configuration({ ...entry.config, ...params }, entry.config.model ?? env.MODEL, "patch").config;
         if (Object.hasOwn(params, "model") || Object.hasOwn(params, "keyScope")) {
           try {
             const modelError = await configurationModelError(env, entry.tenantId, patched);

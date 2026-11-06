@@ -1,4 +1,4 @@
-### Workers event transport
+### Event transport negotiation
 
 The TypeScript and Python SDKs negotiate the agent event transport. A server can offer a WebSocket; a server that answers with an SSE content type explicitly selects SSE. The current Node runtime continues to use SSE. WebSocket failures reconnect without silently downgrading to another transport.
 

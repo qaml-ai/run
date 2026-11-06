@@ -65,7 +65,12 @@ export async function fakeModel(t: T, respond: (body: any, index: number) => obj
   const headers: Record<string, string | string[] | undefined>[] = [];
   const url = await listen(t, async (req, res) => {
     let text = "";
-    for await (const chunk of req) text += chunk;
+    try { for await (const chunk of req) text += chunk; }
+    catch (error) {
+      // Cancelling a model call can close its upload before the body is complete.
+      if (req.destroyed && !req.complete && (error as NodeJS.ErrnoException).code === "ECONNRESET") return;
+      throw error;
+    }
     const body = JSON.parse(text);
     bodies.push(body);
     keys.push(req.headers.authorization ?? "");
@@ -122,7 +127,13 @@ export async function runtime(t: T, respond: (body: any, index: number) => objec
     output += chunk;
     const lines = output.split("\n");
     output = lines.pop()!;
-    for (const line of lines) { if (!logs.length) ready.resolve(JSON.parse(line).address.port); logs.push(line); }
+    for (const line of lines) {
+      logs.push(line);
+      // A failed listen drains before it exits, so its first log can be
+      // drain_started. Only the listening event is a readiness barrier.
+      const message = JSON.parse(line);
+      if (message.type === "listening") ready.resolve(message.address.port);
+    }
   });
   child.on("exit", code => ready.reject(new Error(`Server exited: ${code}`)));
   const base = `http://127.0.0.1:${await ready.promise}`;

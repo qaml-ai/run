@@ -17,12 +17,12 @@ const userMessages = (body: any) => body.messages.filter((message: any) => messa
 
 const session = (runId: string) => `client_${runId.slice("run_".length)}`;
 
-async function frames(base: string, runId: string, options: { lastEventId?: number; stop?: (frame: { id: number; data: any }) => boolean } = {}) {
+async function frames(base: string, runId: string, options: { lastEventId?: number; ready?: () => void; stop?: (frame: { id: number; data: any }) => boolean } = {}) {
   const controller = new AbortController();
   const response = await openEventStream(fetch, `${base}/v1/runs/${runId}/events`, { headers: { Authorization: `Bearer ${OPERATOR}`, ...(options.lastEventId ? { "Last-Event-ID": String(options.lastEventId) } : {}) }, signal: controller.signal });
   assert.equal(response.status, 200, await (response.ok ? "" : response.text()));
   const got: { id: number; data: any }[] = [];
-  let buffer = "";
+  let buffer = "", protocolClosed = false;
   try {
     for await (const chunk of response.body!.pipeThrough(new TextDecoderStream())) {
       buffer += chunk;
@@ -30,13 +30,21 @@ async function frames(base: string, runId: string, options: { lastEventId?: numb
         const lines = buffer.slice(0, end).split("\n");
         const id = Number(lines.find(line => line.startsWith("id:"))?.slice(3));
         const text = lines.filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
-        if (!text || lines.includes("event: ready") || !Number.isSafeInteger(id)) continue;
+        if (lines.includes("event: ready")) { options.ready?.(); continue; }
+        if (lines.includes("event: closed")) {
+          assert.equal(got.at(-1)?.data.type, "response", "the terminal response precedes the protocol close");
+          protocolClosed = true;
+          continue;
+        }
+        if (!text || !Number.isSafeInteger(id)) continue;
         const frame = { id, data: JSON.parse(text) };
         got.push(frame);
         if (options.stop?.(frame)) { controller.abort(); return got; }
       }
     }
   } catch (error) { if (!controller.signal.aborted) throw error; }
+  if (response.headers.get("X-Agent-Transport") === "websocket")
+    assert.ok(protocolClosed, "a run's live or replay stream closes at the protocol layer");
   return got;
 }
 
@@ -193,12 +201,25 @@ contractTest("runs", "tests/runs.test.ts:161", "runs count against busy agents a
 });
 
 contractTest("runs", "tests/runs.test.ts:195", "a run's event stream follows it to its end, and picks up after Last-Event-ID without a gap or a repeat", async (t) => {
-  const r = await runtime(t, (_body, index) => index === 0 ? { ...toolCall("codemode", { code: "return 6 * 7" }), delayMs: 300 } : { role: "assistant", content: "it is 42", delayMs: 800 });
+  const firstReply = Promise.withResolvers<void>(), finalReply = Promise.withResolvers<void>();
+  t.after(() => { firstReply.resolve(); finalReply.resolve(); });
+  const r = await runtime(t, (_body, index) => index === 0
+    ? { ...toolCall("codemode", { code: "return 6 * 7" }), wait: firstReply.promise }
+    : { role: "assistant", content: "it is 42", wait: finalReply.promise });
   const created = (await r.call("/v1/runs", { body: { input: "compute", codeMode: true } })).json;
-  // Read until the first tool call ends, then drop the connection.
-  const head = await frames(r.base, created.id, { stop: frame => frame.data.event?.type === "tool_execution_end" });
+  // Observe each connection's ready frame before letting the provider advance it.
+  const firstReady = Promise.withResolvers<void>();
+  const readingHead = frames(r.base, created.id, { ready: firstReady.resolve, stop: frame => frame.data.event?.type === "tool_execution_end" });
+  await Promise.race([firstReady.promise, readingHead.then(() => { throw new Error("The first stream ended before its ready frame"); })]);
+  firstReply.resolve();
+  const head = await readingHead;
   assert.ok(head.length > 0);
-  const rest = await frames(r.base, created.id, { lastEventId: head.at(-1)!.id });
+  assert.equal(head.at(-1)!.data.event?.type, "tool_execution_end");
+  const resumedReady = Promise.withResolvers<void>();
+  const readingRest = frames(r.base, created.id, { lastEventId: head.at(-1)!.id, ready: resumedReady.resolve });
+  await Promise.race([resumedReady.promise, readingRest.then(() => { throw new Error("The resumed stream ended before its ready frame"); })]);
+  finalReply.resolve();
+  const rest = await readingRest;
   const ids = [...head, ...rest].map(frame => frame.id).filter(id => id > (head[0].data.type === "snapshot" ? head[0].id : 0));
   assert.deepEqual(ids, [...new Set(ids)].sort((a, b) => a - b), "no repeats, in order");
   for (let i = 1; i < rest.length; i++) assert.equal(rest[i].id, rest[i - 1].id + 1, "no gap");

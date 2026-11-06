@@ -8,6 +8,7 @@ import { startFixture } from "./fixture.ts";
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 export async function compatibilityRuntime(
   t: any,
   respond: any,
@@ -18,6 +19,10 @@ export async function compatibilityRuntime(
   const root = await mkdtemp(join(tmpdir(), 'camelrun-proto-sdk-files-'));
   t.after(() => rm(root, {recursive:true,force:true}));
   const model = await fakeModel(t, respond);
+  // Match tests/runtime-server.ts: a default fixture can use its fake model.
+  // Explicit configurations retain missing-key and provider-policy coverage.
+  const defaultTenants = { tenants: Object.fromEntries([["alice", OPERATOR], ["bob", OTHER_OPERATOR]].map(([id, token]) =>
+    [id, { tokenSha256: createHash("sha256").update(token).digest("hex"), apiKeys: { openrouter: "fixture-model-key" } }])) };
   const tenants = [
     { id: "alice", token: OPERATOR },
     { id: "bob", token: OTHER_OPERATOR },
@@ -37,7 +42,7 @@ export async function compatibilityRuntime(
     tenants,
     vars: {
       ...env,
-      ...(tenantsFile ? { AGENT_TENANTS_JSON: JSON.stringify(tenantsFile) } : {}),
+      ...(tenantsFile ? { AGENT_TENANTS_JSON: JSON.stringify(tenantsFile) } : env.AGENT_TENANTS_JSON ? {} : { AGENT_TENANTS_JSON: JSON.stringify(defaultTenants) }),
       ...(tenantsFile ? { TEST_DECISION_KEYS: JSON.stringify({ tenants: Object.fromEntries(Object.entries(tenantsFile.tenants ?? {}).map(([id, value]: [string, any]) => [id, { apiKeys: value.apiKeys, platformKeys: value.platformKeys }])), platformKeys: tenantsFile.platformKeys }) } : {}),
       MODEL: `${env.AGENT_PROVIDER ?? "openrouter"}/${env.AGENT_MODEL ?? "openai/gpt-4o-mini"}`,
       PUBLIC_BASE_URL: env.AGENT_PUBLIC_URL ?? 'https://agents.example.test',

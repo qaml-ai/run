@@ -19,6 +19,14 @@ test("bucket and keyScope names use the source grammars", () => {
   for (const keyScope of ["-leading", "has spaces", "x".repeat(101), "org:1", null]) assert.throws(() => configuration({ keyScope }, "test/model"), /keyScope must be/);
 });
 
+test("configuration patches can remove a key scope without accepting null on creation", () => {
+  // src/node.ts checks creation with checkScope; src/session-config.ts permits null on update.
+  assert.throws(() => configuration({ keyScope: null }, "test/model"), /keyScope must be/);
+  const scoped = configuration({ keyScope: "org-abc.123" }, "test/model").config;
+  assert.equal(configuration({ ...scoped, keyScope: null }, "test/model", "patch").config.keyScope, undefined);
+  assert.equal(configuration(scoped, "test/model", "patch").config.keyScope, scoped.keyScope);
+});
+
 test("spendLimit accepts source dollar objects and null, and rejects numeric or unbounded values", () => {
   assert.deepEqual(configuration({ spendLimit: { usd: 1.5 } }, "test/model").config.spendLimit, { usd: 1.5 });
   assert.deepEqual(configuration({ spendLimit: { usd: 0 } }, "test/model").config.spendLimit, { usd: 0 });

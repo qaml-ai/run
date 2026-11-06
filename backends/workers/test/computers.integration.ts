@@ -1,13 +1,31 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import test from "node:test";
 import { promisify } from "node:util";
 import { startFixture } from "./fixture.ts";
 
+async function dockerUnavailable() {
+  if (existsSync("/.sprite")) {
+    return "Native Docker computer tests are unsupported on Sprites: the host restricts required kernel modules and OCI namespace operations.";
+  }
+  for (const args of [["info"], ["buildx", "version"]]) {
+    try {
+      await promisify(execFile)("docker", args, { timeout: 10_000 });
+    } catch {
+      return `Native Docker computer tests require a running local Docker daemon with Buildx (docker ${args.join(" ")} failed).`;
+    }
+  }
+}
+
+const unavailable = await dockerUnavailable();
+const requireDocker = process.env.WORKERS_REQUIRE_DOCKER === "1";
+
 test(
   "optional native Container and Sandbox SDK providers in local Docker",
-  { timeout: 240_000 },
+  { timeout: 240_000, skip: requireDocker ? false : unavailable },
   async (t) => {
+    assert.equal(unavailable, undefined, unavailable);
     const fixture = await startFixture({ config: "wrangler.computers.test.jsonc" });
     const { worker: server, token } = fixture;
     t.after(async () => {
@@ -50,7 +68,7 @@ test(
         body: JSON.stringify({ model: "test/echo" }),
       });
       assert.equal(create.status, 201, await create.clone().text());
-      const { id } = (await create.json()) as { id: string };
+      const { id, token: agentToken } = (await create.json()) as { id: string; token: string };
       const call = async (
         provider: string,
         request: object,
@@ -68,8 +86,6 @@ test(
             signal: AbortSignal.timeout(60000),
           },
         );
-        if (response.status !== 200)
-          await new Promise((resolve) => setTimeout(resolve, 250));
         assert.equal(
           response.status,
           expectedStatus,
@@ -103,7 +119,7 @@ test(
           const submit = await fetch(`${server.url}/clients/${id}/requests`, {
             method: "POST",
             headers: {
-              authorization: `Bearer ${token}`,
+              authorization: `Bearer ${agentToken}`,
               "content-type": "application/json",
             },
             body: JSON.stringify({
@@ -117,10 +133,10 @@ test(
           assert.equal(submit.status, 202, await submit.text());
           const settled = await fetch(
             `${server.url}/clients/${id}/requests/${requestId}?wait=20`,
-            { headers: { authorization: `Bearer ${token}` } },
+            { headers: { authorization: `Bearer ${agentToken}` } },
           );
           const record = (await settled.json()) as any;
-          assert.equal(record.status, "completed", JSON.stringify(record));
+          assert.equal(record.state, "completed", JSON.stringify(record));
           assert.match(record.outcome.result.reply, /nested computer/);
           await call(provider, {
             op: "write",

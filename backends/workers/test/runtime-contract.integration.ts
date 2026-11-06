@@ -132,7 +132,8 @@ test(
     assert.equal(reset.body.keptMessages, 2);
     assert.ok(reset.body.after.bytes < reset.body.before.bytes);
     assert.equal((await call(base + "/history?limit=1")).body.total, 1302);
-    const client = await agents.get(id);
+    // Keyless agents retain the credentials returned by creation (src/client-sessions/configuration.ts).
+    const client = await agents.agent(created.body);
     await client.run("after reset", { timeoutMs: 15000 });
     const context = JSON.stringify(calls.at(-1).messages);
     assert.ok(context.includes("Keep this summary"));
@@ -142,7 +143,7 @@ test(
     await client.run("after compact", { timeoutMs: 15000 });
     assert.equal((await call(base + "/history?limit=1")).body.total, 1306);
     const forbidden = await call(
-      base + "/requests",
+      `/clients/${id}/requests`,
       {
         id: "denied-config",
         method: "configure",
@@ -152,7 +153,7 @@ test(
     );
     assert.equal(forbidden.response.status, 403);
     const safe = await call(
-      base + "/requests",
+      `/clients/${id}/requests`,
       {
         id: "safe-config",
         method: "configure",

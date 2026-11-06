@@ -4,6 +4,7 @@ import { createConnection, createServer, type Server, type Socket } from "node:n
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
+import { observeWorkerExit } from "./local-worker-exit.ts";
 
 const directory = fileURLToPath(new URL("../", import.meta.url));
 const token = "local-integration-only-token-with-at-least-32-characters";
@@ -100,29 +101,33 @@ export class LocalWorker {
       });
       socket.pipe(upstream).pipe(socket);
     });
+    let output = "";
     const save = (data: Buffer) => {
-      this.output = (this.output + data.toString()).slice(-16_000);
+      output = (output + data.toString()).slice(-16_000);
+      this.output = output;
     };
     child.stdout!.on("data", save);
     child.stderr!.on("data", save);
+    const exited = observeWorkerExit(child, () => output);
     await new Promise<void>((resolve, reject) => {
+      let settled = false;
       const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
         listener.off("error", failed);
-        child.off("exit", exited);
         this.cancelListen = undefined;
         if (error) reject(error); else resolve();
       };
       const failed = (error: Error) => finish(error);
-      const exited = () => finish(new Error(`workerd exited: ${this.output}`));
       this.cancelListen = () => finish(new Error("Local Worker startup was cancelled"));
       listener.once("error", failed);
-      child.once("exit", exited);
+      void exited.then(finish);
       listener.listen(this.port, "127.0.0.1", () => finish());
     });
     for (let attempt = 0; attempt < 480; attempt++) {
       if (this.stopping) throw new Error("Local Worker startup was cancelled");
       if (child.exitCode !== null || child.signalCode !== null)
-        throw new Error(`workerd exited: ${this.output}`);
+        throw await exited;
       try {
         const response = await fetch(`${this.url}/healthz`, {
           headers: { authorization: `Bearer ${this.readyToken}` },

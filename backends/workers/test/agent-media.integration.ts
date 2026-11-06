@@ -32,7 +32,7 @@ test("agent image tools generate and edit through shared media, save mounted fil
   const id = created.json.id;
   const generated = await r.prompt(id, "Create the image", OPERATOR, { actor: "fixture-operator" });
   assert.equal(generated.outcome.result.reply, "The image is saved.", JSON.stringify(generated));
-  assert.equal(generated.outcome.result.toolErrors.length, 0, JSON.stringify(generated));
+  assert.equal(generated.outcome.result.toolErrors, undefined, JSON.stringify(generated));
   const first = generated.outcome.result.files[0];
   assert.match(first.path, /^\/scratch\/tool-outputs\/generate_image\/[^/]+\/image\.png$/, "the private workspace takes priority over a shared /workspace");
   assert.equal(first.contentType, "image/png");
@@ -43,7 +43,7 @@ test("agent image tools generate and edit through shared media, save mounted fil
   assert.deepEqual(Buffer.from(await read.arrayBuffer()), image);
   input = first.path;
   const edited = await r.prompt(id, "Edit the image", OPERATOR);
-  assert.equal(edited.outcome.result.toolErrors.length, 0, JSON.stringify(edited));
+  assert.equal(edited.outcome.result.toolErrors, undefined, JSON.stringify(edited));
   assert.equal(edited.outcome.result.files.length, 1);
   assert.notEqual(edited.outcome.result.files[0].path, first.path);
   assert.deepEqual(calls, ["/images/generations", "/images/edits"]);

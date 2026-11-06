@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { AgentRuntime } from "../../../clients/typescript.ts";
+import { openEventStream } from "../../../clients/event-transport.ts";
 import { OPERATOR, toolCall } from "../../../tests/runtime-server.ts";
 import { compatibilityRuntime } from "./compat-runtime.ts";
 
@@ -15,7 +16,7 @@ test("presented files are streamed and retained in results until agent deletion,
   const agent = await sdk.upsertAgent("presented-output", { tools: {}, mounts: [{ volumeId: shared.id, path: "/shared", mode: "rw" }] });
   const events: any[] = [];
   const abort = new AbortController();
-  const stream = await fetch(`${r.base}/v1/agents/${agent.session.id}/events`, { headers: { authorization: `Bearer ${OPERATOR}` }, signal: abort.signal });
+  const stream = await openEventStream(fetch, `${r.base}/v1/agents/${agent.session.id}/events`, { headers: { authorization: `Bearer ${OPERATOR}` }, signal: abort.signal });
   assert.equal(stream.status, 200);
   const reader = stream.body!.getReader();
   const reading = (async () => {

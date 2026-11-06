@@ -443,13 +443,10 @@ test("Public-id creation keys cannot take another tenant agent; unknown webhook 
       undefined,
       "owner-fixture-key",
     );
-    assert.equal(credentials.status, 200);
-    const retained = (await credentials.json()) as {
-      token: string;
-      configHash: string;
-    };
-    assert.ok(retained.token === victim.token, "Owner credential unchanged");
-    assert.equal(retained.configHash, victim.configHash);
+    // src/client-sessions/configuration.ts only recovers credentials for keyed agents.
+    // The original token still authenticated the unchanged configuration above.
+    assert.equal(credentials.status, 409);
+    assert.equal((await credentials.json() as { code: string }).code, "AGENT_KEYLESS");
     const foreignRead = await call(
       `/v1/agents/${victim.id}`,
       "GET",
