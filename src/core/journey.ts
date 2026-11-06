@@ -195,10 +195,10 @@ export function consoleRoute(pathname: string) {
   return "/console/*";
 }
 
-/** A UUID from a key, the same each time: an event written again keeps its id. */
 /** The bytes a base64 string decodes to, counted as Buffer does (padding and any final partial group). */
 const base64Bytes = (text: string) => Math.floor(text.replace(/=+$/, "").length * 3 / 4);
 
+/** A UUID from a key, the same each time: an event written again keeps its id. */
 function keyedId(key: string) {
   const hex = sha256Hex(key);
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-8${hex.slice(13, 16)}-${(parseInt(hex[16]!, 16) & 3 | 8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
