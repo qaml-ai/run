@@ -68,12 +68,12 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
       // Unmetered starts still end any earlier session.
       started: (instance, idleMs) => payer ? meter.started(payer, instance, idleMs) : meter.stopped(),
       // A running container with no open session (a DO that died mid-start, or one started unmetered) is billed from
-      // now to whoever uses it.
-      used: async () => {
-        if (payer && this.ctx.container?.running && !(await meter.isOpen())) await meter.started(payer, spec.instance, network.idleMs);
-        else await meter.used();
+      // now to whoever uses it (its CPU from the current reading on).
+      used: async (cpuUsec) => {
+        if (payer && this.ctx.container?.running && !(await meter.isOpen())) await meter.started(payer, spec.instance, network.idleMs, cpuUsec ?? 0);
+        else await meter.used(cpuUsec);
       },
-      stopped: () => meter.stopped(),
+      stopped: (cpuUsec) => meter.stopped(cpuUsec),
     };
     return new ContainerProvider(this.ctx.container, this.ctx.storage, spec, Date.now, network, bound);
   }
@@ -120,7 +120,8 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
    */
   purge(): Promise<{ purged: true }> {
     return this.serial(async () => {
-      if (this.ctx.container?.running) await this.ctx.container.destroy();
+      // Stopping through the provider takes a last CPU reading for the meter.
+      if (this.ctx.container) await this.provider().sleep();
       const meter = this.meter();
       await meter.stopped();
       if (await meter.settled()) await this.ctx.storage.deleteAll();

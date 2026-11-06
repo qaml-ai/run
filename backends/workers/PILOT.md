@@ -594,7 +594,7 @@ the `workspace` entry of the `images` map, which a deploy builds from
 `computers/Dockerfile` and pins by digest) and the size (`COMPUTER_INSTANCE`,
 `standard-1`) at each start; a container stops after 60 s idle. Agents with code
 mode see the `computer` tool; its container time is charged as platform usage
-(`computer` kind, `cloudflare/standard-1`, about $0.074 an hour while running).
+(`computer` kind, `cloudflare/standard-1`, at cost: about $0.038 an hour idle, $0.074 busy).
 A deploy needs Docker on the deploying machine. A
 new image digest makes earlier snapshots unusable (they are refused, not
 restored); snapshots expire 30 days after creation or their latest restore.

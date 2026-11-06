@@ -26,6 +26,10 @@ export default {
       const start = await timed(() => origin.operate({ op: 'exec', argv: ['node', '-e', 'process.stdout.write("container-probe-ready")'], timeoutMs: 30000 }));
       await origin.operate({ op: 'write', path: 'probe.txt', content: 'synthetic-container-file' });
       const originMounts = await origin.operate({ op: 'exec', argv: inspect });
+      // Metering reads the container's cgroup CPU counter (computers/provider.ts CPU_STAT): idle, then after 1 s of work.
+      const cpuIdle = await origin.operate({ op: 'exec', argv: ['cat', '/sys/fs/cgroup/cpu.stat'] });
+      await origin.operate({ op: 'exec', argv: ['node', '-e', 'const end=Date.now()+1000;while(Date.now()<end);'] });
+      const cpuBusy = await origin.operate({ op: 'exec', argv: ['cat', '/sys/fs/cgroup/cpu.stat'] });
       const snapshot = await timed(() => origin.takeSnapshot('base'));
       const handle = snapshot.value;
       const forks = await timed(() => Promise.all(FORKS.map(async name => {
@@ -36,7 +40,7 @@ export default {
         const mounts = await computer.operate({ op: 'exec', argv: inspect });
         return { name, startFromSnapshotMs: restore.ms, firstReadMs: read.ms, restoreToReadyMs: restore.ms + read.ms, read: read.value, mounts };
       })));
-      return Response.json({ startMs: start.ms, command: start.value, originMounts, snapshotMs: snapshot.ms, snapshot: handle, forksWallMs: forks.ms, forks: forks.value });
+      return Response.json({ startMs: start.ms, command: start.value, originMounts, cpuIdle, cpuBusy, snapshotMs: snapshot.ms, snapshot: handle, forksWallMs: forks.ms, forks: forks.value });
     } catch (error) {
       return Response.json({ error: error instanceof Error ? error.message.slice(0, 500) : 'Native container failed' }, { status: 500 });
     } finally {

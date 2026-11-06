@@ -1,0 +1,511 @@
+{
+  "name": "camelrun-probe-do-computer",
+  "account": "85bbd288051330fb51ee1c86031a299b",
+  "startedAt": "2026-11-06T23:56:03.151Z",
+  "budgetUsd": 5,
+  "operations": [
+    {
+      "phase": "preflight",
+      "at": "2026-11-06T23:56:03.151Z"
+    },
+    {
+      "command": "containers images list --filter camelrun-probe-do-computer --json -c probes/computers/wrangler.jsonc",
+      "exitCode": 0
+    },
+    {
+      "phase": "deploying",
+      "at": "2026-11-06T23:56:24.605Z"
+    },
+    {
+      "command": "deploy -c probes/computers/wrangler.jsonc",
+      "exitCode": 0
+    },
+    {
+      "command": "secret put PROBE_TOKEN -c probes/computers/wrangler.jsonc",
+      "exitCode": 0
+    },
+    {
+      "phase": "executing",
+      "at": "2026-11-06T23:57:02.215Z"
+    },
+    {
+      "phase": "verified",
+      "at": "2026-11-06T23:57:27.573Z"
+    },
+    {
+      "phase": "cleanup",
+      "at": "2026-11-06T23:57:27.574Z"
+    },
+    {
+      "command": "deploy -c /var/folders/2w/ghgmsg856n52r27w6r4slplw0000gn/T/camelrun-probe-do-computer-oLbkf8/teardown.json",
+      "exitCode": 0
+    },
+    {
+      "command": "containers images list --filter camelrun-probe-do-computer --json -c probes/computers/wrangler.jsonc",
+      "exitCode": 0
+    },
+    {
+      "command": "containers images delete camelrun-probe-do-computer-containercomputer-workspace:rootfs-set-23e3e5dc28d40772f310bb25b5d33ea51cd5304cb52825dbb95c31a894b02ae2 -y -c probes/computers/wrangler.jsonc",
+      "exitCode": 0
+    },
+    {
+      "command": "containers images delete camelrun-probe-do-computer-containercomputer-workspace:rootfs-set-7c1d29dff8fd62eea6be6f4ae747c4ee8e3d29825e43655c33f9af5930f868fa -y -c probes/computers/wrangler.jsonc",
+      "exitCode": 0
+    },
+    {
+      "command": "containers images delete camelrun-probe-do-computer-containercomputer-workspace:rootfs-set-f0b20c4b9f0c6ae786f80481b86f649e3aa7efc40f0b3147181e59bd9484c37f -y -c probes/computers/wrangler.jsonc",
+      "exitCode": 0
+    },
+    {
+      "command": "containers images delete camelrun-probe-do-computer-containercomputer-workspace:rootfs-snapshot-ba7a8547ca09bb6fd18ac001017976838b8f29be97bca46ec79405d6d1e71180 -y -c probes/computers/wrangler.jsonc",
+      "exitCode": 0
+    },
+    {
+      "command": "containers images delete camelrun-probe-do-computer-containercomputer-workspace:rootfs-snapshot-bd5179e2b98d4a43792b0593a312573e83773f3102fc4b01c46f28c9966d662c -y -c probes/computers/wrangler.jsonc",
+      "exitCode": 0
+    },
+    {
+      "command": "containers images delete camelrun-probe-do-computer-containercomputer-workspace:rootfs-snapshot-c14077b79a50612d209c5f8f2ea2923b09ee22aa1bbbfba60fc4cb1242064ba8 -y -c probes/computers/wrangler.jsonc",
+      "exitCode": 0
+    },
+    {
+      "command": "containers images delete camelrun-probe-do-computer-containercomputer-workspace:wrangler-mw5mv95d -y -c probes/computers/wrangler.jsonc",
+      "exitCode": 0
+    },
+    {
+      "command": "containers images list --filter camelrun-probe-do-computer --json -c probes/computers/wrangler.jsonc",
+      "exitCode": 0
+    }
+  ],
+  "cleanup": {
+    "stopStatus": 200,
+    "deletedImages": [
+      "camelrun-probe-do-computer-containercomputer-workspace:rootfs-set-23e3e5dc28d40772f310bb25b5d33ea51cd5304cb52825dbb95c31a894b02ae2",
+      "camelrun-probe-do-computer-containercomputer-workspace:rootfs-set-7c1d29dff8fd62eea6be6f4ae747c4ee8e3d29825e43655c33f9af5930f868fa",
+      "camelrun-probe-do-computer-containercomputer-workspace:rootfs-set-f0b20c4b9f0c6ae786f80481b86f649e3aa7efc40f0b3147181e59bd9484c37f",
+      "camelrun-probe-do-computer-containercomputer-workspace:rootfs-snapshot-ba7a8547ca09bb6fd18ac001017976838b8f29be97bca46ec79405d6d1e71180",
+      "camelrun-probe-do-computer-containercomputer-workspace:rootfs-snapshot-bd5179e2b98d4a43792b0593a312573e83773f3102fc4b01c46f28c9966d662c",
+      "camelrun-probe-do-computer-containercomputer-workspace:rootfs-snapshot-c14077b79a50612d209c5f8f2ea2923b09ee22aa1bbbfba60fc4cb1242064ba8",
+      "camelrun-probe-do-computer-containercomputer-workspace:wrangler-mw5mv95d"
+    ],
+    "workers": [],
+    "namespaces": [],
+    "applications": [],
+    "images": [],
+    "errors": [],
+    "verifiedAbsent": true
+  },
+  "preflight": {
+    "worker": false,
+    "namespace": false,
+    "application": false,
+    "images": []
+  },
+  "runs": [
+    {
+      "at": "2026-11-06T23:57:12.722Z",
+      "startMs": 3742,
+      "command": {
+        "stdout": "container-probe-ready",
+        "stderr": "",
+        "exitCode": 0
+      },
+      "originMounts": {
+        "stdout": "/dev/vdb on / type btrfs (rw,relatime,compress=zstd:3,space_cache=v2,subvolid=263,subvol=/rootfs)\n---\nFilesystem     Type  1K-blocks   Used Available Use% Mounted on\n/dev/vdb       btrfs   7812500 174956   7548372   3% /\n/dev/vdb       btrfs   7812500 174956   7548372   3% /\n",
+        "stderr": "",
+        "exitCode": 0
+      },
+      "cpuIdle": {
+        "stdout": "usage_usec 7679373\nuser_usec 2858324\nsystem_usec 4821048\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "stderr": "",
+        "exitCode": 0
+      },
+      "cpuBusy": {
+        "stdout": "usage_usec 8771652\nuser_usec 3887124\nsystem_usec 4884527\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "stderr": "",
+        "exitCode": 0
+      },
+      "snapshotMs": 4089,
+      "snapshot": {
+        "id": "c51778b5-00cf-40fe-ad80-e957f6b5e358",
+        "name": "base",
+        "size": 4458,
+        "image": "registry.cloudflare.com/85bbd288051330fb51ee1c86031a299b/camelrun-probe-do-computer-containercomputer-workspace@sha256:95df34057aa074fe367d29623a5f78d802b198bee37c27cf8e062cdcc3fc4b63",
+        "createdAt": 1794009431433,
+        "expiresAt": 1796601431433
+      },
+      "forksWallMs": 1085,
+      "forks": [
+        {
+          "name": "fork-1",
+          "startFromSnapshotMs": 518,
+          "firstReadMs": 328,
+          "restoreToReadyMs": 846,
+          "read": {
+            "content": "synthetic-container-file"
+          },
+          "mounts": {
+            "stdout": "/dev/vdb on / type btrfs (rw,relatime,compress=zstd:3,space_cache=v2,subvolid=263,subvol=/rootfs)\n---\nFilesystem     Type  1K-blocks   Used Available Use% Mounted on\n/dev/vdb       btrfs   7812500 175756   7548372   3% /\n/dev/vdb       btrfs   7812500 175756   7548372   3% /\n",
+            "stderr": "",
+            "exitCode": 0
+          }
+        },
+        {
+          "name": "fork-2",
+          "startFromSnapshotMs": 600,
+          "firstReadMs": 339,
+          "restoreToReadyMs": 939,
+          "read": {
+            "content": "synthetic-container-file"
+          },
+          "mounts": {
+            "stdout": "/dev/vdb on / type btrfs (rw,relatime,compress=zstd:3,space_cache=v2,subvolid=263,subvol=/rootfs)\n---\nFilesystem     Type  1K-blocks   Used Available Use% Mounted on\n/dev/vdb       btrfs   7812500 175756   7548372   3% /\n/dev/vdb       btrfs   7812500 175756   7548372   3% /\n",
+            "stderr": "",
+            "exitCode": 0
+          }
+        },
+        {
+          "name": "fork-3",
+          "startFromSnapshotMs": 746,
+          "firstReadMs": 298,
+          "restoreToReadyMs": 1044,
+          "read": {
+            "content": "synthetic-container-file"
+          },
+          "mounts": {
+            "stdout": "/dev/vdb on / type btrfs (rw,relatime,compress=zstd:3,space_cache=v2,subvolid=263,subvol=/rootfs)\n---\nFilesystem     Type  1K-blocks   Used Available Use% Mounted on\n/dev/vdb       btrfs   7812500 175756   7548372   3% /\n/dev/vdb       btrfs   7812500 175756   7548372   3% /\n",
+            "stderr": "",
+            "exitCode": 0
+          }
+        }
+      ]
+    },
+    {
+      "at": "2026-11-06T23:57:20.146Z",
+      "startMs": 1530,
+      "command": {
+        "stdout": "container-probe-ready",
+        "stderr": "",
+        "exitCode": 0
+      },
+      "originMounts": {
+        "stdout": "/dev/vdb on / type btrfs (rw,relatime,compress=zstd:3,space_cache=v2,subvolid=263,subvol=/rootfs)\n---\nFilesystem     Type  1K-blocks   Used Available Use% Mounted on\n/dev/vdb       btrfs   7812500 174956   7548372   3% /\n/dev/vdb       btrfs   7812500 174956   7548372   3% /\n",
+        "stderr": "",
+        "exitCode": 0
+      },
+      "cpuIdle": {
+        "stdout": "usage_usec 841110\nuser_usec 78459\nsystem_usec 762651\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "stderr": "",
+        "exitCode": 0
+      },
+      "cpuBusy": {
+        "stdout": "usage_usec 1956789\nuser_usec 1082319\nsystem_usec 874470\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "stderr": "",
+        "exitCode": 0
+      },
+      "snapshotMs": 3798,
+      "snapshot": {
+        "id": "d801d902-d750-4258-9f79-7264c5ea4afa",
+        "name": "base",
+        "size": 4458,
+        "image": "registry.cloudflare.com/85bbd288051330fb51ee1c86031a299b/camelrun-probe-do-computer-containercomputer-workspace@sha256:95df34057aa074fe367d29623a5f78d802b198bee37c27cf8e062cdcc3fc4b63",
+        "createdAt": 1794009439400,
+        "expiresAt": 1796601439400
+      },
+      "forksWallMs": 551,
+      "forks": [
+        {
+          "name": "fork-1",
+          "startFromSnapshotMs": 186,
+          "firstReadMs": 219,
+          "restoreToReadyMs": 405,
+          "read": {
+            "content": "synthetic-container-file"
+          },
+          "mounts": {
+            "stdout": "/dev/vdb on / type btrfs (rw,relatime,compress=zstd:3,space_cache=v2,subvolid=263,subvol=/rootfs)\n---\nFilesystem     Type  1K-blocks   Used Available Use% Mounted on\n/dev/vdb       btrfs   7812500 175756   7548372   3% /\n/dev/vdb       btrfs   7812500 175756   7548372   3% /\n",
+            "stderr": "",
+            "exitCode": 0
+          }
+        },
+        {
+          "name": "fork-2",
+          "startFromSnapshotMs": 210,
+          "firstReadMs": 286,
+          "restoreToReadyMs": 496,
+          "read": {
+            "content": "synthetic-container-file"
+          },
+          "mounts": {
+            "stdout": "/dev/vdb on / type btrfs (rw,relatime,compress=zstd:3,space_cache=v2,subvolid=263,subvol=/rootfs)\n---\nFilesystem     Type  1K-blocks   Used Available Use% Mounted on\n/dev/vdb       btrfs   7812500 175756   7548372   3% /\n/dev/vdb       btrfs   7812500 175756   7548372   3% /\n",
+            "stderr": "",
+            "exitCode": 0
+          }
+        },
+        {
+          "name": "fork-3",
+          "startFromSnapshotMs": 266,
+          "firstReadMs": 248,
+          "restoreToReadyMs": 514,
+          "read": {
+            "content": "synthetic-container-file"
+          },
+          "mounts": {
+            "stdout": "/dev/vdb on / type btrfs (rw,relatime,compress=zstd:3,space_cache=v2,subvolid=263,subvol=/rootfs)\n---\nFilesystem     Type  1K-blocks   Used Available Use% Mounted on\n/dev/vdb       btrfs   7812500 175756   7548372   3% /\n/dev/vdb       btrfs   7812500 175756   7548372   3% /\n",
+            "stderr": "",
+            "exitCode": 0
+          }
+        }
+      ]
+    },
+    {
+      "at": "2026-11-06T23:57:26.379Z",
+      "startMs": 405,
+      "command": {
+        "stdout": "container-probe-ready",
+        "stderr": "",
+        "exitCode": 0
+      },
+      "originMounts": {
+        "stdout": "/dev/vdb on / type btrfs (rw,relatime,compress=zstd:3,space_cache=v2,subvolid=263,subvol=/rootfs)\n---\nFilesystem     Type  1K-blocks   Used Available Use% Mounted on\n/dev/vdb       btrfs   7812500 174924   7548372   3% /\n/dev/vdb       btrfs   7812500 174924   7548372   3% /\n",
+        "stderr": "",
+        "exitCode": 0
+      },
+      "cpuIdle": {
+        "stdout": "usage_usec 5423934\nuser_usec 1828253\nsystem_usec 3595681\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "stderr": "",
+        "exitCode": 0
+      },
+      "cpuBusy": {
+        "stdout": "usage_usec 6487108\nuser_usec 2826432\nsystem_usec 3660675\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+        "stderr": "",
+        "exitCode": 0
+      },
+      "snapshotMs": 3923,
+      "snapshot": {
+        "id": "99862972-5118-488a-8cbc-74fb76ae15c9",
+        "name": "base",
+        "size": 4458,
+        "image": "registry.cloudflare.com/85bbd288051330fb51ee1c86031a299b/camelrun-probe-do-computer-containercomputer-workspace@sha256:95df34057aa074fe367d29623a5f78d802b198bee37c27cf8e062cdcc3fc4b63",
+        "createdAt": 1794009445636,
+        "expiresAt": 1796601445636
+      },
+      "forksWallMs": 548,
+      "forks": [
+        {
+          "name": "fork-1",
+          "startFromSnapshotMs": 165,
+          "firstReadMs": 232,
+          "restoreToReadyMs": 397,
+          "read": {
+            "content": "synthetic-container-file"
+          },
+          "mounts": {
+            "stdout": "/dev/vdb on / type btrfs (rw,relatime,compress=zstd:3,space_cache=v2,subvolid=263,subvol=/rootfs)\n---\nFilesystem     Type  1K-blocks   Used Available Use% Mounted on\n/dev/vdb       btrfs   7812500 175660   7548372   3% /\n/dev/vdb       btrfs   7812500 175660   7548372   3% /\n",
+            "stderr": "",
+            "exitCode": 0
+          }
+        },
+        {
+          "name": "fork-2",
+          "startFromSnapshotMs": 265,
+          "firstReadMs": 249,
+          "restoreToReadyMs": 514,
+          "read": {
+            "content": "synthetic-container-file"
+          },
+          "mounts": {
+            "stdout": "/dev/vdb on / type btrfs (rw,relatime,compress=zstd:3,space_cache=v2,subvolid=263,subvol=/rootfs)\n---\nFilesystem     Type  1K-blocks   Used Available Use% Mounted on\n/dev/vdb       btrfs   7812500 175660   7548372   3% /\n/dev/vdb       btrfs   7812500 175660   7548372   3% /\n",
+            "stderr": "",
+            "exitCode": 0
+          }
+        },
+        {
+          "name": "fork-3",
+          "startFromSnapshotMs": 230,
+          "firstReadMs": 248,
+          "restoreToReadyMs": 478,
+          "read": {
+            "content": "synthetic-container-file"
+          },
+          "mounts": {
+            "stdout": "/dev/vdb on / type btrfs (rw,relatime,compress=zstd:3,space_cache=v2,subvolid=263,subvol=/rootfs)\n---\nFilesystem     Type  1K-blocks   Used Available Use% Mounted on\n/dev/vdb       btrfs   7812500 175660   7548372   3% /\n/dev/vdb       btrfs   7812500 175660   7548372   3% /\n",
+            "stderr": "",
+            "exitCode": 0
+          }
+        }
+      ]
+    }
+  ],
+  "failedRuns": [],
+  "result": {
+    "at": "2026-11-06T23:57:12.722Z",
+    "startMs": 3742,
+    "command": {
+      "stdout": "container-probe-ready",
+      "stderr": "",
+      "exitCode": 0
+    },
+    "originMounts": {
+      "stdout": "/dev/vdb on / type btrfs (rw,relatime,compress=zstd:3,space_cache=v2,subvolid=263,subvol=/rootfs)\n---\nFilesystem     Type  1K-blocks   Used Available Use% Mounted on\n/dev/vdb       btrfs   7812500 174956   7548372   3% /\n/dev/vdb       btrfs   7812500 174956   7548372   3% /\n",
+      "stderr": "",
+      "exitCode": 0
+    },
+    "cpuIdle": {
+      "stdout": "usage_usec 7679373\nuser_usec 2858324\nsystem_usec 4821048\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+      "stderr": "",
+      "exitCode": 0
+    },
+    "cpuBusy": {
+      "stdout": "usage_usec 8771652\nuser_usec 3887124\nsystem_usec 4884527\nnice_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n",
+      "stderr": "",
+      "exitCode": 0
+    },
+    "snapshotMs": 4089,
+    "snapshot": {
+      "id": "c51778b5-00cf-40fe-ad80-e957f6b5e358",
+      "name": "base",
+      "size": 4458,
+      "image": "registry.cloudflare.com/85bbd288051330fb51ee1c86031a299b/camelrun-probe-do-computer-containercomputer-workspace@sha256:95df34057aa074fe367d29623a5f78d802b198bee37c27cf8e062cdcc3fc4b63",
+      "createdAt": 1794009431433,
+      "expiresAt": 1796601431433
+    },
+    "forksWallMs": 1085,
+    "forks": [
+      {
+        "name": "fork-1",
+        "startFromSnapshotMs": 518,
+        "firstReadMs": 328,
+        "restoreToReadyMs": 846,
+        "read": {
+          "content": "synthetic-container-file"
+        },
+        "mounts": {
+          "stdout": "/dev/vdb on / type btrfs (rw,relatime,compress=zstd:3,space_cache=v2,subvolid=263,subvol=/rootfs)\n---\nFilesystem     Type  1K-blocks   Used Available Use% Mounted on\n/dev/vdb       btrfs   7812500 175756   7548372   3% /\n/dev/vdb       btrfs   7812500 175756   7548372   3% /\n",
+          "stderr": "",
+          "exitCode": 0
+        }
+      },
+      {
+        "name": "fork-2",
+        "startFromSnapshotMs": 600,
+        "firstReadMs": 339,
+        "restoreToReadyMs": 939,
+        "read": {
+          "content": "synthetic-container-file"
+        },
+        "mounts": {
+          "stdout": "/dev/vdb on / type btrfs (rw,relatime,compress=zstd:3,space_cache=v2,subvolid=263,subvol=/rootfs)\n---\nFilesystem     Type  1K-blocks   Used Available Use% Mounted on\n/dev/vdb       btrfs   7812500 175756   7548372   3% /\n/dev/vdb       btrfs   7812500 175756   7548372   3% /\n",
+          "stderr": "",
+          "exitCode": 0
+        }
+      },
+      {
+        "name": "fork-3",
+        "startFromSnapshotMs": 746,
+        "firstReadMs": 298,
+        "restoreToReadyMs": 1044,
+        "read": {
+          "content": "synthetic-container-file"
+        },
+        "mounts": {
+          "stdout": "/dev/vdb on / type btrfs (rw,relatime,compress=zstd:3,space_cache=v2,subvolid=263,subvol=/rootfs)\n---\nFilesystem     Type  1K-blocks   Used Available Use% Mounted on\n/dev/vdb       btrfs   7812500 175756   7548372   3% /\n/dev/vdb       btrfs   7812500 175756   7548372   3% /\n",
+          "stderr": "",
+          "exitCode": 0
+        }
+      }
+    ]
+  },
+  "applications": [
+    {
+      "id": "9cdcf4be136f43f29075d734ae31bd0c",
+      "name": "camelrun-probe-do-computer"
+    }
+  ],
+  "instancesAfterStop": [
+    {
+      "id": "c94e0d670344959e6305521ccc5aa1229ab2ba30337dac526af42e650d1d4398",
+      "started_at": "2026-11-06T23:57:25.728Z",
+      "status": {
+        "state": "stopped",
+        "updated_at": "2026-11-06T23:57:26.252Z",
+        "exit_code": 0
+      },
+      "location": {
+        "name": "dfw13",
+        "region": "WNAM"
+      },
+      "application_id": "9cdcf4be136f43f29075d734ae31bd0c",
+      "name": "fork-2",
+      "image": "registry.cloudflare.com/85bbd288051330fb51ee1c86031a299b/camelrun-probe-do-computer-containercomputer-workspace@sha256:95df34057aa074fe367d29623a5f78d802b198bee37c27cf8e062cdcc3fc4b63",
+      "configuration": {
+        "vcpu": 0.5,
+        "memory": 4096,
+        "disk": 8000
+      }
+    },
+    {
+      "id": "b4e2a8fa4533fba7d5db2d71c285fb559975b4dee29b879887daf61e04c66d42",
+      "started_at": "2026-11-06T23:57:25.715Z",
+      "status": {
+        "state": "stopped",
+        "updated_at": "2026-11-06T23:57:26.247Z",
+        "exit_code": 0
+      },
+      "location": {
+        "name": "dfw13",
+        "region": "WNAM"
+      },
+      "application_id": "9cdcf4be136f43f29075d734ae31bd0c",
+      "name": "fork-3",
+      "image": "registry.cloudflare.com/85bbd288051330fb51ee1c86031a299b/camelrun-probe-do-computer-containercomputer-workspace@sha256:95df34057aa074fe367d29623a5f78d802b198bee37c27cf8e062cdcc3fc4b63",
+      "configuration": {
+        "vcpu": 0.5,
+        "memory": 4096,
+        "disk": 8000
+      }
+    },
+    {
+      "id": "afdef18248ea2dd86bb6fe3fdb869a0607f2bc044f02c306e014c171d7d2d5b9",
+      "started_at": "2026-11-06T23:57:25.71Z",
+      "status": {
+        "state": "provisioning",
+        "updated_at": "2026-11-06T23:57:25.772Z"
+      },
+      "location": {
+        "name": "dfw13",
+        "region": "WNAM"
+      },
+      "application_id": "9cdcf4be136f43f29075d734ae31bd0c",
+      "name": "fork-1",
+      "image": "registry.cloudflare.com/85bbd288051330fb51ee1c86031a299b/camelrun-probe-do-computer-containercomputer-workspace@sha256:95df34057aa074fe367d29623a5f78d802b198bee37c27cf8e062cdcc3fc4b63",
+      "configuration": {
+        "vcpu": 0.5,
+        "memory": 4096,
+        "disk": 8000
+      }
+    },
+    {
+      "id": "dd24f7c7f6eb7755095572644fb8c432d312904c920518663734d3d3fbad606b",
+      "started_at": "2026-11-06T23:57:20.232Z",
+      "status": {
+        "state": "stopped",
+        "updated_at": "2026-11-06T23:57:26.242Z",
+        "exit_code": 0
+      },
+      "location": {
+        "name": "dfw13",
+        "region": "WNAM"
+      },
+      "application_id": "9cdcf4be136f43f29075d734ae31bd0c",
+      "name": "origin",
+      "image": "registry.cloudflare.com/85bbd288051330fb51ee1c86031a299b/camelrun-probe-do-computer-containercomputer-workspace@sha256:95df34057aa074fe367d29623a5f78d802b198bee37c27cf8e062cdcc3fc4b63",
+      "configuration": {
+        "vcpu": 0.5,
+        "memory": 4096,
+        "disk": 8000
+      }
+    }
+  ],
+  "endedAt": "2026-11-06T23:58:30.760Z"
+}

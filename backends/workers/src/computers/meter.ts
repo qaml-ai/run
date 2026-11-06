@@ -9,9 +9,12 @@ export const payerSetup = (payer: { tenant: string; agent: string }): ComputerSe
 
 /**
  * Cloudflare Containers' list rates (Workers Paid, after included usage): per vCPU-second, per GiB-second of memory
- * and per GB-second of disk (developers.cloudflare.com/containers/pricing). Memory and disk are billed on what the
- * instance provisions; CPU only while used, which is not measurable here, so a computer is charged its provisioned
- * vCPU: at most what Cloudflare bills for it.
+ * and per GB-second of disk (developers.cloudflare.com/containers/pricing). Cloudflare bills memory and disk on what
+ * the instance provisions and CPU only while it is used, and camelRun passes platform costs through at cost
+ * (docs/operations/billing.md), so a session is charged the same way: provisioned memory and disk for its time, plus
+ * the CPU-seconds the container's cgroup counted (cpu.stat usage_usec, read after each operation and before each
+ * stop). Time no reading covers (the tail after the last reading of a container that idled out or crashed) is charged
+ * at the provisioned vCPU: the reading cannot be taken, and that is at most what Cloudflare bills.
  */
 export const CONTAINER_RATES = { vcpuSecond: 0.00002, memoryGiBSecond: 0.0000025, diskGBSecond: 0.00000007 };
 /** Each instance type's provisioned vCPU, memory (GiB) and disk (GB), from Cloudflare's limits page. */
@@ -22,19 +25,38 @@ export const INSTANCE_RESOURCES: Record<InstanceType, { vcpu: number; memoryGiB:
   "standard-3": { vcpu: 2, memoryGiB: 8, diskGB: 16 },
   "standard-4": { vcpu: 4, memoryGiB: 12, diskGB: 20 },
 };
-/** USD per second a running instance of this type costs. */
+/** USD per second a running instance of this type costs at its provisioned vCPU: the most it can cost. */
 export function secondRate(instance: InstanceType) {
+  return holdRate(instance) + INSTANCE_RESOURCES[instance].vcpu * CONTAINER_RATES.vcpuSecond;
+}
+/** USD per second for what a running instance holds whether or not it computes: its memory and disk. */
+export function holdRate(instance: InstanceType) {
   const r = INSTANCE_RESOURCES[instance];
-  return r.vcpu * CONTAINER_RATES.vcpuSecond + r.memoryGiB * CONTAINER_RATES.memoryGiBSecond + r.diskGB * CONTAINER_RATES.diskGBSecond;
+  return r.memoryGiB * CONTAINER_RATES.memoryGiBSecond + r.diskGB * CONTAINER_RATES.diskGBSecond;
+}
+/**
+ * A session's cost: memory and disk for `seconds`, CPU for the measured vCPU-seconds, and the provisioned vCPU for
+ * the `unmeasuredSeconds` no reading covers.
+ */
+export function sessionCost(instance: InstanceType, seconds: number, cpuSeconds: number, unmeasuredSeconds: number) {
+  const vcpu = INSTANCE_RESOURCES[instance].vcpu;
+  return seconds * holdRate(instance) + (cpuSeconds + unmeasuredSeconds * vcpu) * CONTAINER_RATES.vcpuSecond;
 }
 
 /** Who pays for a computer's time: the agent (and its tenant) whose tool or session uses it. */
 export type ComputerPayer = { tenant: string; agent: string };
 /** One container's run, from its start until it stops or idles out. */
 /** `idleMs` is the inactivity timeout this container was started with (a definition's `computer.idleSeconds`). */
-export type ComputerSession = ComputerPayer & { id: string; instance: InstanceType; startedAt: number; usedAt: number; idleMs?: number };
+/**
+ * CPU: `cpuBaseUsec` is the container's cgroup usage when the session began (0 for a container it started),
+ * `cpuUsec` the latest reading and `cpuAt` when it was taken (the start, until the first reading).
+ */
+export type ComputerSession = ComputerPayer & { id: string; instance: InstanceType; startedAt: number; usedAt: number; idleMs?: number;
+  cpuBaseUsec?: number; cpuUsec?: number; cpuAt?: number };
 /** A finished session's charge. `id` makes it exactly-once: charging the same session twice records it once. */
-export type ComputerCharge = ComputerPayer & { id: string; instance: InstanceType; startedAt: number; endedAt: number; seconds: number; costUsd: number };
+export type ComputerCharge = ComputerPayer & { id: string; instance: InstanceType; startedAt: number; endedAt: number; seconds: number; costUsd: number;
+  /** vCPU-seconds the cgroup counted, and seconds charged at the provisioned vCPU because no reading covers them. */
+  cpuSeconds?: number; unmeasuredSeconds?: number };
 export interface MeterStore {
   get<T>(key: string): Promise<T | undefined>;
   put<T>(key: string, value: T): Promise<void>;
@@ -89,10 +111,11 @@ export class ComputerMeter {
    * A container is starting for this payer. Call before `start()`, so a DO that dies in between leaves a session
    * (billed until it idles out) rather than an unmetered container. Any earlier session ended.
    */
-  async started(payer: ComputerPayer, instance: InstanceType, idleMs = this.idleMs) {
+  async started(payer: ComputerPayer, instance: InstanceType, idleMs = this.idleMs, cpuBaseUsec = 0) {
     await this.close();
     const at = this.now();
-    await this.store.put<ComputerSession>(OPEN, { ...payer, id: crypto.randomUUID(), instance, startedAt: at, usedAt: at, idleMs });
+    await this.store.put<ComputerSession>(OPEN, { ...payer, id: crypto.randomUUID(), instance, startedAt: at, usedAt: at, idleMs,
+      cpuBaseUsec, cpuUsec: cpuBaseUsec, cpuAt: at });
     await this.schedule(at + idleMs + SETTLE_MARGIN_MS);
   }
   private idle(session: ComputerSession) {
@@ -101,16 +124,18 @@ export class ComputerMeter {
   async isOpen() {
     return !!(await this.store.get(OPEN));
   }
-  /** The container was used just now: its idle clock starts over. */
-  async used() {
+  /** The container was used just now: its idle clock starts over. `cpuUsec` is its cgroup CPU reading, if one was taken. */
+  async used(cpuUsec?: number) {
+    await this.reading(cpuUsec);
     const open = await this.checkpoint(true);
     if (!open) return;
     const at = this.now();
     await this.store.put<ComputerSession>(OPEN, { ...open, usedAt: Math.max(open.usedAt, at) });
     await this.schedule(at + this.idle(open) + SETTLE_MARGIN_MS);
   }
-  /** The container was destroyed just now (sleep, restore, purge). */
-  async stopped() {
+  /** The container was destroyed just now (sleep, restore, purge), with its last CPU reading if one was taken. */
+  async stopped(cpuUsec?: number) {
+    await this.reading(cpuUsec);
     await this.close();
     await this.settle();
   }
@@ -128,6 +153,13 @@ export class ComputerMeter {
     }
     await this.settle();
   }
+  /** Keep a CPU reading on the open session. The counter only grows while one container runs. */
+  private async reading(cpuUsec?: number) {
+    if (cpuUsec === undefined || !Number.isFinite(cpuUsec) || cpuUsec < 0) return;
+    const open = await this.store.get<ComputerSession>(OPEN);
+    if (!open) return;
+    await this.store.put<ComputerSession>(OPEN, { ...open, cpuUsec: Math.max(open.cpuUsec ?? 0, cpuUsec), cpuAt: this.now() });
+  }
   /** Charge an open session that has run CHECKPOINT_MS and, while the container runs, continue it as a new one. */
   private async checkpoint(running: boolean) {
     const open = await this.store.get<ComputerSession>(OPEN);
@@ -137,7 +169,9 @@ export class ComputerMeter {
     await this.close();
     if (!running) { await this.settle(); return undefined; }
     // Time past the old session's idle point stays unbilled: the new one is billed from now only while in use.
-    const next: ComputerSession = { ...open, id: crypto.randomUUID(), startedAt: now, usedAt: Math.max(open.usedAt, now) };
+    // CPU continues from the last reading; the time since it stays unmeasured in the new session too.
+    const next: ComputerSession = { ...open, id: crypto.randomUUID(), startedAt: now, usedAt: Math.max(open.usedAt, now),
+      cpuBaseUsec: open.cpuUsec ?? open.cpuBaseUsec ?? 0, cpuAt: Math.max(now, open.cpuAt ?? now) };
     await this.store.put(OPEN, next);
     await this.settle();
     return next;
@@ -149,8 +183,17 @@ export class ComputerMeter {
     const now = this.now(), idleAt = open.usedAt + this.idle(open);
     const endedAt = Math.max(open.startedAt, Math.min(now, idleAt));
     const seconds = (endedAt - open.startedAt) / 1000;
+    // A session from before CPU readings (no cpuAt) is unmeasured throughout.
+    const measuredUntil = Math.min(endedAt, Math.max(open.startedAt, open.cpuAt ?? open.startedAt));
+    const unmeasuredSeconds = (endedAt - measuredUntil) / 1000;
+    // Never more than the provisioned vCPU over the measured time, which is what Cloudflare can bill (an unthrottled
+    // host, like local Docker, can count more).
+    const measuredSeconds = (measuredUntil - open.startedAt) / 1000;
+    const cpuSeconds = Math.min(INSTANCE_RESOURCES[open.instance].vcpu * measuredSeconds,
+      Math.max(0, (open.cpuUsec ?? 0) - (open.cpuBaseUsec ?? 0)) / 1e6);
     const charge: ComputerCharge = { id: open.id, tenant: open.tenant, agent: open.agent, instance: open.instance,
-      startedAt: open.startedAt, endedAt, seconds, costUsd: seconds * secondRate(open.instance) };
+      startedAt: open.startedAt, endedAt, seconds, cpuSeconds, unmeasuredSeconds,
+      costUsd: sessionCost(open.instance, seconds, cpuSeconds, unmeasuredSeconds) };
     // A session that ended as it started costs nothing and records nothing.
     if (seconds > 0) await this.store.put(`${UNSETTLED}${open.id}`, charge);
     await this.store.delete(OPEN);

@@ -58,7 +58,9 @@ Container time is metered (`src/computers/meter.ts`): each call's setup names
 its payer (the identity's tenant and agent), and each container session, from
 start until destroyed or idled out (its idle timeout after the last use), is
 charged as platform usage (`kind: "computer"`, model `cloudflare/<instance>`)
-at Cloudflare's list rate for the instance's provisioned vCPU, memory and disk;
+at cost: provisioned memory and disk for its time, plus the CPU-seconds the
+container's cgroup counted (`cpu.stat`, read after each operation and before
+each stop; unread time, such as the idle tail, at the provisioned vCPU);
 a session in constant use is charged every 5 minutes. Every operation is
 refused once a prepaid tenant's credit is spent or an agent spend limit is
 reached. Sessions wait in DO storage until their charge commits; the DO alarm

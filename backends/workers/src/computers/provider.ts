@@ -139,9 +139,12 @@ export interface ProviderMeter {
   admit(): Promise<void>;
   /** Just before a container starts, with the idle timeout it starts with. */
   started(instance: InstanceType, idleMs: number): Promise<void>;
-  used(): Promise<void>;
-  stopped(): Promise<void>;
+  /** After use; `cpuUsec` is the container's cgroup CPU counter, when it could be read. */
+  used(cpuUsec?: number): Promise<void>;
+  stopped(cpuUsec?: number): Promise<void>;
 }
+/** Where the container's own cgroup (v2) counts its CPU time. */
+export const CPU_STAT = "/sys/fs/cgroup/cpu.stat";
 const OUTPUT_LIMIT = 64 * 1024;
 const FILE_LIMIT = 1024 * 1024;
 
@@ -238,10 +241,26 @@ export class ContainerProvider implements ComputerProvider {
       throw error;
     }
   }
-  /** Destroy the running container, ending its metered session. */
+  /** Destroy the running container, ending its metered session with a last CPU reading. */
   protected async stop() {
+    const cpu = await this.cpuUsec();
     await this.container.destroy();
-    await this.meter?.stopped();
+    await this.meter?.stopped(cpu);
+  }
+  /**
+   * The container's CPU time so far (cgroup v2 `usage_usec`), for metering; undefined when unmetered or unreadable,
+   * which charges that time at the provisioned vCPU instead.
+   */
+  protected async cpuUsec(): Promise<number | undefined> {
+    if (!this.meter || !this.container.running) return undefined;
+    try {
+      const read = await this.container.exec(["cat", CPU_STAT], { signal: AbortSignal.timeout(5_000), stdout: "pipe", stderr: "ignore" });
+      const [text, code] = await Promise.all([readBounded(read.stdout, 4096), read.exitCode]);
+      const usage = code ? undefined : /^usage_usec (\d+)$/m.exec(text)?.[1];
+      return usage === undefined ? undefined : Number(usage);
+    } catch {
+      return undefined;
+    }
   }
   /**
    * Each container has its own interception CA, and a snapshot carries the one its machine trusted: trust this one.
@@ -312,7 +331,7 @@ export class ContainerProvider implements ComputerProvider {
       throw error;
     } finally {
       // Never let metering replace the command's own outcome; the session was marked used before it ran.
-      await this.meter?.used().catch((error) =>
+      await this.cpuUsec().then((cpu) => this.meter?.used(cpu)).catch((error) =>
         console.error(JSON.stringify({ type: "computer_meter_failed", error: error instanceof Error ? error.message.slice(0, 200) : "unknown" })),
       );
     }

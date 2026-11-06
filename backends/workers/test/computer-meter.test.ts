@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CHECKPOINT_MS, ComputerMeter, SETTLE_MARGIN_MS, secondRate, type ComputerCharge, type MeterStore } from "../src/computers/meter.ts";
+import { CHECKPOINT_MS, ComputerMeter, SETTLE_MARGIN_MS, CONTAINER_RATES, holdRate, secondRate, type ComputerCharge, type MeterStore } from "../src/computers/meter.ts";
 import { ContainerProvider, operate, type ProviderMeter } from "../src/computers/provider.ts";
 
 const payer = { tenant: "t1", agent: "a1" };
@@ -208,4 +208,70 @@ test("a container that does not come up is destroyed and reported: no blank comp
   await assert.rejects(operate(provider, { op: "exec", argv: ["true"] }), /did not start/);
   assert.equal(container.running, false, "a first start whose readiness failed leaves nothing running");
   assert.deepEqual(events, ["started", "stopped", "started", "stopped"]);
+});
+
+const near = (actual: number, expected: number) => assert.ok(Math.abs(actual - expected) < 1e-12, `${actual} != ${expected}`);
+
+test("an idle session is charged its memory and disk only; a busy one adds the CPU-seconds it used", async () => {
+  // An hour on standard-4 with readings after each use and before the stop: 0.2 vCPU-seconds of CPU in all.
+  const idle = harness();
+  await idle.meter.started(payer, "standard-4");
+  for (let minute = 1; minute <= 4; minute++) { idle.advance(15_000); await idle.meter.used(50_000 * minute); }
+  idle.advance(15_000);
+  await idle.meter.stopped(200_000);
+  const [quiet] = idle.charges;
+  assert.equal(quiet.seconds, 75);
+  assert.equal(quiet.cpuSeconds, 0.2);
+  assert.equal(quiet.unmeasuredSeconds, 0);
+  near(quiet.costUsd, 75 * holdRate("standard-4") + 0.2 * CONTAINER_RATES.vcpuSecond);
+  assert.ok(quiet.costUsd < 0.3 * 75 * secondRate("standard-4"), "an idle standard-4 costs far less than its provisioned vCPU");
+  // The same time spent computing: 4 vCPUs for 75 s.
+  const busy = harness();
+  await busy.meter.started(payer, "standard-4");
+  busy.advance(75_000);
+  await busy.meter.used(300_000_000);
+  await busy.meter.stopped(300_000_000);
+  near(busy.charges[0].costUsd, 75 * holdRate("standard-4") + 300 * CONTAINER_RATES.vcpuSecond);
+});
+
+test("time no reading covers is charged at the provisioned vCPU: the tail of a session that idled out", async () => {
+  const h = harness();
+  await h.meter.started(payer, "standard-1");
+  h.advance(10_000);
+  await h.meter.used(1_000_000);
+  h.advance(600_000);
+  await h.meter.alarm(false);
+  const [charge] = h.charges;
+  assert.equal(charge.seconds, 70);
+  assert.equal(charge.cpuSeconds, 1);
+  assert.equal(charge.unmeasuredSeconds, 60, "after the last reading the container idled for 60 s, unread");
+  near(charge.costUsd, 70 * holdRate("standard-1") + (1 + 60 * 0.5) * CONTAINER_RATES.vcpuSecond);
+});
+
+test("a checkpoint continues CPU from the last reading, so no CPU-second is charged twice", async () => {
+  const h = harness();
+  await h.meter.started(payer, "standard-1");
+  let cpu = 0;
+  for (let elapsed = 0; elapsed < CHECKPOINT_MS + 30_000; elapsed += 30_000) {
+    h.advance(30_000);
+    cpu += 3_000_000;
+    await h.meter.used(cpu);
+  }
+  h.advance(10_000);
+  cpu += 1_000_000;
+  await h.meter.stopped(cpu);
+  assert.equal(h.charges.length, 2);
+  near(h.charges.reduce((sum, c) => sum + (c.cpuSeconds ?? 0), 0), cpu / 1e6);
+  assert.equal(h.charges.reduce((sum, c) => sum + (c.unmeasuredSeconds ?? 0), 0), 0);
+});
+
+test("measured CPU is capped at the provisioned vCPU: never more than Cloudflare can bill", async () => {
+  const h = harness();
+  await h.meter.started(payer, "lite");
+  h.advance(10_000);
+  // An unthrottled host (local Docker) let it use 2 full CPUs: lite is 1/16 vCPU.
+  await h.meter.used(20_000_000);
+  await h.meter.stopped(20_000_000);
+  assert.equal(h.charges[0].cpuSeconds, 10 / 16);
+  near(h.charges[0].costUsd, 10 * secondRate("lite"));
 });
