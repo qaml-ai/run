@@ -63,8 +63,8 @@ export default function pilotOperator(options: Options) {
           // Foreground I/O may outlive waitUntil's post-response window. Both
           // the claimed deletion and every host sweep are scoped to this ID.
           const deletions = accountDeletions(setup, { accounts: services.accounts } as AccountServices, tenant);
-          if (!await deletions.status(tenant!)) return reply({ error: "No deletion" }, 404);
-          await deletions.next(tenant);
+          await deletions.request(tenant!, "operator:pilot-bootstrap");
+          await deletions.kick();
           return reply(await deletions.status(tenant!));
         }
 

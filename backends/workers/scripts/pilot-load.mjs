@@ -195,10 +195,9 @@ export async function runPilotLoad(options) {
     report.cleanup.startedAt = new Date().toISOString();
     const cleanupResults = await mapLimit(createdTenants, 4, async tenant => {
       try {
-        await admin(`/v1/tenants/${tenant.id}`, { method: 'DELETE', timeoutMs: 180_000 });
-        const until = Date.now() + 300_000;
+        const until = Date.now() + 900_000;
         while (Date.now() < until) {
-          const state = await admin(`/v1/tenants/${tenant.id}/deletion`, { timeoutMs: 180_000 });
+          const state = await admin('/pilot/cleanup', { body: { tenant: tenant.id }, timeoutMs: 600_000 });
           if (state.state === 'deleted') {
             let revoked = false;
             try { await call(tenant, '/v1/me'); } catch (error) { revoked = error instanceof RequestError && error.status === 401; }
