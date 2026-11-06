@@ -1,6 +1,8 @@
 import { TOOL_FILE_LIMITS } from '../../../src/limits.ts';
 import { acceptFiles, resolveFiles, takesFiles, hasFileArgument } from './tool-file-schema.ts';
-import { savedContent, multipartBody, type ToolFiles } from './tool-files.ts';
+import { savedContent } from './tool-content.ts';
+import { multipartBody } from './tool-multipart.ts';
+import type { ToolFiles } from './tool-files.ts';
 import { textual } from './file-policy.ts';
 import { legacyMcpRequest } from "./legacy-mcp.ts";
 import { pacedProgress, progressEvent, silenceDeadline, type Progress, type ToolProgressEvent } from "./mcp-progress.ts";
