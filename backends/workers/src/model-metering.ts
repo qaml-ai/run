@@ -52,6 +52,8 @@ export function meterProvider<P extends Provider<any>>(
           apiKey: preparedKey === 'runtime-bearer' ? preparedKey : credentials.apiKey ?? preparedKey,
           headers: { ...('headers' in credentials ? credentials.headers : {}), ...options.headers },
         };
+        // withSettings supplies the guarded, rebasing fetch for these APIs.
+        // Keep its source URL intact: changing it here would rebase twice.
         if ('baseUrl' in credentials && credentials.baseUrl && !FETCH_APIS.includes(model.api)) model = { ...model, baseUrl: credentials.baseUrl };
       }
       let limit = await modelSpendLimit(service.db, identity) ?? await service.accounts.runLimit(identity.tenant);
