@@ -42,7 +42,7 @@ export async function runSmoke(options: { apiKey: string; baseUrl: string; fakeU
       const handle = await agents.upsert(`pilot-smoke-${key}`, { model: "pilot-fake/deterministic", ...config });
       handles.push(handle); return handle;
     };
-    const agent = await make("main", { builtins: ["ask_human"] });
+    const agent = await make("main", { builtins: ["ask_user"] });
     await check("typescript-create-message-history", async () => {
       assert.equal((await agent.run("pilot:hello")).text, "Echo: pilot:hello");
       assert.match(JSON.stringify(await agent.history()), /pilot:hello/);

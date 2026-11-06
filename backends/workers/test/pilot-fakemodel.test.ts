@@ -14,11 +14,12 @@ test("pilot fake produces valid streaming completions with billable synthetic us
 });
 
 test("pilot fake issues each tool once, then includes its result", () => {
-  for (const [prompt, name] of [["pilot:human", "ask_human"], ["pilot:code", "codemode"], ["pilot:delegate", "delegate"]]) {
+  for (const [prompt, name] of [["pilot:human", "ask_user"], ["pilot:code", "codemode"], ["pilot:delegate", "delegate"]]) {
     const messages = [{ role: "user", content: prompt }];
     const called = reply({ messages });
     assert.ok("tool_calls" in called);
     assert.equal(called.tool_calls[0].function.name, name);
+    if (name === "ask_user") assert.deepEqual(JSON.parse(called.tool_calls[0].function.arguments), { questions: [{ question: "Approve the pilot smoke test?", header: "Approval", options: [{ label: "approved" }, { label: "rejected" }] }] });
     const returned = reply({ messages: [...messages, { role: "tool", content: "finished" }] });
     assert.ok("content" in returned);
     assert.equal(returned.content, "Tool result: finished");

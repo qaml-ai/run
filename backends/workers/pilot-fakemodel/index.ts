@@ -10,7 +10,7 @@ export function reply(body: RequestBody) {
   const prompt = content(messages[userIndex]);
   const returned = messages.slice(userIndex + 1).findLast(message => message.role === "tool");
   if (returned) return { role: "assistant", content: `Tool result: ${content(returned)}` };
-  if (prompt.startsWith("pilot:human")) return tool("ask_human", { question: "Approve the pilot smoke test?" });
+  if (prompt.startsWith("pilot:human")) return tool("ask_user", { questions: [{ question: "Approve the pilot smoke test?", header: "Approval", options: [{ label: "approved" }, { label: "rejected" }] }] });
   if (prompt.startsWith("pilot:code")) return tool("codemode", { code: 'await tools.write({path:"/workspace/pilot-code.txt",content:"pilot-codemode-ok"}); text((await tools.read({path:"/workspace/pilot-code.txt"})).content);' });
   if (prompt.startsWith("pilot:delegate")) return tool("delegate", { instructions: "You are the pilot smoke test helper.", task: "pilot:child" });
   if (prompt.startsWith("pilot:images")) {
