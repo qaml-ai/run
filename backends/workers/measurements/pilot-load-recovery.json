@@ -1,0 +1,40 @@
+{
+  "completedAt": "2026-11-06T01:57:10.647Z",
+  "status": [
+    {
+      "tenant": "pilot-load-3f37439eb5-0",
+      "state": "deleted",
+      "requestedAt": 1793929485119,
+      "completedAt": 1793930062070
+    },
+    {
+      "tenant": "pilot-load-3f37439eb5-1",
+      "state": "deleted",
+      "requestedAt": 1793929485407,
+      "completedAt": 1793930062143
+    }
+  ],
+  "counts": {
+    "tenants": 0,
+    "agents": 0,
+    "api_tokens": 0,
+    "provider_keys": 0,
+    "model_providers": 0,
+    "volumes": 0,
+    "end_users": 0,
+    "holds": 0,
+    "held_micros": 0,
+    "end_user_holds": 0,
+    "end_user_held_micros": 0,
+    "balance_micros": 199999729,
+    "usage_debits": 2,
+    "usage_micros": -271,
+    "responses": 10,
+    "receipts": 0,
+    "attempts": 10,
+    "pending_attempts": 0,
+    "settled_attempts": 10,
+    "attempt_charge_micros": 0,
+    "deleted_tenants": 2
+  }
+}
