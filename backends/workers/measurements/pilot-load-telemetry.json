@@ -1,0 +1,29 @@
+{
+  "window": { "from": "2026-11-06T02:29:40Z", "to": "2026-11-06T02:31:20Z" },
+  "scope": "250-concurrent-turn stage; shared pilot account telemetry",
+  "hyperdrive": {
+    "configId": "3e6d68e844ec480589e766119f52dead",
+    "originConnectionLimit": 12,
+    "colo": "IAD",
+    "pool": { "averageSize": 2, "maximumSize": 2, "averageAvailableSlots": 0.06060606060606061, "averageWaitingClients": 96.85858585858585, "maximumWaitingClients": 157 },
+    "queries": [
+      { "cacheStatus": "disabled", "eventStatus": "complete", "count": 43038, "averageConnectionLatencyMs": 1094, "averageQueryLatencyMs": 1099 },
+      { "cacheStatus": "uncacheable", "eventStatus": "complete", "count": 1868, "averageConnectionLatencyMs": 0, "averageQueryLatencyMs": 4 },
+      { "cacheStatus": "transaction", "eventStatus": "complete", "count": 12412, "averageConnectionLatencyMs": 3599, "averageQueryLatencyMs": 4 }
+    ]
+  },
+  "durableObjects": {
+    "namespaceId": "b7a05e64caac4a9dbd59df0956a89a5c",
+    "activeTimeMicroseconds": 22106081795,
+    "cpuTimeMicroseconds": 140102042,
+    "durationGBSeconds": 2829.57846976,
+    "exceededCpuErrors": 0,
+    "exceededMemoryErrors": 0,
+    "fatalInternalErrors": 0
+  },
+  "sampledWorkerWarnings": {
+    "count": 100,
+    "message": "Job camel-wake (host/camel-wake) has been dispatching for over 30s. Long dispatches starve every other job on this object; onJob must detach unbounded work and return."
+  },
+  "interpretation": "The regional Hyperdrive pool saturated. The database did not report a connection-limit error in this stage. Long wake jobs were also observed; this report does not assign all client timeouts to one cause."
+}

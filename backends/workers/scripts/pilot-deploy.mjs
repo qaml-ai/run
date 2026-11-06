@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 const cwd = fileURLToPath(new URL('../', import.meta.url));
 const bin = resolve(cwd, 'node_modules/wrangler/bin/wrangler.js');
 const account = '85bbd288051330fb51ee1c86031a299b';
-const originLimit = Number(process.env.PILOT_ORIGIN_CONNECTION_LIMIT ?? 12);
+const originLimit = Number(process.env.PILOT_ORIGIN_CONNECTION_LIMIT ?? 16);
 if (!Number.isInteger(originLimit) || originLimit < 5 || originLimit > 100)
   throw new Error('PILOT_ORIGIN_CONNECTION_LIMIT must be an integer from 5 to 100');
 async function run(args, { input, quiet = false } = {}) {
