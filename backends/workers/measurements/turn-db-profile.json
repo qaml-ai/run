@@ -10,12 +10,23 @@
     "transactionHold": "From successful BEGIN acknowledgement until COMMIT or ROLLBACK returns. Includes SQL and application gaps; excludes initial connection and BEGIN wait.",
     "scope": "Agent phases plus public prompt/status auth and directory SQL. Monitoring and cleanup SQL are excluded. Once-per-isolate outer webhook recovery is excluded.",
     "phaseRules": "Explicit admission, hold, renew, settle, webhook and history contexts. Usage and webhook table statements override parent phase; other retains unclassified agent operations. Receipt and end-user accounting SQL remain in settle.",
-    "history": "The load runner does not request history; Workers history uses DO SQLite, not PostgreSQL."
+    "history": "The load runner does not request history; Workers history uses DO SQLite, not PostgreSQL.",
+    "boundaryCaveat": "The complete flag requires no detected object recreation and no inspected pending model attempts or holds. It does not establish quiescence of all non-financial SQL. Snapshots await serial, event and webhook tails.",
+    "resetBoundary": "Counts are recorded at query dispatch; elapsed times arrive at completion. A query crossing reset can leave its time in the discarded snapshot, and a transaction crossing reset can record its full hold time after reset without its BEGIN. The runner awaits serial/event/webhook work, but in-flight alarm SQL is not independently counted. Treat non-quiescent and failed stages as observed lower bounds, not exact per-turn timing.",
+    "failedTransactionBoundary": "A failed COMMIT closes the profiler transaction interval; any later ROLLBACK tail is not included in that hold interval.",
+    "transactionHoldPerRequestedTurn": "Sum of the phase transaction hold milliseconds divided by the requested turn count. Concurrent transactions can overlap, so this is database occupancy per turn, not elapsed turn latency.",
+    "latency": "Prompt-to-result latency for successful client turns only, including the 15-second fake model delay. Failed turns do not enter percentiles.",
+    "throughput": "Successful client turns divided by the full stage duration, including the same watcher shutdown padding before and after."
   },
   "before": {
-    "revision": "247cc940",
+    "revision": "247cc940cb031f5df47b874a726a8b8609e4249f",
     "deploymentVersion": "7fc8d34c-647a-471a-8ff7-9c7a99630fe7",
     "source": "backends/workers/measurements/turn-db-before-load.json",
+    "provenance": {
+      "runnerRevision": "247cc940cb031f5df47b874a726a8b8609e4249f",
+      "operatorRevision": null,
+      "operatorSource": "The original orchestrator imported the working-tree helper; its exact revision was not recorded. This affected cleanup, which was subsequently completed with the isolated baseline helper. The pilot API and remote workload were pinned to the profiling-only revision."
+    },
     "stages": [
       {
         "concurrency": 100,
@@ -23,6 +34,8 @@
         "objectRestarts": 0,
         "queries": 28897,
         "queriesPerRequestedTurn": 288.97,
+        "observedQueries": 28897,
+        "observedQueriesPerRequestedTurn": 288.97,
         "phases": {
           "admission": {
             "queries": 2600,
@@ -33,6 +46,8 @@
             "connectMsTotal": 7089,
             "transactions": 200,
             "transactionHoldMsTotal": 16599,
+            "transactionHoldMsPerRequestedTurn": 165.99,
+            "observedTransactionHoldMsPerRequestedTurn": 165.99,
             "transactionHoldMs": {
               "samples": 200,
               "p50": 81,
@@ -50,6 +65,8 @@
             "connectMsTotal": 1678,
             "transactions": 100,
             "transactionHoldMsTotal": 36366,
+            "transactionHoldMsPerRequestedTurn": 363.66,
+            "observedTransactionHoldMsPerRequestedTurn": 363.66,
             "transactionHoldMs": {
               "samples": 100,
               "p50": 359,
@@ -67,6 +84,8 @@
             "connectMsTotal": 0,
             "transactions": 0,
             "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": 0.0,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
             "transactionHoldMs": {
               "samples": 0,
               "p50": null,
@@ -84,6 +103,8 @@
             "connectMsTotal": 4866,
             "transactions": 392,
             "transactionHoldMsTotal": 190831,
+            "transactionHoldMsPerRequestedTurn": 1908.31,
+            "observedTransactionHoldMsPerRequestedTurn": 1908.31,
             "transactionHoldMs": {
               "samples": 392,
               "p50": 325,
@@ -101,6 +122,8 @@
             "connectMsTotal": 0,
             "transactions": 0,
             "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": 0.0,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
             "transactionHoldMs": {
               "samples": 0,
               "p50": null,
@@ -118,6 +141,8 @@
             "connectMsTotal": 18258,
             "transactions": 0,
             "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": 0.0,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
             "transactionHoldMs": {
               "samples": 0,
               "p50": null,
@@ -135,6 +160,8 @@
             "connectMsTotal": 0,
             "transactions": 0,
             "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": 0.0,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
             "transactionHoldMs": {
               "samples": 0,
               "p50": null,
@@ -152,6 +179,8 @@
             "connectMsTotal": 133757,
             "transactions": 200,
             "transactionHoldMsTotal": 17120,
+            "transactionHoldMsPerRequestedTurn": 171.2,
+            "observedTransactionHoldMsPerRequestedTurn": 171.2,
             "transactionHoldMs": {
               "samples": 200,
               "p50": 84,
@@ -169,6 +198,8 @@
             "connectMsTotal": 2360,
             "transactions": 0,
             "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": 0.0,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
             "transactionHoldMs": {
               "samples": 0,
               "p50": null,
@@ -181,8 +212,10 @@
         "load": {
           "startedAt": "2026-11-06T03:36:40.115Z",
           "finishedAt": "2026-11-06T03:37:18.475Z",
+          "accepted": 100,
           "completed": 100,
           "failed": 0,
+          "errors": {},
           "errorRate": 0,
           "durationMs": 38359.12617300001,
           "turnsPerSecond": 2.60694155411672,
@@ -192,6 +225,14 @@
             "p95Ms": 37712.33148099999,
             "p99Ms": 37869.172292
           }
+        },
+        "financialDrain": {
+          "holds": 0,
+          "end_user_holds": 0,
+          "attempts": 100,
+          "pending_attempts": 0,
+          "settled_attempts": 100,
+          "responses": 100
         }
       },
       {
@@ -200,6 +241,8 @@
         "objectRestarts": 0,
         "queries": 65162,
         "queriesPerRequestedTurn": 260.648,
+        "observedQueries": 65162,
+        "observedQueriesPerRequestedTurn": 260.648,
         "phases": {
           "admission": {
             "queries": 6500,
@@ -210,6 +253,8 @@
             "connectMsTotal": 15668,
             "transactions": 500,
             "transactionHoldMsTotal": 39785,
+            "transactionHoldMsPerRequestedTurn": 159.14,
+            "observedTransactionHoldMsPerRequestedTurn": 159.14,
             "transactionHoldMs": {
               "samples": 500,
               "p50": 79,
@@ -227,6 +272,8 @@
             "connectMsTotal": 3712,
             "transactions": 250,
             "transactionHoldMsTotal": 88281,
+            "transactionHoldMsPerRequestedTurn": 353.124,
+            "observedTransactionHoldMsPerRequestedTurn": 353.124,
             "transactionHoldMs": {
               "samples": 250,
               "p50": 351,
@@ -244,6 +291,8 @@
             "connectMsTotal": 0,
             "transactions": 0,
             "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": 0.0,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
             "transactionHoldMs": {
               "samples": 0,
               "p50": null,
@@ -261,6 +310,8 @@
             "connectMsTotal": 10650,
             "transactions": 946,
             "transactionHoldMsTotal": 455905,
+            "transactionHoldMsPerRequestedTurn": 1823.62,
+            "observedTransactionHoldMsPerRequestedTurn": 1823.62,
             "transactionHoldMs": {
               "samples": 946,
               "p50": 321,
@@ -278,6 +329,8 @@
             "connectMsTotal": 0,
             "transactions": 0,
             "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": 0.0,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
             "transactionHoldMs": {
               "samples": 0,
               "p50": null,
@@ -295,6 +348,8 @@
             "connectMsTotal": 41714,
             "transactions": 0,
             "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": 0.0,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
             "transactionHoldMs": {
               "samples": 0,
               "p50": null,
@@ -312,6 +367,8 @@
             "connectMsTotal": 0,
             "transactions": 0,
             "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": 0.0,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
             "transactionHoldMs": {
               "samples": 0,
               "p50": null,
@@ -329,6 +386,8 @@
             "connectMsTotal": 282084,
             "transactions": 500,
             "transactionHoldMsTotal": 39545,
+            "transactionHoldMsPerRequestedTurn": 158.18,
+            "observedTransactionHoldMsPerRequestedTurn": 158.18,
             "transactionHoldMs": {
               "samples": 500,
               "p50": 79,
@@ -346,6 +405,8 @@
             "connectMsTotal": 5772,
             "transactions": 0,
             "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": 0.0,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
             "transactionHoldMs": {
               "samples": 0,
               "p50": null,
@@ -358,8 +419,13 @@
         "load": {
           "startedAt": "2026-11-06T03:37:23.204Z",
           "finishedAt": "2026-11-06T03:38:32.139Z",
+          "accepted": 250,
           "completed": 248,
           "failed": 2,
+          "errors": {
+            "http_503:UNAVAILABLE:unclassified": 1,
+            "http_200:turn_model_error:unclassified": 1
+          },
           "errorRate": 0.008,
           "durationMs": 68933.635354,
           "turnsPerSecond": 3.5976631542269204,
@@ -369,6 +435,14 @@
             "p95Ms": 66717.28371799999,
             "p99Ms": 66920.83398599998
           }
+        },
+        "financialDrain": {
+          "holds": 0,
+          "end_user_holds": 0,
+          "attempts": 350,
+          "pending_attempts": 0,
+          "settled_attempts": 350,
+          "responses": 350
         }
       },
       {
@@ -377,6 +451,8 @@
         "objectRestarts": 499,
         "queries": null,
         "queriesPerRequestedTurn": null,
+        "observedQueries": 5149,
+        "observedQueriesPerRequestedTurn": 10.298,
         "phases": {
           "admission": {
             "queries": 35,
@@ -387,6 +463,8 @@
             "connectMsTotal": 77,
             "transactions": 3,
             "transactionHoldMsTotal": 261,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 0.522,
             "transactionHoldMs": {
               "samples": 3,
               "p50": 86,
@@ -404,6 +482,8 @@
             "connectMsTotal": 12,
             "transactions": 1,
             "transactionHoldMsTotal": 392,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 0.784,
             "transactionHoldMs": {
               "samples": 1,
               "p50": 392,
@@ -421,6 +501,8 @@
             "connectMsTotal": 0,
             "transactions": 0,
             "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
             "transactionHoldMs": {
               "samples": 0,
               "p50": null,
@@ -438,6 +520,8 @@
             "connectMsTotal": 62,
             "transactions": 5,
             "transactionHoldMsTotal": 2716,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 5.432,
             "transactionHoldMs": {
               "samples": 5,
               "p50": 473,
@@ -455,6 +539,8 @@
             "connectMsTotal": 0,
             "transactions": 0,
             "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
             "transactionHoldMs": {
               "samples": 0,
               "p50": null,
@@ -472,6 +558,8 @@
             "connectMsTotal": 147,
             "transactions": 0,
             "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
             "transactionHoldMs": {
               "samples": 0,
               "p50": null,
@@ -489,6 +577,8 @@
             "connectMsTotal": 0,
             "transactions": 0,
             "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
             "transactionHoldMs": {
               "samples": 0,
               "p50": null,
@@ -506,6 +596,8 @@
             "connectMsTotal": 1235,
             "transactions": 2,
             "transactionHoldMsTotal": 161,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 0.322,
             "transactionHoldMs": {
               "samples": 2,
               "p50": 80,
@@ -523,6 +615,8 @@
             "connectMsTotal": 12523,
             "transactions": 0,
             "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
             "transactionHoldMs": {
               "samples": 0,
               "p50": null,
@@ -535,8 +629,14 @@
         "load": {
           "startedAt": "2026-11-06T03:38:40.557Z",
           "finishedAt": "2026-11-06T03:41:01.094Z",
+          "accepted": 500,
           "completed": 187,
           "failed": 313,
+          "errors": {
+            "client_timeout": 299,
+            "http_500:INTERNAL:unclassified": 1,
+            "http_503:UNAVAILABLE:unclassified": 13
+          },
           "errorRate": 0.626,
           "durationMs": 140534.58088599998,
           "turnsPerSecond": 1.3306333488957585,
@@ -547,9 +647,3186 @@
             "p99Ms": 121184.31372500001
           }
         },
-        "limitation": "Agent profiling was in memory; object recreation dropped counters. Raw surviving counts are lower bounds and are not normalized."
+        "financialDrain": {
+          "holds": 0,
+          "end_user_holds": 0,
+          "attempts": 849,
+          "pending_attempts": 0,
+          "settled_attempts": 849,
+          "responses": 849
+        },
+        "limitation": "Object recreation or financial work pending at the stage boundary makes the counters incomplete. Raw observed counts are lower bounds, not a complete per-turn profile."
       }
     ]
   },
-  "after": null
+  "afterInitial": {
+    "revision": "f5dac260dcd2dd5219e95b94dccb58609e3814d2",
+    "deploymentVersion": "b763cf33-160a-4812-9e06-5fe0ad1bc9da",
+    "source": "backends/workers/measurements/turn-db-after-initial-load.json",
+    "provenance": {
+      "runnerRevision": "f5dac260dcd2dd5219e95b94dccb58609e3814d2",
+      "operatorRevision": "f5dac260dcd2dd5219e95b94dccb58609e3814d2"
+    },
+    "stages": [
+      {
+        "concurrency": 100,
+        "complete": true,
+        "objectRestarts": 0,
+        "queries": 21773,
+        "queriesPerRequestedTurn": 217.73,
+        "observedQueries": 21773,
+        "observedQueriesPerRequestedTurn": 217.73,
+        "phases": {
+          "admission": {
+            "queries": 2400,
+            "queriesPerRequestedTurn": 24.0,
+            "queryMsTotal": 252936,
+            "queryErrors": 0,
+            "connections": 1900,
+            "connectMsTotal": 5938,
+            "transactions": 200,
+            "transactionHoldMsTotal": 16970,
+            "transactionHoldMsPerRequestedTurn": 169.7,
+            "observedTransactionHoldMsPerRequestedTurn": 169.7,
+            "transactionHoldMs": {
+              "samples": 200,
+              "p50": 82,
+              "p95": 109,
+              "p99": 136,
+              "max": 158
+            },
+            "largestStatementGroups": [
+              {
+                "label": "select:end_user_settings",
+                "queries": 400,
+                "queryMs": 51114,
+                "errors": 0
+              },
+              {
+                "label": "select:tenants",
+                "queries": 300,
+                "queryMs": 29922,
+                "errors": 0
+              },
+              {
+                "label": "update:agent_spend_limits+agents+model_attempts+pi_usage_receipts",
+                "queries": 200,
+                "queryMs": 22217,
+                "errors": 0
+              },
+              {
+                "label": "begin:other",
+                "queries": 200,
+                "queryMs": 25142,
+                "errors": 0
+              },
+              {
+                "label": "select:pi_usage_receipts",
+                "queries": 200,
+                "queryMs": 8512,
+                "errors": 0
+              },
+              {
+                "label": "commit:other",
+                "queries": 200,
+                "queryMs": 8458,
+                "errors": 0
+              },
+              {
+                "label": "select:billing_disputes+credit_accounts+credit_spend_minutes",
+                "queries": 200,
+                "queryMs": 27335,
+                "errors": 0
+              },
+              {
+                "label": "select:end_users",
+                "queries": 200,
+                "queryMs": 25524,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_days+end_user_holds",
+                "queries": 200,
+                "queryMs": 28517,
+                "errors": 0
+              },
+              {
+                "label": "insert:rate_limits",
+                "queries": 100,
+                "queryMs": 8141,
+                "errors": 0
+              }
+            ]
+          },
+          "hold": {
+            "queries": 1200,
+            "queriesPerRequestedTurn": 12.0,
+            "queryMsTotal": 89749,
+            "queryErrors": 0,
+            "connections": 400,
+            "connectMsTotal": 1263,
+            "transactions": 100,
+            "transactionHoldMsTotal": 33374,
+            "transactionHoldMsPerRequestedTurn": 333.74,
+            "observedTransactionHoldMsPerRequestedTurn": 333.74,
+            "transactionHoldMs": {
+              "samples": 100,
+              "p50": 332,
+              "p95": 399,
+              "p99": 420,
+              "max": 423
+            },
+            "largestStatementGroups": [
+              {
+                "label": "select:end_user_settings",
+                "queries": 200,
+                "queryMs": 20077,
+                "errors": 0
+              },
+              {
+                "label": "select:agents",
+                "queries": 100,
+                "queryMs": 9150,
+                "errors": 0
+              },
+              {
+                "label": "begin:other",
+                "queries": 100,
+                "queryMs": 15682,
+                "errors": 0
+              },
+              {
+                "label": "insert:end_users",
+                "queries": 100,
+                "queryMs": 4389,
+                "errors": 0
+              },
+              {
+                "label": "select:end_users",
+                "queries": 100,
+                "queryMs": 4101,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_lots",
+                "queries": 100,
+                "queryMs": 4043,
+                "errors": 0
+              },
+              {
+                "label": "delete:end_user_holds",
+                "queries": 100,
+                "queryMs": 4031,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_days+end_user_holds",
+                "queries": 100,
+                "queryMs": 4373,
+                "errors": 0
+              },
+              {
+                "label": "insert:end_user_holds",
+                "queries": 100,
+                "queryMs": 4085,
+                "errors": 0
+              },
+              {
+                "label": "commit:other",
+                "queries": 100,
+                "queryMs": 4246,
+                "errors": 0
+              }
+            ]
+          },
+          "renew": {
+            "queries": 0,
+            "queriesPerRequestedTurn": 0.0,
+            "queryMsTotal": 0,
+            "queryErrors": 0,
+            "connections": 0,
+            "connectMsTotal": 0,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": 0.0,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            }
+          },
+          "settle": {
+            "queries": 3668,
+            "queriesPerRequestedTurn": 36.68,
+            "queryMsTotal": 486340,
+            "queryErrors": 0,
+            "connections": 784,
+            "connectMsTotal": 2432,
+            "transactions": 328,
+            "transactionHoldMsTotal": 158906,
+            "transactionHoldMsPerRequestedTurn": 1589.06,
+            "observedTransactionHoldMsPerRequestedTurn": 1589.06,
+            "transactionHoldMs": {
+              "samples": 328,
+              "p50": 346,
+              "p95": 1008,
+              "p99": 1056,
+              "max": 1219
+            },
+            "largestStatementGroups": [
+              {
+                "label": "begin:other",
+                "queries": 328,
+                "queryMs": 235347,
+                "errors": 0
+              },
+              {
+                "label": "commit:other",
+                "queries": 328,
+                "queryMs": 13530,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_lots",
+                "queries": 300,
+                "queryMs": 12100,
+                "errors": 0
+              },
+              {
+                "label": "select:tenants",
+                "queries": 228,
+                "queryMs": 106994,
+                "errors": 0
+              },
+              {
+                "label": "select:other",
+                "queries": 228,
+                "queryMs": 23856,
+                "errors": 0
+              },
+              {
+                "label": "select:credit_accounts",
+                "queries": 228,
+                "queryMs": 8999,
+                "errors": 0
+              },
+              {
+                "label": "select:idempotency_keys",
+                "queries": 228,
+                "queryMs": 9040,
+                "errors": 0
+              },
+              {
+                "label": "select:end_users",
+                "queries": 200,
+                "queryMs": 8044,
+                "errors": 0
+              },
+              {
+                "label": "delete:credit_holds",
+                "queries": 200,
+                "queryMs": 7993,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_settings",
+                "queries": 200,
+                "queryMs": 12076,
+                "errors": 0
+              }
+            ]
+          },
+          "usage": {
+            "queries": 300,
+            "queriesPerRequestedTurn": 3.0,
+            "queryMsTotal": 14920,
+            "queryErrors": 0,
+            "connections": 0,
+            "connectMsTotal": 0,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": 0.0,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            },
+            "largestStatementGroups": [
+              {
+                "label": "insert:usage",
+                "queries": 100,
+                "queryMs": 6560,
+                "errors": 0
+              },
+              {
+                "label": "insert:workspace_assignments+workspace_usage",
+                "queries": 100,
+                "queryMs": 4237,
+                "errors": 0
+              },
+              {
+                "label": "with:credit_accounts+credit_ledger+credit_spend_minutes+usage",
+                "queries": 100,
+                "queryMs": 4123,
+                "errors": 0
+              }
+            ]
+          },
+          "webhooks": {
+            "queries": 728,
+            "queriesPerRequestedTurn": 7.28,
+            "queryMsTotal": 223668,
+            "queryErrors": 0,
+            "connections": 400,
+            "connectMsTotal": 17113,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": 0.0,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            },
+            "largestStatementGroups": [
+              {
+                "label": "select:idempotency_keys+usage_webhook_outbox+webhook_deliveries",
+                "queries": 428,
+                "queryMs": 157081,
+                "errors": 0
+              },
+              {
+                "label": "insert:webhook_deliveries+webhook_endpoints",
+                "queries": 300,
+                "queryMs": 66587,
+                "errors": 0
+              }
+            ]
+          },
+          "history": {
+            "queries": 0,
+            "queriesPerRequestedTurn": 0.0,
+            "queryMsTotal": 0,
+            "queryErrors": 0,
+            "connections": 0,
+            "connectMsTotal": 0,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": 0.0,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            }
+          },
+          "other": {
+            "queries": 12703,
+            "queriesPerRequestedTurn": 127.03,
+            "queryMsTotal": 2386749,
+            "queryErrors": 0,
+            "connections": 9304,
+            "connectMsTotal": 130236,
+            "transactions": 200,
+            "transactionHoldMsTotal": 16842,
+            "transactionHoldMsPerRequestedTurn": 168.42,
+            "observedTransactionHoldMsPerRequestedTurn": 168.42,
+            "transactionHoldMs": {
+              "samples": 200,
+              "p50": 83,
+              "p95": 100,
+              "p99": 124,
+              "max": 159
+            },
+            "largestStatementGroups": [
+              {
+                "label": "select:agents",
+                "queries": 2999,
+                "queryMs": 641081,
+                "errors": 0
+              },
+              {
+                "label": "update:agent_spend_limits+agents+model_attempts+pi_usage_receipts",
+                "queries": 2999,
+                "queryMs": 549466,
+                "errors": 0
+              },
+              {
+                "label": "select:tenants",
+                "queries": 2999,
+                "queryMs": 588948,
+                "errors": 0
+              },
+              {
+                "label": "select:computer_connections+computer_leases",
+                "queries": 767,
+                "queryMs": 117621,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_settings",
+                "queries": 600,
+                "queryMs": 65894,
+                "errors": 0
+              },
+              {
+                "label": "select:pi_usage_receipts",
+                "queries": 372,
+                "queryMs": 119519,
+                "errors": 0
+              },
+              {
+                "label": "select:agents+computer_connections",
+                "queries": 367,
+                "queryMs": 77716,
+                "errors": 0
+              },
+              {
+                "label": "select:end_users",
+                "queries": 300,
+                "queryMs": 33009,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_days+end_user_holds",
+                "queries": 300,
+                "queryMs": 33033,
+                "errors": 0
+              },
+              {
+                "label": "select:model_providers",
+                "queries": 300,
+                "queryMs": 31314,
+                "errors": 0
+              }
+            ]
+          },
+          "edge": {
+            "queries": 774,
+            "queriesPerRequestedTurn": 7.74,
+            "queryMsTotal": 145402,
+            "queryErrors": 0,
+            "connections": 774,
+            "connectMsTotal": 2304,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": 0.0,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            },
+            "largestStatementGroups": [
+              {
+                "label": "select:api_tokens",
+                "queries": 258,
+                "queryMs": 50744,
+                "errors": 0
+              },
+              {
+                "label": "select:account_deletions+tenants",
+                "queries": 258,
+                "queryMs": 46620,
+                "errors": 0
+              },
+              {
+                "label": "select:agents",
+                "queries": 258,
+                "queryMs": 48038,
+                "errors": 0
+              }
+            ]
+          }
+        },
+        "load": {
+          "startedAt": "2026-11-06T04:02:29.823Z",
+          "finishedAt": "2026-11-06T04:03:06.519Z",
+          "accepted": 100,
+          "completed": 100,
+          "failed": 0,
+          "errors": {},
+          "errorRate": 0,
+          "durationMs": 36696.841111000016,
+          "turnsPerSecond": 2.7250301925858302,
+          "turnLatency": {
+            "samples": 100,
+            "p50Ms": 33090.374771,
+            "p95Ms": 34970.534212,
+            "p99Ms": 35332.51219800001
+          }
+        },
+        "financialDrain": {
+          "holds": 0,
+          "end_user_holds": 0,
+          "attempts": 100,
+          "pending_attempts": 0,
+          "settled_attempts": 100,
+          "responses": 100
+        }
+      },
+      {
+        "concurrency": 250,
+        "complete": false,
+        "objectRestarts": 2,
+        "queries": null,
+        "queriesPerRequestedTurn": null,
+        "observedQueries": 52573,
+        "observedQueriesPerRequestedTurn": 210.292,
+        "phases": {
+          "admission": {
+            "queries": 5952,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 1530671,
+            "queryErrors": 0,
+            "connections": 4712,
+            "connectMsTotal": 14181,
+            "transactions": 496,
+            "transactionHoldMsTotal": 39554,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 158.216,
+            "transactionHoldMs": {
+              "samples": 496,
+              "p50": 79,
+              "p95": 93,
+              "p99": 115,
+              "max": 145
+            },
+            "largestStatementGroups": [
+              {
+                "label": "select:end_user_settings",
+                "queries": 992,
+                "queryMs": 325380,
+                "errors": 0
+              },
+              {
+                "label": "select:tenants",
+                "queries": 744,
+                "queryMs": 198436,
+                "errors": 0
+              },
+              {
+                "label": "update:agent_spend_limits+agents+model_attempts+pi_usage_receipts",
+                "queries": 496,
+                "queryMs": 149953,
+                "errors": 0
+              },
+              {
+                "label": "begin:other",
+                "queries": 496,
+                "queryMs": 161532,
+                "errors": 0
+              },
+              {
+                "label": "select:pi_usage_receipts",
+                "queries": 496,
+                "queryMs": 19969,
+                "errors": 0
+              },
+              {
+                "label": "commit:other",
+                "queries": 496,
+                "queryMs": 19585,
+                "errors": 0
+              },
+              {
+                "label": "select:billing_disputes+credit_accounts+credit_spend_minutes",
+                "queries": 496,
+                "queryMs": 169588,
+                "errors": 0
+              },
+              {
+                "label": "select:end_users",
+                "queries": 496,
+                "queryMs": 158977,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_days+end_user_holds",
+                "queries": 496,
+                "queryMs": 169450,
+                "errors": 0
+              },
+              {
+                "label": "insert:rate_limits",
+                "queries": 248,
+                "queryMs": 46571,
+                "errors": 0
+              }
+            ]
+          },
+          "hold": {
+            "queries": 2976,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 449638,
+            "queryErrors": 0,
+            "connections": 992,
+            "connectMsTotal": 2836,
+            "transactions": 248,
+            "transactionHoldMsTotal": 80211,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 320.844,
+            "transactionHoldMs": {
+              "samples": 248,
+              "p50": 324,
+              "p95": 375,
+              "p99": 405,
+              "max": 413
+            },
+            "largestStatementGroups": [
+              {
+                "label": "select:end_user_settings",
+                "queries": 496,
+                "queryMs": 121609,
+                "errors": 0
+              },
+              {
+                "label": "select:agents",
+                "queries": 248,
+                "queryMs": 62223,
+                "errors": 0
+              },
+              {
+                "label": "begin:other",
+                "queries": 248,
+                "queryMs": 100774,
+                "errors": 0
+              },
+              {
+                "label": "insert:end_users",
+                "queries": 248,
+                "queryMs": 9965,
+                "errors": 0
+              },
+              {
+                "label": "select:end_users",
+                "queries": 248,
+                "queryMs": 9892,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_lots",
+                "queries": 248,
+                "queryMs": 10017,
+                "errors": 0
+              },
+              {
+                "label": "delete:end_user_holds",
+                "queries": 248,
+                "queryMs": 10165,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_days+end_user_holds",
+                "queries": 248,
+                "queryMs": 10110,
+                "errors": 0
+              },
+              {
+                "label": "insert:end_user_holds",
+                "queries": 248,
+                "queryMs": 9961,
+                "errors": 0
+              },
+              {
+                "label": "commit:other",
+                "queries": 248,
+                "queryMs": 10111,
+                "errors": 0
+              }
+            ]
+          },
+          "renew": {
+            "queries": 0,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 0,
+            "queryErrors": 0,
+            "connections": 0,
+            "connectMsTotal": 0,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            }
+          },
+          "settle": {
+            "queries": 9290,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 3498629,
+            "queryErrors": 0,
+            "connections": 2035,
+            "connectMsTotal": 5944,
+            "transactions": 845,
+            "transactionHoldMsTotal": 397846,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 1591.384,
+            "transactionHoldMs": {
+              "samples": 845,
+              "p50": 335,
+              "p95": 975,
+              "p99": 1101,
+              "max": 1198
+            },
+            "largestStatementGroups": [
+              {
+                "label": "begin:other",
+                "queries": 845,
+                "queryMs": 1952467,
+                "errors": 0
+              },
+              {
+                "label": "commit:other",
+                "queries": 845,
+                "queryMs": 33977,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_lots",
+                "queries": 746,
+                "queryMs": 29544,
+                "errors": 0
+              },
+              {
+                "label": "select:tenants",
+                "queries": 595,
+                "queryMs": 1182591,
+                "errors": 0
+              },
+              {
+                "label": "select:other",
+                "queries": 595,
+                "queryMs": 66057,
+                "errors": 0
+              },
+              {
+                "label": "select:credit_accounts",
+                "queries": 595,
+                "queryMs": 23291,
+                "errors": 0
+              },
+              {
+                "label": "select:idempotency_keys",
+                "queries": 595,
+                "queryMs": 23299,
+                "errors": 0
+              },
+              {
+                "label": "select:end_users",
+                "queries": 498,
+                "queryMs": 19866,
+                "errors": 0
+              },
+              {
+                "label": "delete:credit_holds",
+                "queries": 498,
+                "queryMs": 19573,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_settings",
+                "queries": 496,
+                "queryMs": 29422,
+                "errors": 0
+              }
+            ]
+          },
+          "usage": {
+            "queries": 744,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 34310,
+            "queryErrors": 0,
+            "connections": 0,
+            "connectMsTotal": 0,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            },
+            "largestStatementGroups": [
+              {
+                "label": "insert:usage",
+                "queries": 248,
+                "queryMs": 14208,
+                "errors": 0
+              },
+              {
+                "label": "insert:workspace_assignments+workspace_usage",
+                "queries": 248,
+                "queryMs": 10081,
+                "errors": 0
+              },
+              {
+                "label": "with:credit_accounts+credit_ledger+credit_spend_minutes+usage",
+                "queries": 248,
+                "queryMs": 10021,
+                "errors": 0
+              }
+            ]
+          },
+          "webhooks": {
+            "queries": 1835,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 1941192,
+            "queryErrors": 0,
+            "connections": 992,
+            "connectMsTotal": 40950,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            },
+            "largestStatementGroups": [
+              {
+                "label": "select:idempotency_keys+usage_webhook_outbox+webhook_deliveries",
+                "queries": 1091,
+                "queryMs": 1477110,
+                "errors": 0
+              },
+              {
+                "label": "insert:webhook_deliveries+webhook_endpoints",
+                "queries": 744,
+                "queryMs": 464082,
+                "errors": 0
+              }
+            ]
+          },
+          "history": {
+            "queries": 0,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 0,
+            "queryErrors": 0,
+            "connections": 0,
+            "connectMsTotal": 0,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            }
+          },
+          "other": {
+            "queries": 29541,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 15298691,
+            "queryErrors": 1,
+            "connections": 21822,
+            "connectMsTotal": 295263,
+            "transactions": 496,
+            "transactionHoldMsTotal": 39509,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 158.036,
+            "transactionHoldMs": {
+              "samples": 496,
+              "p50": 80,
+              "p95": 93,
+              "p99": 103,
+              "max": 155
+            },
+            "largestStatementGroups": [
+              {
+                "label": "select:tenants",
+                "queries": 6825,
+                "queryMs": 3559303,
+                "errors": 0
+              },
+              {
+                "label": "select:agents",
+                "queries": 6728,
+                "queryMs": 3931445,
+                "errors": 1
+              },
+              {
+                "label": "update:agent_spend_limits+agents+model_attempts+pi_usage_receipts",
+                "queries": 6727,
+                "queryMs": 3422299,
+                "errors": 0
+              },
+              {
+                "label": "select:computer_connections+computer_leases",
+                "queries": 1915,
+                "queryMs": 964481,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_settings",
+                "queries": 1488,
+                "queryMs": 412465,
+                "errors": 0
+              },
+              {
+                "label": "select:agents+computer_connections",
+                "queries": 1021,
+                "queryMs": 686814,
+                "errors": 0
+              },
+              {
+                "label": "select:pi_usage_receipts",
+                "queries": 967,
+                "queryMs": 844977,
+                "errors": 0
+              },
+              {
+                "label": "select:end_users",
+                "queries": 744,
+                "queryMs": 203475,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_days+end_user_holds",
+                "queries": 744,
+                "queryMs": 215060,
+                "errors": 0
+              },
+              {
+                "label": "select:model_providers",
+                "queries": 646,
+                "queryMs": 202518,
+                "errors": 0
+              }
+            ]
+          },
+          "edge": {
+            "queries": 2235,
+            "queriesPerRequestedTurn": 8.94,
+            "queryMsTotal": 2445627,
+            "queryErrors": 1,
+            "connections": 2235,
+            "connectMsTotal": 6423,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            },
+            "largestStatementGroups": [
+              {
+                "label": "select:api_tokens",
+                "queries": 745,
+                "queryMs": 710432,
+                "errors": 0
+              },
+              {
+                "label": "select:account_deletions+tenants",
+                "queries": 745,
+                "queryMs": 910948,
+                "errors": 0
+              },
+              {
+                "label": "select:agents",
+                "queries": 745,
+                "queryMs": 824247,
+                "errors": 1
+              }
+            ]
+          }
+        },
+        "load": {
+          "startedAt": "2026-11-06T04:03:11.476Z",
+          "finishedAt": "2026-11-06T04:04:13.854Z",
+          "accepted": 250,
+          "completed": 248,
+          "failed": 2,
+          "errors": {
+            "client_timeout": 1,
+            "http_503:UNAVAILABLE:unclassified": 1
+          },
+          "errorRate": 0.008,
+          "durationMs": 62377.742539,
+          "turnsPerSecond": 3.975777094609423,
+          "turnLatency": {
+            "samples": 248,
+            "p50Ms": 56448.20290999999,
+            "p95Ms": 60652.22350000002,
+            "p99Ms": 60848.935503999994
+          }
+        },
+        "financialDrain": {
+          "holds": 0,
+          "end_user_holds": 0,
+          "attempts": 350,
+          "pending_attempts": 0,
+          "settled_attempts": 350,
+          "responses": 350
+        },
+        "limitation": "Object recreation or financial work pending at the stage boundary makes the counters incomplete. Raw observed counts are lower bounds, not a complete per-turn profile."
+      },
+      {
+        "concurrency": 500,
+        "complete": false,
+        "objectRestarts": 0,
+        "queries": null,
+        "queriesPerRequestedTurn": null,
+        "observedQueries": 98390,
+        "observedQueriesPerRequestedTurn": 196.78,
+        "phases": {
+          "admission": {
+            "queries": 12000,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 6636077,
+            "queryErrors": 0,
+            "connections": 9500,
+            "connectMsTotal": 26773,
+            "transactions": 1000,
+            "transactionHoldMsTotal": 78575,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 157.15,
+            "transactionHoldMs": {
+              "samples": 1000,
+              "p50": 78,
+              "p95": 90,
+              "p99": 114,
+              "max": 171
+            },
+            "largestStatementGroups": [
+              {
+                "label": "select:end_user_settings",
+                "queries": 2000,
+                "queryMs": 1477959,
+                "errors": 0
+              },
+              {
+                "label": "select:tenants",
+                "queries": 1500,
+                "queryMs": 839450,
+                "errors": 0
+              },
+              {
+                "label": "update:agent_spend_limits+agents+model_attempts+pi_usage_receipts",
+                "queries": 1000,
+                "queryMs": 637385,
+                "errors": 0
+              },
+              {
+                "label": "begin:other",
+                "queries": 1000,
+                "queryMs": 668455,
+                "errors": 0
+              },
+              {
+                "label": "select:pi_usage_receipts",
+                "queries": 1000,
+                "queryMs": 39388,
+                "errors": 0
+              },
+              {
+                "label": "commit:other",
+                "queries": 1000,
+                "queryMs": 39187,
+                "errors": 0
+              },
+              {
+                "label": "select:billing_disputes+credit_accounts+credit_spend_minutes",
+                "queries": 1000,
+                "queryMs": 677103,
+                "errors": 0
+              },
+              {
+                "label": "select:end_users",
+                "queries": 1000,
+                "queryMs": 746178,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_days+end_user_holds",
+                "queries": 1000,
+                "queryMs": 842994,
+                "errors": 0
+              },
+              {
+                "label": "insert:rate_limits",
+                "queries": 500,
+                "queryMs": 199252,
+                "errors": 0
+              }
+            ]
+          },
+          "hold": {
+            "queries": 5984,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 2762897,
+            "queryErrors": 3,
+            "connections": 1998,
+            "connectMsTotal": 5508,
+            "transactions": 498,
+            "transactionHoldMsTotal": 157400,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 314.8,
+            "transactionHoldMs": {
+              "samples": 498,
+              "p50": 317,
+              "p95": 366,
+              "p99": 400,
+              "max": 408
+            },
+            "largestStatementGroups": [
+              {
+                "label": "select:end_user_settings",
+                "queries": 998,
+                "queryMs": 682465,
+                "errors": 0
+              },
+              {
+                "label": "select:agents",
+                "queries": 500,
+                "queryMs": 264909,
+                "errors": 0
+              },
+              {
+                "label": "begin:other",
+                "queries": 500,
+                "queryMs": 762380,
+                "errors": 2
+              },
+              {
+                "label": "insert:end_users",
+                "queries": 498,
+                "queryMs": 19477,
+                "errors": 0
+              },
+              {
+                "label": "select:end_users",
+                "queries": 498,
+                "queryMs": 19562,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_lots",
+                "queries": 498,
+                "queryMs": 19630,
+                "errors": 0
+              },
+              {
+                "label": "delete:end_user_holds",
+                "queries": 498,
+                "queryMs": 19615,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_days+end_user_holds",
+                "queries": 498,
+                "queryMs": 19787,
+                "errors": 0
+              },
+              {
+                "label": "insert:end_user_holds",
+                "queries": 498,
+                "queryMs": 19686,
+                "errors": 0
+              },
+              {
+                "label": "commit:other",
+                "queries": 498,
+                "queryMs": 20061,
+                "errors": 0
+              }
+            ]
+          },
+          "renew": {
+            "queries": 0,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 0,
+            "queryErrors": 0,
+            "connections": 0,
+            "connectMsTotal": 0,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            }
+          },
+          "settle": {
+            "queries": 18832,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 14685079,
+            "queryErrors": 40,
+            "connections": 3879,
+            "connectMsTotal": 11518,
+            "transactions": 1681,
+            "transactionHoldMsTotal": 784920,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 1569.84,
+            "transactionHoldMs": {
+              "samples": 1681,
+              "p50": 333,
+              "p95": 960,
+              "p99": 1053,
+              "max": 1159
+            },
+            "largestStatementGroups": [
+              {
+                "label": "begin:other",
+                "queries": 1719,
+                "queryMs": 9063641,
+                "errors": 38
+              },
+              {
+                "label": "commit:other",
+                "queries": 1681,
+                "queryMs": 67408,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_lots",
+                "queries": 1596,
+                "queryMs": 62872,
+                "errors": 0
+              },
+              {
+                "label": "delete:credit_holds",
+                "queries": 1102,
+                "queryMs": 43030,
+                "errors": 0
+              },
+              {
+                "label": "select:end_users",
+                "queries": 1099,
+                "queryMs": 43234,
+                "errors": 0
+              },
+              {
+                "label": "select:tenants",
+                "queries": 1081,
+                "queryMs": 4890509,
+                "errors": 2
+              },
+              {
+                "label": "select:other",
+                "queries": 1079,
+                "queryMs": 104390,
+                "errors": 0
+              },
+              {
+                "label": "select:credit_accounts",
+                "queries": 1079,
+                "queryMs": 42242,
+                "errors": 0
+              },
+              {
+                "label": "select:idempotency_keys",
+                "queries": 1079,
+                "queryMs": 42229,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_settings",
+                "queries": 994,
+                "queryMs": 58390,
+                "errors": 0
+              }
+            ]
+          },
+          "usage": {
+            "queries": 1494,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 65698,
+            "queryErrors": 0,
+            "connections": 0,
+            "connectMsTotal": 0,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            },
+            "largestStatementGroups": [
+              {
+                "label": "with:credit_accounts+credit_ledger+credit_spend_minutes+usage",
+                "queries": 500,
+                "queryMs": 20253,
+                "errors": 0
+              },
+              {
+                "label": "insert:usage",
+                "queries": 497,
+                "queryMs": 25554,
+                "errors": 0
+              },
+              {
+                "label": "insert:workspace_assignments+workspace_usage",
+                "queries": 497,
+                "queryMs": 19891,
+                "errors": 0
+              }
+            ]
+          },
+          "webhooks": {
+            "queries": 3576,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 8473570,
+            "queryErrors": 0,
+            "connections": 2000,
+            "connectMsTotal": 80058,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            },
+            "largestStatementGroups": [
+              {
+                "label": "select:idempotency_keys+usage_webhook_outbox+webhook_deliveries",
+                "queries": 2079,
+                "queryMs": 6491369,
+                "errors": 0
+              },
+              {
+                "label": "insert:webhook_deliveries+webhook_endpoints",
+                "queries": 1497,
+                "queryMs": 1982201,
+                "errors": 0
+              }
+            ]
+          },
+          "history": {
+            "queries": 0,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 0,
+            "queryErrors": 0,
+            "connections": 0,
+            "connectMsTotal": 0,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            }
+          },
+          "other": {
+            "queries": 51910,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 65847259,
+            "queryErrors": 121,
+            "connections": 38949,
+            "connectMsTotal": 458680,
+            "transactions": 1000,
+            "transactionHoldMsTotal": 78133,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 156.266,
+            "transactionHoldMs": {
+              "samples": 1000,
+              "p50": 78,
+              "p95": 90,
+              "p99": 104,
+              "max": 149
+            },
+            "largestStatementGroups": [
+              {
+                "label": "select:tenants",
+                "queries": 11168,
+                "queryMs": 15260453,
+                "errors": 29
+              },
+              {
+                "label": "select:agents",
+                "queries": 10991,
+                "queryMs": 15749501,
+                "errors": 30
+              },
+              {
+                "label": "update:agent_spend_limits+agents+model_attempts+pi_usage_receipts",
+                "queries": 10961,
+                "queryMs": 14917271,
+                "errors": 38
+              },
+              {
+                "label": "select:computer_connections+computer_leases",
+                "queries": 4021,
+                "queryMs": 4816201,
+                "errors": 2
+              },
+              {
+                "label": "select:end_user_settings",
+                "queries": 3000,
+                "queryMs": 1789962,
+                "errors": 0
+              },
+              {
+                "label": "select:agents+computer_connections",
+                "queries": 2273,
+                "queryMs": 3889206,
+                "errors": 12
+              },
+              {
+                "label": "select:pi_usage_receipts",
+                "queries": 1744,
+                "queryMs": 3184271,
+                "errors": 10
+              },
+              {
+                "label": "select:end_users",
+                "queries": 1500,
+                "queryMs": 892793,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_days+end_user_holds",
+                "queries": 1500,
+                "queryMs": 895409,
+                "errors": 0
+              },
+              {
+                "label": "select:model_providers",
+                "queries": 1252,
+                "queryMs": 832578,
+                "errors": 0
+              }
+            ]
+          },
+          "edge": {
+            "queries": 4594,
+            "queriesPerRequestedTurn": 9.188,
+            "queryMsTotal": 6070192,
+            "queryErrors": 21,
+            "connections": 4594,
+            "connectMsTotal": 12797,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            },
+            "largestStatementGroups": [
+              {
+                "label": "select:api_tokens",
+                "queries": 1534,
+                "queryMs": 2361303,
+                "errors": 4
+              },
+              {
+                "label": "select:account_deletions+tenants",
+                "queries": 1530,
+                "queryMs": 1762103,
+                "errors": 0
+              },
+              {
+                "label": "select:agents",
+                "queries": 1530,
+                "queryMs": 1946786,
+                "errors": 17
+              }
+            ]
+          }
+        },
+        "load": {
+          "startedAt": "2026-11-06T04:04:21.388Z",
+          "finishedAt": "2026-11-06T04:06:08.674Z",
+          "accepted": 500,
+          "completed": 251,
+          "failed": 249,
+          "errors": {
+            "http_503:UNAVAILABLE:unclassified": 21,
+            "http_500:INTERNAL:unclassified": 6,
+            "client_timeout": 221,
+            "http_200:turn_model_error:unclassified": 1
+          },
+          "errorRate": 0.498,
+          "durationMs": 107285.624446,
+          "turnsPerSecond": 2.3395492294155,
+          "turnLatency": {
+            "samples": 251,
+            "p50Ms": 97562.64427399996,
+            "p95Ms": 105519.344706,
+            "p99Ms": 106563.66723399996
+          }
+        },
+        "financialDrain": {
+          "holds": 0,
+          "end_user_holds": 1,
+          "attempts": 848,
+          "pending_attempts": 1,
+          "settled_attempts": 847,
+          "responses": 847
+        },
+        "limitation": "Object recreation or financial work pending at the stage boundary makes the counters incomplete. Raw observed counts are lower bounds, not a complete per-turn profile."
+      }
+    ],
+    "status": "Initial optimized runtime; a subsequent final measurement uses the merged deployment."
+  },
+  "after": {
+    "revision": "76f5609635adacb5250d4d39cc8ff7dd4dcce5a7",
+    "deploymentVersion": "e19b0ab2-743b-4f63-80ca-3998c1deda77",
+    "source": "backends/workers/measurements/turn-db-after-load.json",
+    "provenance": {
+      "runnerRevision": "76f5609635adacb5250d4d39cc8ff7dd4dcce5a7",
+      "operatorRevision": "76f5609635adacb5250d4d39cc8ff7dd4dcce5a7"
+    },
+    "stages": [
+      {
+        "concurrency": 100,
+        "complete": true,
+        "objectRestarts": 0,
+        "queries": 21923,
+        "queriesPerRequestedTurn": 219.23,
+        "observedQueries": 21923,
+        "observedQueriesPerRequestedTurn": 219.23,
+        "phases": {
+          "admission": {
+            "queries": 2400,
+            "queriesPerRequestedTurn": 24.0,
+            "queryMsTotal": 250889,
+            "queryErrors": 0,
+            "connections": 1900,
+            "connectMsTotal": 5280,
+            "transactions": 200,
+            "transactionHoldMsTotal": 16478,
+            "transactionHoldMsPerRequestedTurn": 164.78,
+            "observedTransactionHoldMsPerRequestedTurn": 164.78,
+            "transactionHoldMs": {
+              "samples": 200,
+              "p50": 80,
+              "p95": 99,
+              "p99": 124,
+              "max": 138
+            },
+            "largestStatementGroups": [
+              {
+                "label": "select:end_user_settings",
+                "queries": 400,
+                "queryMs": 52059,
+                "errors": 0
+              },
+              {
+                "label": "select:tenants",
+                "queries": 300,
+                "queryMs": 28913,
+                "errors": 0
+              },
+              {
+                "label": "update:agent_spend_limits+agents+model_attempts+pi_usage_receipts",
+                "queries": 200,
+                "queryMs": 24616,
+                "errors": 0
+              },
+              {
+                "label": "begin:other",
+                "queries": 200,
+                "queryMs": 22965,
+                "errors": 0
+              },
+              {
+                "label": "select:pi_usage_receipts",
+                "queries": 200,
+                "queryMs": 8349,
+                "errors": 0
+              },
+              {
+                "label": "commit:other",
+                "queries": 200,
+                "queryMs": 8129,
+                "errors": 0
+              },
+              {
+                "label": "select:billing_disputes+credit_accounts+credit_spend_minutes",
+                "queries": 200,
+                "queryMs": 26218,
+                "errors": 0
+              },
+              {
+                "label": "select:end_users",
+                "queries": 200,
+                "queryMs": 27664,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_days+end_user_holds",
+                "queries": 200,
+                "queryMs": 27557,
+                "errors": 0
+              },
+              {
+                "label": "insert:rate_limits",
+                "queries": 100,
+                "queryMs": 7754,
+                "errors": 0
+              }
+            ]
+          },
+          "hold": {
+            "queries": 1200,
+            "queriesPerRequestedTurn": 12.0,
+            "queryMsTotal": 92090,
+            "queryErrors": 0,
+            "connections": 400,
+            "connectMsTotal": 1065,
+            "transactions": 100,
+            "transactionHoldMsTotal": 32176,
+            "transactionHoldMsPerRequestedTurn": 321.76,
+            "observedTransactionHoldMsPerRequestedTurn": 321.76,
+            "transactionHoldMs": {
+              "samples": 100,
+              "p50": 323,
+              "p95": 382,
+              "p99": 398,
+              "max": 418
+            },
+            "largestStatementGroups": [
+              {
+                "label": "select:end_user_settings",
+                "queries": 200,
+                "queryMs": 18795,
+                "errors": 0
+              },
+              {
+                "label": "select:agents",
+                "queries": 100,
+                "queryMs": 8956,
+                "errors": 0
+              },
+              {
+                "label": "begin:other",
+                "queries": 100,
+                "queryMs": 17681,
+                "errors": 0
+              },
+              {
+                "label": "insert:end_users",
+                "queries": 100,
+                "queryMs": 4022,
+                "errors": 0
+              },
+              {
+                "label": "select:end_users",
+                "queries": 100,
+                "queryMs": 3999,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_lots",
+                "queries": 100,
+                "queryMs": 4167,
+                "errors": 0
+              },
+              {
+                "label": "delete:end_user_holds",
+                "queries": 100,
+                "queryMs": 3998,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_days+end_user_holds",
+                "queries": 100,
+                "queryMs": 3947,
+                "errors": 0
+              },
+              {
+                "label": "insert:end_user_holds",
+                "queries": 100,
+                "queryMs": 3884,
+                "errors": 0
+              },
+              {
+                "label": "commit:other",
+                "queries": 100,
+                "queryMs": 4195,
+                "errors": 0
+              }
+            ]
+          },
+          "renew": {
+            "queries": 0,
+            "queriesPerRequestedTurn": 0.0,
+            "queryMsTotal": 0,
+            "queryErrors": 0,
+            "connections": 0,
+            "connectMsTotal": 0,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": 0.0,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            }
+          },
+          "settle": {
+            "queries": 3638,
+            "queriesPerRequestedTurn": 36.38,
+            "queryMsTotal": 535770,
+            "queryErrors": 0,
+            "connections": 769,
+            "connectMsTotal": 2207,
+            "transactions": 323,
+            "transactionHoldMsTotal": 151494,
+            "transactionHoldMsPerRequestedTurn": 1514.94,
+            "observedTransactionHoldMsPerRequestedTurn": 1514.94,
+            "transactionHoldMs": {
+              "samples": 323,
+              "p50": 341,
+              "p95": 944,
+              "p99": 1064,
+              "max": 1228
+            },
+            "largestStatementGroups": [
+              {
+                "label": "begin:other",
+                "queries": 323,
+                "queryMs": 251836,
+                "errors": 0
+              },
+              {
+                "label": "commit:other",
+                "queries": 323,
+                "queryMs": 12700,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_lots",
+                "queries": 300,
+                "queryMs": 11300,
+                "errors": 0
+              },
+              {
+                "label": "select:tenants",
+                "queries": 223,
+                "queryMs": 145529,
+                "errors": 0
+              },
+              {
+                "label": "select:other",
+                "queries": 223,
+                "queryMs": 24440,
+                "errors": 0
+              },
+              {
+                "label": "select:credit_accounts",
+                "queries": 223,
+                "queryMs": 8533,
+                "errors": 0
+              },
+              {
+                "label": "select:idempotency_keys",
+                "queries": 223,
+                "queryMs": 8578,
+                "errors": 0
+              },
+              {
+                "label": "select:end_users",
+                "queries": 200,
+                "queryMs": 7549,
+                "errors": 0
+              },
+              {
+                "label": "delete:credit_holds",
+                "queries": 200,
+                "queryMs": 7637,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_settings",
+                "queries": 200,
+                "queryMs": 11359,
+                "errors": 0
+              }
+            ]
+          },
+          "usage": {
+            "queries": 300,
+            "queriesPerRequestedTurn": 3.0,
+            "queryMsTotal": 13009,
+            "queryErrors": 0,
+            "connections": 0,
+            "connectMsTotal": 0,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": 0.0,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            },
+            "largestStatementGroups": [
+              {
+                "label": "insert:usage",
+                "queries": 100,
+                "queryMs": 5158,
+                "errors": 0
+              },
+              {
+                "label": "insert:workspace_assignments+workspace_usage",
+                "queries": 100,
+                "queryMs": 3899,
+                "errors": 0
+              },
+              {
+                "label": "with:credit_accounts+credit_ledger+credit_spend_minutes+usage",
+                "queries": 100,
+                "queryMs": 3952,
+                "errors": 0
+              }
+            ]
+          },
+          "webhooks": {
+            "queries": 723,
+            "queriesPerRequestedTurn": 7.23,
+            "queryMsTotal": 225831,
+            "queryErrors": 0,
+            "connections": 400,
+            "connectMsTotal": 15716,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": 0.0,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            },
+            "largestStatementGroups": [
+              {
+                "label": "select:idempotency_keys+usage_webhook_outbox+webhook_deliveries",
+                "queries": 423,
+                "queryMs": 161924,
+                "errors": 0
+              },
+              {
+                "label": "insert:webhook_deliveries+webhook_endpoints",
+                "queries": 300,
+                "queryMs": 63907,
+                "errors": 0
+              }
+            ]
+          },
+          "history": {
+            "queries": 0,
+            "queriesPerRequestedTurn": 0.0,
+            "queryMsTotal": 0,
+            "queryErrors": 0,
+            "connections": 0,
+            "connectMsTotal": 0,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": 0.0,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            }
+          },
+          "other": {
+            "queries": 12945,
+            "queriesPerRequestedTurn": 129.45,
+            "queryMsTotal": 2348713,
+            "queryErrors": 0,
+            "connections": 9481,
+            "connectMsTotal": 124003,
+            "transactions": 200,
+            "transactionHoldMsTotal": 16684,
+            "transactionHoldMsPerRequestedTurn": 166.84,
+            "observedTransactionHoldMsPerRequestedTurn": 166.84,
+            "transactionHoldMs": {
+              "samples": 200,
+              "p50": 83,
+              "p95": 101,
+              "p99": 113,
+              "max": 125
+            },
+            "largestStatementGroups": [
+              {
+                "label": "select:agents",
+                "queries": 3064,
+                "queryMs": 613250,
+                "errors": 0
+              },
+              {
+                "label": "update:agent_spend_limits+agents+model_attempts+pi_usage_receipts",
+                "queries": 3064,
+                "queryMs": 506211,
+                "errors": 0
+              },
+              {
+                "label": "select:tenants",
+                "queries": 3064,
+                "queryMs": 595571,
+                "errors": 0
+              },
+              {
+                "label": "select:computer_connections+computer_leases",
+                "queries": 784,
+                "queryMs": 122897,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_settings",
+                "queries": 600,
+                "queryMs": 60802,
+                "errors": 0
+              },
+              {
+                "label": "select:pi_usage_receipts",
+                "queries": 385,
+                "queryMs": 150448,
+                "errors": 0
+              },
+              {
+                "label": "select:agents+computer_connections",
+                "queries": 384,
+                "queryMs": 80267,
+                "errors": 0
+              },
+              {
+                "label": "select:end_users",
+                "queries": 300,
+                "queryMs": 32677,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_days+end_user_holds",
+                "queries": 300,
+                "queryMs": 31932,
+                "errors": 0
+              },
+              {
+                "label": "select:model_providers",
+                "queries": 300,
+                "queryMs": 30810,
+                "errors": 0
+              }
+            ]
+          },
+          "edge": {
+            "queries": 717,
+            "queriesPerRequestedTurn": 7.17,
+            "queryMsTotal": 106861,
+            "queryErrors": 0,
+            "connections": 717,
+            "connectMsTotal": 1740,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": 0.0,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            },
+            "largestStatementGroups": [
+              {
+                "label": "select:api_tokens",
+                "queries": 239,
+                "queryMs": 36988,
+                "errors": 0
+              },
+              {
+                "label": "select:account_deletions+tenants",
+                "queries": 239,
+                "queryMs": 36474,
+                "errors": 0
+              },
+              {
+                "label": "select:agents",
+                "queries": 239,
+                "queryMs": 33399,
+                "errors": 0
+              }
+            ]
+          }
+        },
+        "load": {
+          "startedAt": "2026-11-06T04:58:03.516Z",
+          "finishedAt": "2026-11-06T04:58:39.131Z",
+          "accepted": 100,
+          "completed": 100,
+          "failed": 0,
+          "errors": {},
+          "errorRate": 0,
+          "durationMs": 35615.230639,
+          "turnsPerSecond": 2.807787516908462,
+          "turnLatency": {
+            "samples": 100,
+            "p50Ms": 32377.963227999993,
+            "p95Ms": 34232.940560999996,
+            "p99Ms": 34724.630552999995
+          }
+        },
+        "financialDrain": {
+          "holds": 0,
+          "end_user_holds": 0,
+          "attempts": 100,
+          "pending_attempts": 0,
+          "settled_attempts": 100,
+          "responses": 100
+        }
+      },
+      {
+        "concurrency": 250,
+        "complete": false,
+        "objectRestarts": 1,
+        "queries": null,
+        "queriesPerRequestedTurn": null,
+        "observedQueries": 52493,
+        "observedQueriesPerRequestedTurn": 209.972,
+        "phases": {
+          "admission": {
+            "queries": 5976,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 1431701,
+            "queryErrors": 0,
+            "connections": 4731,
+            "connectMsTotal": 12651,
+            "transactions": 498,
+            "transactionHoldMsTotal": 38891,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 155.564,
+            "transactionHoldMs": {
+              "samples": 498,
+              "p50": 78,
+              "p95": 89,
+              "p99": 103,
+              "max": 126
+            },
+            "largestStatementGroups": [
+              {
+                "label": "select:end_user_settings",
+                "queries": 996,
+                "queryMs": 301144,
+                "errors": 0
+              },
+              {
+                "label": "select:tenants",
+                "queries": 747,
+                "queryMs": 192757,
+                "errors": 0
+              },
+              {
+                "label": "update:agent_spend_limits+agents+model_attempts+pi_usage_receipts",
+                "queries": 498,
+                "queryMs": 145814,
+                "errors": 0
+              },
+              {
+                "label": "begin:other",
+                "queries": 498,
+                "queryMs": 147513,
+                "errors": 0
+              },
+              {
+                "label": "select:pi_usage_receipts",
+                "queries": 498,
+                "queryMs": 19387,
+                "errors": 0
+              },
+              {
+                "label": "commit:other",
+                "queries": 498,
+                "queryMs": 19504,
+                "errors": 0
+              },
+              {
+                "label": "select:billing_disputes+credit_accounts+credit_spend_minutes",
+                "queries": 498,
+                "queryMs": 147918,
+                "errors": 0
+              },
+              {
+                "label": "select:end_users",
+                "queries": 498,
+                "queryMs": 153269,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_days+end_user_holds",
+                "queries": 498,
+                "queryMs": 151216,
+                "errors": 0
+              },
+              {
+                "label": "insert:rate_limits",
+                "queries": 249,
+                "queryMs": 46606,
+                "errors": 0
+              }
+            ]
+          },
+          "hold": {
+            "queries": 2988,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 419289,
+            "queryErrors": 0,
+            "connections": 996,
+            "connectMsTotal": 2607,
+            "transactions": 249,
+            "transactionHoldMsTotal": 79034,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 316.136,
+            "transactionHoldMs": {
+              "samples": 249,
+              "p50": 319,
+              "p95": 374,
+              "p99": 394,
+              "max": 428
+            },
+            "largestStatementGroups": [
+              {
+                "label": "select:end_user_settings",
+                "queries": 498,
+                "queryMs": 107043,
+                "errors": 0
+              },
+              {
+                "label": "select:agents",
+                "queries": 249,
+                "queryMs": 59350,
+                "errors": 0
+              },
+              {
+                "label": "begin:other",
+                "queries": 249,
+                "queryMs": 90121,
+                "errors": 0
+              },
+              {
+                "label": "insert:end_users",
+                "queries": 249,
+                "queryMs": 9815,
+                "errors": 0
+              },
+              {
+                "label": "select:end_users",
+                "queries": 249,
+                "queryMs": 9880,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_lots",
+                "queries": 249,
+                "queryMs": 9899,
+                "errors": 0
+              },
+              {
+                "label": "delete:end_user_holds",
+                "queries": 249,
+                "queryMs": 9765,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_days+end_user_holds",
+                "queries": 249,
+                "queryMs": 9790,
+                "errors": 0
+              },
+              {
+                "label": "insert:end_user_holds",
+                "queries": 249,
+                "queryMs": 9984,
+                "errors": 0
+              },
+              {
+                "label": "commit:other",
+                "queries": 249,
+                "queryMs": 10061,
+                "errors": 0
+              }
+            ]
+          },
+          "renew": {
+            "queries": 0,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 0,
+            "queryErrors": 0,
+            "connections": 0,
+            "connectMsTotal": 0,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            }
+          },
+          "settle": {
+            "queries": 9417,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 3455293,
+            "queryErrors": 0,
+            "connections": 2094,
+            "connectMsTotal": 5458,
+            "transactions": 864,
+            "transactionHoldMsTotal": 382579,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 1530.316,
+            "transactionHoldMs": {
+              "samples": 864,
+              "p50": 323,
+              "p95": 934,
+              "p99": 1026,
+              "max": 1243
+            },
+            "largestStatementGroups": [
+              {
+                "label": "begin:other",
+                "queries": 864,
+                "queryMs": 1852980,
+                "errors": 0
+              },
+              {
+                "label": "commit:other",
+                "queries": 864,
+                "queryMs": 33968,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_lots",
+                "queries": 747,
+                "queryMs": 28982,
+                "errors": 0
+              },
+              {
+                "label": "select:tenants",
+                "queries": 615,
+                "queryMs": 1251831,
+                "errors": 0
+              },
+              {
+                "label": "select:other",
+                "queries": 615,
+                "queryMs": 57403,
+                "errors": 0
+              },
+              {
+                "label": "select:credit_accounts",
+                "queries": 615,
+                "queryMs": 23795,
+                "errors": 0
+              },
+              {
+                "label": "select:idempotency_keys",
+                "queries": 615,
+                "queryMs": 23543,
+                "errors": 0
+              },
+              {
+                "label": "select:end_users",
+                "queries": 498,
+                "queryMs": 19324,
+                "errors": 0
+              },
+              {
+                "label": "delete:credit_holds",
+                "queries": 498,
+                "queryMs": 19052,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_settings",
+                "queries": 498,
+                "queryMs": 29000,
+                "errors": 0
+              }
+            ]
+          },
+          "usage": {
+            "queries": 747,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 32051,
+            "queryErrors": 0,
+            "connections": 0,
+            "connectMsTotal": 0,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            },
+            "largestStatementGroups": [
+              {
+                "label": "insert:usage",
+                "queries": 249,
+                "queryMs": 12550,
+                "errors": 0
+              },
+              {
+                "label": "insert:workspace_assignments+workspace_usage",
+                "queries": 249,
+                "queryMs": 9837,
+                "errors": 0
+              },
+              {
+                "label": "with:credit_accounts+credit_ledger+credit_spend_minutes+usage",
+                "queries": 249,
+                "queryMs": 9664,
+                "errors": 0
+              }
+            ]
+          },
+          "webhooks": {
+            "queries": 1860,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 1771975,
+            "queryErrors": 0,
+            "connections": 996,
+            "connectMsTotal": 38700,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            },
+            "largestStatementGroups": [
+              {
+                "label": "select:idempotency_keys+usage_webhook_outbox+webhook_deliveries",
+                "queries": 1113,
+                "queryMs": 1344502,
+                "errors": 0
+              },
+              {
+                "label": "insert:webhook_deliveries+webhook_endpoints",
+                "queries": 747,
+                "queryMs": 427473,
+                "errors": 0
+              }
+            ]
+          },
+          "history": {
+            "queries": 0,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 0,
+            "queryErrors": 0,
+            "connections": 0,
+            "connectMsTotal": 0,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            }
+          },
+          "other": {
+            "queries": 29270,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 14593640,
+            "queryErrors": 0,
+            "connections": 21640,
+            "connectMsTotal": 266569,
+            "transactions": 498,
+            "transactionHoldMsTotal": 38885,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 155.54,
+            "transactionHoldMs": {
+              "samples": 498,
+              "p50": 78,
+              "p95": 91,
+              "p99": 113,
+              "max": 145
+            },
+            "largestStatementGroups": [
+              {
+                "label": "select:tenants",
+                "queries": 6733,
+                "queryMs": 3304461,
+                "errors": 0
+              },
+              {
+                "label": "select:agents",
+                "queries": 6634,
+                "queryMs": 3699475,
+                "errors": 0
+              },
+              {
+                "label": "update:agent_spend_limits+agents+model_attempts+pi_usage_receipts",
+                "queries": 6634,
+                "queryMs": 3216587,
+                "errors": 0
+              },
+              {
+                "label": "select:computer_connections+computer_leases",
+                "queries": 1911,
+                "queryMs": 909209,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_settings",
+                "queries": 1494,
+                "queryMs": 403790,
+                "errors": 0
+              },
+              {
+                "label": "select:agents+computer_connections",
+                "queries": 1014,
+                "queryMs": 729041,
+                "errors": 0
+              },
+              {
+                "label": "select:pi_usage_receipts",
+                "queries": 965,
+                "queryMs": 885045,
+                "errors": 0
+              },
+              {
+                "label": "select:end_users",
+                "queries": 747,
+                "queryMs": 202576,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_days+end_user_holds",
+                "queries": 747,
+                "queryMs": 201351,
+                "errors": 0
+              },
+              {
+                "label": "select:model_providers",
+                "queries": 648,
+                "queryMs": 192144,
+                "errors": 0
+              }
+            ]
+          },
+          "edge": {
+            "queries": 2235,
+            "queriesPerRequestedTurn": 8.94,
+            "queryMsTotal": 2195946,
+            "queryErrors": 0,
+            "connections": 2235,
+            "connectMsTotal": 5442,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            },
+            "largestStatementGroups": [
+              {
+                "label": "select:api_tokens",
+                "queries": 745,
+                "queryMs": 697209,
+                "errors": 0
+              },
+              {
+                "label": "select:account_deletions+tenants",
+                "queries": 745,
+                "queryMs": 849620,
+                "errors": 0
+              },
+              {
+                "label": "select:agents",
+                "queries": 745,
+                "queryMs": 649117,
+                "errors": 0
+              }
+            ]
+          }
+        },
+        "load": {
+          "startedAt": "2026-11-06T04:58:43.342Z",
+          "finishedAt": "2026-11-06T04:59:43.613Z",
+          "accepted": 250,
+          "completed": 249,
+          "failed": 1,
+          "errors": {
+            "client_timeout": 1
+          },
+          "errorRate": 0.004,
+          "durationMs": 60269.42926099998,
+          "turnsPerSecond": 4.13144778460888,
+          "turnLatency": {
+            "samples": 249,
+            "p50Ms": 55469.01733500001,
+            "p95Ms": 58412.42512899998,
+            "p99Ms": 58773.99238500002
+          }
+        },
+        "financialDrain": {
+          "holds": 0,
+          "end_user_holds": 0,
+          "attempts": 350,
+          "pending_attempts": 0,
+          "settled_attempts": 350,
+          "responses": 350
+        },
+        "limitation": "Object recreation or financial work pending at the stage boundary makes the counters incomplete. Raw observed counts are lower bounds, not a complete per-turn profile."
+      },
+      {
+        "concurrency": 500,
+        "complete": false,
+        "objectRestarts": 0,
+        "queries": null,
+        "queriesPerRequestedTurn": null,
+        "observedQueries": 98327,
+        "observedQueriesPerRequestedTurn": 196.654,
+        "phases": {
+          "admission": {
+            "queries": 12000,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 6852567,
+            "queryErrors": 0,
+            "connections": 9500,
+            "connectMsTotal": 26590,
+            "transactions": 1000,
+            "transactionHoldMsTotal": 78658,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 157.316,
+            "transactionHoldMs": {
+              "samples": 1000,
+              "p50": 79,
+              "p95": 91,
+              "p99": 113,
+              "max": 153
+            },
+            "largestStatementGroups": [
+              {
+                "label": "select:end_user_settings",
+                "queries": 2000,
+                "queryMs": 1532223,
+                "errors": 0
+              },
+              {
+                "label": "select:tenants",
+                "queries": 1500,
+                "queryMs": 848832,
+                "errors": 0
+              },
+              {
+                "label": "update:agent_spend_limits+agents+model_attempts+pi_usage_receipts",
+                "queries": 1000,
+                "queryMs": 639682,
+                "errors": 0
+              },
+              {
+                "label": "begin:other",
+                "queries": 1000,
+                "queryMs": 669016,
+                "errors": 0
+              },
+              {
+                "label": "select:pi_usage_receipts",
+                "queries": 1000,
+                "queryMs": 39588,
+                "errors": 0
+              },
+              {
+                "label": "commit:other",
+                "queries": 1000,
+                "queryMs": 39070,
+                "errors": 0
+              },
+              {
+                "label": "select:billing_disputes+credit_accounts+credit_spend_minutes",
+                "queries": 1000,
+                "queryMs": 692208,
+                "errors": 0
+              },
+              {
+                "label": "select:end_users",
+                "queries": 1000,
+                "queryMs": 761229,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_days+end_user_holds",
+                "queries": 1000,
+                "queryMs": 924257,
+                "errors": 0
+              },
+              {
+                "label": "insert:rate_limits",
+                "queries": 500,
+                "queryMs": 212376,
+                "errors": 0
+              }
+            ]
+          },
+          "hold": {
+            "queries": 6000,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 3297108,
+            "queryErrors": 0,
+            "connections": 2000,
+            "connectMsTotal": 5670,
+            "transactions": 500,
+            "transactionHoldMsTotal": 156533,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 313.066,
+            "transactionHoldMs": {
+              "samples": 500,
+              "p50": 315,
+              "p95": 355,
+              "p99": 397,
+              "max": 429
+            },
+            "largestStatementGroups": [
+              {
+                "label": "select:end_user_settings",
+                "queries": 1000,
+                "queryMs": 838953,
+                "errors": 0
+              },
+              {
+                "label": "select:agents",
+                "queries": 500,
+                "queryMs": 276989,
+                "errors": 0
+              },
+              {
+                "label": "begin:other",
+                "queries": 500,
+                "queryMs": 933834,
+                "errors": 0
+              },
+              {
+                "label": "insert:end_users",
+                "queries": 500,
+                "queryMs": 19474,
+                "errors": 0
+              },
+              {
+                "label": "select:end_users",
+                "queries": 500,
+                "queryMs": 19479,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_lots",
+                "queries": 500,
+                "queryMs": 19406,
+                "errors": 0
+              },
+              {
+                "label": "delete:end_user_holds",
+                "queries": 500,
+                "queryMs": 19466,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_days+end_user_holds",
+                "queries": 500,
+                "queryMs": 19739,
+                "errors": 0
+              },
+              {
+                "label": "insert:end_user_holds",
+                "queries": 500,
+                "queryMs": 19490,
+                "errors": 0
+              },
+              {
+                "label": "commit:other",
+                "queries": 500,
+                "queryMs": 19979,
+                "errors": 0
+              }
+            ]
+          },
+          "renew": {
+            "queries": 0,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 0,
+            "queryErrors": 0,
+            "connections": 0,
+            "connectMsTotal": 0,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            }
+          },
+          "settle": {
+            "queries": 18319,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 11830726,
+            "queryErrors": 0,
+            "connections": 3758,
+            "connectMsTotal": 10734,
+            "transactions": 1620,
+            "transactionHoldMsTotal": 753340,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 1506.68,
+            "transactionHoldMs": {
+              "samples": 1620,
+              "p50": 328,
+              "p95": 952,
+              "p99": 1025,
+              "max": 1291
+            },
+            "largestStatementGroups": [
+              {
+                "label": "begin:other",
+                "queries": 1620,
+                "queryMs": 7041403,
+                "errors": 0
+              },
+              {
+                "label": "commit:other",
+                "queries": 1620,
+                "queryMs": 64155,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_lots",
+                "queries": 1551,
+                "queryMs": 60431,
+                "errors": 0
+              },
+              {
+                "label": "select:tenants",
+                "queries": 1069,
+                "queryMs": 4099960,
+                "errors": 0
+              },
+              {
+                "label": "select:other",
+                "queries": 1069,
+                "queryMs": 99945,
+                "errors": 0
+              },
+              {
+                "label": "select:credit_accounts",
+                "queries": 1069,
+                "queryMs": 41046,
+                "errors": 0
+              },
+              {
+                "label": "select:idempotency_keys",
+                "queries": 1069,
+                "queryMs": 41067,
+                "errors": 0
+              },
+              {
+                "label": "select:end_users",
+                "queries": 1051,
+                "queryMs": 40898,
+                "errors": 0
+              },
+              {
+                "label": "delete:credit_holds",
+                "queries": 1050,
+                "queryMs": 40488,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_settings",
+                "queries": 1000,
+                "queryMs": 58454,
+                "errors": 0
+              }
+            ]
+          },
+          "usage": {
+            "queries": 1499,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 63798,
+            "queryErrors": 0,
+            "connections": 0,
+            "connectMsTotal": 0,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            },
+            "largestStatementGroups": [
+              {
+                "label": "insert:usage",
+                "queries": 500,
+                "queryMs": 24331,
+                "errors": 0
+              },
+              {
+                "label": "insert:workspace_assignments+workspace_usage",
+                "queries": 500,
+                "queryMs": 19819,
+                "errors": 0
+              },
+              {
+                "label": "with:credit_accounts+credit_ledger+credit_spend_minutes+usage",
+                "queries": 499,
+                "queryMs": 19648,
+                "errors": 0
+              }
+            ]
+          },
+          "webhooks": {
+            "queries": 3567,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 7280014,
+            "queryErrors": 0,
+            "connections": 1998,
+            "connectMsTotal": 78763,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            },
+            "largestStatementGroups": [
+              {
+                "label": "select:idempotency_keys+usage_webhook_outbox+webhook_deliveries",
+                "queries": 2068,
+                "queryMs": 5462285,
+                "errors": 0
+              },
+              {
+                "label": "insert:webhook_deliveries+webhook_endpoints",
+                "queries": 1499,
+                "queryMs": 1817729,
+                "errors": 0
+              }
+            ]
+          },
+          "history": {
+            "queries": 0,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 0,
+            "queryErrors": 0,
+            "connections": 0,
+            "connectMsTotal": 0,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            }
+          },
+          "other": {
+            "queries": 52631,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 65686529,
+            "queryErrors": 0,
+            "connections": 39466,
+            "connectMsTotal": 457320,
+            "transactions": 1000,
+            "transactionHoldMsTotal": 79557,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 159.114,
+            "transactionHoldMs": {
+              "samples": 1000,
+              "p50": 79,
+              "p95": 92,
+              "p99": 108,
+              "max": 592
+            },
+            "largestStatementGroups": [
+              {
+                "label": "select:tenants",
+                "queries": 11414,
+                "queryMs": 15768782,
+                "errors": 0
+              },
+              {
+                "label": "select:agents",
+                "queries": 11165,
+                "queryMs": 15842754,
+                "errors": 0
+              },
+              {
+                "label": "update:agent_spend_limits+agents+model_attempts+pi_usage_receipts",
+                "queries": 11165,
+                "queryMs": 15038534,
+                "errors": 0
+              },
+              {
+                "label": "select:computer_connections+computer_leases",
+                "queries": 4063,
+                "queryMs": 4713119,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_settings",
+                "queries": 3000,
+                "queryMs": 1799576,
+                "errors": 0
+              },
+              {
+                "label": "select:agents+computer_connections",
+                "queries": 2313,
+                "queryMs": 3520232,
+                "errors": 0
+              },
+              {
+                "label": "select:pi_usage_receipts",
+                "queries": 1761,
+                "queryMs": 2913172,
+                "errors": 0
+              },
+              {
+                "label": "select:end_users",
+                "queries": 1500,
+                "queryMs": 891830,
+                "errors": 0
+              },
+              {
+                "label": "select:end_user_days+end_user_holds",
+                "queries": 1500,
+                "queryMs": 908620,
+                "errors": 0
+              },
+              {
+                "label": "select:model_providers",
+                "queries": 1251,
+                "queryMs": 857649,
+                "errors": 0
+              }
+            ]
+          },
+          "edge": {
+            "queries": 4311,
+            "queriesPerRequestedTurn": 8.622,
+            "queryMsTotal": 4908350,
+            "queryErrors": 0,
+            "connections": 4311,
+            "connectMsTotal": 10933,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMsPerRequestedTurn": null,
+            "observedTransactionHoldMsPerRequestedTurn": 0.0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            },
+            "largestStatementGroups": [
+              {
+                "label": "select:api_tokens",
+                "queries": 1437,
+                "queryMs": 1930820,
+                "errors": 0
+              },
+              {
+                "label": "select:account_deletions+tenants",
+                "queries": 1437,
+                "queryMs": 1522142,
+                "errors": 0
+              },
+              {
+                "label": "select:agents",
+                "queries": 1437,
+                "queryMs": 1455388,
+                "errors": 0
+              }
+            ]
+          }
+        },
+        "load": {
+          "startedAt": "2026-11-06T04:59:51.878Z",
+          "finishedAt": "2026-11-06T05:01:39.915Z",
+          "accepted": 500,
+          "completed": 220,
+          "failed": 280,
+          "errors": {
+            "client_timeout": 280
+          },
+          "errorRate": 0.56,
+          "durationMs": 108035.755221,
+          "turnsPerSecond": 2.0363628647753127,
+          "turnLatency": {
+            "samples": 220,
+            "p50Ms": 92735.158275,
+            "p95Ms": 103699.88410499998,
+            "p99Ms": 105271.56225900003
+          }
+        },
+        "financialDrain": {
+          "holds": 0,
+          "end_user_holds": 1,
+          "attempts": 850,
+          "pending_attempts": 1,
+          "settled_attempts": 849,
+          "responses": 849
+        },
+        "limitation": "Object recreation or financial work pending at the stage boundary makes the counters incomplete. Raw observed counts are lower bounds, not a complete per-turn profile."
+      }
+    ],
+    "deploymentChecks": {
+      "beforeLoad": {
+        "at": "2026-11-06T04:56:28.384Z",
+        "deployment": "b53bc3c3-6f4d-4cea-8d96-ce22adc66de6",
+        "version": "e19b0ab2-743b-4f63-80ca-3998c1deda77",
+        "percentage": 100
+      },
+      "afterStages": {
+        "at": "2026-11-06T05:02:18.221Z",
+        "deployment": "b53bc3c3-6f4d-4cea-8d96-ce22adc66de6",
+        "version": "e19b0ab2-743b-4f63-80ca-3998c1deda77",
+        "percentage": 100
+      },
+      "afterCleanup": {
+        "at": "2026-11-06T05:14:46.451Z",
+        "deployment": "b53bc3c3-6f4d-4cea-8d96-ce22adc66de6",
+        "version": "e19b0ab2-743b-4f63-80ca-3998c1deda77",
+        "percentage": 100
+      }
+    },
+    "postLoadFinancialDrain": {
+      "at": "2026-11-06T05:03:21.136Z",
+      "source": "backends/workers/measurements/turn-db-after-cleanup.json",
+      "attempts": 850,
+      "settledAttempts": 850,
+      "pendingAttempts": 0,
+      "tenantHolds": 0,
+      "endUserHolds": 0,
+      "note": "The one pending attempt at the 500-stage snapshot settled through normal runtime recovery before this read. The stage profile remains partial because its snapshot preceded this tail."
+    },
+    "cleanup": {
+      "source": "backends/workers/measurements/turn-db-after-cleanup.json",
+      "startedAt": "2026-11-06T05:01:44.819Z",
+      "finishedAt": "2026-11-06T05:13:35.729Z",
+      "deletedTenants": 20,
+      "failures": [],
+      "counts": {
+        "tenants": 0,
+        "agents": 0,
+        "api_tokens": 0,
+        "provider_keys": 0,
+        "model_providers": 0,
+        "volumes": 0,
+        "end_users": 0,
+        "holds": 0,
+        "held_micros": 0,
+        "end_user_holds": 0,
+        "end_user_held_micros": 0,
+        "balance_micros": 1999870094,
+        "usage_debits": 40,
+        "usage_micros": -129906,
+        "responses": 850,
+        "receipts": 0,
+        "attempts": 850,
+        "pending_attempts": 0,
+        "settled_attempts": 850,
+        "attempt_charge_micros": 0,
+        "deleted_tenants": 20,
+        "revoked_agents": 0,
+        "purged_agents": 0,
+        "deleting_tenants": 0,
+        "deletion_attempts": 20,
+        "claimed_deletions": 0
+      }
+    }
+  },
+  "interference": [
+    {
+      "at": "2026-11-06T04:08:00Z",
+      "timePrecision": "minute",
+      "event": "The shared pilot was overwritten by the upstream hardening deployment after all initial load stages ended. Initial cleanup spans multiple runtime versions; stage performance measurements ended by 04:06:08.674Z."
+    },
+    {
+      "at": "2026-11-06T04:17:00Z",
+      "timePrecision": "minute",
+      "event": "The pilot deletion queue consumer batch size changed from 10 to 1 after load stages; existing in-flight batches may still use the prior setting."
+    }
+  ]
 }
