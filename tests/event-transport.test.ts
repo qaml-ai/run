@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { openEventStream } from "../clients/event-transport.ts";
-import { eventFrame, negotiateEvents, websocketAuthorization, EVENT_PROTOCOL } from "../backends/workers/src/live-transport.ts";
+import { eventFrame, negotiateEvents, websocketAuthorization, webSocketRequired, EVENT_PROTOCOL } from "../backends/workers/src/live-transport.ts";
 import { watchAgent } from "../clients/watch.ts";
 
 class Socket extends EventTarget {
@@ -18,7 +18,7 @@ class Socket extends EventTarget {
   message(value: unknown) { this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(value) })); }
 }
 
-test("Workers prefer WebSocket in either offer order and preserve explicit SSE", async () => {
+test("Workers select WebSocket in either offer order and refuse SSE-only streams", async () => {
   for (const accept of ["application/vnd.camelrun.events+json, text/event-stream", "text/event-stream, application/vnd.camelrun.events+json"]) {
     const response = negotiateEvents(new Request("https://runtime.test/events", { headers: { accept } }));
     assert.ok(response);
@@ -27,6 +27,9 @@ test("Workers prefer WebSocket in either offer order and preserve explicit SSE",
   for (const accept of ["text/event-stream", "application/json", "*/*"]) {
     assert.equal(negotiateEvents(new Request("https://runtime.test/events", { headers: { accept } })), undefined);
   }
+  const refused = webSocketRequired();
+  assert.equal(refused.status, 406);
+  assert.equal((await refused.json()).code, "WEBSOCKET_REQUIRED");
 });
 
 test("SSE Content-Type explicitly selects the current Node stream in one request", async () => {

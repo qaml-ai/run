@@ -7,7 +7,9 @@ import { TOOL_FILE_LIMITS } from '../../../src/limits.ts';
 import { steeringCanJoin, steeringJoined } from "./steering-placement.ts";
 import { admitAgentMessage } from "./message-admission.ts";
 import { MULTI_AGENT_LIMITS } from "./multi-agent-policy.ts";
-import { visibleEvent, visibleReplay } from "./event-visibility.ts";
+import { visibleReplay } from "./event-visibility.ts";
+import { BrowserTokens } from "./browser-tokens.ts";
+import { subscribedEvent, type EventSubscription } from "./event-socket.ts";
 import { toolOutputExtension } from "./tool-output.ts";
 import { refreshIdleLifetime } from "./idle-lifetime.ts";
 import { forkSnapshot } from "./fork-snapshot.ts";
@@ -103,6 +105,7 @@ import {
 import {
   eventFrame,
   negotiateEvents,
+  webSocketRequired,
   EVENT_PROTOCOL,
 } from "./live-transport.ts";
 import { attachedComputerTools } from "./computers/agent-tools.ts";
@@ -197,14 +200,12 @@ import { AgentRunLimits, type RuntimeLimit } from "./run-limits.ts";
 import { EndUserCredits, creditError } from "./end-user-credits.ts";
 import {
   DurableEventLog,
-  runEventStream,
   enqueueTerminalEvents,
   acknowledgeTerminalEvent,
   TERMINAL_EVENTS_PREFIX,
   type TerminalEvents,
   type TerminalDelivery,
 } from "./event-log.ts";
-import { EVENT_CONNECTION_HEADER } from "./event-relay.ts";
 import { agentBuiltins } from "./agent-builtins.ts";
 import { scheduleError, type ScheduleToolsHost } from "./agent-schedules.ts";
 import { auxiliaryRunCosts } from "./auxiliary-usage.ts";
@@ -1157,13 +1158,6 @@ export class CamelAgent extends DurableObject<Env> {
   private pendingWaits = new Map<string, Promise<void>>();
   private admission: Promise<unknown> = Promise.resolve();
   private eventsProcessed: Promise<void> = Promise.resolve();
-  private readonly closeEventStreams = new Set<() => void>();
-  private readonly attachedEventStreams = new Map<string, () => void>();
-
-  /** Called only by the public Worker for the SSE connection it forwarded. */
-  async detachEventConnection(connection: string): Promise<void> {
-    this.attachedEventStreams.get(connection)?.();
-  }
 
   private async records() {
     return [
@@ -1213,8 +1207,13 @@ export class CamelAgent extends DurableObject<Env> {
       for (const listener of this.listeners) listener(cursor, event);
       for (const socket of this.ctx.getWebSockets()) {
         try {
-          if (!visibleEvent(event, socket.deserializeAttachment()?.subagents === true)) continue;
-          socket.send(eventFrame(event, cursor));
+          const subscription = socket.deserializeAttachment() as EventSubscription;
+          if (subscription.browser && subscription.browser.exp <= Date.now()) {
+            socket.close(1008, "Browser token expired");
+            continue;
+          }
+          const visible = subscribedEvent(subscription, event);
+          if (visible !== undefined) socket.send(eventFrame(visible, cursor));
         } catch {
           socket.close(1011, "Send failed");
         }
@@ -3394,7 +3393,6 @@ export class CamelAgent extends DurableObject<Env> {
       if (path === "/credentials/rotate" && request.method === "POST") {
         await this.configurationQueue.settled();
         this.attached.close();
-        for (const close of [...this.closeEventStreams]) close();
         for (const socket of this.ctx.getWebSockets()) this.retireAttachedSocket(socket);
         return json({ rotated: true });
       }
@@ -3738,6 +3736,7 @@ export class CamelAgent extends DurableObject<Env> {
       await this.promptPreparations.deadline(),
       await this.ctx.storage.get<number>("human-input-deadline") ?? Infinity,
       await this.limits.deadline(),
+      ...this.ctx.getWebSockets().filter(socket => socket.readyState === 1).map(socket => (socket.deserializeAttachment() as EventSubscription)?.browser?.exp ?? Infinity),
     );
     if (Number.isFinite(next))
       await this.lifecycle.jobs.push({
@@ -3779,6 +3778,10 @@ export class CamelAgent extends DurableObject<Env> {
     });
   }
   private async wake() {
+    for (const socket of this.ctx.getWebSockets()) {
+      const subscription = socket.deserializeAttachment() as EventSubscription;
+      if (subscription.browser && subscription.browser.exp <= Date.now()) socket.close(1008, "Browser token expired");
+    }
     this.configurationQueue.kick();
     await this.promptPreparations.sweep();
     await this.resumeKeptQueue();
@@ -3903,12 +3906,21 @@ export class CamelAgent extends DurableObject<Env> {
     await this.arm();
   }
   private async webSocketEvents(request: Request): Promise<Response> {
-    await this.observe();
-    const state = await this.state();
-    const replay = await this.replayEvents(request);
-    const conf = await this.config();
     const url = new URL(request.url);
-    const watch = url.searchParams.get("watch") === "1";
+    const bearer = request.headers.get("authorization") ?? "";
+    const claims = BrowserTokens.carries(bearer)
+      ? new BrowserTokens(this.env.AGENT_SESSION_SECRET ?? this.env.API_TOKEN).verify(bearer) : undefined;
+    const watch = !!claims || url.searchParams.get("watch") === "1";
+    if (watch && this.ctx.getWebSockets().filter(socket => socket.readyState === 1 &&
+        (socket.deserializeAttachment() as EventSubscription)?.type === "camel.watcher").length >= 32)
+      throw Object.assign(new Error("This agent has too many event stream subscribers; retry later"), { status: 429 });
+    await this.observe();
+    const runId = url.searchParams.get("runId");
+    const replay = runId ? { snapshot: undefined, events: this.runReplay(request, runId) } : await this.replayEvents(request);
+    const conf = await this.config();
+    const subscription: EventSubscription = { type: watch ? "camel.watcher" : "camel.application",
+      subagents: url.searchParams.get("subagents") === "1", request: runId ?? url.searchParams.get("request") ?? undefined,
+      ...(claims ? { browser: { scopes: claims.scopes, events: claims.events, redact: claims.redact, exp: claims.exp } } : {}) };
     const previous =
       request.headers.get("X-Agent-Connection") ??
       url.searchParams.get("connection") ??
@@ -3937,21 +3949,15 @@ export class CamelAgent extends DurableObject<Env> {
           other.serializeAttachment({ ...attachment, serving: false });
         }
       }
-      socket.serializeAttachment({
-        type: "camel.application",
-        subagents: url.searchParams.get("subagents") === "1",
-        connection: connection.id,
-        serving: true,
-        initialized: false,
-      });
-    } else {
-      socket.serializeAttachment({ type: "camel.watcher", subagents: url.searchParams.get("subagents") === "1" });
+      Object.assign(subscription, { connection: connection.id, serving: true, initialized: false });
     }
+    socket.serializeAttachment(subscription);
     socket.send(
       eventFrame(
         {
           version: 5,
           agentId: conf.id,
+          ...(watch ? { watch: true } : {}),
           connection: connection?.id,
           toolsHash: await digest(JSON.stringify(conf.config.mcp?.tools ?? [])),
         },
@@ -3967,8 +3973,15 @@ export class CamelAgent extends DurableObject<Env> {
           socket.serializeAttachment({ ...attachment, initialized: true });
         })
         .catch(() => this.retireAttachedSocket(socket));
-    if (replay.snapshot) socket.send(eventFrame(replay.snapshot, replay.snapshot.cursor));
-    for (const row of replay.events) socket.send(eventFrame(row.data, row.id));
+    if (replay.snapshot) {
+      const visible = subscribedEvent(subscription, replay.snapshot);
+      if (visible !== undefined) socket.send(eventFrame(visible, replay.snapshot.cursor));
+    }
+    for (const row of replay.events) {
+      const visible = subscribedEvent(subscription, row.data);
+      if (visible !== undefined) socket.send(eventFrame(visible, row.id));
+    }
+    if (claims) await this.arm();
     const selected = request.headers
       .get("sec-websocket-protocol")
       ?.split(",")
@@ -3988,6 +4001,12 @@ export class CamelAgent extends DurableObject<Env> {
     const selected = negotiateEvents(request);
     if (!selected) return;
     const url = new URL(request.url);
+    // The capability request preserves typed HTTP refusals before upgrade.
+    if (url.searchParams.has("runId")) this.runReplay(request, url.searchParams.get("runId")!).next();
+    else await this.replayEvents(request);
+    if (url.searchParams.get("watch") === "1" && this.ctx.getWebSockets().filter(socket => socket.readyState === 1 &&
+        (socket.deserializeAttachment() as EventSubscription)?.type === "camel.watcher").length >= 32)
+      throw Object.assign(new Error("This agent has too many event stream subscribers; retry later"), { status: 429 });
     if (url.searchParams.get("watch") !== "1" && !url.searchParams.has("runId"))
       await this.attached.prepareAttach(
         request.headers.get("X-Agent-Connection") ?? undefined,
@@ -4073,17 +4092,23 @@ export class CamelAgent extends DurableObject<Env> {
     const asked = new URL(request.url).searchParams.get("snapshot");
     const replay = replayEvents({ cursor: state.cursor, events: state.events,
       turn: await this.ctx.storage.get<LiveTurn>("live-turn"), partial: this.partial },
-      request.headers.get("Last-Event-ID") ?? "0", watch ? asked !== "0" : asked === "1",
+      request.headers.get("Last-Event-ID") ?? new URL(request.url).searchParams.get("cursor") ?? "0", watch ? asked !== "0" : asked === "1",
       Number((this.env as Env & { AGENT_SNAPSHOT_BYTES?: string }).AGENT_SNAPSHOT_BYTES) || undefined);
     return visibleReplay(replay, new URL(request.url).searchParams.get("subagents") === "1");
   }
+  private *runReplay(request: Request, id: string): Generator<{ id: number; data: unknown }> {
+    const raw = request.headers.get("Last-Event-ID") ?? new URL(request.url).searchParams.get("cursor") ?? "0", after = Number(raw);
+    if (!/^\d+$/.test(raw) || !Number.isSafeInteger(after)) throw new BadRequest("Invalid Last-Event-ID");
+    let cursor = after;
+    for (;;) {
+      const page = this.eventLog.read(id, cursor, Number.MAX_SAFE_INTEGER);
+      for (const row of page) yield { id: row.cursor, data: JSON.parse(row.body) };
+      if (page.length < 128) return;
+      cursor = page[page.length - 1].cursor;
+    }
+  }
   private async events(request: Request): Promise<Response> {
-    const runId = new URL(request.url).searchParams.get("runId");
-    if (runId)
-      return runEventStream(request, runId, this.eventLog, (receive) => {
-        this.listeners.add(receive);
-        return () => this.listeners.delete(receive);
-      });
+    if (new URL(request.url).searchParams.get("poll") !== "1") return webSocketRequired();
     await this.observe();
     const state = await this.state();
     let replay = await this.replayEvents(request);
@@ -4102,123 +4127,6 @@ export class CamelAgent extends DurableObject<Env> {
       }
       return json({ cursor: replay.cursor || state.cursor, events: [...(replay.snapshot ? [{ id: replay.snapshot.cursor, data: replay.snapshot }] : []), ...replay.events] });
     }
-    const encoder = new TextEncoder();
-    const conf = await this.config();
-    const toolsHash = await digest(
-      JSON.stringify(conf.config.mcp?.tools ?? []),
-    );
-    const watch =
-      new URL(request.url).searchParams.get("watch") === "1" ||
-      request.headers.get("authorization")?.startsWith("Bearer cbt_");
-    const previous = request.headers.get("X-Agent-Connection") ?? undefined;
-    const takeover =
-      new URL(request.url).searchParams.get("takeover") === "true";
-    if (!watch) await this.attached.prepareAttach(previous, takeover);
-    let heartbeat: ReturnType<typeof setInterval>;
-    let cleanup = () => {};
-    let connectionId: string | undefined;
-    const stream = new ReadableStream<Uint8Array>(
-      {
-        start: (controller) => {
-          let closed = false;
-          const retire = () => {
-            if (closed) return;
-            controller.enqueue(encoder.encode("event: closed\ndata: {}\n\n"));
-            cleanup();
-            controller.close();
-          };
-          const send = (cursor: number, event: unknown) => {
-            if (closed) return;
-            if (!visibleEvent(event, new URL(request.url).searchParams.get("subagents") === "1")) return;
-            if (cursor === 0 || (controller.desiredSize ?? 0) <= 0) {
-              cleanup();
-              controller.close();
-              return;
-            }
-            controller.enqueue(
-              encoder.encode(
-                `id: ${cursor}\ndata: ${JSON.stringify(event)}\n\n`,
-              ),
-            );
-          };
-          const connection = watch
-            ? undefined
-            : this.attached.attach(
-                (event) => {
-                  if (closed) return;
-                  if ((controller.desiredSize ?? 0) <= 0) {
-                    cleanup();
-                    controller.close();
-                    return;
-                  }
-                  // MCP is a live RPC channel; replay cursors belong only to agent events.
-                  controller.enqueue(
-                    encoder.encode(`data: ${JSON.stringify(event)}\n\n`),
-                  );
-                },
-                previous,
-                takeover,
-                () => {
-                  if (closed) return;
-                  controller.enqueue(
-                    encoder.encode('event: closed\ndata: {"reason":"replaced"}\n\n'),
-                  );
-                  cleanup();
-                  controller.close();
-                },
-              );
-          const abort = () => {
-            cleanup();
-            try { controller.close(); } catch {}
-          };
-          cleanup = () => {
-            if (closed) return;
-            closed = true;
-            clearInterval(heartbeat);
-            request.signal.removeEventListener("abort", abort);
-            this.listeners.delete(send);
-            this.closeEventStreams.delete(retire);
-            if (connection) this.attachedEventStreams.delete(connection.id);
-            connection?.close();
-          };
-          if (connection) {
-            connectionId = connection.id;
-            this.attachedEventStreams.set(connection.id, abort);
-          }
-          request.signal.addEventListener("abort", abort, { once: true });
-          if (request.signal.aborted) { abort(); return; }
-          this.closeEventStreams.add(retire);
-          this.listeners.add(send);
-          controller.enqueue(
-            encoder.encode(
-              `event: ready\ndata: ${JSON.stringify({ version: 5, agentId: conf.id, connection: connection?.id, toolsHash })}\n\n`,
-            ),
-          );
-          connection?.start();
-          if (replay.snapshot) send(replay.snapshot.cursor, replay.snapshot);
-          for (const event of replay.events) send(event.id, event.data);
-          heartbeat = setInterval(() => {
-            if (closed) return;
-            if ((controller.desiredSize ?? 0) <= 0) {
-              cleanup();
-              controller.close();
-              return;
-            }
-            controller.enqueue(encoder.encode(": heartbeat\n\n"));
-          }, 10_000);
-        },
-        cancel() {
-          cleanup();
-        },
-      },
-      { highWaterMark: 64 },
-    );
-    return new Response(stream, {
-      headers: {
-        "content-type": "text/event-stream",
-        "cache-control": "no-store",
-        ...(connectionId ? { [EVENT_CONNECTION_HEADER]: connectionId } : {}),
-      },
-    });
+    return webSocketRequired();
   }
 }
