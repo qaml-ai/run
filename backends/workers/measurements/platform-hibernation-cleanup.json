@@ -1,0 +1,11 @@
+{
+  "name": "camelrun-proto-platform-hibernation",
+  "namespace": "e0654af451934176b782e1ed7c0831a7",
+  "cleanedAt": "2026-11-05T18:41:44.504Z",
+  "deletedClasses": [
+    "CamelAgent"
+  ],
+  "workers": [],
+  "namespaces": [],
+  "estimatedMarginalSpendUsdLessThan": 0.01
+}

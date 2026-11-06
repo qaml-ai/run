@@ -1,0 +1,59 @@
+{
+  "window": {
+    "from": "2026-11-06T02:59:48Z",
+    "to": "2026-11-06T03:01:02Z"
+  },
+  "scope": "Retuned 250-concurrent-turn stage; pilot telemetry",
+  "hyperdrive": {
+    "configId": "3e6d68e844ec480589e766119f52dead",
+    "originConnectionLimit": 16,
+    "colo": "IAD",
+    "pool": {
+      "averageSize": 3,
+      "maximumSize": 3,
+      "maximumPoolSize": 3,
+      "averageAvailableSlots": 0.18666666666666668,
+      "averageWaitingClients": 81.56,
+      "maximumWaitingClients": 150
+    },
+    "queries": [
+      {
+        "cacheStatus": "disabled",
+        "eventStatus": "complete",
+        "count": 48930,
+        "averageConnectionLatencyMs": 610,
+        "averageQueryLatencyMs": 614
+      },
+      {
+        "cacheStatus": "uncacheable",
+        "eventStatus": "complete",
+        "count": 2326,
+        "averageConnectionLatencyMs": 0,
+        "averageQueryLatencyMs": 3
+      },
+      {
+        "cacheStatus": "transaction",
+        "eventStatus": "complete",
+        "count": 12266,
+        "averageConnectionLatencyMs": 2413,
+        "averageQueryLatencyMs": 4
+      }
+    ]
+  },
+  "durableObjects": {
+    "namespaceId": "b7a05e64caac4a9dbd59df0956a89a5c",
+    "invocationsByStatus": [
+      {
+        "status": "clientDisconnected",
+        "errors": 54,
+        "requests": 54
+      },
+      {
+        "status": "success",
+        "errors": 0,
+        "requests": 3743
+      }
+    ]
+  },
+  "interpretation": "The regional pool remained busy after retuning. All returned query groups were complete; no Hyperdrive error event group was reported. 54 Durable Object invocation errors were classified clientDisconnected; these are not 54 failed turns. The workload recorded 11 failed turns separately."
+}

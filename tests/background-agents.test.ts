@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { AgentRuntime } from "../clients/typescript.ts";
-import { OPERATOR, runtime, sleep, toolCall, toolResults, until, watchEvents } from "./runtime-server.ts";
+import { freshWindow, OPERATOR, runtime, sleep, toolCall, toolResults, until, watchEvents } from "./runtime-server.ts";
 
 const systemText = (body: any) => body.messages.filter((message: any) => message.role === "system" || message.role === "developer")
   .map((message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join("")).join("\n");
@@ -128,7 +128,7 @@ test("spawn_agent refuses past maxParallel running children and past the depth l
   await notified(r, root);
 });
 
-test("two agents waking each other through notifications stop at the wake cap with agent_loop_limit, the notification still in history", async t => {
+test("two agents waking each other through notifications stop at the wake cap with agent_loop_limit, the notification still in history", { timeout: 60_000 }, async t => {
   // Every turn of the parent spawns a child; every child answers at once, so its notification wakes the parent again.
   const r = await runtime(t, body => {
     if (roleText(body).includes("ECHO")) return { role: "assistant", content: "echo" };
@@ -136,6 +136,9 @@ test("two agents waking each other through notifications stop at the wake cap wi
     return toolCall("spawn_agent", { instructions: "You are ECHO.", task: "echo" }, `call_${body.messages.length}`);
   }, { AGENT_WAKES_PER_HOUR: "3" });
   const parent = (await r.call("/v1/agents", { body: { builtins: ["agents"], delegate: { instructions: true } } })).json.id;
+  // A new clock hour legitimately resets the cap. Keep the four notifications
+  // in one window; the timeout includes up to 20 seconds waiting for it.
+  await freshWindow(3600, 20_000);
   await r.prompt(parent, "start the loop");
   const done = await notified(r, parent, 4);
   const stopped = done.find(request => request.outcome.result.stopped === "agent_loop_limit");

@@ -11,6 +11,27 @@ import { testDatabase } from "./database.ts";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 
+test("a foreground deletion claims only its explicit tenant and respects another worker's lease", async () => {
+  const { db } = await testDatabase();
+  const storage = memoryStorage(postgresTail(db));
+  const accounts = new Accounts({ tenants: new Tenants({ read: async () => '{"tenants":{}}' }), db });
+  await accounts.tenants.reload();
+  await db.query("insert into tenants(id,created_at) values('allowed',1),('unrelated',1)");
+  await db.query("insert into account_deletions(tenant,requested_at,requested_by,claimed_until) values('allowed',1,'test',now()+interval '1 minute'),('unrelated',0,'test',null)");
+  const deletions = new AccountDeletions({ db, accounts, storage, deleteAgent: async () => assert.fail("no agents in fixture") });
+  assert.equal(await deletions.next("allowed"), false, "a scoped claim does not fall back to the unrelated due deletion");
+  const bounded = new AccountDeletions({ db, accounts, storage, onlyTenant: "allowed", deleteAgent: async () => assert.fail("no agents in fixture") });
+  await bounded.kick();
+  assert.equal((await bounded.status("unrelated"))?.state, "deleting", "background kick inherits the bounded operator's scope too");
+  await db.query("update account_deletions set claimed_until=null where tenant='allowed'");
+  assert.equal(await deletions.next("allowed"), true);
+  assert.equal((await deletions.status("allowed"))?.state, "deleted");
+  assert.equal((await deletions.status("unrelated"))?.state, "deleting");
+  assert.deepEqual((await db.query("select id from tenants")).rows, [{ id: "unrelated" }]);
+  assert.equal(await deletions.next(), true, "the ordinary sweep still claims all tenants");
+  assert.equal((await deletions.status("unrelated"))?.state, "deleted");
+});
+
 test("a deletion interrupted at any step continues where it stopped, and never while another node holds it", { timeout: 60_000 }, async () => {
   const { db } = await testDatabase();
   const storage = memoryStorage(postgresTail(db));

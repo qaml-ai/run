@@ -1,0 +1,156 @@
+import {contractTest, createContractFixture} from '../support.ts';
+import type {ModelReply, ContractFixture} from '../fixture.ts';
+import type {T} from '../http.ts';
+async function runtime(t:T,respond:ModelReply,env:Record<string,string>={},tenants?:object):Promise<ContractFixture>{return createContractFixture(t,{respond,env,tenants});}
+
+import assert from "node:assert/strict";
+
+import {createHash} from "node:crypto";
+
+import {OPERATOR, listen, toolCall, until} from "../support.ts";
+
+const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+
+const CAPPED = "capped-operator-token-at-least-24-chars";
+
+const looping = (_body: unknown, index: number) => ({ ...toolCall("codemode", { code: `return ${index}` }, `call_${index}`), usage: { prompt_tokens: 10, completion_tokens: 1 } });
+
+contractTest("runs", "tests/run-limits.test.ts:12", "a run stops at its agent's limit of model responses with stopped turn_limit, and the next message continues", async t => {
+  const r = await runtime(t, looping);
+  for (const runLimits of [{ maxResponses: 0 }, { maxResponses: 1.5 }, { maxSeconds: -1 }, { other: 1 }]) {
+    assert.equal((await r.call("/v1/agents", { body: { runLimits } })).status, 400, JSON.stringify(runLimits));
+  }
+  const { id, token } = (await r.call("/v1/agents", { body: { runLimits: { maxResponses: 3 } } })).json;
+  assert.deepEqual((await r.call(`/v1/agents/${id}`)).json.runLimits, { maxResponses: 3 });
+
+  const first = await r.prompt(id, "go");
+  assert.equal(first.stopped, "turn_limit");
+  assert.equal(first.outcome.result.stopped, "turn_limit");
+  assert.equal(first.outcome.result.code, "turn_limit");
+  assert.equal(first.outcome.result.error, "This run stopped at its limit of 3 model responses. Send another message to continue");
+  assert.equal(r.model.bodies.length, 3, "the turn ended after the third response's tool calls");
+  // The history holds the last response's tool result, so the next message continues from there.
+  const second = await r.prompt(id, "go on");
+  assert.equal(second.outcome.result.stopped, "turn_limit");
+  assert.equal(r.model.bodies.length, 6, "each run counts its own responses");
+
+  // Only the tenant sets them; null returns to the runtime's.
+  assert.equal((await r.call(`/clients/${id}/requests`, { token, body: { id: "self", method: "configure", params: { runLimits: { maxResponses: 100 } } } })).status, 403);
+  assert.equal((await r.call(`/v1/agents/${id}/configuration`, { method: "PATCH", body: { runLimits: { maxResponses: 1 } } })).status, 202);
+  // A configuration change is queued like a run (202): it shows once the agent has taken it.
+  await until(async () => (await r.call(`/v1/agents/${id}`)).json.runLimits?.maxResponses === 1, "the new run limits to apply");
+  assert.equal((await r.prompt(id, "once")).outcome.result.stopped, "turn_limit");
+  assert.equal(r.model.bodies.length, 7);
+  assert.equal((await r.call(`/v1/agents/${id}/configuration`, { method: "PATCH", body: { runLimits: null } })).status, 202);
+  await until(async () => (await r.call(`/v1/agents/${id}`)).json.runLimits === null, "the run limits to be removed");
+});
+
+contractTest("runs", "tests/run-limits.test.ts:42", "self-serve tenants get the runtime's maximums (or the operator's per tenant); admin tenants the admin backstop unless their entry sets one", async t => {
+  const tenantsFile = {
+    tenants: {
+      // Like chiridion-prod: an unbilled admin tenant, with no run limits of its own.
+      alice: { tokenSha256: sha(OPERATOR), apiKeys: { openrouter: "fixture-model-key" } },
+      capped: { tokenSha256: sha(CAPPED), apiKeys: { openrouter: "fixture-model-key" }, maxRunResponses: 3 },
+    },
+    platformKeys: { openrouter: "fixture-platform-key" },
+  };
+  // Each agent's model calls tools until its turn has 12 tool results, then answers.
+  const r = await runtime(t, (body: any, index) => body.messages.filter((message: any) => message.role === "tool").length >= 12
+    ? { role: "assistant", content: "done", usage: { prompt_tokens: 10, completion_tokens: 1 } } : looping(body, index), { AGENT_MAX_RUN_RESPONSES: "4", AGENT_ADMIN_MAX_RUN_RESPONSES: "20", AGENT_BILLING_ADMINS: "alice" }, tenantsFile);
+
+  // The admin tenant's long run is not stopped at the runtime's 4: 13 responses, within its backstop of 20.
+  const admin = (await r.call("/v1/agents", { body: {} })).json;
+  const long = await r.prompt(admin.id, "go");
+  assert.equal(long.outcome.result.stopped, undefined);
+  assert.equal(long.outcome.result.reply, "done");
+  assert.equal(r.model.bodies.length, 13);
+  // Its agents may still set their own.
+  const own = (await r.call("/v1/agents", { body: { runLimits: { maxResponses: 2 } } })).json;
+  assert.equal((await r.prompt(own.id, "go")).outcome.result.stopped, "turn_limit");
+  assert.equal(r.model.bodies.length, 15);
+  // An admin tenant whose entry sets maxRunResponses: that, whatever its agents ask.
+  const capped = (await r.call("/v1/agents", { body: { runLimits: { maxResponses: 50 } }, token: CAPPED })).json;
+  assert.equal((await r.prompt(capped.id, "go", CAPPED)).outcome.result.error, "This run stopped at its limit of 3 model responses. Send another message to continue");
+  assert.equal(r.model.bodies.length, 18);
+
+  // A self-serve tenant: the runtime's maximum, or the operator's for it.
+  const made = await r.call("/v1/tenants", { body: { id: "lab-runs" } });
+  assert.equal(made.status, 201, made.text);
+  const token = made.json.token.token;
+  assert.equal((await r.call("/v1/billing/adjustments", { body: { tenant: "lab-runs", amount: 5_000_000, reason: "test", idempotencyKey: "runs:1" } })).status, 201);
+  const selfServe = (await r.call("/v1/agents", { body: {}, token })).json;
+  assert.equal((await r.prompt(selfServe.id, "go", token)).outcome.result.error, "This run stopped at its limit of 4 model responses. Send another message to continue");
+  assert.equal(r.model.bodies.length, 22);
+  const set = await r.call("/v1/tenants/lab-runs/limits", { method: "PUT", body: { maxRunResponses: 6, maxRunSeconds: 600 } });
+  assert.deepEqual(set.json.limits, { maxRunResponses: 6, maxRunSeconds: 600 });
+  const raised = (await r.call("/v1/agents", { body: {}, token })).json;
+  assert.equal((await r.prompt(raised.id, "go", token)).outcome.result.error, "This run stopped at its limit of 6 model responses. Send another message to continue");
+  assert.equal(r.model.bodies.length, 28);
+});
+
+contractTest("runs", "tests/run-limits.test.ts:85", "an admin tenant's runaway run stops at the admin backstop", async t => {
+  const tenantsFile = { tenants: { alice: { tokenSha256: sha(OPERATOR), apiKeys: { openrouter: "fixture-model-key" } } }, platformKeys: { openrouter: "fixture-platform-key" } };
+  // A model that never stops calling tools (2026-10-27: one ran 25 hours for an admin tenant, which had no limit).
+  const r = await runtime(t, looping, { AGENT_MAX_RUN_RESPONSES: "4", AGENT_ADMIN_MAX_RUN_RESPONSES: "6", AGENT_BILLING_ADMINS: "alice" }, tenantsFile);
+  const agent = (await r.call("/v1/agents", { body: {} })).json;
+  assert.equal((await r.prompt(agent.id, "go")).outcome.result.error, "This run stopped at its limit of 6 model responses. Send another message to continue");
+  assert.equal(r.model.bodies.length, 6);
+});
+
+contractTest("runs", "tests/run-limits.test.ts:94", "a definition's run limits reach its agents, and an agent's own stay when the definition is applied", async t => {
+  const r = await runtime(t, looping);
+  assert.equal((await r.call("/v1/definitions", { body: { name: "bad", runLimits: { maxResponses: "2" } } })).status, 400);
+  const definition = await r.call("/v1/definitions", { body: { name: "short", runLimits: { maxResponses: 2 } } });
+  assert.equal(definition.status, 201, definition.text);
+  assert.deepEqual(definition.json.runLimits, { maxResponses: 2 });
+  const made = (await r.call("/v1/agents", { body: { definition: definition.json.id } })).json;
+  assert.deepEqual((await r.call(`/v1/agents/${made.id}`)).json.runLimits, { maxResponses: 2 });
+  assert.equal((await r.prompt(made.id, "go")).outcome.result.stopped, "turn_limit");
+  assert.equal(r.model.bodies.length, 2, "the definition's limit");
+  const mine = (await r.call("/v1/agents", { body: { definition: definition.json.id, runLimits: { maxResponses: 3 } } })).json;
+  const updated = await r.call(`/v1/definitions/${definition.json.id}`, { method: "PATCH", body: { runLimits: { maxResponses: 1 }, apply: "all" } });
+  assert.equal(updated.status, 200, updated.text);
+  await until(async () => (await r.call(`/v1/agents/${made.id}`)).json.runLimits?.maxResponses === 1, "the definition to be applied");
+  assert.deepEqual((await r.call(`/v1/agents/${mine.id}`)).json.runLimits, { maxResponses: 3 }, "its own");
+});
+
+contractTest("runs", "tests/run-limits.test.ts:111", "a run stops at its time limit before its next model request", async t => {
+  // Durable QuickJS advances its virtual clock only when a host result arrives; Date.now cannot time a busy loop.
+  // Hold the first tool at an I/O barrier, cross the run's 1 s limit, and only then let it return.
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
+  const api = await listen(t, async (req, res) => {
+    for await (const _chunk of req) { /* consume the request */ }
+    if (req.url === "/openapi.json") {
+      res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({
+        openapi: "3.0.3", info: { title: "Clock barrier", version: "1" },
+        servers: [{ url: `http://${req.headers.host}` }],
+        paths: { "/wait": { post: { operationId: "wait", responses: { 200: { description: "released" } } } } },
+      }));
+      return;
+    }
+    entered.resolve();
+    await release.promise;
+    res.writeHead(200, { "Content-Type": "application/json" }).end("1");
+  });
+  const r = await runtime(t, (_body, index) => ({ ...toolCall("codemode", { code: "return await tools.clock__wait({})" }, `call_${index}`), usage: { prompt_tokens: 10, completion_tokens: 1 } }), {
+    AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32",
+  });
+  const definition = await r.call("/v1/definitions", { body: { name: "Clock barrier", openApi: [{ name: "clock", spec: `${api}/openapi.json` }] } });
+  assert.equal(definition.status, 201, definition.text);
+  const created = await r.call("/v1/agents", { body: { runLimits: { maxSeconds: 1 }, definition: definition.json.id } });
+  assert.equal(created.status, 201, created.text);
+  const { id } = created.json;
+  const pending = r.prompt(id, "go");
+  await Promise.race([entered.promise, pending.then(() => { throw new Error("The run ended before its first tool reached the barrier"); })]);
+  await r.advanceTime(1_000);
+  release.resolve();
+  const run = await pending;
+  assert.equal(run.outcome.result.stopped, "turn_limit");
+  assert.equal(run.outcome.result.error, "This run stopped at its time limit of 1 second. Send another message to continue");
+  assert.equal(r.model.bodies.length, 1, "no model request after the limit passed");
+  // The step's tool call ran and is in the history, so the next message continues from it.
+  const history = (await r.call(`/v1/agents/${id}/history`)).json;
+  assert.ok(JSON.stringify(history).includes("call_0"));
+});

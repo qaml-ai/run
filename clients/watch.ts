@@ -10,6 +10,7 @@
  */
 import type { AgentEvent, AssistantMessage, Message } from "./types.ts";
 import type { AgentInput } from "./typescript.ts";
+import { openEventStream } from "./event-transport.ts";
 export type * from "./types.ts";
 
 /** A token and when it expires (ms); `getToken` may answer either. */
@@ -31,8 +32,8 @@ export interface WatchOptions {
   /** Every event as it arrives (Pi's, and the runtime's own), after `state` took it in. */
   onEvent?: (event: AgentEvent) => void;
   onError?: (error: Error) => void;
-  /** "auto" (default): an SSE stream, and long polls where streams fail; or only one of them. */
-  transport?: "auto" | "sse" | "poll";
+  /** "auto" (default): prefer a server-advertised WebSocket, else SSE; or force a transport. */
+  transport?: "auto" | "websocket" | "sse" | "poll";
   /** Messages a history page asks for (default 50). */
   pageSize?: number;
   /** A stream that delivers nothing (not even a heartbeat) this long is cut (default 35 s); two such, and it polls. */
@@ -67,7 +68,7 @@ export interface AgentView {
   lastOutcome: { id: string; stopped?: string; error?: string } | null;
   /** Whether older history is there to load (`loadOlder`). */
   hasOlder: boolean;
-  transport: "sse" | "poll" | null;
+  transport: "websocket" | "sse" | "poll" | null;
   connected: boolean;
   /** The token expired (or was refused) and could not be renewed: the watcher has stopped. Watch again with a new one. */
   expired: boolean;
@@ -201,6 +202,7 @@ export function watchAgent(options: WatchOptions): Watcher {
   /** The index the next finished message takes, once the stream has said (a run's start, or a snapshot). */
   let next: number | undefined;
   let cursor = 0;
+  let websocketSelected = false;
   let json = new Map<number, string>();
   let stream: AbortController | undefined;
 
@@ -353,12 +355,16 @@ export function watchAgent(options: WatchOptions): Watcher {
    * on purpose (`event: reconnect`: its node is leaving, or the agent moved) ends here, and the next one starts at once.
    */
   async function sse(signal: AbortSignal): Promise<boolean> {
-    const response = await get(`/events?snapshot=1${options.subagents ? "&subagents=1" : ""}`, { headers: { Accept: "text/event-stream", ...(cursor ? { "Last-Event-ID": String(cursor) } : {}) } }, signal);
+    const path = `/events?snapshot=1${options.subagents ? "&subagents=1" : ""}`;
+    const response = await openEventStream((_url, init) => get(path, init, signal), base + path, { headers: { Accept: "text/event-stream", Authorization: `Bearer ${token}`, ...(cursor ? { "Last-Event-ID": String(cursor) } : {}) }, signal }, options.transport === "sse" ? "sse" : options.transport === "websocket" ? "websocket" : "websocket,sse", () => `Bearer ${token}`);
     if (!response.ok || !response.body) throw Object.assign(new Error(`events: HTTP ${response.status}`), { status: response.status });
+    const hibernatable = response.headers.get("x-agent-transport") === "websocket";
+    websocketSelected = hibernatable;
+    if (options.transport === "websocket" && !hibernatable) { await response.body.cancel(); throw new Error("Runtime did not select WebSocket transport"); }
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "", delivered = false, watchdog: ReturnType<typeof setTimeout> | undefined;
-    const touch = () => { clearTimeout(watchdog); watchdog = setTimeout(() => void reader.cancel().catch(() => {}), options.stallMs ?? 35_000); };
+    const touch = () => { clearTimeout(watchdog); if (!hibernatable) watchdog = setTimeout(() => void reader.cancel().catch(() => {}), options.stallMs ?? 35_000); };
     touch();
     try {
       for (;;) {
@@ -372,7 +378,7 @@ export function watchAgent(options: WatchOptions): Watcher {
           const text = lines.filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
           if (!text) continue;
           delivered = true;
-          if (lines.includes("event: ready")) { state.connected = true; state.transport = "sse"; changed(); continue; }
+          if (lines.includes("event: ready")) { state.connected = true; state.transport = hibernatable ? "websocket" : "sse"; changed(); continue; }
           if (lines.includes("event: reconnect")) { void reader.cancel().catch(() => {}); return true; }
           const id = Number(lines.find(line => line.startsWith("id:"))?.slice(3));
           await receive(JSON.parse(text));
@@ -380,7 +386,7 @@ export function watchAgent(options: WatchOptions): Watcher {
           changed();
         }
       }
-    } finally { clearTimeout(watchdog); reader.releaseLock(); }
+    } finally { clearTimeout(watchdog); await reader.cancel().catch(() => {}); reader.releaseLock(); }
   }
 
   /** One long poll. */
@@ -437,7 +443,7 @@ export function watchAgent(options: WatchOptions): Watcher {
         backoff = Math.min(backoff * 2, 30_000);
       }
       // Streams that end or fail without delivering anything (a proxy that buffers them): poll instead.
-      if (mode === "sse" && options.transport !== "sse" && failures >= 2) mode = "poll";
+      if (mode === "sse" && options.transport !== "sse" && options.transport !== "websocket" && !websocketSelected && failures >= 2) mode = "poll";
     }
   }
 

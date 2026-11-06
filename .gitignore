@@ -1,5 +1,6 @@
 node_modules
 dist/
+backends/workers/.assets/
 # The docs the SDK packages ship, copied from docs/ when they build (scripts/package-docs.mjs)
 sdk/docs/
 clients/python/camelai_run/*.md
@@ -21,3 +22,5 @@ sim-corpus/
 sim-corpus-*/
 sim-mcp/
 test-timings/
+.contract-artifacts/
+backends/workers/measurements/runs/

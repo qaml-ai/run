@@ -1,0 +1,129 @@
+{
+  "backend": "workers",
+  "area": "files,volumes,images,search,schedules,workspaces,selfhost,cli,journey",
+  "nodeKey": "1ff65be69bdb97687bb551ad863a1ab48c42d7c4726928e25ab5efd896fabdfc",
+  "suiteHash": "fabe683775fe343cc1c227f56f728a869eff7d15d2552fd4ee40db9c2129e413",
+  "revision": "3e2d2e618e8ee4b4eb4d047d905544d486e7e35b",
+  "shard": {
+    "index": 4,
+    "total": 4
+  },
+  "durationMs": 67288.94291099999,
+  "runtime": {
+    "node": "v24.22.1",
+    "platform": "linux",
+    "arch": "x64"
+  },
+  "recordedAt": "2026-11-05T22:43:57.090Z",
+  "expectedCases": 12,
+  "rows": [
+    {
+      "area": "files",
+      "source": "tests/files.test.ts",
+      "name": "a run's outcome lists the files it wrote and presented, and a presented file is an event with a download link",
+      "status": "pass",
+      "durationMs": 7518.084065,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "files",
+      "source": "tests/files.test.ts",
+      "name": "an upload streams to storage a chunk at a time: the source is never more than a few chunks ahead of storage",
+      "status": "pass",
+      "durationMs": 9151.630127,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "files",
+      "source": "tests/files.test.ts",
+      "name": "attachments over REST land in the workspace, the transcript keeps references, and the model sees them natively",
+      "status": "pass",
+      "durationMs": 8177.616395,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "schedules",
+      "source": "tests/schedule-api.test.ts:21",
+      "name": "public accounts can email their verified address and cannot email strangers or suppressed recipients",
+      "status": "pass",
+      "durationMs": 6055.445334,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "schedules",
+      "source": "tests/schedule-api.test.ts:37",
+      "name": "a calendar wake-up tells the model its fixed local edition date",
+      "status": "pass",
+      "durationMs": 5854.498706,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "schedules",
+      "source": "tests/schedule-api.test.ts:7",
+      "name": "calendar schedules and owner-configured email round trip through the API without crossing accounts",
+      "status": "pass",
+      "durationMs": 7129.653528,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "search",
+      "source": "tests/web-search.test.ts",
+      "name": "a definition pins web_search's providers; a platform search is charged at the answering provider's price and counted in the hour's ledger entry",
+      "status": "pass",
+      "durationMs": 7304.893168,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "search",
+      "source": "tests/web-search.test.ts",
+      "name": "a search key the operator set for a tenant (its apiKeys) is used, and is not counted as the platform's",
+      "status": "pass",
+      "durationMs": 6109.738871,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "search",
+      "source": "tests/web-search.test.ts",
+      "name": "an operator's tenant without a key of its own searches on the platform's, recorded as platform usage and never charged; its own key wins; platformKeys: false keeps the refusal",
+      "status": "pass",
+      "durationMs": 9947.475798,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "search",
+      "source": "tests/web-search.test.ts",
+      "name": "codemode's searches on the platform's key stop once the tenant's credit is spent, without waiting for the next model request",
+      "status": "pass",
+      "durationMs": 6736.500513,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "search",
+      "source": "tests/web-search.test.ts",
+      "name": "web_search uses the tenant's own search key, else the platform's billed to credit, and pairs with web_fetch",
+      "status": "pass",
+      "durationMs": 11617.875987,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "volumes",
+      "source": "tests/projects.test.ts",
+      "name": "publishTool finds the project from the call's identity, never its arguments, and tells the model what to fix",
+      "status": "pass",
+      "durationMs": 10047.272243,
+      "reason": "",
+      "backend": "workers"
+    }
+  ]
+}

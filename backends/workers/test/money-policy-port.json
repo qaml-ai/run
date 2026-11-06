@@ -1,0 +1,579 @@
+[
+  {
+    "file": "tests/credit-holds.test.ts",
+    "test": "a dear call a small balance cannot pay for is refused before it is made, and leaves no attempt",
+    "included": true
+  },
+  {
+    "file": "tests/credit-holds.test.ts",
+    "test": "the long-context tier counts: $60 per million past 272k input, not $30",
+    "included": true
+  },
+  {
+    "file": "tests/credit-holds.test.ts",
+    "test": "max_tokens is sized to what is left, so reasoning that never streams is bounded; holds leave room for other calls",
+    "included": true
+  },
+  {
+    "file": "tests/credit-holds.test.ts",
+    "test": "people can spend all they paid for: a last call starts within the shortfall, then nothing does",
+    "included": true
+  },
+  {
+    "file": "tests/credit-holds.test.ts",
+    "test": "an unknown price holds at a mid-range one; a router's zero is unknown; :free holds nothing; no estimate, own key and no billing hold nothing",
+    "included": true
+  },
+  {
+    "file": "tests/credit-holds.test.ts",
+    "test": "on free credit a call is held within the hour's allowance, not the whole balance",
+    "included": true
+  },
+  {
+    "file": "tests/credit-holds.test.ts",
+    "test": "a run on a tenant with too little credit stops before any call, as a spend limit; a small balance caps the call's max_tokens",
+    "included": false,
+    "reason": "ECS HTTP fixture"
+  },
+  {
+    "file": "tests/credit-holds.test.ts",
+    "test": "a hold whose host went away lapses and stops counting",
+    "included": true
+  },
+  {
+    "file": "tests/credit-holds.test.ts",
+    "test": "a failed attempt's hold goes as it ends and costs nothing, on reconciliation too; only the attempt that answered is charged",
+    "included": true
+  },
+  {
+    "file": "tests/credit-holds.test.ts",
+    "test": "a call an end user pays for on the platform's key holds both credits; a failed attempt releases both and costs neither, and only the attempt that answered is charged",
+    "included": true
+  },
+  {
+    "file": "tests/credit-holds.test.ts",
+    "test": "a tenants-file tenant with no billing, or none, is never held or refused, and takes no row lock: as camel-bots and chiridion-prod are",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-holds.test.ts",
+    "test": "reusing the settlement lock still expires credit released by the hold in that transaction",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-holds.test.ts",
+    "test": "a hold takes the bucket's allowance first, then the balance at the markup; settling posts what the call cost",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-holds.test.ts",
+    "test": "a call is refused when it cannot hold its minimum: for the balance, or for the daily limit",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-holds.test.ts",
+    "test": "a fixed hold takes what is left when it is near enough, and is refused with nothing left or far too little",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-holds.test.ts",
+    "test": "a bucket's own daily limit caps what it charges the balance, whatever the balance: a bot cannot spend past it",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-holds.test.ts",
+    "test": "changing an allowance mid-day keeps what was spent: only the cap moves",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-holds.test.ts",
+    "test": "parallel calls never hold more than the user has: each sees the others' holds",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-holds.test.ts",
+    "test": "a concurrent workload of holds, extensions and settlements keeps every invariant",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-holds.test.ts",
+    "test": "a lowered cost refunds at the rate it was paid at, never more than was paid, whatever the markup is now",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-holds.test.ts",
+    "test": "a refund returns at most the balance not held by calls in flight; an adjustment still corrects it",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-holds.test.ts",
+    "test": "a corrected cost refunds the balance first, then the allowance; holds of a dead call expire",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-holds.test.ts",
+    "test": "a model call holds its estimate, holds more as it streams, is cut at the line, and posts its cost marked up",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-holds.test.ts",
+    "test": "a model call its end user cannot pay for is refused before it is made, and leaves no attempt",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-holds.test.ts",
+    "test": "a begin delivered again holds once, and a request for more that lands after the call settled holds nothing",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-holds.test.ts",
+    "test": "a call whose input alone is past what is left still starts: a short reply on what is left, the rest written off, then refused",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-holds.test.ts",
+    "test": "a failed call with no output releases its hold; one without an end user is the tenant's alone",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-holds.test.ts",
+    "test": "ChatGPT subscription attempts hold and charge no end-user credit, including through an endpoint",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-holds.test.ts",
+    "test": "a subscription attempt begun before the exemption releases its hold and settles at zero",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-holds.test.ts",
+    "test": "a model with no price is never free to its end user, nor refused for it: it holds and settles at the catalog's or a mid-range price, and is said",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-holds.test.ts",
+    "test": "what a call costs its end user is what it costs the tenant: usage.recorded's cost (cache reads and writes, reasoning, the provider's own) and funding it",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-holds.test.ts",
+    "test": "a call's hold prices the input its provider likely reads from cache at the cache's rate: a cheap cached reply is not refused",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-holds.test.ts",
+    "test": "a slow call that needs no more of its hold yet keeps it from lapsing as it reports",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-holds.test.ts",
+    "test": "a call begun before midnight holds more from its own day's allowance, never the next day's",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-lots.test.ts",
+    "test": "a month's credit is a lot every bucket spends first, splitting into the credit that never expires",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-lots.test.ts",
+    "test": "at its time a lot's unspent part expires: an expiry entry, the balance down, the day's expired, a webhook",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-lots.test.ts",
+    "test": "a hold open at expiry settles against the lot it reserved; what it leaves expires at the next lock",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-lots.test.ts",
+    "test": "refunds: a pack's takes credit that never expires first; one naming the month's grant takes its lot",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-lots.test.ts",
+    "test": "a debt is repaid before a month's credit counts; usage never takes lots past the balance",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-lots.test.ts",
+    "test": "credit granted before lots can be marked to expire, once per key; a sweep expires lots of people who do nothing",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-lots.test.ts",
+    "test": "the lots API and the TypeScript SDK: expiring grants, lots on the end user, marking, refunds by lot, for the tenant only",
+    "included": false,
+    "reason": "ECS HTTP fixture"
+  },
+  {
+    "file": "tests/end-user-credits.test.ts",
+    "test": "a bucket's allowance: its own key, else the longest prefix, else *, with the user's keys over the tenant's",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-credits.test.ts",
+    "test": "markup rounds what the user is charged up and what it pays for down",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-credits.test.ts",
+    "test": "settings default to off, change field by field, and refuse what is not an amount",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-credits.test.ts",
+    "test": "grants, refunds and adjustments move the balance once per key, and the ledger pages newest first",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-credits.test.ts",
+    "test": "a spend takes credit for what the tenant sells, at most the balance calls in flight don't hold; descriptions are kept",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-credits.test.ts",
+    "test": "a user's overrides merge key by key and never touch what they spent",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-credits.test.ts",
+    "test": "the end-user API: settings, entries, an end user and their ledger, for the tenant only",
+    "included": false,
+    "reason": "ECS HTTP fixture"
+  },
+  {
+    "file": "tests/end-user-written-off.test.ts",
+    "test": "a bot at a bucket limit of 0: a call past its allowance never charges a balance of 0; the rest is written off, said once",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-written-off.test.ts",
+    "test": "a bucket limit with some room: an overflow charges what is left of it, and writes off the rest",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-written-off.test.ts",
+    "test": "the daily limit: paid spend ends at exactly the limit, at the markup, and the rest is written off",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-written-off.test.ts",
+    "test": "the balance: an overflow takes it to zero, never below; the next call is refused; zero balance and no allowance charge nothing",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-written-off.test.ts",
+    "test": "an overflow never takes credit another call in flight holds, however many settle at once",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-written-off.test.ts",
+    "test": "corrections: an upward one with no hold is capped as a first settlement is; a downward one reduces the write-off first, then refunds",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-written-off.test.ts",
+    "test": "other spend obeys the same cap: a transcription's hold and a web search at a bucket limit of 0 with no allowance left",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-written-off.test.ts",
+    "test": "a person spends down to nothing: the last call starts on what is left, overdraws nothing, is written off, and the next is refused",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-written-off.test.ts",
+    "test": "calls at once never overdraw: the first to ask holds what is left, the others are refused",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-written-off.test.ts",
+    "test": "the last call stays within the daily limit and the bucket's own: its overshoot is written off, not charged",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-written-off.test.ts",
+    "test": "a normal model call with enough balance runs and settles exactly: no write-off, nothing logged",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-written-off.test.ts",
+    "test": "a model call that costs more than its hold: capped at settlement, kept on the attempt, and corrected by the difference",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-written-off.test.ts",
+    "test": "midnight: a call begun at 23:59:59 is capped by the day it posts to, and so is a correction made later",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-settings-concurrency.test.ts",
+    "test": "concurrent PATCHes adding their own keys all land",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-settings-concurrency.test.ts",
+    "test": "a node's PUT at start never resets the markup and daily limit an operator PATCHes at the same time",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-settings-concurrency.test.ts",
+    "test": "writers queued on the settings row each keep their own change (deterministic)",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-settings-concurrency.test.ts",
+    "test": "two first writes for a tenant with no settings yet both land",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-settings-concurrency.test.ts",
+    "test": "a PATCH past 100 keys is refused and changes nothing",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-settings-concurrency.test.ts",
+    "test": "holds and charges go through while a writer holds the settings row",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-balance-events.test.ts",
+    "test": "below $10, add $5: balance.low fires on the crossing, and again on the first debit after a top-up that left it under",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-balance-events.test.ts",
+    "test": "a person's own lowBalance overrides the tenant's, is shown under overrides, and a threshold set above the balance fires once",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-balance-events.test.ts",
+    "test": "cause says what moved the balance: a negative adjustment, a corrected cost, a refused call; a refund stays silent",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-balance-events.test.ts",
+    "test": "a person never credited (free allowances only) is never told their balance is low",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-balance-events.test.ts",
+    "test": "each grant, refund and adjustment sends its event once; a replayed key sends nothing",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-balance-events.test.ts",
+    "test": "allowance.low fires once per person, bucket and day past allowanceWarningPercent; off without it",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-balance-events.test.ts",
+    "test": "the API: a person's lowBalance, and the end users under their threshold",
+    "included": false,
+    "reason": "ECS HTTP fixture"
+  },
+  {
+    "file": "tests/end-user-history.test.ts",
+    "test": "the ledger narrows by kind, time, bucket and moved, and pages with its filters",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-history.test.ts",
+    "test": "a credit history among much usage is read from the entries index, not the usage",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-history.test.ts",
+    "test": "per-day totals equal the day's usage rows by bucket, with the tenant's entries, newest first and paged",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-history.test.ts",
+    "test": "the history API and the TypeScript SDK: ledger filters and per-day totals, for the tenant only",
+    "included": false,
+    "reason": "ECS HTTP fixture"
+  },
+  {
+    "file": "tests/end-user-usage.test.ts",
+    "test": "usage sums posting hours and UTC days across buckets, calls and agents",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-usage.test.ts",
+    "test": "usage corrections sum signed amounts at posting time",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-usage.test.ts",
+    "test": "usage defaults and invalid ranges",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-usage.test.ts",
+    "test": "usage time ranges use the user's time index, not their history or other users",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-usage.test.ts",
+    "test": "usage API and TypeScript SDK parse times, group usage and isolate tenants",
+    "included": false,
+    "reason": "ECS HTTP fixture"
+  },
+  {
+    "file": "tests/model-attempts.test.ts",
+    "test": "concurrent attempt begins retain one identity and reject changed replay identities",
+    "included": true
+  },
+  {
+    "file": "tests/model-attempts.test.ts",
+    "test": "one provider attempt charges once across duplicate delivery, concurrent owners and usage callbacks",
+    "included": true
+  },
+  {
+    "file": "tests/model-attempts.test.ts",
+    "test": "a lost commit acknowledgement can be delivered again without a second debit",
+    "included": true
+  },
+  {
+    "file": "tests/model-attempts.test.ts",
+    "test": "end-user settlement preserves holds on rollback and charges once after a lost commit acknowledgement",
+    "included": true
+  },
+  {
+    "file": "tests/model-attempts.test.ts",
+    "test": "reconciliation survives a lost host, includes BYOK cost, and runs concurrently without double billing",
+    "included": true
+  },
+  {
+    "file": "tests/model-attempts.test.ts",
+    "test": "authoritative reconciliation posts only the difference, including a refund; stale failures without evidence settle",
+    "included": true
+  },
+  {
+    "file": "tests/model-attempts.test.ts",
+    "test": "deleting a streaming agent preserves its generation and billed output before killing its host",
+    "included": false,
+    "reason": "ECS client-session fixture"
+  },
+  {
+    "file": "tests/model-attempts.test.ts",
+    "test": "a failed durable begin never dispatches a provider request",
+    "included": true
+  },
+  {
+    "file": "tests/model-attempts.test.ts",
+    "test": "settlement rollback leaves the attempt pending, then replay and webhook corrections conserve cost",
+    "included": true
+  },
+  {
+    "file": "tests/model-attempts.test.ts",
+    "test": "missing provider records and rotated keys never finalize an unknown charge as zero",
+    "included": true
+  },
+  {
+    "file": "tests/model-attempts.test.ts",
+    "test": "OpenRouter Messages header is durable before body and survives a missing body",
+    "included": false,
+    "reason": "ECS model stream seam"
+  },
+  {
+    "file": "tests/model-attempts.test.ts",
+    "test": "tenant-owned OpenRouter usage reconciles with its original key without charging platform credits",
+    "included": true
+  },
+  {
+    "file": "tests/model-attempts.test.ts",
+    "test": "a late completed delivery upgrades an estimate once without counting a second response",
+    "included": true
+  },
+  {
+    "file": "tests/model-attempts.test.ts",
+    "test": "HTTP success alone does not finalize a still-running generation",
+    "included": true
+  },
+  {
+    "file": "tests/model-attempts.test.ts",
+    "test": "generation persistence failure cancels the upstream response before it reaches the SDK",
+    "included": false,
+    "reason": "ECS model stream seam"
+  },
+  {
+    "file": "tests/model-attempts.test.ts",
+    "test": "scoped OpenRouter reconciliation selects only a fingerprint-matching key",
+    "included": true
+  },
+  {
+    "file": "tests/model-attempts.test.ts",
+    "test": "duplicate no-evidence finishes never bill or emit a correction webhook",
+    "included": true
+  },
+  {
+    "file": "tests/model-attempts.test.ts",
+    "test": "recoverable generations are not crowded out by unsupported provider records",
+    "included": true
+  },
+  {
+    "file": "tests/model-attempts.test.ts",
+    "test": "Messages API native message IDs preserve the header generation through cancellation and reconciliation",
+    "included": false,
+    "reason": "ECS client-session fixture"
+  },
+  {
+    "file": "tests/model-attempts.test.ts",
+    "test": "gateway and empty-key attempts finalize estimates; existing gateway rows stop reconciliation",
+    "included": true
+  },
+  {
+    "file": "tests/model-attempts.test.ts",
+    "test": "a hosted-scope gateway generation settles without an OpenRouter credential",
+    "included": false,
+    "reason": "ECS model stream seam"
+  },
+  {
+    "file": "tests/model-attempts.test.ts",
+    "test": "platform Azure Luna refusals never bill estimated input",
+    "included": true
+  },
+  {
+    "file": "tests/model-attempts.test.ts",
+    "test": "a gateway refusal settles at zero and is never polled",
+    "included": true
+  },
+  {
+    "file": "tests/model-attempts.test.ts",
+    "test": "reconciliation leaves an in-flight attempt for its real full-usage finish",
+    "included": true
+  },
+  {
+    "file": "tests/model-attempts.test.ts",
+    "test": "real provider reconciliation can increase an end user's charge after the call",
+    "included": true
+  },
+  {
+    "file": "tests/model-attempts.test.ts",
+    "test": "platform Azure and tenant provider base URLs are not gateway credentials",
+    "included": false,
+    "reason": "ECS model stream seam"
+  },
+  {
+    "file": "tests/model-attempts.test.ts",
+    "test": "a recorded direct credential is not reclassified when its scope becomes a gateway",
+    "included": true
+  },
+  {
+    "file": "tests/model-attempts.test.ts",
+    "test": "a stale direct OpenRouter failure without generation or usage settles at zero",
+    "included": true
+  },
+  {
+    "file": "tests/oauth-clients.test.ts",
+    "test": "registering a confidential client's public metadata again never yields its secret",
+    "included": true
+  },
+  {
+    "file": "tests/oauth-clients.test.ts",
+    "test": "the consent page shows where the code goes and that the name is unverified",
+    "included": true
+  }
+]

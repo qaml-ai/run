@@ -1,0 +1,17 @@
+{
+  "shards": 4,
+  "elapsedMs": 46368,
+  "status": 1,
+  "phases": [
+    {
+      "backend": "node",
+      "elapsedMs": 46367,
+      "status": 0,
+      "mergeStatus": 1
+    }
+  ],
+  "args": [
+    "--area=files,volumes,images,search,schedules,workspaces,selfhost,cli,journey",
+    "--shards=4"
+  ]
+}

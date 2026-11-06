@@ -1,0 +1,2931 @@
+{
+  "runtimeNonTypeScript": [
+    {
+      "file": "backends/workers/computers/parse.mjs",
+      "lines": 79
+    }
+  ],
+  "sourceCommit": "5aabfaf09743783e8e7ad854e2857352215b836e",
+  "method": "Physical TypeScript lines, comments and blanks included; declarations, tests, dependencies and generated bindings excluded. Whole mixed-purpose source files counted. Not feature-equivalent.",
+  "excluded": [
+    "src/channel-filter.ts",
+    "src/channels-api.ts",
+    "src/channels-discord.ts",
+    "src/channels-email.ts",
+    "src/channels-github.ts",
+    "src/channels-slack.ts",
+    "src/channels-telegram.ts",
+    "src/channels-webhook.ts",
+    "src/channels.ts",
+    "src/discord-managed.ts",
+    "src/opus.ts",
+    "src/voice-api.ts",
+    "src/voice-audio.ts",
+    "src/voice-browser.ts",
+    "src/voice-discord.ts",
+    "src/voice-library.ts",
+    "src/voice-providers/socket.ts",
+    "src/voice-sessions.ts",
+    "src/voice-speech.ts",
+    "src/voice/audio-decode.ts",
+    "src/voice/echo-guard.ts",
+    "src/voice/jitter.ts",
+    "src/voice/jukebox.ts",
+    "src/voice/latency.ts",
+    "src/voice/media-host.ts",
+    "src/voice/media-worker.ts",
+    "src/voice/media.ts",
+    "src/voice/protocol.ts",
+    "src/voice/realtime/brain.ts",
+    "src/voice/realtime/elevenlabs.ts",
+    "src/voice/realtime/gemini.ts",
+    "src/voice/realtime/grok.ts",
+    "src/voice/realtime/mixer.ts",
+    "src/voice/realtime/openai.ts",
+    "src/voice/realtime/provider.ts",
+    "src/voice/recorder.ts",
+    "src/voice/turns/features.ts",
+    "src/voice/turns/floor.ts",
+    "src/voice/turns/inference-worker.ts",
+    "src/voice/turns/inference.ts",
+    "src/voice/turns/protocol.ts",
+    "src/voice/turns/segmenter.ts",
+    "src/voice/turns/turn-taker.ts"
+  ],
+  "rows": [
+    {
+      "area": "Accounts, money, webhooks",
+      "ecs": {
+        "files": 40,
+        "lines": 10422,
+        "nonblank": 9823
+      },
+      "workers": {
+        "files": 39,
+        "lines": 8802,
+        "nonblank": 8320
+      }
+    },
+    {
+      "area": "Hosting, admission, tenancy",
+      "ecs": {
+        "files": 14,
+        "lines": 4374,
+        "nonblank": 4151
+      },
+      "workers": {
+        "files": 2,
+        "lines": 369,
+        "nonblank": 336
+      }
+    },
+    {
+      "area": "Agents, history, schedules",
+      "ecs": {
+        "files": 33,
+        "lines": 15107,
+        "nonblank": 14317
+      },
+      "workers": {
+        "files": 9,
+        "lines": 4171,
+        "nonblank": 4093
+      }
+    },
+    {
+      "area": "HTTP, contracts, remaining policy",
+      "ecs": {
+        "files": 69,
+        "lines": 13677,
+        "nonblank": 12864
+      },
+      "workers": {
+        "files": 98,
+        "lines": 8893,
+        "nonblank": 8378
+      }
+    },
+    {
+      "area": "Code execution",
+      "ecs": {
+        "files": 6,
+        "lines": 797,
+        "nonblank": 749
+      },
+      "workers": {
+        "files": 5,
+        "lines": 138,
+        "nonblank": 134
+      }
+    }
+  ],
+  "records": [
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/account-deletion.ts",
+      "lines": 207,
+      "nonblank": 193
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/account-emails.ts",
+      "lines": 72,
+      "nonblank": 70
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/account-export.ts",
+      "lines": 220,
+      "nonblank": 204
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/account-mail.ts",
+      "lines": 81,
+      "nonblank": 74
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/accounts.ts",
+      "lines": 733,
+      "nonblank": 679
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/admin-accounts.ts",
+      "lines": 125,
+      "nonblank": 105
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/admin-acquisition.ts",
+      "lines": 97,
+      "nonblank": 92
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/admin-growth.ts",
+      "lines": 152,
+      "nonblank": 144
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/admin-health.ts",
+      "lines": 174,
+      "nonblank": 167
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/admin-mcp.ts",
+      "lines": 82,
+      "nonblank": 79
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/admin-report.ts",
+      "lines": 83,
+      "nonblank": 78
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/admin-revenue.ts",
+      "lines": 192,
+      "nonblank": 186
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/admin-signals.ts",
+      "lines": 200,
+      "nonblank": 188
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/admin-site.ts",
+      "lines": 300,
+      "nonblank": 290
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/admin-stats.ts",
+      "lines": 89,
+      "nonblank": 86
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/admin-usage.ts",
+      "lines": 362,
+      "nonblank": 351
+    },
+    {
+      "backend": "ecs",
+      "area": "Hosting, admission, tenancy",
+      "file": "src/agent-child.ts",
+      "lines": 42,
+      "nonblank": 39
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/agent-host.ts",
+      "lines": 1370,
+      "nonblank": 1320
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/agent-mcp.ts",
+      "lines": 345,
+      "nonblank": 329
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/anthropic-federation.ts",
+      "lines": 116,
+      "nonblank": 108
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/api-schemas.ts",
+      "lines": 1745,
+      "nonblank": 1691
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/api.ts",
+      "lines": 1588,
+      "nonblank": 1550
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/assert.ts",
+      "lines": 51,
+      "nonblank": 44
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/attached.ts",
+      "lines": 96,
+      "nonblank": 86
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/audio-header.ts",
+      "lines": 178,
+      "nonblank": 168
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/auto-topup.ts",
+      "lines": 362,
+      "nonblank": 360
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/azure-openai.ts",
+      "lines": 134,
+      "nonblank": 123
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/billing-alerts.ts",
+      "lines": 309,
+      "nonblank": 287
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/billing-emails.ts",
+      "lines": 91,
+      "nonblank": 91
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/billing-mailer.ts",
+      "lines": 111,
+      "nonblank": 108
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/billing-payments.ts",
+      "lines": 222,
+      "nonblank": 208
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/billing.ts",
+      "lines": 776,
+      "nonblank": 730
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/browser-tokens.ts",
+      "lines": 133,
+      "nonblank": 121
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/buggify.ts",
+      "lines": 20,
+      "nonblank": 17
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/builtins.ts",
+      "lines": 255,
+      "nonblank": 245
+    },
+    {
+      "backend": "ecs",
+      "area": "Hosting, admission, tenancy",
+      "file": "src/busy-agents.ts",
+      "lines": 107,
+      "nonblank": 98
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/calendar.ts",
+      "lines": 34,
+      "nonblank": 33
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/capabilities/router.ts",
+      "lines": 79,
+      "nonblank": 72
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/card-credit.ts",
+      "lines": 108,
+      "nonblank": 100
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/catalog.ts",
+      "lines": 115,
+      "nonblank": 103
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/child-stderr.ts",
+      "lines": 54,
+      "nonblank": 52
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/client-sessions.ts",
+      "lines": 2845,
+      "nonblank": 2692
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/client-sessions/children.ts",
+      "lines": 797,
+      "nonblank": 759
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/client-sessions/configuration.ts",
+      "lines": 538,
+      "nonblank": 518
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/client-sessions/delegation.ts",
+      "lines": 392,
+      "nonblank": 368
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/client-sessions/events.ts",
+      "lines": 559,
+      "nonblank": 538
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/client-sessions/inputs.ts",
+      "lines": 183,
+      "nonblank": 169
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/client-sessions/spend.ts",
+      "lines": 574,
+      "nonblank": 544
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/client-sessions/state.ts",
+      "lines": 492,
+      "nonblank": 484
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/client-sessions/tools.ts",
+      "lines": 456,
+      "nonblank": 428
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/client-sessions/workflows.ts",
+      "lines": 130,
+      "nonblank": 124
+    },
+    {
+      "backend": "ecs",
+      "area": "Code execution",
+      "file": "src/codemode-pi-launcher.ts",
+      "lines": 175,
+      "nonblank": 169
+    },
+    {
+      "backend": "ecs",
+      "area": "Code execution",
+      "file": "src/codemode.ts",
+      "lines": 307,
+      "nonblank": 290
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/compaction.ts",
+      "lines": 341,
+      "nonblank": 325
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/computer-env.ts",
+      "lines": 227,
+      "nonblank": 221
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/computers/abuse.ts",
+      "lines": 21,
+      "nonblank": 19
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/computers/api.ts",
+      "lines": 43,
+      "nonblank": 42
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/computers/managed.ts",
+      "lines": 529,
+      "nonblank": 502
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/computers/microvm.ts",
+      "lines": 196,
+      "nonblank": 193
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/computers/providers.ts",
+      "lines": 233,
+      "nonblank": 228
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/computers/service.ts",
+      "lines": 263,
+      "nonblank": 261
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/computers/transfers.ts",
+      "lines": 56,
+      "nonblank": 53
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/console-auth.ts",
+      "lines": 441,
+      "nonblank": 424
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/credential-exchange.ts",
+      "lines": 232,
+      "nonblank": 216
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/credit-holds.ts",
+      "lines": 58,
+      "nonblank": 51
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/db.ts",
+      "lines": 384,
+      "nonblank": 364
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/decision-providers.ts",
+      "lines": 99,
+      "nonblank": 95
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/decisions.ts",
+      "lines": 546,
+      "nonblank": 508
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/deepseek-replay.ts",
+      "lines": 72,
+      "nonblank": 66
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/definitions-api.ts",
+      "lines": 77,
+      "nonblank": 74
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/definitions.ts",
+      "lines": 358,
+      "nonblank": 338
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/docs.ts",
+      "lines": 60,
+      "nonblank": 57
+    },
+    {
+      "backend": "ecs",
+      "area": "Hosting, admission, tenancy",
+      "file": "src/ecs.ts",
+      "lines": 185,
+      "nonblank": 173
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/email-accounts.ts",
+      "lines": 192,
+      "nonblank": 178
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/end-user-credits.ts",
+      "lines": 1123,
+      "nonblank": 1058
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/end-users-api.ts",
+      "lines": 139,
+      "nonblank": 134
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/file-arguments.ts",
+      "lines": 116,
+      "nonblank": 103
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/files.ts",
+      "lines": 278,
+      "nonblank": 251
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/gc-verify.ts",
+      "lines": 94,
+      "nonblank": 89
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/help-emails.ts",
+      "lines": 233,
+      "nonblank": 210
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/help.ts",
+      "lines": 333,
+      "nonblank": 315
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/history-none.ts",
+      "lines": 12,
+      "nonblank": 11
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/history-pages.ts",
+      "lines": 304,
+      "nonblank": 290
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/history.ts",
+      "lines": 142,
+      "nonblank": 133
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/hosted-mcp.ts",
+      "lines": 103,
+      "nonblank": 95
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/html-text.ts",
+      "lines": 24,
+      "nonblank": 23
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/http-error.ts",
+      "lines": 10,
+      "nonblank": 10
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/http.ts",
+      "lines": 98,
+      "nonblank": 86
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/idempotency.ts",
+      "lines": 84,
+      "nonblank": 80
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/identity.ts",
+      "lines": 173,
+      "nonblank": 158
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/image-header.ts",
+      "lines": 86,
+      "nonblank": 82
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/images.ts",
+      "lines": 418,
+      "nonblank": 393
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/inputs.ts",
+      "lines": 326,
+      "nonblank": 301
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/inspect-worker.ts",
+      "lines": 48,
+      "nonblank": 44
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/inspect.ts",
+      "lines": 168,
+      "nonblank": 157
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/journey.ts",
+      "lines": 786,
+      "nonblank": 743
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/key-check.ts",
+      "lines": 38,
+      "nonblank": 35
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/key-scopes.ts",
+      "lines": 161,
+      "nonblank": 147
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/language.ts",
+      "lines": 98,
+      "nonblank": 86
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/legacy-coverage.ts",
+      "lines": 216,
+      "nonblank": 199
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/limit-hits.ts",
+      "lines": 53,
+      "nonblank": 47
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/limits.ts",
+      "lines": 180,
+      "nonblank": 169
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/log-tail.ts",
+      "lines": 157,
+      "nonblank": 152
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/mail-transport.ts",
+      "lines": 50,
+      "nonblank": 47
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/markdown-email.ts",
+      "lines": 37,
+      "nonblank": 36
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/mcp-client-kind.ts",
+      "lines": 32,
+      "nonblank": 30
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/mcp-results.ts",
+      "lines": 91,
+      "nonblank": 85
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/mcp.ts",
+      "lines": 203,
+      "nonblank": 186
+    },
+    {
+      "backend": "ecs",
+      "area": "Hosting, admission, tenancy",
+      "file": "src/memory-retirement.ts",
+      "lines": 49,
+      "nonblank": 43
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/metrics.ts",
+      "lines": 599,
+      "nonblank": 556
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/model-attempt-stream.ts",
+      "lines": 118,
+      "nonblank": 115
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/model-attempt.ts",
+      "lines": 38,
+      "nonblank": 38
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/model-attempts.ts",
+      "lines": 399,
+      "nonblank": 387
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/model-errors.ts",
+      "lines": 115,
+      "nonblank": 103
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/model-fallback.ts",
+      "lines": 48,
+      "nonblank": 46
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/model-providers.ts",
+      "lines": 216,
+      "nonblank": 197
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/model-stream.ts",
+      "lines": 144,
+      "nonblank": 135
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/model.ts",
+      "lines": 80,
+      "nonblank": 73
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/multi-agent.ts",
+      "lines": 309,
+      "nonblank": 285
+    },
+    {
+      "backend": "ecs",
+      "area": "Hosting, admission, tenancy",
+      "file": "src/node-config.ts",
+      "lines": 211,
+      "nonblank": 207
+    },
+    {
+      "backend": "ecs",
+      "area": "Hosting, admission, tenancy",
+      "file": "src/node-context.ts",
+      "lines": 101,
+      "nonblank": 92
+    },
+    {
+      "backend": "ecs",
+      "area": "Hosting, admission, tenancy",
+      "file": "src/node.ts",
+      "lines": 1811,
+      "nonblank": 1774
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/oauth.ts",
+      "lines": 543,
+      "nonblank": 507
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/openapi.ts",
+      "lines": 253,
+      "nonblank": 234
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/openrouter-model.ts",
+      "lines": 75,
+      "nonblank": 70
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/ops-mcp.ts",
+      "lines": 172,
+      "nonblank": 162
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/ops-reports.ts",
+      "lines": 238,
+      "nonblank": 222
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/origins.ts",
+      "lines": 56,
+      "nonblank": 50
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/outbound.ts",
+      "lines": 298,
+      "nonblank": 274
+    },
+    {
+      "backend": "ecs",
+      "area": "Hosting, admission, tenancy",
+      "file": "src/ownership.ts",
+      "lines": 495,
+      "nonblank": 459
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/parse-job.ts",
+      "lines": 91,
+      "nonblank": 87
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/passwords.ts",
+      "lines": 118,
+      "nonblank": 103
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/pi-catalog.ts",
+      "lines": 257,
+      "nonblank": 241
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/pi-durable/agent.ts",
+      "lines": 1084,
+      "nonblank": 1043
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/pi-durable/fork.ts",
+      "lines": 127,
+      "nonblank": 120
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/pi-durable/history.ts",
+      "lines": 318,
+      "nonblank": 287
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/pi-durable/host-journal.ts",
+      "lines": 263,
+      "nonblank": 239
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/pi-durable/ordinals.ts",
+      "lines": 331,
+      "nonblank": 312
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/pi-durable/reclaim.ts",
+      "lines": 154,
+      "nonblank": 142
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/pi-durable/reset.ts",
+      "lines": 77,
+      "nonblank": 71
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/pi-durable/seed.ts",
+      "lines": 200,
+      "nonblank": 190
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/pi-durable/storage.ts",
+      "lines": 1621,
+      "nonblank": 1539
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/pi-harness/messages.ts",
+      "lines": 62,
+      "nonblank": 55
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/pi-harness/tokens.ts",
+      "lines": 89,
+      "nonblank": 81
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/pin-backfill.ts",
+      "lines": 86,
+      "nonblank": 82
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/platform-pricing.ts",
+      "lines": 103,
+      "nonblank": 91
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/pricing.ts",
+      "lines": 190,
+      "nonblank": 181
+    },
+    {
+      "backend": "ecs",
+      "area": "Hosting, admission, tenancy",
+      "file": "src/process-memory.ts",
+      "lines": 16,
+      "nonblank": 15
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/protocol.ts",
+      "lines": 183,
+      "nonblank": 177
+    },
+    {
+      "backend": "ecs",
+      "area": "Hosting, admission, tenancy",
+      "file": "src/rate-limits.ts",
+      "lines": 415,
+      "nonblank": 380
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/request-images.ts",
+      "lines": 25,
+      "nonblank": 23
+    },
+    {
+      "backend": "ecs",
+      "area": "Hosting, admission, tenancy",
+      "file": "src/rpc.ts",
+      "lines": 102,
+      "nonblank": 98
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/runs.ts",
+      "lines": 185,
+      "nonblank": 176
+    },
+    {
+      "backend": "ecs",
+      "area": "Code execution",
+      "file": "src/sandbox-probe.ts",
+      "lines": 27,
+      "nonblank": 26
+    },
+    {
+      "backend": "ecs",
+      "area": "Code execution",
+      "file": "src/sandbox-wire.ts",
+      "lines": 49,
+      "nonblank": 46
+    },
+    {
+      "backend": "ecs",
+      "area": "Code execution",
+      "file": "src/sandbox.ts",
+      "lines": 83,
+      "nonblank": 73
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/schedule-mailer.ts",
+      "lines": 57,
+      "nonblank": 56
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/scheduler.ts",
+      "lines": 216,
+      "nonblank": 202
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/secrets.ts",
+      "lines": 131,
+      "nonblank": 128
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/sender.ts",
+      "lines": 114,
+      "nonblank": 99
+    },
+    {
+      "backend": "ecs",
+      "area": "Hosting, admission, tenancy",
+      "file": "src/server.ts",
+      "lines": 34,
+      "nonblank": 33
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/session-config.ts",
+      "lines": 285,
+      "nonblank": 265
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/signup-source.ts",
+      "lines": 42,
+      "nonblank": 37
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/speech-api.ts",
+      "lines": 194,
+      "nonblank": 182
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/speech.ts",
+      "lines": 182,
+      "nonblank": 163
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/storage-gc.ts",
+      "lines": 115,
+      "nonblank": 108
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/storage-integrity.ts",
+      "lines": 85,
+      "nonblank": 81
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/storage-usage.ts",
+      "lines": 175,
+      "nonblank": 164
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/stripe.ts",
+      "lines": 110,
+      "nonblank": 100
+    },
+    {
+      "backend": "ecs",
+      "area": "Hosting, admission, tenancy",
+      "file": "src/supervisor.ts",
+      "lines": 500,
+      "nonblank": 466
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/system-prompt.ts",
+      "lines": 155,
+      "nonblank": 134
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/tar.ts",
+      "lines": 79,
+      "nonblank": 72
+    },
+    {
+      "backend": "ecs",
+      "area": "Hosting, admission, tenancy",
+      "file": "src/tenants.ts",
+      "lines": 306,
+      "nonblank": 274
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/tool-choice.ts",
+      "lines": 33,
+      "nonblank": 32
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/tool-files.ts",
+      "lines": 393,
+      "nonblank": 361
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/tool-judge.ts",
+      "lines": 197,
+      "nonblank": 181
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/tool-policy.ts",
+      "lines": 164,
+      "nonblank": 146
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/tool-servers.ts",
+      "lines": 218,
+      "nonblank": 204
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/tool-sources.ts",
+      "lines": 658,
+      "nonblank": 628
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/transcription.ts",
+      "lines": 233,
+      "nonblank": 213
+    },
+    {
+      "backend": "ecs",
+      "area": "Code execution",
+      "file": "src/v8-exec.ts",
+      "lines": 156,
+      "nonblank": 145
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/virtual-models.ts",
+      "lines": 69,
+      "nonblank": 62
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/voice-providers/prices.ts",
+      "lines": 53,
+      "nonblank": 47
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/voice-providers/tts-chain.ts",
+      "lines": 117,
+      "nonblank": 111
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/voice-providers/tts.ts",
+      "lines": 131,
+      "nonblank": 120
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/volume-env.ts",
+      "lines": 150,
+      "nonblank": 142
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/volume-tools.ts",
+      "lines": 406,
+      "nonblank": 391
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/volumes.ts",
+      "lines": 1066,
+      "nonblank": 1003
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/web-render.ts",
+      "lines": 73,
+      "nonblank": 68
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/web-search.ts",
+      "lines": 295,
+      "nonblank": 276
+    },
+    {
+      "backend": "ecs",
+      "area": "Accounts, money, webhooks",
+      "file": "src/webhooks.ts",
+      "lines": 394,
+      "nonblank": 353
+    },
+    {
+      "backend": "ecs",
+      "area": "Agents, history, schedules",
+      "file": "src/workflows.ts",
+      "lines": 397,
+      "nonblank": 373
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/workspaces-api.ts",
+      "lines": 46,
+      "nonblank": 44
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/workspaces.ts",
+      "lines": 77,
+      "nonblank": 74
+    },
+    {
+      "backend": "ecs",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/x-search.ts",
+      "lines": 97,
+      "nonblank": 90
+    },
+    {
+      "backend": "ecs",
+      "area": "Files, images, computers",
+      "file": "src/zip.ts",
+      "lines": 132,
+      "nonblank": 125
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/access-policy.ts",
+      "lines": 3,
+      "nonblank": 3
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/account-access.ts",
+      "lines": 15,
+      "nonblank": 15
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/account-common-passwords.ts",
+      "lines": 2,
+      "nonblank": 2
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/account-console-auth.ts",
+      "lines": 442,
+      "nonblank": 425
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/account-email-accounts.ts",
+      "lines": 193,
+      "nonblank": 179
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/account-http.ts",
+      "lines": 14,
+      "nonblank": 13
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/account-journey.ts",
+      "lines": 11,
+      "nonblank": 11
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/account-mail.ts",
+      "lines": 67,
+      "nonblank": 64
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/account-metrics.ts",
+      "lines": 2,
+      "nonblank": 2
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/account-network.ts",
+      "lines": 13,
+      "nonblank": 12
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/account-oauth.ts",
+      "lines": 544,
+      "nonblank": 508
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/account-origins.ts",
+      "lines": 57,
+      "nonblank": 51
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/account-passwords.ts",
+      "lines": 119,
+      "nonblank": 104
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/account-rate-limits.ts",
+      "lines": 416,
+      "nonblank": 381
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/account-services.ts",
+      "lines": 202,
+      "nonblank": 197
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/account-signup-source.ts",
+      "lines": 43,
+      "nonblank": 38
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/accounts.ts",
+      "lines": 735,
+      "nonblank": 681
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/admin-api.ts",
+      "lines": 98,
+      "nonblank": 95
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/admin/admin-accounts.ts",
+      "lines": 126,
+      "nonblank": 106
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/admin/admin-acquisition.ts",
+      "lines": 98,
+      "nonblank": 93
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/admin/admin-growth.ts",
+      "lines": 153,
+      "nonblank": 145
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/admin/admin-health.ts",
+      "lines": 175,
+      "nonblank": 168
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/admin/admin-mcp.ts",
+      "lines": 83,
+      "nonblank": 80
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/admin/admin-revenue.ts",
+      "lines": 193,
+      "nonblank": 187
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/admin/admin-signals.ts",
+      "lines": 201,
+      "nonblank": 189
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/admin/admin-stats.ts",
+      "lines": 90,
+      "nonblank": 87
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/admin/admin-usage.ts",
+      "lines": 363,
+      "nonblank": 352
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/admission-errors.ts",
+      "lines": 18,
+      "nonblank": 16
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/admission.ts",
+      "lines": 59,
+      "nonblank": 51
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/agent-builtins.ts",
+      "lines": 67,
+      "nonblank": 64
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/agent-routes.ts",
+      "lines": 96,
+      "nonblank": 93
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/agent-spend-policy.ts",
+      "lines": 26,
+      "nonblank": 23
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/agent-spend.ts",
+      "lines": 154,
+      "nonblank": 139
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/agent-workspace.ts",
+      "lines": 17,
+      "nonblank": 16
+    },
+    {
+      "backend": "workers",
+      "area": "Agents, history, schedules",
+      "file": "backends/workers/src/agent.ts",
+      "lines": 2619,
+      "nonblank": 2615
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/api-contract.ts",
+      "lines": 175,
+      "nonblank": 170
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/attached-tools.ts",
+      "lines": 183,
+      "nonblank": 169
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/auto-topup.ts",
+      "lines": 364,
+      "nonblank": 362
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/auxiliary-usage.ts",
+      "lines": 83,
+      "nonblank": 77
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/billing-alerts.ts",
+      "lines": 311,
+      "nonblank": 289
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/billing-host.ts",
+      "lines": 49,
+      "nonblank": 48
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/billing-inputs.ts",
+      "lines": 26,
+      "nonblank": 26
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/billing-mail.ts",
+      "lines": 36,
+      "nonblank": 34
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/billing-payments.ts",
+      "lines": 224,
+      "nonblank": 210
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/billing-routes.ts",
+      "lines": 214,
+      "nonblank": 209
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/billing-sql.ts",
+      "lines": 83,
+      "nonblank": 78
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/billing.ts",
+      "lines": 778,
+      "nonblank": 732
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/browser-response.ts",
+      "lines": 50,
+      "nonblank": 49
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/browser-tokens.ts",
+      "lines": 135,
+      "nonblank": 123
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/capability-router.ts",
+      "lines": 52,
+      "nonblank": 49
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/card-credit.ts",
+      "lines": 110,
+      "nonblank": 102
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/catalog-policy.ts",
+      "lines": 115,
+      "nonblank": 103
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/computers/agent-tools.ts",
+      "lines": 16,
+      "nonblank": 16
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/computers/api.ts",
+      "lines": 44,
+      "nonblank": 44
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/computers/microvm-policy.ts",
+      "lines": 29,
+      "nonblank": 29
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/computers/microvm.ts",
+      "lines": 115,
+      "nonblank": 113
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/computers/objects.ts",
+      "lines": 53,
+      "nonblank": 52
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/computers/policy.ts",
+      "lines": 44,
+      "nonblank": 41
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/computers/provider.ts",
+      "lines": 323,
+      "nonblank": 318
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/computers/remote.ts",
+      "lines": 134,
+      "nonblank": 132
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/computers/service.ts",
+      "lines": 193,
+      "nonblank": 191
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/computers/tool.ts",
+      "lines": 64,
+      "nonblank": 63
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/context-reset.ts",
+      "lines": 79,
+      "nonblank": 77
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/control.ts",
+      "lines": 854,
+      "nonblank": 848
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/cors.ts",
+      "lines": 14,
+      "nonblank": 13
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/credit-holds.ts",
+      "lines": 59,
+      "nonblank": 52
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/decision-policy.ts",
+      "lines": 547,
+      "nonblank": 509
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/decision-providers.ts",
+      "lines": 100,
+      "nonblank": 96
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/decision-runtime.ts",
+      "lines": 107,
+      "nonblank": 104
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/decision-service.ts",
+      "lines": 58,
+      "nonblank": 57
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/deepseek-policy.ts",
+      "lines": 73,
+      "nonblank": 67
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/definitions.ts",
+      "lines": 120,
+      "nonblank": 119
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/delegation-notifications.ts",
+      "lines": 102,
+      "nonblank": 98
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/delegation-targets.ts",
+      "lines": 14,
+      "nonblank": 13
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/delegation.ts",
+      "lines": 371,
+      "nonblank": 369
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/end-user-credits.ts",
+      "lines": 1124,
+      "nonblank": 1059
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/errors.ts",
+      "lines": 19,
+      "nonblank": 18
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/event-log.ts",
+      "lines": 83,
+      "nonblank": 79
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/exchange-auth.ts",
+      "lines": 61,
+      "nonblank": 59
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/exchange-policy.ts",
+      "lines": 21,
+      "nonblank": 20
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/file-links.ts",
+      "lines": 80,
+      "nonblank": 80
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/file-mounts.ts",
+      "lines": 202,
+      "nonblank": 202
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/file-output.ts",
+      "lines": 67,
+      "nonblank": 62
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/file-policy.ts",
+      "lines": 137,
+      "nonblank": 124
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/file-upload.ts",
+      "lines": 78,
+      "nonblank": 78
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/file-versions.ts",
+      "lines": 27,
+      "nonblank": 24
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/files.ts",
+      "lines": 1123,
+      "nonblank": 1123
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/fs-tools.ts",
+      "lines": 67,
+      "nonblank": 64
+    },
+    {
+      "backend": "workers",
+      "area": "Agents, history, schedules",
+      "file": "backends/workers/src/history-formats.ts",
+      "lines": 210,
+      "nonblank": 199
+    },
+    {
+      "backend": "workers",
+      "area": "Agents, history, schedules",
+      "file": "backends/workers/src/history-policy.ts",
+      "lines": 84,
+      "nonblank": 79
+    },
+    {
+      "backend": "workers",
+      "area": "Agents, history, schedules",
+      "file": "backends/workers/src/history.ts",
+      "lines": 91,
+      "nonblank": 89
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/host-execution.ts",
+      "lines": 117,
+      "nonblank": 110
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/http-error-policy.ts",
+      "lines": 38,
+      "nonblank": 33
+    },
+    {
+      "backend": "workers",
+      "area": "Agents, history, schedules",
+      "file": "backends/workers/src/human.ts",
+      "lines": 108,
+      "nonblank": 101
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/idempotency-routes.ts",
+      "lines": 4,
+      "nonblank": 4
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/idempotency.ts",
+      "lines": 86,
+      "nonblank": 82
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/images.ts",
+      "lines": 417,
+      "nonblank": 417
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/index.ts",
+      "lines": 402,
+      "nonblank": 400
+    },
+    {
+      "backend": "workers",
+      "area": "Agents, history, schedules",
+      "file": "backends/workers/src/input-policy.ts",
+      "lines": 82,
+      "nonblank": 78
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/key-catalog.ts",
+      "lines": 65,
+      "nonblank": 58
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/key-check.ts",
+      "lines": 40,
+      "nonblank": 37
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/key-routes.ts",
+      "lines": 138,
+      "nonblank": 136
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/key-scopes.ts",
+      "lines": 163,
+      "nonblank": 149
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/mcp-inputs.ts",
+      "lines": 33,
+      "nonblank": 31
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/message-projection.ts",
+      "lines": 61,
+      "nonblank": 59
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/model-attempt-stream.ts",
+      "lines": 119,
+      "nonblank": 116
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/model-attempt.ts",
+      "lines": 39,
+      "nonblank": 39
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/model-attempts.ts",
+      "lines": 400,
+      "nonblank": 388
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/model-call-fetch.ts",
+      "lines": 63,
+      "nonblank": 63
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/model-catalog.ts",
+      "lines": 258,
+      "nonblank": 242
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/model-context.ts",
+      "lines": 6,
+      "nonblank": 5
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/model-credentials.ts",
+      "lines": 57,
+      "nonblank": 54
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/model-error-classification.ts",
+      "lines": 45,
+      "nonblank": 42
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/model-errors.ts",
+      "lines": 116,
+      "nonblank": 104
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/model-estimate.ts",
+      "lines": 12,
+      "nonblank": 12
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/model-key-failure.ts",
+      "lines": 7,
+      "nonblank": 6
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/model-metering.ts",
+      "lines": 95,
+      "nonblank": 93
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/model-policy.ts",
+      "lines": 276,
+      "nonblank": 249
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/model-providers.ts",
+      "lines": 218,
+      "nonblank": 199
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/model-stream-failure.ts",
+      "lines": 3,
+      "nonblank": 3
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/model-stream.ts",
+      "lines": 145,
+      "nonblank": 136
+    },
+    {
+      "backend": "workers",
+      "area": "Agents, history, schedules",
+      "file": "backends/workers/src/model.ts",
+      "lines": 409,
+      "nonblank": 404
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/money-api.ts",
+      "lines": 128,
+      "nonblank": 128
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/money-event-metrics.ts",
+      "lines": 73,
+      "nonblank": 65
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/money-host.ts",
+      "lines": 19,
+      "nonblank": 19
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/money-idempotency.ts",
+      "lines": 31,
+      "nonblank": 27
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/money-limit-metrics.ts",
+      "lines": 61,
+      "nonblank": 51
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/money-metrics.ts",
+      "lines": 49,
+      "nonblank": 45
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/money-tokens.ts",
+      "lines": 90,
+      "nonblank": 82
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/observability.ts",
+      "lines": 15,
+      "nonblank": 15
+    },
+    {
+      "backend": "workers",
+      "area": "Agents, history, schedules",
+      "file": "backends/workers/src/multi-agent-policy.ts",
+      "lines": 310,
+      "nonblank": 286
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/openapi-policy.ts",
+      "lines": 125,
+      "nonblank": 115
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/output-policy.ts",
+      "lines": 44,
+      "nonblank": 41
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/output-validation.ts",
+      "lines": 77,
+      "nonblank": 69
+    },
+    {
+      "backend": "workers",
+      "area": "Agents, history, schedules",
+      "file": "backends/workers/src/pi-catalog.ts",
+      "lines": 258,
+      "nonblank": 242
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/platform-pricing.ts",
+      "lines": 104,
+      "nonblank": 92
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/policy-host.ts",
+      "lines": 38,
+      "nonblank": 38
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/postgres-policy.ts",
+      "lines": 74,
+      "nonblank": 60
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/postgres.ts",
+      "lines": 80,
+      "nonblank": 75
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/prompt-policy.ts",
+      "lines": 95,
+      "nonblank": 76
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/prompt-sections.ts",
+      "lines": 22,
+      "nonblank": 21
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/provider-policy.ts",
+      "lines": 104,
+      "nonblank": 97
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/provider-routes.ts",
+      "lines": 78,
+      "nonblank": 76
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/public-address-policy.ts",
+      "lines": 107,
+      "nonblank": 97
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/public-outbound.ts",
+      "lines": 68,
+      "nonblank": 66
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/reset-policy.ts",
+      "lines": 25,
+      "nonblank": 19
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/run-failure.ts",
+      "lines": 38,
+      "nonblank": 37
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/run-limits.ts",
+      "lines": 130,
+      "nonblank": 127
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/run-projection.ts",
+      "lines": 61,
+      "nonblank": 60
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/runtime-identity.ts",
+      "lines": 175,
+      "nonblank": 160
+    },
+    {
+      "backend": "workers",
+      "area": "Agents, history, schedules",
+      "file": "backends/workers/src/schedule-policy.ts",
+      "lines": 40,
+      "nonblank": 36
+    },
+    {
+      "backend": "workers",
+      "area": "Agents, history, schedules",
+      "file": "backends/workers/src/schedules.ts",
+      "lines": 111,
+      "nonblank": 110
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/security-addresses.ts",
+      "lines": 64,
+      "nonblank": 57
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/security-deepseek.ts",
+      "lines": 74,
+      "nonblank": 68
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/security-fetch-policy.ts",
+      "lines": 54,
+      "nonblank": 51
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/security-host.ts",
+      "lines": 15,
+      "nonblank": 15
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/security-inputs.ts",
+      "lines": 25,
+      "nonblank": 25
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/security-outbound.ts",
+      "lines": 61,
+      "nonblank": 59
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/security-policy.ts",
+      "lines": 38,
+      "nonblank": 32
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/security-services.ts",
+      "lines": 72,
+      "nonblank": 69
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/security-types.ts",
+      "lines": 43,
+      "nonblank": 39
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/sender-extension.ts",
+      "lines": 28,
+      "nonblank": 27
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/sender-markers.ts",
+      "lines": 24,
+      "nonblank": 21
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/sender.ts",
+      "lines": 115,
+      "nonblank": 100
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/storage-usage.ts",
+      "lines": 177,
+      "nonblank": 166
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/stripe.ts",
+      "lines": 112,
+      "nonblank": 102
+    },
+    {
+      "backend": "workers",
+      "area": "Hosting, admission, tenancy",
+      "file": "backends/workers/src/tenant.ts",
+      "lines": 61,
+      "nonblank": 60
+    },
+    {
+      "backend": "workers",
+      "area": "Hosting, admission, tenancy",
+      "file": "backends/workers/src/tenants.ts",
+      "lines": 308,
+      "nonblank": 276
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/tool-identity.ts",
+      "lines": 39,
+      "nonblank": 35
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/tool-sources.ts",
+      "lines": 374,
+      "nonblank": 362
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/validation.ts",
+      "lines": 105,
+      "nonblank": 99
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/volume-policy.ts",
+      "lines": 56,
+      "nonblank": 54
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/volume.ts",
+      "lines": 729,
+      "nonblank": 729
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/web-definitions.ts",
+      "lines": 39,
+      "nonblank": 39
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/web-fetch-policy.ts",
+      "lines": 42,
+      "nonblank": 42
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/web-policy-host.ts",
+      "lines": 10,
+      "nonblank": 10
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/web-render-policy.ts",
+      "lines": 74,
+      "nonblank": 69
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/web-search-policy.ts",
+      "lines": 296,
+      "nonblank": 277
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/web-transfer-policy.ts",
+      "lines": 25,
+      "nonblank": 24
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/webhook-policy.ts",
+      "lines": 395,
+      "nonblank": 354
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/webhooks.ts",
+      "lines": 279,
+      "nonblank": 274
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/workspaces.ts",
+      "lines": 78,
+      "nonblank": 75
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/x-search-policy.ts",
+      "lines": 98,
+      "nonblank": 91
+    },
+    {
+      "backend": "workers",
+      "area": "Code execution",
+      "file": "backends/workers/codemode/fs-shim.ts",
+      "lines": 3,
+      "nonblank": 3
+    },
+    {
+      "backend": "workers",
+      "area": "Code execution",
+      "file": "backends/workers/codemode/index.ts",
+      "lines": 18,
+      "nonblank": 17
+    },
+    {
+      "backend": "workers",
+      "area": "Code execution",
+      "file": "backends/workers/codemode/limits.ts",
+      "lines": 61,
+      "nonblank": 60
+    },
+    {
+      "backend": "workers",
+      "area": "Code execution",
+      "file": "backends/workers/codemode/routing.ts",
+      "lines": 33,
+      "nonblank": 32
+    },
+    {
+      "backend": "workers",
+      "area": "Code execution",
+      "file": "backends/workers/codemode/sandbox.ts",
+      "lines": 23,
+      "nonblank": 22
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "src/account-emails.ts",
+      "lines": 72,
+      "nonblank": 70
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/pricing.ts",
+      "lines": 190,
+      "nonblank": 181
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/mcp-client-kind.ts",
+      "lines": 32,
+      "nonblank": 30
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/signup-source.ts",
+      "lines": 42,
+      "nonblank": 37
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/calendar.ts",
+      "lines": 34,
+      "nonblank": 33
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "src/billing-emails.ts",
+      "lines": 91,
+      "nonblank": 91
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/limits.ts",
+      "lines": 180,
+      "nonblank": 169
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "src/tar.ts",
+      "lines": 79,
+      "nonblank": 72
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "src/voice-providers/prices.ts",
+      "lines": 53,
+      "nonblank": 47
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/azure-openai.ts",
+      "lines": 134,
+      "nonblank": 123
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "src/image-header.ts",
+      "lines": 86,
+      "nonblank": 82
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "src/audio-header.ts",
+      "lines": 178,
+      "nonblank": 168
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/language.ts",
+      "lines": 98,
+      "nonblank": 86
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/markdown-email.ts",
+      "lines": 37,
+      "nonblank": 36
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/html-text.ts",
+      "lines": 24,
+      "nonblank": 23
+    },
+    {
+      "backend": "workers",
+      "area": "Agents, history, schedules",
+      "file": "src/pi-catalog.ts",
+      "lines": 257,
+      "nonblank": 241
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "src/http-error.ts",
+      "lines": 10,
+      "nonblank": 10
+    }
+  ]
+}

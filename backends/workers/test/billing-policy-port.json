@@ -1,0 +1,286 @@
+[
+  {
+    "file": "tests/billing-refunds.test.ts",
+    "test": "a full refund arriving first is retained and atomically offsets later purchase fulfillment",
+    "included": true
+  },
+  {
+    "file": "tests/billing-refunds.test.ts",
+    "test": "partial refunds reconcile monotonically across reordering, retries and restart",
+    "included": true
+  },
+  {
+    "file": "tests/billing-refunds.test.ts",
+    "test": "concurrent purchase and refund delivery cannot lose or apply credit twice",
+    "included": true
+  },
+  {
+    "file": "tests/billing-refunds.test.ts",
+    "test": "conflicting and invalid refunds cannot mutate the stored payment or its balance",
+    "included": true
+  },
+  {
+    "file": "tests/billing-refunds.test.ts",
+    "test": "a reconciliation failure rolls back both fulfillment and pending refunds for a safe retry",
+    "included": true
+  },
+  {
+    "file": "tests/billing-disputes.test.ts",
+    "test": "a dispute debits the purchase's credit and stops runs until it closes; won, the credit comes back",
+    "included": true
+  },
+  {
+    "file": "tests/billing-disputes.test.ts",
+    "test": "a lost dispute keeps the debit, so credit already spent leaves the account in debt",
+    "included": true
+  },
+  {
+    "file": "tests/billing-disputes.test.ts",
+    "test": "disputes arriving before their purchase, or closed before they open, apply once in the right state",
+    "included": true
+  },
+  {
+    "file": "tests/billing-disputes.test.ts",
+    "test": "a dispute after a partial refund removes only the credit still left",
+    "included": true
+  },
+  {
+    "file": "tests/billing-payments.test.ts",
+    "test": "Checkout persists its quote, creates an invoice, and reuses one purchase through concurrency and a lost response",
+    "included": true
+  },
+  {
+    "file": "tests/billing-payments.test.ts",
+    "test": "fulfillment validates the stored terms and ownership, applies early refunds, and ignores invoice.paid",
+    "included": true
+  },
+  {
+    "file": "tests/billing-payments.test.ts",
+    "test": "a webhook arriving before the create response binds the order atomically; a conflicting session cannot bind",
+    "included": true
+  },
+  {
+    "file": "tests/billing-payments.test.ts",
+    "test": "ambiguous creates older than the safe idempotency window fail closed without contacting Stripe",
+    "included": true
+  },
+  {
+    "file": "tests/billing-payments.test.ts",
+    "test": "portal scopes both flows to the tenant, validates product configuration, and only displays Stripe-owned card details",
+    "included": true
+  },
+  {
+    "file": "tests/billing-payments.test.ts",
+    "test": "test/live customers are isolated; legacy customer adoption requires ownership and mode",
+    "included": true
+  },
+  {
+    "file": "tests/billing-payments.test.ts",
+    "test": "unregistered sessions only use legacy fulfillment if created before cutover; provider errors retain code and request id",
+    "included": true
+  },
+  {
+    "file": "tests/billing-payments.test.ts",
+    "test": "billing REST routes bind portal ownership to authentication and reject caller-supplied redirects",
+    "included": false,
+    "reason": "Uses the ECS HTTP runtime fixture; not ported as an unchanged Workers test."
+  },
+  {
+    "file": "tests/auto-topup.test.ts",
+    "test": "auto top-up is off by default; quotes require current explicit consent and survive a card-setup round trip",
+    "included": true
+  },
+  {
+    "file": "tests/auto-topup.test.ts",
+    "test": "an immediate top-up reserves the all-in amount and posts credit only after verified Stripe payment",
+    "included": true
+  },
+  {
+    "file": "tests/auto-topup.test.ts",
+    "test": "concurrent workers share one reservation and invoice; a lost create response resumes with its original key",
+    "included": true
+  },
+  {
+    "file": "tests/auto-topup.test.ts",
+    "test": "monthly cap includes fees: nine $21.10 top-ups fit $200, refunds do not reopen the cap",
+    "included": true
+  },
+  {
+    "file": "tests/auto-topup.test.ts",
+    "test": "declines keep the reservation across months; explicit retry pays the same invoice with the new default card",
+    "included": true
+  },
+  {
+    "file": "tests/auto-topup.test.ts",
+    "test": "bank confirmation remains on the original invoice; invoice.paid without a successful payment cannot grant credit",
+    "included": true
+  },
+  {
+    "file": "tests/auto-topup.test.ts",
+    "test": "disable cancels unsubmitted reservations but an already submitted invoice can finish",
+    "included": true
+  },
+  {
+    "file": "tests/auto-topup.test.ts",
+    "test": "a removed card pauses before payment and resumes the same invoice when a default card is restored",
+    "included": true
+  },
+  {
+    "file": "tests/auto-topup.test.ts",
+    "test": "ambiguous old invoice creates retain the hold; invoice totals are checked before charging",
+    "included": true
+  },
+  {
+    "file": "tests/auto-topup.test.ts",
+    "test": "payment emails include exact charges, the invoice link, and escaped text",
+    "included": true
+  },
+  {
+    "file": "tests/auto-topup.test.ts",
+    "test": "an old ambiguous pay is reconciled from its successful invoice without charging again",
+    "included": true
+  },
+  {
+    "file": "tests/auto-topup.test.ts",
+    "test": "failed ledger writes roll back the paid marker and retry fulfillment without another payment",
+    "included": true
+  },
+  {
+    "file": "tests/auto-topup.test.ts",
+    "test": "the mail worker sends payment receipts and drops a resolved no-card warning",
+    "included": false,
+    "reason": "Uses the source process mail worker; Workers uses a bounded scheduled Email Sending pump."
+  },
+  {
+    "file": "tests/auto-topup.test.ts",
+    "test": "auto top-up REST requires the exact quote version and explicit consent",
+    "included": false,
+    "reason": "Uses the ECS HTTP runtime fixture; not ported as an unchanged Workers test."
+  },
+  {
+    "file": "tests/auto-topup.test.ts",
+    "test": "healthy balances make no polling Stripe calls; nodes claim a low-balance scan only once",
+    "included": true
+  },
+  {
+    "file": "tests/auto-topup.test.ts",
+    "test": "waiting attempts back off for an hour and portal returns wake card recovery",
+    "included": true
+  },
+  {
+    "file": "tests/auto-topup.test.ts",
+    "test": "disable voids a declined invoice and releases its hold before re-enabling",
+    "included": true
+  },
+  {
+    "file": "tests/auto-topup.test.ts",
+    "test": "disable reconciles a concurrent completed payment rather than voiding it",
+    "included": true
+  },
+  {
+    "file": "tests/auto-topup.test.ts",
+    "test": "bank confirmation can finish after disable, but an unpaid action expires after a day",
+    "included": true
+  },
+  {
+    "file": "tests/auto-topup.test.ts",
+    "test": "reconciliation mail explains the pause without assigning internal work to the customer",
+    "included": true
+  },
+  {
+    "file": "tests/auto-topup.test.ts",
+    "test": "a lost void response retains the hold until Stripe confirms the invoice is void",
+    "included": true
+  },
+  {
+    "file": "tests/auto-topup.test.ts",
+    "test": "capped accounts make no provider requests until reset or new consent raises the cap",
+    "included": true
+  },
+  {
+    "file": "tests/auto-topup.test.ts",
+    "test": "an expired bank confirmation stays paused across scans, portal returns and months until fresh consent",
+    "included": true
+  },
+  {
+    "file": "tests/auto-topup.test.ts",
+    "test": "confirmation expiry persists its pause intent across a lost void response",
+    "included": true
+  },
+  {
+    "file": "tests/auto-topup.test.ts",
+    "test": "expiry never voids a settling payment and fulfills success without pausing",
+    "included": true
+  },
+  {
+    "file": "tests/billing-alerts.test.ts",
+    "test": "balance crossings fan out atomically, dedupe retries and re-arm only after recovery",
+    "included": true
+  },
+  {
+    "file": "tests/billing-alerts.test.ts",
+    "test": "an unfunded signup stays quiet, including its confirmation; an opted-in funded empty account gets one notice",
+    "included": true
+  },
+  {
+    "file": "tests/billing-alerts.test.ts",
+    "test": "concurrent usage flushes emit each crossing once and rollback includes all outboxes",
+    "included": true
+  },
+  {
+    "file": "tests/billing-alerts.test.ts",
+    "test": "an outbox write failure rolls the balance and ledger back",
+    "included": true
+  },
+  {
+    "file": "tests/billing-alerts.test.ts",
+    "test": "raising the threshold issues one current notice; setting it again and lowering it stay quiet",
+    "included": true
+  },
+  {
+    "file": "tests/billing-alerts.test.ts",
+    "test": "recipients are normalized, capped across concurrent adds, isolated by tenant and secrets stay private",
+    "included": true
+  },
+  {
+    "file": "tests/billing-alerts.test.ts",
+    "test": "confirmation requires the live unexpired token, and resend invalidates the previous one",
+    "included": true
+  },
+  {
+    "file": "tests/billing-alerts.test.ts",
+    "test": "confirmation limits survive remove/re-add and apply across tenants",
+    "included": true
+  },
+  {
+    "file": "tests/billing-alerts.test.ts",
+    "test": "per-recipient choices select notices and opting back in below threshold does not notify others",
+    "included": true
+  },
+  {
+    "file": "tests/billing-alerts.test.ts",
+    "test": "delivery leases fence stale acknowledgements, retry, and re-check preferences before sending",
+    "included": true
+  },
+  {
+    "file": "tests/billing-alerts.test.ts",
+    "test": "confirmed bounces suppress queued mail and future re-adds",
+    "included": true
+  },
+  {
+    "file": "tests/billing-alerts.test.ts",
+    "test": "a confirmation delivery decrypts only while claimed and removes its secret after acknowledgement",
+    "included": true
+  },
+  {
+    "file": "tests/billing-alerts.test.ts",
+    "test": "registered billing webhooks are delivered by the existing worker with valid signatures",
+    "included": false,
+    "reason": "Uses the ECS HTTP runtime and process webhook worker fixtures; not ported as an unchanged Workers test."
+  },
+  {
+    "file": "tests/billing-alerts.test.ts",
+    "test": "confirmation limits tolerate concurrent adds reaching the tenant lock out of clock order",
+    "included": true
+  }
+]

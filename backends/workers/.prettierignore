@@ -1,0 +1,6 @@
+# These files must remain byte-identical to the source extraction.
+src/billing-sql.ts
+src/end-user-credits.ts
+worker-configuration.d.ts
+node_modules
+measurements

@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": { "types": ["node"], "lib": ["ES2024", "DOM", "DOM.Iterable", "DOM.AsyncIterable"] },
+  "include": [
+    "scripts/pilot-smoke.ts",
+    "pilot-fakemodel/index.ts",
+    "test/pilot-fakemodel.test.ts"
+  ]
+}

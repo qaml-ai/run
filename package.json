@@ -30,7 +30,8 @@
     "bench:sim-hooks": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-sim-hooks.ts",
     "bench:search": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-search.ts",
     "test:studio": "node --experimental-strip-types --disable-warning=ExperimentalWarning studio/smoke.ts",
-    "check:core": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/check-core.ts && tsc -p tsconfig.core.json"
+    "check:core": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/check-core.ts && tsc -p tsconfig.core.json",
+    "parity": "node tests/contract/sprites.mjs"
   },
   "version": "0.1.0",
   "description": "Hosted agent runtime: supervisor, durable agent state, V8 codemode sandbox, SDKs, console and Studio",

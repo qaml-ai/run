@@ -1,0 +1,138 @@
+{
+  "backend": "node",
+  "area": "files,volumes,images,search,schedules,workspaces,selfhost,cli,journey",
+  "nodeKey": "1ff65be69bdb97687bb551ad863a1ab48c42d7c4726928e25ab5efd896fabdfc",
+  "suiteHash": "fabe683775fe343cc1c227f56f728a869eff7d15d2552fd4ee40db9c2129e413",
+  "revision": "3e2d2e618e8ee4b4eb4d047d905544d486e7e35b",
+  "shard": {
+    "index": 2,
+    "total": 4
+  },
+  "durationMs": 17226.834182,
+  "runtime": {
+    "node": "v24.22.1",
+    "platform": "linux",
+    "arch": "x64"
+  },
+  "recordedAt": "2026-11-05T22:41:44.356Z",
+  "expectedCases": 13,
+  "rows": [
+    {
+      "area": "images",
+      "source": "tests/image-generation-api.test.ts",
+      "name": "POST /v1/images makes images on the platform's OpenAI key for a prepaid tenant, edits images given as base64, multipart or a URL, and is billed per token",
+      "status": "pass",
+      "durationMs": 4125.280261,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "images",
+      "source": "tests/image-generation-api.test.ts",
+      "name": "POST /v1/images needs an OpenAI key, and a monthly cap refuses it",
+      "status": "pass",
+      "durationMs": 2335.267511,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "images",
+      "source": "tests/image-generation-api.test.ts",
+      "name": "POST /v1/images with volumeId saves the images to the volume and answers their paths",
+      "status": "pass",
+      "durationMs": 2596.126314,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "images",
+      "source": "tests/image-generation-sdk.test.ts:7",
+      "name": "the TypeScript SDK: images.generate and images.edit from bytes, a Blob or a URL, answered as base64 or saved to a volume",
+      "status": "pass",
+      "durationMs": 2568.977332,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "journey",
+      "source": "tests/journey-server.test.ts:120",
+      "name": "an account's export holds its journey: what this runtime kept and what the store holds; an account journey never knew has none",
+      "status": "pass",
+      "durationMs": 2516.316226,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "journey",
+      "source": "tests/journey-server.test.ts:148",
+      "name": "an email sign-up is an account made when its mailed link is finished, in the browser that finishes it",
+      "status": "pass",
+      "durationMs": 3189.038656,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "journey",
+      "source": "tests/journey-server.test.ts:46",
+      "name": "a runtime with journey events off serves the console as ever: no tag, no cookie, no endpoint",
+      "status": "pass",
+      "durationMs": 3983.583754,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "journey",
+      "source": "tests/journey-server.test.ts:57",
+      "name": "with journey events on, an arrival is noted through the redirect, the browser gets its visitor id, and the console's pages reach the store",
+      "status": "pass",
+      "durationMs": 2649.91018,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "journey",
+      "source": "tests/journey-server.test.ts:88",
+      "name": "with journey events on, making an agent and running it tells the store of the agent, the day's activity and the account's first run",
+      "status": "pass",
+      "durationMs": 4580.446558,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "selfhost",
+      "source": "tests/selfhost.test.ts:39",
+      "name": "a runtime bootstrapped from AGENT_TENANT and AGENT_OPERATOR_TOKEN serves that tenant",
+      "status": "pass",
+      "durationMs": 5451.803793,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "selfhost",
+      "source": "tests/selfhost.test.ts:48",
+      "name": "on a runtime configured by AGENT_TENANT, a run without a model key also names AGENT_TENANT_API_KEYS",
+      "status": "pass",
+      "durationMs": 3360.839058,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "selfhost",
+      "source": "tests/selfhost.test.ts:57",
+      "name": "a private runtime names no URL to browsers: AGENT_BROWSER_URL overrides the browser token's url, or empty leaves it out, and links carry their path on the runtime",
+      "status": "pass",
+      "durationMs": 5616.64778,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "workspaces",
+      "source": "tests/workspaces.test.ts:48",
+      "name": "workspaces API validates ownership, inherits definitions, and accounts agent and stateless model calls",
+      "status": "pass",
+      "durationMs": 7742.304692,
+      "reason": "",
+      "backend": "node"
+    }
+  ]
+}

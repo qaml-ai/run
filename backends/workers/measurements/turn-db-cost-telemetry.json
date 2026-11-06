@@ -1,0 +1,412 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-11-06T05:15:17Z",
+  "window": {
+    "from": "2026-11-06T03:30:00Z",
+    "to": "2026-11-06T05:14:30Z"
+  },
+  "scope": "Workers-scale task from before its first profiler commit and pilot deployment through the measurement timestamp, including baseline, initial optimized and final optimized loads and observed cleanup; not all earlier pilot activity.",
+  "hyperdriveConfig": {
+    "id": "3e6d68e844ec480589e766119f52dead",
+    "name": "camelrun-proto",
+    "origin_connection_limit": 16,
+    "caching": {
+      "disabled": true
+    },
+    "modified_on": "2026-11-06T04:07:43.213776Z",
+    "observedAt": "2026-11-06T05:04:58Z",
+    "databaseConnectionSlotsDuringLoads": 25
+  },
+  "namespaces": {
+    "b7a05e64caac4a9dbd59df0956a89a5c": "agents",
+    "a21fed97d122445fb526f8376bcf4b10": "tenants",
+    "a5bcaeba94c14924aa643d7ff6f75724": "volumes",
+    "f9d0c0b529bf453e928ac030e3d5b5d3": "sandbox"
+  },
+  "workerScripts": [
+    "camelrun-pilot",
+    "camelrun-pilot-fakemodel",
+    "camelrun-pilot-codemode"
+  ],
+  "sources": [
+    "https://developers.cloudflare.com/durable-objects/platform/pricing/",
+    "https://developers.cloudflare.com/workers/platform/pricing/",
+    "https://developers.cloudflare.com/hyperdrive/observability/metrics/",
+    "https://developers.cloudflare.com/changelog/post/2026-05-15-hyperdrive-pool-size-metrics/"
+  ],
+  "observations": {
+    "durableObjects": {
+      "duration": 30839.590202240004,
+      "exceededCpuErrors": 0,
+      "exceededMemoryErrors": 0,
+      "fatalInternalErrors": 0,
+      "rowsRead": 4786089,
+      "rowsWritten": 756836
+    },
+    "durableObjectInvocations": {
+      "errors": 4771,
+      "requests": 77932
+    },
+    "workers": {
+      "cpuTimeUs": 405189188,
+      "errors": 0,
+      "requests": 14236
+    }
+  },
+  "meterValues": [
+    {
+      "meter": "durableObjectDurationGBSeconds",
+      "amount": 30839.590202240004,
+      "unitSize": 1000000,
+      "ratePerUnitUsd": 12.5,
+      "linearValueUsd": 0.385494877528,
+      "conservativeRoundedValueUsd": 12.5
+    },
+    {
+      "meter": "durableObjectSqliteRowsRead",
+      "amount": 4786089,
+      "unitSize": 1000000,
+      "ratePerUnitUsd": 0.001,
+      "linearValueUsd": 0.004786089,
+      "conservativeRoundedValueUsd": 0.005
+    },
+    {
+      "meter": "durableObjectSqliteRowsWritten",
+      "amount": 756836,
+      "unitSize": 1000000,
+      "ratePerUnitUsd": 1,
+      "linearValueUsd": 0.756836,
+      "conservativeRoundedValueUsd": 1
+    },
+    {
+      "meter": "durableObjectRequests",
+      "amount": 77932,
+      "unitSize": 1000000,
+      "ratePerUnitUsd": 0.15,
+      "linearValueUsd": 0.0116898,
+      "conservativeRoundedValueUsd": 0.15
+    },
+    {
+      "meter": "workerRequests",
+      "amount": 14236,
+      "unitSize": 1000000,
+      "ratePerUnitUsd": 0.3,
+      "linearValueUsd": 0.0042708,
+      "conservativeRoundedValueUsd": 0.3
+    },
+    {
+      "meter": "workerCpuMilliseconds",
+      "amount": 405189.188,
+      "unitSize": 1000000,
+      "ratePerUnitUsd": 0.02,
+      "linearValueUsd": 0.00810378376,
+      "conservativeRoundedValueUsd": 0.02
+    }
+  ],
+  "linearSubtotalUsd": 1.171181350288,
+  "conservativeBudgetModel": {
+    "rounding": "Apply ceil(amount/1,000,000) independently to each measured meter, assume all included allowances exhausted, then add a $2 reserve. This is a conservative scenario, not an invoice or a provider-guaranteed upper bound.",
+    "measuredRoundedSubtotalUsd": 13.975,
+    "ancillaryReserveUsd": 2,
+    "totalWithReserveUsd": 15.975
+  },
+  "hyperdrive": {
+    "measurement": "Cloudflare sampled per-window aggregates, stable when re-read several minutes after the final load; maximum waiting clients is a peak, averages include idle samples in each stage.",
+    "beforeCombined": {
+      "window": {
+        "from": "2026-11-06T03:36:00Z",
+        "to": "2026-11-06T03:44:00Z"
+      },
+      "results": [
+        {
+          "avg": {
+            "availablePoolSlots": 1.5791666666666666,
+            "currentPoolSize": 3,
+            "waitingClients": 66.06041666666667
+          },
+          "dimensions": {
+            "coloCode": "IAD"
+          },
+          "max": {
+            "currentPoolSize": 3,
+            "maxPoolSize": 3,
+            "waitingClients": 315
+          }
+        }
+      ]
+    },
+    "stages": [
+      {
+        "phase": "before",
+        "concurrency": 100,
+        "window": {
+          "concurrency": 100,
+          "from": "2026-11-06T03:36:40.115Z",
+          "to": "2026-11-06T03:37:18.475Z"
+        },
+        "results": [
+          {
+            "avg": {
+              "availablePoolSlots": 1,
+              "currentPoolSize": 3,
+              "waitingClients": 20.37837837837838
+            },
+            "dimensions": {
+              "coloCode": "IAD"
+            },
+            "max": {
+              "currentPoolSize": 3,
+              "maxPoolSize": 3,
+              "waitingClients": 63
+            }
+          }
+        ]
+      },
+      {
+        "phase": "before",
+        "concurrency": 250,
+        "window": {
+          "concurrency": 250,
+          "from": "2026-11-06T03:37:23.204Z",
+          "to": "2026-11-06T03:38:32.139Z"
+        },
+        "results": [
+          {
+            "avg": {
+              "availablePoolSlots": 0.04411764705882353,
+              "currentPoolSize": 3,
+              "waitingClients": 87.98529411764706
+            },
+            "dimensions": {
+              "coloCode": "IAD"
+            },
+            "max": {
+              "currentPoolSize": 3,
+              "maxPoolSize": 3,
+              "waitingClients": 151
+            }
+          }
+        ]
+      },
+      {
+        "phase": "before",
+        "concurrency": 500,
+        "window": {
+          "concurrency": 500,
+          "from": "2026-11-06T03:38:40.557Z",
+          "to": "2026-11-06T03:41:01.094Z"
+        },
+        "results": [
+          {
+            "avg": {
+              "availablePoolSlots": 0.42142857142857143,
+              "currentPoolSize": 3,
+              "waitingClients": 178.32857142857142
+            },
+            "dimensions": {
+              "coloCode": "IAD"
+            },
+            "max": {
+              "currentPoolSize": 3,
+              "maxPoolSize": 3,
+              "waitingClients": 315
+            }
+          }
+        ]
+      },
+      {
+        "phase": "afterInitial",
+        "concurrency": 100,
+        "window": {
+          "concurrency": 100,
+          "from": "2026-11-06T04:02:29.823Z",
+          "to": "2026-11-06T04:03:06.519Z"
+        },
+        "results": [
+          {
+            "avg": {
+              "availablePoolSlots": 1.1578947368421053,
+              "currentPoolSize": 3,
+              "waitingClients": 12.236842105263158
+            },
+            "dimensions": {
+              "coloCode": "IAD"
+            },
+            "max": {
+              "currentPoolSize": 3,
+              "maxPoolSize": 3,
+              "waitingClients": 48
+            }
+          }
+        ]
+      },
+      {
+        "phase": "afterInitial",
+        "concurrency": 250,
+        "window": {
+          "concurrency": 250,
+          "from": "2026-11-06T04:03:11.476Z",
+          "to": "2026-11-06T04:04:13.854Z"
+        },
+        "results": [
+          {
+            "avg": {
+              "availablePoolSlots": 0.1935483870967742,
+              "currentPoolSize": 3,
+              "waitingClients": 70.45161290322581
+            },
+            "dimensions": {
+              "coloCode": "IAD"
+            },
+            "max": {
+              "currentPoolSize": 3,
+              "maxPoolSize": 3,
+              "waitingClients": 173
+            }
+          }
+        ]
+      },
+      {
+        "phase": "afterInitial",
+        "concurrency": 500,
+        "window": {
+          "concurrency": 500,
+          "from": "2026-11-06T04:04:21.388Z",
+          "to": "2026-11-06T04:06:08.674Z"
+        },
+        "results": [
+          {
+            "avg": {
+              "availablePoolSlots": 0,
+              "currentPoolSize": 3,
+              "waitingClients": 192.69158878504672
+            },
+            "dimensions": {
+              "coloCode": "IAD"
+            },
+            "max": {
+              "currentPoolSize": 3,
+              "maxPoolSize": 3,
+              "waitingClients": 290
+            }
+          }
+        ]
+      },
+      {
+        "phase": "afterFinal",
+        "concurrency": 100,
+        "window": {
+          "concurrency": 100,
+          "from": "2026-11-06T04:58:03.516Z",
+          "to": "2026-11-06T04:58:39.131Z"
+        },
+        "refreshedAt": "2026-11-06T05:06:19Z",
+        "results": [
+          {
+            "avg": {
+              "availablePoolSlots": 1.0285714285714285,
+              "currentPoolSize": 3,
+              "waitingClients": 14.257142857142858
+            },
+            "dimensions": {
+              "coloCode": "IAD"
+            },
+            "max": {
+              "currentPoolSize": 3,
+              "maxPoolSize": 3,
+              "waitingClients": 61
+            }
+          }
+        ]
+      },
+      {
+        "phase": "afterFinal",
+        "concurrency": 250,
+        "window": {
+          "concurrency": 250,
+          "from": "2026-11-06T04:58:43.342Z",
+          "to": "2026-11-06T04:59:43.613Z"
+        },
+        "refreshedAt": "2026-11-06T05:06:19Z",
+        "results": [
+          {
+            "avg": {
+              "availablePoolSlots": 0.18333333333333332,
+              "currentPoolSize": 3,
+              "waitingClients": 71.13333333333334
+            },
+            "dimensions": {
+              "coloCode": "IAD"
+            },
+            "max": {
+              "currentPoolSize": 3,
+              "maxPoolSize": 3,
+              "waitingClients": 160
+            }
+          }
+        ]
+      },
+      {
+        "phase": "afterFinal",
+        "concurrency": 500,
+        "window": {
+          "concurrency": 500,
+          "from": "2026-11-06T04:59:51.878Z",
+          "to": "2026-11-06T05:01:39.915Z"
+        },
+        "refreshedAt": "2026-11-06T05:06:19Z",
+        "results": [
+          {
+            "avg": {
+              "availablePoolSlots": 0.125,
+              "currentPoolSize": 3,
+              "waitingClients": 138.16666666666666
+            },
+            "dimensions": {
+              "coloCode": "IAD"
+            },
+            "max": {
+              "currentPoolSize": 3,
+              "maxPoolSize": 3,
+              "waitingClients": 243
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "limitations": [
+    "Cloudflare's analytics budget required small result limits. All six pool stage windows and the task-window core cost sums were eventually collected; no pool stage is missing.",
+    "Linear meter value excludes monthly included allocations and billable-unit rounding. It must not be presented as the actual charge.",
+    "Temporary bootstrap Workers, R2, Queue, Analytics Engine, logging and stored data are not itemized; the conservative budget scenario assigns a $2 reserve for them.",
+    "The measured window begins before the first Workers-scale profiler commit at 03:34:20Z and ends at the current recorded timestamp; it excludes earlier pilot work and requires a refresh for later final deployment/load and cleanup.",
+    "Aggregate Durable Object invocation errors include client disconnections and are not a count of failed turns.",
+    "Hyperdrive's configured origin limit is global; the observed IAD regional pool has three connections. Regional saturation cannot be compared to all 25 database slots as if they were available to this one pool.",
+    "Recent Cloudflare analytics can lag ingestion; final pool windows were re-read after the load, while cumulative metering near the cutoff may not yet include every event.",
+    "The names-only Cloudflare inventory at 05:14:46.451Z confirmed no temporary helpers and falls after the 05:14:30Z metering cutoff. Extending the cutoff to 05:15Z hit the analytics budget cooldown; the successful window already includes the 05:13:58.822Z terminal cleanup inspection."
+  ],
+  "queries": {
+    "durableObjects": "{viewer{accounts(filter:{accountTag:\"85bbd288051330fb51ee1c86031a299b\"}){durableObjectsPeriodicGroups(limit:1,filter:{datetime_geq:\"2026-11-06T03:30:00Z\",datetime_lt:\"2026-11-06T05:14:30Z\",namespaceId_in:[\"b7a05e64caac4a9dbd59df0956a89a5c\",\"a21fed97d122445fb526f8376bcf4b10\",\"a5bcaeba94c14924aa643d7ff6f75724\",\"f9d0c0b529bf453e928ac030e3d5b5d3\"]}){sum{duration rowsWritten rowsRead exceededCpuErrors exceededMemoryErrors fatalInternalErrors}}}}}",
+    "invocations": "{viewer{accounts(filter:{accountTag:\"85bbd288051330fb51ee1c86031a299b\"}){durableObjectsInvocationsAdaptiveGroups(limit:1,filter:{datetime_geq:\"2026-11-06T03:30:00Z\",datetime_lt:\"2026-11-06T05:14:30Z\",namespaceId_in:[\"b7a05e64caac4a9dbd59df0956a89a5c\",\"a21fed97d122445fb526f8376bcf4b10\",\"a5bcaeba94c14924aa643d7ff6f75724\",\"f9d0c0b529bf453e928ac030e3d5b5d3\"]}){sum{requests errors}}workersInvocationsAdaptive(limit:1,filter:{datetime_geq:\"2026-11-06T03:30:00Z\",datetime_lt:\"2026-11-06T05:14:30Z\",scriptName_in:[\"camelrun-pilot\",\"camelrun-pilot-fakemodel\",\"camelrun-pilot-codemode\"]}){sum{cpuTimeUs requests errors}}}}}",
+    "hyperdriveBeforeStages": [
+      "{viewer{accounts(filter:{accountTag:\"85bbd288051330fb51ee1c86031a299b\"}){hyperdrivePoolSizesAdaptiveGroups(limit:10,filter:{datetime_geq:\"2026-11-06T03:36:40.115Z\",datetime_lt:\"2026-11-06T03:37:18.475Z\",configId:\"3e6d68e844ec480589e766119f52dead\"}){dimensions{coloCode}avg{currentPoolSize availablePoolSlots waitingClients}max{currentPoolSize maxPoolSize waitingClients}}}}}",
+      "{viewer{accounts(filter:{accountTag:\"85bbd288051330fb51ee1c86031a299b\"}){hyperdrivePoolSizesAdaptiveGroups(limit:10,filter:{datetime_geq:\"2026-11-06T03:37:23.204Z\",datetime_lt:\"2026-11-06T03:38:32.139Z\",configId:\"3e6d68e844ec480589e766119f52dead\"}){dimensions{coloCode}avg{currentPoolSize availablePoolSlots waitingClients}max{currentPoolSize maxPoolSize waitingClients}}}}}",
+      "{viewer{accounts(filter:{accountTag:\"85bbd288051330fb51ee1c86031a299b\"}){hyperdrivePoolSizesAdaptiveGroups(limit:1,filter:{datetime_geq:\"2026-11-06T03:38:40.557Z\",datetime_lt:\"2026-11-06T03:41:01.094Z\",configId:\"3e6d68e844ec480589e766119f52dead\",coloCode:\"IAD\"}){dimensions{coloCode}avg{currentPoolSize availablePoolSlots waitingClients}max{currentPoolSize maxPoolSize waitingClients}}}}}"
+    ],
+    "hyperdriveAfterInitialStages": "{viewer{accounts(filter:{accountTag:\"85bbd288051330fb51ee1c86031a299b\"}){after100:hyperdrivePoolSizesAdaptiveGroups(limit:1,filter:{datetime_geq:\"2026-11-06T04:02:29.823Z\",datetime_lt:\"2026-11-06T04:03:06.519Z\",configId:\"3e6d68e844ec480589e766119f52dead\",coloCode:\"IAD\"}){dimensions{coloCode}avg{currentPoolSize availablePoolSlots waitingClients}max{currentPoolSize maxPoolSize waitingClients}}\nafter250:hyperdrivePoolSizesAdaptiveGroups(limit:1,filter:{datetime_geq:\"2026-11-06T04:03:11.476Z\",datetime_lt:\"2026-11-06T04:04:13.854Z\",configId:\"3e6d68e844ec480589e766119f52dead\",coloCode:\"IAD\"}){dimensions{coloCode}avg{currentPoolSize availablePoolSlots waitingClients}max{currentPoolSize maxPoolSize waitingClients}}\nafter500:hyperdrivePoolSizesAdaptiveGroups(limit:1,filter:{datetime_geq:\"2026-11-06T04:04:21.388Z\",datetime_lt:\"2026-11-06T04:06:08.674Z\",configId:\"3e6d68e844ec480589e766119f52dead\",coloCode:\"IAD\"}){dimensions{coloCode}avg{currentPoolSize availablePoolSlots waitingClients}max{currentPoolSize maxPoolSize waitingClients}}}}}",
+    "hyperdriveAfterFinalStages": "{viewer{accounts(filter:{accountTag:\"85bbd288051330fb51ee1c86031a299b\"}){afterFinal100:hyperdrivePoolSizesAdaptiveGroups(limit:1,filter:{datetime_geq:\"2026-11-06T04:58:03.516Z\",datetime_lt:\"2026-11-06T04:58:39.131Z\",configId:\"3e6d68e844ec480589e766119f52dead\",coloCode:\"IAD\"}){dimensions{coloCode}avg{currentPoolSize availablePoolSlots waitingClients}max{currentPoolSize maxPoolSize waitingClients}}\nafterFinal250:hyperdrivePoolSizesAdaptiveGroups(limit:1,filter:{datetime_geq:\"2026-11-06T04:58:43.342Z\",datetime_lt:\"2026-11-06T04:59:43.613Z\",configId:\"3e6d68e844ec480589e766119f52dead\",coloCode:\"IAD\"}){dimensions{coloCode}avg{currentPoolSize availablePoolSlots waitingClients}max{currentPoolSize maxPoolSize waitingClients}}\nafterFinal500:hyperdrivePoolSizesAdaptiveGroups(limit:1,filter:{datetime_geq:\"2026-11-06T04:59:51.878Z\",datetime_lt:\"2026-11-06T05:01:39.915Z\",configId:\"3e6d68e844ec480589e766119f52dead\",coloCode:\"IAD\"}){dimensions{coloCode}avg{currentPoolSize availablePoolSlots waitingClients}max{currentPoolSize maxPoolSize waitingClients}}}}}"
+  },
+  "cleanup": {
+    "completedAt": "2026-11-06T05:13:35.729Z",
+    "independentlyVerifiedAt": "2026-11-06T05:13:58.822Z",
+    "deletedAccounts": 20,
+    "remainingAgents": 0,
+    "remainingVolumes": 0,
+    "remainingEndUsers": 0,
+    "remainingHolds": 0,
+    "remainingDeletionClaims": 0,
+    "pendingModelAttempts": 0,
+    "settledModelAttempts": 850
+  },
+  "configurationProvenance": "All nine load windows used Hyperdrive origin limit 16 and the database's 25 connection slots. The CTO initiated a database resize after all load measurements and terminal cleanup; that later capacity is not part of these comparisons."
+}

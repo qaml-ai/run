@@ -5,6 +5,9 @@
 #   scripts/sprite-test HEAD node --experimental-strip-types --test tests/clients.test.ts   # any command, in the checkout
 #   scripts/sprite-test --warm [ref]                      # prepare every free sprite in the pool not yet at <ref>, ready for runs
 #   scripts/sprite-test --status                          # the leases, and the commit each sprite has
+#   scripts/sprite-test --shards=6 --artifacts=tmp/reports --output=/tmp/reports HEAD command '{shard}/{shards}'
+#                                                        # one command per lease; collect immutable artifacts
+#   --contract-baselines                                 # include validated local Node report caches in the archive
 #
 # The pool is rt-pool-1..SPRITE_POOL (default 40) in the Fly org SPRITE_ORG (default camelai: `sprite login -o camelai`).
 # Each sprite keeps a checkout in ~/rt with node_modules and the v8-exec build, and Postgres 16. A sleeping sprite costs
@@ -138,8 +141,9 @@ running) # <id>: "done" once the job wrote its exit status (its coordinator leas
 touch) mine "$1" && touch ~/lease ;;
 unlock) ! mine "$1" || rm -rf ~/lease ;;
 clean) # before a tar sync: everything but node_modules and the v8-exec build goes
-  cd ~/rt && find . -mindepth 1 -maxdepth 1 ! -name node_modules ! -name sandbox -exec rm -rf {} +
-  find sandbox -mindepth 1 -maxdepth 2 ! -path sandbox/v8-exec ! -path sandbox/v8-exec/target -exec rm -rf {} + 2>/dev/null; true ;;
+  # Keep the same caches as the rsync path, including Workers dependencies.
+  cd ~/rt && find . \( -name node_modules -o -path ./sandbox/v8-exec/target \) -prune -o ! -type d -exec rm -f {} +
+  true ;;
 start) # <id> <fingerprint> <job script, base64> <lease>: record the synced tree, start the job detached, wait until it runs.
   # Started already (a retry whose first answer was lost): say so, rather than start it twice.
   if [ -s ~/runs/"$1".pid ] && kill -0 "$(cat ~/runs/"$1".pid)" 2>/dev/null; then echo started; exit 0; fi
@@ -187,12 +191,29 @@ exec > ~/runs/$id.log 2>&1 < /dev/null
 api=/.sprite/bin/sprite-env; hold=
 finish() {
   [ -z "$hold" ] || kill "$hold" 2>/dev/null
+  # Capture while we still own the checkout. Another lease can sync it as soon
+  # as the exit status appears; ~/runs is outside that checkout and immutable.
+  if [ -n "$artifacts" ] && [ -d "$artifacts" ]; then
+    tar czf ~/runs/$id.artifacts.tar.gz -C "$artifacts" . || { echo '== artifact snapshot failed'; set -- 1; }
+  fi
   echo "$1" > ~/runs/$id.exit.new && mv ~/runs/$id.exit.new ~/runs/$id.exit
   if [ "$(cut -d' ' -f1 ~/lease/owner 2>/dev/null)" = "$lease" ]; then $api curl -X DELETE /v1/tasks/sprite-test >/dev/null 2>&1; rm -rf ~/lease; fi
   exit 0
 }
 cmd=
-trap 'echo "== stopped"; [ -z "$cmd" ] || kill -TERM "$cmd" 2>/dev/null; finish 137' TERM INT HUP
+stop_job() {
+  trap '' TERM INT HUP
+  echo "== stopped"
+  if [ -n "$cmd" ]; then
+    # Give the harness time to close its separately owned fixture processes
+    # before the lease is released and a subsequent job resets the database.
+    kill -TERM "$cmd" 2>/dev/null
+    for _ in $(seq 70); do kill -0 "$cmd" 2>/dev/null || break; sleep 0.1; done
+    kill -KILL -- "-$cmd" 2>/dev/null || true
+  fi
+  finish 137
+}
+trap stop_job TERM INT HUP
 # Without a task the sprite pauses a few seconds after the last exec ends, and the job with it. The task lasts 5 minutes
 # and is renewed every minute, with the lock, until the job ends.
 job_pid=$$
@@ -267,7 +288,25 @@ if [[ ${1:-} == --status ]]; then
   exit 0
 fi
 
-warm=0; [[ ${1:-} != --warm ]] || { warm=1; shift; }
+warm=0; command_shards=; artifacts=; artifact_output=; contract_baselines=0
+while [[ ${1:-} == --* ]]; do
+  case $1 in
+    --warm) warm=1 ;;
+    --shards=*) command_shards=${1#*=} ;;
+    --artifacts=*) artifacts=${1#*=} ;;
+    --output=*) artifact_output=${1#*=} ;;
+    --contract-baselines) contract_baselines=1 ;;
+    *) echo "Unknown sprite-test option: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+if [[ -n $command_shards ]] && { [[ ! $command_shards =~ ^[1-9][0-9]*$ ]] || (( command_shards > pool )); }; then
+  echo "--shards must be between 1 and SPRITE_POOL ($pool)" >&2; exit 2
+fi
+if [[ -n $artifacts ]]; then
+  [[ $artifacts != /* && $artifacts != *..* && $artifacts =~ ^[a-zA-Z0-9_./-]+$ && -n $artifact_output ]] || { echo '--artifacts needs a safe relative directory and --output' >&2; exit 2; }
+  mkdir -p "$artifact_output"; artifact_output=$(cd "$artifact_output" && pwd)
+fi
 ref=${1:-HEAD}; shift || true
 (( ! warm )) || set --
 sha=$(git rev-parse --verify "$ref^{commit}"); short=$(git rev-parse --short "$sha")
@@ -278,21 +317,46 @@ run=$(date +%Y%m%d-%H%M%S)-$$; owner=$(whoami)@$(hostname -s)/$run
 # --warm takes every free sprite the coordinator does not record at the commit, and runs `true` on each.
 shards=${SPRITE_SHARDS:-8}; [[ $shards =~ ^[0-9]+$ ]] || { echo "SPRITE_SHARDS must be a number" >&2; exit 2; }
 if (( warm )); then slots=${#candidates[@]}
+elif [[ -n $command_shards ]]; then slots=$command_shards
 elif [[ $# -eq 0 && $shards -gt 1 ]]; then slots=$shards
 else slots=1; fi
 args=("$@")
 job_for() { # <slot> <lease> <id>: the job script, base64
-  local cmd
+  local cmd arg expanded=()
   if (( warm )); then cmd=true
-  elif (( ${#args[@]} )); then cmd=$(printf '%q ' "${args[@]}")
+  elif (( ${#args[@]} )); then
+    for arg in "${args[@]}"; do arg=${arg//\{shard\}/$1}; arg=${arg//\{shards\}/$slots}; expanded+=("$arg"); done
+    cmd=$(printf '%q ' "${expanded[@]}")
   else cmd="env TEST_DATABASE_PER_FILE=true TEST_CONCURRENCY=6 TEST_INCLUDE_SIM=true npm run -s test:shard -- $1/$slots"; fi
-  printf 'id=%q lease=%q lock=%q v8=%q hours=%q max_age=%q\nset -- %s\n%s\n' "$3" "$2" "$lock" "$v8" "${SPRITE_RUN_HOURS:-2}" "$max_age" "$cmd" "$JOB" | base64 | tr -d '\n'
+  printf 'id=%q lease=%q lock=%q v8=%q hours=%q max_age=%q artifacts=%q\nexport CONTRACT_REVISION=%q\nset -- %s\n%s\n' "$3" "$2" "$lock" "$v8" "${SPRITE_RUN_HOURS:-2}" "$max_age" "$artifacts" "$sha" "$cmd" "$JOB" | base64 | tr -d '\n'
 }
 
 tmp=$(mktemp -d); : > "$tmp/leases"; echo coordinator > "$tmp/mode"
 names=() leases=() synced=() workers=() beat=
 cleanup() { [[ -z $beat ]] || { pkill -P "$beat" 2>/dev/null; kill "$beat" 2>/dev/null; } || true; rm -rf "$tmp"; }
 trap cleanup EXIT
+if (( contract_baselines )); then
+  # This is the sole working-tree overlay: generated Node evidence, never
+  # source files, credentials, or an arbitrary caller-selected directory.
+  node --input-type=module - "$PWD/backends/workers/measurements/node-baselines" "$tmp/baselines" <<'JS'
+import { lstat, readdir, readFile, mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
+const [source, destination] = process.argv.slice(2);
+const info = await lstat(source).catch(error => { if (error.code === "ENOENT") return null; throw error; });
+if (info && (!info.isDirectory() || info.isSymbolicLink())) throw new Error("Contract baseline cache must be a real directory");
+await mkdir(destination);
+for (const name of info ? await readdir(source) : []) {
+  if (!/^[a-f0-9]{64}\.json$/.test(name)) continue;
+  const filename = path.join(source, name), entry = await lstat(filename);
+  if (!entry.isFile() || entry.isSymbolicLink()) throw new Error(`Contract baseline must be a regular file: ${name}`);
+  const bytes = await readFile(filename), report = JSON.parse(bytes);
+  if (report.backend !== "node" || report.nodeKey !== name.slice(0, -5) || !Array.isArray(report.rows)) throw new Error(`Invalid Node baseline cache: ${name}`);
+  // The contract runner separately verifies the current source key, selected
+  // case identities, unique inventory and all statuses before trusting it.
+  await writeFile(path.join(destination, name), bytes);
+}
+JS
+fi
 # Until the jobs start, this script keeps their sprites' locks fresh; the coordinator leases are renewed throughout.
 (
   # Its own stderr stays quiet ("Terminated" when the cleanup stops its sleep); notices go to the script's, on fd 3.
@@ -402,6 +466,10 @@ if (( warm && ! ${#names[@]} && current )); then echo "== the $current free spri
 
 # Every sprite gets the tree from here, or checks its own against it (a fraction of a second to write).
 tree=$tmp/tree; mkdir "$tree"; git archive "$sha" | tar x -C "$tree"
+if (( contract_baselines )); then
+  mkdir -p "$tree/backends/workers/measurements/node-baselines"
+  cp -R "$tmp/baselines/." "$tree/backends/workers/measurements/node-baselines/"
+fi
 
 worker() { # <slot index>: sync, start the job, follow it. Writes the exit status to tmp/code.<slot>, the synced fingerprint to tmp/fp.<slot>.
   local k=$1 name=${names[$1]} lease=${leases[$1]} id t0=$SECONDS t1 how out attempt=0 verdict rest
@@ -420,7 +488,7 @@ worker() { # <slot index>: sync, start the job, follow it. Writes the exit statu
     done
     if [[ -z $how ]]; then
       echo "== rsync to $name failed; sending the tree as a tar stream instead"
-      if remote "$name" 120 clean && git archive --format=tar.gz "$sha" | limit 600 sprite exec -o "$org" -s "$name" --stdin -- sh -c 'cd ~/rt && tar xzf -'; then how=tar
+      if remote "$name" 120 clean && tar czf - -C "$tree" . | limit 600 sprite exec -o "$org" -s "$name" --stdin -- sh -c 'cd ~/rt && tar xzf -'; then how=tar
       else echo "== could not send the tree to $name"; remote "$name" 30 unlock "$lease" >/dev/null 2>&1 || true; return; fi
     fi
     for try in 1 2 3; do
@@ -456,6 +524,17 @@ worker() { # <slot index>: sync, start the job, follow it. Writes the exit statu
     [[ $verdict = ok ]] || { echo "== could not claim $name again ($rest)"; status=137; break; }
     synced[k]=$rest; echo "== running it again on $name (retry $attempt of ${SPRITE_RETRIES:-1})"
   done
+  if [[ -n $artifacts && $status != 69 ]]; then
+    mkdir -p "$artifact_output/shard-$(( k + 1 ))"
+    local copied=
+    for try in 1 2 3; do
+      if limit 120 rsync -a --timeout=20 -e "$ssh_cmd" "sprite@$name:runs/$id.artifacts.tar.gz" "$tmp/artifacts.$k.tar.gz"; then copied=1; break; fi
+      (( try == 3 )) || sleep $(( try * 2 ))
+    done
+    if [[ -n $copied ]] && tar xzf "$tmp/artifacts.$k.tar.gz" -C "$artifact_output/shard-$(( k + 1 ))"; then
+      echo "== collected artifacts from $name into $artifact_output/shard-$(( k + 1 ))"
+    else echo "== could not collect artifacts from $name"; status=1; fi
+  fi
   echo "== exit $status in $(( SECONDS - t0 ))s on $name; log ~/runs/$id.log there"
   echo "$status" > "$tmp/code.$k"
 }

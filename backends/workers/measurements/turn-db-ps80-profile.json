@@ -1,0 +1,884 @@
+{
+  "schemaVersion": 1,
+  "source": "backends/workers/measurements/turn-db-ps80-load.json",
+  "runtimeRevision": "76f5609635adacb5250d4d39cc8ff7dd4dcce5a7",
+  "deploymentVersion": "e19b0ab2-743b-4f63-80ca-3998c1deda77",
+  "runnerRevision": "18daa03f37ac75e34de9f7ba7a9b2abc0bf1e538",
+  "operatorRevision": "18daa03f37ac75e34de9f7ba7a9b2abc0bf1e538",
+  "database": {
+    "tier": "PS80 ARM",
+    "vCpu": 1,
+    "memoryGB": 8,
+    "maxConnections": 150,
+    "hyperdriveOriginLimit": 100,
+    "hyperdriveCaching": false
+  },
+  "workload": {
+    "requestedStages": [
+      250,
+      500,
+      1000
+    ],
+    "tenantCount": 20,
+    "agentCount": 1000,
+    "fakeModelDelayMs": 15000,
+    "earlyStopErrorFraction": 0.05,
+    "originSampleTargetMs": 5000,
+    "observerQueriesPerOriginSample": 2
+  },
+  "limitations": [
+    "Latencies include only successful client turns and include the fake model delay. Throughput uses the entire stage duration including watcher shutdown.",
+    "Censored stages separate actual errors from harness-cancelled clients; their primary latency and throughput fields are null. Observed completed-client measurements are not a full-stage comparison.",
+    "Profiling counts SQL dispatches. Cross-reset in-flight completion timing may be missing and a crossing transaction may attribute its full hold to the later snapshot. Incomplete profiles are observed lower bounds.",
+    "Origin status adds two SQL queries per before/during sample; the after sample reuses the normal post-stage status query. Actual sampling intervals can exceed five seconds."
+  ],
+  "stages": [
+    {
+      "concurrency": 250,
+      "completeProfile": true,
+      "objectRestarts": 0,
+      "load": {
+        "startedAt": "2026-11-06T05:28:48.676Z",
+        "finishedAt": "2026-11-06T05:29:18.594Z",
+        "accepted": 250,
+        "completed": 250,
+        "failed": 0,
+        "cancelled": null,
+        "censored": null,
+        "errorRate": 0,
+        "errors": {},
+        "durationMs": 29918.356708999985,
+        "turnsPerSecond": 8.356073912468442,
+        "turnLatency": {
+          "samples": 250,
+          "p50Ms": 26713.675139,
+          "p95Ms": 28172.831033999973,
+          "p99Ms": 28804.834751000017
+        },
+        "observedTurnsPerSecond": null,
+        "observedCompletedTurnLatency": null,
+        "stop": null,
+        "instrumentationError": null
+      },
+      "queriesPerRequestedTurn": 216.532,
+      "observedQueries": 54133,
+      "observedQueriesPerRequestedTurn": 216.532,
+      "phases": {
+        "admission": {
+          "queries": 6000,
+          "queriesPerRequestedTurn": 24.0,
+          "observedQueriesPerRequestedTurn": 24.0,
+          "queryErrors": 0,
+          "transactions": 500,
+          "transactionHoldMsTotal": 42537,
+          "transactionHoldMsPerRequestedTurn": 170.148,
+          "transactionHoldMs": {
+            "samples": 500,
+            "p50": 84,
+            "p95": 102,
+            "p99": 130,
+            "max": 142
+          }
+        },
+        "hold": {
+          "queries": 3000,
+          "queriesPerRequestedTurn": 12.0,
+          "observedQueriesPerRequestedTurn": 12.0,
+          "queryErrors": 0,
+          "transactions": 250,
+          "transactionHoldMsTotal": 90104,
+          "transactionHoldMsPerRequestedTurn": 360.416,
+          "transactionHoldMs": {
+            "samples": 250,
+            "p50": 358,
+            "p95": 424,
+            "p99": 445,
+            "max": 452
+          }
+        },
+        "renew": {
+          "queries": 0,
+          "queriesPerRequestedTurn": 0.0,
+          "observedQueriesPerRequestedTurn": 0.0,
+          "queryErrors": 0,
+          "transactions": 0,
+          "transactionHoldMsTotal": 0,
+          "transactionHoldMsPerRequestedTurn": 0.0,
+          "transactionHoldMs": {
+            "samples": 0,
+            "p50": null,
+            "p95": null,
+            "p99": null,
+            "max": 0
+          }
+        },
+        "settle": {
+          "queries": 8750,
+          "queriesPerRequestedTurn": 35.0,
+          "observedQueriesPerRequestedTurn": 35.0,
+          "queryErrors": 0,
+          "transactions": 750,
+          "transactionHoldMsTotal": 721495,
+          "transactionHoldMsPerRequestedTurn": 2885.98,
+          "transactionHoldMs": {
+            "samples": 750,
+            "p50": 946,
+            "p95": 1719,
+            "p99": 2141,
+            "max": 2398
+          }
+        },
+        "usage": {
+          "queries": 750,
+          "queriesPerRequestedTurn": 3.0,
+          "observedQueriesPerRequestedTurn": 3.0,
+          "queryErrors": 0,
+          "transactions": 0,
+          "transactionHoldMsTotal": 0,
+          "transactionHoldMsPerRequestedTurn": 0.0,
+          "transactionHoldMs": {
+            "samples": 0,
+            "p50": null,
+            "p95": null,
+            "p99": null,
+            "max": 0
+          }
+        },
+        "webhooks": {
+          "queries": 1750,
+          "queriesPerRequestedTurn": 7.0,
+          "observedQueriesPerRequestedTurn": 7.0,
+          "queryErrors": 0,
+          "transactions": 0,
+          "transactionHoldMsTotal": 0,
+          "transactionHoldMsPerRequestedTurn": 0.0,
+          "transactionHoldMs": {
+            "samples": 0,
+            "p50": null,
+            "p95": null,
+            "p99": null,
+            "max": 0
+          }
+        },
+        "history": {
+          "queries": 0,
+          "queriesPerRequestedTurn": 0.0,
+          "observedQueriesPerRequestedTurn": 0.0,
+          "queryErrors": 0,
+          "transactions": 0,
+          "transactionHoldMsTotal": 0,
+          "transactionHoldMsPerRequestedTurn": 0.0,
+          "transactionHoldMs": {
+            "samples": 0,
+            "p50": null,
+            "p95": null,
+            "p99": null,
+            "max": 0
+          }
+        },
+        "other": {
+          "queries": 32383,
+          "queriesPerRequestedTurn": 129.532,
+          "observedQueriesPerRequestedTurn": 129.532,
+          "queryErrors": 0,
+          "transactions": 500,
+          "transactionHoldMsTotal": 44062,
+          "transactionHoldMsPerRequestedTurn": 176.248,
+          "transactionHoldMs": {
+            "samples": 500,
+            "p50": 85,
+            "p95": 109,
+            "p99": 135,
+            "max": 845
+          }
+        },
+        "edge": {
+          "queries": 1500,
+          "queriesPerRequestedTurn": 6.0,
+          "observedQueriesPerRequestedTurn": 6.0,
+          "queryErrors": 0,
+          "transactions": 0,
+          "transactionHoldMsTotal": 0,
+          "transactionHoldMsPerRequestedTurn": 0.0,
+          "transactionHoldMs": {
+            "samples": 0,
+            "p50": null,
+            "p95": null,
+            "p99": null,
+            "max": 0
+          }
+        }
+      },
+      "financialStageEnd": {
+        "attempts": 250,
+        "settled_attempts": 250,
+        "pending_attempts": 0,
+        "holds": 0,
+        "held_micros": 0,
+        "end_user_holds": 0,
+        "end_user_held_micros": 0,
+        "responses": 250
+      },
+      "originObserverExtraQueries": 10,
+      "originConnectionSeries": [
+        {
+          "at": "2026-11-06T05:28:48.575Z",
+          "phase": "before",
+          "maxConnectionsSetting": 150,
+          "clientConnections": 42,
+          "active": 1,
+          "idle": 41,
+          "idleInTransaction": 0,
+          "idleInTransactionAborted": 0
+        },
+        {
+          "at": "2026-11-06T05:28:55.676Z",
+          "phase": "during",
+          "maxConnectionsSetting": 150,
+          "clientConnections": 102,
+          "active": 2,
+          "idle": 100,
+          "idleInTransaction": 0,
+          "idleInTransactionAborted": 0
+        },
+        {
+          "at": "2026-11-06T05:29:02.033Z",
+          "phase": "during",
+          "maxConnectionsSetting": 150,
+          "clientConnections": 102,
+          "active": 2,
+          "idle": 100,
+          "idleInTransaction": 0,
+          "idleInTransactionAborted": 0
+        },
+        {
+          "at": "2026-11-06T05:29:08.354Z",
+          "phase": "during",
+          "maxConnectionsSetting": 150,
+          "clientConnections": 102,
+          "active": 1,
+          "idle": 94,
+          "idleInTransaction": 7,
+          "idleInTransactionAborted": 0
+        },
+        {
+          "at": "2026-11-06T05:29:13.612Z",
+          "phase": "during",
+          "maxConnectionsSetting": 150,
+          "clientConnections": 102,
+          "active": 73,
+          "idle": 9,
+          "idleInTransaction": 20,
+          "idleInTransactionAborted": 0
+        },
+        {
+          "at": "2026-11-06T05:29:18.757Z",
+          "phase": "after",
+          "maxConnectionsSetting": 150,
+          "clientConnections": 102,
+          "active": 1,
+          "idle": 101,
+          "idleInTransaction": 0,
+          "idleInTransactionAborted": 0
+        }
+      ]
+    },
+    {
+      "concurrency": 500,
+      "completeProfile": true,
+      "objectRestarts": 0,
+      "load": {
+        "startedAt": "2026-11-06T05:29:25.870Z",
+        "finishedAt": "2026-11-06T05:30:05.699Z",
+        "accepted": 500,
+        "completed": 500,
+        "failed": 0,
+        "cancelled": null,
+        "censored": null,
+        "errorRate": 0,
+        "errors": {},
+        "durationMs": 39828.78724099998,
+        "turnsPerSecond": 12.553733985786469,
+        "turnLatency": {
+          "samples": 500,
+          "p50Ms": 35114.06408500002,
+          "p95Ms": 37143.35237000001,
+          "p99Ms": 38092.124591
+        },
+        "observedTurnsPerSecond": null,
+        "observedCompletedTurnLatency": null,
+        "stop": null,
+        "instrumentationError": null
+      },
+      "queriesPerRequestedTurn": 213.878,
+      "observedQueries": 106939,
+      "observedQueriesPerRequestedTurn": 213.878,
+      "phases": {
+        "admission": {
+          "queries": 12000,
+          "queriesPerRequestedTurn": 24.0,
+          "observedQueriesPerRequestedTurn": 24.0,
+          "queryErrors": 0,
+          "transactions": 1000,
+          "transactionHoldMsTotal": 83532,
+          "transactionHoldMsPerRequestedTurn": 167.064,
+          "transactionHoldMs": {
+            "samples": 1000,
+            "p50": 81,
+            "p95": 108,
+            "p99": 135,
+            "max": 169
+          }
+        },
+        "hold": {
+          "queries": 6000,
+          "queriesPerRequestedTurn": 12.0,
+          "observedQueriesPerRequestedTurn": 12.0,
+          "queryErrors": 0,
+          "transactions": 500,
+          "transactionHoldMsTotal": 167423,
+          "transactionHoldMsPerRequestedTurn": 334.846,
+          "transactionHoldMs": {
+            "samples": 500,
+            "p50": 330,
+            "p95": 386,
+            "p99": 416,
+            "max": 2016
+          }
+        },
+        "renew": {
+          "queries": 0,
+          "queriesPerRequestedTurn": 0.0,
+          "observedQueriesPerRequestedTurn": 0.0,
+          "queryErrors": 0,
+          "transactions": 0,
+          "transactionHoldMsTotal": 0,
+          "transactionHoldMsPerRequestedTurn": 0.0,
+          "transactionHoldMs": {
+            "samples": 0,
+            "p50": null,
+            "p95": null,
+            "p99": null,
+            "max": 0
+          }
+        },
+        "settle": {
+          "queries": 17710,
+          "queriesPerRequestedTurn": 35.42,
+          "observedQueriesPerRequestedTurn": 35.42,
+          "queryErrors": 0,
+          "transactions": 1535,
+          "transactionHoldMsTotal": 1516958,
+          "transactionHoldMsPerRequestedTurn": 3033.916,
+          "transactionHoldMs": {
+            "samples": 1535,
+            "p50": 967,
+            "p95": 1717,
+            "p99": 2436,
+            "max": 2937
+          }
+        },
+        "usage": {
+          "queries": 1500,
+          "queriesPerRequestedTurn": 3.0,
+          "observedQueriesPerRequestedTurn": 3.0,
+          "queryErrors": 0,
+          "transactions": 0,
+          "transactionHoldMsTotal": 0,
+          "transactionHoldMsPerRequestedTurn": 0.0,
+          "transactionHoldMs": {
+            "samples": 0,
+            "p50": null,
+            "p95": null,
+            "p99": null,
+            "max": 0
+          }
+        },
+        "webhooks": {
+          "queries": 3535,
+          "queriesPerRequestedTurn": 7.07,
+          "observedQueriesPerRequestedTurn": 7.07,
+          "queryErrors": 0,
+          "transactions": 0,
+          "transactionHoldMsTotal": 0,
+          "transactionHoldMsPerRequestedTurn": 0.0,
+          "transactionHoldMs": {
+            "samples": 0,
+            "p50": null,
+            "p95": null,
+            "p99": null,
+            "max": 0
+          }
+        },
+        "history": {
+          "queries": 0,
+          "queriesPerRequestedTurn": 0.0,
+          "observedQueriesPerRequestedTurn": 0.0,
+          "queryErrors": 0,
+          "transactions": 0,
+          "transactionHoldMsTotal": 0,
+          "transactionHoldMsPerRequestedTurn": 0.0,
+          "transactionHoldMs": {
+            "samples": 0,
+            "p50": null,
+            "p95": null,
+            "p99": null,
+            "max": 0
+          }
+        },
+        "other": {
+          "queries": 63080,
+          "queriesPerRequestedTurn": 126.16,
+          "observedQueriesPerRequestedTurn": 126.16,
+          "queryErrors": 0,
+          "transactions": 1000,
+          "transactionHoldMsTotal": 83254,
+          "transactionHoldMsPerRequestedTurn": 166.508,
+          "transactionHoldMs": {
+            "samples": 1000,
+            "p50": 83,
+            "p95": 100,
+            "p99": 120,
+            "max": 158
+          }
+        },
+        "edge": {
+          "queries": 3114,
+          "queriesPerRequestedTurn": 6.228,
+          "observedQueriesPerRequestedTurn": 6.228,
+          "queryErrors": 0,
+          "transactions": 0,
+          "transactionHoldMsTotal": 0,
+          "transactionHoldMsPerRequestedTurn": 0.0,
+          "transactionHoldMs": {
+            "samples": 0,
+            "p50": null,
+            "p95": null,
+            "p99": null,
+            "max": 0
+          }
+        }
+      },
+      "financialStageEnd": {
+        "attempts": 750,
+        "settled_attempts": 750,
+        "pending_attempts": 0,
+        "holds": 0,
+        "held_micros": 0,
+        "end_user_holds": 0,
+        "end_user_held_micros": 0,
+        "responses": 750
+      },
+      "originObserverExtraQueries": 12,
+      "originConnectionSeries": [
+        {
+          "at": "2026-11-06T05:29:25.775Z",
+          "phase": "before",
+          "maxConnectionsSetting": 150,
+          "clientConnections": 102,
+          "active": 1,
+          "idle": 101,
+          "idleInTransaction": 0,
+          "idleInTransactionAborted": 0
+        },
+        {
+          "at": "2026-11-06T05:29:31.534Z",
+          "phase": "during",
+          "maxConnectionsSetting": 150,
+          "clientConnections": 102,
+          "active": 6,
+          "idle": 29,
+          "idleInTransaction": 67,
+          "idleInTransactionAborted": 0
+        },
+        {
+          "at": "2026-11-06T05:29:38.010Z",
+          "phase": "during",
+          "maxConnectionsSetting": 150,
+          "clientConnections": 102,
+          "active": 1,
+          "idle": 101,
+          "idleInTransaction": 0,
+          "idleInTransactionAborted": 0
+        },
+        {
+          "at": "2026-11-06T05:29:44.318Z",
+          "phase": "during",
+          "maxConnectionsSetting": 150,
+          "clientConnections": 102,
+          "active": 1,
+          "idle": 101,
+          "idleInTransaction": 0,
+          "idleInTransactionAborted": 0
+        },
+        {
+          "at": "2026-11-06T05:29:52.099Z",
+          "phase": "during",
+          "maxConnectionsSetting": 150,
+          "clientConnections": 102,
+          "active": 33,
+          "idle": 19,
+          "idleInTransaction": 50,
+          "idleInTransactionAborted": 0
+        },
+        {
+          "at": "2026-11-06T05:30:00.465Z",
+          "phase": "during",
+          "maxConnectionsSetting": 150,
+          "clientConnections": 102,
+          "active": 63,
+          "idle": 17,
+          "idleInTransaction": 22,
+          "idleInTransactionAborted": 0
+        },
+        {
+          "at": "2026-11-06T05:30:05.856Z",
+          "phase": "after",
+          "maxConnectionsSetting": 150,
+          "clientConnections": 102,
+          "active": 1,
+          "idle": 100,
+          "idleInTransaction": 1,
+          "idleInTransactionAborted": 0
+        }
+      ]
+    },
+    {
+      "concurrency": 1000,
+      "completeProfile": false,
+      "objectRestarts": 135,
+      "load": {
+        "startedAt": "2026-11-06T05:30:20.076Z",
+        "finishedAt": "2026-11-06T05:31:22.187Z",
+        "accepted": 1000,
+        "completed": 995,
+        "failed": 5,
+        "cancelled": null,
+        "censored": null,
+        "errorRate": 0.005,
+        "errors": {
+          "client_timeout": 5
+        },
+        "durationMs": 62111.116263,
+        "turnsPerSecond": 16.01967666764875,
+        "turnLatency": {
+          "samples": 995,
+          "p50Ms": 55335.200379999995,
+          "p95Ms": 61015.61430799999,
+          "p99Ms": 61417.64805799999
+        },
+        "observedTurnsPerSecond": null,
+        "observedCompletedTurnLatency": null,
+        "stop": null,
+        "instrumentationError": null
+      },
+      "queriesPerRequestedTurn": null,
+      "observedQueries": 213904,
+      "observedQueriesPerRequestedTurn": 213.904,
+      "phases": {
+        "admission": {
+          "queries": 23712,
+          "queriesPerRequestedTurn": null,
+          "observedQueriesPerRequestedTurn": 23.712,
+          "queryErrors": 0,
+          "transactions": 1976,
+          "transactionHoldMsTotal": 160680,
+          "transactionHoldMsPerRequestedTurn": null,
+          "transactionHoldMs": {
+            "samples": 1976,
+            "p50": 80,
+            "p95": 96,
+            "p99": 128,
+            "max": 171
+          }
+        },
+        "hold": {
+          "queries": 11856,
+          "queriesPerRequestedTurn": null,
+          "observedQueriesPerRequestedTurn": 11.856,
+          "queryErrors": 0,
+          "transactions": 988,
+          "transactionHoldMsTotal": 324872,
+          "transactionHoldMsPerRequestedTurn": null,
+          "transactionHoldMs": {
+            "samples": 988,
+            "p50": 329,
+            "p95": 392,
+            "p99": 425,
+            "max": 613
+          }
+        },
+        "renew": {
+          "queries": 0,
+          "queriesPerRequestedTurn": null,
+          "observedQueriesPerRequestedTurn": 0.0,
+          "queryErrors": 0,
+          "transactions": 0,
+          "transactionHoldMsTotal": 0,
+          "transactionHoldMsPerRequestedTurn": null,
+          "transactionHoldMs": {
+            "samples": 0,
+            "p50": null,
+            "p95": null,
+            "p99": null,
+            "max": 0
+          }
+        },
+        "settle": {
+          "queries": 38930,
+          "queriesPerRequestedTurn": null,
+          "observedQueriesPerRequestedTurn": 38.93,
+          "queryErrors": 0,
+          "transactions": 3689,
+          "transactionHoldMsTotal": 3316936,
+          "transactionHoldMsPerRequestedTurn": null,
+          "transactionHoldMs": {
+            "samples": 3689,
+            "p50": 870,
+            "p95": 1872,
+            "p99": 2426,
+            "max": 3589
+          }
+        },
+        "usage": {
+          "queries": 2964,
+          "queriesPerRequestedTurn": null,
+          "observedQueriesPerRequestedTurn": 2.964,
+          "queryErrors": 0,
+          "transactions": 0,
+          "transactionHoldMsTotal": 0,
+          "transactionHoldMsPerRequestedTurn": null,
+          "transactionHoldMs": {
+            "samples": 0,
+            "p50": null,
+            "p95": null,
+            "p99": null,
+            "max": 0
+          }
+        },
+        "webhooks": {
+          "queries": 7641,
+          "queriesPerRequestedTurn": null,
+          "observedQueriesPerRequestedTurn": 7.641,
+          "queryErrors": 0,
+          "transactions": 0,
+          "transactionHoldMsTotal": 0,
+          "transactionHoldMsPerRequestedTurn": null,
+          "transactionHoldMs": {
+            "samples": 0,
+            "p50": null,
+            "p95": null,
+            "p99": null,
+            "max": 0
+          }
+        },
+        "history": {
+          "queries": 0,
+          "queriesPerRequestedTurn": null,
+          "observedQueriesPerRequestedTurn": 0.0,
+          "queryErrors": 0,
+          "transactions": 0,
+          "transactionHoldMsTotal": 0,
+          "transactionHoldMsPerRequestedTurn": null,
+          "transactionHoldMs": {
+            "samples": 0,
+            "p50": null,
+            "p95": null,
+            "p99": null,
+            "max": 0
+          }
+        },
+        "other": {
+          "queries": 120065,
+          "queriesPerRequestedTurn": null,
+          "observedQueriesPerRequestedTurn": 120.065,
+          "queryErrors": 0,
+          "transactions": 1976,
+          "transactionHoldMsTotal": 162936,
+          "transactionHoldMsPerRequestedTurn": null,
+          "transactionHoldMs": {
+            "samples": 1976,
+            "p50": 82,
+            "p95": 101,
+            "p99": 120,
+            "max": 188
+          }
+        },
+        "edge": {
+          "queries": 8736,
+          "queriesPerRequestedTurn": null,
+          "observedQueriesPerRequestedTurn": 8.736,
+          "queryErrors": 0,
+          "transactions": 0,
+          "transactionHoldMsTotal": 0,
+          "transactionHoldMsPerRequestedTurn": null,
+          "transactionHoldMs": {
+            "samples": 0,
+            "p50": null,
+            "p95": null,
+            "p99": null,
+            "max": 0
+          }
+        }
+      },
+      "financialStageEnd": {
+        "attempts": 1750,
+        "settled_attempts": 1750,
+        "pending_attempts": 0,
+        "holds": 0,
+        "held_micros": 0,
+        "end_user_holds": 0,
+        "end_user_held_micros": 0,
+        "responses": 1750
+      },
+      "originObserverExtraQueries": 14,
+      "originConnectionSeries": [
+        {
+          "at": "2026-11-06T05:30:19.984Z",
+          "phase": "before",
+          "maxConnectionsSetting": 150,
+          "clientConnections": 102,
+          "active": 1,
+          "idle": 101,
+          "idleInTransaction": 0,
+          "idleInTransactionAborted": 0
+        },
+        {
+          "at": "2026-11-06T05:30:26.760Z",
+          "phase": "during",
+          "maxConnectionsSetting": 150,
+          "clientConnections": 102,
+          "active": 9,
+          "idle": 67,
+          "idleInTransaction": 26,
+          "idleInTransactionAborted": 0
+        },
+        {
+          "at": "2026-11-06T05:30:34.121Z",
+          "phase": "during",
+          "maxConnectionsSetting": 150,
+          "clientConnections": 102,
+          "active": 5,
+          "idle": 30,
+          "idleInTransaction": 67,
+          "idleInTransactionAborted": 0
+        },
+        {
+          "at": "2026-11-06T05:30:40.654Z",
+          "phase": "during",
+          "maxConnectionsSetting": 150,
+          "clientConnections": 102,
+          "active": 2,
+          "idle": 100,
+          "idleInTransaction": 0,
+          "idleInTransactionAborted": 0
+        },
+        {
+          "at": "2026-11-06T05:30:47.144Z",
+          "phase": "during",
+          "maxConnectionsSetting": 150,
+          "clientConnections": 102,
+          "active": 20,
+          "idle": 7,
+          "idleInTransaction": 75,
+          "idleInTransactionAborted": 0
+        },
+        {
+          "at": "2026-11-06T05:30:57.321Z",
+          "phase": "during",
+          "maxConnectionsSetting": 150,
+          "clientConnections": 102,
+          "active": 73,
+          "idle": 7,
+          "idleInTransaction": 22,
+          "idleInTransactionAborted": 0
+        },
+        {
+          "at": "2026-11-06T05:31:13.716Z",
+          "phase": "during",
+          "maxConnectionsSetting": 150,
+          "clientConnections": 102,
+          "active": 63,
+          "idle": 14,
+          "idleInTransaction": 25,
+          "idleInTransactionAborted": 0
+        },
+        {
+          "at": "2026-11-06T05:31:22.365Z",
+          "phase": "after",
+          "maxConnectionsSetting": 150,
+          "clientConnections": 102,
+          "active": 3,
+          "idle": 98,
+          "idleInTransaction": 1,
+          "idleInTransactionAborted": 0
+        }
+      ]
+    }
+  ],
+  "cleanup": {
+    "startedAt": "2026-11-06T05:31:30.790Z",
+    "deletedTenants": 20,
+    "revokedCredentials": 20,
+    "failures": [],
+    "after": {
+      "tenants": 0,
+      "agents": 0,
+      "api_tokens": 0,
+      "provider_keys": 0,
+      "model_providers": 0,
+      "volumes": 0,
+      "end_users": 0,
+      "holds": 0,
+      "held_micros": 0,
+      "end_user_holds": 0,
+      "end_user_held_micros": 0,
+      "balance_micros": 1999861939,
+      "usage_debits": 20,
+      "usage_micros": -138061,
+      "responses": 1750,
+      "receipts": 0,
+      "attempts": 1750,
+      "pending_attempts": 0,
+      "settled_attempts": 1750,
+      "attempt_charge_micros": 0,
+      "deleted_tenants": 20,
+      "revoked_agents": 0,
+      "purged_agents": 0,
+      "deleting_tenants": 0,
+      "deletion_attempts": 40,
+      "claimed_deletions": 0
+    }
+  },
+  "deploymentChecks": {
+    "beforeLoad": {
+      "at": "2026-11-06T05:25:31.761Z",
+      "deployment": "b53bc3c3-6f4d-4cea-8d96-ce22adc66de6",
+      "version": "e19b0ab2-743b-4f63-80ca-3998c1deda77",
+      "percentage": 100,
+      "hyperdriveOriginLimit": 100,
+      "hyperdriveCachingDisabled": true
+    },
+    "afterStages": {
+      "at": "2026-11-06T05:31:56.022Z",
+      "deployment": "b53bc3c3-6f4d-4cea-8d96-ce22adc66de6",
+      "version": "e19b0ab2-743b-4f63-80ca-3998c1deda77",
+      "percentage": 100,
+      "hyperdriveOriginLimit": 100,
+      "hyperdriveCachingDisabled": true
+    },
+    "afterCleanup": {
+      "at": "2026-11-06T05:47:05.932Z",
+      "deployment": "b53bc3c3-6f4d-4cea-8d96-ce22adc66de6",
+      "version": "e19b0ab2-743b-4f63-80ca-3998c1deda77",
+      "percentage": 100,
+      "hyperdriveOriginLimit": 100,
+      "hyperdriveCachingDisabled": true
+    }
+  },
+  "cleanupEvidence": {
+    "source": "backends/workers/measurements/turn-db-ps80-cleanup.json",
+    "verifiedAt": "2026-11-06T05:46:36.756Z",
+    "temporaryHelpersRemovedAt": "2026-11-06T05:47:05.932Z"
+  }
+}

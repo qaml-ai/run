@@ -1,0 +1,138 @@
+{
+  "backend": "node",
+  "area": "files,volumes,images,search,schedules,workspaces,selfhost,cli,journey",
+  "nodeKey": "1ff65be69bdb97687bb551ad863a1ab48c42d7c4726928e25ab5efd896fabdfc",
+  "suiteHash": "fabe683775fe343cc1c227f56f728a869eff7d15d2552fd4ee40db9c2129e413",
+  "revision": "3e2d2e618e8ee4b4eb4d047d905544d486e7e35b",
+  "shard": {
+    "index": 3,
+    "total": 4
+  },
+  "durationMs": 26631.86794,
+  "runtime": {
+    "node": "v24.22.1",
+    "platform": "linux",
+    "arch": "x64"
+  },
+  "recordedAt": "2026-11-05T22:41:57.130Z",
+  "expectedCases": 13,
+  "rows": [
+    {
+      "area": "files",
+      "source": "tests/file-arguments.test.ts",
+      "name": "fileArguments: other parties' servers are not offered or sent files unless a definition turns it on",
+      "status": "pass",
+      "durationMs": 10068.2898,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "files",
+      "source": "tests/file-arguments.test.ts",
+      "name": "files reach a tool as URLs bound to the call: a file at its version, a directory as a snapshot, small ones inline",
+      "status": "pass",
+      "durationMs": 4869.4389,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "files",
+      "source": "tests/files.test.ts:261",
+      "name": "the TypeScript SDK attaches bytes, Blobs, local paths and workspace files; a file deleted or replaced after attaching still reads as attached",
+      "status": "pass",
+      "durationMs": 4277.88339,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "files",
+      "source": "tests/files.test.ts:76",
+      "name": "the REST API stores the upload's type and serves downloads with safe headers",
+      "status": "pass",
+      "durationMs": 5748.50148,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "files",
+      "source": "tests/files.test.ts:98",
+      "name": "signed links: bound to tenant, volume, path, method, expiry, size and content type; tampering fails",
+      "status": "pass",
+      "durationMs": 3748.93388,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "files",
+      "source": "tests/tool-files.test.ts",
+      "name": "application-attached MCP files are saved to the workspace like a server's",
+      "status": "pass",
+      "durationMs": 3830.96304,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "files",
+      "source": "tests/tool-files.test.ts",
+      "name": "MCP images, audio, blobs and long text are saved to the workspace, under sanitized names",
+      "status": "pass",
+      "durationMs": 4881.13778,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "files",
+      "source": "tests/tool-files.test.ts",
+      "name": "MCP tools take files by {$file}: base64 or a call-bound URL, only from the agent's mounts",
+      "status": "pass",
+      "durationMs": 8709.24157,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "files",
+      "source": "tests/tool-files.test.ts",
+      "name": "OpenAPI operations upload files (multipart, raw bytes, base64) and save binary responses",
+      "status": "pass",
+      "durationMs": 4568.0144,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "files",
+      "source": "tests/tool-files.test.ts",
+      "name": "web_fetch saves PDFs and images to the workspace and shows them to the model",
+      "status": "pass",
+      "durationMs": 3820.05143,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "images",
+      "source": "tests/images.test.ts",
+      "name": "a thread with over 20 images, one of them 2,400 px, gets a request where every image is at most 1,568 px; the stored history is unchanged",
+      "status": "pass",
+      "durationMs": 9581.42949,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "search",
+      "source": "tests/x-search.test.ts",
+      "name": "X search works in agents and stateless runs, uses tenant keys first and bills only platform requests",
+      "status": "pass",
+      "durationMs": 13060.73953,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "volumes",
+      "source": "tests/volumes.test.ts:538",
+      "name": "the REST API and SDK manage volumes within a tenant, and nothing crosses tenants",
+      "status": "pass",
+      "durationMs": 10763.57832,
+      "reason": "",
+      "backend": "node"
+    }
+  ]
+}

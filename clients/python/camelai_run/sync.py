@@ -21,6 +21,7 @@ import uuid
 from urllib.parse import quote
 
 import httpx
+from .event_transport import event_stream_sync
 
 from . import (
     DEFAULT_URL, AgentError, Download, InputDetail, InputRequired, Mount, WorkspaceMount, Run, RunError, RuntimeIdentity, RuntimeTokenError, StreamPart,
@@ -125,7 +126,7 @@ class AgentRuntime(_RuntimeCalls):
         while True:
             headers = {"Authorization": f"Bearer {self._operator()}", "Accept": "text/event-stream", **({"Last-Event-ID": str(cursor)} if cursor else {})}
             try:
-                with self.http.stream("GET", f"{self.base}/v1/runs/{quote(run_id, safe='')}/events", headers=headers, timeout=httpx.Timeout(10, read=60)) as response:
+                with event_stream_sync(self.http, f"{self.base}/v1/runs/{quote(run_id, safe='')}/events", headers=headers, timeout=httpx.Timeout(10, read=60)) as response:
                     if not response.is_success:
                         response.read()
                         error = AgentError(_error(response), response.status_code, retry_after=_retry_after(response))
@@ -304,7 +305,7 @@ class AgentClient(_AgentCalls):
         cursor, record, failures, hinted = 0, None, 0, False
         while True:
             try:
-                with self.http.stream("GET", f"{self.base}{self.path}/events?snapshot=1&watch=1", timeout=20, headers={
+                with event_stream_sync(self.http, f"{self.base}{self.path}/events?snapshot=1&watch=1", timeout=20, headers={
                         "Authorization": f"Bearer {self.session['token']}", "Accept": "text/event-stream", "Last-Event-ID": str(cursor)}) as response:
                     if not response.is_success:
                         response.read()

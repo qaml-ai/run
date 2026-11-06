@@ -1,0 +1,689 @@
+{
+  "schemaVersion": 1,
+  "measurement": "Larger pilot database follow-up; read-only platform metrics plus runner-sampled PostgreSQL activity.",
+  "runtimeRevision": "76f5609635adacb5250d4d39cc8ff7dd4dcce5a7",
+  "deploymentVersion": "e19b0ab2-743b-4f63-80ca-3998c1deda77",
+  "runnerRevision": "18daa03f",
+  "database": {
+    "tier": "PS80 ARM",
+    "vCpu": 1,
+    "memoryGiB": 8,
+    "maxConnections": 150,
+    "hyperdriveOriginLimit": 100,
+    "hyperdriveCaching": false
+  },
+  "hyperdriveConfig": {
+    "id": "3e6d68e844ec480589e766119f52dead",
+    "name": "camelrun-proto",
+    "origin_connection_limit": 100,
+    "caching": {
+      "disabled": true
+    },
+    "modified_on": "2026-11-06T05:21:22.802187Z"
+  },
+  "cpuSource": {
+    "file": "backends/workers/measurements/planetscale-cpu-bigger-db.json",
+    "coordinatorOwned": true,
+    "start": "2026-11-06T05:20:00Z",
+    "end": "2026-11-06T05:49:59.999Z",
+    "resolutionSeconds": 60,
+    "observedAt": "2026-11-06T05:50:52.463Z",
+    "refreshMayReviseRecentBins": true,
+    "timeSemantics": "Provider points are spaced 60 seconds apart. Minute labels are used for time alignment only; the data does not establish exclusive per-stage CPU averages or instantaneous maxima."
+  },
+  "postgresSource": "backends/workers/measurements/turn-db-ps80-profile.json",
+  "stages": [
+    {
+      "concurrency": 250,
+      "window": {
+        "from": "2026-11-06T05:28:48.676Z",
+        "to": "2026-11-06T05:29:18.594Z"
+      },
+      "load": {
+        "startedAt": "2026-11-06T05:28:48.676Z",
+        "finishedAt": "2026-11-06T05:29:18.594Z",
+        "accepted": 250,
+        "completed": 250,
+        "failed": 0,
+        "cancelled": null,
+        "censored": null,
+        "errorRate": 0,
+        "errors": {},
+        "durationMs": 29918.356708999985,
+        "turnsPerSecond": 8.356073912468442,
+        "turnLatency": {
+          "samples": 250,
+          "p50Ms": 26713.675139,
+          "p95Ms": 28172.831033999973,
+          "p99Ms": 28804.834751000017
+        },
+        "observedTurnsPerSecond": null,
+        "observedCompletedTurnLatency": null,
+        "stop": null
+      },
+      "hyperdrive": {
+        "provisional": false,
+        "observedAt": "2026-11-06 05:40:42 UTC",
+        "stableAgainst": "2026-11-06T05:34:01Z",
+        "scope": "Sampled IAD aggregate over the complete requested stage interval; not a complete per-second series.",
+        "results": [
+          {
+            "avg": {
+              "availablePoolSlots": 10.533333333333333,
+              "currentPoolSize": 18.833333333333332,
+              "waitingClients": 16.666666666666668
+            },
+            "dimensions": {
+              "coloCode": "IAD"
+            },
+            "max": {
+              "currentPoolSize": 20,
+              "maxPoolSize": 20,
+              "waitingClients": 106
+            }
+          }
+        ]
+      },
+      "postgres": {
+        "sampleCount": 6,
+        "clientBackendsPeak": 102,
+        "activeBackendsPeak": 73,
+        "maxConnectionsSetting": 150,
+        "series": [
+          {
+            "at": "2026-11-06T05:28:48.575Z",
+            "phase": "before",
+            "maxConnectionsSetting": 150,
+            "clientConnections": 42,
+            "active": 1,
+            "idle": 41,
+            "idleInTransaction": 0,
+            "idleInTransactionAborted": 0
+          },
+          {
+            "at": "2026-11-06T05:28:55.676Z",
+            "phase": "during",
+            "maxConnectionsSetting": 150,
+            "clientConnections": 102,
+            "active": 2,
+            "idle": 100,
+            "idleInTransaction": 0,
+            "idleInTransactionAborted": 0
+          },
+          {
+            "at": "2026-11-06T05:29:02.033Z",
+            "phase": "during",
+            "maxConnectionsSetting": 150,
+            "clientConnections": 102,
+            "active": 2,
+            "idle": 100,
+            "idleInTransaction": 0,
+            "idleInTransactionAborted": 0
+          },
+          {
+            "at": "2026-11-06T05:29:08.354Z",
+            "phase": "during",
+            "maxConnectionsSetting": 150,
+            "clientConnections": 102,
+            "active": 1,
+            "idle": 94,
+            "idleInTransaction": 7,
+            "idleInTransactionAborted": 0
+          },
+          {
+            "at": "2026-11-06T05:29:13.612Z",
+            "phase": "during",
+            "maxConnectionsSetting": 150,
+            "clientConnections": 102,
+            "active": 73,
+            "idle": 9,
+            "idleInTransaction": 20,
+            "idleInTransactionAborted": 0
+          },
+          {
+            "at": "2026-11-06T05:29:18.757Z",
+            "phase": "after",
+            "maxConnectionsSetting": 150,
+            "clientConnections": 102,
+            "active": 1,
+            "idle": 101,
+            "idleInTransaction": 0,
+            "idleInTransactionAborted": 0
+          }
+        ],
+        "idleInTransactionPeak": 20,
+        "idleInTransactionAbortedPeak": 0,
+        "extraObserverQueries": 10
+      },
+      "platformMinuteSamples": [
+        {
+          "minuteStart": "2026-11-06T05:28:00.000Z",
+          "minuteEnd": "2026-11-06T05:29:00.000Z",
+          "loadOverlapWithLabeledMinuteSeconds": 11.324,
+          "cpuPercent": 15.852325555555,
+          "memoryPercent": 5.940604112513,
+          "connections": {
+            "active": 1,
+            "disabled": 0,
+            "fastpath function call": 0,
+            "idle": 34,
+            "idle in transaction": 7,
+            "idle in transaction (aborted)": 0
+          },
+          "transactionCommitsPerSecond": 262.9166666666667
+        },
+        {
+          "minuteStart": "2026-11-06T05:29:00.000Z",
+          "minuteEnd": "2026-11-06T05:30:00.000Z",
+          "loadOverlapWithLabeledMinuteSeconds": 18.594,
+          "cpuPercent": 23.023170555555,
+          "memoryPercent": 6.018061873375,
+          "connections": {
+            "active": 1,
+            "disabled": 0,
+            "fastpath function call": 0,
+            "idle": 34,
+            "idle in transaction": 8,
+            "idle in transaction (aborted)": 0
+          },
+          "transactionCommitsPerSecond": 342.1166666666667
+        }
+      ]
+    },
+    {
+      "concurrency": 500,
+      "window": {
+        "from": "2026-11-06T05:29:25.870Z",
+        "to": "2026-11-06T05:30:05.699Z"
+      },
+      "load": {
+        "startedAt": "2026-11-06T05:29:25.870Z",
+        "finishedAt": "2026-11-06T05:30:05.699Z",
+        "accepted": 500,
+        "completed": 500,
+        "failed": 0,
+        "cancelled": null,
+        "censored": null,
+        "errorRate": 0,
+        "errors": {},
+        "durationMs": 39828.78724099998,
+        "turnsPerSecond": 12.553733985786469,
+        "turnLatency": {
+          "samples": 500,
+          "p50Ms": 35114.06408500002,
+          "p95Ms": 37143.35237000001,
+          "p99Ms": 38092.124591
+        },
+        "observedTurnsPerSecond": null,
+        "observedCompletedTurnLatency": null,
+        "stop": null
+      },
+      "hyperdrive": {
+        "provisional": false,
+        "observedAt": "2026-11-06 05:40:42 UTC",
+        "stableAgainst": "2026-11-06T05:34:01Z",
+        "scope": "Sampled IAD aggregate over the complete requested stage interval; not a complete per-second series.",
+        "results": [
+          {
+            "avg": {
+              "availablePoolSlots": 5.863636363636363,
+              "currentPoolSize": 20,
+              "waitingClients": 75
+            },
+            "dimensions": {
+              "coloCode": "IAD"
+            },
+            "max": {
+              "currentPoolSize": 20,
+              "maxPoolSize": 20,
+              "waitingClients": 268
+            }
+          }
+        ]
+      },
+      "postgres": {
+        "sampleCount": 7,
+        "clientBackendsPeak": 102,
+        "activeBackendsPeak": 63,
+        "maxConnectionsSetting": 150,
+        "series": [
+          {
+            "at": "2026-11-06T05:29:25.775Z",
+            "phase": "before",
+            "maxConnectionsSetting": 150,
+            "clientConnections": 102,
+            "active": 1,
+            "idle": 101,
+            "idleInTransaction": 0,
+            "idleInTransactionAborted": 0
+          },
+          {
+            "at": "2026-11-06T05:29:31.534Z",
+            "phase": "during",
+            "maxConnectionsSetting": 150,
+            "clientConnections": 102,
+            "active": 6,
+            "idle": 29,
+            "idleInTransaction": 67,
+            "idleInTransactionAborted": 0
+          },
+          {
+            "at": "2026-11-06T05:29:38.010Z",
+            "phase": "during",
+            "maxConnectionsSetting": 150,
+            "clientConnections": 102,
+            "active": 1,
+            "idle": 101,
+            "idleInTransaction": 0,
+            "idleInTransactionAborted": 0
+          },
+          {
+            "at": "2026-11-06T05:29:44.318Z",
+            "phase": "during",
+            "maxConnectionsSetting": 150,
+            "clientConnections": 102,
+            "active": 1,
+            "idle": 101,
+            "idleInTransaction": 0,
+            "idleInTransactionAborted": 0
+          },
+          {
+            "at": "2026-11-06T05:29:52.099Z",
+            "phase": "during",
+            "maxConnectionsSetting": 150,
+            "clientConnections": 102,
+            "active": 33,
+            "idle": 19,
+            "idleInTransaction": 50,
+            "idleInTransactionAborted": 0
+          },
+          {
+            "at": "2026-11-06T05:30:00.465Z",
+            "phase": "during",
+            "maxConnectionsSetting": 150,
+            "clientConnections": 102,
+            "active": 63,
+            "idle": 17,
+            "idleInTransaction": 22,
+            "idleInTransactionAborted": 0
+          },
+          {
+            "at": "2026-11-06T05:30:05.856Z",
+            "phase": "after",
+            "maxConnectionsSetting": 150,
+            "clientConnections": 102,
+            "active": 1,
+            "idle": 100,
+            "idleInTransaction": 1,
+            "idleInTransactionAborted": 0
+          }
+        ],
+        "idleInTransactionPeak": 67,
+        "idleInTransactionAbortedPeak": 0,
+        "extraObserverQueries": 12
+      },
+      "platformMinuteSamples": [
+        {
+          "minuteStart": "2026-11-06T05:29:00.000Z",
+          "minuteEnd": "2026-11-06T05:30:00.000Z",
+          "loadOverlapWithLabeledMinuteSeconds": 34.13,
+          "cpuPercent": 23.023170555555,
+          "memoryPercent": 6.018061873375,
+          "connections": {
+            "active": 1,
+            "disabled": 0,
+            "fastpath function call": 0,
+            "idle": 34,
+            "idle in transaction": 8,
+            "idle in transaction (aborted)": 0
+          },
+          "transactionCommitsPerSecond": 342.1166666666667
+        },
+        {
+          "minuteStart": "2026-11-06T05:30:00.000Z",
+          "minuteEnd": "2026-11-06T05:31:00.000Z",
+          "loadOverlapWithLabeledMinuteSeconds": 5.699,
+          "cpuPercent": 92.6481366666,
+          "memoryPercent": 11.901515503156,
+          "connections": {
+            "active": 10,
+            "disabled": 0,
+            "fastpath function call": 0,
+            "idle": 26,
+            "idle in transaction": 76,
+            "idle in transaction (aborted)": 0
+          },
+          "transactionCommitsPerSecond": 1585.35
+        }
+      ]
+    },
+    {
+      "concurrency": 1000,
+      "window": {
+        "from": "2026-11-06T05:30:20.076Z",
+        "to": "2026-11-06T05:31:22.187Z"
+      },
+      "load": {
+        "startedAt": "2026-11-06T05:30:20.076Z",
+        "finishedAt": "2026-11-06T05:31:22.187Z",
+        "accepted": 1000,
+        "completed": 995,
+        "failed": 5,
+        "cancelled": null,
+        "censored": null,
+        "errorRate": 0.005,
+        "errors": {
+          "client_timeout": 5
+        },
+        "durationMs": 62111.116263,
+        "turnsPerSecond": 16.01967666764875,
+        "turnLatency": {
+          "samples": 995,
+          "p50Ms": 55335.200379999995,
+          "p95Ms": 61015.61430799999,
+          "p99Ms": 61417.64805799999
+        },
+        "observedTurnsPerSecond": null,
+        "observedCompletedTurnLatency": null,
+        "stop": null
+      },
+      "hyperdrive": {
+        "provisional": false,
+        "observedAt": "2026-11-06 05:40:42 UTC",
+        "stableAgainst": "2026-11-06T05:34:01Z",
+        "scope": "Sampled IAD aggregate over the complete requested stage interval; not a complete per-second series.",
+        "results": [
+          {
+            "avg": {
+              "availablePoolSlots": 0,
+              "currentPoolSize": 20,
+              "waitingClients": 241.5
+            },
+            "dimensions": {
+              "coloCode": "IAD"
+            },
+            "max": {
+              "currentPoolSize": 20,
+              "maxPoolSize": 20,
+              "waitingClients": 287
+            }
+          }
+        ]
+      },
+      "postgres": {
+        "sampleCount": 8,
+        "clientBackendsPeak": 102,
+        "activeBackendsPeak": 73,
+        "maxConnectionsSetting": 150,
+        "series": [
+          {
+            "at": "2026-11-06T05:30:19.984Z",
+            "phase": "before",
+            "maxConnectionsSetting": 150,
+            "clientConnections": 102,
+            "active": 1,
+            "idle": 101,
+            "idleInTransaction": 0,
+            "idleInTransactionAborted": 0
+          },
+          {
+            "at": "2026-11-06T05:30:26.760Z",
+            "phase": "during",
+            "maxConnectionsSetting": 150,
+            "clientConnections": 102,
+            "active": 9,
+            "idle": 67,
+            "idleInTransaction": 26,
+            "idleInTransactionAborted": 0
+          },
+          {
+            "at": "2026-11-06T05:30:34.121Z",
+            "phase": "during",
+            "maxConnectionsSetting": 150,
+            "clientConnections": 102,
+            "active": 5,
+            "idle": 30,
+            "idleInTransaction": 67,
+            "idleInTransactionAborted": 0
+          },
+          {
+            "at": "2026-11-06T05:30:40.654Z",
+            "phase": "during",
+            "maxConnectionsSetting": 150,
+            "clientConnections": 102,
+            "active": 2,
+            "idle": 100,
+            "idleInTransaction": 0,
+            "idleInTransactionAborted": 0
+          },
+          {
+            "at": "2026-11-06T05:30:47.144Z",
+            "phase": "during",
+            "maxConnectionsSetting": 150,
+            "clientConnections": 102,
+            "active": 20,
+            "idle": 7,
+            "idleInTransaction": 75,
+            "idleInTransactionAborted": 0
+          },
+          {
+            "at": "2026-11-06T05:30:57.321Z",
+            "phase": "during",
+            "maxConnectionsSetting": 150,
+            "clientConnections": 102,
+            "active": 73,
+            "idle": 7,
+            "idleInTransaction": 22,
+            "idleInTransactionAborted": 0
+          },
+          {
+            "at": "2026-11-06T05:31:13.716Z",
+            "phase": "during",
+            "maxConnectionsSetting": 150,
+            "clientConnections": 102,
+            "active": 63,
+            "idle": 14,
+            "idleInTransaction": 25,
+            "idleInTransactionAborted": 0
+          },
+          {
+            "at": "2026-11-06T05:31:22.365Z",
+            "phase": "after",
+            "maxConnectionsSetting": 150,
+            "clientConnections": 102,
+            "active": 3,
+            "idle": 98,
+            "idleInTransaction": 1,
+            "idleInTransactionAborted": 0
+          }
+        ],
+        "idleInTransactionPeak": 75,
+        "idleInTransactionAbortedPeak": 0,
+        "extraObserverQueries": 14
+      },
+      "platformMinuteSamples": [
+        {
+          "minuteStart": "2026-11-06T05:30:00.000Z",
+          "minuteEnd": "2026-11-06T05:31:00.000Z",
+          "loadOverlapWithLabeledMinuteSeconds": 39.924,
+          "cpuPercent": 92.6481366666,
+          "memoryPercent": 11.901515503156,
+          "connections": {
+            "active": 10,
+            "disabled": 0,
+            "fastpath function call": 0,
+            "idle": 26,
+            "idle in transaction": 76,
+            "idle in transaction (aborted)": 0
+          },
+          "transactionCommitsPerSecond": 1585.35
+        },
+        {
+          "minuteStart": "2026-11-06T05:31:00.000Z",
+          "minuteEnd": "2026-11-06T05:32:00.000Z",
+          "loadOverlapWithLabeledMinuteSeconds": 22.187,
+          "cpuPercent": 100,
+          "memoryPercent": 12.208735610842,
+          "connections": {
+            "active": 6,
+            "disabled": 0,
+            "fastpath function call": 0,
+            "idle": 50,
+            "idle in transaction": 51,
+            "idle in transaction (aborted)": 0
+          },
+          "transactionCommitsPerSecond": 2291.516666666667
+        }
+      ]
+    }
+  ],
+  "cloudflareCost": {
+    "window": {
+      "from": "2026-11-06T05:22:22Z",
+      "to": "2026-11-06T05:48:00Z"
+    },
+    "observedAt": "2026-11-06 05:49:07 UTC",
+    "observations": {
+      "durableObjects": {
+        "duration": 12340.806318207999,
+        "exceededCpuErrors": 0,
+        "exceededMemoryErrors": 0,
+        "fatalInternalErrors": 0,
+        "rowsRead": 3541944,
+        "rowsWritten": 529875
+      },
+      "durableObjectInvocations": {
+        "errors": 3288,
+        "requests": 63126
+      },
+      "workers": {
+        "cpuTimeUs": 213917127,
+        "errors": 0,
+        "requests": 8289
+      }
+    },
+    "meters": [
+      {
+        "name": "durationGBSeconds",
+        "amount": 12340.806318207999,
+        "ratePerMillion": 12.5,
+        "linearUsd": 0.1542600789776,
+        "roundedMillionUsd": 12.5
+      },
+      {
+        "name": "sqliteRowsRead",
+        "amount": 3541944,
+        "ratePerMillion": 0.001,
+        "linearUsd": 0.003541944,
+        "roundedMillionUsd": 0.004
+      },
+      {
+        "name": "sqliteRowsWritten",
+        "amount": 529875,
+        "ratePerMillion": 1,
+        "linearUsd": 0.529875,
+        "roundedMillionUsd": 1
+      },
+      {
+        "name": "doRequests",
+        "amount": 63126,
+        "ratePerMillion": 0.15,
+        "linearUsd": 0.0094689,
+        "roundedMillionUsd": 0.15
+      },
+      {
+        "name": "workerRequests",
+        "amount": 8289,
+        "ratePerMillion": 0.3,
+        "linearUsd": 0.0024866999999999997,
+        "roundedMillionUsd": 0.3
+      },
+      {
+        "name": "workerCpuMilliseconds",
+        "amount": 213917.127,
+        "ratePerMillion": 0.02,
+        "linearUsd": 0.0042783425400000005,
+        "roundedMillionUsd": 0.02
+      }
+    ],
+    "linearUsd": 0.7039109655175999,
+    "conservativeRoundedWith2UsdReserve": 15.974,
+    "provisional": false,
+    "scope": "Pilot namespaced Durable Objects and three named Worker scripts, including provisioning, all three load stages, durable cleanup and helper-removal verification. Ancillary helpers, Queue, R2, logs and storage are covered by the reserve rather than itemized.",
+    "budgetLimitUsd": 20,
+    "rounding": "Apply ceil(amount/1,000,000) independently to each measured meter, assume included allocations exhausted, then add $2 ancillary reserve. Conservative scenario, not invoice or provider-guaranteed upper bound."
+  },
+  "limitations": [
+    "PlanetScale CPU/memory/connection series have one-minute resolution and may repeat values while ingestion catches up; overlapping samples are not instantaneous or exclusive per-stage peaks.",
+    "A sample bucket can contain two stages, provisioning or cleanup. Stage overlaps are recorded rather than presented as isolated CPU means.",
+    "PostgreSQL activity samples target five-second intervals and add two observer SQL statements each. Peak client-backend counts include platform/Patroni and the observer, and are not directly comparable to differently timed platform gauges.",
+    "Hyperdrive metrics are sampled regional-pool aggregates; global configured origin limit 100 is separate from observed IAD pool size.",
+    "Recent Cloudflare analytics can lag ingestion. Pool aggregates were unchanged across reads at 05:34:01 and 05:40:42 UTC; final cost sums were collected at 05:49:07 through the 05:48:00 cutoff, after terminal cleanup and helper-removal verification.",
+    "Cloudflare linear meter value is not an invoice. The conservative scenario rounds each measured meter to a million-unit block, assumes included allowances exhausted, and reserves $2 for ancillary helpers, Queues, R2, logging and storage.",
+    "PostgreSQL application_name labels are reused and may be stale, so connection pool ownership is not attributed from those labels.",
+    "Aggregate Durable Object invocation errors include client disconnections and are not a count of failed turns."
+  ],
+  "postgresSampling": {
+    "targetIntervalMs": 5000,
+    "roundTripsPerSample": 2,
+    "scope": "Current database pg_stat_activity client backends including platform sessions and the observer. State counts are instantaneous samples.",
+    "omittedLabels": "application_name values are reused and may be stale; they do not prove connection pool ownership.",
+    "cost": "Two SQL queries per before/during sample. The after sample reuses the normal post-stage status query; stage-specific extra observer counts are copied from the runner."
+  },
+  "queueObservations": [
+    {
+      "observedAt": "2026-11-06T05:35:05Z",
+      "queue": "camelrun-pilot-delivery",
+      "backlogCount": 4,
+      "backlogBytes": 232,
+      "oldestMessageAt": "2026-11-06T05:32:41.199Z"
+    },
+    {
+      "observedAt": "2026-11-06T05:41:11Z",
+      "queue": "camelrun-pilot-delivery",
+      "backlogCount": 4,
+      "backlogBytes": 236,
+      "oldestMessageAt": "2026-11-06T05:39:59.452Z"
+    }
+  ],
+  "analyticsRefreshes": [
+    {
+      "at": "2026-11-06T05:35:33Z",
+      "dataset": "hyperdrivePoolSizesAdaptiveGroups",
+      "status": "rate_limited",
+      "retryAfterSeconds": 300
+    },
+    {
+      "at": "2026-11-06T05:40:42Z",
+      "dataset": "hyperdrivePoolSizesAdaptiveGroups",
+      "status": "success",
+      "unchangedFrom": "2026-11-06T05:34:01Z"
+    }
+  ],
+  "sources": [
+    "https://developers.cloudflare.com/durable-objects/platform/pricing/",
+    "https://developers.cloudflare.com/workers/platform/pricing/",
+    "https://developers.cloudflare.com/hyperdrive/observability/metrics/"
+  ],
+  "recordedAt": "2026-11-06T05:50:52.464Z",
+  "queries": {
+    "hyperdriveStages": "{viewer{accounts(filter:{accountTag:\"85bbd288051330fb51ee1c86031a299b\"}){stage250:hyperdrivePoolSizesAdaptiveGroups(limit:1,filter:{datetime_geq:\"2026-11-06T05:28:48.676Z\",datetime_lt:\"2026-11-06T05:29:18.594Z\",configId:\"3e6d68e844ec480589e766119f52dead\",coloCode:\"IAD\"}){dimensions{coloCode}avg{currentPoolSize availablePoolSlots waitingClients}max{currentPoolSize maxPoolSize waitingClients}}\nstage500:hyperdrivePoolSizesAdaptiveGroups(limit:1,filter:{datetime_geq:\"2026-11-06T05:29:25.870Z\",datetime_lt:\"2026-11-06T05:30:05.699Z\",configId:\"3e6d68e844ec480589e766119f52dead\",coloCode:\"IAD\"}){dimensions{coloCode}avg{currentPoolSize availablePoolSlots waitingClients}max{currentPoolSize maxPoolSize waitingClients}}\nstage1000:hyperdrivePoolSizesAdaptiveGroups(limit:1,filter:{datetime_geq:\"2026-11-06T05:30:20.076Z\",datetime_lt:\"2026-11-06T05:31:22.187Z\",configId:\"3e6d68e844ec480589e766119f52dead\",coloCode:\"IAD\"}){dimensions{coloCode}avg{currentPoolSize availablePoolSlots waitingClients}max{currentPoolSize maxPoolSize waitingClients}}}}}",
+    "durableObjects": "{viewer{accounts(filter:{accountTag:\"85bbd288051330fb51ee1c86031a299b\"}){durableObjectsPeriodicGroups(limit:1,filter:{datetime_geq:\"2026-11-06T05:22:22Z\",datetime_lt:\"2026-11-06T05:48:00Z\",namespaceId_in:[\"b7a05e64caac4a9dbd59df0956a89a5c\",\"a21fed97d122445fb526f8376bcf4b10\",\"a5bcaeba94c14924aa643d7ff6f75724\",\"f9d0c0b529bf453e928ac030e3d5b5d3\"]}){sum{duration rowsWritten rowsRead exceededCpuErrors exceededMemoryErrors fatalInternalErrors}}}}}",
+    "invocations": "{viewer{accounts(filter:{accountTag:\"85bbd288051330fb51ee1c86031a299b\"}){durableObjectsInvocationsAdaptiveGroups(limit:1,filter:{datetime_geq:\"2026-11-06T05:22:22Z\",datetime_lt:\"2026-11-06T05:48:00Z\",namespaceId_in:[\"b7a05e64caac4a9dbd59df0956a89a5c\",\"a21fed97d122445fb526f8376bcf4b10\",\"a5bcaeba94c14924aa643d7ff6f75724\",\"f9d0c0b529bf453e928ac030e3d5b5d3\"]}){sum{requests errors}}workersInvocationsAdaptive(limit:1,filter:{datetime_geq:\"2026-11-06T05:22:22Z\",datetime_lt:\"2026-11-06T05:48:00Z\",scriptName_in:[\"camelrun-pilot\",\"camelrun-pilot-fakemodel\",\"camelrun-pilot-codemode\"]}){sum{cpuTimeUs requests errors}}}}}"
+  },
+  "cleanup": {
+    "startedAt": "2026-11-06T05:31:30.790Z",
+    "mainTerminalAt": "2026-11-06T05:46:12.762Z",
+    "independentTerminalAt": "2026-11-06T05:46:36.756Z",
+    "helperRemovalVerifiedAt": "2026-11-06T05:47:05.932Z",
+    "accountsDeleted": 20,
+    "agentsDeleted": 1000,
+    "settledModelAttempts": 1750,
+    "remainingAccounts": 0,
+    "remainingAgents": 0,
+    "remainingHolds": 0,
+    "pendingModelAttempts": 0,
+    "activeDeletionClaims": 0,
+    "temporaryHelpers": 0
+  }
+}

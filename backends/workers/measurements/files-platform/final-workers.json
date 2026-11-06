@@ -1,0 +1,505 @@
+{
+  "backend": "workers",
+  "area": "files,volumes,images,search,schedules,workspaces,selfhost,cli,journey",
+  "nodeKey": "1ff65be69bdb97687bb551ad863a1ab48c42d7c4726928e25ab5efd896fabdfc",
+  "suiteHash": "fabe683775fe343cc1c227f56f728a869eff7d15d2552fd4ee40db9c2129e413",
+  "revision": "3e2d2e618e8ee4b4eb4d047d905544d486e7e35b",
+  "durationMs": 76632.774894,
+  "runtime": {
+    "node": "v24.22.1",
+    "platform": "linux",
+    "arch": "x64"
+  },
+  "recordedAt": "2026-11-05T22:44:34.977Z",
+  "expectedCases": 51,
+  "rows": [
+    {
+      "area": "cli",
+      "source": "tests/cli.test.ts",
+      "name": "a manifest's delegate settings bring their builtin",
+      "status": "pass",
+      "durationMs": 0.315737,
+      "reason": "",
+      "backend": "sdk-unit"
+    },
+    {
+      "area": "cli",
+      "source": "tests/cli.test.ts",
+      "name": "a run waiting on a person exits 2 and resumes once answered",
+      "status": "pass",
+      "durationMs": 7982.356209,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "cli",
+      "source": "tests/cli.test.ts",
+      "name": "login saves a checked key readable only by its owner",
+      "status": "pass",
+      "durationMs": 8228.66218,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "cli",
+      "source": "tests/cli.test.ts",
+      "name": "run --stateless answers in one call and leaves no agent; runs get reads it back",
+      "status": "pass",
+      "durationMs": 6521.00223,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "cli",
+      "source": "tests/cli.test.ts",
+      "name": "the CLI deploys a manifest, runs its agent, and manages agents and definitions",
+      "status": "pass",
+      "durationMs": 23639.80169,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "cli",
+      "source": "tests/cli.test.ts",
+      "name": "the CLI reads the runtime's URL from CAMELAI_BASE_URL, as the SDKs do, or CAMELAI_URL",
+      "status": "pass",
+      "durationMs": 0.922995,
+      "reason": "",
+      "backend": "sdk-unit"
+    },
+    {
+      "area": "cli",
+      "source": "tests/cli.test.ts",
+      "name": "the MCP server deploys and runs agents for a coding agent",
+      "status": "pass",
+      "durationMs": 9809.72535,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "files",
+      "source": "tests/agent-links.test.ts:5",
+      "name": "a tenant signs links to its agent's files with its own token, as for its volumes",
+      "status": "pass",
+      "durationMs": 14671.761204,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "files",
+      "source": "tests/file-arguments.test.ts",
+      "name": "fileArguments: other parties' servers are not offered or sent files unless a definition turns it on",
+      "status": "pass",
+      "durationMs": 10767.09647,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "files",
+      "source": "tests/file-arguments.test.ts",
+      "name": "files reach a tool as URLs bound to the call: a file at its version, a directory as a snapshot, small ones inline",
+      "status": "pass",
+      "durationMs": 11758.48532,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "files",
+      "source": "tests/files.test.ts:261",
+      "name": "the TypeScript SDK attaches bytes, Blobs, local paths and workspace files; a file deleted or replaced after attaching still reads as attached",
+      "status": "pass",
+      "durationMs": 9351.77574,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "files",
+      "source": "tests/files.test.ts:76",
+      "name": "the REST API stores the upload's type and serves downloads with safe headers",
+      "status": "pass",
+      "durationMs": 6128.96915,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "files",
+      "source": "tests/files.test.ts:98",
+      "name": "signed links: bound to tenant, volume, path, method, expiry, size and content type; tampering fails",
+      "status": "pass",
+      "durationMs": 6952.41693,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "files",
+      "source": "tests/files.test.ts",
+      "name": "a run's outcome lists the files it wrote and presented, and a presented file is an event with a download link",
+      "status": "pass",
+      "durationMs": 7518.084065,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "files",
+      "source": "tests/files.test.ts",
+      "name": "an upload streams to storage a chunk at a time: the source is never more than a few chunks ahead of storage",
+      "status": "pass",
+      "durationMs": 9151.630127,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "files",
+      "source": "tests/files.test.ts",
+      "name": "attachments over REST land in the workspace, the transcript keeps references, and the model sees them natively",
+      "status": "pass",
+      "durationMs": 8177.616395,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "files",
+      "source": "tests/tool-files.test.ts",
+      "name": "application-attached MCP files are saved to the workspace like a server's",
+      "status": "pass",
+      "durationMs": 6623.51249,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "files",
+      "source": "tests/tool-files.test.ts",
+      "name": "MCP images, audio, blobs and long text are saved to the workspace, under sanitized names",
+      "status": "pass",
+      "durationMs": 7501.84749,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "files",
+      "source": "tests/tool-files.test.ts",
+      "name": "MCP tools take files by {$file}: base64 or a call-bound URL, only from the agent's mounts",
+      "status": "pass",
+      "durationMs": 8719.37295,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "files",
+      "source": "tests/tool-files.test.ts",
+      "name": "OpenAPI operations upload files (multipart, raw bytes, base64) and save binary responses",
+      "status": "pass",
+      "durationMs": 7738.27565,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "files",
+      "source": "tests/tool-files.test.ts",
+      "name": "web_fetch saves PDFs and images to the workspace and shows them to the model",
+      "status": "pass",
+      "durationMs": 6783.69149,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "images",
+      "source": "tests/image-generation-api.test.ts",
+      "name": "POST /v1/images makes images on the platform's OpenAI key for a prepaid tenant, edits images given as base64, multipart or a URL, and is billed per token",
+      "status": "pass",
+      "durationMs": 14266.761974,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "images",
+      "source": "tests/image-generation-api.test.ts",
+      "name": "POST /v1/images needs an OpenAI key, and a monthly cap refuses it",
+      "status": "pass",
+      "durationMs": 5532.563042,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "images",
+      "source": "tests/image-generation-api.test.ts",
+      "name": "POST /v1/images with volumeId saves the images to the volume and answers their paths",
+      "status": "pass",
+      "durationMs": 6995.699577,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "images",
+      "source": "tests/image-generation-sdk.test.ts:7",
+      "name": "the TypeScript SDK: images.generate and images.edit from bytes, a Blob or a URL, answered as base64 or saved to a volume",
+      "status": "pass",
+      "durationMs": 6479.161959,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "images",
+      "source": "tests/images.test.ts:187",
+      "name": "an image whose scaling failed for now (its parse job crashed) is tried again on the next request, not held as omitted",
+      "status": "pass",
+      "durationMs": 8227.467349,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "images",
+      "source": "tests/images.test.ts",
+      "name": "a thread with over 20 images, one of them 2,400 px, gets a request where every image is at most 1,568 px; the stored history is unchanged",
+      "status": "pass",
+      "durationMs": 10936.5472,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "journey",
+      "source": "tests/journey-server.test.ts:120",
+      "name": "an account's export holds its journey: what this runtime kept and what the store holds; an account journey never knew has none",
+      "status": "fail",
+      "durationMs": 5122.828374,
+      "reason": "Expected values to be strictly equal: 404 !== 200",
+      "error": {
+        "message": "Expected values to be strictly equal:\n\n404 !== 200\n",
+        "stack": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\n404 !== 200\n\n    at file:///home/sprite/rt/tests/contract/areas/journey.public.contract.test.ts:125:10\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/ported.ts:13:13\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)",
+        "expected": 200,
+        "actual": 404,
+        "operator": "strictEqual"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "journey",
+      "source": "tests/journey-server.test.ts:148",
+      "name": "an email sign-up is an account made when its mailed link is finished, in the browser that finishes it",
+      "status": "pass",
+      "durationMs": 5224.626254,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "journey",
+      "source": "tests/journey-server.test.ts:46",
+      "name": "a runtime with journey events off serves the console as ever: no tag, no cookie, no endpoint",
+      "status": "pass",
+      "durationMs": 8072.816579,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "journey",
+      "source": "tests/journey-server.test.ts:57",
+      "name": "with journey events on, an arrival is noted through the redirect, the browser gets its visitor id, and the console's pages reach the store",
+      "status": "pass",
+      "durationMs": 8054.008,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "journey",
+      "source": "tests/journey-server.test.ts:88",
+      "name": "with journey events on, making an agent and running it tells the store of the agent, the day's activity and the account's first run",
+      "status": "pass",
+      "durationMs": 8521.977245,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "schedules",
+      "source": "tests/schedule-api.test.ts:21",
+      "name": "public accounts can email their verified address and cannot email strangers or suppressed recipients",
+      "status": "pass",
+      "durationMs": 6055.445334,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "schedules",
+      "source": "tests/schedule-api.test.ts:37",
+      "name": "a calendar wake-up tells the model its fixed local edition date",
+      "status": "pass",
+      "durationMs": 5854.498706,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "schedules",
+      "source": "tests/schedule-api.test.ts:7",
+      "name": "calendar schedules and owner-configured email round trip through the API without crossing accounts",
+      "status": "pass",
+      "durationMs": 7129.653528,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "search",
+      "source": "tests/web-render.test.ts",
+      "name": "web_fetch has Firecrawl render JavaScript shells, and only those, charging a platform render",
+      "status": "pass",
+      "durationMs": 8581.158158,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "search",
+      "source": "tests/web-search.test.ts",
+      "name": "a definition pins web_search's providers; a platform search is charged at the answering provider's price and counted in the hour's ledger entry",
+      "status": "pass",
+      "durationMs": 7304.893168,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "search",
+      "source": "tests/web-search.test.ts",
+      "name": "a search key the operator set for a tenant (its apiKeys) is used, and is not counted as the platform's",
+      "status": "pass",
+      "durationMs": 6109.738871,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "search",
+      "source": "tests/web-search.test.ts",
+      "name": "an operator's tenant without a key of its own searches on the platform's, recorded as platform usage and never charged; its own key wins; platformKeys: false keeps the refusal",
+      "status": "pass",
+      "durationMs": 9947.475798,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "search",
+      "source": "tests/web-search.test.ts",
+      "name": "codemode's searches on the platform's key stop once the tenant's credit is spent, without waiting for the next model request",
+      "status": "pass",
+      "durationMs": 6736.500513,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "search",
+      "source": "tests/web-search.test.ts",
+      "name": "web_search uses the tenant's own search key, else the platform's billed to credit, and pairs with web_fetch",
+      "status": "pass",
+      "durationMs": 11617.875987,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "search",
+      "source": "tests/x-search.test.ts",
+      "name": "X search works in agents and stateless runs, uses tenant keys first and bills only platform requests",
+      "status": "pass",
+      "durationMs": 11717.12366,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "selfhost",
+      "source": "tests/selfhost.test.ts:39",
+      "name": "a runtime bootstrapped from AGENT_TENANT and AGENT_OPERATOR_TOKEN serves that tenant",
+      "status": "pass",
+      "durationMs": 11562.303169,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "selfhost",
+      "source": "tests/selfhost.test.ts:48",
+      "name": "on a runtime configured by AGENT_TENANT, a run without a model key also names AGENT_TENANT_API_KEYS",
+      "status": "pass",
+      "durationMs": 6051.125359,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "selfhost",
+      "source": "tests/selfhost.test.ts:57",
+      "name": "a private runtime names no URL to browsers: AGENT_BROWSER_URL overrides the browser token's url, or empty leaves it out, and links carry their path on the runtime",
+      "status": "pass",
+      "durationMs": 10034.785629,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "volumes",
+      "source": "tests/projects.test.ts",
+      "name": "a project is a keyed volume seeded once, mounted with the workspace beside it, and published as checked snapshots",
+      "status": "pass",
+      "durationMs": 11121.304239,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "volumes",
+      "source": "tests/projects.test.ts",
+      "name": "a project is restored in place to a published version, and a check hands what it computed to store and the result",
+      "status": "pass",
+      "durationMs": 12198.488635,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "volumes",
+      "source": "tests/projects.test.ts",
+      "name": "pinned versions outlast keep and the snapshot cap, carry labels, and a snapshot can be made from contents",
+      "status": "pass",
+      "durationMs": 29190.775893,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "volumes",
+      "source": "tests/projects.test.ts",
+      "name": "publishTool finds the project from the call's identity, never its arguments, and tells the model what to fix",
+      "status": "pass",
+      "durationMs": 10047.272243,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "volumes",
+      "source": "tests/volumes.test.ts:538",
+      "name": "the REST API and SDK manage volumes within a tenant, and nothing crosses tenants",
+      "status": "pass",
+      "durationMs": 21764.29372,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "workspaces",
+      "source": "tests/workspaces.test.ts:48",
+      "name": "workspaces API validates ownership, inherits definitions, and accounts agent and stateless model calls",
+      "status": "pass",
+      "durationMs": 15209.804856,
+      "reason": "",
+      "backend": "workers"
+    }
+  ],
+  "shards": [
+    {
+      "index": 1,
+      "total": 4,
+      "durationMs": 76632.774894
+    },
+    {
+      "index": 2,
+      "total": 4,
+      "durationMs": 61742.2543
+    },
+    {
+      "index": 3,
+      "total": 4,
+      "durationMs": 67951.79944
+    },
+    {
+      "index": 4,
+      "total": 4,
+      "durationMs": 67288.94291099999
+    }
+  ]
+}

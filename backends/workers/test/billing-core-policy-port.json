@@ -1,0 +1,145 @@
+[
+  {
+    "file": "tests/billing.test.ts",
+    "test": "pricing: defaults, environment overrides in USD, and the purchase fee in whole cents",
+    "included": true
+  },
+  {
+    "file": "tests/billing.test.ts",
+    "test": "card-credit pricing follows the starting grant unless explicitly configured",
+    "included": true
+  },
+  {
+    "file": "tests/billing.test.ts",
+    "test": "usage tiers: the defaults, AGENT_USAGE_TIERS, its validation, and which tier an amount paid is in",
+    "included": true
+  },
+  {
+    "file": "tests/billing.test.ts",
+    "test": "provider-reported cost wins over the catalog, including zero; invalid amounts cannot poison billing",
+    "included": true
+  },
+  {
+    "file": "tests/billing.test.ts",
+    "test": "platform model usage passes through actual cost and funding, including compaction, without charging customer-owned keys",
+    "included": true
+  },
+  {
+    "file": "tests/billing.test.ts",
+    "test": "a waived funding fee charges exactly the reported usage amount",
+    "included": true
+  },
+  {
+    "file": "tests/billing.test.ts",
+    "test": "the ledger posts each idempotency key once and keeps the balance equal to its entries",
+    "included": true
+  },
+  {
+    "file": "tests/billing.test.ts",
+    "test": "two nodes debiting one tenant at once lose no debit, and each flush posts once",
+    "included": true
+  },
+  {
+    "file": "tests/billing.test.ts",
+    "test": "usage accrues into one entry per tenant per UTC hour, updated in place until the hour ends, and the ledger still sums to the balance",
+    "included": true
+  },
+  {
+    "file": "tests/billing.test.ts",
+    "test": "the ledger sums to every balance under concurrent flushes, grants, purchases and refunds on several nodes",
+    "included": true
+  },
+  {
+    "file": "tests/billing.test.ts",
+    "test": "a flush whose commit acknowledgement is lost is retried without counting twice",
+    "included": true
+  },
+  {
+    "file": "tests/billing.test.ts",
+    "test": "credit: prepaid tenants are refused at zero, others never; the balance counts this node's unwritten debits",
+    "included": true
+  },
+  {
+    "file": "tests/billing.test.ts",
+    "test": "a self-serve tenant gets its starting credit once; tenants from before billing stay unbilled",
+    "included": false,
+    "reason": "Uses a staged legacy-migration fixture; the Workers test database applies all migrations."
+  },
+  {
+    "file": "tests/billing.test.ts",
+    "test": "storage is charged once a UTC day, pro rata, to prepaid tenants by what their agents and volumes store, as tracked",
+    "included": false,
+    "reason": "Uses source storage and Postgres log-tail fixtures; the Workers R2 storage-meter integration is not ported."
+  },
+  {
+    "file": "tests/billing.test.ts",
+    "test": "tracked storage: concurrent nodes add up, dedup holds across nodes, purged agents are not charged, and reconciliation replaces drift",
+    "included": false,
+    "reason": "Uses source storage and Postgres log-tail fixtures; the Workers R2 storage-meter integration is not ported."
+  },
+  {
+    "file": "tests/billing.test.ts",
+    "test": "a prepaid tenant pays the catalog fallback plus funding when actual cost is absent; spent credit stops runs",
+    "included": false,
+    "reason": "Uses the ECS HTTP/runtime fixture; not ported as an unchanged Workers test."
+  },
+  {
+    "file": "tests/billing.test.ts",
+    "test": "streamed OpenRouter actual cost reaches the credit ledger instead of the catalog estimate",
+    "included": false,
+    "reason": "Uses the ECS HTTP/runtime fixture; not ported as an unchanged Workers test."
+  },
+  {
+    "file": "tests/billing.test.ts",
+    "test": "responses on the tenant's own key cost no credit for tokens, but time in turns is charged",
+    "included": false,
+    "reason": "Uses the ECS HTTP/runtime fixture; not ported as an unchanged Workers test."
+  },
+  {
+    "file": "tests/billing.test.ts",
+    "test": "Stripe webhooks are verified by signature: a bad or stale signature is refused, and a well-signed replay is harmless",
+    "included": true
+  },
+  {
+    "file": "tests/billing.test.ts",
+    "test": "credit is bought through Stripe Checkout with the fee on top, added once the webhook reports payment, and refunds take it back",
+    "included": false,
+    "reason": "Uses the ECS HTTP/runtime fixture; not ported as an unchanged Workers test."
+  },
+  {
+    "file": "tests/billing.test.ts",
+    "test": "without Stripe, checkout answers 503 and the webhook 404",
+    "included": false,
+    "reason": "Uses the ECS HTTP/runtime fixture; not ported as an unchanged Workers test."
+  },
+  {
+    "file": "tests/billing.test.ts",
+    "test": "open sign-up admits any GitHub account; starting credit is once per account id and uses the configured signup policy; a renamed login keeps its tenant",
+    "included": false,
+    "reason": "Uses the ECS HTTP/runtime fixture; not ported as an unchanged Workers test."
+  },
+  {
+    "file": "tests/billing.test.ts",
+    "test": "signup retries an incomplete profile before creating an account, and does not block an existing login",
+    "included": false,
+    "reason": "Uses the ECS HTTP/runtime fixture; not ported as an unchanged Workers test."
+  },
+  {
+    "file": "tests/billing.test.ts",
+    "test": "only a billing-admin operator can issue the one-time support grant",
+    "included": false,
+    "reason": "Uses the ECS HTTP/runtime fixture; not ported as an unchanged Workers test."
+  },
+  {
+    "file": "tests/billing.test.ts",
+    "test": "free credit brings fewer busy agents (its usage tier) and an hourly spend limit, both lifted by the first purchase",
+    "included": false,
+    "reason": "Uses the ECS HTTP/runtime fixture; not ported as an unchanged Workers test."
+  },
+  {
+    "file": "tests/billing.test.ts",
+    "test": "disabled card credit is absent from billing and its start endpoint refuses while GitHub grants remain",
+    "included": false,
+    "reason": "Uses the ECS HTTP/runtime fixture; not ported as an unchanged Workers test."
+  }
+]

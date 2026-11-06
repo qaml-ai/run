@@ -1,0 +1,150 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "camelrun-pilot",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-05",
+  "compatibility_flags": [
+    "nodejs_compat",
+    "enable_request_signal"
+  ],
+  "workers_dev": false,
+  "preview_urls": false,
+  "build": {
+    "command": "node scripts/public-assets.mjs"
+  },
+  "assets": {
+    "directory": ".assets",
+    "binding": "PUBLIC_ASSETS",
+    "run_worker_first": true,
+    "html_handling": "none",
+    "not_found_handling": "none"
+  },
+  "observability": {
+    "enabled": true,
+    // Browser WebSockets carry a bearer subprotocol. Keep structured runtime
+    // logs, but never persist automatic request headers or traces.
+    "logs": {
+      "enabled": true,
+      "invocation_logs": false
+    },
+    "traces": {
+      "enabled": false
+    },
+    "redact_query_string": true
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "AGENTS",
+        "class_name": "CamelAgent"
+      },
+      {
+        "name": "TENANTS",
+        "class_name": "TenantAdmission"
+      },
+      {
+        "name": "VOLUMES",
+        "class_name": "Volume"
+      },
+      {
+        "name": "CODEMODE_SANDBOX",
+        "class_name": "CodemodeSandbox",
+        "script_name": "camelrun-pilot-codemode"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "CamelAgent",
+        "TenantAdmission",
+        "Volume"
+      ]
+    }
+  ],
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "3e6d68e844ec480589e766119f52dead"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "BUCKET",
+      "bucket_name": "camelrun-pilot-files"
+    }
+  ],
+  "images": {
+    "binding": "IMAGES"
+  },
+  "queues": {
+    "producers": [
+      {
+        "binding": "WEBHOOKS",
+        "queue": "camelrun-pilot-delivery"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "camelrun-pilot-delivery",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 3
+      }
+    ]
+  },
+  "analytics_engine_datasets": [
+    {
+      "binding": "METRICS",
+      "dataset": "camelrun_pilot"
+    }
+  ],
+  "triggers": {
+    "crons": [
+      "*/5 * * * *"
+    ]
+  },
+  "vars": {
+    "PILOT_DB_PROFILE": "1",
+    "MODEL": "openrouter/openai/gpt-4.1-nano",
+    "AGENT_PUBLIC_URL": "https://run-pilot.camelai.dev",
+    "PUBLIC_URL": "https://run-pilot.camelai.dev",
+    "EMAIL_FROM": "camelrun@staging.camelai.dev",
+    "AGENT_ACCOUNT_EMAIL_FROM": "camelrun@staging.camelai.dev",
+    "SCHEDULE_EMAIL_FROM": "camelrun@staging.camelai.dev",
+    "ADMIN_TENANTS": "pilot-admin",
+    "AGENT_OPEN_SIGNUP": "false",
+    "AGENT_MAX_AGENTS": "2100",
+    "AGENT_MAX_AGENTS_PER_TENANT": "2100",
+    "TENANT_MAX_ACTIVE": "2100"
+  },
+  "account_id": "85bbd288051330fb51ee1c86031a299b",
+  "routes": [
+    {
+      "pattern": "run-pilot.camelai.dev",
+      "custom_domain": true
+    }
+  ],
+  "placement": {
+    "mode": "smart"
+  },
+  "secrets_store_secrets": [
+    {
+      "binding": "PILOT_OPENROUTER_KEY",
+      "store_id": "c8c66b0210e64900864182073dcd5e09",
+      "secret_name": "CAMELRUN_PILOT_OPENROUTER_KEY"
+    }
+  ],
+  "send_email": [
+    {
+      "name": "EMAIL",
+      "allowed_sender_addresses": [
+        "camelrun@staging.camelai.dev"
+      ]
+    }
+  ],
+  "limits": {
+    "cpu_ms": 30000
+  }
+}

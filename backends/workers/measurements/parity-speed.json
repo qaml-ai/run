@@ -1,0 +1,138 @@
+{
+  "recordedAt": "2026-11-05T22:31:21.355Z",
+  "beforeRevision": "a2d1d6c7",
+  "afterRevision": "38f8e794",
+  "nodeKey": "37fe8ceacf3bc0cd00210c288964a3d85119933e53516aa4392d3f40854b56dc",
+  "suiteHash": "fcaaa20fa067d1546be5e90171d1dc5d8722982cc1b5261f8bced851bbc5c7fe",
+  "environment": {
+    "sprites": 6,
+    "cpusPerSprite": 8,
+    "memoryGiBPerSprite": 8,
+    "node": "v24.22.1",
+    "fileConcurrency": {
+      "node": 6,
+      "workers": 2
+    },
+    "pythonConcurrency": {
+      "node": 4,
+      "workers": 2
+    }
+  },
+  "before": {
+    "fullComparisonMs": 2602000,
+    "remoteJobMs": 2616000,
+    "nodeFileConcurrency": 4,
+    "workersFileConcurrency": 4,
+    "pythonConcurrency": 1,
+    "note": "Untouched checkout. The local driver reread its concurrently edited script after the remote job finished and reported a shell parse error; both complete reports and the 2602-second marker were already saved."
+  },
+  "after": {
+    "shards": 6,
+    "elapsedMs": 874970,
+    "status": 1,
+    "phases": [
+      {
+        "backend": "node",
+        "elapsedMs": 313231,
+        "status": 0,
+        "mergeStatus": 0
+      },
+      {
+        "backend": "workers",
+        "elapsedMs": 561738,
+        "status": 1,
+        "mergeStatus": 1
+      }
+    ],
+    "args": []
+  },
+  "delegation": {
+    "shards": 6,
+    "elapsedMs": 109386,
+    "status": 1,
+    "phases": [
+      {
+        "backend": "workers",
+        "elapsedMs": 109384,
+        "status": 1,
+        "mergeStatus": 1
+      }
+    ],
+    "args": [
+      "--backend=workers",
+      "--group=delegation"
+    ]
+  },
+  "comparison": {
+    "node": {
+      "before": {
+        "rows": 970,
+        "counts": {
+          "pass": 590,
+          "out-of-scope": 380
+        },
+        "statusSha256": "7e4c3890842b8facb9b34e4239a69acd13691857fbc6cd92fc8f57d601c5d4c5"
+      },
+      "after": {
+        "rows": 970,
+        "counts": {
+          "pass": 590,
+          "out-of-scope": 380
+        },
+        "statusSha256": "7e4c3890842b8facb9b34e4239a69acd13691857fbc6cd92fc8f57d601c5d4c5"
+      },
+      "changedCases": [],
+      "backendClassificationChanges": 0
+    },
+    "workers": {
+      "before": {
+        "rows": 970,
+        "counts": {
+          "fail": 469,
+          "pass": 121,
+          "out-of-scope": 380
+        },
+        "statusSha256": "292f3b455bb578fd855fccc7c42fe4125a58610ed5a0d4a2fd984744848f4838"
+      },
+      "after": {
+        "rows": 970,
+        "counts": {
+          "fail": 469,
+          "pass": 121,
+          "out-of-scope": 380
+        },
+        "statusSha256": "292f3b455bb578fd855fccc7c42fe4125a58610ed5a0d4a2fd984744848f4838"
+      },
+      "changedCases": [],
+      "backendClassificationChanges": 4
+    }
+  },
+  "assertionAudit": {
+    "portedCases": 311,
+    "portedAssertions": 2516,
+    "productDeclarations": 49,
+    "productAssertions": 620
+  },
+  "notes": [
+    "The final Node phase includes one Sprite restart and the pool runner retrying that shard.",
+    "All case status hashes include the 380 out-of-scope rows. No extra harness failures were present.",
+    "Workers and delegation exit 1 because the unchanged expected implementation gaps still fail assertions."
+  ],
+  "postBenchmarkIntegration": {
+    "baseRevision": "8db58007e6f6bf3759f1dd188eee14cad40b6296",
+    "nodeKeyUnchanged": true,
+    "harnessAndCancellationTests": 21,
+    "pythonRunnerTests": 6,
+    "typecheckPassed": true,
+    "workersSmoke": {
+      "group": "delegation",
+      "cases": 39,
+      "counts": {
+        "pass": 26,
+        "fail": 13
+      },
+      "harnessFailures": 0,
+      "cachedNode": true
+    }
+  }
+}

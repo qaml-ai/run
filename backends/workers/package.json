@@ -1,0 +1,48 @@
+{
+  "name": "@camelai/run-workers-experiment",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "WRANGLER_LOG_PATH=.wrangler/logs wrangler dev --local -c wrangler.jsonc -c codemode/wrangler.jsonc",
+    "typecheck": "tsc --noEmit",
+    "types": "WRANGLER_LOG_PATH=.wrangler/logs wrangler types --include-runtime=false",
+    "build": "WRANGLER_LOG_PATH=.wrangler/logs wrangler deploy --dry-run --outdir dist && WRANGLER_LOG_PATH=.wrangler/logs wrangler deploy --dry-run -c codemode/wrangler.jsonc --outdir dist-codemode",
+    "test": "node scripts/run-tests.mjs unit",
+    "test:integration": "node scripts/run-tests.mjs integration",
+    "test:compat": "node scripts/compatibility.mjs",
+    "measure": "node scripts/measure.mjs",
+    "test:python": "python3 scripts/python-compat.py",
+    "parity": "node ../../tests/contract/run.mjs"
+  },
+  "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "3.1127.0",
+    "@cloudflare/computer": "0.9.0",
+    "@cloudflare/sandbox": "1.0.3",
+    "@earendil-works/chord": "1.5.0",
+    "@earendil-works/pi-ai": "1.5.0",
+    "@earendil-works/pi-codemode": "1.5.0",
+    "@earendil-works/pi-durable": "1.5.0",
+    "@earendil-works/pi-schema": "1.5.0",
+    "agents": "0.33.0",
+    "aws4fetch": "1.0.20",
+    "e2b": "2.59.0",
+    "hono": "^4.13.16",
+    "jose": "^6.2.15",
+    "pg": "8.16.3",
+    "zod": "4.6.7",
+    "yaml": "2.9.1",
+    "@modelcontextprotocol/sdk": "1.32.2"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "latest",
+    "@types/node": "^22",
+    "@types/pg": "8.15.6",
+    "ai": "7.0.118",
+    "just-bash": "3.0.1",
+    "typebox": "1.1.38",
+    "typescript": "^5.9.3",
+    "wrangler": "4.157.0",
+    "ws": "8.21.0"
+  }
+}

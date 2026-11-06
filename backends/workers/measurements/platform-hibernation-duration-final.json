@@ -1,0 +1,99 @@
+{
+  "queriedAt": "2026-11-05T18:42:04.219Z",
+  "query": "{ viewer { accounts(filter:{accountTag:\"85bbd288051330fb51ee1c86031a299b\"}) { durableObjectsPeriodicGroups(limit:1000,filter:{datetime_geq:\"2026-11-05T18:37:00Z\",datetime_leq:\"2026-11-05T18:42:00Z\",namespaceId:\"e0654af451934176b782e1ed7c0831a7\"},orderBy:[datetimeMinute_ASC]) { dimensions {datetimeMinute objectId namespaceId} sum {duration activeTime cpuTime inboundWebsocketMsgCount outboundWebsocketMsgCount}} } } }",
+  "data": {
+    "viewer": {
+      "accounts": [
+        {
+          "durableObjectsPeriodicGroups": [
+            {
+              "dimensions": {
+                "datetimeMinute": "2026-11-05T18:37:00Z",
+                "namespaceId": "e0654af451934176b782e1ed7c0831a7",
+                "objectId": "bfac2e1f73d018b2cc3821e50849621415676218c5533d1278d12b896ee18305"
+              },
+              "sum": {
+                "activeTime": 59660358,
+                "cpuTime": 87142,
+                "duration": 7.636525824,
+                "inboundWebsocketMsgCount": 0,
+                "outboundWebsocketMsgCount": 0
+              }
+            },
+            {
+              "dimensions": {
+                "datetimeMinute": "2026-11-05T18:37:00Z",
+                "namespaceId": "e0654af451934176b782e1ed7c0831a7",
+                "objectId": "aeddd390650f56e6463e8056c3b4c2151969be9032516abd3c32a57405e956be"
+              },
+              "sum": {
+                "activeTime": 133971,
+                "cpuTime": 76603,
+                "duration": 0.017148288,
+                "inboundWebsocketMsgCount": 0,
+                "outboundWebsocketMsgCount": 2
+              }
+            },
+            {
+              "dimensions": {
+                "datetimeMinute": "2026-11-05T18:38:00Z",
+                "namespaceId": "e0654af451934176b782e1ed7c0831a7",
+                "objectId": "bfac2e1f73d018b2cc3821e50849621415676218c5533d1278d12b896ee18305"
+              },
+              "sum": {
+                "activeTime": 60000213,
+                "cpuTime": 1304,
+                "duration": 7.680027264,
+                "inboundWebsocketMsgCount": 0,
+                "outboundWebsocketMsgCount": 0
+              }
+            },
+            {
+              "dimensions": {
+                "datetimeMinute": "2026-11-05T18:39:00Z",
+                "namespaceId": "e0654af451934176b782e1ed7c0831a7",
+                "objectId": "bfac2e1f73d018b2cc3821e50849621415676218c5533d1278d12b896ee18305"
+              },
+              "sum": {
+                "activeTime": 60000093,
+                "cpuTime": 1480,
+                "duration": 7.680011904,
+                "inboundWebsocketMsgCount": 0,
+                "outboundWebsocketMsgCount": 0
+              }
+            },
+            {
+              "dimensions": {
+                "datetimeMinute": "2026-11-05T18:40:00Z",
+                "namespaceId": "e0654af451934176b782e1ed7c0831a7",
+                "objectId": "bfac2e1f73d018b2cc3821e50849621415676218c5533d1278d12b896ee18305"
+              },
+              "sum": {
+                "activeTime": 842521,
+                "cpuTime": 2351,
+                "duration": 0.107842688,
+                "inboundWebsocketMsgCount": 0,
+                "outboundWebsocketMsgCount": 0
+              }
+            },
+            {
+              "dimensions": {
+                "datetimeMinute": "2026-11-05T18:40:00Z",
+                "namespaceId": "e0654af451934176b782e1ed7c0831a7",
+                "objectId": "aeddd390650f56e6463e8056c3b4c2151969be9032516abd3c32a57405e956be"
+              },
+              "sum": {
+                "activeTime": 13171,
+                "cpuTime": 3041,
+                "duration": 0.001685888,
+                "inboundWebsocketMsgCount": 0,
+                "outboundWebsocketMsgCount": 1
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "errors": null
+}

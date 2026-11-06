@@ -40,6 +40,8 @@ export interface AccountDeletionOptions {
   /** Write storage-usage deltas, so none for the tenant's deleted objects is written after its rows go. */
   flushStorageUsage?(): Promise<void>;
   removeComputers?(tenant: string): Promise<void>;
+  /** Restrict maintenance claims when a bounded operator manages one tenant. */
+  onlyTenant?: string;
 }
 
 /** Tables whose rows go with the tenant, by their `tenant` column (payment, ledger and anti-abuse records are not here). */
@@ -115,12 +117,13 @@ export class AccountDeletions {
   stop() { clearInterval(this.timer); this.timer = undefined; }
 
   /** Claim one deletion that is due, with a lease, and take it as far as it goes; false when none was due. */
-  async next(): Promise<boolean> {
+  async next(tenantOnly = this.options.onlyTenant): Promise<boolean> {
     const { rows } = await this.db.query(`
       update account_deletions set claimed_until = now() + interval '5 minutes', attempts = attempts + 1
       where tenant = (select tenant from account_deletions where completed_at is null and (claimed_until is null or claimed_until < now())
+        and ($1::text is null or tenant = $1)
         order by requested_at limit 1 for update skip locked)
-      returning tenant`);
+      returning tenant`, [tenantOnly ?? null]);
     const tenant = rows[0]?.tenant as string | undefined;
     if (!tenant) return false;
     let retryMs = 60_000;

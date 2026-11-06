@@ -1,0 +1,23 @@
+{
+  "date": "2026-11-05",
+  "account": "camelAI",
+  "workers": ["camelrun-proto-agents-codemode-1105", "camelrun-proto-agents-probe-1105"],
+  "sandboxVersion": "36df0626-6918-4d64-9b3d-f7afb660e12a",
+  "probeVersion": "dfd34e2b-b6f5-498d-8974-1d992ac463e3",
+  "result": {
+    "passed": true,
+    "elapsedMs": 888,
+    "arithmetic": 6,
+    "memory": {"kind": "script", "name": "InternalError", "message": "out of memory"},
+    "concurrency": [{"value": 1}, {"value": 1}, {"kind": "sandbox", "message": "Remote sandbox failed: Agent sandbox concurrency limit (3) reached"}, {"value": 1}],
+    "cancellation": {"kind": "aborted", "message": "The operation was aborted"}
+  },
+  "calls": {"http": 1, "remoteSandbox": 7},
+  "spend": {"estimatedMarginalUsdLessThan": 0.01, "observedInvoiceUsd": null, "notes": "No model providers or persistent data resources. Billing has not settled; estimate excludes an existing account subscription."},
+  "cleanup": {
+    "probeWorker": "deleted",
+    "sandboxNamespace": "deleted via explicit Durable Object tombstone",
+    "sandboxWorker": "deleted",
+    "verifiedRemainingWorkerNames": []
+  }
+}

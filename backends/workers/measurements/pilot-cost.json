@@ -1,0 +1,150 @@
+{
+  "window": {
+    "from": "2026-11-06T01:35:00Z",
+    "to": "2026-11-06T03:04:00Z"
+  },
+  "recordedAt": "2026-11-06T03:11:37Z",
+  "scope": "Pilot namespaces and the three named pilot Workers. Meter-rate estimate before included allowances, invoice rounding and shared-account allocation; not an invoice.",
+  "sources": [
+    "https://developers.cloudflare.com/durable-objects/platform/pricing/",
+    "https://developers.cloudflare.com/workers/platform/pricing/"
+  ],
+  "observations": {
+    "durableObjects": {
+      "activeTime": 76649408449,
+      "cpuTime": 888344377,
+      "duration": 9811.124281471999,
+      "exceededCpuErrors": 0,
+      "exceededMemoryErrors": 0,
+      "fatalInternalErrors": 0,
+      "rowsRead": 2687317,
+      "rowsWritten": 640818
+    },
+    "durableObjectRequestNamespaces": [
+      {
+        "namespace": "agents",
+        "errors": 499,
+        "requests": 22647
+      },
+      {
+        "namespace": "tenants",
+        "errors": 0,
+        "requests": 12274
+      },
+      {
+        "namespace": "sandbox",
+        "errors": 0,
+        "requests": 2
+      }
+    ],
+    "workers": {
+      "cpuTimeUs": 296965040,
+      "errors": 0,
+      "requests": 8087
+    },
+    "observability": {
+      "from": "2026-11-06T01:35:00Z",
+      "to": "2026-11-06T03:04:00Z",
+      "rows": [
+        {
+          "bin": "2026-11-06 00:00:00",
+          "dataset": "cloudflare-workers",
+          "service": "camelrun-pilot",
+          "count": 9654,
+          "eventSize": 12108962
+        },
+        {
+          "bin": "2026-11-06 00:00:00",
+          "dataset": "cloudflare-workers",
+          "service": "camelrun-pilot-fakemodel",
+          "count": 718,
+          "eventSize": 3403947
+        },
+        {
+          "bin": "2026-11-06 00:00:00",
+          "dataset": "otel",
+          "service": "camelrun-pilot-codemode",
+          "count": 14,
+          "eventSize": 16670
+        },
+        {
+          "bin": "2026-11-06 00:00:00",
+          "dataset": "cloudflare-workers",
+          "service": "camelrun-pilot-codemode",
+          "count": 2,
+          "eventSize": 1932
+        },
+        {
+          "bin": "2026-11-06 00:00:00",
+          "dataset": "otel",
+          "service": "camelrun-pilot",
+          "count": 21680,
+          "eventSize": 27640805
+        },
+        {
+          "bin": "2026-11-06 00:00:00",
+          "dataset": "otel",
+          "service": "camelrun-pilot-fakemodel",
+          "count": 718,
+          "eventSize": 1548683
+        }
+      ],
+      "events": 32786,
+      "bytes": 44720999
+    }
+  },
+  "meterValues": [
+    {
+      "meter": "durableObjectDurationGBSeconds",
+      "amount": 9811.124281471999,
+      "rateUsd": 0.0000125,
+      "linearValueUsd": 0.12263905351839999
+    },
+    {
+      "meter": "durableObjectSqliteRowsRead",
+      "amount": 2687317,
+      "rateUsd": 1e-9,
+      "linearValueUsd": 0.0026873170000000003
+    },
+    {
+      "meter": "durableObjectSqliteRowsWritten",
+      "amount": 640818,
+      "rateUsd": 0.000001,
+      "linearValueUsd": 0.640818
+    },
+    {
+      "meter": "durableObjectRequestsPartial",
+      "amount": 34923,
+      "rateUsd": 1.5e-7,
+      "linearValueUsd": 0.0052384499999999995
+    },
+    {
+      "meter": "workerRequests",
+      "amount": 8087,
+      "rateUsd": 3e-7,
+      "linearValueUsd": 0.0024261
+    },
+    {
+      "meter": "workerCpuMilliseconds",
+      "amount": 296965.04,
+      "rateUsd": 2e-8,
+      "linearValueUsd": 0.0059393008
+    },
+    {
+      "meter": "observabilityEventsConservative",
+      "amount": 32786,
+      "rateUsd": 6e-7,
+      "linearValueUsd": 0.019671599999999997
+    }
+  ],
+  "linearSubtotalUsd": 0.7994198213184001,
+  "limitations": [
+    "Billing API is unavailable to this OAuth token (HTTP 403); actual marginal invoice cost is not known.",
+    "DO request sum excludes the volume namespace because its analytics query was rate limited.",
+    "Ephemeral bootstrap helper Worker CPU/requests, R2, Images, Queue, Analytics Engine, storage and existing plan charges are not itemized.",
+    "The conservative event estimate applies the Workers Logs rate to all returned Workers/OTel events; their final billing classification was not independently verified.",
+    "Cloudflare included allowances and billable-unit rounding are not applied. This linear meter value must not be presented as an actual charge.",
+    "External fake model provider cost is zero. The one real model call reported $0.00002745 model usage and $0.000042 total internal tenant debit.",
+    "Aggregate DO errors include transport disconnections; they are not a count of failed turns."
+  ]
+}

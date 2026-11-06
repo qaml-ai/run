@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import pg from "pg";
 import { transaction } from "../src/db.ts";
 import { clientAddress, clientKey, loopback, RateLimited, RateLimits, rateLimitConfig, rateLimitHeaders, type RateLimitConfig } from "../src/rate-limits.ts";
 import { errorHeaders } from "../src/http.ts";
@@ -181,6 +182,33 @@ test("a tenant's window as X-RateLimit-* headers: limit, what is left, and secon
   assert.deepEqual(Object.keys(errorHeaders(await refusal(perAddress.request("/oauth/token", "203.0.113.5")))), ["Retry-After"]);
   clock.now += 30_000;
   assert.deepEqual(await tenantLimits.agentCreate("paid", false), { limit: 3, remaining: 3, reset: 60 }, "a new minute starts afresh");
+});
+
+test("prepared create admission uses its transaction connection and rolls back with the create", { timeout: 10_000 }, async () => {
+  const { url } = await testDatabase();
+  // A nested pool query cannot acquire a second connection. This catches the
+  // Hyperdrive starvation that concurrent directory transactions exposed.
+  const db = new pg.Pool({ connectionString: url, max: 1, connectionTimeoutMillis: 100 });
+  let policyReads = 0;
+  const limits = new RateLimits({
+    db, config: rateLimitConfig({}), hashKey: "prepared-create-test", nodes: () => 1,
+    now: () => Date.UTC(2026, 9, 1, 12, 0, 10), free: async () => false,
+    override: async () => { policyReads++; await db.query("select 1"); return 2; },
+  });
+  try {
+    const admit = await limits.prepareAgentCreate("tenant");
+    await assert.rejects(transaction(db, async sql => {
+      assert.equal((await admit(sql))?.remaining, 1);
+      throw new Error("create failed");
+    }), /create failed/);
+    assert.equal((await db.query("select count(*)::int as n from rate_limits")).rows[0].n, 0);
+    const admitted = await Promise.all([0, 1].map(() => transaction(db, sql => admit(sql))));
+    assert.deepEqual(admitted.map(state => state?.remaining).sort(), [0, 1]);
+    await refusal(transaction(db, sql => admit(sql)));
+    assert.equal((await transaction(db, sql => admit(sql, false)))?.remaining, 0);
+    assert.equal((await db.query("select count from rate_limits")).rows[0].count, 2, "a refused create rolls back its increment");
+    assert.equal(policyReads, 1, "policy resolution never opens a connection inside the transaction");
+  } finally { await db.end(); }
 });
 
 test("creates and runs answer with X-RateLimit-* headers; an upsert that changes nothing is not a create, and gives the same configHash", { timeout: 180_000 }, async t => {

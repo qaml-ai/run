@@ -1,0 +1,102 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "camelrun-proto-workers-native",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-05",
+  "compatibility_flags": [
+    "nodejs_compat",
+    "enable_request_signal"
+  ],
+  "workers_dev": false,
+  "preview_urls": false,
+  "assets": { "directory": ".assets", "binding": "PUBLIC_ASSETS", "run_worker_first": true, "html_handling": "none", "not_found_handling": "none" },
+  "observability": {
+    "enabled": true,
+    "traces": {
+      "enabled": true
+    }
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "AGENTS",
+        "class_name": "CamelAgent"
+      },
+      {
+        "name": "TENANTS",
+        "class_name": "TenantAdmission"
+      },
+      {
+        "name": "VOLUMES",
+        "class_name": "Volume"
+      },
+      {
+        "name": "CODEMODE_SANDBOX",
+        "class_name": "CodemodeSandbox",
+        "script_name": "camelrun-proto-workers-codemode"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "CamelAgent",
+        "TenantAdmission",
+        "Volume"
+      ]
+    }
+  ],
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "00000000000000000000000000000000",
+      "localConnectionString": "postgresql://postgres:local-only-unused@127.0.0.1:55434/camelrun_proto"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "BUCKET",
+      "bucket_name": "camelrun-proto-workers-files"
+    }
+  ],
+  "images": {
+    "binding": "IMAGES"
+  },
+  "queues": {
+    "producers": [
+      {
+        "binding": "WEBHOOKS",
+        "queue": "camelrun-proto-workers-webhooks"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "camelrun-proto-workers-webhooks",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 3
+      }
+    ]
+  },
+  "analytics_engine_datasets": [
+    {
+      "binding": "METRICS",
+      "dataset": "camelrun_proto_workers"
+    }
+  ],
+  "triggers": {
+    "crons": [
+      "*/5 * * * *"
+    ]
+  },
+  "vars": {
+    "TEST_MODEL": "1",
+    "TEST_HOOKS": "1",
+    "MODEL": "test/echo",
+    "API_TOKEN": "local-integration-only-token-with-at-least-32-characters",
+    "FILE_SIGNING_SECRET": "local-only-file-secret-with-at-least-32-characters",
+    "ALLOW_LOCAL_WEBHOOKS": "1",
+    "TEST_MODE": "1"
+  }
+}

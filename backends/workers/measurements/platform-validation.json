@@ -1,0 +1,102 @@
+{
+  "status": "verified subset; full compatibility remains incomplete",
+  "unit": {
+    "command": "npm test",
+    "pass": 238,
+    "fail": 0,
+    "durationMs": 108780.423917
+  },
+  "integration": {
+    "command": "npm run test:integration",
+    "finalLog": "platform-integration.tap",
+    "pass": 62,
+    "fail": 0,
+    "durationMs": 224991.045041
+  },
+  "sdkTransport": {
+    "typescript": 6,
+    "python": 4,
+    "nodeSdkAndWatch": 20,
+    "nodeWatchAfterFinalCleanupFix": 16,
+    "pythonAgainstNode": 5,
+    "nodeTransportSdkAndWatch": 26,
+    "nodeDurationMs": 60139.9365
+  },
+  "typechecks": [
+    "backends/workers",
+    "sdk",
+    "root"
+  ],
+  "sourceDriftChecks": [
+    "reuse-sql",
+    "reuse-media",
+    "reuse-schedules",
+    "reuse-computers",
+    "reuse-admin",
+    "reuse-volume-policy",
+    "reuse-money",
+    "reuse-money-metrics"
+  ],
+  "docs": {
+    "build": true,
+    "llmsTests": 2
+  },
+  "build": "Both Wrangler dry-run bundles passed",
+  "compatibility": {
+    "total": 162,
+    "pass": 64,
+    "fail": 56,
+    "notApplicable": 42,
+    "workerPass": 19,
+    "baseline": {
+      "total": 146,
+      "pass": 50,
+      "fail": 57,
+      "notApplicable": 39
+    },
+    "scopeChanges": [
+      "16 file/project inventory cases added: 6 pass, 3 fail, 7 N/A",
+      "4 standalone transcription cases changed from N/A to attempted: 1 pass, 3 fail",
+      "Transcription API/SDK cases are classified as workerd integration, including their indirect start fixture"
+    ],
+    "originalComputerCases": {
+      "pass": 3,
+      "total": 7
+    },
+    "sdkUnitPass": 45,
+    "originalImageCases": {
+      "pass": 4,
+      "total": 4
+    },
+    "standaloneTranscription": {
+      "pass": 1,
+      "total": 1
+    }
+  },
+  "cloud": {
+    "evidence": [
+      "platform-files-cloud.json",
+      "platform-hibernation-summary.json",
+      "platform-hibernation-cleanup.json",
+      "platform-container-cloud.json"
+    ],
+    "estimatedMarginalUsdLessThan": 0.1,
+    "allTemporaryResourcesDeleted": true,
+    "realAwsOrModelProviderCalls": false,
+    "container": {
+      "pass": true,
+      "lifecycleMs": 7090,
+      "estimatedMarginalUsdLessThan": 0.05,
+      "allTemporaryResourcesDeleted": true
+    }
+  },
+  "limitations": "PLATFORM.md",
+  "backendSourceCommit": "7d5a5160208a47c488c877d2e1a626325d56c300",
+  "finalizedAt": "2026-11-05T19:19:32.799029+00:00",
+  "alarms": {
+    "catalogRules": 14,
+    "wiredRules": 4,
+    "queryAndNotificationServiceDeployed": false
+  },
+  "openapi": "npm run openapi passed; openapi.json unchanged"
+}

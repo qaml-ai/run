@@ -1,0 +1,34 @@
+{
+  "name": "camelrun-pilot-codemode",
+  "account_id": "85bbd288051330fb51ee1c86031a299b",
+  "main": "index.ts",
+  "compatibility_date": "2026-11-05",
+  "workers_dev": false,
+  "preview_urls": false,
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SANDBOX",
+        "class_name": "CodemodeSandbox"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "CodemodeSandbox"
+      ]
+    }
+  ],
+  "limits": {
+    "cpu_ms": 30000
+  },
+  "observability": {
+    "enabled": true,
+    "traces": {
+      "enabled": true
+    },
+    "redact_query_string": true
+  }
+}
