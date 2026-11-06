@@ -413,7 +413,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     if (entry?.apiKey || entry?.baseUrl) return { apiKey: entry.apiKey ?? "", ...(entry.baseUrl ? { baseUrl: entry.baseUrl } : {}), ...(entry.headers ? { headers: entry.headers } : {}), platform: false };
     const resolved = await accounts.providerKey(tenant, provider);
     if (!resolved) return undefined;
-    const platform = resolved.source !== "tenant";
+    const platform = resolved.source === "platform";
     if (resolved.source === "platform") { const limited = await accounts.billing.creditLimit(tenant); if (limited) throw limited; }
     // The platform's key goes to its Azure OpenAI deployment when there is one, falling back on OpenAI (azure-openai.ts).
     const azure = secrets.azureOpenAI;
