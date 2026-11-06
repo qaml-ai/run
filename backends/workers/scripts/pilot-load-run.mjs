@@ -64,7 +64,7 @@ try {
       const writer = spawn('sprite', ['exec', '-o', process.env.SPRITE_ORG ?? 'camelai', '-s', sprite, '--stdin', '--', 'sh', '-c', `cat > ${quote(fifo)}`], { stdio: ['pipe', 'ignore', 'pipe'] });
       // No shell interpolation, environment variable, regular file or CLI argument
       // contains the credential. Child stdin feeds the remote FIFO directly.
-      writer.stdin.end(JSON.stringify({ operatorBaseUrl: operator.baseUrl, operatorToken: operator.token, tenantIds, fakeBaseUrl, ...(stages ? { stages } : {}), modelDelayMs: Number(process.env.PILOT_LOAD_DELAY_MS ?? 5000) }));
+      writer.stdin.end(JSON.stringify({ operatorBaseUrl: operator.baseUrl, operatorToken: operator.token, tenantIds, fakeBaseUrl, ...(stages ? { stages } : {}), modelDelayMs: Number(process.env.PILOT_LOAD_DELAY_MS ?? 5000), ...(process.env.PILOT_LOAD_STOP_EARLY === '1' ? { stopStageOnErrorRate: true } : {}), ...(process.env.PILOT_ORIGIN_SAMPLE_MS ? { originSampleMs: Number(process.env.PILOT_ORIGIN_SAMPLE_MS) } : {}) }));
       writer.on('error', () => { child.kill('SIGINT'); reject(new Error('Could not feed the scoped credential to the Sprite')); });
       writer.on('exit', code => { if (code) { child.kill('SIGINT'); reject(new Error('Sprite credential pipe failed')); } });
     };
