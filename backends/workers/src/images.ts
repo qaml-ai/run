@@ -331,6 +331,9 @@ export function withImageReferences<A extends Api>(
     const tenant = await getTenant(),
       selected = new Map<string, unknown>();
     const references: ImageReference[] = [];
+    // These Pi adapters honor options.fetch. The native Bedrock SDK and the
+    // Workers AI binding retain the bounded compatibility materialization.
+    const canStream = ["openai-completions", "openai-responses", "openai-codex-responses", "azure-openai-responses", "anthropic-messages", "google-generative-ai"].includes(model.api) && model.provider !== "cloudflare";
     let bytes = 0,
       count = 0;
     for (const location of locations.reverse()) {
@@ -365,9 +368,11 @@ export function withImageReferences<A extends Api>(
         if (ref.type !== "image_ref" || ref.tenant !== tenant || !ownedImageKey(tenant, ref.key) || !Number.isSafeInteger(ref.size) || ref.size < 1 || ref.size > IMAGE_LIMITS.derivativeBytes)
           throw new FileError("Invalid image reference");
         if (ref.key.startsWith("files/") && !await authorizeFile?.(ref.key)) continue;
-        const reference = { key: ref.key, size: ref.size, mimeType: ref.mimeType, nonce: crypto.randomUUID() };
-        references.push(reference);
-        block = { type: "image", mimeType: "image/png", data: makeMarker(reference) };
+        if (canStream) {
+          const reference = { key: ref.key, size: ref.size, mimeType: ref.mimeType, nonce: crypto.randomUUID() };
+          references.push(reference);
+          block = { type: "image", mimeType: "image/png", data: makeMarker(reference) };
+        } else block = (await imageInputs(env, tenant, [ref], env.PUBLIC_BASE_URL ?? "https://localhost.invalid", false))[0];
       }
       const size = ref ? 4 * Math.ceil(ref.size / 3) : block?.data?.length ?? 0;
       if (
