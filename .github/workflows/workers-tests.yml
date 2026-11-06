@@ -13,18 +13,26 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   test:
-    name: Workers ${{ matrix.suite }}
+    name: Workers ${{ matrix.suite }}${{ matrix.shard && format(' (shard {0}/3)', matrix.shard) || '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        suite: [unit, integration]
+        # Integration shard 1 holds only the 2001-agent account deletion test (see weight in
+        # backends/workers/scripts/run-tests.mjs): it needs a runner to itself to finish inside its 900 s timeout.
         include:
           - suite: unit
             command: test
           - suite: integration
             command: test:integration
+            shard: 1
+          - suite: integration
+            command: test:integration
+            shard: 2
+          - suite: integration
+            command: test:integration
+            shard: 3
     steps:
       - uses: actions/checkout@v4
       # Tests also import the shared src/ code and the repository SDK.
@@ -46,7 +54,7 @@ jobs:
         id: postgres
         uses: ./.github/actions/test-postgres
       - name: Run Workers ${{ matrix.suite }} suite
-        run: npm run ${{ matrix.command }}
+        run: npm run ${{ matrix.command }}${{ matrix.shard && format(' -- --test-shard={0}/3', matrix.shard) || '' }}
         working-directory: backends/workers
         env:
           AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ steps.postgres.outputs.port }}/postgres
