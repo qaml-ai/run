@@ -40,7 +40,7 @@ for (let i = 0; i < 15; i++) {
 }
 const occupied = await probe("while-open");
 record("socket-fin-sent");
-socket.end(); // A normal TLS close_notify + TCP FIN, never an RST.
+socket.end(); // Request a normal TLS close_notify + TCP FIN.
 if (closeMode === "full-close") {
   if (!socket.writableFinished) await new Promise(resolve => socket.once("finish", resolve));
   record("socket-destroy-after-finish");
@@ -55,7 +55,7 @@ for (let i = 0; i < 25; i++) {
 trace = await fetch(address("/trace")).then(r => r.json());
 const result = { startedAt: new Date(start).toISOString(), url: base.origin, session, occupied, freedAfterMs: freedAfterMs ?? null, closeMode, normalFin: true, events, trace };
 if (process.argv[3]) await writeFile(process.argv[3], JSON.stringify(result, null, 2) + "\n");
-console.log(JSON.stringify(result, null, 2));
+console.log(JSON.stringify({ ...result, events: undefined, trace: undefined }, null, 2));
 // The diagnostic is bounded even when the deployed stream failed to cancel.
 socket.unref();
 process.exitCode = occupied === 429 && freedAfterMs !== undefined ? 0 : 1;
