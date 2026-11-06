@@ -36,9 +36,7 @@ export async function openProviderSecret(env: ProviderKeyEnv, aad: string, value
 /** Scope credentials take precedence; the tenant key is the fallback. No ambient AWS credentials. */
 export async function resolveProviderKey(env: ProviderKeyEnv, tenant: string, provider: string, scope?: string): Promise<ProviderKey | undefined> {
   const credentials = await providerCredentials(await keyServices(env as KeyEnv), tenant, provider, scope);
-  // Auxiliary work is platform-funded only for the actual platform key.
-  // Operator-configured tenant keys retain model billing attribution separately.
-  return credentials && { ...credentials, platform: credentials.source === "platform" };
+  return credentials;
 }
 
 /** Only public declarations enter the synchronous model resolver; keys stay in the request hook. */

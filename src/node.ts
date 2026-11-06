@@ -120,6 +120,7 @@ import type { Duplex } from "node:stream";
 import { hostClient, startTurnModels, type TurnModels, type TurnModelsHost } from "./voice/turns/inference.ts";
 import { buggify } from "./buggify.ts";
 import { sometimes } from "./assert.ts";
+import { chargesPlatform } from "./core/key-source.ts";
 
 /** Idle keep-alive sockets stay open this long: past the ALB's idle timeout (infra/terraform alb_idle_timeout, 360 s). */
 const HTTP_KEEP_ALIVE_MS = 365_000;
@@ -413,11 +414,11 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     if (entry?.apiKey || entry?.baseUrl) return { apiKey: entry.apiKey ?? "", ...(entry.baseUrl ? { baseUrl: entry.baseUrl } : {}), ...(entry.headers ? { headers: entry.headers } : {}), platform: false };
     const resolved = await accounts.providerKey(tenant, provider);
     if (!resolved) return undefined;
-    const platform = resolved.source === "platform";
-    if (resolved.source === "platform") { const limited = await accounts.billing.creditLimit(tenant); if (limited) throw limited; }
+    const platform = chargesPlatform(resolved.source);
+    if (platform) { const limited = await accounts.billing.creditLimit(tenant); if (limited) throw limited; }
     // The platform's key goes to its Azure OpenAI deployment when there is one, falling back on OpenAI (azure-openai.ts).
     const azure = secrets.azureOpenAI;
-    if (resolved.source === "platform" && provider === "openai" && azure && azureDeployment) return { ...azureCredentials(azure, azureDeployment, { apiKey: resolved.key }), platform };
+    if (platform && provider === "openai" && azure && azureDeployment) return { ...azureCredentials(azure, azureDeployment, { apiKey: resolved.key }), platform };
     return { apiKey: resolved.key, platform };
   };
   // What speech providers other than OpenAI cost on the platform's keys (AGENT_SPEECH_PRICES overrides list prices).
@@ -868,7 +869,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       if (resolved?.region) return { key: SCOPE_KEY, platform: false };
       // The platform's Azure resource: each call takes its address and deployments with the key (`scopedKey`).
       if (resolved && provider === "azure") return { key: SCOPE_KEY, platform: true };
-      return resolved && { key: resolved.key, platform: resolved.source !== "tenant" };
+      return resolved && { key: resolved.key, platform: chargesPlatform(resolved.source) };
     },
     catalogPriced: async tenant => await accounts.billing.mode(tenant) === "prepaid",
     scopedKey: async (tenant, keyScope, provider) => {
@@ -882,7 +883,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       const resolved = await accounts.providerKey(tenant, provider);
       const azure = provider === "azure" && accounts.azureChat;
       if (resolved && azure) return { ...azureChatCredentials(azure), platform: true };
-      return resolved && { apiKey: resolved.key, platform: resolved.source !== "tenant", ...(resolved.region ? { region: resolved.region } : {}), ...(resolved.bearer ? { bearer: true as const } : {}) };
+      return resolved && { apiKey: resolved.key, platform: chargesPlatform(resolved.source), ...(resolved.region ? { region: resolved.region } : {}), ...(resolved.bearer ? { bearer: true as const } : {}) };
     },
     modelEndpoints: tenant => tenants.modelEndpoints(tenant),
     customProviders: (tenant, keyScope) => modelProviders.resolvable(tenant, keyScope),
