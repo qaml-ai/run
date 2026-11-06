@@ -115,11 +115,13 @@ export class ModelAttempts {
       const prepaid = await this.accounts.billing.mode(tenant) === "prepaid";
       // Keep the input estimate for calls with evidence of usage but no final token counts.
       const inputTokens = Number(event.estimate?.inputTokens);
-      await this.db.query(`insert into model_attempts (id,tenant,agent,provider,model,kind,platform,catalog_priced,prepaid,key_hash,context,started_at,updated_at,next_check_at,end_user,end_user_bucket,estimated_input_tokens)
-        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12,$13,$14,$15,$16) on conflict (id) do nothing`,
+      const inserted = await this.db.query(`insert into model_attempts (id,tenant,agent,provider,model,kind,platform,catalog_priced,prepaid,key_hash,context,started_at,updated_at,next_check_at,end_user,end_user_bucket,estimated_input_tokens)
+        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12,$13,$14,$15,$16) on conflict (id) do nothing returning tenant,agent,provider,model`,
         [event.id, tenant, agent, event.provider, event.model, event.kind, platform, catalogPriced, prepaid, event.keyHash, JSON.stringify({ ...event.context, ...(event.reconciliationEligible === undefined ? {} : { reconciliationEligible: event.reconciliationEligible }), ...(event.reconciliationDisabled || event.keyHash === hash("") ? { reconciliationDisabled: event.reconciliationDisabled ?? "Empty provider credential has no reconciliation; reported usage is final" } : {}) }), event.at, Date.now() + 300_000,
           metered ? event.endUser!.id : null, metered ? event.endUser!.bucket : null, Number.isFinite(inputTokens) && inputTokens > 0 ? Math.min(Math.round(inputTokens), 2_000_000_000) : null]);
-      const row = (await this.db.query("select tenant,agent,provider,model from model_attempts where id=$1", [event.id])).rows[0];
+      // New attempts already returned their identity. A replay still reads the
+      // committed row after ON CONFLICT waited for its concurrent inserter.
+      const row = inserted.rows[0] ?? (await this.db.query("select tenant,agent,provider,model from model_attempts where id=$1", [event.id])).rows[0];
       if (row.tenant !== tenant || row.agent !== agent || row.provider !== event.provider || row.model !== event.model) throw new Error("Model attempt identity mismatch");
       const holds = [metered, credit].filter(hold => !!hold) as (Metered & { most: number })[];
       if (!holds.length) return true;
@@ -240,8 +242,9 @@ export class ModelAttempts {
       // it is known, as the tenant's charge is).
       // The end user's row first, as everything that touches their holds locks it (end-user-credits.ts).
       let hold: { allowance: string; paid: string } | undefined;
+      let lockedEndUser: { sql: typeof sql; user: any } | undefined;
       if (row.end_user && !reconciled) {
-        await lockEndUser(sql, tenant, row.end_user);
+        lockedEndUser = { sql, user: await lockEndUser(sql, tenant, row.end_user) };
         hold = (await sql.query("delete from end_user_holds where id=$1 returning allowance, paid", [id])).rows[0];
       }
       if (!reconciled) await sql.query("delete from credit_holds where id=$1", [id]);
@@ -312,7 +315,7 @@ export class ModelAttempts {
           tenant, endUser: row.end_user, bucket: row.end_user_bucket, day: utcDay(Number(row.started_at)), raw: endUserRaw, key: `attempt:${id}:${revision}`,
           previous: { raw: Number(row.end_user_raw), allowance: Number(row.end_user_allowance), paid: Number(row.end_user_paid), writtenOff: Number(row.end_user_written_off ?? 0) },
           metadata: { call: row.kind === "compaction" ? "compaction" : "response", attempt: id, provider: row.provider, model: row.model, agent, ...(row.context?.requestId ? { requestId: row.context.requestId } : {}), ...(final && !estimate ? {} : { estimated: true }) },
-        });
+        }, Date.now(), lockedEndUser);
         await sql.query("update model_attempts set end_user_raw=$2, end_user_allowance=$3, end_user_paid=$4, end_user_written_off=$5 where id=$1", [id, posted.raw, posted.allowance, posted.paid, posted.writtenOff]);
       }
       if (!replaced) {

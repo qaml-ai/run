@@ -57,6 +57,11 @@
   },
   {
     "file": "tests/end-user-holds.test.ts",
+    "test": "reusing the settlement lock still expires credit released by the hold in that transaction",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-holds.test.ts",
     "test": "a hold takes the bucket's allowance first, then the balance at the markup; settling posts what the call cost",
     "included": true
   },
@@ -417,12 +422,22 @@
   },
   {
     "file": "tests/model-attempts.test.ts",
+    "test": "concurrent attempt begins retain one identity and reject changed replay identities",
+    "included": true
+  },
+  {
+    "file": "tests/model-attempts.test.ts",
     "test": "one provider attempt charges once across duplicate delivery, concurrent owners and usage callbacks",
     "included": true
   },
   {
     "file": "tests/model-attempts.test.ts",
     "test": "a lost commit acknowledgement can be delivered again without a second debit",
+    "included": true
+  },
+  {
+    "file": "tests/model-attempts.test.ts",
+    "test": "end-user settlement preserves holds on rollback and charges once after a lost commit acknowledgement",
     "included": true
   },
   {

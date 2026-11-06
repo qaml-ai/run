@@ -214,6 +214,12 @@ const entryView = (row: any): LedgerEntry => ({
 export async function lockEndUser(sql: Sql, tenant: string, id: string, now = Date.now()) {
   await sql.query("insert into end_users (tenant, id, created_at, updated_at) values ($1, $2, $3, $3) on conflict (tenant, id) do nothing", [tenant, id, now]);
   const user = (await sql.query("select * from end_users where tenant = $1 and id = $2 for update", [tenant, id])).rows[0];
+  return refreshLockedEndUser(sql, tenant, user, now);
+}
+
+/** Refresh after a hold is released, while retaining the same transaction's user lock. */
+async function refreshLockedEndUser(sql: Sql, tenant: string, user: any, now: number) {
+  const id = user.id;
   return await expireLots(sql, tenant, user, now) ? (await sql.query("select * from end_users where tenant = $1 and id = $2", [tenant, id])).rows[0] : user;
 }
 
@@ -812,7 +818,8 @@ export type Hold = { id: string; raw: number; allowance: number; paid: number };
 export type Reserved = { hold: Hold; refused?: undefined; most?: number } | { refused: CreditRefusal; hold?: undefined };
 
 /** What an end user may still spend now in a bucket: its allowance left (raw), and room on the balance (charged). */
-type Room = { day: string; allowance: number; allowanceLeft: number; paidRoom: number; bound: CreditRefusal["reason"]; balance: number; dailyLimit: number | null; bucketLimit: number | null; markupBps: number };
+type DaySpend = { bucket: string; allowance_spent: number | string; paid_spent: number | string };
+type Room = { day: string; spent: DaySpend[]; allowance: number; allowanceLeft: number; paidRoom: number; bound: CreditRefusal["reason"]; balance: number; dailyLimit: number | null; bucketLimit: number | null; markupBps: number };
 
 const dayText = (day: unknown) => day instanceof Date ? day.toISOString().slice(0, 10) : String(day).slice(0, 10);
 const dollars = (micros: number) => `${micros < 0 ? "-" : ""}$${(Math.abs(micros) / MICROS).toFixed(2)}`;
@@ -823,10 +830,18 @@ const dollars = (micros: number) => `${micros < 0 ? "-" : ""}$${(Math.abs(micros
  * and held today, and within the bucket's own limit less what it paid and holds today.
  */
 async function room(sql: Sql, tenant: string, user: any, settings: EndUserSettings, bucket: string, now: number, day = utcDay(now)): Promise<Room> {
-  const [{ rows: days }, { rows: holds }] = await Promise.all([
-    sql.query("select bucket, allowance_spent, paid_spent from end_user_days where tenant = $1 and end_user = $2 and day = $3", [tenant, user.id, day]),
-    sql.query("select bucket, day, allowance, paid from end_user_holds where tenant = $1 and end_user = $2 and expires_at > $3", [tenant, user.id, now]),
-  ]);
+  // Both sets describe the same user's credit room. Read one snapshot in one
+  // round trip; a pg client serializes Promise.all queries on its connection.
+  const { rows: [{ days, holds }] } = await sql.query<{
+    days: DaySpend[];
+    holds: { bucket: string; day: string; allowance: number | string; paid: number | string }[];
+  }>(`select
+    coalesce((select jsonb_agg(d) from (
+      select bucket, allowance_spent, paid_spent from end_user_days where tenant = $1 and end_user = $2 and day = $3
+    ) d), '[]'::jsonb) as days,
+    coalesce((select jsonb_agg(h) from (
+      select bucket, day, allowance, paid from end_user_holds where tenant = $1 and end_user = $2 and expires_at > $4
+    ) h), '[]'::jsonb) as holds`, [tenant, user.id, day, now]);
   const allowance = allowanceFor(settings.allowances, user.allowances ?? {}, bucket);
   const spent = Number(days.find(row => row.bucket === bucket)?.allowance_spent ?? 0);
   const paidToday = days.reduce((total, row) => total + Number(row.paid_spent), 0);
@@ -843,7 +858,7 @@ async function room(sql: Sql, tenant: string, user: any, settings: EndUserSettin
   const byBucket = bucketLimit === null ? Infinity : bucketLimit - bucketPaid;
   const least = Math.min(byBalance, byLimit, byBucket);
   return {
-    day, allowance, allowanceLeft: Math.max(0, allowance - spent - heldAllowance), paidRoom: Math.max(0, least),
+    day, spent: days, allowance, allowanceLeft: Math.max(0, allowance - spent - heldAllowance), paidRoom: Math.max(0, least),
     bound: least === byBucket ? "bucket_limit" : least === byBalance ? "balance" : "daily_limit", balance, dailyLimit, bucketLimit, markupBps: settings.markupBps,
   };
 }
@@ -883,10 +898,13 @@ export const NOTHING_POSTED: Readonly<Posted> = Object.freeze({ raw: 0, allowanc
  * and never charged later. Less: the write-off goes down first, then the balance is refunded, then the allowance. In the
  * caller's transaction, which this locks the user in; returns what the call has posted now.
  */
-export async function settleUsage(sql: Sql, call: { tenant: string; endUser: string; bucket: string; day: string; raw: number; key: string; hold?: string; previous?: Partial<Posted>; metadata?: Record<string, unknown> }, now = Date.now()): Promise<Posted> {
+export async function settleUsage(sql: Sql, call: { tenant: string; endUser: string; bucket: string; day: string; raw: number; key: string; hold?: string; previous?: Partial<Posted>; metadata?: Record<string, unknown> }, now = Date.now(), locked?: { sql: Sql; user: any }): Promise<Posted> {
   const { tenant, endUser, bucket, day } = call;
   const previous: Posted = { ...NOTHING_POSTED, ...call.previous };
-  const user = await lockEndUser(sql, tenant, endUser, now);
+  if (locked && (locked.sql !== sql || locked.user.tenant !== tenant || locked.user.id !== endUser)) throw new Error("End-user lock belongs to another transaction or user");
+  // Model settlement already locked this user before releasing its hold. Lots
+  // must still be expired again: the released hold may have kept a lot alive.
+  const user = locked ? await refreshLockedEndUser(sql, tenant, locked.user, now) : await lockEndUser(sql, tenant, endUser, now);
   if (call.hold) await sql.query("delete from end_user_holds where id = $1", [call.hold]);
   const raw = Math.max(0, Math.round(call.raw));
   if (raw === previous.raw) return previous;
@@ -905,7 +923,7 @@ export async function settleUsage(sql: Sql, call: { tenant: string; endUser: str
     paid = previous.paid + charged;
     writtenOff = previous.writtenOff + lost;
     const balance = Number(user.balance) - charged;
-    const spent = (await sql.query("select bucket, allowance_spent, paid_spent from end_user_days where tenant = $1 and end_user = $2 and day = $3", [tenant, endUser, day])).rows;
+    const spent = left.spent;
     const mine = spent.find(row => row.bucket === bucket);
     // The bucket's allowance for the day is used up with this call: said once per user, bucket and day.
     const before = Number(mine?.allowance_spent ?? 0);
