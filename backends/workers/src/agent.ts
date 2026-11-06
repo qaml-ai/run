@@ -342,6 +342,7 @@ export class CamelAgent extends DurableObject<Env> {
     await this.ctx.storage.put("deleted", true);
   }
   private instanceId = crypto.randomUUID();
+  private shuttingDown = false;
   private configurationQueue = new ConfigurationQueue<RequestRecord>(this.ctx.storage, {
     busy: async order => (await this.harness.session().busy()) || (await this.records()).some(record => record.method !== 'configure' && record.state !== 'completed' && (record.configurationWait === undefined || record.configurationWait < order)),
     released: order => this.releaseConfigurationWaiters(order),
@@ -571,7 +572,7 @@ export class CamelAgent extends DurableObject<Env> {
     );
   }
   private async agentSpend(conf: Config) {
-    const spend = await readAgentSpendLimit(this.env, conf.tenantId, conf.id);
+    const spend = await readAgentSpendLimit(this.env, conf.tenantId, conf.id, { includeRevoked: this.shuttingDown });
     return spend
       ? {
           ...spend,
@@ -3025,6 +3026,8 @@ export class CamelAgent extends DurableObject<Env> {
       }
       if (request.method === "DELETE" && path === "/") {
         const deletion = this.admission.then(async () => {
+          if (await this.ctx.storage.get("deleted")) return json({ deleted: true });
+          this.shuttingDown = true;
           await this.promptPreparations.cancel();
           const conf = await this.ctx.storage.get<Config>("configuration");
           await this.markCancelledRequests();

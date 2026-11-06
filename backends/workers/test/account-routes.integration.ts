@@ -68,6 +68,10 @@ test("deleting an account removes agent spend limits and keeps its credit ledger
   await r.db.query("insert into journey_lost_signups(tenant,consent,visitor,method,surface,at) values($1,'granted',$2,'password','console',$3)", [tenant, visitor, now]);
   await r.db.query("insert into journey_outbox(id,account_ref,body,due,created_at) values($1,$2,$3,$4,$4)", [crypto.randomUUID(), accountRef, { name: "run_token_created", visitor_id: visitor }, now]);
 
+  // Directory marks the agent revoked before shutdown. A cold DO must still
+  // reopen its harness and read the owned spend counter to finish that shutdown.
+  await r.worker.stop(true);
+  await r.worker.start();
   assert.equal((await call(`/v1/tenants/${tenant}`, "DELETE", undefined, operator)).status, 202);
   let deleted = false;
   const deadline = Date.now() + 30_000;

@@ -7,9 +7,9 @@ export type AgentSpend = SpendLimit;
 export type SpendLimitError = HttpError & { stopLimit: "agent" | "run" };
 
 /** The source table is keyed by agent only. Every public read or mutation checks its tenant first. */
-async function owned(sql: Sql, tenant: string, agent: string, lock = false) {
+async function owned(sql: Sql, tenant: string, agent: string, lock = false, includeRevoked = false) {
   const row = (await sql.query(
-    `select id from agents where id=$1 and tenant=$2 and not revoked${lock ? " for update" : ""}`,
+    `select id from agents where id=$1 and tenant=$2${includeRevoked ? "" : " and not revoked"}${lock ? " for update" : ""}`,
     [agent, tenant],
   )).rows[0];
   if (!row) throw new HttpError(404, "Agent not found", "NOT_FOUND");
@@ -83,9 +83,11 @@ export async function agentSpend(sql: Sql, tenant: string, agent: string): Promi
 }
 
 /** Read at admission and between requests. Never add the same run's usage to these already metered totals. */
-export async function readAgentSpendLimit(env: PostgresEnv, tenant: string, agent: string): Promise<SpendLimit | null> {
+export async function readAgentSpendLimit(env: PostgresEnv, tenant: string, agent: string, options: { includeRevoked?: boolean } = {}): Promise<SpendLimit | null> {
   return withSql(env, async sql => {
-    await owned(sql, tenant, agent);
+    // Directory revokes first to block new callers. Its DO still needs the
+    // same owned counter while reopening the harness to abort and settle.
+    await owned(sql, tenant, agent, false, options.includeRevoked);
     return agentSpend(sql, tenant, agent);
   });
 }
