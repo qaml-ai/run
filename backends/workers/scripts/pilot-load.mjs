@@ -99,7 +99,7 @@ export async function runPilotLoad(options) {
       const tenant = createdTenants[index % createdTenants.length];
       const subject = `load-${index}`;
       await call(tenant, `/v1/end-users/${subject}/entries`, { body: { kind: 'grant', amount: 1_000_000, key: `load-grant:${subject}` } });
-      const agent = await call(tenant, '/v1/agents', { body: { key: `load-${index}`, model: 'pilot-fake/deterministic', subject, systemPrompt: 'Reply briefly.', codeMode: false, fileTools: false, decide: false, ttlSeconds: 3600 } });
+      const agent = await call(tenant, '/v1/agents', { body: { model: 'pilot-fake/deterministic', subject, systemPrompt: 'Reply briefly.', codeMode: false, fileTools: false, decide: false, ttlSeconds: 3600 } });
       agents[index] = { id: agent.id, tenant };
       if ((index + 1) % 250 === 0) emit({ type: 'load_setup_progress', created: index + 1 });
     });
