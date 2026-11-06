@@ -392,9 +392,11 @@ export class CamelAgent extends DurableObject<Env> {
     request: NoticeRequest,
     notice: RuntimeNotice,
   ): Promise<unknown> {
+    this.invalidateMaintenance();
     return this.notifications.deliverMessage(request, notice);
   }
   async receiveAgentProgress(report: ChildProgressReport): Promise<unknown> {
+    this.invalidateMaintenance();
     return this.delegation.recordProgress(report);
   }
   async hasBackgroundChild(id: string): Promise<boolean> {
@@ -1172,6 +1174,14 @@ export class CamelAgent extends DurableObject<Env> {
   private serial: Promise<unknown> = Promise.resolve();
   private readonly initialCursor = Date.now() * 1000;
   private pendingWaits = new Map<string, Promise<void>>();
+  // A durable watchdog must survive losing in-memory waiters. Live waiters
+  // need limit checks; other maintenance can wait for its actual deadline.
+  private maintenance: { at: number; tracksRuns: boolean } | undefined;
+  private maintenanceGeneration = 0;
+  private invalidateMaintenance() {
+    this.maintenance = undefined;
+    this.maintenanceGeneration++;
+  }
   private admission: Promise<unknown> = Promise.resolve();
   private eventsProcessed: Promise<void> = Promise.resolve();
 
@@ -1630,12 +1640,17 @@ export class CamelAgent extends DurableObject<Env> {
   }
   private track(id: string) {
     if (this.pendingWaits.has(id)) return;
+    this.invalidateMaintenance();
     const settled = this.settle(id, 0)
       .then(() => {})
       .catch(() => {})
-      .finally(() => {
+      .finally(async () => {
+        this.invalidateMaintenance();
         this.pendingWaits.delete(id);
         this.configurationQueue.kick();
+        // A failed waiter leaves durable work to recover. Arm its retry after
+        // removing the tracker so the watchdog performs the complete recovery.
+        await this.arm();
       });
     this.pendingWaits.set(id, settled);
     this.ctx.waitUntil(settled);
@@ -1981,6 +1996,7 @@ export class CamelAgent extends DurableObject<Env> {
   }
   /** Withdraw only this delegated input, including a cancellation that arrives before it. */
   async cancelRequest(id: string) {
+    this.invalidateMaintenance();
     const cancel = this.admission.then(async () => {
       await this.ctx.storage.put(`cancelled-request:${id}`, true);
       const record = await this.ctx.storage.get<RequestRecord>(reqKey(id));
@@ -2887,6 +2903,7 @@ export class CamelAgent extends DurableObject<Env> {
   }
 
   async fetch(request: Request): Promise<Response> {
+    this.invalidateMaintenance();
     return this.dbProfile.run(new URL(request.url).pathname === "/history" ? "history" : "other", () => withMoneyMetrics(this.env, () => this.fetchRequest(request)));
   }
   private async fetchRequest(request: Request): Promise<Response> {
@@ -3722,6 +3739,11 @@ export class CamelAgent extends DurableObject<Env> {
     return schedule;
   }
   private async arm(retry?: number) {
+    this.invalidateMaintenance();
+    const generation = this.maintenanceGeneration;
+    const config = await this.ctx.storage.get<Config>("configuration");
+    if (!config) return;
+    const deleted = await this.ctx.storage.get("deleted");
     const schedules = await this.ctx.storage.list<Schedule>({
       prefix: "schedule:",
       limit: 100,
@@ -3737,10 +3759,14 @@ export class CamelAgent extends DurableObject<Env> {
     const pendingEvents = (
       await this.ctx.storage.list({ prefix: TERMINAL_EVENTS_PREFIX, limit: 1 })
     ).size;
-    const config = await this.ctx.storage.get<Config>("configuration");
-    const pendingRun = (await this.records()).some(
-      (record) => record.accepted && record.state !== "completed",
-    );
+    const records = await this.records();
+    const pendingRuns = records.filter(record => record.accepted && record.state !== "completed");
+    const recovering = records.some(record => record.state !== "completed" && !record.accepted) ||
+      this.cancellations.size > 0 ||
+      (await Promise.all(pendingRuns.map(record => this.ctx.storage.get(`cancelled-request:${record.id}`)))).some(Boolean) ||
+      !!await this.ctx.storage.get("resume-kept-queue") ||
+      await this.notifications.pending() ||
+      (await this.delegation.children()).length > 0;
     const next = Math.min(
       config?.expiresAt ?? Infinity,
       config
@@ -3752,18 +3778,27 @@ export class CamelAgent extends DurableObject<Env> {
       retry ?? Infinity,
       pendingBilling ? Date.now() + 5000 : Infinity,
       pendingEvents ? Date.now() + 1000 : Infinity,
-      pendingRun ? Date.now() + 1000 : Infinity,
-      (await this.records()).some(record => record.method === 'configure' && record.state !== 'completed') ? Date.now() + 1000 : Infinity,
+      records.some(record => record.method === 'configure' && record.state !== 'completed') ? Date.now() + 1000 : Infinity,
       await this.promptPreparations.deadline(),
       await this.ctx.storage.get<number>("human-input-deadline") ?? Infinity,
-      await this.limits.deadline(),
+      deleted || (config.expiresAt && config.expiresAt <= Date.now()) ? Infinity : await this.limits.deadline(),
       ...this.ctx.getWebSockets().filter(socket => socket.readyState === 1).map(socket => (socket.deserializeAttachment() as EventSubscription)?.browser?.exp ?? Infinity),
     );
-    if (Number.isFinite(next))
+    const current = generation === this.maintenanceGeneration;
+    if (current) this.maintenance = {
+      at: next,
+      tracksRuns: !recovering && pendingRuns.length > 0 && pendingRuns.every(record => this.pendingWaits.has(record.id)),
+    };
+    // A slower planner must not replace a newer deadline with its stale reads.
+    // If activity invalidated it without another plan, retain prompt recovery.
+    const watchdog = current
+      ? Math.min(next, pendingRuns.length ? Date.now() + 1000 : Infinity)
+      : Math.min(Date.now() + 1000, this.maintenance?.at ?? Infinity);
+    if (Number.isFinite(watchdog))
       await this.lifecycle.jobs.push({
         id: "camel-wake",
         fn: "camel-wake",
-        time: Math.max(Date.now() + 1, next),
+        time: Math.max(Date.now() + 1, watchdog),
       });
   }
   async onStart() {
@@ -3792,13 +3827,34 @@ export class CamelAgent extends DurableObject<Env> {
     )
       this.ctx.waitUntil(this.flushBilling());
     this.ctx.waitUntil(this.flushTerminalEvents());
+    await this.arm();
+    // A cold-start watchdog still performs the complete recovery pass. Its
+    // waiters and maintenance schedule have only just been restored.
+    this.invalidateMaintenance();
   }
   async onJob(context: { job: { fn: string } }) {
     return this.dbProfile.run("other", () => withMoneyMetrics(this.env, async () => {
-      if (context.job.fn === "camel-wake") await this.wake();
+      if (context.job.fn !== "camel-wake") return;
+      const maintenance = this.maintenance;
+      if (maintenance?.tracksRuns && Date.now() < maintenance.at &&
+          !await this.notifications.pending() && (await this.delegation.children()).length === 0 &&
+          !await this.limits.check(Date.now(), false) && this.maintenance === maintenance && Date.now() < maintenance.at) {
+        await this.lifecycle.jobs.push({
+          id: "camel-wake",
+          fn: "camel-wake",
+          time: Math.min(Date.now() + 1000, maintenance.at),
+        });
+        return;
+      }
+      await this.wake();
     }));
   }
   private async wake() {
+    if (await this.ctx.storage.get("deleted")) {
+      await this.flushBilling();
+      await this.flushTerminalEvents();
+      return;
+    }
     for (const socket of this.ctx.getWebSockets()) {
       const subscription = socket.deserializeAttachment() as EventSubscription;
       if (subscription.browser && subscription.browser.exp <= Date.now()) this.closeBrowserSocket(socket);
