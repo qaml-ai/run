@@ -1,7 +1,7 @@
 /** Local-only fixture adapter. It is never referenced by a deployment config. */
 import application from "../src/index.ts";
 import { CamelAgent as RuntimeAgent } from "../src/agent.ts";
-import { ARM_AGENT } from "../src/agent-internals.ts";
+import { ARM_AGENT, DUE_HUMAN_INPUTS } from "../src/agent-internals.ts";
 import type { Env } from "../src/agent.ts";
 import type { DelegatedChild } from "../src/delegation.ts";
 import { databaseUnavailable, withSql } from "../src/postgres.ts";
@@ -126,6 +126,13 @@ export class CamelAgent extends RuntimeAgent {
       });
       await this[ARM_AGENT](Date.now() + 300);
       return Response.json({ updated: children.size });
+    }
+    if (this.env.TEST_MODE === "1" && new URL(request.url).pathname === "/__test/contract-inputs-due" && request.method === "POST") {
+      // Match the Node fixture's due inputs: each pending input's time is up now. The runtime's own alarm then expires
+      // them, as it would after their wait.
+      const due = await this[DUE_HUMAN_INPUTS](Date.now());
+      if (!due) return Response.json({ error: "Fixture inputs not found" }, { status: 404 });
+      return Response.json({ updated: due });
     }
     if (this.env.TEST_MODE === "1" && new URL(request.url).pathname === "/__test/contract-schedule-due" && request.method === "POST") {
       const { id, dueAt, history } = await request.json() as { id: string; dueAt: number; history?: "none" };

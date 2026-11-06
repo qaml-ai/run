@@ -1,4 +1,5 @@
-import { contractTest, createContractFixture, toolCall, toolResults, listen, type T } from '../support.ts';
+import { contractTest, createContractFixture, toolCall, toolResults, listen, until, type T } from '../support.ts';
+import { createHash } from "node:crypto";
 import type { ModelReply, ContractFixture } from '../fixture.ts';
 async function runtime(t:T, respond:ModelReply, env:Record<string,string>={}, tenants?:object):Promise<ContractFixture>{return createContractFixture(t,{respond,env,tenants});}
 
@@ -55,4 +56,30 @@ return [await asking, await wiping];`;
   assert.equal(next.outcome.error, undefined, JSON.stringify(next.outcome));
   assert.notEqual((await r.call(`/v1/agents/${agent}/inputs`)).json.find((input: any) => input.id === question.id)?.state, "pending");
   assert.deepEqual(s.calls, ["read"], "the held call was never made");
+});
+
+contractTest("human-input", "tests/contract/areas/codemode-held-calls.contract.test.ts:2", "a call held while another waits on a person is made once no one answers in time and the runtime answers instead", async (t)=>{
+  const s = await server(t, 500);
+  const script = `const asking = tools.ask_user(${JSON.stringify(ASK)});
+await tools.s__read({});
+const wiping = tools.s__wipe({});
+return [await asking, await wiping];`;
+  const r = await runtime(t, (body, index) => index === 0 ? toolCall("codemode", { code: script }, "code") : { role: "assistant", content: toolResults(body).at(-1) }, LOCAL);
+  const definition = (await r.call("/v1/definitions", { body: { name: "Held", builtins: ["ask_user"], humanInput: {}, mcpServers: [{ name: "s", url: s.url, exposure: "codemode" }] } })).json;
+  const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id;
+
+  const suspended = await r.prompt(agent, "Clean up");
+  assert.equal(suspended.outcome.result.stopped, "input_required");
+  const [question] = suspended.outcome.result.inputs;
+  assert.deepEqual(s.calls, ["read"], "the call made after the question waits for its answer");
+
+  // No one answers in time: the question gets the runtime's answer, and the held call is made, as after a person's.
+  await r.expireInputs(agent);
+  const resume = `resume_${createHash("sha256").update(question.requestId).digest("hex").slice(0, 40)}`;
+  const resumed = await until(async () => { const record = (await r.call(`/v1/agents/${agent}/requests/${resume}`)).json; return record?.state === "completed" && record; }, "the resumed run", 15_000, { pendingResources: [`/v1/agents/${agent}/requests/${resume}`] });
+  assert.equal(resumed.outcome.error, undefined, JSON.stringify(resumed.outcome));
+  assert.equal((await r.call(`/v1/agents/${agent}/inputs`)).json.find((input: any) => input.id === question.id)?.state, "expired");
+  assert.deepEqual(s.calls, ["read", "wipe"], "the held call was made once");
+  assert.match(resumed.outcome.result.reply, /"timedOut":true[\s\S]*wipe done/);
+  assert.equal(r.model.bodies.length, 2, "the model is asked only to start and to answer");
 });

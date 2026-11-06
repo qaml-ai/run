@@ -21,7 +21,7 @@ async function asker(r: ContractFixture, humanInput?: object) {
 const request = (r: ContractFixture, agent: string, id: string) =>
   until(async () => { const record = (await r.call(`/v1/agents/${agent}/requests/${id}`)).json; return record.state === "completed" && record; }, `request ${id}`);
 
-contractTest("human-input", "tests/human-input.test.ts:45", "ask_user suspends the turn; the answer, after the agent unloaded, resumes it with the answer as the call's result", async (t, f) => {
+contractTest("human-input", "tests/human-input.test.ts:46", "ask_user suspends the turn; the answer, after the agent unloaded, resumes it with the answer as the call's result", async (t, f) => {
   const r = await useFixture(f, (body, index) => index === 0 ? toolCall("ask_user", ASK, "call_ask")
     : { role: "assistant", content: `Deploying to ${JSON.parse(toolResults(body).at(-1)).answers["Which region?"]}` }, { AGENT_IDLE_MS: "1000" });
   const agent = await asker(r);
@@ -32,7 +32,7 @@ contractTest("human-input", "tests/human-input.test.ts:45", "ask_user suspends t
   assert.equal(input.message, "Which region?");
   assert.equal(input.toolCallId, "call_ask");
   assert.deepEqual(input.detail.questions[0].options.map((option: any) => option.label), ["EU", "US"]);
-  assert.ok(input.expiresAt - Date.now() > 6 * 86_400_000, "inputs wait 7 days by default");
+  assert.ok(Math.abs(input.expiresAt - Date.now() - 15 * 60_000) < 60_000, "inputs wait 15 minutes by default");
   assert.equal(r.model.bodies.length, 1, "the model is not called while the turn waits");
   const system = r.model.bodies[0].messages.find((message: any) => message.role === "system" || message.role === "developer").content;
   assert.match(system, /ask them with ask_user; your turn pauses until they answer/);
@@ -68,7 +68,7 @@ contractTest("human-input", "tests/human-input.test.ts:45", "ask_user suspends t
 
 }, {env:{ AGENT_IDLE_MS: "1000" }});
 
-contractTest("human-input", "tests/human-input.test.ts:91", "a new message supersedes a waiting input; its call is closed and the prompt runs", async (t, f) => {
+contractTest("human-input", "tests/human-input.test.ts:92", "a new message supersedes a waiting input; its call is closed and the prompt runs", async (t, f) => {
   const r = await useFixture(f, (body, index) => index === 0 ? toolCall("ask_user", ASK) : { role: "assistant", content: `Read: ${lastUser(body)}` });
   const agent = await asker(r);
   const [input] = (await r.prompt(agent, "Deploy it")).outcome.result.inputs;

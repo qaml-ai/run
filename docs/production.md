@@ -60,7 +60,9 @@ Before you ship an application on the runtime, check each of these.
       calls that did not complete.
 - [ ] Runs that wait on people (`status: "input_required"`) are shown to someone
       who can answer, or answered from your inbox (`agents.runtime.inbox("pending")`
-      and the `input.requested` webhook). Inputs expire after 7 days by default.
+      and the `input.requested` webhook). After 15 minutes by default
+      (`humanInput.expiresInSeconds`) the runtime answers for them, approving
+      nothing, and the agent goes on.
 - [ ] Retries reuse the run's `idempotencyKey`, so a request retried after a
       timeout observes the same run instead of starting another.
 - [ ] Waits have a bound where your caller needs one (`signal`, Python

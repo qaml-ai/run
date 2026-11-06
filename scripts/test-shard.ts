@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -44,7 +45,9 @@ const filesFor = (hosting: string) => files.filter(file =>
   (hosting === "inline" || process.env.TEST_INCLUDE_SIM === "true" || !inlineOnly(file)));
 
 function run(args: string[], timingsOut: string, failuresOut: string) {
-  return spawnSync(process.execPath, [...TEST_ARGS, timingsOut, failuresOut, ...args], { stdio: "inherit", cwd: fileURLToPath(new URL("..", import.meta.url)) }).status ?? 1;
+  return spawnSync(process.execPath, [...TEST_ARGS, timingsOut, failuresOut, ...args], { stdio: "inherit", cwd: fileURLToPath(new URL("..", import.meta.url)),
+    // Each test file is a process; one compile cache saves the later ones re-compiling the same modules.
+    env: { NODE_COMPILE_CACHE: join(tmpdir(), "camelrun-test-compile-cache"), ...process.env } }).status ?? 1;
 }
 
 function* jsonFiles(dir: string): Generator<string> {

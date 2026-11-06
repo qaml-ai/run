@@ -1,7 +1,7 @@
 import { defineDoc, defineTool, hook, ToolTask, type Extension, type Harness, type ToolExecutionApi, type ToolRegistration, type ToolTaskInput } from "@earendil-works/pi-durable";
 import { obj, str } from "@earendil-works/pi-schema";
 import type { Context } from "@earendil-works/chord";
-import { answerInput, expiresAt, mayAnswer, questionsInput, resolution, type Answer, type HumanInputSettings, type InputRow, type Responder } from "./input-policy.ts";
+import { answerInput, expiresAt, INPUT_LIMITS, mayAnswer, questionsInput, resolution, settledAlready, type Answer, type HumanInputSettings, type InputRow, type Responder } from "./input-policy.ts";
 import { HostExecutionRequest } from "./host-execution.ts";
 import { senderInput } from "./sender.ts";
 import { actorInput } from "./security-policy.ts";
@@ -18,7 +18,6 @@ export type HumanInput = {
   answerDetail?: Omit<Answer, "content"> & { content?: any };
   responders?: { audience?: string[] };
   policyBound?: boolean;
-  resumeOnExpire?: boolean;
   requestId?: string;
   conversationId?: number;
   /** A call from code's: its code mode call's task, which ends with the turn if this input closes without an answer. */
@@ -60,7 +59,7 @@ export async function waitForHuman(input: HumanInput, api: ToolExecutionApi, con
           throw new Error("Human input retention limit reached");
         doc.requests[key] = { ...input, toolCallId: api.callId, conversationId: api.conversationId,
           ...(owner?.requestId ? { requestId: owner.requestId } : {}), ...(script ? { parentTask: script.parent } : {}),
-          createdAt: api.now(), expiresAt: api.now() + 7 * 86400_000, state: "pending" };
+          createdAt: api.now(), expiresAt: api.now() + INPUT_LIMITS.defaultExpiresSeconds * 1000, state: "pending" };
       }
     }, context);
     const release = script ? waitsOnPerson(script.startedAt, script.seed, script.call) : undefined;
@@ -85,7 +84,7 @@ export async function waitForHuman(input: HumanInput, api: ToolExecutionApi, con
       // Closed without an answer (aborted, expired, or a new message came instead): the script goes no further, and
       // this call is not made. A question's answer, a refusal or an approval is the call's, as the script goes on.
       const system = answer.answerDetail?.by.system;
-      if (script && system && !(system === "expired" && answer.resumeOnExpire))
+      if (script && system && system !== "expired")
         endScript(script.startedAt, script.seed, `${api.callId.split("/").pop()} waited on a person, and the input was closed without an answer (${system}): the script ended there`);
       return humanInputResult(answer);
     } finally {
@@ -111,8 +110,7 @@ export function humanInputView(id: string, item: HumanInput, agent: string, requ
 export function bindHumanInput(item: HumanInput, requestId: string, actor: string | undefined, settings: HumanInputSettings | undefined, agentExpiresAt: number | null): HumanInput {
   if (item.policyBound) return item;
   return { ...item, requestId, responders: actor ? { audience: [actor] } : {},
-    expiresAt: expiresAt(settings, agentExpiresAt, item.createdAt), policyBound: true,
-    ...(settings?.onExpire === "resume" ? { resumeOnExpire: true } : {}) };
+    expiresAt: expiresAt(settings, agentExpiresAt, item.createdAt), policyBound: true };
 }
 
 /** Question answers are model results; external tools retain their retry payload. */
@@ -123,7 +121,7 @@ export function humanInputResult(item: HumanInput) {
       stored: { message: item.question, detail: item.detail ?? {}, responders: item.responders ?? {}, tool: "ask_user", argumentsHash: "" } };
     const resolved = resolution([input], () => undefined);
     if ("result" in resolved) return { output: resolved.result.content, ...(resolved.result.isError ? { isError: true } : {}),
-      ...(item.answerDetail.by.system ? { control: { terminate: !(item.answerDetail.by.system === "expired" && item.resumeOnExpire) } } : {}) };
+      ...(item.answerDetail.by.system ? { control: { terminate: item.answerDetail.by.system !== "expired" } } : {}) };
   }
   return { output: [{ type: "text" as const, text: item.answer! }] };
 }
@@ -137,7 +135,7 @@ export function answerHuman(item: HumanInput, body: unknown, via: Responder["via
   const value = body as Record<string, unknown>;
   const by: Responder = { via, ...(value?.actor !== undefined ? { actor: actorInput(value.actor) } : {}), ...(value?.from !== undefined ? { from: senderInput(value.from) } : {}) };
   if (!mayAnswer({ responders: item.responders ?? {} }, by, approvers)) throw new HttpError(403, "This person may not answer this input");
-  if (item.answer === undefined && item.expiresAt !== undefined && item.expiresAt <= Date.now()) throw new HttpError(409, "This input is expired");
+  if (item.answer === undefined && item.expiresAt !== undefined && item.expiresAt <= Date.now()) throw new HttpError(409, settledAlready({ state: "expired", answer: { action: "cancel", by: { system: "expired" }, at: item.expiresAt } }));
   if (typeof value?.answer === "string") {
     if (value.answer.length > 4096) throw new HttpError(400, "Answer exceeds 4096 characters");
     return { answer: value.answer, state: "answered" as const, answerDetail: { action: "accept" as const, content: value.answer, by, at: Date.now() } };
@@ -192,10 +190,10 @@ export function humanInputExtension(): Extension {
         // A code mode call whose script waited on a person, and the input closed without an answer: the script ended
         // there (endScript), and the turn ends with it, as it does for a direct call.
         const ended = Object.values((await api.snapshot(HumanInputs, context))?.requests ?? {}).some(input => input.parentTask === prefix
-          && input.answerDetail?.by.system && !(input.answerDetail.by.system === "expired" && input.resumeOnExpire));
+          && input.answerDetail?.by.system && input.answerDetail.by.system !== "expired");
         return ended ? { ...result, isError: true, control: { ...result.control, terminate: true } } : undefined;
       }
-      const terminate = inputs.every(input => input.answerDetail?.by.system && !(input.answerDetail.by.system === "expired" && input.resumeOnExpire));
+      const terminate = inputs.every(input => input.answerDetail?.by.system && input.answerDetail.by.system !== "expired");
       return { ...result, ...humanInputResult(closed), control: { ...result.control, terminate } };
     },
   })] };

@@ -4,6 +4,7 @@ import { type ConversationView, type LiveState, LiveDoc } from "@earendil-works/
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { body } from "./validation.ts";
 import { answerHuman, bindHumanInput, sameHumanAnswer, systemHumanAnswer, humanInputView, HumanInputs, resumedHumanTools, type HumanInput } from "./human.ts";
+import { settledAlready } from "./input-policy.ts";
 import { releaseTurn } from "./control.ts";
 import { attachmentMessage } from "./prompt-attachments.ts";
 import { publishScheduleEmails } from "./schedules.ts";
@@ -352,7 +353,7 @@ export async function onHumanImpl(this: AgentRuntime,
           const doc = await tx.doc(HumanInputs);
           for (const [key, input] of bound) {
             const current = doc.requests[key];
-            if (current && !current.policyBound) Object.assign(current, { requestId: input.requestId, responders: input.responders, expiresAt: input.expiresAt, policyBound: true, ...(input.resumeOnExpire ? { resumeOnExpire: true } : {}) });
+            if (current && !current.policyBound) Object.assign(current, { requestId: input.requestId, responders: input.responders, expiresAt: input.expiresAt, policyBound: true });
           }
         }, BACKGROUND_CONTEXT);
       }
@@ -712,6 +713,13 @@ export async function submitImpl(this: AgentRuntime,
     return result;
   }
 
+/** A late answer's 409: what became of the input (one that expired says so), as Node words it. */
+function settledMessage(inputs: HumanInput[]) {
+  const expired = inputs.find(input => input.answerDetail?.by.system === "expired");
+  if (inputs.length === 1 && inputs[0].answerDetail) return settledAlready({ state: inputs[0].state ?? "answered", answer: inputs[0].answerDetail });
+  return expired ? settledAlready({ state: "expired", answer: expired.answerDetail }) : "An input is already settled";
+}
+
 export async function answerHumanInputsImpl(this: AgentRuntime,
   answers: Array<{ id: string; body: unknown }>,
   via: "api" | "agent",
@@ -743,7 +751,7 @@ export async function answerHumanInputsImpl(this: AgentRuntime,
       }
       const fresh = checked.every(entry => entry.pending.answer === undefined);
       if (!fresh && !checked.every(entry => sameHumanAnswer(entry.pending, entry.answer)))
-        throw Object.assign(new Error("An input is already settled"), { status: 409, input: checked.length === 1 ? humanInputView(checked[0].id, checked[0].pending, conf.id, checked[0].owner) : checked.map(entry => humanInputView(entry.id, entry.pending, conf!.id, entry.owner)) });
+        throw Object.assign(new Error(settledMessage(checked.map(entry => entry.pending))), { status: 409, input: checked.length === 1 ? humanInputView(checked[0].id, checked[0].pending, conf.id, checked[0].owner) : checked.map(entry => humanInputView(entry.id, entry.pending, conf!.id, entry.owner)) });
       const selected = new Set(answers.map(entry => entry.id));
       const unresolved = new Set(await Promise.all(Object.entries(snapshot?.requests ?? {})
         .filter(([key, input]) => !selected.has(key) && input.answer === undefined)
@@ -786,7 +794,7 @@ export async function answerHumanInputsImpl(this: AgentRuntime,
         for (const entry of checked) {
           const current = doc.requests[entry.id];
           if (current.answer !== undefined && !sameHumanAnswer(current, entry.answer))
-            throw Object.assign(new Error("An input is already settled"), { status: 409, input: humanInputView(entry.id, current, conf!.id, entry.owner) });
+            throw Object.assign(new Error(settledMessage([current])), { status: 409, input: humanInputView(entry.id, current, conf!.id, entry.owner) });
         }
         for (const entry of checked) {
           const current = doc.requests[entry.id];
@@ -799,7 +807,7 @@ export async function answerHumanInputsImpl(this: AgentRuntime,
         for (const event of events) await this.emit({ type: 'event', requestId: resumed.id, event });
       }
       if (fresh) for (const entry of checked)
-        await this.emit({ type: "event", requestId: entry.owner, event: { type: "input_resolved", id: entry.id } }, undefined,
+        await this.emit({ type: "event", requestId: entry.owner, event: { type: "input_resolved", id: entry.id, state: entry.answer.state, by: entry.answer.answerDetail.by } }, undefined,
           inputWebhook(conf, entry.owner ?? "", { id: entry.id, state: entry.answer.state }, true));
       for (const request of requests) this.track(request.id);
       if (requests.length) await this.arm();
@@ -813,6 +821,28 @@ export async function answerHumanInputsImpl(this: AgentRuntime,
       }
       throw error;
     } finally { releaseProjection(); }
+  }
+
+/**
+ * Bring every pending input's expiry forward to `at` (never later than it was), and the alarm with it: the alarm then
+ * expires them as it would at their own time. Returns how many were pending. Reached only through a subclass capability.
+ */
+export async function dueHumanInputsImpl(this: AgentRuntime, at: number) {
+    const root = await (await this.harness.pi()).root(BACKGROUND_CONTEXT);
+    let due = 0;
+    await root.commit(async tx => {
+      const doc = await tx.doc(HumanInputs);
+      for (const input of Object.values(doc.requests)) if (input.answer === undefined) {
+        input.expiresAt = Math.min(input.expiresAt ?? at, at);
+        due++;
+      }
+    }, BACKGROUND_CONTEXT);
+    if (due) {
+      const deadline = await this.ctx.storage.get<number>("human-input-deadline");
+      await this.ctx.storage.put("human-input-deadline", Math.min(deadline ?? at, at));
+      await this.arm();
+    }
+    return due;
   }
 
 export async function closeHumanInputsImpl(this: AgentRuntime,
