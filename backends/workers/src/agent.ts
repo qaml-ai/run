@@ -3761,12 +3761,17 @@ export class CamelAgent extends DurableObject<Env> {
     ).size;
     const records = await this.records();
     const pendingRuns = records.filter(record => record.accepted && record.state !== "completed");
+    const children = await this.delegation.children();
+    const childKeys = new Set(children.map(child => child.key));
     const recovering = records.some(record => record.state !== "completed" && !record.accepted) ||
       this.cancellations.size > 0 ||
       (await Promise.all(pendingRuns.map(record => this.ctx.storage.get(`cancelled-request:${record.id}`)))).some(Boolean) ||
       !!await this.ctx.storage.get("resume-kept-queue") ||
       await this.notifications.pending() ||
-      (await this.delegation.children()).length > 0;
+      children.some(child => child.status === "running" ||
+        (child.background && ((child.status === "input_required" && !child.cancelRequested &&
+          !childKeys.has(`${child.key}:resume`) && Date.now() - child.createdAt < MULTI_AGENT_LIMITS.childTtlSeconds * 1000) ||
+          (child.accepted && !child.notified && child.landedBy !== "wait"))));
     const next = Math.min(
       config?.expiresAt ?? Infinity,
       config
@@ -3787,12 +3792,12 @@ export class CamelAgent extends DurableObject<Env> {
     const current = generation === this.maintenanceGeneration;
     if (current) this.maintenance = {
       at: next,
-      tracksRuns: !recovering && pendingRuns.length > 0 && pendingRuns.every(record => this.pendingWaits.has(record.id)),
+      tracksRuns: !recovering && !children.length && pendingRuns.length > 0 && pendingRuns.every(record => this.pendingWaits.has(record.id)),
     };
     // A slower planner must not replace a newer deadline with its stale reads.
     // If activity invalidated it without another plan, retain prompt recovery.
     const watchdog = current
-      ? Math.min(next, pendingRuns.length ? Date.now() + 1000 : Infinity)
+      ? Math.min(next, pendingRuns.length || recovering ? Date.now() + 1000 : Infinity)
       : Math.min(Date.now() + 1000, this.maintenance?.at ?? Infinity);
     if (Number.isFinite(watchdog))
       await this.lifecycle.jobs.push({
