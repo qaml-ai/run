@@ -19,6 +19,7 @@ import { requestView } from "./request-view.ts";
 import { waitForRequest } from "./request-wait.ts";
 import type { AgentConfiguration } from "./api-contract.ts";
 import { configuration } from "./api-contract.ts";
+import { wordedFileTools } from "./file-tool-selection.ts";
 import { prioritizedTools } from "./tool-priority.ts";
 import { sourceTools, toolSourceViews } from "./tool-sources.ts";
 import { resolveCustomProviders } from "./model-credentials.ts";
@@ -67,12 +68,14 @@ export async function stateImpl(this: AgentRuntime) {
     const activity = await this.activity();
     const spend = await this.agentSpend(await this.config());
     const lastActive = Math.max(this.recentEvents.lastActivity() ?? 0, (await this.ctx.storage.get<number>("last-active")) ?? 0);
+    // A turn that suspended from code left nothing running: the agent is idle at once, until anything happens again.
+    const unloaded = (await this.ctx.storage.get<number>("unloaded-at")) ?? 0;
     return {
       cursor: (await this.ctx.storage.get<number>("cursor")) ?? this.initialCursor,
       connected: this.attached.connected,
       spendLimit: spend ? { usd: spend.usd, spent: spend.spent } : null,
       ...activity,
-      running: activity.busy || Date.now() - lastActive < Number((this.env as Env & { AGENT_IDLE_MS?: string }).AGENT_IDLE_MS ?? 60_000),
+      running: activity.busy || lastActive > unloaded && Date.now() - lastActive < Number((this.env as Env & { AGENT_IDLE_MS?: string }).AGENT_IDLE_MS ?? 60_000),
       events: this.recentEvents.read(),
       requests: await Promise.all((await this.records()).map(requestView)),
       ...(this.env.TEST_MODEL === "1"
@@ -221,6 +224,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
               incoming.config.type === "subagent",
             ),
           });
+          this.registry.install({ name: "camel.files", tools: wordedFileTools(this.workspaceFileTools, incoming.config), sections: [] });
           this.availableTools = prioritizedTools(this.registry.snapshot().tools());
           const enabled = await this.enabledTools(incoming.config);
           await root.configure(

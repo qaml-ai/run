@@ -61,7 +61,7 @@ contractTest("models", "tests/model-pricing-trust.test.ts:27", "a tenant cannot 
   assert.equal(balance, micros(1) - funded(5000 * catalog.cost.input / 1e6));
 });
 
-contractTest("models", "tests/model-pricing-trust.test.ts:95", "an unbilled admin tenant's responses on platform or admin keys are as the provider reported them, never estimated", async t => {
+contractTest("models", "tests/model-pricing-trust.test.ts:115", "an unbilled admin tenant's responses on platform or admin keys are as the provider reported them, never estimated", async t => {
   const r = await runtime(t, () => ({ role: "assistant", content: "done" }), env, tenantsFile);
   const agent = (await r.call("/v1/agents", { body: {}, token: OPS })).json;
   assert.equal((await r.prompt(agent.id, "go", OPS)).outcome.result.reply, "done");

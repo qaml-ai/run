@@ -30,7 +30,7 @@ const sources = new Set([
   "added-models.test.ts", "azure-models.test.ts", "openrouter-hosts.test.ts", "openrouter-model.test.ts", "outbound-origins.test.ts", "code-engine.test.ts",
   "docs.test.ts", "webmcp.test.ts", "ops-mcp.test.ts", "admin-site.test.ts",
   "data-collection.test.ts", "judged-approval.test.ts", "reasoning.test.ts", "deepseek-replay.test.ts", "content-filter-fallback.test.ts", "runs-stall.test.ts", "runs-busy-limit.test.ts", "runs-messages-at-end.test.ts", "end-user-usage.test.ts",
-  "workflows.test.ts", "default-model.test.ts", "model-endpoints.test.ts", "model-pricing-trust.test.ts", "inline-mcp-servers.test.ts", "mcp.test.ts", "virtual-models.test.ts",
+  "codemode-delegation.test.ts", "default-model.test.ts", "model-endpoints.test.ts", "model-pricing-trust.test.ts", "inline-mcp-servers.test.ts", "mcp.test.ts", "virtual-models.test.ts",
   "agent-language.test.ts", "agent-lifetime.test.ts", "agent-links.test.ts", "agent-mcp.test.ts", "agent-progress.test.ts", "background-agents.test.ts", "attach.test.ts", "browser-tokens.test.ts", "builtins.test.ts", "context-reset.test.ts", "history-formats.test.ts", "history-none-ignored.test.ts", "idempotency.test.ts", "model-settings.test.ts", "multi-agent.test.ts", "prompt-options.test.ts", "run-limits.test.ts", "sender.test.ts", "tool-calls.test.ts", "tool-spawn.test.ts", "tool-streaming.test.ts", "tenant-reads.test.ts",
   "agents-upsert.test.ts", "agents.test.ts", "agents-list.test.ts", "history-pages.test.ts", "structured-output.test.ts",
   "agent-fork.test.ts", "agent-messaging.test.ts", "sdk-multi-agent.test.ts", "errors.test.ts", "human-input.test.ts", "schedule-api.test.ts", "stream-deltas.test.ts",

@@ -14,6 +14,7 @@ import type { Context } from '@earendil-works/chord';
 import type { McpResult } from './attached-tools.ts';
 import { waitsForProgress } from './delegation-progress.ts';
 import { followEvents } from './event-follow.ts';
+import { scriptOf } from './codemode-run.ts';
 
 type Configuration = { model?: string | object; systemPrompt?: string; delegate?: DelegateSettings; builtins?: string[]; spendLimit?: { usd: number }; [key: string]: unknown };
 export type ParentRun = { id: string; piId?: string; startedAt?: number; params?: { spendLimit?: { usd: number }; bucket?: string; actor?: string }; metadata?: unknown };
@@ -23,7 +24,7 @@ export function childUsageCost(usage?: ChildUsage) {
   return (usage?.costUsd ?? 0) + (usage?.subagentCostUsd ?? 0) + (usage?.imageCostUsd ?? 0) + (usage?.decisionCostUsd ?? 0) + (usage?.webCostUsd ?? 0) + (usage?.transcriptionCostUsd ?? 0);
 }
 export type ChildProgressReport = { agentId: string; requestId: string; text: string; callId: string };
-export type DelegatedChild = { id: string; key: string; requestId: string; parentRequestId: string; toolCallId: string; task: string; name: string; depth: number; maxDepth?: number; chain?: string[]; root?: string; background?: boolean; folded?: boolean; createdAt: number; endedAt?: number; status: string; made: boolean; held?: number; spent?: number; charged?: boolean; outcome?: ChildRun['outcome']; error?: string; notified?: boolean; landedBy?: 'wait' | 'notice'; accepted?: boolean; cancelRequested?: boolean; progress?: { text: string; at: number; sequence: number }; progressShown?: number; progressCalls?: string[] };
+export type DelegatedChild = { id: string; key: string; requestId: string; parentRequestId: string; toolCallId: string; callId?: string; task: string; name: string; depth: number; maxDepth?: number; chain?: string[]; root?: string; background?: boolean; folded?: boolean; createdAt: number; endedAt?: number; status: string; made: boolean; held?: number; spent?: number; charged?: boolean; outcome?: ChildRun['outcome']; error?: string; notified?: boolean; landedBy?: 'wait' | 'notice'; accepted?: boolean; cancelRequested?: boolean; progress?: { text: string; at: number; sequence: number }; progressShown?: number; progressCalls?: string[] };
 export interface DelegationHost {
   storage: DurableObjectStorage;
   secret: string;
@@ -132,6 +133,9 @@ export class Delegation {
     if (args.instructions !== undefined && (typeof args.instructions !== 'string' || !args.instructions.trim() || args.instructions.length > MULTI_AGENT_LIMITS.instructionsChars)) throw new HttpError(400, 'Invalid sub-agent instructions');
     if (args.name !== undefined && (typeof args.name !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(args.name))) throw new HttpError(400, 'Invalid sub-agent name');
     const identity = await digest(`${run.id}:${callId}`), key = `delegate-${identity.slice(0, 48)}`;
+    // A call from code (`<codemode call>/c<n>`) is the code mode call's, as the model made it: its child names that call.
+    const site = api?.getTask ? await toolCallSite(api) : undefined;
+    const toolCallId = site?.innerCallId ? site.toolCallId : callId;
     const stored = await this.host.storage.get<DelegatedChild>(prefix + key);
     if (stored?.cancelRequested && !stored.accepted && stored.status === 'running') {
       await this.cancelRemote(stored);
@@ -149,8 +153,7 @@ export class Delegation {
     const place = await this.place(id, run, settings);
     const maxParallel = settings.maxParallel ?? MULTI_AGENT_LIMITS.maxParallel;
     let group: { messageIndex: number; delegates: number } | undefined;
-    if (!background && !override && api?.getTask && api.commit) {
-      const site = await toolCallSite(api);
+    if (!background && !override && site && !site.innerCallId && api?.commit) {
       if (site.assistant !== undefined) {
         const entry = await api.commit(tx => tx.entry(site.assistant as never), BACKGROUND_CONTEXT);
         let delegates = 0;
@@ -194,7 +197,7 @@ export class Delegation {
             await tx.put(responseKey, { ...state.delegateResponse!, keys: [...new Set([...(prior?.keys ?? []), key])] });
           } else held = remaining / (maxParallel - running.length);
         }
-        const child: DelegatedChild = { id: '', key, requestId: `${background ? 'spawn' : 'delegate'}_${identity.slice(0, 48)}`, parentRequestId: run.id, toolCallId: callId, task: args.instructions === undefined ? args.task as string : roleAndTask(args.instructions as string, args.task as string), name: typeof args.name === 'string' ? args.name : `${target?.name ?? 'subagent'}-${children.length + 1}`, depth: place.depth, maxDepth: place.maxDepth, chain: place.chain, root: place.chain[0], background, createdAt: Date.now(), status: 'running', made: target?.agent === undefined, ...(held !== undefined ? { held } : {}) };
+        const child: DelegatedChild = { id: '', key, requestId: `${background ? 'spawn' : 'delegate'}_${identity.slice(0, 48)}`, parentRequestId: run.id, toolCallId, ...(toolCallId !== callId ? { callId } : {}), task: args.instructions === undefined ? args.task as string : roleAndTask(args.instructions as string, args.task as string), name: typeof args.name === 'string' ? args.name : `${target?.name ?? 'subagent'}-${children.length + 1}`, depth: place.depth, maxDepth: place.maxDepth, chain: place.chain, root: place.chain[0], background, createdAt: Date.now(), status: 'running', made: target?.agent === undefined, ...(held !== undefined ? { held } : {}) };
         await tx.put(prefix + key, child);
         return child;
       });
@@ -207,9 +210,9 @@ export class Delegation {
           Object.assign(admitted, await this.update(admitted, { id: made.id! }));
           if (!resolved?.id) await this.host.inheritComputer?.(id, admitted.id);
           await this.checkCancellation(admitted, signal);
-          const metadata = { [PARENT_KEYS.agent]: id, [PARENT_KEYS.run]: run.id, [PARENT_KEYS.toolCall]: callId, [PARENT_KEYS.depth]: String(place.depth), [PARENT_KEYS.maxDepth]: String(place.maxDepth), [PARENT_KEYS.chain]: place.chain.join(',') };
+          const metadata = { [PARENT_KEYS.agent]: id, [PARENT_KEYS.run]: run.id, [PARENT_KEYS.toolCall]: toolCallId, [PARENT_KEYS.depth]: String(place.depth), [PARENT_KEYS.maxDepth]: String(place.maxDepth), [PARENT_KEYS.chain]: place.chain.join(',') };
           const signed = { ...metadata, [PARENT_KEYS.signature]: await signature(this.host.secret, admitted.id, admitted.requestId, String(place.depth), String(place.maxDepth), place.chain.join(',')) };
-          await this.host.emit({ type: 'event', requestId: run.id, event: { type: 'subagent_start', toolCallId: callId, agentId: admitted.id, requestId: admitted.requestId, name: admitted.name, depth: admitted.depth, ...(admitted.background ? { background: true } : {}) } });
+          await this.host.emit({ type: 'event', requestId: run.id, event: { type: 'subagent_start', toolCallId, agentId: admitted.id, requestId: admitted.requestId, name: admitted.name, depth: admitted.depth, ...(admitted.background ? { background: true } : {}) } });
           const relay = await this.relay(admitted);
           try { await this.checkCancellation(admitted, signal); }
           catch (error) { relay.abort(); throw error; }
@@ -232,7 +235,7 @@ export class Delegation {
             const cancelled = signal.aborted || current.cancelRequested;
             Object.assign(admitted, await this.update(current, { status: cancelled ? 'aborted' : 'failed', error: error instanceof Error ? error.message : 'Child failed', endedAt: Date.now(), held: undefined, ...(cancelled ? { cancelRequested: true } : {}) }));
             if (cancelled && admitted.id) await this.cancelRemote(admitted);
-            await this.host.emit({ type: 'event', requestId: run.id, event: { type: 'subagent_end', toolCallId: callId, agentId: admitted.id, requestId: admitted.requestId, name: admitted.name, status: admitted.status, error: admitted.error, ...(admitted.background ? { background: true } : {}) } });
+            await this.host.emit({ type: 'event', requestId: run.id, event: { type: 'subagent_end', toolCallId, agentId: admitted.id, requestId: admitted.requestId, name: admitted.name, status: admitted.status, error: admitted.error, ...(admitted.background ? { background: true } : {}) } });
           }
           throw error;
         }
@@ -310,9 +313,9 @@ export class Delegation {
     }
   }
   answer(child: DelegatedChild) { return { agentId: child.id, requestId: child.requestId, name: child.name, status: child.status, ...(child.outcome?.result?.reply ? { text: child.outcome.result.reply } : {}), ...(child.outcome?.result?.output !== undefined ? { output: child.outcome.result.output } : {}), ...(child.outcome?.result?.stopped ? { stopped: child.outcome.result.stopped } : {}), ...(child.error ? { error: child.error } : {}) }; }
-  async cancel(requestId?: string, callPrefix?: string) {
+  async cancel(requestId?: string, callPrefix?: string, key?: string) {
     const children = await this.host.storage.transaction(async tx => {
-      const children = [...(await tx.list<DelegatedChild>({ prefix })).values()].filter(child => child.status === 'running' && (!requestId || child.parentRequestId === requestId) && (!callPrefix || child.toolCallId.startsWith(callPrefix)));
+      const children = [...(await tx.list<DelegatedChild>({ prefix })).values()].filter(child => child.status === 'running' && (!requestId || child.parentRequestId === requestId) && (!callPrefix || child.toolCallId.startsWith(callPrefix)) && (!key || child.key === key));
       for (const child of children) await tx.put(prefix + child.key, { ...child, cancelRequested: true });
       return children;
     });
@@ -503,11 +506,20 @@ export class Delegation {
   tools(settings: DelegateSettings, builtins: readonly string[], subagent = false, describe: Parameters<typeof delegateTool>[1] = () => undefined): ToolRegistration[] {
     const definitions: ToolDefinition[] = [...(builtins.includes('delegate') ? [delegateTool(settings, describe)] : []), ...(builtins.includes('agents') ? agentsTools(settings, describe) : [])];
     if (subagent) definitions.push(REPORT_PROGRESS, ...(!definitions.some(tool => tool.name === 'send_message') ? [SEND_MESSAGE] : []));
-    return definitions.map(definition => defineTool({ name: definition.name, description: definition.description, parameters: definition.parameters as never, replay: 'safe', execute: async (args: Record<string, unknown>, api, context) => {
+    return definitions.map(definition => defineTool({ name: definition.name, description: definition.description, parameters: definition.parameters as never, ...(definition.callers ? { callers: definition.callers as ('model' | 'tools')[] } : {}), replay: 'safe', execute: async (args: Record<string, unknown>, api, context) => {
       const signal = context.abortSignal ?? new AbortController().signal;
       if (definition.name === 'delegate') {
-        const child = await this.wait(await this.start(args, api.callId, signal, false, api), signal);
-        return { ...await this.toolResult(this.answer(child), api), ...(child.status === 'completed' ? {} : { isError: true }) };
+        try {
+          const child = await this.wait(await this.start(args, api.callId, signal, false, api), signal);
+          return { ...await this.toolResult(this.answer(child), api), ...(child.status === 'completed' ? {} : { isError: true }) };
+        } catch (error) {
+          // A call from code whose script ended without awaiting it (Pi aborts the calls a script leaves out): its child
+          // stops, as no one will read its answer. A call cut off otherwise (the agent restarting) keeps its child for
+          // the script's replay.
+          if (signal.aborted && api.callId.includes('/') && (await scriptOf(api).catch(() => undefined))?.ended)
+            await this.cancel(undefined, undefined, `delegate-${(await digest(`${(await this.host.context(api)).run.id}:${api.callId}`)).slice(0, 48)}`).catch(() => {});
+          throw error;
+        }
       }
       if (definition.name === 'spawn_agent') {
         const work = this.start(args, api.callId, signal, true, api);

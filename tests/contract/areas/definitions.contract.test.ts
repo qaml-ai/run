@@ -224,6 +224,9 @@ contractTest("definitions", "tests/definitions.test.ts:217", "fileTools: false l
   assert.match(toolResults(r.model.bodies[1]).at(-1), /Script completed[\s\S]*\nhi$/, "code calls the file tools the model is not offered");
   assert.match(systemText(r.model.bodies[0]), /Scripts read and write them with the file tools \(tools\.read, tools\.write, tools\.ls and so on\); the application's own tools may reach other files/);
   assert.doesNotMatch(systemText(r.model.bodies[0]), /The file tools \(read/);
+  // Scripts are the only way to the files here, and the codemode section's declarations say how.
+  assert.match(systemText(r.model.bodies[0]), /This is how scripts write files \(or with await fs\.writeFile\(path, text\)\): pass the text as a plain string/);
+  assert.match(systemText(r.model.bodies[0]), /Scripts read, write and edit files with tools\.read, tools\.write and tools\.edit \(or await fs\.readFile and fs\.writeFile\)/);
 
   // Applying the definition without it brings the file tools back, but not to an agent that chose to go without.
   const own = (await r.call("/v1/agents", { body: { definition: definition.id, fileTools: false } })).json.id;
@@ -231,12 +234,16 @@ contractTest("definitions", "tests/definitions.test.ts:217", "fileTools: false l
   await until(async () => (await r.call(`/v1/definitions/${definition.id}/agents`)).json.every((entry: any) => entry.revision === 2), "the apply");
   await r.prompt(agent, "again");
   assert.deepEqual(direct(r.model.bodies.at(-1)), ["codemode", "cp", "decide", "edit", "glob", "grep", "ls", "mv", "present_file", "read", "write"]);
+  // Declared to the model, write and edit say to call them directly rather than from a script.
+  const described = (name: string) => r.model.bodies.at(-1).tools.find((tool: any) => tool.function.name === name).function.description;
+  assert.match(described("write"), /Call it directly, not from a codemode script: a file's text inside a JavaScript string breaks on backticks/);
+  assert.match(described("edit"), /Call it directly, not from a codemode script: there a failed edit ends the script\.$/);
   assert.match(systemText(r.model.bodies.at(-1)) + JSON.stringify(r.model.bodies.at(-1).messages), /The file tools \(read/);
   await r.prompt(own, "hello");
   assert.deepEqual(direct(r.model.bodies.at(-1)), ["codemode", "decide", "present_file"]);
 });
 
-contractTest("definitions", "tests/definitions.test.ts:244", "the SDK makes an agent from a definition with its attached server's tools, which survive an apply", async (t) => {
+contractTest("definitions", "tests/definitions.test.ts:251", "the SDK makes an agent from a definition with its attached server's tools, which survive an apply", async (t) => {
   const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
   const definition = (await r.call("/v1/definitions", { body: { name: "Desk", systemPrompt: "v1" } })).json;
   const runtimeClient = new AgentRuntime({ url: r.base, apiKey: "fixture-operator-token-at-least-24-chars" });
@@ -252,7 +259,7 @@ contractTest("definitions", "tests/definitions.test.ts:244", "the SDK makes an a
   assert.deepEqual(await names(), [["lookup", "App's lookup"], ["extra", "Something else"]]);
 });
 
-contractTest("definitions", "tests/definitions.test.ts:328", "public configuration waits between turns, preserves history, and reports validation and outcome", async (t) => {
+contractTest("definitions", "tests/definitions.test.ts:335", "public configuration waits between turns, preserves history, and reports validation and outcome", async (t) => {
   const r = await runtime(t, () => ({ role: "assistant", content: "ok", delayMs: 500 }));
   const agent = (await r.call("/v1/agents", { body: { systemPrompt: "Before" } })).json.id;
   const path = `/v1/agents/${agent}/configuration`;
@@ -288,7 +295,7 @@ contractTest("definitions", "tests/definitions.test.ts:328", "public configurati
   assert.deepEqual((await r.call(`/v1/agents/${agent}/history`)).json, history);
 });
 
-contractTest("definitions", "tests/definitions.test.ts:390", "a tenant's definitions are capped by its limit (409 DEFINITIONS_LIMIT), and the ones no agent uses can be listed to delete", async (t) => {
+contractTest("definitions", "tests/definitions.test.ts:397", "a tenant's definitions are capped by its limit (409 DEFINITIONS_LIMIT), and the ones no agent uses can be listed to delete", async (t) => {
   // alice (of the tenants file) at AGENT_MAX_DEFINITIONS_PER_TENANT=3.
   const r = await runtime(t, () => ({ role: "assistant", content: "ok" }), { AGENT_MAX_DEFINITIONS_PER_TENANT: "3" });
   const ids: string[] = [];

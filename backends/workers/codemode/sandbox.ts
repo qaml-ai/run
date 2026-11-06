@@ -1,6 +1,6 @@
 import {
   RemoteCodemodeSandbox, type CodemodeExecuteOptions, type CodemodeHostCall, type CodemodeOutcome, type CodemodeResult,
-  type CodemodeRun, type CodemodeRunOptions,
+  type CodemodeRun, type CodemodeRunOptions, type RemoteCodemodeSandboxOptions,
 } from "@earendil-works/pi-codemode/portable";
 import { FS_SHIM } from "./fs-shim.ts";
 import { SANDBOX_LIMITS } from "../../../src/limits.ts";
@@ -13,12 +13,12 @@ const OFF_THE_CLOCK = new Set(["delegate"]);
  * person, and whether an input one waited on was closed without an answer. A call from code finds its script in Pi's
  * run document (human.ts), and may do so before the script starts again after a restart.
  */
-type Script = { waiting: Set<number>; ended?: string; runs: Set<ScriptRun>; expires?: ReturnType<typeof setTimeout> };
+type Script = { waiting: Map<number, number>; ended?: string; runs: Set<ScriptRun>; expires?: ReturnType<typeof setTimeout> };
 const scripts = new Map<string, Script>();
 const keyOf = (startedAt: number, seed: number) => `${startedAt}:${seed}`;
 function script(key: string) {
   let found = scripts.get(key);
-  if (!found) scripts.set(key, found = { waiting: new Set(), runs: new Set() });
+  if (!found) scripts.set(key, found = { waiting: new Map(), runs: new Set() });
   return found;
 }
 function forget(key: string) {
@@ -33,10 +33,16 @@ function forget(key: string) {
  */
 export function waitsOnPerson(startedAt: number, seed: number, id: number): () => void {
   const key = keyOf(startedAt, seed), found = script(key);
-  found.waiting.add(id);
+  // Counted: one call may wait on several inputs at once (an MCP server's batch).
+  found.waiting.set(id, (found.waiting.get(id) ?? 0) + 1);
   for (const run of found.runs) run.changed();
+  let released = false;
   return () => {
-    found.waiting.delete(id);
+    if (released) return;
+    released = true;
+    const left = (found.waiting.get(id) ?? 1) - 1;
+    if (left > 0) found.waiting.set(id, left);
+    else found.waiting.delete(id);
     for (const run of found.runs) run.changed();
     forget(key);
   };
@@ -88,12 +94,14 @@ class ScriptRun implements CodemodeRun {
   private wall?: ReturnType<typeof setTimeout>;
   private readonly entry: Script;
   private readonly onAbort = () => this.abort();
+  private readonly launch: (options: CodemodeRunOptions) => CodemodeRun;
+  private readonly options: CodemodeRunOptions;
+  private readonly limitMs: number;
 
-  constructor(
-    private readonly launch: (options: CodemodeRunOptions) => CodemodeRun,
-    private readonly options: CodemodeRunOptions,
-    private readonly limitMs: number,
-  ) {
+  constructor(launch: (options: CodemodeRunOptions) => CodemodeRun, options: CodemodeRunOptions, limitMs: number) {
+    this.launch = launch;
+    this.options = options;
+    this.limitMs = limitMs;
     this.result = new Promise(resolve => { this.resolve = resolve; });
     this.entry = script(keyOf(options.startedAt, options.seed));
     this.entry.runs.add(this);
@@ -255,11 +263,17 @@ class ScriptRun implements CodemodeRun {
 
 /** The shared fs compatibility shim is the only code prepended to stock Pi. */
 export class SessionCodemodeSandbox extends RemoteCodemodeSandbox {
+  /** A script's runtime deadline unless it asks for less (`timeoutMs` in the options: tests only). */
+  private readonly defaultTimeoutMs: number;
+  constructor(options: RemoteCodemodeSandboxOptions) {
+    super(options);
+    this.defaultTimeoutMs = Math.min(options.timeoutMs ?? SANDBOX_LIMITS.timeoutMs, SANDBOX_LIMITS.maxTimeoutMs);
+  }
   override execute(code: string, options?: CodemodeExecuteOptions) {
-    return super.execute(FS_SHIM + code, { ...options, timeoutMs: Math.min(options?.timeoutMs ?? SANDBOX_LIMITS.timeoutMs, SANDBOX_LIMITS.maxTimeoutMs) });
+    return super.execute(FS_SHIM + code, { ...options, timeoutMs: Math.min(options?.timeoutMs ?? this.defaultTimeoutMs, SANDBOX_LIMITS.maxTimeoutMs) });
   }
   override start(code: string, options: CodemodeRunOptions): CodemodeRun {
-    const limit = Math.min(options.timeoutMs ?? SANDBOX_LIMITS.timeoutMs, SANDBOX_LIMITS.maxTimeoutMs);
+    const limit = Math.min(options.timeoutMs ?? this.defaultTimeoutMs, SANDBOX_LIMITS.maxTimeoutMs);
     return new ScriptRun(run => super.start(FS_SHIM + code, run), options, limit);
   }
 }

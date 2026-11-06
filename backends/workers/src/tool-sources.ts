@@ -16,7 +16,6 @@ import type { Context } from "@earendil-works/chord";
 import { registration, type McpResult, type ToolDefinition, type ToolSpawn } from "./attached-tools.ts";
 import { checkDocument, operations, formEncode, type Operation } from "./openapi-policy.ts";
 import { HttpError } from "./errors.ts";
-import { HostExecutionRequest } from "./host-execution.ts";
 import { HumanInputs, waitForHuman } from "./human.ts";
 import { parse as parseYaml } from "yaml";
 import { signRuntimeIdentity, type IdentityEnv, type RuntimeIdentity } from "./tool-identity.ts";
@@ -447,7 +446,6 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
           judge ? (input, _signal) => judge(input, api, context) : undefined);
         if (!gated) return { reply: {} };
         if (gated.resultType !== "input_required") return { result: gated };
-        if ((await toolCallSite(api, context)).innerCallId && !(await api.snapshot(HostExecutionRequest, api.conversationId, context))?.requestId) throw new Error(`${source.name}__${tool} needs the user's approval: call ${source.name}__${tool} directly`);
         const input = { name: `${source.name}__${tool}`, args, kind: "approval" as const, message: `Allow ${source.name}__${tool} to run?`, detail: { tool: `${source.name}__${tool}`, source: source.name, arguments: args } };
         if (approve) await approve(input);
         else {

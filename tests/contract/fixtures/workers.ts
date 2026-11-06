@@ -196,6 +196,10 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
       const result = await call(`/v1/agents/${parent}/__test/contract-child-settlement`, { body: {} });
       if (result.status !== 200) throw new Error(`Child settlement fixture: ${result.status} ${result.text}`);
     },
+    async seedLegacyWorkflowDefinition(definition) {
+      const result = await server.db.query(`update definitions set spec = (spec::jsonb || '{"builtins":["workflow"],"workflow":{"instructions":true}}'::jsonb)::json where id = $1`, [definition]);
+      if (result.rowCount !== 1) throw new Error("Fixture definition not found");
+    },
     async countOAuthRefreshTokens() {
       return (await server.db.query("select count(*)::int as n from oauth_tokens where kind='refresh' and grant_id is not null")).rows[0].n;
     },

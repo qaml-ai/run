@@ -219,6 +219,7 @@ original suite.
 | `builtins.test.ts` | 5 / 7 |
 | `context-reset.test.ts` | 1 / 5 |
 | `code-engine.test.ts` | 1 / 2 |
+| `codemode-delegation.test.ts` | 4 / 4 |
 | `content-filter-fallback.test.ts` | 3 / 7 |
 | `data-collection.test.ts` | 2 / 3 |
 | `deepseek-replay.test.ts` | 3 / 8 |
@@ -234,7 +235,7 @@ original suite.
 | `history-none-ignored.test.ts` | 3 / 3 |
 | `history-pages.test.ts` | 4 / 12 |
 | `http-drain.test.ts` | 1 / 1 |
-| `human-input.test.ts` | 13 / 13 |
+| `human-input.test.ts` | 14 / 15 |
 | `idempotency.test.ts` | 3 / 3 |
 | `inline-mcp-servers.test.ts` | 4 / 4 |
 | `judged-approval.test.ts` | 7 / 7 |
@@ -272,7 +273,6 @@ original suite.
 | `tool-streaming.test.ts` | 1 / 4 |
 | `virtual-models.test.ts` | 4 / 10 |
 | `webmcp.test.ts` | 2 / 4 |
-| `workflows.test.ts` | 5 / 5 |
 
 ## What stays in the original suites
 

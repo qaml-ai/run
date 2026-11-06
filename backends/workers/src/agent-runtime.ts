@@ -207,6 +207,8 @@ export class AgentRuntime extends AgentContext {
   }
 
   workspaceToolNames: string[] = [];
+  /** The file tools as made, before wordedFileTools fits their descriptions to the configuration. */
+  workspaceFileTools: ToolRegistration[] = [];
 
   fileVersions = new DurableFileVersions(this.ctx.storage);
 

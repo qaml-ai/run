@@ -34,7 +34,7 @@ import { senderExtension } from "./sender-extension.ts";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { agentBuiltins } from "./agent-builtins.ts";
 import { writtenFile, presentedFile } from "./file-output.ts";
-import { selectAgentTools } from "./file-tool-selection.ts";
+import { selectAgentTools, wordedFileTools } from "./file-tool-selection.ts";
 import { Env } from "./agent-types.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
 
@@ -308,9 +308,10 @@ export function createHarness(this: AgentRuntime): PiHarness {
         })),
       );
       this.workspaceToolNames = tools.map((tool) => tool.name);
+      this.workspaceFileTools = tools;
       registry.install({
         name: "camel.files",
-        tools,
+        tools: wordedFileTools(tools, conf.config),
         sections: [],
       });
       registry.install({ name: "camel.human", tools: [askHuman, askUser] });

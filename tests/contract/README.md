@@ -115,6 +115,8 @@ npm run parity -- --local --backend=node --area=history
 npm run parity -- --local --backend=workers --area=history
 node tests/contract/check-assertions.mjs
 node tests/contract/check-product-assertions.mjs
+node tests/contract/relink-sources.mjs [--write]   # ports whose source test moved (by its title), or is gone
+node tests/contract/diff-assertions.mjs runs.contract.test.ts tests/runs.test.ts:195   # one port's assertions against its source
 ```
 
 Local runs need root and Workers dependencies, Python requirements, v8-exec, and
