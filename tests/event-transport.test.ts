@@ -72,6 +72,21 @@ test("capability response cannot send a bearer credential to another origin", as
   await assert.rejects(openEventStream(async () => Response.json({ transport: "websocket", protocol: EVENT_PROTOCOL, url: "https://evil.test/events" }, { headers: { "content-type": "application/vnd.camelrun.events+json" } }), "https://runtime.test/events", { headers: { authorization: "Bearer secret" } }), /origin/);
 });
 
+test("a protocol close ends the reader before the host closes the transport", async () => {
+  const original = globalThis.WebSocket;
+  globalThis.WebSocket = Socket as unknown as typeof WebSocket;
+  try {
+    const response = await openEventStream(async () => negotiateEvents(new Request("https://runtime.test/events", {
+      headers: { accept: "application/vnd.camelrun.events+json" },
+    }))!, "https://runtime.test/events", { headers: { authorization: "Bearer fixture" } });
+    const reader = response.body!.getReader();
+    Socket.last.message({ event: "closed", data: { reason: "expired" } });
+    assert.equal(new TextDecoder().decode((await reader.read()).value), 'event: closed\ndata: {"reason":"expired"}\n\n');
+    assert.deepEqual(await reader.read(), { value: undefined, done: true });
+    assert.equal(Socket.last.readyState, 3, "the client also initiates transport closure");
+  } finally { globalThis.WebSocket = original; }
+});
+
 test("browser upgrade authentication accepts only the named protocol", () => {
   const request = new Request("https://runtime.test/events", { headers: { upgrade: "websocket", "sec-websocket-protocol": `${EVENT_PROTOCOL}, bearer.c2VjcmV0` } });
   assert.equal(websocketAuthorization(request).headers.get("authorization"), "Bearer secret");

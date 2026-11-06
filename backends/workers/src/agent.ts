@@ -1211,7 +1211,7 @@ export class CamelAgent extends DurableObject<Env> {
         try {
           const subscription = socket.deserializeAttachment() as EventSubscription;
           if (subscription.browser && subscription.browser.exp <= Date.now()) {
-            socket.close(1008, "Browser token expired");
+            this.closeBrowserSocket(socket);
             continue;
           }
           const visible = subscribedEvent(subscription, event);
@@ -3787,7 +3787,7 @@ export class CamelAgent extends DurableObject<Env> {
   private async wake() {
     for (const socket of this.ctx.getWebSockets()) {
       const subscription = socket.deserializeAttachment() as EventSubscription;
-      if (subscription.browser && subscription.browser.exp <= Date.now()) socket.close(1008, "Browser token expired");
+      if (subscription.browser && subscription.browser.exp <= Date.now()) this.closeBrowserSocket(socket);
     }
     this.configurationQueue.kick();
     await this.promptPreparations.sweep();
@@ -4096,6 +4096,10 @@ export class CamelAgent extends DurableObject<Env> {
         socket.close(1011, "Send failed");
       } catch {}
     }
+  }
+  private closeBrowserSocket(socket: WebSocket) {
+    try { socket.send(eventFrame({ reason: "expired" }, undefined, "closed")); } catch {}
+    socket.close(1008, "Browser token expired");
   }
   private retireAttachedSocket(socket: WebSocket) {
     const attachment = socket.deserializeAttachment();
