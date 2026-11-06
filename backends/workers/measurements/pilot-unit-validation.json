@@ -1,0 +1,215 @@
+{
+  "scope": "Workers unit suite and focused tests; public contract reports are separate",
+  "fullSuite": {
+    "status": "blocked by reproduced baseline failures and non-exiting agent-policy.test.ts",
+    "pilotRevision": "a0ee8d19",
+    "baselineRevision": "363c8987",
+    "pilotLog": "rt-pool-1:~/runs/20261105-195040-96758-1.log",
+    "baselineLog": "rt-pool-3:~/runs/20261105-195235-99005-1.log",
+    "matchingFailuresBeforeTermination": [
+      "Workers API admission keeps source IP limits and authenticated admin exemptions",
+      "Workers API admission groups source IPv6 /64 and identifies Worker zones",
+      "test mode alone does not grant web builtins access to private addresses",
+      "search reports missing own keys without dispatching",
+      "x_search preserves handle filters, citations and provider-reported exact cost",
+      "decision and delegation tools resolve context from the executing conversation",
+      "targeted cancellation includes queued requests of named agents and survives restart",
+      "signed children can message their parent with bounded idempotent request ids",
+      "a message folded into a running child keeps its original answer for wait_agent",
+      "progress is idempotent, shown once in tool results, and never starts a turn",
+      "wait_agent takes a background ending exactly once and excludes direct delegates"
+    ],
+    "termination": "Both owned process groups were terminated after the same file stopped progressing; interruption-generated failures are excluded."
+  },
+  "remainingUnitFiles": {
+    "revision": "1fc86d32",
+    "excluded": [
+      "test/agent-policy.test.ts"
+    ],
+    "passed": 398,
+    "failed": 10,
+    "log": "rt-pool-1:~/runs/20261105-195445-2544-1.log",
+    "failureClasses": {
+      "matchedBaselineAssertions": [
+        "Workers API admission keeps source IP limits and authenticated admin exemptions",
+        "Workers API admission groups source IPv6 /64 and identifies Worker zones",
+        "test mode alone does not grant web builtins access to private addresses",
+        "search reports missing own keys without dispatching",
+        "x_search preserves handle filters, citations and provider-reported exact cost"
+      ],
+      "otherAssertion": [
+        "bucket and keyScope names use the source grammars"
+      ],
+      "moduleLoaderFailures": [
+        "test/agent-tools.test.ts",
+        "test/mcp-transport.test.ts",
+        "test/service-api.test.ts",
+        "test/source-discovery.test.ts"
+      ]
+    },
+    "interpretation": "This broad unit run is not green. Five assertions match the reproduced baseline; other assertion/loader failures were not repaired as part of the pilot."
+  },
+  "focusedImageValidation": {
+    "revision": "98afabfd",
+    "streamUnitTests": 11,
+    "fakeProviderUnitTests": 4,
+    "filesAndImagesWorkerdIntegrationTests": 8,
+    "integrationLog": "rt-pool-2:~/runs/20261105-194938-95644-1.log",
+    "status": "pass"
+  },
+  "focusedWebSocketValidation": {
+    "revision": "8b4f1f2d",
+    "unitTests": 9,
+    "workerdIntegrationTests": 2,
+    "log": "rt-pool-3:~/runs/20261105-200154-16134-1.log",
+    "status": "pass",
+    "checks": [
+      "default SDK negotiates WebSocket",
+      "idle connection stays open for 22 seconds and receives next turn",
+      "explicit SSE fails with HTTP 406 WEBSOCKET_REQUIRED",
+      "browser event filtering, cost redaction, write refusal and expiry"
+    ]
+  },
+  "focusedWatcherQuotas": {
+    "revision": "fe1fc417",
+    "status": "pass",
+    "mainWorkersTypecheck": "pass",
+    "integrationTests": 1,
+    "log": "rt-pool-1:~/runs/20261105-201302-30942-1.log",
+    "checks": [
+      "one tenant limit across different agent Durable Objects",
+      "WebSocket disconnect returns its durable reservation",
+      "bounded JSON polls and sockets share the quota"
+    ]
+  },
+  "assertionPreservation": {
+    "portedCases": 311,
+    "portedAssertions": 2516,
+    "productDeclarations": 49,
+    "productAssertions": 620,
+    "status": "pass",
+    "revision": "9af166c0",
+    "logs": [
+      "rt-pool-4:~/runs/20261105-203707-88169-1.log",
+      "rt-pool-3:~/runs/20261105-203841-91924-1.log"
+    ]
+  },
+  "focusedRunLimitValidation": {
+    "revision": "74c4bf3d",
+    "status": "pass",
+    "runLimitCases": 5,
+    "runLimitLog": "rt-pool-2:~/runs/20261105-203144-76650-1.log",
+    "modelStallCases": 1,
+    "modelStallLog": "rt-pool-3:~/runs/20261105-203212-77380-1.log",
+    "note": "The preceding combined8-Sprite matrix at bccea4cc reported a 30s case timeout and a fixture workerd exit; both source files passed separately with CONTRACT_CONCURRENCY=1. Final matrix reruns these cases."
+  },
+  "focusedProtocolClose": {
+    "revision": "0dc8e339",
+    "typeScriptTransportTests": 8,
+    "browserExpiryContractCases": 1,
+    "status": "pass",
+    "log": "rt-pool-2:~/runs/20261105-203450-83813-1.log",
+    "note": "The Worker sends an existing closed control frame before closing the expired browser stream; the adapter delivers that frame and EOF without waiting for the host TCP close. Node SSE behavior is unchanged.",
+    "pythonRevision": "9a303660",
+    "pythonTransportTests": 6,
+    "integratedRevision": "591c9c73"
+  },
+  "publicContractAttempts": [
+    {
+      "nodeRevision": "d22ed734",
+      "workersRevision": "834fe6e1",
+      "node": {
+        "pass": 590,
+        "fail": 0,
+        "outOfScope": 380
+      },
+      "workers": {
+        "pass": 570,
+        "acceptedDifference": 17,
+        "fail": 3,
+        "outOfScope": 380
+      },
+      "failures": [
+        "tests/browser-tokens.test.ts:75",
+        "tests/sdk-multi-agent.test.ts:13",
+        "tests/multi-agent.test.ts:179"
+      ],
+      "artifactDirectory": "runs/2026-11-06T02-14-00-577Z-32406"
+    },
+    {
+      "workersRevision": "bccea4cc",
+      "workers": {
+        "pass": 570,
+        "acceptedDifference": 17,
+        "fail": 3,
+        "outOfScope": 380
+      },
+      "failures": [
+        "tests/browser-tokens.test.ts:75",
+        "tests/run-limits.test.ts:111",
+        "tests/runs-stall.test.ts:8"
+      ],
+      "note": "Isolated branch included a speculative dedicated expiry job, which did not fix closure and was not merged. The run-limit and model-stall files subsequently passed sequential focused runs."
+    }
+  ],
+  "hibernationCloseProbe": {
+    "diagnosticRevision": "2f6a6687",
+    "log": "rt-pool-2:~/runs/20261105-203330-81389-1.log",
+    "description": "The same Node built-in WebSocket client; each endpoint sends close1008 after1000ms.",
+    "results": [
+      {
+        "endpoint": "plain Worker",
+        "elapsedMs": 1104,
+        "code": 1008,
+        "readyState": 3
+      },
+      {
+        "endpoint": "plain Durable Object",
+        "elapsedMs": 1104,
+        "code": 1008,
+        "readyState": 3
+      },
+      {
+        "endpoint": "hibernating Durable Object",
+        "observedMs": 5014,
+        "readyState": 2
+      }
+    ],
+    "resolution": "Use the existing closed protocol control frame to finish the client reader and initiate local closure. Do not keep a Worker or Durable Object awake."
+  },
+  "finalTypechecks": {
+    "revision": "591c9c73",
+    "root": "pass",
+    "workers": "pass",
+    "generatedMcp": "pass",
+    "log": "rt-pool-2:~/runs/20261105-203541-85870-1.log"
+  },
+  "finalNodeContract": {
+    "revision": "9af166c06e24d58cad33b887f5330c4d5c16b9ed",
+    "nodeKey": "852bab2d222691ed660a6bdcca2bf1308f7348edec37d0e6e9a0a4296097e533",
+    "recordedAt": "2026-11-06T02:44:09.707Z",
+    "durationMs": 382331.27853999997,
+    "httpPass": 524,
+    "sdkPass": 66,
+    "fail": 0,
+    "outOfScope": 380
+  },
+  "finalWorkersContract": {
+    "revision": "43476578f18f0d3009a1f6b3c75dd30f21269b94",
+    "nodeKey": "852bab2d222691ed660a6bdcca2bf1308f7348edec37d0e6e9a0a4296097e533",
+    "suiteHash": "f9ddaa6c05511e74108e7c621ff00d6e99886ceb5bab26e97688dbc3f7cbb473",
+    "recordedAt": "2026-11-06T02:54:50.543Z",
+    "durationMs": 625604.341531,
+    "httpPass": 507,
+    "sdkOnlyPass": 66,
+    "acceptedDifferences": 17,
+    "fail": 0,
+    "outOfScope": 380
+  },
+  "harnessInventoryValidation": {
+    "revision": "17ce8e28",
+    "pass": 7,
+    "fail": 0,
+    "log": "rt-pool-1:~/runs/20261105-205526-22639-1.log"
+  }
+}

@@ -1,0 +1,155 @@
+{
+  "scope": "Full public contract comparison and provenance of subsequent operational helper fixes",
+  "command": "CONTRACT_CONCURRENCY=1 npm run parity -- --shards=8",
+  "sprites": 8,
+  "perSpriteConcurrency": 1,
+  "artifacts": "runs/2026-11-06T02-37-30-151Z-88945",
+  "node": {
+    "revision": "9af166c06e24d58cad33b887f5330c4d5c16b9ed",
+    "nodeKey": "852bab2d222691ed660a6bdcca2bf1308f7348edec37d0e6e9a0a4296097e533",
+    "recordedAt": "2026-11-06T02:44:09.707Z",
+    "durationMs": 382331.27853999997,
+    "httpPass": 524,
+    "sdkOnlyPass": 66,
+    "fail": 0,
+    "outOfScope": 380
+  },
+  "workers": {
+    "revision": "43476578f18f0d3009a1f6b3c75dd30f21269b94",
+    "nodeKey": "852bab2d222691ed660a6bdcca2bf1308f7348edec37d0e6e9a0a4296097e533",
+    "suiteHash": "f9ddaa6c05511e74108e7c621ff00d6e99886ceb5bab26e97688dbc3f7cbb473",
+    "recordedAt": "2026-11-06T02:54:50.543Z",
+    "durationMs": 625604.341531,
+    "httpPass": 507,
+    "sdkOnlyPass": 66,
+    "acceptedDifferences": 17,
+    "fail": 0,
+    "outOfScope": 380
+  },
+  "subsequentHelperValidation": {
+    "comparisonRevision": "17ce8e28df55528575e6da20a98c70bc95cddb94",
+    "changedFiles": [
+      "backends/workers/PILOT.md",
+      "backends/workers/measurements/pilot-browser-expiry-before-fix.json",
+      "backends/workers/measurements/pilot-browser-expiry.json",
+      "backends/workers/measurements/pilot-hibernation.json",
+      "backends/workers/measurements/pilot-real-model.json",
+      "backends/workers/measurements/pilot-smoke-90s.json",
+      "backends/workers/measurements/pilot-smoke.json",
+      "backends/workers/scripts/pilot-load.mjs",
+      "backends/workers/scripts/pilot-operator-worker.ts",
+      "backends/workers/test/pilot-load.test.mjs",
+      "tests/contract/harness.test.mjs"
+    ],
+    "unchangedRuntimeTrees": [
+      {
+        "path": "backends/workers/src",
+        "tree": "d7a73bdd74afb33536b7c2afacf49e2a76fc1309",
+        "equal": true
+      },
+      {
+        "path": "backends/workers/codemode",
+        "tree": "5bd1808109d4b995042ce0137740d983a8e654a4",
+        "equal": true
+      },
+      {
+        "path": "backends/workers/computers",
+        "tree": "8c80bee938b657f85fe43576c3879d9c1b0351b1",
+        "equal": true
+      },
+      {
+        "path": "backends/workers/pilot-fakemodel",
+        "tree": "f6895459017da59ecd436636226cd0e9cde6a48a",
+        "equal": true
+      },
+      {
+        "path": "clients",
+        "tree": "d6ab1ed7d9f470c1112aafd362d7df1693da09ed",
+        "equal": true
+      },
+      {
+        "path": "src",
+        "tree": "82d873f8032588cb8359dbcd36540dd86bc02b82",
+        "equal": true
+      },
+      {
+        "path": "sdk",
+        "tree": "d7912c5959319d8d8612beacb709c56fbbf1d824",
+        "equal": true
+      },
+      {
+        "path": "shared",
+        "tree": "fd36f5aed4d2b765a3a7846c7b43f35af9e2b9ee",
+        "equal": true
+      },
+      {
+        "path": "vendor",
+        "tree": "2a7cfbd873816072494bf6ae3d4ee2e2768497c0",
+        "equal": true
+      },
+      {
+        "path": "tests/contract/areas",
+        "tree": "bdb3c49999a460d8a24dfe6d448a77034af02419",
+        "equal": true
+      },
+      {
+        "path": "tests/contract/fixtures",
+        "tree": "541456daf1903fb1f04ca682e09f9c2435494af2",
+        "equal": true
+      }
+    ],
+    "nodeSourceInputsChanged": false,
+    "focusedTest": {
+      "command": "scripts/sprite-test HEAD node --test backends/workers/test/pilot-load.test.mjs",
+      "revision": "8eb0225c7da3e7922bc6e3a31824eaf6234a243d",
+      "pass": 1,
+      "fail": 0,
+      "log": "rt-pool-3:~/runs/20261105-205159-17746-1.log"
+    },
+    "note": "The contract matrix does not invoke pilot operational scripts. Full reports retain their actual tested revisions and hashes; no hash is rewritten to claim those scripts ran in the matrix.",
+    "currentNodeKey": "852bab2d222691ed660a6bdcca2bf1308f7348edec37d0e6e9a0a4296097e533",
+    "currentSuiteHash": "dad3fb477101db913d0e63b4e3a29887a141e55835d2717eb5dcf684985206a4",
+    "harnessInventoryTest": {
+      "revision": "17ce8e28",
+      "pass": 7,
+      "fail": 0,
+      "log": "rt-pool-1:~/runs/20261105-205526-22639-1.log"
+    }
+  },
+  "groups": {
+    "transport": {
+      "nodeHttpPass": 43,
+      "workersHttpPass": 34,
+      "sdkOnlyPass": 19,
+      "acceptedDifferences": 9,
+      "fail": 0,
+      "outOfScope": 0
+    },
+    "sdk": {
+      "nodeHttpPass": 10,
+      "workersHttpPass": 8,
+      "sdkOnlyPass": 19,
+      "acceptedDifferences": 2,
+      "fail": 0,
+      "outOfScope": 0
+    },
+    "python": {
+      "nodeHttpPass": 32,
+      "workersHttpPass": 32,
+      "sdkOnlyPass": 24,
+      "acceptedDifferences": 0,
+      "fail": 0,
+      "outOfScope": 4
+    }
+  },
+  "mergeVerification": {
+    "revision": "43476578f18f0d3009a1f6b3c75dd30f21269b94",
+    "command": "node tests/contract/run.mjs --backend=workers --merge=<run artifacts>/workers",
+    "exitCode": 0,
+    "note": "Merged in an isolated checkout of the tested Worker revision. The pool coordinator rejected merging into the newer helper-only source tree, as designed. Reports keep their actual hashes and revisions."
+  },
+  "ciValidation": {
+    "persistedReportHashGate": false,
+    "evidence": "No GitHub Actions workflow or normal test imports the persisted Worker report. Only explicit parity report merging validates current Worker suiteHash; this merge used the exact tested checkout."
+  }
+}
