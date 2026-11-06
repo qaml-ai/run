@@ -1,13 +1,16 @@
 import { DurableObject } from "cloudflare:workers";
 import { TenantWatchers } from "./tenant-watchers.ts";
+import { TenantStorage } from "./tenant-storage.ts";
 const agentOf = "CASE WHEN instr(id, ':') > 0 THEN substr(id, 1, instr(id, ':') - 1) ELSE id END";
 
 /** One tenant serializes admission. No fleet registry, heartbeat or PG advisory lock. */
 export class TenantAdmission extends DurableObject<Record<string, unknown>> {
   private readonly watchers: TenantWatchers;
+  private readonly files: TenantStorage;
   constructor(ctx: DurableObjectState, env: Record<string, unknown>) {
     super(ctx, env);
     this.watchers = new TenantWatchers(ctx.storage.sql, write => ctx.storage.transactionSync(write));
+    this.files = new TenantStorage(ctx.storage, env.BUCKET as R2Bucket);
     ctx.storage.sql.exec(
       "CREATE TABLE IF NOT EXISTS admitted (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL)",
     );
@@ -83,6 +86,10 @@ export class TenantAdmission extends DurableObject<Record<string, unknown>> {
       return true;
     });
   }
+  nativeStorageUsed(tenant: string) { return this.files.used(tenant); }
+  recordNativeFile(tenant: string, key: string, bytes: number) { return this.files.record(tenant, key, bytes); }
+  deleteNativeFile(tenant: string, key: string) { return this.files.deleted(tenant, key); }
+  alarm() { return this.files.alarm(); }
   /** Called after account deletion has stopped and purged every owned agent. */
   async purgeAccountData() {
     await this.ctx.storage.deleteAlarm();
