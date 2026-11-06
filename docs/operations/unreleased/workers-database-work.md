@@ -1,4 +1,4 @@
-# Workers pilot database work and account deletion
+### Workers pilot database work and account deletion
 
 The Workers pilot batches webhook outbox work and avoids repeated credit reads
 inside a model settlement. Active turns keep their recovery alarm and live

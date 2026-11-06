@@ -351,6 +351,9 @@ remain retained. A workerd test created 2,001 agents through the API, interrupte
 the process during deletion, and verified all agents removed across 81 persisted
 passes, with the original balance and ledger preserved and the token rejected.
 The deletion portion took 531.905 seconds on the Sprite test database.
+The Queue delivers one message per invocation, so independent accounts do not
+wait behind a batch of long deletion passes. This setting was reduced from ten
+after the measured load stages, during their durable cleanup.
 
 The load orchestrator pins both the temporary operator helper and the Sprite
 runner to one commit. Its temporary checkout contains source and dependency
