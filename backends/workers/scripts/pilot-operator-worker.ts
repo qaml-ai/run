@@ -61,6 +61,13 @@ export default function pilotOperator(options: Options) {
             (select count(*) from model_attempts where tenant=any($1::text[]) and state='settled')::int as settled_attempts,
             (select coalesce(sum(charge),0)::bigint from model_attempts where tenant=any($1::text[])) as attempt_charge_micros,
             (select count(*) from account_deletions where tenant=any($1::text[]) and completed_at is not null)::int as deleted_tenants`, [tenant ? [tenant] : [...allowed]]);
+          const agent = url.searchParams.get("agent");
+          if (agent) {
+            if (!tenant || !(await services.accounts.db.query("select 1 from agents where tenant=$1 and id=$2", [tenant, agent])).rowCount)
+              return reply({ error: "Agent outside bootstrap scope" }, 403);
+            const namespace = env.AGENTS as unknown as DurableObjectNamespace;
+            return reply({ ...row, agentId: agent, agentObjectId: namespace.idFromName(agent).toString() });
+          }
           return reply(row);
         }
         if (targeted && (!targeted[2] || targeted[2] === "deletion")) {
