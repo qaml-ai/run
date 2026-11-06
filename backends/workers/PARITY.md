@@ -578,9 +578,10 @@ Run one area with `npm run parity -- --area=history` (Node gate, then Workers), 
 | Case / source | Node | Workers | Failure or accepted-difference reason |
 | --- | --- | --- | --- |
 | the admin site answers only on its hostname, to people Cloudflare Access signed in, with every tenant's stats (`tests/admin-site.test.ts:25`) | pass | pass |  |
-| the operations endpoint names its own protected resource, and answers nobody who is not signed in (`tests/ops-mcp.test.ts:38`) | pass | pass |  |
-| only the tenants on AGENT_OPS_ADMINS connect: anyone else is refused at consent, and /mcp is untouched (`tests/ops-mcp.test.ts:59`) | pass | pass |  |
-| the tools: read-only rows a dashboard charts, and a token that works here works nowhere else (`tests/ops-mcp.test.ts:86`) | pass | pass |  |
+| the operations endpoint names its own protected resource, and answers nobody who is not signed in (`tests/ops-mcp.test.ts:39`) | pass | pass |  |
+| only the tenants on AGENT_OPS_ADMINS connect: anyone else is refused at consent, and /mcp is untouched (`tests/ops-mcp.test.ts:60`) | pass | pass |  |
+| the tools: read-only rows a dashboard charts, and a token that works here works nowhere else (`tests/ops-mcp.test.ts:87`) | pass | pass |  |
+| the account, channel, schedule and support tools answer one tenant's shape, and never its secrets (`tests/ops-mcp.test.ts:171`) | pass | pass |  |
 
 ## providers
 
