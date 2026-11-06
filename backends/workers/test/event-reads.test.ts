@@ -26,7 +26,7 @@ function fixture(acquire?: () => Promise<void>) {
 }
 
 test("stuck subscriber setup expires and releases its slots before the upstream completes", async t => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_000_000 });
   const f = fixture();
   let started!: () => void, finish!: (response: Response) => void, forwarded!: Request;
   const entered = new Promise<void>(resolve => { started = resolve; });
@@ -51,7 +51,7 @@ test("stuck subscriber setup expires and releases its slots before the upstream 
 });
 
 test("a stalled subscriber response body also expires but a bounded poll can finish", async t => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_000_000 });
   const f = fixture();
   let started!: () => void;
   const entered = new Promise<void>(resolve => { started = resolve; });
