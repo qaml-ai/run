@@ -228,8 +228,8 @@ invoice. The original cleanup hit the 30-second post-response lifetime of
 background work. A scoped foreground operator recovered it: all 20 tenants,
 2,000 agents, volumes, end users, provider settings and API keys were removed,
 with no credit holds remaining. See `measurements/pilot-load-full-recovery.json`.
-The repeatable load driver now uses this foreground path directly; each request
-can wait up to ten minutes without cutting off cleanup after its HTTP response.
+That repeat used the foreground path directly. The scaling change below replaces
+it with durable Queue passes and status polling.
 
 One zero-charge accounting audit from the original ramp remains pending. It has
 no end-user hold or customer context. The normal five-minute Cron reconciler
@@ -313,6 +313,98 @@ of model usage; its total internal tenant debit was $0.000042.
 - Cold-object account deletion and agent spend regression checks pass. A second
   regression covers recovery of an already-revoked, partially purged agent.
 - Documentation build and both `llms.txt` checks pass.
+
+## Database scaling measurements
+
+The scaling branch profiles PostgreSQL calls with `PILOT_DB_PROFILE=1`. Each
+`pg.query` invocation counts once, including transaction control and failed
+statements. Transaction hold time runs from the successful `BEGIN` response to
+the `COMMIT` or `ROLLBACK` response. Connection acquisition is measured separately.
+The profile contains counts, durations and allowlisted schema labels, never query
+text, parameters or credentials. The switch is enabled only in the pilot config.
+`measurements/turn-db-profile.json` records the phase breakdown and limitations.
+
+Credit settlement still runs in PostgreSQL transactions. The changes combine
+credit-room reads, reuse an already locked end-user row while repeating expiry
+after hold release, reuse the same daily totals for notices, and return a newly
+inserted attempt's identity without a second read. Duplicate attempts still read
+and validate the existing identity. Ledger writes, lot allocation, expiry,
+idempotency and attribution remain in the same transaction. Webhook intents are
+batched into the durable outbox and its delivery scan uses one statement.
+Credit leasing was not introduced: PostgreSQL still owns every reservation and
+charge. The 15-second fake turns already require no hold-renewal queries.
+
+Active turns retain a one-second durable watchdog. A live object that still owns
+its result waiters checks live limits (up to three PostgreSQL reads per tick)
+without repeating computer cleanup and the rest of the maintenance scan. Real
+deadlines, a cold start, lost waiters, delegation, notifications and cancellation
+still take the full recovery path. Plan generation checks prevent an older
+asynchronous planner from replacing a newer deadline. Deleted agents continue
+retrying unacknowledged financial receipts.
+
+Account deletion now uses the existing delivery Queue. The request persists its
+intent and enqueues work before returning HTTP 202. Each consumer pass revokes
+and purges at most 25 agents. It enqueues the next pass before acknowledging the
+current message. PostgreSQL leases serialize duplicate deliveries; the five-minute
+Cron repairs a lost enqueue or exhausted delivery retries. Accounting records
+remain retained. A workerd test created 2,001 agents through the API, interrupted
+the process during deletion, and verified all agents removed across 81 persisted
+passes, with the original balance and ledger preserved and the token rejected.
+The deletion portion took 531.905 seconds on the Sprite test database.
+
+The load orchestrator pins both the temporary operator helper and the Sprite
+runner to one commit. Its temporary checkout contains source and dependency
+links; credentials still travel only through the pipe and kernel FIFO. Cleanup
+posts one deletion request, polls its durable status and checks token revocation.
+
+The comparison uses 20 tenants, the same 15-second fake model and the same load
+runner at 100, 250 and 500 concurrent turns. Hyperdrive remains at an origin
+limit of 16 and the database remains at 25 connection slots. The baseline API
+revision is `247cc940`; the optimized revision is `f5dac260`. Neither AWS nor the
+production runtime was changed.
+
+| Concurrent turns | Version | Client errors | Successful turns/s | p50 / p95 / p99 |
+| --- | --- | --- | --- | --- |
+| 100 | Before | 0/100 | 2.607 | 36.436 / 37.712 / 37.869 s |
+| 100 | After | 0/100 | 2.725 | 33.090 / 34.971 / 35.333 s |
+| 250 | Before | 2/250 (0.8%) | 3.598 | 65.368 / 66.717 / 66.921 s |
+| 250 | After | 2/250 (0.8%) | 3.976 | 56.448 / 60.652 / 60.849 s |
+| 500 | Before | 313/500 (62.6%) | 1.331 | 115.439 / 120.151 / 121.184 s |
+| 500 | After | 249/500 (49.8%) | 2.340 | 97.563 / 105.519 / 106.564 s |
+
+Latencies include the fake model delay and describe observed completed turns.
+Client failures, mostly timeouts, do not imply the same number of failed model
+attempts. The raw reports retain admission, HTTP-error and financial counters.
+
+The 100-turn samples had no detected object recreation. Observed PostgreSQL
+round trips per requested turn fell **24.65%**, from **288.97 to 217.73**:
+
+| Phase | Before | After |
+| --- | ---: | ---: |
+| Admission | 26.00 | 24.00 |
+| Hold | 14.00 | 12.00 |
+| Renew | 0 | 0 |
+| Settle | 47.70 | 36.68 |
+| Usage | 3.00 | 3.00 |
+| Webhooks | 14.32 | 7.28 |
+| History | 0 | 0 |
+| Other, including live limit checks | 175.10 | 127.03 |
+| Public API authentication and lookup | 8.85 | 7.74 |
+
+The runner does not request history; Workers history uses DO SQLite. The baseline
+500-turn profile lost counters when 499 objects were recreated. The optimized
+250-turn profile detected two recreations, and its 500-turn snapshot still had
+one pending attempt. Those profiles are partial. Counts are observed query
+dispatches, not a proof that every operation completed inside the snapshot:
+in-flight SQL can also understate the recorded timing at reset boundaries.
+
+The largest remaining group is live limits: each tick verifies ownership,
+refreshes the agent spend counter and reads tenant caps. Financial writes remain
+in PostgreSQL. The results still reject 500 concurrent turns on this database.
+For a next CTO-approved capacity trial, about 64 origin connections backed by
+80–100 database slots is a reasonable starting point. That is a rough fourfold
+capacity hypothesis, not a measured guarantee; regional pool allocation, query
+cost and database CPU still need validation. The current database was not resized.
 
 ## Limits and rollback
 
