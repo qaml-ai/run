@@ -17,7 +17,6 @@ on:
       - "!src/oauth.ts"
       - "!src/help*.ts"
       - "!src/ops-*.ts"
-      - "!src/discord-managed.ts"
       - "!src/email-accounts.ts"
       - clients/*.ts
       - shared/**
@@ -46,7 +45,6 @@ on:
       - "!src/oauth.ts"
       - "!src/help*.ts"
       - "!src/ops-*.ts"
-      - "!src/discord-managed.ts"
       - "!src/email-accounts.ts"
       - clients/*.ts
       - shared/**

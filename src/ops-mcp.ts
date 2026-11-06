@@ -153,7 +153,7 @@ export function opsTools(db: Db): OpsTool[] {
     },
     {
       name: "channels", title: "Channels",
-      description: "Channels let people talk to agents through Telegram, Slack, Discord, GitHub, email or a webhook. By provider: how many channels, how many accounts have them, and how many conversations they answer; the inbound messages per UTC day; and the accounts with channels, most used first. Inbound messages are kept 7 days, so daily is at most 7 rows whatever days asks for. Counts only: never a credential, a definition or a message.",
+      description: "Channels let people talk to agents through Telegram, Slack, GitHub, email or a webhook (stored Discord channels, retired, still count). By provider: how many channels, how many accounts have them, and how many conversations they answer; the inbound messages per UTC day; and the accounts with channels, most used first. Inbound messages are kept 7 days, so daily is at most 7 rows whatever days asks for. Counts only: never a credential, a definition or a message.",
       input: { days: days(7), limit: limit(25) },
       run: args => reports.channels(db, { days: args.days ?? 7, limit: args.limit ?? 25 }),
     },

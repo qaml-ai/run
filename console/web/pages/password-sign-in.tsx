@@ -9,7 +9,7 @@ import type { SignupSource } from "@/lib/signup-source";
 /** The shortest password the runtime takes. */
 export const MIN_PASSWORD = 12;
 
-/** After signing in: on to `next` where the server accepted it (a page load: Discord, or an app's consent page), else the console. */
+/** After signing in: on to `next` where the server accepted it (a page load: an app's consent page), else the console. */
 export function signedIn(accepted: string | undefined, onSignedIn: () => void) {
   if (accepted) { location.assign(accepted); return; }
   history.replaceState(null, "", "/console/");
@@ -18,7 +18,7 @@ export function signedIn(accepted: string | undefined, onSignedIn: () => void) {
 }
 
 /**
- * Signing in with an email address and password. `next` resumes adding Camel to Discord or connecting an app;
+ * Signing in with an email address and password. `next` resumes connecting an app;
  * `secondary` when GitHub or Google is offered above it; `onForgot` where a reset link can be mailed.
  */
 export function PasswordForm({ onSignedIn, next, secondary = false, onForgot }: { onSignedIn: () => void; next?: string; secondary?: boolean; onForgot?: () => void }) {
@@ -31,7 +31,7 @@ export function PasswordForm({ onSignedIn, next, secondary = false, onForgot }: 
     setBusy(true); setError("");
     try {
       const result = await api<{ next?: string }>("/console/auth/password", { body: { email: email.trim(), password, ...(next ? { next } : {}) } });
-      // The server accepted only its own routes: those are page loads (on to Discord, or the consent page), not console routes.
+      // The server accepted only its own routes: those are page loads (the consent page), not console routes.
       signedIn(result.next && result.next === next ? result.next : undefined, onSignedIn);
     }
     catch (caught) { setError((caught as Error).message); setPassword(""); }

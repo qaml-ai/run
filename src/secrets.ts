@@ -98,34 +98,3 @@ export async function runtimeSecrets(env = process.env) {
     stripe,
   };
 }
-
-/** Managed Discord is opt-in. In hosted deployments load platform credentials from Secrets Manager. */
-export async function managedDiscordSecrets(env = process.env) {
-  if (env.AGENT_DISCORD_MANAGED_ENABLED !== "true") return undefined;
-  const names = ["BOT_TOKEN", "APPLICATION_ID", "CLIENT_SECRET"];
-  let values: Record<string, unknown>;
-  if (env.AGENT_DISCORD_MANAGED_SECRET_ARN) {
-    if (names.some(name => env[`AGENT_DISCORD_MANAGED_${name}`])) throw new Error("Set AGENT_DISCORD_MANAGED_SECRET_ARN or managed Discord values, not both");
-    // Like Stripe and Google: a secret Terraform made but nothing has filled yet leaves the integration off.
-    let text = "";
-    try { text = await (await secretReader(env.AGENT_DISCORD_MANAGED_SECRET_ARN, env))(); }
-    catch (error) { if ((error as Error).name !== "ResourceNotFoundException") throw error; }
-    try { values = JSON.parse(text || "{}"); } catch { values = {}; }
-  } else {
-    values = { botToken: env.AGENT_DISCORD_MANAGED_BOT_TOKEN, applicationId: env.AGENT_DISCORD_MANAGED_APPLICATION_ID,
-      clientSecret: env.AGENT_DISCORD_MANAGED_CLIENT_SECRET };
-  }
-  // Any other field (an older secret's publicKey) is ignored.
-  if (!values.botToken || !values.applicationId || !values.clientSecret) {
-    console.error(JSON.stringify({ type: "discord_managed_not_configured" }));
-    return undefined;
-  }
-  if (typeof values.botToken !== "string" || !/^[A-Za-z0-9_.-]{50,100}$/.test(values.botToken)
-      || typeof values.applicationId !== "string" || !/^\d{1,20}$/.test(values.applicationId)
-      || typeof values.clientSecret !== "string") {
-    // A malformed optional integration must not stop every node from starting: it stays off, and says so.
-    console.error(JSON.stringify({ type: "discord_managed_not_configured", reason: "Managed Discord credentials must hold valid {botToken, applicationId, clientSecret}" }));
-    return undefined;
-  }
-  return { botToken: values.botToken, applicationId: values.applicationId, clientSecret: values.clientSecret };
-}

@@ -1927,10 +1927,6 @@ export class ClientSessions {
 
   private async execute(session: Session, record: RequestRecord, params: any, method: RequestMethod = record.method) {
     const id = session.header.id;
-    // Managed channel prompts queue behind definition changes; a failed change must not run old tools.
-    if (record.method === "prompt" && params.requiredDefinition !== undefined && params.requiredDefinition !== session.header.definition?.id) {
-      throw new HttpError(409, "The server configuration has not applied to this conversation; retry after applying it");
-    }
     // An agent still starting answers nothing yet: wait for it (should it fail, it is not running).
     await session.starting?.catch(() => {});
     const live = this.supervisor.agents.has(id);

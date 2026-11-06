@@ -6,9 +6,8 @@ import { Separator } from "@/components/ui/separator";
 import { AuthLayout } from "@/components/auth-layout";
 import { ErrorAlert } from "@/components/common";
 import { useApi } from "@/lib/api";
-import { consoleLoginUrl, discordInstallNext } from "@/lib/discord-setup";
 import { startNext } from "@/lib/onboarding";
-import { signupSource } from "@/lib/signup-source";
+import { consoleLoginUrl, signupSource } from "@/lib/signup-source";
 import { ForgotPasswordForm, PasswordForm, SignUpForm } from "@/pages/password-sign-in";
 
 /** Google's "G", in the button's color: the console is monochrome. */
@@ -21,9 +20,9 @@ type Mode = "signin" | "signup" | "forgot";
 const MODE_PATHS: Record<Mode, string> = { signin: "/console/", signup: "/console/signup", forgot: "/console/reset" };
 
 export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
-  // Where to go after: resuming adding Camel to Discord, a use-case start (a landing page's deep link), or an app's
-  // consent page that linked here (the server checks it).
-  const next = discordInstallNext(location.pathname, location.search) ?? startNext(location.pathname, location.search)
+  // Where to go after: a use-case start (a landing page's deep link), or an app's consent page that linked here (the
+  // server checks it).
+  const next = startNext(location.pathname, location.search)
     ?? (new URLSearchParams(location.search).get("next") || undefined);
   // Where this browser came from: kept on the account if this sign-in makes one, for the team's dashboard.
   const source = signupSource(location.search, document.referrer, location.origin);

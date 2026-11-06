@@ -260,7 +260,7 @@ export function NextSteps({ children }: { children?: ReactNode }) {
         <ul className="grid gap-2 text-sm sm:grid-cols-2">
           {children}
           <li><LearnMore page="tools">Tools</LearnMore>: your functions, MCP servers, OpenAPI and built-ins</li>
-          <li><LearnMore page="channels">Channels</LearnMore>: Slack, Telegram, Discord, GitHub and webhooks</li>
+          <li><LearnMore page="channels">Channels</LearnMore>: Slack, Telegram, GitHub, email and webhooks</li>
           <li><LearnMore page="definitions">Definitions</LearnMore>: one configuration for many agents</li>
           <li><LearnMore page="models-and-keys">Models and keys</LearnMore>: choose a model, or bring your own key</li>
           <li><LearnMore page="pricing">Pricing</LearnMore>: what runs and storage cost</li>

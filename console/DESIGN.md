@@ -38,7 +38,7 @@ Fonts are self-hosted, since the CSP allows fonts from `'self'` only;
 
 1. Sign-in (`components/auth-layout.tsx`): `DitherLiquid` current behind an eyebrow and headline.
 2. Get started (the home of an account with no agents): `FirstRunPanel` hero over `DitherLiquid` swell, above the
-   use-case starts (a Discord bot, an agent with code).
+   use-case start (an agent with code).
 3. First key (API keys, with none): `FirstRunPanel` over `DitherAurora` curtain.
 
 Errors and not-found pages use `StatusPanel`: the bare curtain, the code in
@@ -94,4 +94,4 @@ offscreen and in hidden tabs, and paint a still frame under reduced motion.
 - Every page header links its docs page (`PageHeader`'s `docs`, `LearnMore`) on the docs site people read
   (`web/lib/docs.ts`). An empty list says what the thing is and gives the one action to take (`EmptyState`'s `action`).
 - Get started's checklists tick from the account's real state through existing endpoints (`web/lib/onboarding.ts`);
-  `?start=discord` or `?start=code` on `/console/` opens a path directly, and survives sign-in.
+  `?start=code` on `/console/` opens the code path directly, and survives sign-in.

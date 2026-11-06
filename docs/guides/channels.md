@@ -1,7 +1,7 @@
 # Channels
 
-A channel lets people talk to agents from a messaging service (Telegram, Slack,
-Discord or email), or has agents answer activity on GitHub. A `webhook` channel lets any service that sends webhooks (Sentry,
+A channel lets people talk to agents from a messaging service (Telegram, Slack
+or email), or has agents answer activity on GitHub. A `webhook` channel lets any service that sends webhooks (Sentry,
 Linear, Stripe, your own) start agents; see [Generic webhooks](#generic-webhooks). Tenants manage channels with `/v1/channels` or the console's Channels page:
 
 ```sh
@@ -19,11 +19,13 @@ the channel.
 | --- | --- | --- | --- |
 | `telegram` | `botToken` | webhook, registered for you | a chat |
 | `slack` | `botToken` (`xoxb-…`), `signingSecret` | webhook, pasted into the app | a thread started by an @mention, or a DM |
-| `discord` | `botToken` | the Gateway (a WebSocket) | a DM, or a channel or thread where the bot is @mentioned |
-| `discord-managed` | none from the customer; one Discord authorization from the console | Camel's shared Gateway | an allowed server channel or thread where Camel is @mentioned |
 | `github` | `appId`, `privateKey`, `webhookSecret` | webhook, pasted into the GitHub App | a pull request or issue |
 | `webhook` | `secret`, optional `replyUrl` | webhook, pasted into the sending service | whatever the `key` template names (one agent by default) |
 | `email` | none | SES, on the runtime's domain | an email thread |
+
+Discord is not a channel type. Discord bots live in [camelBots](https://bots.camelai.com): creating a `discord` or
+`discord-managed` channel answers 400 `CHANNEL_TYPE_RETIRED`. A Discord channel made before then is kept as it was:
+`GET /v1/channels` lists it with `disabled: true`, it answers nothing, it cannot be changed, and `DELETE` removes it.
 
 Creating a channel checks its credentials with the service. Credentials and a
 random webhook secret are stored encrypted; the API returns only masked values.
@@ -42,20 +44,6 @@ random webhook secret are stored encrypted; the API returns only masked values.
   there; later messages in that thread reach its agent without a mention. The
   same message sent as both `app_mention` and `message` is handled once. Slack has
   no typing indicator for bots.
-- **Discord.** Create an application, add a bot, and invite it with View
-  Channel, Send Messages, Send Messages in Threads, Attach Files and Read
-  Message History.
-  There is no webhook for ordinary messages: the runtime keeps the bot's Gateway
-  connection itself, reconnecting and resuming as needed. A token Discord rejects
-  is retried every five minutes. The bot needs no privileged intents: it
-  answers only DMs and messages that mention the bot user. A mention of a role
-  with the bot's name does not count: in autocomplete, pick the entry with the
-  App badge. Replies never ping anyone (`allowed_mentions` is empty). The health
-  log counts messages received, accepted and ignored by reason, and a message
-  ignored as a role mention (`role_mention_without_bot_mention`) or as empty is
-  logged with its id. Once the token is saved, the console shows an invite link
-  and a test mention to paste into Discord.
-
 - **GitHub.** Create a GitHub App with the repository permissions Pull requests
   (read and write), Issues (read and write), Contents (read) and Metadata (read),
   subscribe it to Pull request, Issue comment, Pull request review comment (and
@@ -86,58 +74,6 @@ random webhook secret are stored encrypted; the API returns only masked values.
   them as untrusted input (prompt injection), keep `access.public` off, and give
   the agent's tools no more than the conversation needs.
 
-## Add the Camel Discord bot
-
-When the runtime operator enables the managed Discord integration, the console's
-Channels page offers **Add Camel to Discord** alongside the existing channel
-setup. It opens Discord, where you choose a server you own or have Manage Server
-in and authorize Camel; that single step adds the bot and connects the server to
-your camelRun account. You do not need to create a Discord application or copy a
-bot token. Back in the console, the server's settings open. One server belongs to
-one camelRun account at a time.
-
-Choose an existing definition, or create one with the prompt, model and tools
-you want. Select allowed channels explicitly, then choose which members may
-interact: a Discord user-ID allowlist or all members. Saving activates the
-server; until then Camel does not answer there. Each channel or thread has its
-own persistent agent, with history shared by the people using that
-conversation. Every new turn requires a direct mention of the Camel bot user; a
-same-named role mention does not count. Direct messages are ignored.
-
-Members who can interact may invoke the definition's tools using your camelRun
-account's credentials. Select tools and allowed members accordingly. Usage is
-billed to the connected account, with its normal credit and spending controls.
-The managed integration offers per-sender rate limits and a daily turn limit;
-it does not yet offer an aggregate dollar budget across a server's agents. A
-definition with the `schedule` builtin cannot serve a server (any member could
-have the agent wake itself up outside those limits), and turns you start through
-the API count against the server's daily limit. An account connects at most 10
-servers, or one while on free credit, which also caps each server at 500 turns a
-day.
-
-Use **Configure** to edit the selected definition, including tools, and apply it to
-existing conversations; the console reports updated, queued or failed outcomes
-using the normal [definition revision mechanism](definitions.md).
-
-Pause stops new routing and pending sends; resume requires Camel to be in the
-server. Disconnect retains conversation history and stops routing; it does not
-remove Camel from Discord. Removing Camel from the server disconnects it, and
-adding it again requires explicit reactivation. A temporary Discord server
-outage is tracked separately from removal. A successful configuration save is
-not proof that Discord delivered a reply: test with a fresh mention in an
-allowed channel.
-
-A server's administrators decide who runs Camel there. To move a server to
-another camelRun account, remove Camel from the server, then add it again from
-that account. The previous account keeps its past conversations but sees no new
-ones. If Camel finds itself in a server nobody added through camelRun, it leaves
-when mentioned.
-
-Managed channels are created through console setup, rather than generic
-`POST /v1/channels`. The existing `discord` provider and customer-owned bot flow
-remain available. Operators can find the platform setup and pilot boundaries in
-[Managed Discord operations](../operations/managed-discord.md).
-
 ## Shared channel behavior
 
 What they all share:
@@ -145,27 +81,26 @@ What they all share:
 - Each external conversation gets its own agent, made on first contact from
   the channel's definition, at its revision then.
 - Senders must be on the allowlist unless the channel sets `access.public`:
-  Telegram and Discord user ids or @usernames, Slack member ids (`U0123ABCD`).
+  Telegram user ids or @usernames, Slack member ids (`U0123ABCD`), GitHub logins.
   Each sender is rate limited (`limits.perSenderPerMinute`, default 10) and the
   channel has a daily turn cap (`limits.turnsPerDay`, default 1000).
 - Each message carries its sender as `from` (see [Who sent a message](multi-user.md#one-agent-per-user-or-conversation)), and tool calls carry a runtime-set `origin`
   (`{channel, conversationId, sender}`, `context.origin` in the SDKs) that
   tools can authorize against.
 - Attachments of any type (Telegram photos, documents, audio, voice notes,
-  videos and animations; Slack files; Discord attachments) are streamed into the
+  videos and animations; Slack files; email attachments) are streamed into the
   agent's workspace at `uploads/<requestId>/<name>` and the prompt refers to
   them by path (`files: [{path}]`), as in [Attaching files](files.md#attaching-files-to-a-message).
   Up to 10 files and 25 MiB each (20 MB on Telegram, the most a bot may
   download), 100 MiB per message. Downloads go only to the service's file host
-  (Slack's with the bot token, Discord's CDN, Telegram's file API), never follow
+  (Slack's with the bot token, Telegram's file API), never follow
   redirects, and have 60 seconds each. A file too large or that fails to
   download is left out, and the prompt says so: `(file big.zip too large, not
   attached)`. A message with only files reads `(sent a file)`. Audio (voice
   notes, audio files) is transcribed for the model as it arrives: see
   [Voice and audio](voice.md).
 - The turn's final answer is sent back when the turn ends, split to the
-  service's limit (4,096 characters on Telegram, 4,000 on Slack, 2,000 on
-  Discord), with a typing indicator meanwhile where the service has one. Channel
+  service's limit (4,096 characters on Telegram, 4,000 on Slack), with a typing indicator meanwhile where the service has one. Channel
   agents also get a `send_message` tool for updates mid-turn, which takes
   `files` too: paths in the agent's mounts, each checked and pinned to its
   current version when the tool is called.
@@ -173,12 +108,11 @@ What they all share:
   the reply's text, each with its caption: on Telegram images (JPEG, PNG, WebP,
   up to 10 MB) as photos and anything else as documents (up to 50 MB); on Slack
   through the external upload (`files.getUploadURLExternal`, the bytes, then
-  `files.completeUploadExternal` into the thread; up to 100 MiB); on Discord as
-  a multipart attachment (up to 10 MiB, the limit in servers without boosts). A
+  `files.completeUploadExternal` into the thread; up to 100 MiB). A
   file over the service's limit is sent as a [signed link](files.md#signed-links) that
   works for 24 hours, the longest a link may last.
 - A message is recorded durably before it is acknowledged, and duplicates
-  (provider retries, a Gateway resume) are dropped by message id for seven days.
+  (provider retries) are dropped by message id for seven days.
   Replies go through a durable outbox: a failed send is retried with backoff,
   each message is sent once, and a permanent failure
   (the bot was removed from the chat) is not retried. Each part of the text and

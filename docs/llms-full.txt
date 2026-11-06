@@ -504,7 +504,7 @@ check before repeating anything.
 
 An agent can be woken by a schedule (`agent.client.schedule({ text, inSeconds |
 at, everySeconds })`, or the `schedule` built-in for the agent to set its own), by
-a [channel](https://run.camelai.com/docs/guides/channels.md) (Slack, Telegram, Discord), or by your own code
+a [channel](https://run.camelai.com/docs/guides/channels.md) (Slack, Telegram, email), or by your own code
 from a [webhook](https://run.camelai.com/docs/guides/webhooks.md).
 
 A repeating schedule's wake-ups are turns of the agent: each one sees the
@@ -2206,7 +2206,7 @@ no way to answer.
 
 ## In a channel
 
-In Slack, Telegram or Discord, a suspended turn's reply ends with its first input
+In Slack or Telegram, a suspended turn's reply ends with its first input
 as text: a question's numbered options, the call to approve, the URL, a
 confirmation. The next message from someone allowed to answer, if it fits (an
 option's number or label, `approve`/`yes` or `deny`/`no`, `done`), is the answer;
@@ -6562,8 +6562,8 @@ parent's task.
 
 # Channels
 
-A channel lets people talk to agents from a messaging service (Telegram, Slack,
-Discord or email), or has agents answer activity on GitHub. A `webhook` channel lets any service that sends webhooks (Sentry,
+A channel lets people talk to agents from a messaging service (Telegram, Slack
+or email), or has agents answer activity on GitHub. A `webhook` channel lets any service that sends webhooks (Sentry,
 Linear, Stripe, your own) start agents; see [Generic webhooks](https://run.camelai.com/docs/guides/channels.md#generic-webhooks). Tenants manage channels with `/v1/channels` or the console's Channels page:
 
 ```sh
@@ -6581,11 +6581,13 @@ the channel.
 | --- | --- | --- | --- |
 | `telegram` | `botToken` | webhook, registered for you | a chat |
 | `slack` | `botToken` (`xoxb-…`), `signingSecret` | webhook, pasted into the app | a thread started by an @mention, or a DM |
-| `discord` | `botToken` | the Gateway (a WebSocket) | a DM, or a channel or thread where the bot is @mentioned |
-| `discord-managed` | none from the customer; one Discord authorization from the console | Camel's shared Gateway | an allowed server channel or thread where Camel is @mentioned |
 | `github` | `appId`, `privateKey`, `webhookSecret` | webhook, pasted into the GitHub App | a pull request or issue |
 | `webhook` | `secret`, optional `replyUrl` | webhook, pasted into the sending service | whatever the `key` template names (one agent by default) |
 | `email` | none | SES, on the runtime's domain | an email thread |
+
+Discord is not a channel type. Discord bots live in [camelBots](https://bots.camelai.com): creating a `discord` or
+`discord-managed` channel answers 400 `CHANNEL_TYPE_RETIRED`. A Discord channel made before then is kept as it was:
+`GET /v1/channels` lists it with `disabled: true`, it answers nothing, it cannot be changed, and `DELETE` removes it.
 
 Creating a channel checks its credentials with the service. Credentials and a
 random webhook secret are stored encrypted; the API returns only masked values.
@@ -6604,20 +6606,6 @@ random webhook secret are stored encrypted; the API returns only masked values.
   there; later messages in that thread reach its agent without a mention. The
   same message sent as both `app_mention` and `message` is handled once. Slack has
   no typing indicator for bots.
-- **Discord.** Create an application, add a bot, and invite it with View
-  Channel, Send Messages, Send Messages in Threads, Attach Files and Read
-  Message History.
-  There is no webhook for ordinary messages: the runtime keeps the bot's Gateway
-  connection itself, reconnecting and resuming as needed. A token Discord rejects
-  is retried every five minutes. The bot needs no privileged intents: it
-  answers only DMs and messages that mention the bot user. A mention of a role
-  with the bot's name does not count: in autocomplete, pick the entry with the
-  App badge. Replies never ping anyone (`allowed_mentions` is empty). The health
-  log counts messages received, accepted and ignored by reason, and a message
-  ignored as a role mention (`role_mention_without_bot_mention`) or as empty is
-  logged with its id. Once the token is saved, the console shows an invite link
-  and a test mention to paste into Discord.
-
 - **GitHub.** Create a GitHub App with the repository permissions Pull requests
   (read and write), Issues (read and write), Contents (read) and Metadata (read),
   subscribe it to Pull request, Issue comment, Pull request review comment (and
@@ -6648,58 +6636,6 @@ random webhook secret are stored encrypted; the API returns only masked values.
   them as untrusted input (prompt injection), keep `access.public` off, and give
   the agent's tools no more than the conversation needs.
 
-## Add the Camel Discord bot
-
-When the runtime operator enables the managed Discord integration, the console's
-Channels page offers **Add Camel to Discord** alongside the existing channel
-setup. It opens Discord, where you choose a server you own or have Manage Server
-in and authorize Camel; that single step adds the bot and connects the server to
-your camelRun account. You do not need to create a Discord application or copy a
-bot token. Back in the console, the server's settings open. One server belongs to
-one camelRun account at a time.
-
-Choose an existing definition, or create one with the prompt, model and tools
-you want. Select allowed channels explicitly, then choose which members may
-interact: a Discord user-ID allowlist or all members. Saving activates the
-server; until then Camel does not answer there. Each channel or thread has its
-own persistent agent, with history shared by the people using that
-conversation. Every new turn requires a direct mention of the Camel bot user; a
-same-named role mention does not count. Direct messages are ignored.
-
-Members who can interact may invoke the definition's tools using your camelRun
-account's credentials. Select tools and allowed members accordingly. Usage is
-billed to the connected account, with its normal credit and spending controls.
-The managed integration offers per-sender rate limits and a daily turn limit;
-it does not yet offer an aggregate dollar budget across a server's agents. A
-definition with the `schedule` builtin cannot serve a server (any member could
-have the agent wake itself up outside those limits), and turns you start through
-the API count against the server's daily limit. An account connects at most 10
-servers, or one while on free credit, which also caps each server at 500 turns a
-day.
-
-Use **Configure** to edit the selected definition, including tools, and apply it to
-existing conversations; the console reports updated, queued or failed outcomes
-using the normal [definition revision mechanism](https://run.camelai.com/docs/guides/definitions.md).
-
-Pause stops new routing and pending sends; resume requires Camel to be in the
-server. Disconnect retains conversation history and stops routing; it does not
-remove Camel from Discord. Removing Camel from the server disconnects it, and
-adding it again requires explicit reactivation. A temporary Discord server
-outage is tracked separately from removal. A successful configuration save is
-not proof that Discord delivered a reply: test with a fresh mention in an
-allowed channel.
-
-A server's administrators decide who runs Camel there. To move a server to
-another camelRun account, remove Camel from the server, then add it again from
-that account. The previous account keeps its past conversations but sees no new
-ones. If Camel finds itself in a server nobody added through camelRun, it leaves
-when mentioned.
-
-Managed channels are created through console setup, rather than generic
-`POST /v1/channels`. The existing `discord` provider and customer-owned bot flow
-remain available. Operators can find the platform setup and pilot boundaries in
-[Managed Discord operations](https://run.camelai.com/docs/operations/managed-discord.md).
-
 ## Shared channel behavior
 
 What they all share:
@@ -6707,27 +6643,26 @@ What they all share:
 - Each external conversation gets its own agent, made on first contact from
   the channel's definition, at its revision then.
 - Senders must be on the allowlist unless the channel sets `access.public`:
-  Telegram and Discord user ids or @usernames, Slack member ids (`U0123ABCD`).
+  Telegram user ids or @usernames, Slack member ids (`U0123ABCD`), GitHub logins.
   Each sender is rate limited (`limits.perSenderPerMinute`, default 10) and the
   channel has a daily turn cap (`limits.turnsPerDay`, default 1000).
 - Each message carries its sender as `from` (see [Who sent a message](https://run.camelai.com/docs/guides/multi-user.md#one-agent-per-user-or-conversation)), and tool calls carry a runtime-set `origin`
   (`{channel, conversationId, sender}`, `context.origin` in the SDKs) that
   tools can authorize against.
 - Attachments of any type (Telegram photos, documents, audio, voice notes,
-  videos and animations; Slack files; Discord attachments) are streamed into the
+  videos and animations; Slack files; email attachments) are streamed into the
   agent's workspace at `uploads/<requestId>/<name>` and the prompt refers to
   them by path (`files: [{path}]`), as in [Attaching files](https://run.camelai.com/docs/guides/files.md#attaching-files-to-a-message).
   Up to 10 files and 25 MiB each (20 MB on Telegram, the most a bot may
   download), 100 MiB per message. Downloads go only to the service's file host
-  (Slack's with the bot token, Discord's CDN, Telegram's file API), never follow
+  (Slack's with the bot token, Telegram's file API), never follow
   redirects, and have 60 seconds each. A file too large or that fails to
   download is left out, and the prompt says so: `(file big.zip too large, not
   attached)`. A message with only files reads `(sent a file)`. Audio (voice
   notes, audio files) is transcribed for the model as it arrives: see
   [Voice and audio](https://run.camelai.com/docs/guides/voice.md).
 - The turn's final answer is sent back when the turn ends, split to the
-  service's limit (4,096 characters on Telegram, 4,000 on Slack, 2,000 on
-  Discord), with a typing indicator meanwhile where the service has one. Channel
+  service's limit (4,096 characters on Telegram, 4,000 on Slack), with a typing indicator meanwhile where the service has one. Channel
   agents also get a `send_message` tool for updates mid-turn, which takes
   `files` too: paths in the agent's mounts, each checked and pinned to its
   current version when the tool is called.
@@ -6735,12 +6670,11 @@ What they all share:
   the reply's text, each with its caption: on Telegram images (JPEG, PNG, WebP,
   up to 10 MB) as photos and anything else as documents (up to 50 MB); on Slack
   through the external upload (`files.getUploadURLExternal`, the bytes, then
-  `files.completeUploadExternal` into the thread; up to 100 MiB); on Discord as
-  a multipart attachment (up to 10 MiB, the limit in servers without boosts). A
+  `files.completeUploadExternal` into the thread; up to 100 MiB). A
   file over the service's limit is sent as a [signed link](https://run.camelai.com/docs/guides/files.md#signed-links) that
   works for 24 hours, the longest a link may last.
 - A message is recorded durably before it is acknowledged, and duplicates
-  (provider retries, a Gateway resume) are dropped by message id for seven days.
+  (provider retries) are dropped by message id for seven days.
   Replies go through a durable outbox: a failed send is retried with backoff,
   each message is sent once, and a permanent failure
   (the bot was removed from the chat) is not retried. Each part of the text and
@@ -7175,7 +7109,7 @@ conversations](https://run.camelai.com/docs/guides/multi-user.md#bringing-in-exi
 - **Tools anywhere.** Tools run in your process (attached) or behind an HTTPS
   endpoint (served, for serverless and many workers), and the model can call
   many of them from code in `codemode`. See [Tools](https://run.camelai.com/docs/guides/tools.md).
-- **Channels and schedules.** Slack, Telegram, Discord, GitHub and email can
+- **Channels and schedules.** Slack, Telegram, GitHub and email can
   reach an agent directly, and agents can wake themselves. See
   [Channels](https://run.camelai.com/docs/guides/channels.md).
 
@@ -7396,7 +7330,7 @@ curl -sf https://run.camelai.com/v1/account/export -H "Authorization: Bearer $CA
 | `agents/<id>/history/*.json` | each agent's whole history, a page of whole turns per file, named by its first message's index |
 | `definitions.json`, `channels.json`, `webhooks.json` | your definitions, channels and webhook endpoints (secrets and credentials left out or masked) |
 | `tokens.json`, `keys.json` | your API tokens' names and prefixes, and which provider keys are set (last four characters): never a token or key |
-| `oauth-grants.json`, `discord.json` | applications you let act for your account, and managed Discord bindings |
+| `oauth-grants.json`, `discord.json` | applications you let act for your account, and any server bindings from the retired managed Discord bot |
 | `volumes/<id>/volume.json`, `volumes/<id>/files/…` | each volume's name and size, and its files |
 | `billing/ledger.jsonl`, `billing/usage.json` | your credit ledger (newest first) and model usage per day and model |
 
@@ -9400,8 +9334,6 @@ spend limits like any other.
 | Channel senders | `perSenderPerMinute` 1–600 (default 10), `turnsPerDay` 1–1,000,000 (default 1,000); `allow` at most 1,000 senders |
 | Channel filters | what the model sees: 16,000 characters of a message; an answer within 15 s, or the message goes on; a filtered message and its record last 14 days |
 | Channel daily turns | count messages and, since they also post, turns started through the API or a schedule; past the limit those do not post |
-| Camel Discord servers per account | 10, or 1 on free credit (an operator can change either) |
-| A Camel Discord server | `perSenderPerMinute` 1–100 (default 5), `turnsPerDay` 1–10,000 (default 100; at most 500 on free credit); no `schedule` builtin |
 | Webhook endpoints per tenant | 16 |
 | A webhook delivery | 10 s to answer; retried until delivered, for up to 3 days |
 | A rotated webhook secret | keeps signing beside the new one for 24 hours |
@@ -9446,6 +9378,7 @@ retry.
 | Status | `code` | Meaning |
 | --- | --- | --- |
 | 400 | `INVALID_REQUEST` | The request is malformed or invalid; the message says how |
+| 400 | `CHANNEL_TYPE_RETIRED` | A Discord channel (`discord`, `discord-managed`) was to be created or changed: Discord bots live in camelBots (https://bots.camelai.com). See [Channels](https://run.camelai.com/docs/guides/channels.md) |
 | 400 | `INVALID_HISTORY` | An imported history (`initialMessages`) has a message it cannot take; the message names which, and what it lacks |
 | 400 | `TRANSCRIPTION_UNAVAILABLE` | Audio was to be transcribed (an upload, or a listening voice session) and the account has no OpenAI key to do it with (nor the platform's); the message says how to add one |
 | 400 | `REALTIME_UNAVAILABLE` | A voice session's realtime provider needs a key, and the account has none for it (nor the platform's); the message says how to add one |
@@ -9506,7 +9439,7 @@ In more detail:
 | 412 | A versioned write lost (a volume file changed since the `version` you gave) | Read it again and retry with the new version |
 | 413 | Too large: the request body, inline files over 4 MiB, a file over 256 MiB, an upload over a link's `maxBytes` | See [Limits](https://run.camelai.com/docs/reference/limits.md); upload large files first and attach them by path |
 | 415 | An upload through a signed link with another content type | Send the type the link names |
-| 422 | A channel's credentials were rejected by the provider (Slack, Telegram, Discord) | Fix the bot token |
+| 422 | A channel's credentials were rejected by the provider (Slack, Telegram, GitHub) | Fix the bot token |
 | 429 | Too many: a [rate limit](https://run.camelai.com/docs/reference/limits.md#rate-limits) (requests from one address, agents created or runs started a minute, sign-in requests), the tenant's agents awake at once, the agent's 32 open requests, event-stream subscribers, or free credit's hourly allowance | Retry after `Retry-After` (the SDKs do, up to 8 times). A rate limit's body names it in `limit`; to go faster for good, ask for a higher limit |
 | 500 | A bug | Retry; report it with the request id |
 | 503 | The runtime cannot serve it right now: a node is draining or starting, lost ownership of an agent, has no room for its work, or the database is failing over; also a feature this runtime is not configured for | Retry after `Retry-After` (the SDKs retry); nothing happened |

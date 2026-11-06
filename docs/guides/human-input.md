@@ -150,7 +150,7 @@ no way to answer.
 
 ## In a channel
 
-In Slack, Telegram or Discord, a suspended turn's reply ends with its first input
+In Slack or Telegram, a suspended turn's reply ends with its first input
 as text: a question's numbered options, the call to approve, the URL, a
 confirmation. The next message from someone allowed to answer, if it fits (an
 option's number or label, `approve`/`yes` or `deny`/`no`, `done`), is the answer;

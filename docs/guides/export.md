@@ -16,7 +16,7 @@ curl -sf https://run.camelai.com/v1/account/export -H "Authorization: Bearer $CA
 | `agents/<id>/history/*.json` | each agent's whole history, a page of whole turns per file, named by its first message's index |
 | `definitions.json`, `channels.json`, `webhooks.json` | your definitions, channels and webhook endpoints (secrets and credentials left out or masked) |
 | `tokens.json`, `keys.json` | your API tokens' names and prefixes, and which provider keys are set (last four characters): never a token or key |
-| `oauth-grants.json`, `discord.json` | applications you let act for your account, and managed Discord bindings |
+| `oauth-grants.json`, `discord.json` | applications you let act for your account, and any server bindings from the retired managed Discord bot |
 | `volumes/<id>/volume.json`, `volumes/<id>/files/…` | each volume's name and size, and its files |
 | `billing/ledger.jsonl`, `billing/usage.json` | your credit ledger (newest first) and model usage per day and model |
 

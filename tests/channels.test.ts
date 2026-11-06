@@ -217,6 +217,36 @@ test("channel credentials are encrypted, never returned, and the webhook is regi
   assert.equal(await r.deliver(channel, secret, from(ada, "hi")), 404);
 });
 
+test("Discord is retired: creating one is refused with where Discord bots went; a stored one stays, shows disabled, answers nothing and can be deleted", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
+  for (const type of ["discord", "discord-managed"]) {
+    const refused = await r.call("/v1/channels", { body: { type, credentials: { botToken: "x".repeat(60) } } });
+    assert.equal(refused.status, 400, refused.text);
+    assert.equal(refused.json.code, "CHANNEL_TYPE_RETIRED");
+    assert.match(refused.json.error, /camelBots \(https:\/\/bots\.camelai\.com\)/);
+  }
+  // A channel stored before Discord was retired: no migration touches it.
+  const id = "ch_dddddddddddddddddddd";
+  const stored = { id, tenant: "alice", type: "discord", name: "Old bot", definition: "def_none", access: { public: true, allow: [] }, limits: { perSenderPerMinute: 10, turnsPerDay: 1000 },
+    account: { id: "1" }, masked: { botToken: "…abcd" }, sealed: { v: 1 }, createdAt: 1, updatedAt: 1 };
+  await r.db.query("insert into channels (id, tenant, channel, created_at) values ($1, 'alice', $2, 1)", [id, JSON.stringify(stored)]);
+  // Work it had queued is dropped, not retried.
+  const item = { id: "in_retired", channel: id, tenant: "alice", conversationId: "c1", createdAt: 1, state: "received", inbound: { conversationId: "c1", messageId: "m1", sender: { id: "u1" }, text: "hi", files: [] } };
+  await r.db.query("insert into channel_items (id, item, due) values ('in_retired', $1, 0)", [JSON.stringify(item)]);
+  const listed = await r.call("/v1/channels");
+  assert.deepEqual(listed.json.map((channel: any) => [channel.id, channel.type, channel.disabled]), [[id, "discord", true]]);
+  assert.equal((await r.call(`/v1/channels/${id}`)).json.disabled, true);
+  const patched = await r.call(`/v1/channels/${id}`, { method: "PATCH", body: { name: "Renamed" } });
+  assert.equal(patched.status, 400);
+  assert.equal(patched.json.code, "CHANNEL_TYPE_RETIRED");
+  for (let i = 0; i < 100 && (await r.db.query("select 1 from channel_items where id = 'in_retired'")).rowCount; i++) await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal((await r.db.query("select 1 from channel_items where id = 'in_retired'")).rowCount, 0);
+  assert.equal((await r.db.query("select 1 from channel_conversations where channel = $1", [id])).rowCount, 0, "no agent was made for it");
+  assert.equal((await r.db.query("select channel->>'name' as name from channels where id = $1", [id])).rows[0].name, "Old bot");
+  assert.equal((await r.call(`/v1/channels/${id}`, { method: "DELETE" })).status, 200);
+  assert.equal((await r.call(`/v1/channels/${id}`)).status, 404);
+});
+
 test("each conversation gets its own agent; replies are chunked; a retried update is handled once", async t => {
   const long = Array.from({ length: 1500 }, (_, index) => `word${index}`).join(" ");
   const r = await runtime(t, body => ({ role: "assistant", content: lastUser(body).endsWith("long please") ? long : `echo: ${lastUser(body).split("\n").at(-1)}` }));

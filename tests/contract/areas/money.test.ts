@@ -91,13 +91,12 @@ contractTest("auth", "tests/api.test.ts:261","console sessions require same-orig
   assert.equal((await call("/console/auth/password", { body: { ...credentials, password: "wrong-password-here" }, headers: browser })).status, 401);
   const signIn = await call("/console/auth/password", { body: { ...credentials, email: "ALICE@example.test" }, headers: browser });
   assert.equal(signIn.status, 200, "addresses compare without case");
-  const setupNext = "/console/discord/install?guild_id=123456789012345678";
-  assert.equal((await call("/console/auth/password", { body: { ...credentials, next: setupNext }, headers: browser })).json.next, setupNext);
-  for (const start of ["/console/?start=discord", "/console/?start=code"]) {
+  for (const start of ["/console/?start=code"]) {
     assert.equal((await call("/console/auth/password", { body: { ...credentials, next: start }, headers: browser })).json.next, start, "a use-case start survives sign-in");
   }
-  for (const next of ["//evil.example/", "/console/discord/install?guild_id=1&next=https://evil.example", "/console/discord/install?guild_id=abc", "/console/channels?discord_setup=123",
-    "/console/?start=evil", "/console/?start=discord&next=https://evil.example", "/console/agents?start=discord"]) {
+  // Adding Camel to Discord is gone (Discord bots live in camelBots): its install route and start no longer survive sign-in.
+  for (const next of ["//evil.example/", "/console/discord/install?guild_id=123456789012345678", "/console/discord/install?guild_id=1&next=https://evil.example", "/console/channels?discord_setup=123",
+    "/console/?start=evil", "/console/?start=discord", "/console/?start=code&next=https://evil.example", "/console/agents?start=code"]) {
     assert.equal((await call("/console/auth/password", { body: { ...credentials, next }, headers: browser })).json.next, undefined);
   }
   const cookie = signIn.headers.get("set-cookie")!.split(";")[0];

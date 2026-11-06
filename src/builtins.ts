@@ -43,16 +43,6 @@ export const BUILTINS = {
 } as const;
 export type Builtin = keyof typeof BUILTINS;
 /**
- * Builtins that start runs of their own: on a shared server (the managed Discord bot) any member could
- * have the agent wake itself up, outside the server's per-sender and daily limits.
- */
-export const SELF_STARTING_BUILTINS: readonly Builtin[] = ["schedule"];
-/** Why a definition with these builtins cannot serve a managed server, or undefined if it can. */
-export function managedBuiltinsRefusal(builtins: readonly string[] | undefined) {
-  const refused = (builtins ?? []).filter(name => (SELF_STARTING_BUILTINS as readonly string[]).includes(name));
-  return refused.length ? `Camel Discord servers cannot use the ${refused.join(", ")} builtin: any member could start runs outside the server's limits. Remove it from the definition, or use a separate one for the server` : undefined;
-}
-/**
  * What builtins a definition or agent enables cannot do for its tenant, as warnings for its save: web_search
  * without a key (the tenant's, an admin's or the platform's) for any provider it would try, `order` unless
  * the definition pins its own; x_search without an xAI key; generate_image without an OpenAI key; decide without an OpenRouter key. web_fetch works without its renderer's key, so it

@@ -12,7 +12,7 @@ import { fetch as undiciFetch } from "undici";
  * its own (NodeDeps.network), which routes to fakes and to the other nodes, and can drop, delay or partition.
  *
  * Not covered, because a simulation leaves them out: the AWS SDK's own clients (S3, which Storage replaces; SES, Secrets
- * Manager, ECS, Bedrock), Discord's gateway WebSocket, and the confined processes' sockets (the code executor's).
+ * Manager, ECS, Bedrock), Discord's voice WebSocket and UDP socket, and the confined processes' sockets (the code executor's).
  */
 export type Network = {
   /** HTTP. */

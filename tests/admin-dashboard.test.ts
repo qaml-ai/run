@@ -182,7 +182,8 @@ test("usage keeps admin tenants apart, and says which models and features agents
   assert.deepEqual([feature("mcp").agents, feature("schedules").agents, feature("channel").agents], [1, 1, 1]);
   assert.deepEqual([feature("app_tools").agents, feature("definition").agents, feature("no_code_mode").agents, feature("web_fetch").self_serve_agents], [1, 1, 1, 0]);
   const integration = (key: string) => usage.integrations.find(integration => integration.key === key)!;
-  assert.deepEqual(integration("discord-managed"), { key: "discord-managed", label: "Discord (managed Camel app)", accounts: 1, self_serve_accounts: 0 });
+  // A retired Discord channel's row is kept, but Discord is no longer an integration.
+  assert.equal(usage.integrations.some(integration => integration.key.startsWith("discord")), false);
   assert.deepEqual([integration("provider_keys").self_serve_accounts, integration("mcp_clients").self_serve_accounts], [1, 1]);
   assert.deepEqual(usage.mcp_clients, [{ client: "Claude", accounts: 1 }]);
 

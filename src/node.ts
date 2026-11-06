@@ -62,8 +62,6 @@ import { ToolSources } from "./tool-sources.ts";
 import { applicationTools } from "./mcp-results.ts";
 import { telegram } from "./channels-telegram.ts";
 import { slack } from "./channels-slack.ts";
-import { discord } from "./channels-discord.ts";
-import { ManagedDiscord } from "./discord-managed.ts";
 import { github as githubChannel } from "./channels-github.ts";
 import { webhook } from "./channels-webhook.ts";
 import { email, emailReceiver, type EmailOptions } from "./channels-email.ts";
@@ -80,7 +78,7 @@ import { FILE_LIMITS, FileLinks } from "./files.ts";
 import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "./ecs.ts";
 import { cgroupMemory } from "./process-memory.ts";
 import { decisionLoadLine, recordCreate, safeError, Steps, webhookBacklogLine } from "./metrics.ts";
-import { runtimeSecrets, managedDiscordSecrets } from "./secrets.ts";
+import { runtimeSecrets } from "./secrets.ts";
 import { checkSandbox } from "./codemode.ts";
 import { PiV8Sandbox, type CodeSandboxes } from "./codemode-pi-launcher.ts";
 import { V8Exec } from "./v8-exec.ts";
@@ -130,8 +128,8 @@ const HTTP_DRAIN_MS = 10_000;
 
 /**
  * What a node is given rather than finds for itself: its operators' tenants, its secrets, the control-plane database and
- * how to listen on it, the sandbox it checked, and on ECS its task's address, whether a newer deployment replaced it, and
- * managed Discord's credentials. `nodeDeps` makes the real ones from a node's configuration.
+ * how to listen on it, the sandbox it checked, and on ECS its task's address, and whether a newer deployment replaced it.
+ * `nodeDeps` makes the real ones from a node's configuration.
  */
 export type NodeDeps = {
   tenants: Tenants;
@@ -153,8 +151,6 @@ export type NodeDeps = {
   supersession?: () => Promise<((() => Promise<"current" | "waiting" | "superseded">) & { stopTask?: () => Promise<void> }) | undefined>;
   /** Called only when the memory retirement fallback finishes draining. */
   memoryRetired?: (code: number) => void;
-  /** Managed Discord's credentials, read where the node sets up its channels (undefined: managed Discord is off). */
-  managedDiscord?: () => Promise<ManagedDiscordSecrets | undefined>;
   /**
    * How the node reaches other nodes and the outside world, its time and its randomness (src/node-context.ts): the real
    * ones unless given. A node given any runs in a context of its own, so its code finds them wherever it runs, and
@@ -180,7 +176,6 @@ export type NodeDeps = {
   voiceTurnModels?: TurnModels;
 };
 type RuntimeSecrets = Awaited<ReturnType<typeof runtimeSecrets>>;
-type ManagedDiscordSecrets = NonNullable<Awaited<ReturnType<typeof managedDiscordSecrets>>>;
 
 /** Derives client session tokens. It must stay stable, or re-provisioning returns tokens that no longer verify. */
 /** The node's turn-taking models, loaded; undefined (and logged) when they cannot be: sessions then end turns on silence. */
@@ -218,7 +213,7 @@ export async function nodeDeps(config: NodeConfig): Promise<NodeDeps> {
   const address = await taskAddress(env);
   return {
     tenants, secrets, db, listen: handlers => listenFromEnvironment(handlers, env), sandbox, address, codeSandbox, readCgroupMemory: cgroupMemory,
-    supersession: () => supersession(env), managedDiscord: () => managedDiscordSecrets(env),
+    supersession: () => supersession(env),
   };
 }
 
@@ -492,7 +487,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     maxDefinitions: tenant => tenants.maxDefinitions(tenant) ?? (tenants.has(tenant) ? config.maxDefinitionsPerTenant : MAX_DEFINITIONS) });
   // Saving a definition lists its MCP servers, as its agents would.
   definitions.listMcp = (tenant, id, servers) => toolSources.listed(tenant, id, servers);
-  // Saving a definition, an agent or a managed Discord server warns of builtins the tenant has no key for.
+  // Saving a definition or an agent warns of builtins the tenant has no key for.
   const warningsFor = (tenant: string, given: Parameters<typeof builtinWarnings>[0]) => builtinWarnings(given, search.options.order, () => accounts.keyedProviders(tenant));
   definitions.builtinWarnings = (tenant, spec) => warningsFor(tenant, sources(spec));
   const keyScopes = new KeyScopes({ db, accounts, outbound });
@@ -1041,45 +1036,12 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   scheduleMailer?.start(config.schedulerIntervalMs);
   // Email channels, when the runtime has a domain SES receives for: mail arrives through SNS at one shared route.
   const emailOptions: EmailOptions | undefined = config.email && { db, ...config.email };
-  const managedDiscordConfig = await deps.managedDiscord?.();
-  const managedDiscord = managedDiscordConfig ? new ManagedDiscord({
-    ...managedDiscordConfig, db, consoleAuth, channels: () => channels, ownership, node, publicUrl,
-    apiUrl: config.channelApis.discord,
-    canStart: tenant => accounts.runLimit(tenant),
-    definitionBuiltins: async (tenant, id) => (await definitions.read(tenant, id)).spec.builtins,
-    definitionWarnings: async (tenant, id) => warningsFor(tenant, sources((await definitions.read(tenant, id)).spec)),
-    // Interim caps until servers have an aggregate budget: free credit gets one server and 500 turns a day per server.
-    plan: async tenant => {
-      const free = await accounts.billing.onFreeCredit(tenant);
-      const servers = tenants.maxDiscordServers(tenant) ?? (free ? config.discordServers.free : config.discordServers.paid);
-      return { free, servers, turnsPerDay: free ? 500 : 10_000 };
-    },
-    applyDefinition: async (tenant, channelId, definitionId) => {
-      const definition = await definitions.read(tenant, definitionId);
-      const { rows } = await db.query("select ca.agent from channel_agents ca join agents a on a.id = ca.agent where ca.channel = $1 and ca.tenant = $2 and not a.revoked", [channelId, tenant]);
-      const requestId = `managed_apply_${randomUUID().replaceAll("-", "")}`;
-      const queue = rows.map(({ agent }) => agent as string);
-      const results: { agent: string; requestId: string; status: "updated" | "queued" | "failed"; error?: string }[] = [];
-      await Promise.all(Array.from({ length: Math.min(4, queue.length) }, async () => {
-        for (let agent; (agent = queue.shift());) {
-          try {
-            const record = await submitAnywhere(agent, tenant, { id: requestId, method: "configure", params: { definition: { id: definition.id, revision: definition.revision } } });
-            if (record.outcome?.error !== undefined) throw new Error(record.outcome.error);
-            results.push({ agent, requestId, status: record.state === "completed" ? "updated" : "queued" });
-          } catch (error) { results.push({ agent, requestId, status: "failed", error: errorText(error) }); }
-        }
-      }));
-      return results.sort((a, b) => a.agent.localeCompare(b.agent));
-    },
-  }) : undefined;
-  // Messaging channels: webhooks (or a gateway socket one node holds) in, replies out through a durable queue any node can drain.
+  // Messaging channels: webhooks in, replies out through a durable queue any node can drain.
   const channels = new Channels({
     db, accounts, definitions, node, publicUrl, ownership,
     providers: {
       telegram: telegram({ apiUrl: config.channelApis.telegram }),
       slack: slack({ apiUrl: config.channelApis.slack }),
-      discord: discord({ apiUrl: config.channelApis.discord }),
-      ...(managedDiscord ? { "discord-managed": managedDiscord.provider } : {}),
       github: githubChannel({ apiUrl: config.channelApis.github }),
       webhook: webhook({ outbound }),
       ...(emailOptions ? { email: email(emailOptions) } : {}),
@@ -1110,7 +1072,6 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     ...(config.channelRetryMs !== undefined ? { retryBaseMs: config.channelRetryMs } : {}),
   });
   channels.start(config.schedulerIntervalMs);
-  void managedDiscord?.start().catch(error => console.error(JSON.stringify({ type: "discord_managed_start_failed", error: safeError(error) })));
   // Accounts being deleted, continued by whichever node claims each (and started at once on a request).
   const accountDeletions = new AccountDeletions({
     db, accounts, storage, volumes, channels, stripe, deleteAgent: deleteAnywhere, removeComputers: tenant => computers.removeTenant(tenant),
@@ -1302,8 +1263,6 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     if (BROWSER_PAGES.test(c.req.path)) c.res.headers.set("X-Robots-Tag", "noindex");
   });
   app.route("/", consoleAuth.app);
-  if (managedDiscord) app.route("/", managedDiscord.app);
-  else app.get("/console/discord/config", c => c.json({ enabled: false }, 200, { "Cache-Control": "no-store" }));
   app.route("/", oauth.app);
   // The hosted MCP endpoints: their tools call this node's REST API locally, as the caller.
   const { loopbackHost } = config;
@@ -1699,7 +1658,6 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     await voice?.stop();
     await voiceHost?.close();
     await turnHost?.close();
-    await managedDiscord?.stop();
     webhooks.stop();
     accountDeletions.stop();
     storageGc.stop();

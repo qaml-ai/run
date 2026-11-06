@@ -31,7 +31,7 @@ your client's multiple-choice question UI if it has one (Claude Code's AskUserQu
     What should your agent do? Pick one or describe your own:
     1. Support agent: answers customers from your docs and calls your app's functions (e.g. look up an order)
     2. Chat in your web app: a chat UI backed by an agent (React/Vue/Svelte/Solid)
-    3. Discord or Slack bot for your community
+    3. Slack or Telegram bot for your community (Discord bots: camelBots, https://bots.camelai.com)
     4. Scheduled worker: a daily digest or report that runs on its own
     5. Other: tell me
 
@@ -41,7 +41,7 @@ Then follow the recipe for the answer:
 |---|---|
 | 1. Support agent | https://run.camelai.com/docs/guides/tools.md: tools from this project's own functions (step 3 below) |
 | 2. Chat in your web app | https://run.camelai.com/docs/frontend.md: `npm create @camelai/run-app` for a new app, or `createAgentHandler` and `@camelai/run-react` in this one |
-| 3. Discord or Slack bot | https://run.camelai.com/docs/guides/channels.md: a definition, then a channel that uses it |
+| 3. Slack or Telegram bot | https://run.camelai.com/docs/guides/channels.md: a definition, then a channel that uses it |
 | 4. Scheduled worker | https://run.camelai.com/docs/concepts.md#waking-later: `agent.client.schedule({ text, everySeconds })`, or the `schedule` built-in |
 | 5. Other | what they describe, from this file and https://run.camelai.com/llms.txt |
 

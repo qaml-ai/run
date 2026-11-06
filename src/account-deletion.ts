@@ -144,7 +144,7 @@ export class AccountDeletions {
     const ids = async (query: string) => (await db.query(query, [tenant])).rows.map(row => row.id as string);
     // Channels first, so no message makes the tenant a new agent meanwhile; each is torn down at its provider.
     for (const id of await ids("select id from channels where tenant = $1")) {
-      if (channels) await channels.remove(tenant, id, { managed: true });
+      if (channels) await channels.remove(tenant, id);
       await db.query("delete from channel_conversations where channel = $1", [id]);
     }
     await this.options.removeComputers?.(tenant);

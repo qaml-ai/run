@@ -18,7 +18,7 @@ async function files(dir) {
 const excluded = {
   test(file) {
     if (/^src\/voice-providers\/(tts|tts-chain|prices)\.ts$/.test(file)) return false;
-    return /^src\/(?:channels|channel-filter|discord-managed|voice|opus)/.test(file);
+    return /^src\/(?:channels|channel-filter|voice|opus)/.test(file);
   },
 };
 function category(file) {

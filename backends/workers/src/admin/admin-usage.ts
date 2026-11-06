@@ -86,8 +86,6 @@ const FEATURES: { key: string; label: string; sql: string }[] = [
 
 /** What accounts set up, each a query of the accounts (`tenant`) that have it. */
 const INTEGRATIONS: { key: string; label: string; sql: string }[] = [
-  { key: "discord-managed", label: "Discord (managed Camel app)", sql: "select tenant from channels where channel->>'type' = 'discord-managed'" },
-  { key: "discord", label: "Discord (own bot)", sql: "select tenant from channels where channel->>'type' = 'discord'" },
   { key: "slack", label: "Slack", sql: "select tenant from channels where channel->>'type' = 'slack'" },
   { key: "telegram", label: "Telegram", sql: "select tenant from channels where channel->>'type' = 'telegram'" },
   { key: "email", label: "Email", sql: "select tenant from channels where channel->>'type' = 'email'" },

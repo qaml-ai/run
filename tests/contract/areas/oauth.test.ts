@@ -130,10 +130,9 @@ githubTest("tests/api.test.ts:434","GitHub sign-in admits active org members, li
   };
   const bobSession = await signIn("Bob-Builder");
   assert.equal(bobSession.location, "/console/");
-  // Only the MCP consent and managed server setup routes survive sign-in.
+  // Only the MCP consent route survives sign-in.
   assert.equal((await signIn("Bob-Builder", "/oauth/authorize?client_id=x&state=y")).location, "/oauth/authorize?client_id=x&state=y");
-  assert.equal((await signIn("Bob-Builder", "/console/discord/install")).location, "/console/discord/install");
-  assert.equal((await signIn("Bob-Builder", "/console/discord/install?redirect=https://evil.example")).location, "/console/");
+  assert.equal((await signIn("Bob-Builder", "/console/discord/install")).location, "/console/");
   assert.equal((await signIn("Bob-Builder", "https://evil.example/")).location, "/console/");
   assert.equal((await signIn("Bob-Builder", "//evil.example/oauth/authorize?")).location, "/console/");
   assert.equal((await call("/v1/me", { headers: { Cookie: bobSession.session! } })).json.tenant, "bob");

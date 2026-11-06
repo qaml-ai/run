@@ -271,13 +271,12 @@ test("console sessions require same-origin mutations; an email and password an o
   assert.equal((await call("/console/auth/password", { body: { ...credentials, password: "wrong-password-here" }, headers: browser })).status, 401);
   const signIn = await call("/console/auth/password", { body: { ...credentials, email: "ALICE@example.test" }, headers: browser });
   assert.equal(signIn.status, 200, "addresses compare without case");
-  const setupNext = "/console/discord/install?guild_id=123456789012345678";
-  assert.equal((await call("/console/auth/password", { body: { ...credentials, next: setupNext }, headers: browser })).json.next, setupNext);
-  for (const start of ["/console/?start=discord", "/console/?start=code"]) {
+  for (const start of ["/console/?start=code"]) {
     assert.equal((await call("/console/auth/password", { body: { ...credentials, next: start }, headers: browser })).json.next, start, "a use-case start survives sign-in");
   }
-  for (const next of ["//evil.example/", "/console/discord/install?guild_id=1&next=https://evil.example", "/console/discord/install?guild_id=abc", "/console/channels?discord_setup=123",
-    "/console/?start=evil", "/console/?start=discord&next=https://evil.example", "/console/agents?start=discord"]) {
+  // Adding Camel to Discord is gone (Discord bots live in camelBots): its install route and start no longer survive sign-in.
+  for (const next of ["//evil.example/", "/console/discord/install?guild_id=123456789012345678", "/console/discord/install?guild_id=1&next=https://evil.example", "/console/channels?discord_setup=123",
+    "/console/?start=evil", "/console/?start=discord", "/console/?start=code&next=https://evil.example", "/console/agents?start=code"]) {
     assert.equal((await call("/console/auth/password", { body: { ...credentials, next }, headers: browser })).json.next, undefined);
   }
   const cookie = signIn.headers.get("set-cookie")!.split(";")[0];
@@ -448,10 +447,9 @@ test("GitHub sign-in admits active org members, links admin tenants, and creates
   };
   const bobSession = await signIn("Bob-Builder");
   assert.equal(bobSession.location, "/console/");
-  // Only the MCP consent and managed server setup routes survive sign-in.
+  // Only the MCP consent route survives sign-in.
   assert.equal((await signIn("Bob-Builder", "/oauth/authorize?client_id=x&state=y")).location, "/oauth/authorize?client_id=x&state=y");
-  assert.equal((await signIn("Bob-Builder", "/console/discord/install")).location, "/console/discord/install");
-  assert.equal((await signIn("Bob-Builder", "/console/discord/install?redirect=https://evil.example")).location, "/console/");
+  assert.equal((await signIn("Bob-Builder", "/console/discord/install")).location, "/console/");
   assert.equal((await signIn("Bob-Builder", "https://evil.example/")).location, "/console/");
   assert.equal((await signIn("Bob-Builder", "//evil.example/oauth/authorize?")).location, "/console/");
   assert.equal((await call("/v1/me", { headers: { Cookie: bobSession.session! } })).json.tenant, "bob");

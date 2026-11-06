@@ -11,7 +11,7 @@ import { HttpError, readText } from "./http.ts";
 import type { RequestRecord } from "../shared/client-protocol.ts";
 import { PreconditionFailed } from "../shared/storage.ts";
 import { transaction, type Db } from "./db.ts";
-import { underClaim, type Claim, type Ownership } from "./ownership.ts";
+import { underClaim, type Ownership } from "./ownership.ts";
 import { validFileRef, type FileRef } from "./files.ts";
 import type { Input } from "./inputs.ts";
 import { network } from "./node-context.ts";
@@ -22,9 +22,8 @@ import { FILTERED_DAYS, FILTER_QUESTION, FILTER_TIMEOUT_MS, channelFilter, filte
  * Channels let people talk to agents through messaging services. Each external
  * conversation gets its own agent, created on first contact from the channel's
  * definition; a message becomes a prompt, and the turn's reply goes back the same way.
- * Messages arrive by webhook (Telegram, Slack) or over a socket that one node holds
- * for the channel (Discord). Everything is in Postgres, so any node can take a
- * webhook or send a reply:
+ * Messages arrive by webhook (Telegram, Slack, GitHub, email, any service's webhooks).
+ * Everything is in Postgres, so any node can take a webhook or send a reply:
  *
  *   channels                the channel: its definition, access, limits, sealed credentials
  *   channel_conversations   the agent answering one external conversation
@@ -84,14 +83,10 @@ export type ChannelSettings = Record<string, unknown>;
 export interface ParseContext { headers: Headers; account: Record<string, string>; settings: ChannelSettings }
 /**
  * What the core needs from a messaging service; everything provider-specific lives behind it.
- * A service delivers messages either to a webhook (`verify` and `parse`) or over a socket (`connect`).
+ * A service delivers messages to a webhook (`verify` and `parse`), or to a shared inbound address (`Channels.inbound`).
  */
 export interface ChannelProvider {
   readonly label: string;
-  /** Platform integrations may only be provisioned through their verified setup service. */
-  readonly managed?: boolean;
-  /** Recheck managed installation/access before accepting, submitting or delivering queued work. */
-  guard?(channel: Channel, conversationId: string, phase: "inbound" | "submit" | "send"): Promise<boolean>;
   readonly maxMessageLength: number;
   /** Validate credentials and, where the service allows it, point its webhook at `webhook.url`. */
   setup(credentials: Credentials, webhook: { url: string; secret: string }): Promise<{ account: Record<string, string>; masked: Record<string, string> }>;
@@ -112,8 +107,6 @@ export interface ChannelProvider {
   allows?(entry: string, sender: Sender): boolean;
   /** Access and limits a new channel of this type starts with, before the ones it is created with. */
   readonly defaults?: { access?: Partial<Channel["access"]>; limits?: Partial<Channel["limits"]> };
-  /** Hold a connection that delivers the channel's messages, reconnecting on its own, until closed. */
-  connect?(credentials: Credentials, handlers: GatewayHandlers): Gateway;
   /** An attachment's bytes, from the service's own file host only. */
   download(credentials: Credentials, file: InboundFile): Promise<{ body: AsyncIterable<Uint8Array>; contentType?: string }>;
   /** The largest attachment a bot may download, when the service caps it below CHANNEL_FILE_LIMITS.fileBytes. */
@@ -129,14 +122,6 @@ export interface ChannelProvider {
   /** How often the indicator is refreshed while a turn runs (default 4 s). */
   readonly typingMs?: number;
 }
-export interface GatewayHandlers {
-  /** Structured transport diagnostics; never message content, credentials or session tokens. */
-  diagnostic?(event: string, fields: Record<string, unknown>): void;
-  message(inbound: Inbound): Promise<void>;
-  /** The connection cannot work (credentials rejected); it is retried after a pause. */
-  failed(error: Error): void;
-}
-export interface Gateway { close(): void }
 /** A failed send; permanent failures (blocked bot, unknown chat) are not retried. */
 export class SendError extends Error {
   permanent: boolean; retryAfterMs?: number;
@@ -150,7 +135,7 @@ export class SendError extends Error {
 
 export interface Channel {
   id: string; tenant: string; type: string; name: string;
-  /** Where the service delivers messages; channels that receive over a socket have none. */
+  /** Where the service delivers messages; channels that receive at a shared address (email) have none. */
   webhookUrl?: string;
   /** What each conversation's agent is made from. */
   definition: string;
@@ -182,7 +167,7 @@ type Item = {
   inbound?: Inbound;
   /** The channel filter's answer, once asked: a retake does not ask again. */
   verdict?: Verdict;
-  agent?: string; prompt?: { text: string; from?: { id: string; name?: string; username?: string }; files?: { path: string }[]; requiredDefinition?: string };
+  agent?: string; prompt?: { text: string; from?: { id: string; name?: string; username?: string }; files?: { path: string }[] };
   /** What to send: the text's parts, then each file; `sent` counts the steps done. */
   text?: string; files?: Presented[]; sent?: number; attempts?: number;
 };
@@ -221,8 +206,12 @@ const MAX_REPLY = 32_000;
 /** How much of a filtered message's text its event shows. */
 const EVENT_TEXT_CHARS = 4_000;
 const TYPING_MS = 4_000;
-/** How long a gateway whose credentials were rejected waits before trying again. */
-const GATEWAY_RETRY_MS = 5 * 60_000;
+/**
+ * Channel types this runtime no longer serves. Their stored channels stay as they are (a later migration may drop
+ * them): listed as disabled, never connected or answered, and deletable. Creating or changing one is refused.
+ */
+export const RETIRED_CHANNEL_TYPES: ReadonlySet<string> = new Set(["discord", "discord-managed"]);
+export const RETIRED_CHANNEL_MESSAGE = "Discord channels are no longer supported: Discord bots live in camelBots (https://bots.camelai.com)";
 
 /** Fetch an attachment from a service's file host: never redirected (a token may go with it), within a time limit. */
 export async function fetchFile(url: string, headers: Record<string, string> = {}) {
@@ -261,7 +250,7 @@ export function chunks(text: string, max: number): string[] {
 export interface ChannelsOptions {
   db: Db; accounts: Accounts; definitions: Definitions; node: string; publicUrl: string;
   providers: Record<string, ChannelProvider>;
-  /** Decides which node holds each gateway channel's connection; without it no gateway connects. */
+  /** This node's lease: replies are sent only while it is fresh. */
   ownership?: Ownership;
   createAgent(tenant: string, params: any, key: string): Promise<{ id: string }>;
   /** The id `createAgent` gives the agent for a key, so the conversation is bound before the agent starts. */
@@ -296,8 +285,6 @@ export class Channels {
   private readonly options: ChannelsOptions;
   private readonly bindings = new Map<string, Promise<Binding | undefined>>();
   private readonly typing = new Map<string, ReturnType<typeof setInterval>>();
-  private readonly gateways = new Map<string, { claim: Claim; updatedAt: number; gateway: Gateway }>();
-  private readonly gatewayRetry = new Map<string, number>();
   private timer?: ReturnType<typeof setInterval>;
   private scanning = false;
   private prunedAt = 0;
@@ -305,8 +292,6 @@ export class Channels {
   constructor(options: ChannelsOptions) {
     this.options = options;
     this.db = options.db;
-    // A fenced node's claims are void: another node connects while this one is cut off.
-    options.ownership?.onFence(() => { for (const id of [...this.gateways.keys()]) this.closeGateway(id, false); });
   }
 
   start(intervalMs = 5_000) {
@@ -318,16 +303,18 @@ export class Channels {
     this.timer = undefined;
     for (const timer of this.typing.values()) clearInterval(timer);
     this.typing.clear();
-    for (const id of [...this.gateways.keys()]) this.closeGateway(id, true);
   }
 
   // Configuration ---------------------------------------------------------------
 
   private provider(type: string) {
     const provider = Object.hasOwn(this.options.providers, type) ? this.options.providers[type] : undefined;
+    if (!provider && RETIRED_CHANNEL_TYPES.has(type)) throw new HttpError(400, RETIRED_CHANNEL_MESSAGE, "CHANNEL_TYPE_RETIRED");
     if (!provider) throw new HttpError(400, `Unknown channel type ${type}; supported: ${Object.keys(this.options.providers).join(", ")}`);
     return provider;
   }
+  /** Whether this runtime serves the channel's type: a retired type's stored channels are kept but never answered. */
+  private served(channel: Pick<Channel, "type">) { return Object.hasOwn(this.options.providers, channel.type); }
   private async read(id: string, sql: Pick<Db, "query"> = this.db) {
     if (!/^ch_[a-f0-9]{20}$/.test(id)) return undefined;
     return (await sql.query("select channel from channels where id = $1", [id])).rows[0]?.channel as Channel | undefined;
@@ -340,8 +327,10 @@ export class Channels {
   private secrets(channel: Channel): { credentials: Credentials; secret: string } {
     return JSON.parse(this.options.accounts.unseal(`channel:${channel.id}`, channel.sealed));
   }
-  /** Credentials never leave the runtime: callers see a masked form. */
-  view({ sealed: _sealed, masked, ...channel }: Channel) { return { ...channel, credentials: masked }; }
+  /** Credentials never leave the runtime: callers see a masked form. A channel of a retired type shows as disabled. */
+  view({ sealed: _sealed, masked, ...channel }: Channel) {
+    return { ...channel, credentials: masked, ...(RETIRED_CHANNEL_TYPES.has(channel.type) && !this.served(channel) ? { disabled: true } : {}) };
+  }
 
   async list(tenant: string) {
     const { rows } = await this.db.query("select channel from channels where tenant = $1 order by created_at, id", [tenant]);
@@ -349,12 +338,11 @@ export class Channels {
   }
   async get(tenant: string, id: string) { return this.view(await this.owned(tenant, id)); }
 
-  /** `internal` is for a managed integration's own setup, which may write within its transaction (`sql`). */
-  async create(tenant: string, input: ChannelInput, internal?: { managed: true; sql?: Pick<Db, "query"> }) {
-    if (!this.options.accounts.canStoreKeys) throw new HttpError(503, "This runtime has no AGENT_SECRETS_KEY, so it cannot store channel credentials");
+  async create(tenant: string, input: ChannelInput) {
     const type = input.type ?? "";
+    if (RETIRED_CHANNEL_TYPES.has(type) && !Object.hasOwn(this.options.providers, type)) throw new HttpError(400, RETIRED_CHANNEL_MESSAGE, "CHANNEL_TYPE_RETIRED");
+    if (!this.options.accounts.canStoreKeys) throw new HttpError(503, "This runtime has no AGENT_SECRETS_KEY, so it cannot store channel credentials");
     const provider = this.provider(type);
-    if (provider.managed && !internal?.managed) throw new HttpError(403, "Set up this integration through the console");
     if (!input.credentials && provider.needsCredentials !== false) throw new HttpError(400, "A channel needs credentials");
     const credentials = input.credentials ?? {};
     const id = `ch_${randomBytes(10).toString("hex")}`;
@@ -371,13 +359,13 @@ export class Channels {
       ...(settings.greeting ? { greeting: settings.greeting } : {}), ...(settings.settings ? { settings: settings.settings } : {}), ...(filter ? { filter } : {}), account, masked,
       sealed: this.options.accounts.seal(`channel:${id}`, JSON.stringify({ credentials, secret })), createdAt: now, updatedAt: now,
     };
-    await (internal?.sql ?? this.db).query("insert into channels (id, tenant, channel, created_at) values ($1, $2, $3, $4)", [id, tenant, JSON.stringify(channel), now]).catch(taken);
+    await this.db.query("insert into channels (id, tenant, channel, created_at) values ($1, $2, $3, $4)", [id, tenant, JSON.stringify(channel), now]).catch(taken);
     return this.view(channel);
   }
 
-  async update(tenant: string, id: string, input: ChannelInput, internal?: { managed: true; sql?: Pick<Db, "query"> }) {
-    const channel = await this.owned(tenant, id, internal?.sql);
-    if (this.provider(channel.type).managed && !internal?.managed) throw new HttpError(403, "Manage this integration through its server setup in the console");
+  async update(tenant: string, id: string, input: ChannelInput) {
+    const channel = await this.owned(tenant, id);
+    this.provider(channel.type);
     if (input.type !== undefined && input.type !== channel.type) throw new HttpError(400, "A channel's type cannot change");
     const settings = this.settings(this.provider(channel.type), input, id, channel.settings);
     const filter = await this.filterInput(tenant, input.filter);
@@ -397,16 +385,15 @@ export class Channels {
       // A different bot keeps its webhook pointed here otherwise.
       if (next.account.id !== channel.account.id) await provider.teardown(old).catch(() => {});
     }
-    await (internal?.sql ?? this.db).query("update channels set channel = $2 where id = $1", [id, JSON.stringify(next)]).catch(taken);
+    await this.db.query("update channels set channel = $2 where id = $1", [id, JSON.stringify(next)]).catch(taken);
     return this.view(next);
   }
 
-  async remove(tenant: string, id: string, internal?: { managed: true }) {
+  async remove(tenant: string, id: string) {
     const channel = await this.owned(tenant, id);
-    const provider = this.options.providers[channel.type];
-    if ((channel.type === "discord-managed" || provider?.managed) && !internal?.managed) throw new HttpError(403, "Disconnect this integration through its server setup in the console");
-    // Account deletion must still purge persisted managed channels when the hosted feature is disabled.
-    if (!provider && !(internal?.managed && channel.type === "discord-managed")) this.provider(channel.type);
+    const provider = this.served(channel) ? this.options.providers[channel.type] : undefined;
+    // A retired type's channel is deleted without its service: there is nothing of it to tear down here.
+    if (!provider && !RETIRED_CHANNEL_TYPES.has(channel.type)) this.provider(channel.type);
     try { await provider?.teardown(this.secrets(channel).credentials); }
     catch (error) { console.error(JSON.stringify({ type: "channel_teardown_failed", channel: id, error: safeError(error) })); }
     // Its queued work (filtered messages too), dedup, verdicts and rate windows, and its email threads' metadata go too: nothing replies
@@ -535,8 +522,8 @@ export class Channels {
   });
 
   /**
-   * A message that reached the runtime some other way than the channel's own webhook or
-   * gateway (a shared inbound address that serves many channels), already verified by
+   * A message that reached the runtime some other way than the channel's own webhook
+   * (a shared inbound address that serves many channels), already verified by
    * whoever received it. False when there is no such channel.
    */
   async inbound(id: string, inbound: Inbound): Promise<boolean> {
@@ -554,7 +541,7 @@ export class Channels {
 
   /** Record a message and start on it. Anything the channel does not handle, or from someone not allowed, is dropped. */
   private async accept(channel: Channel, inbound: Inbound) {
-    if (await this.provider(channel.type).guard?.(channel, inbound.conversationId, "inbound") === false) return;
+    if (!this.served(channel)) return;
     if (!validConversation(inbound.conversationId) || !(inbound.trusted || this.allowed(channel, inbound.sender))) {
       console.log(JSON.stringify({ type: "channel_message_rejected", channel: channel.id, messageId: inbound.messageId,
         reason: !validConversation(inbound.conversationId) ? "invalid_conversation" : "access" }));
@@ -615,63 +602,6 @@ export class Channels {
     return rows[0] && { item, revision: rows[0].revision };
   }
 
-  // Gateways --------------------------------------------------------------------
-
-  /**
-   * A service that pushes messages over a socket (Discord) needs one connection per
-   * channel. Each is an actor in `actor_owners`, so one node holds it, and when that
-   * node dies or fences the next node's scan takes it. Two connections for a moment
-   * during a takeover are harmless: messages are recorded once by id.
-   */
-  private async connectGateways() {
-    const ownership = this.options.ownership;
-    const types = Object.keys(this.options.providers).filter(type => this.options.providers[type].connect);
-    if (!ownership || !types.length) return;
-    const { rows } = await this.db.query("select channel from channels where channel->>'type' = any($1)", [types]);
-    const wanted = new Map(rows.map(row => [row.channel.id as string, row.channel as Channel]));
-    for (const [id, held] of this.gateways) {
-      const channel = wanted.get(id);
-      if (!ownership.holds(held.claim)) this.closeGateway(id, false);
-      // Deleted, or changed (credentials, access): reconnect with what is stored now.
-      else if (channel?.updatedAt !== held.updatedAt) this.closeGateway(id, !channel);
-    }
-    for (const id of this.gatewayRetry.keys()) if (!wanted.has(id)) this.gatewayRetry.delete(id);
-    for (const channel of wanted.values()) {
-      if (this.gateways.has(channel.id) || ownership.draining || (this.gatewayRetry.get(channel.id) ?? 0) > Date.now()) continue;
-      const taken = await ownership.acquire(`gateway:${channel.id}`).catch(() => undefined);
-      if (!taken || !("claim" in taken)) continue;
-      const { claim } = taken;
-      const current = () => this.gateways.get(channel.id)?.claim === claim;
-      console.log(JSON.stringify({ type: "channel_gateway_acquired", channel: channel.id, node: this.options.node, epoch: claim.epoch }));
-      const gateway = this.provider(channel.type).connect!(this.secrets(channel).credentials, {
-        diagnostic: (event, fields) => console.log(JSON.stringify({ type: `${channel.type}_gateway_${event}`, channel: channel.id, node: this.options.node, epoch: claim.epoch, ...fields })),
-        message: async inbound => {
-          const latest = await this.read(channel.id);
-          if (latest && current()) await this.accept(latest, inbound);
-          else console.log(JSON.stringify({ type: "channel_gateway_message_skipped", channel: channel.id, node: this.options.node, reason: latest ? "stale_claim" : "deleted" }));
-        },
-        // Kept claimed, so no other node tries the same credentials; this node retries after a pause.
-        failed: error => {
-          console.error(JSON.stringify({ type: "channel_gateway_failed", channel: channel.id, error: safeError(error) }));
-          this.gatewayRetry.set(channel.id, Date.now() + GATEWAY_RETRY_MS);
-          if (current()) this.closeGateway(channel.id, false);
-        },
-      });
-      this.gateways.set(channel.id, { claim, updatedAt: channel.updatedAt, gateway });
-    }
-  }
-
-  /** Close a channel's connection; releasing it lets any node take it at once. */
-  private closeGateway(id: string, release: boolean) {
-    const held = this.gateways.get(id);
-    if (!held) return;
-    console.log(JSON.stringify({ type: "channel_gateway_released", channel: id, node: this.options.node, epoch: held.claim.epoch,
-      release, draining: this.options.ownership?.draining ?? false, holds: this.options.ownership?.holds(held.claim) ?? false }));
-    this.gateways.delete(id);
-    held.gateway.close();
-    if (release) void this.options.ownership?.release(held.claim).catch(() => {});
-  }
-
   // Work items ------------------------------------------------------------------
 
   /** Advance every item that is due and unclaimed; any node may run this. */
@@ -679,7 +609,6 @@ export class Channels {
     if (this.scanning) return;
     this.scanning = true;
     try {
-      await this.connectGateways().catch(error => console.error(JSON.stringify({ type: "channel_gateways_failed", error: errorText(error) })));
       await this.prune();
       for (let batch; (batch = await this.claim(now)).length;) {
         for (const claimed of batch) await this.advance(claimed).catch(error => this.failed(claimed.item, error));
@@ -746,9 +675,8 @@ export class Channels {
     if (!channel) return this.finish(current);
     // A filtered message comes due only when its time to be delivered is up.
     if (current.item.state === "filtered") return this.finish(current);
-    const phase = current.item.state === "received" ? "submit" : "send";
-    if (await this.provider(channel.type).guard?.(channel, current.item.conversationId, phase) === false) return this.fenced(current, phase);
-    if (this.provider(channel.type).managed && current.item.inbound && !this.allowed(channel, current.item.inbound.sender)) return this.finish(current);
+    // A retired type's channel answers nothing: its queued work goes.
+    if (!this.served(channel)) return this.fenced(current, current.item.state === "received" ? "submit" : "send");
     if (current.item.state === "received") return this.receive(channel, current);
     if (current.item.state === "submitted") return this.recheck(channel, current);
     return this.deliver(channel, current);
@@ -774,8 +702,6 @@ export class Channels {
     const { credentials } = this.secrets(channel);
     if (this.options.ownership?.fresh() !== false) void this.provider(channel.type).typing?.(credentials, item.conversationId).catch(() => {});
     const agent = await this.agentFor(channel, item.conversationId, inbound.sender, inbound.title);
-    if (!await this.managedSubmissionAllowed(channel, current)) return this.finish(current);
-    await this.syncManagedDefinition(channel, agent, item.id);
     // A reply to the question the agent waits on answers it; anything else is a new message, which supersedes it.
     if (await this.answerInput(channel, agent, inbound)) return this.finish(current);
     const prompt = this.prompt(channel, inbound, await this.attach(channel, credentials, agent, item.id, inbound.files ?? []));
@@ -783,7 +709,6 @@ export class Channels {
     const next = await this.save(current, { state: "submitted", agent, prompt, due: Date.now() + RECHECK_MS }, false);
     // Channels run unattended: a turn goes ahead without the application, whose calls fail as not connected.
     try {
-      if (!await this.managedSubmissionAllowed(channel, next)) return this.finish(next);
       await this.options.submit(agent, channel.tenant, { id: item.id, method: "prompt", params: { ...prompt, allowDisconnected: true } });
     }
     catch (error) {
@@ -887,7 +812,7 @@ export class Channels {
     const { id, name, username } = inbound.sender;
     const from = { id: `${channel.type}:${inbound.unverified ? "unverified:" : ""}${id}`, ...(name ? { name: name.slice(0, 200) } : {}), ...(username ? { username: username.slice(0, 200) } : {}) };
     const text = [inbound.text, ...notes].filter(Boolean).join("\n") || (files.length === 1 ? "(sent a file)" : files.length ? `(sent ${files.length} files)` : "");
-    return { text, from, ...(files.length ? { files } : {}), ...(this.provider(channel.type).managed ? { requiredDefinition: channel.definition } : {}) };
+    return { text, from, ...(files.length ? { files } : {}) };
   }
 
   /**
@@ -914,41 +839,12 @@ export class Channels {
     return true;
   }
 
-  /** A server can change definition while its first agent is still being provisioned. */
-  private async syncManagedDefinition(channel: Channel, agent: string, messageId: string) {
-    if (!this.provider(channel.type).managed) return;
-    const latest = await this.read(channel.id);
-    if (!latest) return;
-    const { rows } = await this.db.query("select header->'definition' as definition from agents where id=$1 and tenant=$2", [agent, latest.tenant]);
-    const reference = rows[0]?.definition;
-    if (!reference || reference.id === latest.definition) return;
-    const definition = await this.options.definitions.read(latest.tenant, latest.definition);
-    const record = await this.options.submit(agent, latest.tenant, {
-      id: `managed_rebind_${sha(`${messageId}:${definition.id}:${definition.revision}`).slice(0, 40)}`,
-      method: "configure", params: { definition: { id: definition.id, revision: definition.revision } },
-    });
-    if (record.outcome?.error) throw new Error(record.outcome.error);
-  }
-
-  /** Managed policies can change while attachments or agent startup are awaiting I/O. */
-  private async managedSubmissionAllowed(channel: Channel, current: Held, phase: "submit" | "send" = "submit") {
-    const provider = this.provider(channel.type);
-    if (!provider.managed) return true;
-    const latest = await this.read(channel.id);
-    if (!latest || latest.tenant !== channel.tenant || (current.item.inbound && !this.allowed(latest, current.item.inbound.sender))) return false;
-    if (await provider.guard?.(latest, current.item.conversationId, phase) === false) return false;
-    // A policy change cancels durable work. Do not submit a held copy of an item already cancelled.
-    const { rowCount } = await this.db.query("select 1 from channel_items where id=$1 and revision=$2", [current.item.id, current.revision]);
-    return !!rowCount;
-  }
-
   /** A submitted message whose turn end this runtime did not see: ask again (idempotently) how it went. */
   private async recheck(channel: Channel, current: Held) {
     const item = current.item;
     let record: RequestRecord;
     // Rechecking an existing request must still retrieve its reply after credit is exhausted.
     // The submission service enforces current credit if this id was never accepted.
-    if (!await this.managedSubmissionAllowed(channel, current, "send")) return this.finish(current);
     try { record = await this.options.submit(item.agent!, channel.tenant, { id: item.id, method: "prompt", params: { ...item.prompt!, allowDisconnected: true } }); }
     catch (error) {
       const status = (error as { status?: number }).status;
@@ -972,7 +868,6 @@ export class Channels {
     ];
     for (let index = item.sent ?? 0; index < steps.length; index++) {
       try {
-        if (await provider.guard?.(channel, item.conversationId, "send") === false) return this.fenced(current, "send");
         // Only while this node's lease is fresh: a node cut off from its peers and the database may have been taken for dead.
         await this.options.ownership?.whenFresh();
         await steps[index]();
@@ -1028,11 +923,11 @@ export class Channels {
     }));
     if (!created) return;
     const channel = await this.read(binding.channel);
-    if (!channel) return this.finish(created);
+    if (!channel || !this.served(channel)) return this.finish(created);
     await this.deliver(channel, created).catch(error => this.failed(created.item, error));
   }
 
-  /** A paused, disconnected or removed integration drops the item: say so, since nothing reaches the conversation. */
+  /** A channel of a retired type drops the item: say so, since nothing reaches the conversation. */
   private fenced(current: Held, phase: string) {
     console.log(JSON.stringify({ type: "channel_item_fenced", channel: current.item.channel, item: current.item.id, phase }));
     return this.finish(current);

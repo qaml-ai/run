@@ -138,7 +138,7 @@ export async function adminHealth(db: Db, options: { days: number | string; now?
       detail: n(q.unresumable) ? "Agents whose interrupted run failed to resume after a node moved them" : "Every interrupted run resumed" },
     { key: "channels", label: "Channel messages", status: n(q.channel_waiting) > 50 || (n(q.channel_waiting) && now - n(q.channel_since) > 60 * MINUTE) ? "bad" : n(q.channel_waiting) ? "warn" : "ok",
       value: n(q.channel_waiting) ? `${plural(n(q.channel_waiting), "message")} waiting` : "Flowing",
-      detail: n(q.channel_waiting) ? `Discord, Slack, email... messages due over 10 minutes ago, the oldest for ${ago(now - n(q.channel_since))}` : "No message to or from a channel is held up" },
+      detail: n(q.channel_waiting) ? `Slack, email, webhook... messages due over 10 minutes ago, the oldest for ${ago(now - n(q.channel_since))}` : "No message to or from a channel is held up" },
     { key: "attempts", label: "Model charges settled", status: n(q.unsettled) ? "warn" : "ok", value: n(q.unsettled) ? `${plural(n(q.unsettled), "call")} unsettled` : "Settled",
       detail: n(q.unsettled) ? `Model calls over an hour old whose final cost the provider has not confirmed, the oldest for ${ago(now - n(q.unsettled_since))}` : "Every model call over an hour old has its final cost" },
     { key: "help", label: "Get Help requests", status: n(q.help_failed) ? "bad" : n(q.help_waiting) ? "warn" : "ok",

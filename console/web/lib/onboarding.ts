@@ -1,10 +1,10 @@
-import { useApi, type AgentSummary, type ApiToken, type Definition, type ManagedDiscordBinding, type ManagedDiscordConfig, type Usage } from "@/lib/api";
+import { useApi, type AgentSummary, type ApiToken, type Usage } from "@/lib/api";
 
 /** The use-case starts Get started offers; `?start=` on /console/ opens one (a landing page's deep link). */
-export type Start = "discord" | "code";
+export type Start = "code";
 export const startFrom = (search: string): Start | undefined => {
   const start = new URLSearchParams(search).get("start");
-  return start === "discord" || start === "code" ? start : undefined;
+  return start === "code" ? start : undefined;
 };
 
 /** Whether home (/console/) is Get started: a use-case start's deep link, or an account with no agent yet. Else Overview. */
@@ -18,8 +18,6 @@ export const startNext = (pathname: string, search: string) => {
 
 /** The playground's agent: one per account, made with this Idempotency-Key. */
 export const PLAYGROUND_KEY = "playground";
-/** Definitions a Discord starter makes are named with this, so the path finds the one it made. */
-export const DISCORD_STARTER_PREFIX = "Discord: ";
 
 export interface Step { id: string; label: string; done: boolean }
 
@@ -33,49 +31,23 @@ export function codeSteps({ tokens, agents, usage }: { tokens?: ApiToken[]; agen
   ];
 }
 
-/** The server the Discord path is about: the one just added, else the account's first. */
-export function discordServer(bindings: ManagedDiscordBinding[] | undefined, chosen?: string) {
-  return bindings?.find(binding => binding.guildId === chosen) ?? bindings?.find(binding => binding.state !== "disconnected") ?? bindings?.[0];
-}
-
-/** A conversation in a managed Discord server is an agent keyed `discord-managed-<channel>-<conversation>`: its first means Camel was mentioned. */
-export const repliedIn = (agents: AgentSummary[] | undefined, channelId: string | null | undefined) =>
-  !!channelId && !!agents?.some(agent => agent.key?.startsWith(`discord-managed-${channelId}-`));
-
-/** The Discord path: a starter, Camel in a server, its setup, a first mention. */
-export function discordSteps({ definitions, server, agents }: { definitions?: Definition[]; server?: ManagedDiscordBinding; agents?: AgentSummary[] }): Step[] {
-  const ready = !!server?.channel && server.state === "active";
-  return [
-    { id: "starter", label: "Pick a starter bot", done: !!server?.channel || !!definitions?.some(definition => definition.name.startsWith(DISCORD_STARTER_PREFIX)) },
-    { id: "added", label: "Add Camel to your Discord server", done: !!server },
-    { id: "setup", label: "Choose where it answers", done: ready },
-    { id: "hello", label: "Say hello", done: ready && repliedIn(agents, server?.channelId) },
-  ];
-}
-
 export const complete = (steps: Step[]) => steps.every(step => step.done);
 
 /**
- * What the checklists read: existing endpoints only. `poll` while Get started is open, so a script run in a terminal or a
- * mention in Discord ticks its step without a reload; elsewhere one read, for the nav's progress.
+ * What the checklists read: existing endpoints only. `poll` while Get started is open, so a script run in a terminal
+ * ticks its step without a reload; elsewhere one read, for the nav's progress.
  */
 export function useOnboarding(poll?: number) {
   const tokens = useApi<ApiToken[]>("/v1/tokens", poll);
   const agents = useApi<AgentSummary[]>("/v1/agents", poll);
   const usage = useApi<Usage>("/v1/usage?days=90", poll);
-  const discord = useApi<ManagedDiscordConfig>("/console/discord/config");
-  const bindings = useApi<{ bindings: ManagedDiscordBinding[] }>(discord.data?.enabled ? "/console/discord/bindings" : undefined, poll);
-  const definitions = useApi<Definition[]>("/v1/definitions", poll);
   const code = codeSteps({ tokens: tokens.data, agents: agents.data, usage: usage.data });
   const loaded = !!tokens.data && !!agents.data && !!usage.data;
-  return { tokens, agents, usage, discord, bindings, definitions, code, loaded };
+  return { tokens, agents, usage, code, loaded };
 }
 
-/** Get started stays in the nav, with its progress, until either path is done: the open path's, else the further one's. */
-export function navProgress(onboarding: ReturnType<typeof useOnboarding>, open?: Start) {
-  const server = discordServer(onboarding.bindings.data?.bindings);
-  const discord = discordSteps({ definitions: onboarding.definitions.data, server, agents: onboarding.agents.data });
+/** Get started stays in the nav, with its progress, until the code path is done. */
+export function navProgress(onboarding: ReturnType<typeof useOnboarding>, _open?: Start) {
   const code = onboarding.code;
-  const best = open ? (open === "code" ? code : discord) : code.filter(step => step.done).length / code.length >= discord.filter(step => step.done).length / discord.length ? code : discord;
-  return { done: best.filter(step => step.done).length, total: best.length, complete: onboarding.loaded && (complete(code) || complete(discord)) };
+  return { done: code.filter(step => step.done).length, total: code.length, complete: onboarding.loaded && complete(code) };
 }

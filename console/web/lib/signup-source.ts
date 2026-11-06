@@ -16,3 +16,9 @@ export function signupSource(search: string, referrer: string, origin: string): 
   } catch { /* No referrer, or not an address. */ }
   return { ...(ref ? { ref } : {}), ...(from ? { from } : {}) };
 }
+
+/** GitHub's or Google's sign-in, coming back to `next`, carrying where the browser came from for a new account. */
+export function consoleLoginUrl(provider: "google" | "github", next?: string, source: SignupSource = {}): string {
+  const query = Object.entries({ next, ...source }).filter(([, value]) => value).map(([key, value]) => `${key}=${encodeURIComponent(value!)}`).join("&");
+  return `/console/auth/${provider}${query ? `?${query}` : ""}`;
+}
