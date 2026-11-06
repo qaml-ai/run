@@ -56,7 +56,10 @@ class _SocketResponse:
     async def aiter_bytes(self):
         try:
             async for message in self.socket:
-                yield _frame(message)
+                frame = _frame(message)
+                yield frame
+                if frame.startswith(b"event: closed\n"):
+                    return
         except (OSError, WebSocketException) as error:
             raise httpx.ReadError("Event WebSocket failed") from error
 
@@ -67,7 +70,10 @@ class _SocketResponse:
     def iter_bytes(self):
         try:
             for message in self.socket:
-                yield _frame(message)
+                frame = _frame(message)
+                yield frame
+                if frame.startswith(b"event: closed\n"):
+                    return
         except (OSError, WebSocketException) as error:
             raise httpx.ReadError("Event WebSocket failed") from error
 

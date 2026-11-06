@@ -54,7 +54,6 @@ import { createJourney, sendJourney } from "./journey.ts";
 import { flushJourney } from "./journey-delivery.ts";
 import { keyServices } from "./security-services.ts";
 import { eventRead } from "./event-reads.ts";
-import { relayEvents } from "./event-relay.ts";
 import { decisionService, type DecisionEnv } from "./decision-service.ts";
 import { decisionRoute } from "./decision-runtime.ts";
 import {
@@ -121,8 +120,7 @@ async function forward(request: Request, env: Env, id: string, path: string, ctx
   const url = new URL(request.url);
   url.pathname = path;
   const agent = env.AGENTS.getByName(id);
-  const response = await agent.fetch(new Request(url, request), { signal: request.signal });
-  return relayEvents(response, request.signal, connection => agent.detachEventConnection(connection), task => ctx.waitUntil(task));
+  return agent.fetch(new Request(url, request), { signal: request.signal });
 }
 function scopedConfiguration(input: unknown) {
   if (!input || typeof input !== "object" || Array.isArray(input))
@@ -231,7 +229,7 @@ const worker = {
         if (path.startsWith("/clients/") || path.startsWith("/registry/"))
           throw new ApiError(401, "An agent token is required", "UNAUTHORIZED");
         const scope = path.slice(path.lastIndexOf("/") + 1);
-        if (request.method !== "GET" || !BROWSER_READS.test(path) || !browser.scopes.includes(scope as never) || request.headers.get("upgrade"))
+        if (request.method !== "GET" || !BROWSER_READS.test(path) || !browser.scopes.includes(scope as never) || (request.headers.has("upgrade") && (scope !== "events" || request.headers.get("upgrade")?.toLowerCase() !== "websocket")))
           throw new ApiError(403, "This browser token does not grant this read", "FORBIDDEN");
       }
       let auth = browser ? null : await authenticateMoney(request, env)
@@ -559,13 +557,6 @@ const worker = {
           throw new HttpError(auth ? 400 : 403, auth
             ? "bucket is for a model run (prompt, continue)"
             : "Only the tenant can choose a run's bucket");
-      }
-      // Browser grants retain Node's read-only SSE policy. The internal agent
-      // endpoint also negotiates transports, so strip the WebSocket offer here.
-      if (browser && tail === "/events") {
-        const headers = new Headers(request.headers);
-        headers.set("accept", "text/event-stream");
-        request = new Request(request, { headers });
       }
       if (tail === "/inputs" || tail.startsWith("/inputs/")) {
         const headers = new Headers(request.headers);

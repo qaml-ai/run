@@ -18,12 +18,19 @@ test('agent MCP advertises its public description and stateless capability sessi
 });
 
 test('agent MCP follows progress and reuses explicit request ids through REST admission', async () => {
-  let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
-  const encoder = new TextEncoder(), records = new Map<string, object>(); let prompts = 0;
-  const frame = (event: object) => controller!.enqueue(encoder.encode('data: ' + JSON.stringify(event) + '\n\n'));
+  let socket: EventTarget;
+  const records = new Map<string, object>(); let prompts = 0, cursor = 0;
+  const frame = (data: object) => socket.dispatchEvent(Object.assign(new Event('message'), { data: JSON.stringify({ id: ++cursor, data }) }));
   const local: typeof fetch = async (input, init) => {
     const path = new URL(String(input)).pathname;
-    if (path.endsWith('/events')) return new Response(new ReadableStream({ start(value) { controller = value; controller.enqueue(encoder.encode('event: ready\ndata: {}\n\n')); } }), { headers: { 'Content-Type': 'text/event-stream' } });
+    if (path.endsWith('/events')) {
+      assert.equal(new Headers(init?.headers).get('Upgrade'), 'websocket');
+      socket = Object.assign(new EventTarget(), {
+        accept() { queueMicrotask(() => socket.dispatchEvent(Object.assign(new Event('message'), { data: JSON.stringify({ event: 'ready', data: {} }) }))); },
+        close() {},
+      });
+      return { status: 101, webSocket: socket } as unknown as Response;
+    }
     if (path.endsWith('/prompt')) {
       const body = JSON.parse(String(init?.body));
       let record = records.get(body.requestId);
@@ -32,6 +39,8 @@ test('agent MCP follows progress and reuses explicit request ids through REST ad
         record = { id: body.requestId, state: 'completed', outcome: { result: { reply: 'echo: ' + body.text } } };
         records.set(body.requestId, record);
         frame({ type: 'event', requestId: body.requestId, event: { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'echo: ' + body.text } } });
+        frame({ type: 'response', id: body.requestId, outcome: (record as any).outcome });
+        return Response.json({ id: body.requestId, state: 'pending' });
       }
       return Response.json(record);
     }

@@ -29,10 +29,12 @@ async function removePrefix(env: FileBindings, prefix: string) {
   }
 }
 
-export function accountDeletions(env: AccountLifecycleEnv, service: AccountServices) {
+export function accountDeletions(env: AccountLifecycleEnv, service: AccountServices, tenantOnly?: string) {
   const db = service.accounts.db;
+  const tenantFilter = tenantOnly === undefined ? "" : " and tenant = $1";
+  const tenantValues = tenantOnly === undefined ? [] : [tenantOnly];
   return new AccountDeletions({
-    db, accounts: service.accounts, stripe: createStripe(env),
+    db, accounts: service.accounts, stripe: createStripe(env), onlyTenant: tenantOnly,
     storage: { async removeBlobs(prefix) {
       const tenant = prefix.split("/")[1];
       await removePrefix(env, prefix);
@@ -46,7 +48,14 @@ export function accountDeletions(env: AccountLifecycleEnv, service: AccountServi
       if (result && typeof result === "object" && result.failed) throw new HttpError(result.status, result.error);
     },
     purgeAgents: async () => {
-      const rows = (await db.query("select id, tenant from agents where revoked and purged_at is not null and tenant <> '' and exists (select 1 from account_deletions d where d.tenant=agents.tenant and d.completed_at is null)")).rows;
+      // Directory revokes before the DO drains. Retry an interrupted shutdown
+      // before purging journals; the source deletion loop only visits live rows.
+      const pending = (await db.query("select id, tenant from agents where revoked and purged_at is null and tenant <> '' and exists (select 1 from account_deletions d where d.tenant=agents.tenant and d.completed_at is null)" + tenantFilter, tenantValues)).rows;
+      for (const { id, tenant } of pending) {
+        const result = await new Directory(env as unknown as ControlEnv, tenant).remove(id);
+        if (result && typeof result === "object" && result.failed) throw new HttpError(result.status, result.error);
+      }
+      const rows = (await db.query("select id, tenant from agents where revoked and purged_at is not null and tenant <> '' and exists (select 1 from account_deletions d where d.tenant=agents.tenant and d.completed_at is null)" + tenantFilter, tenantValues)).rows;
       for (const { id, tenant } of rows) {
         await env.AGENTS.getByName(id).purgeAccountData(tenant, id);
         await transaction(db, async sql => {
@@ -61,7 +70,7 @@ export function accountDeletions(env: AccountLifecycleEnv, service: AccountServi
         await new ComputerService(env as unknown as ComputerEnv, tenant).removeAgent(agent);
     },
     flushStorageUsage: async () => {
-      for (const { tenant } of (await db.query("select tenant from account_deletions where completed_at is null and not exists (select 1 from agents where agents.tenant=account_deletions.tenant)")).rows)
+      for (const { tenant } of (await db.query("select tenant from account_deletions where completed_at is null and not exists (select 1 from agents where agents.tenant=account_deletions.tenant)" + tenantFilter, tenantValues)).rows)
         await env.TENANTS?.getByName(tenant).purgeAccountData();
     },
     volumes: {

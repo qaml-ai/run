@@ -9,6 +9,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 
 import { Agents, RunError } from "../../../clients/node.ts";
+import { openEventStream } from "../../../clients/event-transport.ts";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 
@@ -18,7 +19,7 @@ const session = (runId: string) => `client_${runId.slice("run_".length)}`;
 
 async function frames(base: string, runId: string, options: { lastEventId?: number; stop?: (frame: { id: number; data: any }) => boolean } = {}) {
   const controller = new AbortController();
-  const response = await fetch(`${base}/v1/runs/${runId}/events`, { headers: { Authorization: `Bearer ${OPERATOR}`, ...(options.lastEventId ? { "Last-Event-ID": String(options.lastEventId) } : {}) }, signal: controller.signal });
+  const response = await openEventStream(fetch, `${base}/v1/runs/${runId}/events`, { headers: { Authorization: `Bearer ${OPERATOR}`, ...(options.lastEventId ? { "Last-Event-ID": String(options.lastEventId) } : {}) }, signal: controller.signal });
   assert.equal(response.status, 200, await (response.ok ? "" : response.text()));
   const got: { id: number; data: any }[] = [];
   let buffer = "";

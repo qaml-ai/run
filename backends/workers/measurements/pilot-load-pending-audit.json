@@ -1,0 +1,19 @@
+{
+  "observedAt": "2026-11-06T02:57:44.728Z",
+  "scope": "20 deleted full-load test tenants",
+  "pendingAttempts": 1,
+  "settledAttempts": 410,
+  "attemptChargeMicros": 0,
+  "creditHolds": 0,
+  "endUserHolds": 0,
+  "userDataRows": 0,
+  "disposition": "Retained zero-charge accounting audit; not manually settled",
+  "policy": {
+    "source": "src/model-attempts.ts: reconcile()",
+    "staleAfterMs": 7320000,
+    "cron": "*/5 * * * *",
+    "schedulePath": "index.scheduled -> moneyMaintenance -> modelAttempts.reconcile",
+    "customProviderBehavior": "Once stale, marks non-OpenRouter audit settled without provider lookup or requiring a live tenant",
+    "expectedEligibleWindow": "approximately 2026-11-06T04:32Z; first later successful scheduled sweep"
+  }
+}

@@ -39,6 +39,11 @@ export async function createAdmission(env: AdmissionEnv, tenant: string, counted
   return (await service(env)).limits.agentCreate(tenant, counted);
 }
 
+/** Resolve policy before taking the directory lock; its counter uses the same transaction. */
+export async function prepareCreateAdmission(env: AdmissionEnv, tenant: string) {
+  return (await service(env)).limits.prepareAgentCreate(tenant);
+}
+
 /** A replay of an already admitted request neither consumes nor rechecks its budget. */
 export async function runAdmission(env: AdmissionEnv, tenant: string, counted = true): Promise<RateLimitState | undefined> {
   if (!counted) return undefined;

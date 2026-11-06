@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { openEventStream } from "../clients/event-transport.ts";
-import { eventFrame, negotiateEvents, websocketAuthorization, EVENT_PROTOCOL } from "../backends/workers/src/live-transport.ts";
+import { eventFrame, negotiateEvents, websocketAuthorization, webSocketRequired, EVENT_PROTOCOL } from "../backends/workers/src/live-transport.ts";
 import { watchAgent } from "../clients/watch.ts";
 
 class Socket extends EventTarget {
@@ -17,6 +17,20 @@ class Socket extends EventTarget {
   close() { this.readyState = 3; }
   message(value: unknown) { this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(value) })); }
 }
+
+test("Workers select WebSocket in either offer order and refuse SSE-only streams", async () => {
+  for (const accept of ["application/vnd.camelrun.events+json, text/event-stream", "text/event-stream, application/vnd.camelrun.events+json"]) {
+    const response = negotiateEvents(new Request("https://runtime.test/events", { headers: { accept } }));
+    assert.ok(response);
+    assert.equal((await response.json()).transport, "websocket");
+  }
+  for (const accept of ["text/event-stream", "application/json", "*/*"]) {
+    assert.equal(negotiateEvents(new Request("https://runtime.test/events", { headers: { accept } })), undefined);
+  }
+  const refused = webSocketRequired();
+  assert.equal(refused.status, 406);
+  assert.equal((await refused.json()).code, "WEBSOCKET_REQUIRED");
+});
 
 test("SSE Content-Type explicitly selects the current Node stream in one request", async () => {
   let calls = 0;
@@ -56,6 +70,21 @@ test("negotiated WebSockets preserve frames and carry credentials outside URLs",
 
 test("capability response cannot send a bearer credential to another origin", async () => {
   await assert.rejects(openEventStream(async () => Response.json({ transport: "websocket", protocol: EVENT_PROTOCOL, url: "https://evil.test/events" }, { headers: { "content-type": "application/vnd.camelrun.events+json" } }), "https://runtime.test/events", { headers: { authorization: "Bearer secret" } }), /origin/);
+});
+
+test("a protocol close ends the reader before the host closes the transport", async () => {
+  const original = globalThis.WebSocket;
+  globalThis.WebSocket = Socket as unknown as typeof WebSocket;
+  try {
+    const response = await openEventStream(async () => negotiateEvents(new Request("https://runtime.test/events", {
+      headers: { accept: "application/vnd.camelrun.events+json" },
+    }))!, "https://runtime.test/events", { headers: { authorization: "Bearer fixture" } });
+    const reader = response.body!.getReader();
+    Socket.last.message({ event: "closed", data: { reason: "expired" } });
+    assert.equal(new TextDecoder().decode((await reader.read()).value), 'event: closed\ndata: {"reason":"expired"}\n\n');
+    assert.deepEqual(await reader.read(), { value: undefined, done: true });
+    assert.equal(Socket.last.readyState, 3, "the client also initiates transport closure");
+  } finally { globalThis.WebSocket = original; }
 });
 
 test("browser upgrade authentication accepts only the named protocol", () => {

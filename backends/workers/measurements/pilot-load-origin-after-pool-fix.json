@@ -1,0 +1,41 @@
+{
+  "capturedAt": "2026-11-06T01:59:44.477Z",
+  "database": {
+    "settings": {
+      "max_connections": 25,
+      "superuser_reserved_connections": 3
+    },
+    "activity": [
+      {
+        "state": "active",
+        "backend_type": "client backend",
+        "application_name": "camelrun-proto-workers",
+        "connections": 1
+      },
+      {
+        "state": "idle",
+        "backend_type": "client backend",
+        "application_name": "camelrun-proto-workers",
+        "connections": 7
+      },
+      {
+        "state": "idle",
+        "backend_type": "client backend",
+        "application_name": "Cloudflare Hyperdrive",
+        "connections": 2
+      },
+      {
+        "state": "idle",
+        "backend_type": "client backend",
+        "application_name": "Patroni heartbeat",
+        "connections": 1
+      },
+      {
+        "state": "idle",
+        "backend_type": "client backend",
+        "application_name": "Patroni restapi",
+        "connections": 1
+      }
+    ]
+  }
+}

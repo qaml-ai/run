@@ -36,6 +36,9 @@ test(
       role: "assistant",
       content: "seen",
     }));
+    assert.equal((await r.call("/v1/providers/openrouter/key", {
+      method: "PUT", body: { apiKey: "local-image-fixture-only", verify: false },
+    })).status, 200);
     const client = new AgentRuntime({ url: r.base, apiKey: OPERATOR });
     const made = await client.upsertAgent("attached-files", { tools: {} });
     const id = made.session.id;
@@ -58,7 +61,7 @@ test(
         },
       ],
     });
-    assert.equal(result.outcome.result.reply, "seen");
+    assert.equal(result.outcome.result.reply, "seen", JSON.stringify(result));
     const body = r.model.bodies.at(-1);
     const user = body.messages.find(
       (message: any) => message.role === "user",

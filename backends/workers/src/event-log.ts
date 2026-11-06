@@ -1,5 +1,3 @@
-import { visibleEvent } from './event-visibility.ts';
-
 export type TerminalEvents = { events: unknown[]; next: number };
 export type TerminalDelivery = { key: string; index: number };
 export const TERMINAL_EVENTS_PREFIX = "terminal-events:";
@@ -49,38 +47,4 @@ export class DurableEventLog {
   read(id:string,after:number,before:number,limit=128):{cursor:number;body:string}[] {
     return [...this.sql.exec<{cursor:number;body:string}>("SELECT cursor,body FROM camel_events WHERE request_id=? AND cursor>? AND cursor<=? ORDER BY cursor LIMIT ?",id,after,before,limit)];
   }
-}
-
-export function runEventStream(request:Request, id:string, log:DurableEventLog, subscribe:(receive:(cursor:number,value:unknown)=>void)=>()=>void):Response {
-  const raw=request.headers.get("Last-Event-ID") ?? "0", after=Number(raw);
-  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(after)) return Response.json({error:"Invalid Last-Event-ID"},{status:400});
-  const encoder=new TextEncoder();
-  let cursor=after, closed=false, pulse=false, page:{cursor:number;body:string}[]=[];
-  let waiting:(()=>void)|undefined;
-  const wake=()=>{waiting?.();waiting=undefined;};
-  const detach=subscribe((_next,value)=>{
-    const event=value as {type?:string;requestId?:string;id?:string};
-    if(event.requestId===id || event.type==="response" && event.id===id)wake();
-  });
-  const heartbeat=setInterval(()=>{pulse=true;wake();},10000);
-  const cleanup=()=>{if(closed)return;closed=true;clearInterval(heartbeat);detach();wake();};
-  const stream=new ReadableStream<Uint8Array>({
-    async pull(controller){
-      while(!closed){
-        if(!page.length)page=log.read(id,cursor,Number.MAX_SAFE_INTEGER);
-        const row=page.shift();
-        if(row){
-          cursor=row.cursor;
-          if (!visibleEvent(JSON.parse(row.body), new URL(request.url).searchParams.get('subagents') === '1')) continue;
-          controller.enqueue(encoder.encode(`id: ${row.cursor}\ndata: ${row.body}\n\n`));
-          if((JSON.parse(row.body) as {type?:string}).type==="response"){cleanup();controller.close();}
-          return;
-        }
-        if(pulse){pulse=false;controller.enqueue(encoder.encode(": heartbeat\n\n"));return;}
-        await new Promise<void>(resolve=>{waiting=resolve;});
-      }
-    },
-    cancel(){cleanup();},
-  });
-  return new Response(stream,{headers:{"Content-Type":"text/event-stream","Cache-Control":"no-store"}});
 }

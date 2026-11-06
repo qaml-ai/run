@@ -1,5 +1,6 @@
 import {createServer} from "node:http";
 import {once} from "node:events";
+import { openEventStream } from "../../clients/event-transport.ts";
 import { pollingAttempt, observeMissingStream, observePollingFailure, terminalRequestStates, type PollingOptions } from "./polling.ts";
 
 export type T = { after(fn: () => Promise<void> | void): void };
@@ -136,7 +137,7 @@ export async function attach(t: T, base: string, agent: string, token: string,
   const stream = new AbortController();
   t.after(() => stream.abort());
   const headers = { Authorization: `Bearer ${token}` };
-  const response = await fetch(`${base}/clients/${agent}/events${query}`, { headers: { ...headers, Accept: "text/event-stream" }, signal: stream.signal });
+  const response = await openEventStream(fetch, `${base}/clients/${agent}/events${query}`, { headers, signal: stream.signal });
   const frames: string[] = [];
   const ended = Promise.withResolvers<void>();
   // A stalled application (a half-open connection, say) stops answering the runtime's pings.
@@ -208,7 +209,7 @@ export async function attach(t: T, base: string, agent: string, token: string,
 export async function watchEvents(t: T, url: string, headers: Record<string, string>, options: { cursor?: number; query?: string } = {}) {
   const stream = new AbortController();
   t.after(() => stream.abort());
-  const response = await fetch(`${url}?${options.query ?? "watch=1"}`, { headers: { ...headers, Accept: "text/event-stream", ...(options.cursor !== undefined ? { "Last-Event-ID": String(options.cursor) } : {}) }, signal: stream.signal });
+  const response = await openEventStream(fetch, `${url}?${options.query ?? "watch=1"}`, { headers: { ...headers, ...(options.cursor !== undefined ? { "Last-Event-ID": String(options.cursor) } : {}) }, signal: stream.signal });
   const frames: { id?: number; event?: string; data: any }[] = [];
   let ended = false;
   let errorBody: unknown;
@@ -234,6 +235,12 @@ export async function watchEvents(t: T, url: string, headers: Record<string, str
     const text = await response.text();
     try { errorBody = JSON.parse(text); } catch { /* plain HTTP error */ }
     ended = true;
+  }
+  if (response.ok && response.headers.get("X-Agent-Transport") === "websocket") {
+    await until(() => {
+      if (ended) throw new Error("Event WebSocket ended before its ready frame");
+      return frames.some(frame => frame.event === "ready");
+    }, "the event WebSocket to be ready", 10_000);
   }
   const observe = observeMissingStream(url, response.status, errorBody);
   return { status: response.status, get frames() {

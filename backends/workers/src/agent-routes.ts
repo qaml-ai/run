@@ -87,7 +87,15 @@ export async function statelessRoutes(request: Request, env: ControlEnv, auth: A
   if (match[2] === "/messages" && request.method === "GET") return call(env, entry.id, `/history?run=${encodeURIComponent(runId)}&retentionMs=${entry.run.retentionMs}`);
   const record = await payload(await call(env, entry.id, `/requests/${runId}?wait=${Math.min(25,Number(url.searchParams.get("wait") ?? 0))}`)) as Record;
   if (record.endedAt && record.endedAt + entry.run.retentionMs <= Date.now()) throw new ApiError(404, "Run retention expired", "NOT_FOUND");
-  if (match[2] === "/events" && request.method === "GET") return env.AGENTS.getByName(entry.id).fetch(new Request(`https://agent/events?watch=1&runId=${encodeURIComponent(runId)}`, {headers:request.headers}));
+  if (match[2] === "/events" && request.method === "GET") {
+    const headers = new Headers(request.headers);
+    headers.set("x-camel-events-path", url.pathname);
+    const target = new URL("https://agent/events");
+    target.search = url.search;
+    target.searchParams.set("watch", "1");
+    target.searchParams.set("runId", runId);
+    return env.AGENTS.getByName(entry.id).fetch(new Request(target, { headers, signal: request.signal }));
+  }
   if (match[2] === "/abort" && request.method === "POST") return call(env, entry.id, "/abort", {});
   if (!match[2] && request.method === "DELETE") { await directory.remove(entry.id); return json({deleted:true}); }
   if (!match[2] && request.method === "GET") return json(runView(record, entry.run.retentionMs));

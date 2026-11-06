@@ -132,7 +132,7 @@ test("merge preserves failures and rejects missing, duplicate, stale or extra re
 
 test("accepted differences are exact reviewed Workers cases and never green Node evidence", async () => {
   const { acceptedDifferences, acceptedDifference, differenceResult, validateDifferences, validateDifferenceInventory } = await import("./accepted-differences.mjs");
-  assert.equal(acceptedDifferences.length, 5);
+  assert.equal(acceptedDifferences.length, 17);
   validateDifferenceInventory(acceptedDifferences);
   assert.throws(() => validateDifferenceInventory(acceptedDifferences.slice(1)), /missing or duplicated/);
   assert.throws(() => validateDifferenceInventory([...acceptedDifferences, acceptedDifferences[0]]), /missing or duplicated/);

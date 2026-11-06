@@ -65,6 +65,8 @@ export async function openEventStream(
       if ((controller.desiredSize ?? 0) <= 0) throw new Error("Event WebSocket consumer is too slow");
       const data = JSON.stringify(frame.data);
       controller.enqueue(encoder.encode(`${frame.event ? `event: ${frame.event}\n` : ""}${frame.id ? `id: ${frame.id}\n` : ""}data: ${data}\n\n`));
+      // A protocol close is final even when the host delays its TCP close.
+      if (frame.event === "closed") end();
     } catch (error) { end(error instanceof Error ? error : new Error("Invalid event WebSocket frame")); }
   });
   socket.addEventListener("close", event => end(event.code === 1000 || event.code === 1001 ? undefined : new Error(`Event WebSocket closed (${event.code})`)));

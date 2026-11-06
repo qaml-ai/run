@@ -21,6 +21,8 @@ export type PricingEnv = Partial<Record<
 export type SecurityEnv = BillingEnv & PricingEnv & ModelAzureEnv & FederationEnv & {
   AGENT_SECRETS_KEY?: string;
   AGENT_TENANTS_JSON?: string;
+  /** Account-level credential; resolved only inside the Worker, never by deploy tooling. */
+  PILOT_OPENROUTER_KEY?: { get(): Promise<string> };
   AGENT_PUBLIC_URL?: string;
   AGENT_BILLING_ADMINS?: string;
   AGENT_OUTBOUND_ALLOW_HTTP?: string;
@@ -30,8 +32,17 @@ export type SecurityEnv = BillingEnv & PricingEnv & ModelAzureEnv & FederationEn
 };
 export type KeyEnv = SecurityEnv;
 /** Operator configuration is a Worker secret, never a local file or an AWS lookup. */
-export async function createTenants(env: Pick<SecurityEnv, "AGENT_TENANTS_JSON">) {
-  const tenants = new Tenants({ read: async () => env.AGENT_TENANTS_JSON ?? '{"tenants":{}}', env: true });
+export async function createTenants(env: Pick<SecurityEnv, "AGENT_TENANTS_JSON" | "PILOT_OPENROUTER_KEY">) {
+  const tenants = new Tenants({ read: async () => {
+    const config = JSON.parse(env.AGENT_TENANTS_JSON ?? '{"tenants":{}}');
+    if (env.PILOT_OPENROUTER_KEY) {
+      // A pilot can come up before its operator adds the secret. A missing key
+      // leaves normal model-key errors intact and does not disable own providers.
+      const key = await env.PILOT_OPENROUTER_KEY.get().catch(() => undefined);
+      if (key) config.platformKeys = { ...config.platformKeys, openrouter: key };
+    }
+    return JSON.stringify(config);
+  }, env: true });
   await tenants.reload();
   return tenants;
 }

@@ -2,6 +2,7 @@
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { Api, ApiError, summarize, type RunSummary } from './agent-mcp-api.ts';
 import { digest } from './api-contract.ts';
+import { followEvents as follow } from './event-follow.ts';
 const resumeId = async (id: string) => 'resume_' + (await digest(id)).slice(0, 40);
 
 /** An input as GET .../inputs lists it. */
@@ -183,55 +184,6 @@ function reporter(extra: Extra) {
     },
     stop() { clearInterval(heartbeat); },
   };
-}
-
-/**
- * Read the agent's event stream, as a watcher, into `inbox` until `signal`. A stream that drops opens again after
- * the last event read (from the start, where that is gone), and says `reconnected` so the call checks what it missed.
- * Resolves once the first stream is open; refusals (401, 404, 429...) reject it, or end the call later.
- */
-function follow(call: Call, inbox: Inbox, signal: AbortSignal): Promise<void> {
-  const opened = Promise.withResolvers<void>();
-  void (async () => {
-    let cursor: string | undefined, first = true;
-    while (!signal.aborted) {
-      try {
-        const response = await call.fetch(call.events, { headers: { Authorization: call.authorization, Accept: "text/event-stream", ...(cursor ? { "Last-Event-ID": cursor } : {}) }, signal });
-        if (response.status === 409) { cursor = undefined; await response.body?.cancel(); continue; }
-        if (!response.ok) {
-          const error = new ApiError(response.status, (await response.json().catch(() => ({})) as { error?: string }).error ?? response.statusText);
-          if (response.status !== 503) { opened.reject(error); inbox.push({ kind: "failed", error }); return; }
-        } else {
-          for await (const frame of frames(response.body!)) {
-            if (frame.event === "ready") { if (first) opened.resolve(); else inbox.push({ kind: "reconnected" }); first = false; continue; }
-            if (frame.id) cursor = frame.id;
-            if (frame.data) inbox.push({ kind: "event", data: JSON.parse(frame.data) });
-          }
-        }
-      } catch { /* dropped: open it again */ }
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-    opened.resolve();
-  })();
-  return opened.promise;
-}
-
-/** Server-sent events' frames: each one's event, id and data. */
-async function* frames(body: ReadableStream<Uint8Array>) {
-  const decoder = new TextDecoder();
-  let buffer = "";
-  for await (const chunk of body) {
-    buffer += decoder.decode(chunk, { stream: true });
-    for (let end; (end = buffer.indexOf("\n\n")) !== -1; buffer = buffer.slice(end + 2)) {
-      const frame: { event?: string; id?: string; data?: string } = {};
-      for (const line of buffer.slice(0, end).split("\n")) {
-        const [, field, value] = /^(event|id|data): ?(.*)$/.exec(line) ?? [];
-        if (field === "data") frame.data = frame.data === undefined ? value : `${frame.data}\n${value}`;
-        else if (field) frame[field as "event" | "id"] = value;
-      }
-      yield frame;
-    }
-  }
 }
 
 /** What a call waits on, in the order it arrived. */

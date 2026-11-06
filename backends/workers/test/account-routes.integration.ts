@@ -68,6 +68,15 @@ test("deleting an account removes agent spend limits and keeps its credit ledger
   await r.db.query("insert into journey_lost_signups(tenant,consent,visitor,method,surface,at) values($1,'granted',$2,'password','console',$3)", [tenant, visitor, now]);
   await r.db.query("insert into journey_outbox(id,account_ref,body,due,created_at) values($1,$2,$3,$4,$4)", [crypto.randomUUID(), accountRef, { name: "run_token_created", visitor_id: visitor }, now]);
 
+  const stranded = await call("/v1/agents", "POST", { model: "test/echo", spendLimit: { usd: 1 } });
+  assert.equal(stranded.status, 201);
+  // A previous process revoked the row, then failed before the DO acknowledged
+  // shutdown. Account deletion must retry that persisted cleanup intent too.
+  await r.db.query("update agents set revoked=true, header=header::jsonb || '{\"deleted\":true,\"cleanupPending\":true}'::jsonb where id=$1", [stranded.json.id]);
+  // Directory marks the agent revoked before shutdown. A cold DO must still
+  // reopen its harness and read the owned spend counter to finish that shutdown.
+  await r.worker.stop(true);
+  await r.worker.start();
   assert.equal((await call(`/v1/tenants/${tenant}`, "DELETE", undefined, operator)).status, 202);
   let deleted = false;
   const deadline = Date.now() + 30_000;
@@ -79,6 +88,8 @@ test("deleting an account removes agent spend limits and keeps its credit ledger
   }
   assert.ok(deleted, "account cleanup completes");
   assert.equal((await r.db.query("select count(*)::int n from agent_spend_limits where agent=$1", [id])).rows[0].n, 0);
+  assert.equal((await r.db.query("select count(*)::int n from agent_spend_limits where agent=$1", [stranded.json.id])).rows[0].n, 0);
+  assert.equal((await r.db.query("select count(*)::int n from agents where tenant=$1", [tenant])).rows[0].n, 0, "cold and previously interrupted agents are both purged");
   assert.deepEqual((await r.db.query("select * from credit_ledger where tenant=$1 order by id", [tenant])).rows, ledger);
   assert.equal((await r.db.query("select balance from credit_accounts where tenant=$1", [tenant])).rows[0].balance, balance);
   assert.equal((await r.db.query("select count(*)::int n from journey_accounts where tenant=$1", [tenant])).rows[0].n, 0);

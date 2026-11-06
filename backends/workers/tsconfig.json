@@ -18,6 +18,7 @@
   "include": [
     "src/**/*.ts",
     "worker-configuration.d.ts",
-    "codemode/**/*.ts"
+    "codemode/**/*.ts",
+    "scripts/pilot-operator-worker.ts"
   ]
 }
