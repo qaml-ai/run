@@ -48,4 +48,3 @@ export class DurableEventLog {
     return [...this.sql.exec<{cursor:number;body:string}>("SELECT cursor,body FROM camel_events WHERE request_id=? AND cursor>? AND cursor<=? ORDER BY cursor LIMIT ?",id,after,before,limit)];
   }
 }
-

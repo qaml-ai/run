@@ -6,6 +6,7 @@ export type EventSubscription = {
   type: "camel.application" | "camel.watcher";
   subagents?: boolean;
   request?: string;
+  run?: boolean;
   connection?: string;
   serving?: boolean;
   initialized?: boolean;

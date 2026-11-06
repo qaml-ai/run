@@ -1213,7 +1213,11 @@ export class CamelAgent extends DurableObject<Env> {
             continue;
           }
           const visible = subscribedEvent(subscription, event);
-          if (visible !== undefined) socket.send(eventFrame(visible, cursor));
+          if (visible !== undefined) {
+            socket.send(eventFrame(visible, cursor));
+            const value = event as { type?: string; id?: string };
+            if (subscription.run && value.type === "response" && value.id === subscription.request) socket.close(1000, "Run completed");
+          }
         } catch {
           socket.close(1011, "Send failed");
         }
@@ -3920,6 +3924,7 @@ export class CamelAgent extends DurableObject<Env> {
     const conf = await this.config();
     const subscription: EventSubscription = { type: watch ? "camel.watcher" : "camel.application",
       subagents: url.searchParams.get("subagents") === "1", request: runId ?? url.searchParams.get("request") ?? undefined,
+      ...(runId ? { run: true } : {}),
       ...(claims ? { browser: { scopes: claims.scopes, events: claims.events, redact: claims.redact, exp: claims.exp } } : {}) };
     const previous =
       request.headers.get("X-Agent-Connection") ??
@@ -3980,6 +3985,7 @@ export class CamelAgent extends DurableObject<Env> {
     for (const row of replay.events) {
       const visible = subscribedEvent(subscription, row.data);
       if (visible !== undefined) socket.send(eventFrame(visible, row.id));
+      if (runId && (row.data as {type?:string}).type === "response") socket.close(1000, "Run completed");
     }
     if (claims) await this.arm();
     const selected = request.headers
