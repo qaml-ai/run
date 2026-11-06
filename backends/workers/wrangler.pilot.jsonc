@@ -21,8 +21,14 @@
   },
   "observability": {
     "enabled": true,
+    // Browser WebSockets carry a bearer subprotocol. Keep structured runtime
+    // logs, but never persist automatic request headers or traces.
+    "logs": {
+      "enabled": true,
+      "invocation_logs": false
+    },
     "traces": {
-      "enabled": true
+      "enabled": false
     },
     "redact_query_string": true
   },
