@@ -31,7 +31,8 @@ try {
           } finally { await agent.delete(); }
         } finally { await agents.close(); }
       }
-      report.beforeCleanup = await operator.request("/pilot/inspect");
+      const idleAgent = report.smoke.idle?.agentId;
+      report.beforeCleanup = await operator.request(`/pilot/inspect?tenant=${encodeURIComponent(tenant)}${idleAgent ? `&agent=${encodeURIComponent(idleAgent)}` : ""}`);
     } finally {
       if (created) {
         await operator.request(`/v1/tenants/${tenant}`, { method: "DELETE" });
