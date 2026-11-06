@@ -1,28 +1,56 @@
 ---
 name: sprites-agent-runtime
-description: Run agent-runtime tests on the team's Fly.io Sprites pool instead of the laptop. For people logged in to the camelai Sprites org. Use when running test files or the full suite off the machine.
+description: Run agent-runtime tests, typecheck, builds and any other heavy work on the team's Fly.io Sprites pool instead of the laptop; fan out one job per sprite. For people logged in to the camelai Sprites org (sprite login -o camelai).
 ---
 
 # agent-runtime on Sprites
 
-Needs the `sprite` CLI logged in to the `camelai` org (`sprite login -o camelai`). Anyone without it runs tests as
-[AGENTS.md](../../../AGENTS.md#build-and-test) says. With your work committed:
+`scripts/sprite-test [ref] [command...]` sends the committed tree at a ref to a leased sprite and runs a command there.
+The laptop keeps reading, editing and the loop you are driving; suites, typecheck, builds and anything over about 30
+seconds go here.
 
 ```sh
-scripts/sprite-test                   # the full suite at HEAD as 5 shards on 5 sprites; run it in the background
-scripts/sprite-test origin/fix/x      # the full suite at a ref
-scripts/sprite-test HEAD node --experimental-strip-types --disable-warning=ExperimentalWarning --test tests/<file>.test.ts
-scripts/sprite-test --warm            # sync every free sprite to HEAD, so the next runs start at once
-scripts/sprite-test --status          # who holds which sprite, and the commit each one has
+scripts/sprite-test                                     # the full suite at HEAD: 8 shards on 8 sprites, 8-10 minutes
+scripts/sprite-test origin/main                          # the full suite at a ref
+scripts/sprite-test HEAD npm run typecheck               # any command, in the checkout at that commit
+scripts/sprite-test HEAD npm run build                   # build, build:console, openapi, docs, test:ui, test:python
+scripts/sprite-test HEAD node --experimental-strip-types --disable-warning=ExperimentalWarning --test tests/api.test.ts
+scripts/sprite-test HEAD bash -lc 'npm run -s typecheck && npm run -s openapi'   # a stage of several commands
+scripts/sprite-test --dirty HEAD npm run build           # the working tree, uncommitted (untracked included)
+scripts/sprite-test --status                             # who holds which sprite, and the commit each has
+scripts/sprite-test --stats                              # leases, their ages, the commits the pool holds
+scripts/sprite-test --grow 4                             # create and warm four more pool sprites
+scripts/sprite-test --reap 30                            # sprites nothing has used in 30 days; deletes nothing
+scripts/sprite-test --warm                               # prepare every free sprite at HEAD
 ```
 
-The pool is `rt-pool-1..10`. Each sprite keeps Postgres (durability off, as CI), node_modules and the v8-exec build
-between runs; a sleeping sprite costs nothing. A run leases its sprites through the `rt-coordinator` sprite, sends only
-the committed tree at the ref (never `.env` or ignored files) with rsync (a check of half a second when the sprite already has it),
-and runs the command detached while the script polls its log. A full suite takes 8 to 10 minutes; a single file about
-20 seconds plus the test. How it works, the settings and the exit codes: the header of `scripts/sprite-test`.
+A run gets the tree from `git archive` (never the working directory: `.env` and ignored files stay on the laptop), then
+Postgres 16 in `/tmp` with `fsync` off, `npm ci` when `package-lock.json` changed, and a v8-exec rebuild when
+`sandbox/v8-exec` changed. `--dirty` sends the working tree as a temporary commit: staged, unstaged and untracked files (what `.gitignore` keeps out stays out), without touching your index.
+`SPRITE_SHARDS` sets the shards (default 8), `SPRITE_NAME` pins sprites, `SPRITE_POOL` the pool size (default 40).
 
-Sprites restarts a sprite now and then; a shard whose job died that way runs again once on the same sprite, so that run
-takes longer. Every busy sprite makes a run wait (up to 30 minutes, `SPRITE_WAIT_MINUTES`); exit 75 if none frees.
-A shard's failures in at most 3 files are rerun alone (`scripts/test-shard.ts`); one that passes then is reported as
-flaky, to be fixed.
+Fan out by starting several and waiting — each leases its own sprite:
+
+```sh
+scripts/sprite-test HEAD npm run typecheck &
+scripts/sprite-test HEAD npm run build &
+scripts/sprite-test HEAD node --experimental-strip-types --disable-warning=ExperimentalWarning --test tests/api.test.ts &
+wait
+```
+
+The pool grows when the work does: a sleeping sprite costs nothing, and a run creates the next `rt-pool-N` itself when
+every existing one is busy. To add one ahead of time, `sprite create -o camelai --skip-console rt-pool-41` then
+`SPRITE_NAME=rt-pool-41 scripts/sprite-test --warm` (a new sprite sets itself up once: packages, Postgres, v8-exec).
+
+**Never mount a sprite's filesystem.** Measured on this pool: sshfs costs one round trip per file (22.9 ms for a 1 KB
+read), so `grep -r` over 300 files takes 8.2 s against 0.004 s natively, and `compileall` 51 s against 0.4 s; worse, when
+the tunnel dies an sshfs mount returns **empty listings and `ENOENT` for files that exist**, and a write reports success
+and vanishes. Copy the tree and run the work natively, which is what this script does: rsync over `sprite proxy --ssh`
+(no sshd, no keys, no macFUSE), a tar stream if rsync fails. `--fetch` brings results back the same way, about 8 MB/s;
+`sprite file push`/`pull` is for one hot file only, at about 60 ms a file (1,500 files: 94 s against rsync's 3.8 s), and
+needs a real rsync 3.x (macOS's `openrsync` fails with "unexpected end of file"). `sprite info`'s `Status` is noisy and
+partly self-fulfilling; a real `exec` is the readiness probe.
+
+Leases, waiting, exit codes (75 no sprite free, 69 contact lost, 137 killed) and the sync/retry machinery: the header of
+`scripts/sprite-test`; the cross-repo rules are `~/.agents/skills/sprites/SKILL.md`. A shard's failures in at most 3
+files are rerun alone, and a file that passes then is flaky: fix it, don't rerun until green.

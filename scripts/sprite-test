@@ -5,6 +5,11 @@
 #   scripts/sprite-test HEAD node --experimental-strip-types --test tests/clients.test.ts   # any command, in the checkout
 #   scripts/sprite-test --warm [ref]                      # prepare every free sprite in the pool not yet at <ref>, ready for runs
 #   scripts/sprite-test --status                          # the leases, and the commit each sprite has
+#   scripts/sprite-test --dirty HEAD npm run build         # the working tree (untracked too), as a temporary commit
+#   scripts/sprite-test --stats                           # the pool: leases, their ages, the commits it holds
+#   scripts/sprite-test --grow 4                          # create and warm four more pool sprites
+#   scripts/sprite-test --reap [days]                     # sprites nothing has used in that many days (default 14); deletes nothing
+#   scripts/sprite-test --fetch rt-pool-4 ~/runs/<id>.log ./run.log   # bring a result back with rsync, not `file pull`
 #   scripts/sprite-test --shards=6 --artifacts=tmp/reports --output=/tmp/reports HEAD command '{shard}/{shards}'
 #                                                        # one command per lease; collect immutable artifacts
 #   --contract-baselines                                 # include validated local Node report caches in the archive
@@ -93,11 +98,31 @@ heartbeat) # <sprite> <id> ...: renew each, or say it was lost (released, or tak
     if [ "$(field "$1" 2 leases)" = "$2" ]; then put "$1" "$(awk -v s="$1" -v t="$now" '$1 == s { $7 = t; print }' "$d/leases")"; echo "ok $1"; else echo "lost $1"; fi
     shift 2
   done ;;
-release) # <sprite> <id> <fingerprint|-> ...: drop each lease; record what the sprite is synced at
+release) # <sprite> <id> <fingerprint|-> ...: drop each lease; record what the sprite is synced at, and when
   while [ $# -ge 3 ]; do
     [ "$(field "$1" 2 leases)" != "$2" ] || put "$1" ""
-    if [ "$3" != - ]; then { awk -v s="$1" '$1 != s' "$d/synced"; echo "$1 $3"; } > "$d/synced.new"; mv "$d/synced.new" "$d/synced"; fi
+    if [ "$3" != - ]; then { awk -v s="$1" '$1 != s' "$d/synced"; echo "$1 $3 $now"; } > "$d/synced.new"; mv "$d/synced.new" "$d/synced"; fi
     shift 3
+  done ;;
+stats) # <stale> <max-age> <prefix>: the leases of that pool, their ages, and the commits it is synced at (--stats)
+  awk -v now="$now" -v stale="$1" -v max_age="$2" -v prefix="$3" '
+    index($1, prefix) == 1 {
+      n++; ref[$4]++; age = now - $6
+      if (now - $7 <= stale) live++; else if (max_age != "" && age > max_age) old++; else lapsed++
+      if (age > oldest) { oldest = age; who = $1 } }
+    END {
+      printf "leases: %d (%d live, %d lapsed, %d over-age)\n", n, live, lapsed, old
+      if (n) printf "oldest: %s, held %ds\n", who, oldest
+      for (r in ref) printf "  %s: %d\n", (r == "-" ? "held by another run (not a lease)" : r), ref[r] }' "$d/leases"
+  awk -v prefix="$3" 'index($1, prefix) == 1 { c[substr($2, 1, 12)]++ }
+    END { for (s in c) printf "  %s  %d sprite(s)\n", s, c[s] }' "$d/synced" ;;
+reap) # <days> <prefix>: sprites of that pool no lease holds and nothing has synced in that many days
+  cutoff=$(( now - $1 * 86400 ))
+  awk -v cutoff="$cutoff" -v prefix="$2" 'index($1, prefix) == 1 { at[$1] = $3 }
+    END { for (s in at) print s, at[s] }' "$d/synced" | while read -r s at; do
+    [ -z "$(field "$s" 7 leases)" ] || continue
+    if [ -n "$at" ] && [ "$at" -ge "$cutoff" ]; then continue; fi
+    printf '  %-12s %s\n' "$s" "$( [ -n "$at" ] && echo "last synced $(( (now - at) / 86400 ))d ago" || echo 'last synced: not recorded' )"
   done ;;
 hold) # <sprite> <id> <holder>: the sprite's own lock is someone else's; keep it out of acquire for a stale period
   [ "$(field "$1" 2 leases)" != "$2" ] || put "$1" "$1 held $3 - - $now $now" ;;
@@ -272,6 +297,8 @@ coord() { limit 20 sprite exec -o "$org" -s "$coordinator" --no-stdin -- bash -c
 remote() { local name=$1 secs=$2; shift 2; limit "$secs" sprite exec -o "$org" -s "$name" --no-stdin -- bash -c "$REMOTE" remote "$@"; }
 ssh_cmd="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o BatchMode=yes -o ProxyCommand=\"sprite proxy -o $org -s %h --ssh\""
 candidates=(${SPRITE_NAME:-$(for i in $(seq "$pool"); do echo "rt-pool-$i"; done)})
+# The pool's name prefix, for --stats, --grow and --reap: rt-pool-1 is rt-pool-.
+prefix=${candidates[0]%%[0-9]*}
 
 if [[ ${1:-} == --status ]]; then
   echo "== leases (coordinator $coordinator)"
@@ -288,7 +315,46 @@ if [[ ${1:-} == --status ]]; then
   exit 0
 fi
 
-warm=0; command_shards=; artifacts=; artifact_output=; contract_baselines=0
+if [[ ${1:-} == --fetch ]]; then
+  name=${2:-}; from=${3:-}; to=${4:-}
+  { [[ -n $name && -n $from ]] && grep -qx "$name" <<<"$(sprite list -o "$org" 2>/dev/null)" ; } || {
+    echo "== --fetch takes a sprite and a path: --fetch rt-pool-4 '~/runs/<id>.log' ./run.log" >&2; exit 2; }
+  [[ -n $to ]] || to=./$(basename "${from%/}")
+  # rsync, not `sprite file pull`: 60 ms a file there, about 8 MB/s here.
+  limit 600 rsync -az --timeout=20 -e "$ssh_cmd" "sprite@$name:${from#~/}" "$to" || {
+    echo "== could not fetch $name:$from (a path must be relative to the sprite's home: ~/runs/...)" >&2; exit 1; }
+  echo "== fetched $name:$from to $to"; exit 0
+fi
+
+if [[ ${1:-} == --stats ]]; then
+  list=$(sprite list -o "$org" 2>/dev/null || true)
+  echo "== the pool: $(printf '%s\n' "$list" | grep -c "^$prefix") $prefix* sprites (SPRITE_POOL=$pool)"
+  coord stats "$stale_s" "${max_age:-}" "$prefix" 2>/dev/null || echo "(the coordinator could not be reached)"
+  exit 0
+fi
+
+if [[ ${1:-} == --reap ]]; then
+  days=${2:-${SPRITE_REAP_DAYS:-14}}
+  [[ $days =~ ^[0-9]+$ ]] || { echo "== --reap takes a number of days: --reap 30" >&2; exit 2; }
+  echo "== sprites no lease holds and nothing has synced in $days days (deleting one is yours: sprite delete -o $org <name>)"
+  coord reap "$days" "$prefix" 2>/dev/null || echo "(the coordinator could not be reached)"
+  exit 0
+fi
+
+if [[ ${1:-} == --grow ]]; then
+  n=${2:-1}; [[ $n =~ ^[1-9][0-9]*$ ]] || { echo "== --grow takes a count: --grow 4" >&2; exit 2; }
+  list=$(sprite list -o "$org" 2>/dev/null || true)
+  max=$(printf '%s\n' "$list" | grep -o "^${prefix}[0-9]\\+" | sed "s/^${prefix}//" | sort -n | tail -1); max=${max:-0}
+  made=()
+  for i in $(seq $(( max + 1 )) $(( max + n ))); do
+    name=$prefix$i; made+=("$name"); echo "== creating $name"
+    sprite create -o "$org" --skip-console "$name" >/dev/null 2>&1 || true
+    grep -qx "$name" <<<"$(sprite list -o "$org" 2>/dev/null)" || { echo "== $name did not appear in the pool; stopping" >&2; exit 1; }
+  done
+  echo "== warming ${made[*]}"; exec env SPRITE_NAME="${made[*]}" bash "$0" --warm
+fi
+
+warm=0; dirty=0; command_shards=; artifacts=; artifact_output=; contract_baselines=0
 while [[ ${1:-} == --* ]]; do
   case $1 in
     --warm) warm=1 ;;
@@ -296,6 +362,7 @@ while [[ ${1:-} == --* ]]; do
     --artifacts=*) artifacts=${1#*=} ;;
     --output=*) artifact_output=${1#*=} ;;
     --contract-baselines) contract_baselines=1 ;;
+    --dirty) dirty=1 ;;
     *) echo "Unknown sprite-test option: $1" >&2; exit 2 ;;
   esac
   shift
@@ -309,7 +376,23 @@ if [[ -n $artifacts ]]; then
 fi
 ref=${1:-HEAD}; shift || true
 (( ! warm )) || set --
-sha=$(git rev-parse --verify "$ref^{commit}"); short=$(git rev-parse --short "$sha")
+(( ! (warm && dirty) )) || { echo "== --dirty runs a command; it has nothing to send with --warm" >&2; exit 2; }
+if (( dirty )); then
+  # The working tree as it is, without committing it or touching the real index: a temporary index takes the working tree
+  # (`git add -A`, so new files come too and .gitignore still applies), and `commit-tree` writes one commit and no ref.
+  index=$(mktemp -u "${TMPDIR:-/tmp}/sprite-test-index.XXXXXX"); rm -f "$index"
+  GIT_INDEX_FILE=$index git read-tree "$ref"; GIT_INDEX_FILE=$index git add -A || { rm -f "$index"; exit 1; }
+  tree=$(GIT_INDEX_FILE=$index git write-tree); rm -f "$index"
+  if [[ $tree = $(git rev-parse "$ref^{tree}") ]]; then
+    echo "== --dirty: nothing differs from $ref, so that is what runs" >&2; sha=$(git rev-parse "$ref")
+  else
+    ident=(); [[ -n $(git config user.name || true) ]] || ident+=(-c user.name=sprite-test); [[ -n $(git config user.email || true) ]] || ident+=(-c user.email=sprite-test@localhost)
+    sha=$(git "${ident[@]}" commit-tree "$tree" -p "$(git rev-parse "$ref")" -m "dry: working tree at $(date -u +%Y-%m-%dT%H:%M:%SZ)")
+  fi
+else
+  sha=$(git rev-parse --verify "$ref^{commit}")
+fi
+short=$(git rev-parse --short "$sha")
 lock=$(git rev-parse "$sha:package-lock.json"); v8=$(git rev-parse "$sha:sandbox/v8-exec"); fp=$sha:$lock:$v8
 run=$(date +%Y%m%d-%H%M%S)-$$; owner=$(whoami)@$(hostname -s)/$run
 # One command per slot. The full suite (no command) runs as SPRITE_SHARDS shards at once (default 8), each on its own
@@ -481,7 +564,7 @@ worker() { # <slot index>: sync, start the job, follow it. Writes the exit statu
     # retry took a second): each try gets 2 minutes, and a whole tree to a new sprite takes under 30 s.
     how=
     for try in 1 2 3; do
-      if limit 120 rsync -a --delete --stats --timeout=20 --exclude=node_modules/ --exclude=/sandbox/v8-exec/target/ -e "$ssh_cmd" "$tree/" "sprite@$name:rt/" > "$tmp/rsync.$k" 2>&1; then
+      if limit 120 rsync -az --delete --stats --timeout=20 --exclude=node_modules/ --exclude=/sandbox/v8-exec/target/ -e "$ssh_cmd" "$tree/" "sprite@$name:rt/" > "$tmp/rsync.$k" 2>&1; then
         how=rsync; ! grep -q 'transferred file size: 0 B' "$tmp/rsync.$k" || how="in sync (checked by rsync)"; break
       fi
       grep -v 'bind: warning' "$tmp/rsync.$k" | tail -2; (( try == 3 )) || sleep $(( try * 10 ))
