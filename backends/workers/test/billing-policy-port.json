@@ -277,5 +277,10 @@
     "test": "registered billing webhooks are delivered by the existing worker with valid signatures",
     "included": false,
     "reason": "Uses the ECS HTTP runtime and process webhook worker fixtures; not ported as an unchanged Workers test."
+  },
+  {
+    "file": "tests/billing-alerts.test.ts",
+    "test": "confirmation limits tolerate concurrent adds reaching the tenant lock out of clock order",
+    "included": true
   }
 ]

@@ -232,10 +232,13 @@ export class BillingAlerts {
       await sql.query("insert into billing_confirmation_limits (scope, window_start, sent, last_sent) values ($1,$2,0,0) on conflict do nothing", [scope, now]);
       const row = (await sql.query("select * from billing_confirmation_limits where scope = $1 for update", [scope])).rows[0];
       const reset = now >= row.window_start + HOUR;
-      if ((!reset && row.sent >= maximum) || (row.sent > 0 && now < row.last_sent + cooldown)) {
+      // `now` is read before this transaction queues on the tenant's lock, so concurrent requests reach this row out of
+      // clock order: one a millisecond older than the last send is not inside a cooldown of zero (the tenant scope has
+      // none), and `last_sent` never moves backwards.
+      if ((!reset && row.sent >= maximum) || (cooldown > 0 && row.sent > 0 && now < row.last_sent + cooldown)) {
         throw new HttpError(429, "Please wait before sending another confirmation email");
       }
-      await sql.query("update billing_confirmation_limits set window_start=$2, sent=$3, last_sent=$4 where scope=$1", [scope, reset ? now : row.window_start, reset ? 1 : row.sent + 1, now]);
+      await sql.query("update billing_confirmation_limits set window_start=$2, sent=$3, last_sent=greatest(last_sent, $4) where scope=$1", [scope, reset ? now : row.window_start, reset ? 1 : row.sent + 1, now]);
     }
   }
 

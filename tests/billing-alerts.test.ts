@@ -261,3 +261,12 @@ test("registered billing webhooks are delivered by the existing worker with vali
     assert.equal(body.data.balance, micros(-1));
   }
 });
+
+test("confirmation limits tolerate concurrent adds reaching the tenant lock out of clock order", async () => {
+  const { alerts } = await fixture();
+  // A request reads its clock before it queues on the tenant's lock, so a later one can commit first.
+  await alerts.add("a", "later@example.test", ALL, NOW + 5);
+  await alerts.add("a", "earlier@example.test", ALL, NOW);
+  assert.equal((await alerts.get("a")).recipients.length, 2);
+  await assert.rejects(alerts.add("b", "later@example.test", ALL, NOW + 1), /wait/, "the per-address cooldown still holds");
+});
