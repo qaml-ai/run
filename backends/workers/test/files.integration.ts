@@ -218,10 +218,11 @@ test(
           assert.equal(created.status, 201);
           const agent = (await created.json()) as {
             id: string;
+            token: string;
           };
           const sent = await call(`/clients/${agent.id}/requests`, {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers: { "content-type": "application/json", authorization: `Bearer ${agent.token}` },
             body: JSON.stringify({
               id: "image-turn",
               method: "prompt",
@@ -231,6 +232,7 @@ test(
           assert.equal(sent.status, 202, await sent.clone().text());
           const settled = await call(
             `/clients/${agent.id}/requests/image-turn?wait=20`,
+            { headers: { authorization: `Bearer ${agent.token}` } },
           );
           const completion = (await settled.json()) as {
             outcome?: {
