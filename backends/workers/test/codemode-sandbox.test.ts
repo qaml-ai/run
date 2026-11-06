@@ -96,7 +96,8 @@ test("calls a script makes while one waits on a person are held: made after the 
     const seed = ending === "answer" ? 8 : 9;
     let answer: ((outcome: CodemodeOutcome) => void) | undefined, release: (() => void) | undefined;
     const h = await host(code, call => {
-      if (call.name === "approve") { release = waitsOnPerson(1_000, seed, call.id); return new Promise<CodemodeOutcome>(resolve => { answer = resolve; }); }
+      // The question is asked once the call runs (as Pi launches it), after the script's next call went out.
+      if (call.name === "approve") return new Promise<CodemodeOutcome>(resolve => setTimeout(() => { release = waitsOnPerson(1_000, seed, call.id); answer = resolve; }, 50));
       // The read answers once the question waits, so the script's next call comes during the wait.
       if (call.name === "read") return new Promise<CodemodeOutcome>(resolve => setTimeout(() => resolve({ ok: true, value: "r" }), 200));
       return { ok: true, value: "wiped" };
