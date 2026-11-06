@@ -94,8 +94,11 @@ export class LocalWorker {
       }
       // A graceful FIN still permits an HTTP response. A disconnected client
       // needs a TCP reset so workerd cancels a request before its headers exist.
+      let resetRequested = false;
       const resetUpstream = () => {
-        if (!upstream.destroyed) upstream.resetAndDestroy();
+        if (resetRequested || upstream.destroyed) return;
+        resetRequested = true;
+        upstream.resetAndDestroy();
       };
       socket.once("close", resetUpstream);
       socket.on("error", () => { resetUpstream(); socket.destroy(); });
