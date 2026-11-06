@@ -14,13 +14,30 @@ const latency = values => ({ samples: values.length, p50Ms: percentile(values, .
 const emit = value => process.stdout.write(`${JSON.stringify(value)}\n`);
 
 class RequestError extends Error {
-  constructor(status, code) { super(`HTTP ${status} ${code}`); this.status = status; this.code = code; }
+  constructor(status, code, reason) { super(`HTTP ${status} ${code}`); this.status = status; this.code = code; this.reason = reason; }
 }
 function errorClass(error) {
-  if (error instanceof RequestError) return `http_${error.status}:${error.code}`;
+  if (error instanceof RequestError) return `http_${error.status}:${error.code}${error.reason ? ':' + error.reason : ''}`;
   if (error?.name === 'TimeoutError') return 'client_timeout';
   if (error?.name === 'AbortError') return 'client_abort';
   return 'network_or_protocol';
+}
+function failureReason(value) {
+  const message = typeof value === 'string' ? value : '';
+  for (const [pattern, category] of [
+    [/timeout exceeded when trying to connect/i, 'database_connect_timeout'],
+    [/Query read timeout/i, 'database_query_timeout'],
+    [/Connection terminated|connection error|ECONNRESET|ECONNREFUSED/i, 'database_connection_lost'],
+    [/acquire.*connection|connection.*pool/i, 'database_pool_exhausted'],
+    [/too many clients|too many connections/i, 'database_connection_limit'],
+    [/deadlock/i, 'database_deadlock'],
+    [/cpu.*limit|exceeded.*cpu/i, 'worker_cpu_limit'],
+    [/memory.*limit|exceeded.*memory/i, 'worker_memory_limit'],
+    [/too many.*subrequest/i, 'worker_subrequest_limit'],
+    [/timed? ?out|timeout/i, 'timeout'],
+    [/fetch failed|network|socket/i, 'network'],
+  ]) if (pattern.test(message)) return category;
+  return 'unclassified';
 }
 function publicCode(value) {
   // Never expose server messages, response bodies or provider credentials.
@@ -69,7 +86,7 @@ export async function runPilotLoad(options) {
       signal: AbortSignal.timeout(init.timeoutMs ?? 120_000),
     });
     const data = await response.json().catch(() => null);
-    if (!response.ok) throw new RequestError(response.status, publicCode(data?.code));
+    if (!response.ok) throw new RequestError(response.status, publicCode(data?.code), failureReason(data?.error));
     return data;
   };
   const admin = (path, init) => request(operatorBaseUrl, operatorToken, path, init);
@@ -139,7 +156,7 @@ export async function runPilotLoad(options) {
             if (['failed', 'cancelled', 'canceled'].includes(done.state)) throw new RequestError(200, `request_${publicCode(done.state)}`);
           }
           if (done?.state !== 'completed') throw new RequestError(200, 'turn_timeout');
-          if (done.outcome?.result?.error || done.outcome?.result?.stopped || typeof done.outcome?.result?.reply !== 'string') throw new RequestError(200, `turn_${publicCode(done.outcome?.result?.code ?? done.outcome?.result?.stopped ?? 'failed')}`);
+          if (done.outcome?.result?.error || done.outcome?.result?.stopped || typeof done.outcome?.result?.reply !== 'string') throw new RequestError(200, `turn_${publicCode(done.outcome?.result?.code ?? done.outcome?.result?.stopped ?? 'failed')}`, failureReason(done.outcome?.result?.error));
           stage.completed++; turnTimes.push(performance.now() - at);
         } catch (error) {
           stage.failed++;
