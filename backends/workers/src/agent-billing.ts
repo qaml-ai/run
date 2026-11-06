@@ -16,6 +16,7 @@ import { flushAgentMediaUsage } from "./agent-media.ts";
 import { flushAttachmentTranscriptions } from "./attachment-transcription.ts";
 import { Config, RequestRecord, BillingReceipt, reqKey } from "./agent-types.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
+import { dbPhase } from "./db-profile.ts";
 
 export function createLimits(this: AgentRuntime): AgentRunLimits {
   return new AgentRunLimits(this.ctx.storage, async () => {
@@ -86,7 +87,7 @@ export async function admitRequestImpl(this: AgentRuntime,
           status: 429,
           code: "BUSY_AGENT_LIMIT",
         });
-      await reserveTurn(this.env, conf.tenantId, conf.id, id);
+      await dbPhase("hold", () => reserveTurn(this.env, conf.tenantId, conf.id, id));
     } catch (error) {
       if (acquired)
         await this.env.TENANTS.getByName(conf.tenantId).release(
@@ -230,7 +231,7 @@ export async function flushBillingImpl(this: AgentRuntime,
       prefix: "model-billing:",
     })) {
       try {
-        await applyModelReceipt(this.env, receipt);
+        await this.dbProfile.run("settle", () => applyModelReceipt(this.env, receipt));
         await this.ctx.storage.delete(key);
       } catch (error) {
         await this.arm(Date.now() + 1000);
@@ -242,7 +243,7 @@ export async function flushBillingImpl(this: AgentRuntime,
       limit: 100,
     })) {
       try {
-        await settleTurn(this.env, receipt);
+        await this.dbProfile.run("settle", () => settleTurn(this.env, receipt));
         if (await this.testStorage.get("test:crash-settlement")) {
           await this.ctx.storage.transaction(async (tx) => {
             await this.testStorage.delete("test:crash-settlement", tx);

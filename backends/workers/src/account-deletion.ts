@@ -41,12 +41,16 @@ export interface AccountDeletionOptions {
   /** Delete one of the tenant's agents on whichever node serves it. */
   deleteAgent(agent: string, tenant: string): Promise<unknown>;
   /** Purge deleted agents now, rather than at the next sweep. */
-  purgeAgents?(): Promise<void>;
+  purgeAgents?(tenant: string, limit: number): Promise<void>;
   /** Write storage-usage deltas, so none for the tenant's deleted objects is written after its rows go. */
   flushStorageUsage?(): Promise<void>;
   removeComputers?(tenant: string): Promise<void>;
   /** Restrict maintenance claims when a bounded operator manages one tenant. */
   onlyTenant?: string;
+  /** Durable host wake-up. Awaited after recording intent, before accepting the request. */
+  schedule?(tenant: string): Promise<void>;
+  /** Bound each lease to a small amount of external work. */
+  agentBatchSize?: number;
 }
 
 /** Tables whose rows go with the tenant, by their `tenant` column (payment, ledger and anti-abuse records are not here). */
@@ -79,7 +83,7 @@ export class AccountDeletions {
   async request(tenant: string, by: string): Promise<DeletionStatus> {
     if (this.options.accounts.tenants.has(tenant)) throw new HttpError(403, "Admin tenants are defined in the tenants file: remove them there");
     const existing = await this.status(tenant);
-    if (existing) { this.kick(); return existing; }
+    if (existing) { if (existing.state !== "deleted") await this.schedule(tenant); return existing; }
     await transaction(this.db, async sql => {
       if (!(await sql.query("select 1 from tenants where id = $1 for update", [tenant])).rowCount) throw new HttpError(404, `Unknown tenant ${tenant}`);
       if ((await sql.query("select 1 from billing_auto_attempts where tenant = $1 and state not in ('paid', 'cancelled')", [tenant])).rowCount) {
@@ -92,8 +96,20 @@ export class AccountDeletions {
     });
     this.options.accounts.forget(tenant);
     console.log(JSON.stringify({ type: "account_deletion_requested", tenant, by }));
-    this.kick();
+    await this.schedule(tenant);
     return (await this.status(tenant))!;
+  }
+
+  private async schedule(tenant: string) {
+    if (this.options.schedule) await this.options.schedule(tenant);
+    else void this.kick();
+  }
+
+  /** The persisted lease is the retry clock, including a worker lost mid-pass. */
+  async retryAfter(tenant: string): Promise<number | undefined> {
+    const row = (await this.db.query("select completed_at, greatest(1, ceil(extract(epoch from (claimed_until-now()))))::int delay from account_deletions where tenant=$1", [tenant])).rows[0];
+    if (!row || row.completed_at !== null) return undefined;
+    return Math.min(300, Number(row.delay ?? 1));
   }
 
   async status(tenant: string): Promise<DeletionStatus | undefined> {
@@ -154,10 +170,12 @@ export class AccountDeletions {
     }
     await this.options.removeComputers?.(tenant);
     // Agents are revoked where they run, then purged (their logs, history, files' pins, schedules and threads).
-    for (const id of await ids("select id from agents where tenant = $1 and not revoked")) await this.options.deleteAgent(id, tenant);
+    const limit = this.options.agentBatchSize ?? 25;
+    for (const { id } of (await db.query("select id from agents where tenant = $1 and not revoked order by id limit $2", [tenant, limit])).rows)
+      await this.options.deleteAgent(id, tenant);
     // A purged agent's tombstone no longer names its tenant.
     if ((await db.query("select 1 from agents where tenant = $1 limit 1", [tenant])).rowCount) {
-      await this.options.purgeAgents?.();
+      await this.options.purgeAgents?.(tenant, limit);
       if ((await db.query("select 1 from agents where tenant = $1 limit 1", [tenant])).rowCount) return false;
     }
     if (volumes) {

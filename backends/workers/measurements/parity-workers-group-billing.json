@@ -1,0 +1,426 @@
+{
+  "backend": "workers",
+  "area": "all",
+  "group": "billing",
+  "nodeKey": "6e758149cf7712540970a9067b22ada5d533aaa8e421e22efdf790bf2c9fed7f",
+  "suiteHash": "3c8866b86a76a67a5027bf6f5db786ebc54eedcfde67705649f57db74db15f72",
+  "revision": "76f5609635adacb5250d4d39cc8ff7dd4dcce5a7",
+  "durationMs": 128387.60700999999,
+  "runtime": {
+    "node": "v24.22.1",
+    "platform": "linux",
+    "arch": "x64"
+  },
+  "recordedAt": "2026-11-06T04:47:31.918Z",
+  "expectedCases": 44,
+  "rows": [
+    {
+      "area": "billing",
+      "source": "tests/auto-topup.test.ts",
+      "name": "auto top-up REST requires the exact quote version and explicit consent",
+      "status": "pass",
+      "durationMs": 8413.059813,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing-mail.test.ts",
+      "name": "billing recipient API, scanner-safe confirmation, and SES delivery work together",
+      "status": "pass",
+      "durationMs": 8414.318073,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing-mail.test.ts",
+      "name": "disabled email is explicit and never queues a recipient",
+      "status": "pass",
+      "durationMs": 5280.19785,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing-payments.test.ts",
+      "name": "billing REST routes bind portal ownership to authentication and reject caller-supplied redirects",
+      "status": "pass",
+      "durationMs": 6454.111578,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing.test.ts:623",
+      "name": "without Stripe, checkout answers 503 and the webhook 404",
+      "status": "pass",
+      "durationMs": 5248.389755,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing.test.ts",
+      "name": "a prepaid tenant pays the catalog fallback plus funding when actual cost is absent; spent credit stops runs",
+      "status": "pass",
+      "durationMs": 18447.85095,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing.test.ts",
+      "name": "credit is bought through Stripe Checkout with the fee on top, added once the webhook reports payment, and refunds take it back",
+      "status": "pass",
+      "durationMs": 18382.60462,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing.test.ts",
+      "name": "disabled card credit is absent from billing and its start endpoint refuses while GitHub grants remain",
+      "status": "pass",
+      "durationMs": 4977.38816,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing.test.ts",
+      "name": "free credit brings fewer busy agents (its usage tier) and an hourly spend limit, both lifted by the first purchase",
+      "status": "pass",
+      "durationMs": 10259.20675,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing.test.ts",
+      "name": "only a billing-admin operator can issue the one-time support grant",
+      "status": "pass",
+      "durationMs": 5363.70554,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing.test.ts",
+      "name": "open sign-up admits any GitHub account; starting credit is once per account id and uses the configured signup policy; a renamed login keeps its tenant",
+      "status": "pass",
+      "durationMs": 6859.99037,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing.test.ts",
+      "name": "responses on the tenant's own key cost no credit for tokens, but time in turns is charged",
+      "status": "pass",
+      "durationMs": 6999.51819,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing.test.ts",
+      "name": "signup retries an incomplete profile before creating an account, and does not block an existing login",
+      "status": "pass",
+      "durationMs": 5069.3067,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing.test.ts",
+      "name": "streamed OpenRouter actual cost reaches the credit ledger instead of the catalog estimate",
+      "status": "pass",
+      "durationMs": 7596.20863,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "billing",
+      "source": "tests/credit-holds.test.ts:114",
+      "name": "a run on a tenant with too little credit stops before any call, as a spend limit; a small balance caps the call's max_tokens",
+      "status": "pass",
+      "durationMs": 8392.48113,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "billing",
+      "source": "tests/pi-durable-accounting.test.ts:48",
+      "name": "imported usage and forks are free; the next real turn is billed once (inline)",
+      "status": "pass",
+      "durationMs": 8296.0881,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "billing",
+      "source": "tests/pi-durable-accounting.test.ts:48",
+      "name": "imported usage and forks are free; the next real turn is billed once (process)",
+      "status": "pass",
+      "durationMs": 7146.64194,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-balance-events.test.ts",
+      "name": "the API: a person's lowBalance, and the end users under their threshold",
+      "status": "pass",
+      "durationMs": 5998.237853,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-credits.test.ts:145",
+      "name": "the end-user API: settings, entries, an end user and their ledger, for the tenant only",
+      "status": "pass",
+      "durationMs": 6394.137659,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-history.test.ts",
+      "name": "the history API and the TypeScript SDK: ledger filters and per-day totals, for the tenant only",
+      "status": "pass",
+      "durationMs": 5872.01873,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-lots.test.ts",
+      "name": "the lots API and the TypeScript SDK: expiring grants, lots on the end user, marking, refunds by lot, for the tenant only",
+      "status": "pass",
+      "durationMs": 5779.53028,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-reasons.test.ts",
+      "name": "a queued run refused as it starts for a bucket limit above 0 carries end_user_credit and bucket_limit: its record, request and run.failed",
+      "status": "pass",
+      "durationMs": 6485.331394,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-reasons.test.ts",
+      "name": "a queued run refused as it starts for a bucket limit of 0 carries end_user_credit and bucket_limit: its record, request and run.failed",
+      "status": "pass",
+      "durationMs": 6586.656972,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-reasons.test.ts",
+      "name": "a queued run refused as it starts for no balance carries end_user_credit and balance: its record, request and run.failed",
+      "status": "pass",
+      "durationMs": 6752.578231,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-reasons.test.ts",
+      "name": "a queued run refused as it starts for the agent's spend limit carries spend_limit and which limit",
+      "status": "pass",
+      "durationMs": 6661.91704,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-reasons.test.ts",
+      "name": "a queued run refused as it starts for the daily limit carries end_user_credit and daily_limit: its record, request and run.failed",
+      "status": "pass",
+      "durationMs": 7047.943042,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-reasons.test.ts",
+      "name": "the TypeScript SDK: a queued run refused as it starts is a failed run with code end_user_credit and its reason, not runtime_error",
+      "status": "pass",
+      "durationMs": 7579.535044,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-runs.test.ts",
+      "name": "a long reply stops at the end of its end user's credit, mid-stream, and is not retried",
+      "status": "pass",
+      "durationMs": 6966.0142,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-runs.test.ts",
+      "name": "a run's own bucket is what its start is checked against, and the runs after it that name none (the runtime's own too) inherit it, never \"default\"",
+      "status": "pass",
+      "durationMs": 8691.876013,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-runs.test.ts",
+      "name": "a run's own bucket, the agent's bucket and a stateless run's each spend their own allowance",
+      "status": "pass",
+      "durationMs": 8999.41984,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-runs.test.ts",
+      "name": "an end user's allowance pays first, then their balance; out of both, the turn stops and their next run is refused",
+      "status": "pass",
+      "durationMs": 9015.89454,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-runs.test.ts",
+      "name": "concurrent replies for one end user share their credit: their holds never add up to more than it",
+      "status": "pass",
+      "durationMs": 8647.319512,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-runs.test.ts",
+      "name": "the TypeScript SDK: endUsers configure, grant, get and ledger; an agent's bucket; a run out of credit fails with code end_user_credit",
+      "status": "pass",
+      "durationMs": 7817.04307,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-usage.test.ts:96",
+      "name": "usage API and TypeScript SDK parse times, group usage and isolate tenants",
+      "status": "pass",
+      "durationMs": 6414.172321,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "quotas",
+      "source": "tests/api.test.ts:584",
+      "name": "a tenant at its agent quota gets 429 with Retry-After and nothing half-created; the same key succeeds once a slot frees",
+      "status": "pass",
+      "durationMs": 21438.73562,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "quotas",
+      "source": "tests/api.test.ts:615",
+      "name": "a tenant's own maxAgents replaces the default limit, and a change applies at the next tenants reload without a restart",
+      "status": "pass",
+      "durationMs": 6374.62607,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "quotas",
+      "source": "tests/api.test.ts:656",
+      "name": "a tenant's monthly spend cap ends a turn after the response that crosses it, refuses new runs, and a reload raising it lets the turn continue",
+      "status": "pass",
+      "durationMs": 6642.43339,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "quotas",
+      "source": "tests/rate-limits.test.ts",
+      "name": "an admin tenant's traffic (camelAI's servers behind a few Cloudflare egress addresses, its users' browser tokens) is never rate limited",
+      "status": "pass",
+      "durationMs": 12625.2516,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "quotas",
+      "source": "tests/rate-limits.test.ts",
+      "name": "creates and runs answer with X-RateLimit-* headers; an upsert that changes nothing is not a create, and gives the same configHash",
+      "status": "pass",
+      "durationMs": 14485.11182,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "quotas",
+      "source": "tests/rate-limits.test.ts",
+      "name": "the server answers 429 RATE_LIMITED with Retry-After and the limit: per address behind Cloudflare, per tenant for creates and runs",
+      "status": "pass",
+      "durationMs": 8652.95937,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "quotas",
+      "source": "tests/rate-limits.test.ts",
+      "name": "without AGENT_TRUST_CF_CONNECTING_IP, CF-Connecting-IP is ignored and the load balancer's X-Forwarded-For entry counts",
+      "status": "pass",
+      "durationMs": 4696.17871,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "quotas",
+      "source": "tests/spend-limits.test.ts",
+      "name": "a run's own spend limit ends that run once it crosses it, and leaves the agent's limit and later runs alone",
+      "status": "pass",
+      "durationMs": 6365.210827,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "quotas",
+      "source": "tests/spend-limits.test.ts",
+      "name": "an agent's spend limit ends the turn that crosses it and refuses new prompts until a new limit, which counts from zero",
+      "status": "pass",
+      "durationMs": 8191.499853,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "quotas",
+      "source": "tests/storage-limits.test.ts",
+      "name": "over the API: uploads need credit, stop at the free limit with STORAGE_LIMIT, and the operator can raise a tenant's limit",
+      "status": "pass",
+      "durationMs": 7570.08597,
+      "reason": "",
+      "backend": "workers"
+    }
+  ],
+  "shards": [
+    {
+      "index": 1,
+      "total": 2,
+      "durationMs": 64840.177131
+    },
+    {
+      "index": 2,
+      "total": 2,
+      "durationMs": 128387.60700999999
+    }
+  ]
+}

@@ -6,7 +6,7 @@ async function runtime(t:T,respond:ModelReply,env:Record<string,string>={},tenan
 import assert from "node:assert/strict";
 import { AgentRuntime } from "../../../clients/node.ts";
 
-import {OPERATOR, sleep, toolCall, toolResults, until, watchEvents} from "../support.ts";
+import {freshWindow, OPERATOR, sleep, toolCall, toolResults, until, watchEvents} from "../support.ts";
 
 const systemText = (body: any) => body.messages.filter((message: any) => message.role === "system" || message.role === "developer")
   .map((message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join("")).join("\n");
@@ -146,6 +146,9 @@ contractTest("delegation", "tests/background-agents.test.ts:131", "two agents wa
     return toolCall("spawn_agent", { instructions: "You are ECHO.", task: "echo" }, `call_${body.messages.length}`);
   }, { AGENT_WAKES_PER_HOUR: "3" });
   const parent = (await r.call("/v1/agents", { body: { builtins: ["agents"], delegate: { instructions: true } } })).json.id;
+  // A new clock hour legitimately resets the cap. Keep the four notifications
+  // in one window; the timeout includes up to 20 seconds waiting for it.
+  await freshWindow(3600, 20_000);
   await r.prompt(parent, "start the loop");
   const done = await notified(r, parent, 4);
   const stopped = done.find(request => request.outcome.result.stopped === "agent_loop_limit");
@@ -159,7 +162,7 @@ contractTest("delegation", "tests/background-agents.test.ts:131", "two agents wa
   const history = (await r.call(`/v1/agents/${parent}/history`)).json.messages;
   assert.equal(history.filter((message: any) => message.source?.kind === "agent").length, 4, "every notification is in history");
   assert.equal(history.at(-1).source?.kind, "agent", "the last landed with no reply");
-});
+}, { timeout: 60_000 });
 
 contractTest("delegation", "tests/background-agents.test.ts:154", "a child's spend is charged to its parent when its notification lands, and a parent at its spend limit gets no turn", async t => {
   // Each response costs $0.15 (5000 input tokens of openai/gpt-5.5-pro).

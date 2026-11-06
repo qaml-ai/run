@@ -64,24 +64,28 @@ export async function stageWebhook(tx: Pick<DurableObjectTransaction, "get" | "p
 
 export class AgentWebhooks {
   private pending: Promise<void> = Promise.resolve();
-  constructor(private readonly storage: DurableObjectStorage, private readonly env: WebhookEnv) {}
+  private readonly storage: DurableObjectStorage;
+  private readonly env: WebhookEnv;
+  constructor(storage: DurableObjectStorage, env: WebhookEnv) { this.storage = storage; this.env = env; }
+  settled(): Promise<void> { return this.pending; }
   flush(): Promise<void> {
     const next = this.pending.then(async () => {
-      let published = false;
-      for (const [key, event] of await this.storage.list<WebhookEvent>({ prefix: PENDING, limit: 100 })) {
-        try {
-          await withSql(this.env, sql => enqueueEvents(sql, [event]));
-          await this.storage.transaction(async tx => {
+      const entries = await this.storage.list<WebhookEvent>({ prefix: PENDING, limit: 100 });
+      if (!entries.size) return;
+      try {
+        await withSql(this.env, sql => enqueueEvents(sql, [...entries.values()]));
+        await this.storage.transaction(async tx => {
+          for (const [key, event] of entries) {
             await tx.put(`${SENT}${event.id}`, true);
             await tx.delete(key);
-          });
-          published = true;
-        } catch {
-          // The request's terminal event is independently durable and readable.
-          // Retry this intent when the next run or object load flushes the outbox.
-        }
+          }
+        });
+      } catch {
+        // Replaying the entire batch is safe: the Postgres outbox dedupes IDs.
+        // Leave every intent durable if either database or acknowledgement failed.
+        return;
       }
-      if (published) await publishPending(this.env);
+      await publishPending(this.env);
     });
     this.pending = next.catch(() => {});
     return this.pending;

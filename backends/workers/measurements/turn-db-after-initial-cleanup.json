@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "loadRun": "57854ae23b",
+  "source": "backends/workers/measurements/turn-db-after-initial-load.json",
+  "scope": {
+    "tenantCount": 20,
+    "loadRun": "57854ae23b"
+  },
+  "final": {
+    "at": "2026-11-06T04:30:38.462Z",
+    "counts": {
+      "tenants": 0,
+      "agents": 0,
+      "api_tokens": 0,
+      "provider_keys": 0,
+      "model_providers": 0,
+      "volumes": 0,
+      "end_users": 0,
+      "holds": 0,
+      "held_micros": 0,
+      "end_user_holds": 0,
+      "end_user_held_micros": 0,
+      "balance_micros": 1999868007,
+      "usage_debits": 20,
+      "usage_micros": -131993,
+      "responses": 847,
+      "receipts": 0,
+      "attempts": 848,
+      "pending_attempts": 1,
+      "settled_attempts": 847,
+      "attempt_charge_micros": 0,
+      "deleted_tenants": 20,
+      "revoked_agents": 0,
+      "purged_agents": 0,
+      "deleting_tenants": 0,
+      "deletion_attempts": 21,
+      "claimed_deletions": 0
+    },
+    "pending": [
+      {
+        "id": "ea872873-bef0-445c-9c3d-6b616868480d",
+        "tenant": "pilot-load-57854ae23b-6",
+        "agent": "client_202dc914b8d18a308e155a0e797f4a291128e5d0",
+        "state": "pending",
+        "started_at": 1793937908884,
+        "updated_at": 1793937908884,
+        "finished_at": null,
+        "next_check_at": 1793938218819,
+        "checks": 0,
+        "charge": 0,
+        "end_user_hold": false,
+        "tenant_hold": false,
+        "agent_exists": false
+      }
+    ]
+  },
+  "orphanRequest": {
+    "attemptState": "pending",
+    "httpStatus": 200,
+    "state": "completed",
+    "status": "failed",
+    "code": "model_error",
+    "errorClass": "other"
+  },
+  "notes": [
+    "All 20 accounts and all 500 agents, volumes and end users were deleted. No credit holds remain.",
+    "One zero-charge pending model attempt remains as an audit record; its owning request completed with model_error and its agent was deleted. No manual settlement or forced financial deletion was performed.",
+    "The shared pilot runtime was overwritten by an upstream deployment after all load stages ended. Cleanup spans runtime versions. The queue batch size changed from 10 to 1 during cleanup."
+  ],
+  "temporaryWorkerCheck": {
+    "at": "2026-11-06T04:33:11.438330+00:00",
+    "method": "Cloudflare Workers Scripts names-only list, filtered to camelrun-pilot bootstrap, inspect and operator helpers",
+    "remaining": []
+  }
+}

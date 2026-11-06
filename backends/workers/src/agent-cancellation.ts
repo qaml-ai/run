@@ -95,6 +95,7 @@ export async function resumeKeptQueueImpl(this: AgentRuntime) {
 /** Withdraw only this delegated input, including a cancellation that arrives before it. */
 export async function cancelRequestImpl(this: AgentRuntime,
   id: string) {
+    this.invalidateMaintenance();
     const cancel = this.admission.then(async () => {
       await this.ctx.storage.put(`cancelled-request:${id}`, true);
       const record = await this.ctx.storage.get<RequestRecord>(reqKey(id));

@@ -69,7 +69,7 @@ export async function emitImpl(this: AgentRuntime,
     await work;
     const value = event as any;
     if (webhook || value.type === "response" || ["agent_start", "input_required"].includes(value.event?.type))
-      this.ctx.waitUntil(this.webhooks.flush());
+      this.ctx.waitUntil(this.dbProfile.run("webhooks", () => this.webhooks.flush()));
   }
 
 export async function flushTerminalEventsImpl(this: AgentRuntime) {
@@ -85,7 +85,7 @@ export async function flushTerminalEventsImpl(this: AgentRuntime) {
     }))
       for (let index = pending.next; index < pending.events.length; index++)
         await this.emit(pending.events[index], { key, index });
-    await this.webhooks.flush();
+    await this.dbProfile.run("webhooks", () => this.webhooks.flush());
   }
 
 export async function recoverWatchersImpl(this: AgentRuntime) {

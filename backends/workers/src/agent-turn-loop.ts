@@ -423,12 +423,17 @@ export async function onHumanImpl(this: AgentRuntime,
 export function trackImpl(this: AgentRuntime,
   id: string) {
     if (this.pendingWaits.has(id)) return;
+    this.invalidateMaintenance();
     const settled = this.settle(id, 0)
       .then(() => {})
       .catch(() => {})
-      .finally(() => {
+      .finally(async () => {
+        this.invalidateMaintenance();
         this.pendingWaits.delete(id);
         this.configurationQueue.kick();
+        // A failed waiter leaves durable work to recover. Arm its retry after
+        // removing the tracker so the watchdog performs the complete recovery.
+        await this.arm();
       });
     this.pendingWaits.set(id, settled);
     this.ctx.waitUntil(settled);
@@ -437,6 +442,10 @@ export function trackImpl(this: AgentRuntime,
 export async function settleImpl(this: AgentRuntime,
   id: string,
   waitMs: number): Promise<RequestRecord> {
+    if (waitMs === 0 && await this.testStorage.get("test:fail-next-waiter")) {
+      await this.testStorage.delete("test:fail-next-waiter");
+      throw new Error("Injected result waiter interruption");
+    }
     const record = await this.ctx.storage.get<RequestRecord>(reqKey(id));
     if (!record)
       throw Object.assign(new Error("Unknown request"), { status: 404 });

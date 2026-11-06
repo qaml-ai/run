@@ -1,5 +1,6 @@
 import pg, { Client } from "pg";
 import { transaction as policyTransaction } from "./postgres-policy.ts";
+import { profileConnect, profileSql } from "./db-profile.ts";
 export { databaseRetryable, databaseUnavailable } from "./postgres-policy.ts";
 
 // Match src/db.ts: ledger amounts and millisecond timestamps are safe integers.
@@ -38,8 +39,8 @@ export async function withSql<T>(
     application_name: new URL(env.HYPERDRIVE.connectionString).searchParams.get("application_name") ?? "camelrun-proto-workers",
   });
   try {
-    await client.connect();
-    return await run(client);
+    await profileConnect(() => client.connect());
+    return await run(profileSql(client));
   } finally {
     await client.end();
   }
@@ -56,12 +57,12 @@ export function database(env: PostgresEnv): Db {
         query_timeout: 10_000,
       });
       try {
-        await client.connect();
+        await profileConnect(() => client.connect());
       } catch (error) {
         await client.end().catch(() => {});
         throw error;
       }
-      return Object.assign(client, {
+      return Object.assign(profileSql(client), {
         close: () => client.end(),
         release: () => {
           void client.end();

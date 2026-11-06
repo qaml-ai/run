@@ -93,6 +93,7 @@ export async function historyImpl(this: AgentRuntime,
 
 export async function fetchImpl(this: AgentRuntime,
   request: Request): Promise<Response> {
+    this.invalidateMaintenance();
     return withMoneyMetrics(this.env, () => this.fetchRequest(request));
   }
 

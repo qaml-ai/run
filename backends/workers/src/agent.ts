@@ -11,6 +11,13 @@ export { json } from "./agent-types.ts";
 export class CamelAgent extends DurableObject<Env> {
   readonly #runtime = new AgentRuntime(this.ctx, this.env, this);
 
+  /** Binding-only pilot counters; no runtime state, SQL or values are exposed. */
+  databaseProfile(reset = false) {
+    if (this.env.PILOT_DB_PROFILE !== "1")
+      return Promise.reject(new Error("Pilot database profiling is disabled"));
+    return this.#runtime.databaseProfile(reset);
+  }
+
   protected [ARM_AGENT](retry?: number) {
     return this.#runtime.arm(retry);
   }

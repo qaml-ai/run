@@ -12,13 +12,14 @@ export function describeCase(area: string, source: string, name: string) {
 }
 
 export function contractTest(area: string, source: string, name: string,
-  body: (t: TestContext, fixture: ContractFixture) => Promise<void> | void, options: FixtureOptions = {}) {
+  body: (t: TestContext, fixture: ContractFixture) => Promise<void> | void, options: FixtureOptions & { timeout?: number } = {}) {
   if (describeCase(area, source, name)) return;
-  test(`[${area}] ${source} :: ${name}`, { timeout: caseTimeout(area, source, name) }, async t => evidence.run({ backend: null }, async () => {
+  const { timeout = caseTimeout(area, source, name), ...fixtureOptions } = options;
+  test(`[${area}] ${source} :: ${name}`, { timeout }, async t => evidence.run({ backend: null }, async () => {
     // Copied cases with a one-argument callback start their own fixture after
     // constructing local providers. Do not start an unused second runtime.
     let fixture: ContractFixture | undefined;
-    try { if (body.length > 1) fixture = await createFixture(t, options); }
+    try { if (body.length > 1) fixture = await createFixture(t, fixtureOptions); }
     catch (error) { throw new Error(`Fixture setup failed: ${(error as Error).message}`, { cause: error }); }
     try { await body(t, fixture!); }
     finally { t.diagnostic(`contract-backend:${JSON.stringify({ name: t.name, backend: evidence.getStore()!.backend ?? "sdk-unit" })}`); }

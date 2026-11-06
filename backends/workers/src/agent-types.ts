@@ -76,6 +76,7 @@ export interface Env
   TEST_MODEL?: string;
   /** Local fault injection only; absent from deployable configurations. */
   TEST_HOOKS?: string;
+  PILOT_DB_PROFILE?: string;
   TEST_MODEL_BASE_URL?: string;
   TEST_TURN_COST_MICROS?: string;
   TENANT_MAX_ACTIVE?: string;

@@ -21,11 +21,13 @@ export async function admitDelegateWakeImpl(this: AgentRuntime,
 export async function receiveAgentMessageImpl(this: AgentRuntime,
   request: NoticeRequest,
   notice: RuntimeNotice): Promise<unknown> {
+    this.invalidateMaintenance();
     return this.notifications.deliverMessage(request, notice);
   }
 
 export async function receiveAgentProgressImpl(this: AgentRuntime,
   report: ChildProgressReport): Promise<unknown> {
+    this.invalidateMaintenance();
     return this.delegation.recordProgress(report);
   }
 

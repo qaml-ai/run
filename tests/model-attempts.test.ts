@@ -3,6 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { Accounts } from "../src/accounts.ts";
+import { EndUserCredits } from "../src/end-user-credits.ts";
 import { Tenants } from "../src/tenants.ts";
 import { ATTEMPT_STALE_MS, ModelAttempts } from "../src/model-attempts.ts";
 import type { Db } from "../src/db.ts";
@@ -34,6 +35,19 @@ async function begin(attempts: ModelAttempts, id = randomUUID(), tenant = "payg"
 }
 const total = async (db: Db, tenant = "payg") => Number((await db.query("select balance from credit_accounts where tenant=$1", [tenant])).rows[0]?.balance ?? FUNDS) - FUNDS;
 const finish = (id: string, cost: number) => ({ type: "finish" as const, id, usage: { input:100,output:10,providerCost:cost,providerCreditCost:0 }, chars:40, completed:true });
+
+test("concurrent attempt begins retain one identity and reject changed replay identities", async () => {
+  const { db, attempts } = await setup();
+  const id = randomUUID();
+  await Promise.all(Array.from({ length: 8 }, () => begin(attempts, id)));
+  assert.equal(Number((await db.query("select count(*) n from model_attempts where id=$1", [id])).rows[0].n), 1);
+  const event = { type: "begin" as const, id, provider: "openrouter", model: "anthropic/claude-opus-4.1", kind: "response" as const, at: Date.now(), keyHash };
+  await assert.rejects(attempts.event("other", "agent", true, true, event), /identity mismatch/);
+  await assert.rejects(attempts.event("payg", "other", true, true, event), /identity mismatch/);
+  await assert.rejects(attempts.event("payg", "agent", true, true, { ...event, model: "another-model" }), /identity mismatch/);
+  const row = (await db.query("select tenant,agent,provider,model from model_attempts where id=$1", [id])).rows[0];
+  assert.deepEqual(row, { tenant: "payg", agent: "agent", provider: "openrouter", model: event.model });
+});
 
 test("one provider attempt charges once across duplicate delivery, concurrent owners and usage callbacks", async () => {
   const { db, account, attempts } = await setup();
@@ -74,6 +88,54 @@ test("a lost commit acknowledgement can be delivered again without a second debi
   const second = await begin(attempts);
   await new ModelAttempts(faulty, await accounts(db), undefined, 1_000).event("payg","agent",true,true,finish(second,0.1));
   assert.equal(await total(db),-200000,"automatic delivery retry also commits each attempt once");
+});
+
+test("end-user settlement preserves holds on rollback and charges once after a lost commit acknowledgement", async () => {
+  const { db, account } = await setup();
+  const credits = new EndUserCredits(db);
+  await credits.setSettings("payg", { enabled: true, markupBps: 2_000 });
+  await credits.post("payg", "person", { kind: "grant", amount: 1_000_000, key: "funds" });
+  const workspaces = new Workspaces(db);
+  const original = await workspaces.create("payg", "Original"), later = await workspaces.create("payg", "Later");
+  await workspaces.assign("payg", "agent", "agent", original.id);
+  const attempts = new ModelAttempts(db, account, undefined, 0, undefined, credits);
+  const id = randomUUID();
+  await attempts.event("payg", "agent", true, true, { type: "begin", id, provider: "openrouter", model: "anthropic/claude-opus-4.1", kind: "response", at: Date.now(), keyHash,
+    estimate: { inputTokens: 100, maxOutputTokens: 100, rates: { input: 5, output: 20 } }, endUser: { id: "person", bucket: "default" } });
+  await new Promise(resolve => setTimeout(resolve, 2));
+  await workspaces.assign("payg", "agent", "agent", later.id);
+  let seam: "before" | "after" | undefined = "before";
+  const faulty = new Proxy(db, { get(target, property) {
+    if (property !== "connect") return Reflect.get(target, property);
+    return async () => {
+      const client = await db.connect();
+      return new Proxy(client, { get(target, prop) {
+        if (prop !== "query") { const value = Reflect.get(target, prop); return typeof value === "function" ? value.bind(target) : value; }
+        return async (...args: any[]) => {
+          if (args[0] === "commit" && seam === "before") { seam = undefined; throw new Error("crash before commit"); }
+          const result = await (client.query as any)(...args);
+          if (args[0] === "commit" && seam === "after") { seam = undefined; throw new Error("lost commit acknowledgement"); }
+          return result;
+        };
+      } });
+    };
+  } }) as Db;
+  const delivery = new ModelAttempts(faulty, account, undefined, 0, undefined, credits);
+  await assert.rejects(delivery.event("payg", "agent", true, true, finish(id, 0.1)), /crash before commit/);
+  assert.equal(await total(db), 0);
+  assert.equal((await credits.get("payg", "person")).balance, 1_000_000);
+  assert.equal(Number((await db.query("select count(*) n from end_user_holds where id=$1", [id])).rows[0].n), 1, "rollback restores the hold");
+  seam = "after";
+  await assert.rejects(delivery.event("payg", "agent", true, true, finish(id, 0.1)), /lost commit acknowledgement/);
+  await Promise.all(Array.from({ length: 8 }, () => attempts.event("payg", "agent", true, true, finish(id, 0.1))));
+  assert.equal(await total(db), -100_000);
+  assert.equal((await credits.get("payg", "person")).balance, 880_000);
+  assert.equal(Number((await db.query("select count(*) n from end_user_ledger where kind='usage'")).rows[0].n), 1);
+  assert.equal(Number((await db.query("select count(*) n from end_user_holds")).rows[0].n), 0);
+  assert.equal(Number((await db.query("select count(*) n from credit_holds")).rows[0].n), 0);
+  const rows = (await db.query("select workspace, responses, cost from workspace_usage")).rows;
+  assert.equal(rows.length, 1);
+  assert.deepEqual(rows[0], { workspace: original.id, responses: 1, cost: 0.1 });
 });
 
 test("reconciliation survives a lost host, includes BYOK cost, and runs concurrently without double billing", async () => {

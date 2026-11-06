@@ -151,7 +151,7 @@ export function createModels(this: AgentRuntime): ReturnType<typeof modelRuntime
           async (receipt) => {
             const key = `model-billing:${receipt.event.id}`;
             await this.ctx.storage.put(key, receipt);
-            await applyModelReceipt(this.env, receipt);
+            await this.dbProfile.run("settle", () => applyModelReceipt(this.env, receipt));
             await this.ctx.storage.delete(key);
           },
           async (context, stop) => {
@@ -160,6 +160,7 @@ export function createModels(this: AgentRuntime): ReturnType<typeof modelRuntime
               await this.emit({ type: "event", requestId: context.requestId, event: { type: "spend_limit_reached", message: stop.error } });
             }
           },
+          action => this.dbProfile.run("admission", action),
         ),
       settings: async () => {
         const conf = await this.config();

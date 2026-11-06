@@ -1,3 +1,4 @@
+import { MULTI_AGENT_LIMITS } from "./multi-agent-policy.ts";
 import { type EventSubscription } from "./event-socket.ts";
 import { withMoneyMetrics } from "./money-metrics.ts";
 import { BadRequest } from "./validation.ts";
@@ -73,6 +74,11 @@ export async function createScheduleImpl(this: AgentRuntime,
 
 export async function armImpl(this: AgentRuntime,
   retry?: number) {
+    this.invalidateMaintenance();
+    const generation = this.maintenanceGeneration;
+    const config = await this.ctx.storage.get<Config>("configuration");
+    if (!config) return;
+    const deleted = await this.ctx.storage.get("deleted");
     const schedules = await this.ctx.storage.list<Schedule>({
       prefix: "schedule:",
       limit: 100,
@@ -88,10 +94,19 @@ export async function armImpl(this: AgentRuntime,
     const pendingEvents = (
       await this.ctx.storage.list({ prefix: TERMINAL_EVENTS_PREFIX, limit: 1 })
     ).size;
-    const config = await this.ctx.storage.get<Config>("configuration");
-    const pendingRun = (await this.records()).some(
-      (record) => record.accepted && record.state !== "completed",
-    );
+    const records = await this.records();
+    const pendingRuns = records.filter(record => record.accepted && record.state !== "completed");
+    const children = await this.delegation.children();
+    const childKeys = new Set(children.map(child => child.key));
+    const recovering = records.some(record => record.state !== "completed" && !record.accepted) ||
+      this.cancellations.size > 0 ||
+      (await Promise.all(pendingRuns.map(record => this.ctx.storage.get(`cancelled-request:${record.id}`)))).some(Boolean) ||
+      !!await this.ctx.storage.get("resume-kept-queue") ||
+      await this.notifications.pending() ||
+      children.some(child => child.status === "running" ||
+        (child.background && ((child.status === "input_required" && !child.cancelRequested &&
+          !childKeys.has(`${child.key}:resume`) && Date.now() - child.createdAt < MULTI_AGENT_LIMITS.childTtlSeconds * 1000) ||
+          (child.accepted && !child.notified && child.landedBy !== "wait"))));
     const next = Math.min(
       config?.expiresAt ?? Infinity,
       config
@@ -103,18 +118,27 @@ export async function armImpl(this: AgentRuntime,
       retry ?? Infinity,
       pendingBilling ? Date.now() + 5000 : Infinity,
       pendingEvents ? Date.now() + 1000 : Infinity,
-      pendingRun ? Date.now() + 1000 : Infinity,
-      (await this.records()).some(record => record.method === 'configure' && record.state !== 'completed') ? Date.now() + 1000 : Infinity,
+      records.some(record => record.method === 'configure' && record.state !== 'completed') ? Date.now() + 1000 : Infinity,
       await this.promptPreparations.deadline(),
       await this.ctx.storage.get<number>("human-input-deadline") ?? Infinity,
-      await this.limits.deadline(),
+      deleted || (config.expiresAt && config.expiresAt <= Date.now()) ? Infinity : await this.limits.deadline(),
       ...this.ctx.getWebSockets().filter(socket => socket.readyState === 1).map(socket => (socket.deserializeAttachment() as EventSubscription)?.browser?.exp ?? Infinity),
     );
-    if (Number.isFinite(next))
+    const current = generation === this.maintenanceGeneration;
+    if (current) this.maintenance = {
+      at: next,
+      tracksRuns: !recovering && !children.length && pendingRuns.length > 0 && pendingRuns.every(record => this.pendingWaits.has(record.id)),
+    };
+    // A slower planner must not replace a newer deadline with its stale reads.
+    // If activity invalidated it without another plan, retain prompt recovery.
+    const watchdog = current
+      ? Math.min(next, pendingRuns.length || recovering ? Date.now() + 1000 : Infinity)
+      : Math.min(Date.now() + 1000, this.maintenance?.at ?? Infinity);
+    if (Number.isFinite(watchdog))
       await this.lifecycle.jobs.push({
         id: "camel-wake",
         fn: "camel-wake",
-        time: Math.max(Date.now() + 1, next),
+        time: Math.max(Date.now() + 1, watchdog),
       });
   }
 
@@ -145,16 +169,37 @@ export async function restorePendingImpl(this: AgentRuntime) {
     )
       this.ctx.waitUntil(this.flushBilling());
     this.ctx.waitUntil(this.flushTerminalEvents());
+    await this.arm();
+    // A cold-start watchdog still performs the complete recovery pass. Its
+    // waiters and maintenance schedule have only just been restored.
+    this.invalidateMaintenance();
   }
 
 export async function onJobImpl(this: AgentRuntime,
   context: { job: { fn: string } }) {
     return withMoneyMetrics(this.env, async () => {
-      if (context.job.fn === "camel-wake") await this.wake();
+      if (context.job.fn !== "camel-wake") return;
+      const maintenance = this.maintenance;
+      if (maintenance?.tracksRuns && Date.now() < maintenance.at &&
+          !await this.notifications.pending() && (await this.delegation.children()).length === 0 &&
+          !await this.limits.check(Date.now(), false) && this.maintenance === maintenance && Date.now() < maintenance.at) {
+        await this.lifecycle.jobs.push({
+          id: "camel-wake",
+          fn: "camel-wake",
+          time: Math.min(Date.now() + 1000, maintenance.at),
+        });
+        return;
+      }
+      await this.wake();
     });
   }
 
 export async function wakeImpl(this: AgentRuntime) {
+    if (await this.ctx.storage.get("deleted")) {
+      await this.flushBilling();
+      await this.flushTerminalEvents();
+      return;
+    }
     for (const socket of this.ctx.getWebSockets()) {
       const subscription = socket.deserializeAttachment() as EventSubscription;
       if (subscription.browser && subscription.browser.exp <= Date.now()) this.closeBrowserSocket(socket);

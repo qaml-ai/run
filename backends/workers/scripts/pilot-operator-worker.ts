@@ -5,6 +5,7 @@ import { keyServices, type SecurityEnv } from "../src/security-services.ts";
 import { accountDeletions, type AccountLifecycleEnv } from "../src/account-lifecycle.ts";
 import type { AccountServices } from "../src/account-services.ts";
 import { withSql } from "../src/postgres.ts";
+import type { CamelAgent } from "../src/agent.ts";
 
 type Options = { tokenHash: string; tenantIds: string[]; expiresAt: number };
 type Env = SecurityEnv & AccountLifecycleEnv;
@@ -35,6 +36,14 @@ export default function pilotOperator(options: Options) {
             return { settings: Object.fromEntries(settings.rows.map(row => [row.name, Number(row.setting)])), activity: activity.rows };
           }));
         }
+        if (path === "/pilot/database-profile" && request.method === "POST") {
+          const input = await request.json() as { tenant?: string; agent?: string; reset?: boolean };
+          if (!input.tenant || !allowed.has(input.tenant)) return reply({ error: "Tenant outside bootstrap scope" }, 403);
+          if (!input.agent || !(await services.accounts.db.query("select 1 from agents where tenant=$1 and id=$2", [input.tenant, input.agent])).rowCount)
+            return reply({ error: "Agent outside bootstrap scope" }, 403);
+          const agents = env.AGENTS as DurableObjectNamespace<CamelAgent>;
+          return reply(await agents.getByName(input.agent).databaseProfile(input.reset === true));
+        }
         const targeted = /^\/v1\/tenants\/([a-z0-9-]+)(?:\/(limits|deletion))?$/.exec(path);
         const tokens = /^\/v1\/tenants\/([a-z0-9-]+)\/tokens(?:\/([a-f0-9-]{36}))?$/.exec(path);
         const inspect = path === "/pilot/inspect" && request.method === "GET";
@@ -60,11 +69,10 @@ export default function pilotOperator(options: Options) {
         }
 
         if (cleanup) {
-          // Foreground I/O may outlive waitUntil's post-response window. Both
-          // the claimed deletion and every host sweep are scoped to this ID.
+          // The main Worker's queue consumer owns cleanup after this temporary
+          // operator returns; its durable intent is restricted to this tenant.
           const deletions = accountDeletions(setup, { accounts: services.accounts } as AccountServices, tenant);
           await deletions.request(tenant!, "operator:pilot-bootstrap");
-          await deletions.kick();
           return reply(await deletions.status(tenant!));
         }
 
@@ -109,12 +117,10 @@ export default function pilotOperator(options: Options) {
           const deletions = accountDeletions(setup, { accounts: services.accounts } as AccountServices, tenant);
           if (request.method === "DELETE" && !targeted[2]) {
             const result = await deletions.request(tenant!, "operator:pilot-bootstrap");
-            ctx.waitUntil(deletions.kick());
             return reply(result, 202);
           }
           if (request.method === "GET" && targeted[2] === "deletion") {
             const result = await deletions.status(tenant!);
-            ctx.waitUntil(deletions.kick());
             return result ? reply(result) : reply({ error: "No deletion" }, 404);
           }
           return reply({ error: "Not found" }, 404);

@@ -12,7 +12,7 @@ import { Tenants } from "../src/tenants.ts";
 
 import { transaction, type Db } from "../src/postgres.ts";
 
-import { EndUserCredits, HOLD_MS, NOTHING_POSTED as NOTHING, settleUsage, utcDay } from "../src/end-user-credits.ts";
+import { EndUserCredits, HOLD_MS, NOTHING_POSTED as NOTHING, lockEndUser, settleUsage, utcDay } from "../src/end-user-credits.ts";
 
 import { INITIAL_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, ModelAttempts } from "../src/model-attempts.ts";
 
@@ -40,6 +40,31 @@ const balance = async (db: Db, user = "u") => Number((await db.query("select bal
 const ledgerSum = async (db: Db, user = "u") => Number((await db.query("select coalesce(sum(amount), 0) as total from end_user_ledger where tenant = 't' and end_user = $1", [user])).rows[0].total);
 
 const holds = async (db: Db) => (await db.query("select * from end_user_holds")).rows;
+
+test("reusing the settlement lock still expires credit released by the hold in that transaction", async () => {
+  const { db, service } = await credits();
+  const now = Date.now(), expiresAt = now + 60_000;
+  const outcomes = [];
+  for (const reuse of [false, true]) {
+    const user = reuse ? "reuse" : "baseline", id = randomUUID();
+    await service.post("t", user, { kind: "grant", amount: USD, key: `${user}-lot`, expiresAt });
+    await service.reserve("t", user, "b", { id, want: USD, min: USD }, now);
+    const result = await transaction(db, async sql => {
+      const locked = await lockEndUser(sql, "t", user, expiresAt + 1);
+      assert.equal(Number(locked.balance), USD, "the live hold protects the expiring lot");
+      await sql.query("delete from end_user_holds where id=$1", [id]);
+      return settleUsage(sql, { tenant: "t", endUser: user, bucket: "b", day: today(), raw: 100_000, key: `${user}-usage` }, expiresAt + 1,
+        reuse ? { sql, user: locked } : undefined);
+    });
+    outcomes.push(result);
+    assert.equal(await balance(db, user), 0, "released credit expires before settlement sees the balance");
+    assert.equal(await ledgerSum(db, user), 0);
+    assert.equal(Number((await db.query("select sum(remaining) n from end_user_lots where tenant='t' and end_user=$1", [user])).rows[0].n), 0);
+    assert.equal(Number((await db.query("select count(*) n from end_user_ledger where tenant='t' and end_user=$1 and kind='expiry'", [user])).rows[0].n), 1);
+  }
+  assert.deepEqual(outcomes[1], outcomes[0], "the reused lock preserves the original expiry and write-off policy");
+  assert.equal(outcomes[1].writtenOff, 100_000);
+});
 
 test("a hold takes the bucket's allowance first, then the balance at the markup; settling posts what the call cost", async () => {
   const { db, service } = await credits({ allowances: { "bot:*": USD }, markupBps: 2_500 });

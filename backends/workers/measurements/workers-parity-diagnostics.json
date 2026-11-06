@@ -1,0 +1,110 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-11-06T05:07:35.426731+00:00",
+  "sourceRevision": "76f5609635adacb5250d4d39cc8ff7dd4dcce5a7",
+  "nodeKey": "6e758149cf7712540970a9067b22ada5d533aaa8e421e22efdf790bf2c9fed7f",
+  "runArtifacts": "backends/workers/measurements/runs/2026-11-06T04-39-22-730Z-99182",
+  "workerReport": "backends/workers/measurements/parity-workers.json",
+  "pythonRawLog": "backends/workers/measurements/runs/2026-11-06T04-39-22-730Z-99182/workers/shard-1/parity-workers-shard-1-of-6.log",
+  "result": {
+    "command": "npm run parity",
+    "exitCode": 1,
+    "elapsedSeconds": 1610.7,
+    "node": {
+      "pass": 590,
+      "fail": 0,
+      "outOfScope": 380
+    },
+    "workers": {
+      "pass": 548,
+      "acceptedDifference": 17,
+      "fail": 25,
+      "outOfScope": 380
+    }
+  },
+  "failureEvidenceLabels": {
+    "fixture": 21,
+    "workers": 3,
+    "sdk-unit": 1
+  },
+  "failureAreas": {
+    "agents": 1,
+    "models": 1,
+    "python": 22,
+    "runs": 1
+  },
+  "labelMeaning": "Contract backend labels describe observed HTTP evidence or missing results; they do not establish root cause.",
+  "python": {
+    "fail": 22,
+    "missingSelectedResult": {
+      "count": 20,
+      "byClass": {
+        "PythonSDKTest": 3,
+        "ServeToolsTest": 12,
+        "WsgiServeToolsTest": 5
+      },
+      "repeatedSdkCases": [
+        "PythonSDKTest.test_projects_publish_checked_snapshots_and_the_tool_finds_the_project_from_identity",
+        "PythonSDKTest.test_run_with_output_returns_a_pydantic_model_or_the_json_schema_value",
+        "PythonSDKTest.test_stateless_runs_one_call_stream_get_abort_and_no_agent_left"
+      ],
+      "classification": "The child did not report exactly its selected case. The retained report does not identify its exit signal or underlying exception. Root cause remains unknown."
+    },
+    "reportedTimeouts": [
+      {
+        "case": "PythonSDKTest.test_the_sync_client_upserts_runs_streams_answers_and_runs_statelessly",
+        "budgetMs": 30000,
+        "observedCaseDurationMs": 146700.263,
+        "evidenceLabel": "workers",
+        "exceptionTypes": [
+          "AssertionError",
+          "TimeoutError",
+          "CancelledError"
+        ]
+      },
+      {
+        "case": "PythonSDKTest.test_upsert_is_the_same_agent_for_a_key_and_one_process_serves_its_tools",
+        "budgetMs": 30000,
+        "observedCaseDurationMs": 145023.478,
+        "evidenceLabel": "sdk-unit",
+        "exceptionTypes": [
+          "AssertionError",
+          "TimeoutError",
+          "CancelledError"
+        ]
+      }
+    ],
+    "stderrObservations": {
+      "delayedEventLoopCallbacksSeconds": [
+        84.353,
+        115.433
+      ],
+      "syncCaseWait": "asyncio.to_thread(scenario)",
+      "upsertCaseWait": "First HTTP upsert; httpcore response cancellation and asynchronous connection state lock.",
+      "interpretation": "Timeout callbacks and cleanup were delayed. These observations do not prove a Workers runtime defect or a single shared cause for the missing results."
+    },
+    "boundedTermination": {
+      "case": "PythonSDKTest.test_the_sync_client_upserts_runs_streams_answers_and_runs_statelessly",
+      "pid": 27519,
+      "elapsedSecondsAtSignal": 311,
+      "observedState": "Sl / ep_poll",
+      "scope": "Only the verified selected test child PID; no process group, harness, or other job.",
+      "signals": [
+        {
+          "signal": "SIGTERM"
+        },
+        {
+          "signal": "SIGKILL",
+          "afterGraceSeconds": 10
+        }
+      ],
+      "resultIntegrity": "The child had already reported its timeout. The harness was allowed to collect its existing failure and all other completed results."
+    }
+  },
+  "restartAndValidity": {
+    "firstWorkerShard1Attempt": "Sprite rt-pool-6 restarted without an exit status; the runner automatically repeated that shard at the same revision.",
+    "collectedAttempt": "Automatic retry 20261105-224436-14248-1-2 on rt-pool-6.",
+    "limitation": "The repeated missing-result cases and final 25 failures cannot all be attributed to the first restart. The final full parity gate is not green."
+  },
+  "followUpOwnership": "The coordinator owns fixture timing and cleanup investigation. No source fix or further parity rerun was performed for this diagnostic."
+}

@@ -46,6 +46,7 @@ import { replayedRequestImpl, requestResponseImpl, activityImpl, stateImpl, hist
 import { emitImpl, flushTerminalEventsImpl, recoverWatchersImpl, closeWatchersImpl, checkWatchersImpl, webSocketEventsImpl, negotiateAgentEventsImpl, restoreWebSocketsImpl, sendAttachedSocketImpl, closeBrowserSocketImpl, retireAttachedSocketImpl, webSocketMessageImpl, webSocketCloseImpl, webSocketErrorImpl, replayEventsImpl, runReplayImpl, eventsImpl } from "./agent-transport.ts";
 import { purgeAccountDataImpl, configImpl, scheduleToolsImpl, createScheduleImpl, armImpl, onStartImpl, restorePendingImpl, onJobImpl, wakeImpl } from "./agent-lifecycle.ts";
 import type { CamelAgent } from "./agent.ts";
+import { DbProfile } from "./db-profile.ts";
 
 class AgentContext {
   readonly ctx: DurableObjectState;
@@ -61,6 +62,16 @@ class AgentContext {
 /** Internal state, never exposed as a Durable Object RPC target.
  * Field order follows the original agent so eager initialization is unchanged. */
 export class AgentRuntime extends AgentContext {
+  readonly dbProfile = new DbProfile(this.env.PILOT_DB_PROFILE === "1");
+
+  async databaseProfile(reset = false) {
+    if (!this.dbProfile.enabled) throw new Error("Pilot database profiling is disabled");
+    await this.serial;
+    await this.eventsProcessed;
+    await this.webhooks.settled();
+    return { epoch: this.instanceId, ...this.dbProfile.snapshot(reset) };
+  }
+
   purgeAccountData(tenant: string, id: string) {
     return purgeAccountDataImpl.call(this, tenant, id);
   }
@@ -142,7 +153,7 @@ export class AgentRuntime extends AgentContext {
   }
 
   admitRequest(conf: Config, id: string, bucket?: string) {
-    return admitRequestImpl.call(this, conf, id, bucket);
+    return this.dbProfile.run("admission", () => admitRequestImpl.call(this, conf, id, bucket));
   }
 
   toolFileBudgets = new Map<string, { left: number }>();
@@ -226,6 +237,15 @@ export class AgentRuntime extends AgentContext {
   readonly initialCursor = Date.now() * 1000;
 
   pendingWaits = new Map<string, Promise<void>>();
+
+  // A durable watchdog must survive losing in-memory waiters. Live waiters
+  // need limit checks; other maintenance can wait for its actual deadline.
+  maintenance: { at: number; tracksRuns: boolean } | undefined;
+  maintenanceGeneration = 0;
+  invalidateMaintenance() {
+    this.maintenance = undefined;
+    this.maintenanceGeneration++;
+  }
 
   admission: Promise<unknown> = Promise.resolve();
 
@@ -408,7 +428,7 @@ export class AgentRuntime extends AgentContext {
   }
 
   fetch(request: Request): Promise<Response> {
-    return fetchImpl.call(this, request);
+    return this.dbProfile.run(new URL(request.url).pathname === "/history" ? "history" : "other", () => fetchImpl.call(this, request));
   }
 
   fetchRequest(request: Request): Promise<Response> {
@@ -452,7 +472,7 @@ export class AgentRuntime extends AgentContext {
   }
 
   onStart() {
-    return onStartImpl.call(this);
+    return this.dbProfile.run("other", () => onStartImpl.call(this));
   }
 
   restorePending() {
@@ -460,7 +480,7 @@ export class AgentRuntime extends AgentContext {
   }
 
   onJob(context: { job: { fn: string } }) {
-    return onJobImpl.call(this, context);
+    return this.dbProfile.run("other", () => onJobImpl.call(this, context));
   }
 
   wake() {

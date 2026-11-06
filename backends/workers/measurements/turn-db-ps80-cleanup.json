@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "loadRun": "490285ac0a",
+  "source": "backends/workers/measurements/turn-db-ps80-load.json",
+  "scope": {
+    "tenantCount": 20,
+    "tenantPrefix": "pilot-load-490285ac0a-"
+  },
+  "initial": {
+    "at": "2026-11-06T05:32:26.601Z",
+    "counts": {
+      "tenants": 20,
+      "agents": 1000,
+      "api_tokens": 20,
+      "provider_keys": 0,
+      "model_providers": 20,
+      "volumes": 1000,
+      "end_users": 1000,
+      "holds": 0,
+      "held_micros": 0,
+      "end_user_holds": 0,
+      "end_user_held_micros": 0,
+      "balance_micros": 1999861939,
+      "usage_debits": 20,
+      "usage_micros": -138061,
+      "responses": 1750,
+      "receipts": 0,
+      "attempts": 1750,
+      "pending_attempts": 0,
+      "settled_attempts": 1750,
+      "attempt_charge_micros": 0,
+      "deleted_tenants": 0,
+      "revoked_agents": 22,
+      "purged_agents": 21,
+      "deleting_tenants": 4,
+      "deletion_attempts": 1,
+      "claimed_deletions": 1
+    },
+    "pending": []
+  },
+  "initialPendingRequest": null,
+  "final": {
+    "at": "2026-11-06T05:46:36.756Z",
+    "counts": {
+      "tenants": 0,
+      "agents": 0,
+      "api_tokens": 0,
+      "provider_keys": 0,
+      "model_providers": 0,
+      "volumes": 0,
+      "end_users": 0,
+      "holds": 0,
+      "held_micros": 0,
+      "end_user_holds": 0,
+      "end_user_held_micros": 0,
+      "balance_micros": 1999861939,
+      "usage_debits": 20,
+      "usage_micros": -138061,
+      "responses": 1750,
+      "receipts": 0,
+      "attempts": 1750,
+      "pending_attempts": 0,
+      "settled_attempts": 1750,
+      "attempt_charge_micros": 0,
+      "deleted_tenants": 20,
+      "revoked_agents": 0,
+      "purged_agents": 0,
+      "deleting_tenants": 0,
+      "deletion_attempts": 40,
+      "claimed_deletions": 0
+    },
+    "pending": []
+  },
+  "notes": [
+    "Only scoped read-only inspect and public request-status calls were used. No forced settlement or financial deletion was performed."
+  ],
+  "temporaryWorkerCheck": {
+    "at": "2026-11-06T05:47:05.932Z",
+    "method": "Cloudflare Workers Scripts names-only list filtered to pilot bootstrap, inspect and operator helpers",
+    "remaining": []
+  },
+  "deploymentAndHyperdriveCheck": {
+    "at": "2026-11-06T05:47:05.932Z",
+    "deployment": "b53bc3c3-6f4d-4cea-8d96-ce22adc66de6",
+    "version": "e19b0ab2-743b-4f63-80ca-3998c1deda77",
+    "percentage": 100,
+    "hyperdriveOriginLimit": 100,
+    "hyperdriveCachingDisabled": true
+  }
+}
