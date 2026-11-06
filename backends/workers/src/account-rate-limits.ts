@@ -283,6 +283,12 @@ export class RateLimits {
     return this.perTenant(tenant, "agentCreates", "agent_creates", "agents created", counted);
   }
 
+  /** Resolve billing policy before a caller's transaction, then count on its connection. */
+  async prepareAgentCreate(tenant: string) {
+    const applies = await this.tenantLimit(tenant, "agentCreates");
+    return (sql: Sql, counted = true) => this.tenantState(tenant, "agentCreates", "agent_creates", "agents created", counted, sql, applies);
+  }
+
   /** Count a run (prompt, continue, execute) started for `tenant`: where it stands in its window after this one. */
   run(tenant: string) {
     return this.perTenant(tenant, "runs", "runs", "runs started", true);
@@ -317,6 +323,10 @@ export class RateLimits {
 
   private async perTenant(tenant: string, limit: "agentCreates" | "runs", name: string, what: string, counted: boolean): Promise<RateLimitState | undefined> {
     const applies = await this.tenantLimit(tenant, limit);
+    return this.tenantState(tenant, limit, name, what, counted, this.options.db, applies);
+  }
+
+  private async tenantState(tenant: string, limit: "agentCreates" | "runs", name: string, what: string, counted: boolean, sql: Sql, applies: Awaited<ReturnType<RateLimits["tenantLimit"]>>): Promise<RateLimitState | undefined> {
     if (!applies) return;
     const { max, free, paid, tier } = applies;
     // On free credit, what buying credit unlocks; on a tier, the next tier's; a create limit is only against abuse.
@@ -328,8 +338,8 @@ export class RateLimits {
       : `Too many ${what}: at most ${max} a minute for this account (a limit against abuse${tier ? `; usage tier ${tier.name}${upgrade}` : free ? `, on free credit${upgrade}` : ""}). Upsert an agent you have instead of making new ones`;
     const key = `${name}:${tenant}`, windowMs = 60_000, now = this.now();
     // Only this tenant's own counter is read: its key is the tenant's, never another's.
-    const row = counted ? await this.counted(this.options.db, key, { name, scope: "tenant", max, windowSeconds: 60 }, message)
-      : (await this.options.db.query("select count, window_start from rate_limits where key = $1 and window_start = $2", [key, Math.floor(now / windowMs) * windowMs])).rows[0] as { count: number; window_start: string | number } | undefined;
+    const row = counted ? await this.counted(sql, key, { name, scope: "tenant", max, windowSeconds: 60 }, message)
+      : (await sql.query("select count, window_start from rate_limits where key = $1 and window_start = $2", [key, Math.floor(now / windowMs) * windowMs])).rows[0] as { count: number; window_start: string | number } | undefined;
     const start = row ? Number(row.window_start) : Math.floor(now / windowMs) * windowMs;
     return { limit: max, remaining: Math.max(0, max - (row?.count ?? 0)), reset: Math.max(1, Math.ceil((start + windowMs - now) / 1000)) };
   }

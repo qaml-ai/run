@@ -20,7 +20,7 @@ import { CreditHolds } from "./credit-holds.ts";
 import { keyServices, type KeyEnv } from "./security-services.ts";
 import { defaultModelFor, validateAgentModel } from "./default-model.ts";
 import { resolveAgentKey } from "./agent-key.ts";
-import { createAdmission } from "./admission.ts";
+import { prepareCreateAdmission } from "./admission.ts";
 import { reserveAgentCreation } from "./agent-capacity.ts";
 import type { RateLimitState } from "./admission.ts";
 import { applyUsageRows } from "./accounts.ts";
@@ -220,6 +220,7 @@ export class Directory {
     // Volume initialization uses its own SQL and DO calls. Keep those outside
     // the directory transaction; preserve the latest mounts under its lock.
     config.mounts=await (await import('./file-mounts.ts')).prepareMounts(this.env,this.tenantId,id,requested===undefined?before?.config.mounts:requested);
+    const admitCreate = config.type !== "run" ? await prepareCreateAdmission(this.env, this.tenantId) : undefined;
     let createdHere = false;
     const entry = await transaction(this.env, async (sql) => {
       // A transaction-scoped lock covers the absent row as well as concurrent creates.
@@ -250,8 +251,8 @@ export class Directory {
         throw new ApiError(409,`An existing agent's mounts cannot change; delete it (DELETE /v1/agents/${id}) or use another idempotency key, or send remount: true to change its mounts`);
       const configHash=await digest(canonical(config));
       const sameModel = JSON.stringify(old?.resolvedModel) === JSON.stringify(resolvedModel);
-      if (config.type !== "run")
-        rate = await createAdmission(this.env, this.tenantId, !(old?.initialized && old.configHash === configHash));
+      if (admitCreate)
+        rate = await admitCreate(sql, !(old?.initialized && old.configHash === configHash));
       if (old?.initialized && old.configHash === configHash && sameModel) return old;
       const next: DirectoryEntry = {
         id,
