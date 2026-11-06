@@ -11,9 +11,12 @@ test("negotiated WebSocket stays connected when idle and streams the next turn",
   t.after(() => f.stop());
   let negotiations = 0;
   let socketsSelected = 0;
-  const fetcher: typeof fetch = async (url, init) => {
+  // Counted on the global fetch: an SDK given its own fetch asks for SSE through it instead.
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+  globalThis.fetch = async (url, init) => {
     if (String(url).includes("/events")) negotiations++;
-    const response = await fetch(url, init);
+    const response = await original(url, init);
     if (response.headers.get("content-type")?.startsWith("application/vnd.camelrun.events+json")) {
       const selection = await response.clone().json() as { transport: string };
       assert.equal(selection.transport, "websocket");
@@ -21,7 +24,7 @@ test("negotiated WebSocket stays connected when idle and streams the next turn",
     }
     return response;
   };
-  const runtime = new AgentRuntime({ url: f.url, apiKey: f.token, fetch: fetcher });
+  const runtime = new AgentRuntime({ url: f.url, apiKey: f.token });
   const credentials = await (await fetch(f.url + "/v1/agents", {
     method: "POST", headers: { authorization: `Bearer ${f.token}`, "content-type": "application/json" },
     body: JSON.stringify({ model: "test/echo", codeMode: false, fileTools: false }),

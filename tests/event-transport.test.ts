@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { openEventStream } from "../clients/event-transport.ts";
 import { eventFrame, negotiateEvents, websocketAuthorization, webSocketRequired, EVENT_PROTOCOL } from "../backends/workers/src/live-transport.ts";
 import { watchAgent } from "../clients/watch.ts";
+import { AgentRuntime } from "../clients/typescript.ts";
 
 class Socket extends EventTarget {
   static last: Socket;
@@ -109,7 +110,7 @@ test("browser watcher preserves capability headers and selects a WebSocket", asy
   globalThis.WebSocket = Socket as unknown as typeof WebSocket;
   let offered = "";
   const watcher = watchAgent({
-    url: "https://runtime.test", agentId: `client_${"a".repeat(40)}`, token: "fixture",
+    url: "https://runtime.test", agentId: `client_${"a".repeat(40)}`, token: "fixture", transport: "auto",
     fetch: async (url, init) => {
       const request = new Request(url, init);
       if (request.url.includes("/events")) {
@@ -130,6 +131,35 @@ test("browser watcher preserves capability headers and selects a WebSocket", asy
   } finally { watcher.close(); globalThis.WebSocket = original; }
 });
 
+test("with the application's own fetch, watchers and clients ask for SSE alone, which goes through it", async () => {
+  const original = globalThis.WebSocket;
+  globalThis.WebSocket = Socket as unknown as typeof WebSocket;
+  const offers: string[] = [];
+  const own: typeof fetch = async (url, init) => {
+    const request = new Request(url, init);
+    if (request.url.includes("/events")) {
+      offers.push(request.headers.get("accept") ?? "");
+      // Open until the reader lets it go, as a live stream is.
+      const body = new ReadableStream({ start: controller => controller.enqueue(new TextEncoder().encode("event: ready\ndata: {}\n\n")) });
+      return new Response(body, { headers: { "content-type": "text/event-stream" } });
+    }
+    if (request.url.includes("/state")) return Response.json({ cursor: 1, running: false, requests: [] });
+    if (request.url.includes("/history")) return Response.json({ entries: [], next: null });
+    return Response.json([]);
+  };
+  try {
+    const watcher = watchAgent({ url: "https://runtime.test", agentId: `client_${"a".repeat(40)}`, token: "fixture", fetch: own });
+    for (let i = 0; i < 100 && !offers.length; i++) await new Promise(resolve => setTimeout(resolve, 1));
+    watcher.close();
+    assert.equal(offers[0], "text/event-stream");
+    offers.length = 0;
+    const session = { id: `client_${"b".repeat(40)}`, token: "fixture", expiresAt: Date.now() + 60_000 };
+    const client = await new AgentRuntime({ url: "https://runtime.test", apiKey: "fixture", fetch: own }).connectAgent(session, { attach: false });
+    client.close();
+    assert.equal(offers[0], "text/event-stream");
+  } finally { globalThis.WebSocket = original; }
+});
+
 test("a watcher closes its socket when consuming an event fails", async () => {
   const original = globalThis.WebSocket;
   globalThis.WebSocket = Socket as unknown as typeof WebSocket;
@@ -137,7 +167,7 @@ test("a watcher closes its socket when consuming an event fails", async () => {
   let selected: Socket | undefined;
   const errors: Error[] = [];
   const watcher = watchAgent({
-    url: "https://runtime.test", agentId: `client_${"a".repeat(40)}`, token: "fixture",
+    url: "https://runtime.test", agentId: `client_${"a".repeat(40)}`, token: "fixture", transport: "auto",
     onEvent() { throw new Error("Consumer failed"); },
     onError(error) { errors.push(error); },
     fetch: async (url, init) => {

@@ -469,8 +469,9 @@ function fileAt(callId: string, args: Record<string, unknown>, result: ToolResul
  * reads, the handler itself (under the thread's path), with the chat's own headers and credentials.
  */
 export function readsFrom(minted: { url?: string; proxy?: boolean }, endpoint: string, thread: string | null | undefined, doFetch: typeof globalThis.fetch,
-  headers?: AgentChatOptions["headers"], credentials?: RequestCredentials): Pick<WatchOptions, "url" | "fetch"> {
-  if (!minted.proxy) return { url: minted.url!, fetch: doFetch };
+  headers?: AgentChatOptions["headers"], credentials?: RequestCredentials, ownFetch = true): Pick<WatchOptions, "url" | "fetch"> {
+  // Straight to the runtime with the browser's fetch, the watcher may take a WebSocket; through the application's fetch, SSE.
+  if (!minted.proxy) return { url: minted.url!, ...(ownFetch ? { fetch: doFetch } : {}) };
   const base = `${endpoint.replace(/\/+$/, "")}${thread ? `/threads/${encodeURIComponent(thread)}` : ""}`;
   return {
     url: base,
@@ -606,7 +607,7 @@ export function createAgentChat(options: AgentChatOptions): AgentChat {
         agentId = minted.agentId;
         (watcher as Watcher | null)?.close();
         watcher = watchAgent({
-          ...options.watch, ...readsFrom(minted, options.endpoint, options.thread, doFetch, options.headers, options.credentials),
+          ...options.watch, ...readsFrom(minted, options.endpoint, options.thread, doFetch, options.headers, options.credentials, !!options.fetch),
           agentId: minted.agentId, token: minted.token, expiresAt: minted.expiresAt,
           getToken: async () => { const renewed = await call("token"); return { token: renewed.token, expiresAt: renewed.expiresAt }; },
           onChange: state => {
