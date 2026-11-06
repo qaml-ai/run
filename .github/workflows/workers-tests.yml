@@ -1,0 +1,56 @@
+name: Workers tests
+on:
+  push:
+    branches: [codex/workers-parity]
+  pull_request:
+    branches: [codex/workers-parity]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: workers-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  test:
+    name: Workers ${{ matrix.suite }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [unit, integration]
+        include:
+          - suite: unit
+            command: test
+          - suite: integration
+            command: test:integration
+    steps:
+      - uses: actions/checkout@v4
+      # Tests also import the shared src/ code and the repository SDK.
+      - uses: ./.github/actions/node-dependencies
+      - uses: actions/cache@v4
+        id: workers-dependencies
+        with:
+          path: backends/workers/node_modules
+          key: workers-node-modules-${{ runner.os }}-${{ runner.arch }}-22-${{ hashFiles('backends/workers/package-lock.json', 'backends/workers/package.json', 'backends/workers/.npmrc') }}
+      - if: steps.workers-dependencies.outputs.cache-hit != 'true'
+        run: npm ci
+        working-directory: backends/workers
+      - uses: docker/setup-buildx-action@v3
+        if: matrix.suite == 'integration'
+      - name: Check local Docker for native computer fixtures
+        if: matrix.suite == 'integration'
+        run: docker info --format '{{.ServerVersion}}' && docker buildx version
+      - name: Start test Postgres
+        id: postgres
+        uses: ./.github/actions/test-postgres
+      - name: Run Workers ${{ matrix.suite }} suite
+        run: npm run ${{ matrix.command }}
+        working-directory: backends/workers
+        env:
+          AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ steps.postgres.outputs.port }}/postgres
+          WRANGLER_SEND_METRICS: "false"
+      - name: Stop test Postgres
+        if: always() && steps.postgres.outputs.container != ''
+        run: docker rm -f '${{ steps.postgres.outputs.container }}'
