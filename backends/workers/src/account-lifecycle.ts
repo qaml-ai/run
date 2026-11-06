@@ -46,6 +46,13 @@ export function accountDeletions(env: AccountLifecycleEnv, service: AccountServi
       if (result && typeof result === "object" && result.failed) throw new HttpError(result.status, result.error);
     },
     purgeAgents: async () => {
+      // Directory revokes before the DO drains. Retry an interrupted shutdown
+      // before purging journals; the source deletion loop only visits live rows.
+      const pending = (await db.query("select id, tenant from agents where revoked and purged_at is null and tenant <> '' and exists (select 1 from account_deletions d where d.tenant=agents.tenant and d.completed_at is null)")).rows;
+      for (const { id, tenant } of pending) {
+        const result = await new Directory(env as unknown as ControlEnv, tenant).remove(id);
+        if (result && typeof result === "object" && result.failed) throw new HttpError(result.status, result.error);
+      }
       const rows = (await db.query("select id, tenant from agents where revoked and purged_at is not null and tenant <> '' and exists (select 1 from account_deletions d where d.tenant=agents.tenant and d.completed_at is null)")).rows;
       for (const { id, tenant } of rows) {
         await env.AGENTS.getByName(id).purgeAccountData(tenant, id);
