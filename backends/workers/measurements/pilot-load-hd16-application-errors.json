@@ -1,0 +1,40 @@
+{
+  "window": {
+    "from": "2026-11-06T02:59:48Z",
+    "to": "2026-11-06T03:01:02Z"
+  },
+  "source": "Cloudflare Workers observability REST; only safe classifications retained",
+  "publicErrors": {
+    "http_503:UNAVAILABLE:unclassified": 2,
+    "http_500:INTERNAL:unclassified": 1,
+    "http_200:turn_model_error:unclassified": 8
+  },
+  "rays": [
+    {
+      "at": "2026-11-06T03:00:42.457Z",
+      "classification": "http_503:UNAVAILABLE:unclassified",
+      "route": "/v1/agents/:id/requests/:id",
+      "ray": "a560d9125a22869c-DFW"
+    },
+    {
+      "at": "2026-11-06T03:00:42.500Z",
+      "classification": "http_503:UNAVAILABLE:unclassified",
+      "route": "/v1/agents/:id/requests/:id",
+      "ray": "a560d91d7e08377b-DFW"
+    },
+    {
+      "at": "2026-11-06T03:00:44.235Z",
+      "classification": "http_500:INTERNAL:unclassified",
+      "route": "/v1/agents/:id/requests/:id",
+      "ray": "a560d8f10b921924-DFW"
+    }
+  ],
+  "httpFailureLogClasses": {
+    "timeout Error (18 chars)": 2
+  },
+  "runtimeTurnMetrics": {
+    "completed:none": 242,
+    "failed:other": 8
+  },
+  "classificationLimit": "Eight model failures and one HTTP500 had no more specific safe classification in recorded telemetry. No causes are inferred from their counts."
+}

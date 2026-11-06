@@ -205,21 +205,52 @@ The fake provider adds a fixed 15-second delay; these latencies include it and
 the client round trips. Percentiles describe observed completed turns. At 250,
 all prompts were accepted (p95 acceptance 16.73 seconds). There were 79 client
 status-read timeouts at 40 seconds and four HTTP 500 responses. By the end of
-the stage, 249/250 model attempts were settled, with one still pending. Client
-observation failures therefore exceed the number of failed backend turns.
+the stage, 249/250 model attempts were settled, with one still pending. Those
+settlement counts do not imply 83 backend execution failures.
 The peak was 240 simultaneous end-user credit holds, proving actual concurrent
 reserves through Hyperdrive. Cumulative tenant active-time charges before
 cleanup were $0.057711; this is neither a provider charge nor a Cloudflare
-invoice. Final cleanup of the 20 load tenants is pending.
+invoice. The original cleanup hit the 30-second post-response lifetime of
+background work. A scoped foreground operator recovered it: all 20 tenants,
+2,000 agents, volumes, end users, provider settings and API keys were removed,
+with no credit holds remaining. See `measurements/pilot-load-full-recovery.json`.
+The repeatable load driver now uses this foreground path directly; each request
+can wait up to ten minutes without cutting off cleanup after its HTTP response.
+
+One zero-charge accounting audit from the original ramp remains pending. It has
+no end-user hold or customer context. The normal five-minute Cron reconciler
+marks stale custom-provider attempts settled without a provider lookup or a
+live tenant; its default stale threshold is two hours and two minutes. This
+record was not manually settled. See `measurements/pilot-load-pending-audit.json`.
 
 During the 250-turn stage, the IAD Hyperdrive pool had two connections, averaged
 96.9 waiting clients and peaked at 157. Completed uncached queries averaged
-1,094 ms waiting for a connection versus about 4 ms of query execution; this
-supports the diagnosis of pool saturation. That window recorded no Durable
+1,094 ms connection latency and 1,099 ms query latency. Transactions averaged
+3,599 ms connection latency and 4 ms query latency. This supports the diagnosis
+of pool saturation. That window recorded no Durable
 Object CPU-limit, memory-limit or fatal internal errors. Logs also showed long
 `camel-wake` dispatch warnings, so pool saturation is not assumed to explain
-every timeout. The 16-connection setting has not passed a repeat of this ramp.
+every timeout.
 See `measurements/pilot-load-telemetry.json`.
+
+The bounded repeat at **16 connections** used the same 20-tenant distribution,
+15-second fake-model delay and 40-second status-read timeout. At 250 concurrent
+turns, 239 completed successfully and 11 failed (4.4%): eight model failures
+classified by runtime telemetry as `other`, two HTTP 503 status reads classified
+as timeouts, and one unclassified HTTP 500 status read. No client timeout was
+recorded. Throughput was **3.325 turns/second**; completed-turn p50/p95/p99 were
+**69.632/70.914/71.088 seconds**. All 250 end-user holds overlapped and all 250
+attempts settled. This is below the stop threshold but is not an error-free
+250-turn result. Higher stages were not repeated; the highest observed
+zero-error concurrency remains 100.
+
+The repeat's foreground cleanup removed all 20 tenants and 250 agents, verified
+all 20 credentials rejected with HTTP 401, and left no user data, holds or pending
+attempts. Its tenant active-time charge was $0.033961. The two main load runs
+therefore charged $0.091672 of synthetic tenant credit; fake-provider cost was
+zero. See `measurements/pilot-load-hd16-retry.json` and
+`measurements/pilot-load-hd16-application-errors.json`. These internal charges
+are separate from Cloudflare spend.
 
 The image transport now uses the B path for R2-backed image references: request
 scoped markers pass through Pi and expand directly into a known-length streamed

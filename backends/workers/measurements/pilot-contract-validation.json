@@ -151,5 +151,29 @@
   "ciValidation": {
     "persistedReportHashGate": false,
     "evidence": "No GitHub Actions workflow or normal test imports the persisted Worker report. Only explicit parity report merging validates current Worker suiteHash; this merge used the exact tested checkout."
+  },
+  "liveHelperCleanup": {
+    "revision": "8eb0225c7da3e7922bc6e3a31824eaf6234a243d",
+    "target": "https://run-pilot.camelai.dev",
+    "report": "measurements/pilot-load-hd16-retry.json",
+    "startedAt": "2026-11-06T02:58:49.253Z",
+    "finishedAt": "2026-11-06T03:03:40.398Z",
+    "foreground": true,
+    "deletedTenants": 20,
+    "revokedCredentials": 20,
+    "failures": [],
+    "remaining": {
+      "tenants": 0,
+      "agents": 0,
+      "volumes": 0,
+      "endUsers": 0,
+      "apiTokens": 0,
+      "providerKeys": 0,
+      "modelProviders": 0,
+      "creditHolds": 0,
+      "endUserHolds": 0,
+      "pendingAttempts": 0
+    },
+    "note": "This live check exercised the operational helper and load driver after the preserved contract matrix; it does not alter the matrix tested revisions or hashes."
   }
 }
