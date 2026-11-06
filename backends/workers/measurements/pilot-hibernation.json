@@ -1,0 +1,48 @@
+{
+  "verifiedAt": "2026-11-06T02:53:28Z",
+  "source": "Cloudflare GraphQL durableObjectsPeriodicGroups",
+  "namespaceId": "b7a05e64caac4a9dbd59df0956a89a5c",
+  "objectId": "41a873c240956b90a46ee917d48e494357fc8b7a202545ae12faaf993aaa1b36",
+  "agentId": "client_9a85273dc50939a5b36717c3ed80f8f45e1f0181",
+  "transport": "default SDK capability negotiation; eager WebSocket",
+  "idle": {
+    "startedAt": "2026-11-06T02:48:43.378Z",
+    "endedAt": "2026-11-06T02:51:43.380Z",
+    "elapsedMs": 180002,
+    "frames": 0,
+    "sameSocketReceivedWakeTurn": true
+  },
+  "query": {
+    "datetime_geq": "2026-11-06T02:48:00Z",
+    "datetime_lt": "2026-11-06T02:53:00Z"
+  },
+  "reportedBuckets": [
+    {
+      "datetimeMinute": "2026-11-06T02:48:00Z",
+      "activeTimeMicroseconds": 5830590,
+      "cpuTimeMicroseconds": 380332,
+      "durationGBSeconds": 0.74631552,
+      "inboundWebsocketMessages": 0,
+      "outboundWebsocketMessages": 12,
+      "exceededCpuErrors": 0,
+      "exceededMemoryErrors": 0,
+      "fatalInternalErrors": 0
+    },
+    {
+      "datetimeMinute": "2026-11-06T02:51:00Z",
+      "activeTimeMicroseconds": 15827924,
+      "cpuTimeMicroseconds": 357972,
+      "durationGBSeconds": 2.025974272,
+      "inboundWebsocketMessages": 0,
+      "outboundWebsocketMessages": 9,
+      "exceededCpuErrors": 0,
+      "exceededMemoryErrors": 0,
+      "fatalInternalErrors": 0
+    }
+  ],
+  "completeIdleMinutesWithoutReportedActivity": [
+    "2026-11-06T02:49:00Z",
+    "2026-11-06T02:50:00Z"
+  ],
+  "interpretation": "Both complete idle minute buckets have no reported duration, CPU, activity or messages. Active buckets before and after bracket the idle gap and confirm telemetry ingestion. Boundary minutes include setup, wake and deletion, so their duration cannot be attributed solely to idle time."
+}
