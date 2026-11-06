@@ -78,8 +78,8 @@ ignored files stay on the laptop. Commit before a run that matters, and before p
 tree you have not committed (untracked files too; `.gitignore` applies) as a temporary commit, which is enough for a
 build or a test of work in progress, and never sends secrets: changes to `.env*`, `.dev.vars*`, keys, `*.tfvars` or
 credentials files stay on the laptop even when nothing ignores them, and the run lists them. `scripts/sprite-test` is
-only this repo's configuration; the machinery is the shared core in the sprites skill
-(`~/.agents/skills/sprites/scripts/sprite-test-core.sh`), which camel-bots runs too. Options, leases, sync, retries and
+only this repo's configuration; the machinery is `scripts/sprite-test-core.sh`, a copy of the core camel-bots
+keeps too (change both). Options, leases, sync, retries and
 exit codes: `scripts/sprite-test --help`, the core's header and the `sprites-agent-runtime` skill.
 
 ## Where things are written down

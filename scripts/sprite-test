@@ -9,24 +9,15 @@
 #   scripts/sprite-test --help                            # every option and setting
 #   --contract-baselines                                  # (this repo) include validated local Node report caches
 #
-# This file is only camelRun's configuration. The machinery (leases, sync, Node 22, Docker, Postgres, the job) is the
-# shared core that ships with the sprites skill, at ~/.agents/skills/sprites/scripts/sprite-test-core.sh (or
-# SPRITE_TEST_CORE), the same one camel-bots' scripts/sprite-test runs. Each sprite keeps a checkout in ~/rt with
-# node_modules and the v8-exec build; a run gets a fresh Postgres 16 container (as .github/actions/test-postgres), and
-# Docker for the Workers backend's native container tests (backends/workers/README.md, "Docker on a sprite").
-core=${SPRITE_TEST_CORE:-$HOME/.agents/skills/sprites/scripts/sprite-test-core.sh}
-if [[ ! -r $core ]]; then
-  cat >&2 <<MISSING
-== scripts/sprite-test needs the shared sprite-test core, which ships with the sprites skill, and there is none at
-   $core.
-   Install the sprites skill at ~/.agents/skills/sprites (with ~/.claude/skills/sprites a symlink to it), copied from a
-   teammate's, or point SPRITE_TEST_CORE at a copy of sprite-test-core.sh. Then: scripts/sprite-test --check-core
-MISSING
-  exit 2
-fi
+# This file is only camelRun's configuration. The machinery (leases, sync, Node 22, Docker, Postgres, the job) is
+# scripts/sprite-test-core.sh next to it, the same core camel-bots keeps a copy of (keep the two the same). Each sprite
+# keeps a checkout in ~/rt with node_modules and the v8-exec build; a run gets a fresh Postgres 16 container (as
+# .github/actions/test-postgres), and Docker for the Workers backend's native container tests
+# (backends/workers/README.md, "Docker on a sprite").
+core=$(dirname "${BASH_SOURCE[0]}")/sprite-test-core.sh
 
-# The core features this configuration uses; an older core without one of them stops here (tests/sprite-test.test.ts
-# checks the same).
+# The core features this configuration uses; a core without one of them stops here (tests/sprite-test.test.ts checks
+# the same).
 sprite_requires="leases dirty-denylist shards artifacts targeted hooks docker postgres-docker node22 check-core"
 sprite_prefix=rt-pool- sprite_pool=42 sprite_shards=8 sprite_dir=rt
 sprite_keep="node_modules/ /sandbox/v8-exec/target/"

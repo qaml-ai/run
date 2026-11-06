@@ -32,10 +32,10 @@ touching your index, and never secrets (`.env*`, `.dev.vars*`, keys, `*.tfvars`,
 kept back). `SPRITE_SHARDS` sets the shards (default 8), `SPRITE_NAME` pins sprites, `SPRITE_POOL` the pool size
 (default 42); `scripts/sprite-test --help` lists the rest.
 
-`scripts/sprite-test` is only this repo's configuration: the machinery is the shared core in the sprites skill
-(`~/.agents/skills/sprites/scripts/sprite-test-core.sh`), which camel-bots runs too. Change the machinery there, for both
-repos; if this repo starts relying on a new core feature, name it in `sprite_requires`, so an older core stops with a
-clear error (`scripts/sprite-test --check-core`, and `tests/sprite-test.test.ts` where a core is installed).
+`scripts/sprite-test` is only this repo's configuration: the machinery is `scripts/sprite-test-core.sh`, and camel-bots
+keeps a copy of the same core at the same path. Change the machinery in both repos, keeping the copies the same;
+if this repo starts relying on a new core feature, name it in `sprite_requires`, so a core without it stops with a
+clear error (`scripts/sprite-test --check-core`, and `tests/sprite-test.test.ts`).
 
 Every pool sprite also has Docker with Buildx (set up once per sprite by the core), so the Workers
 backend's native container tests run there as on CI, `WORKERS_REQUIRE_DOCKER=1` included:
