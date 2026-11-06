@@ -41,7 +41,8 @@ import { releaseConfigurationWaitersImpl, configureRequestImpl, acceptConfigurat
 import { imageToolsImpl, sourceIdentityImpl, fileRequestIdImpl } from "./agent-attachments.ts";
 import { computerNamesImpl, refreshComputerToolsImpl, enabledToolsImpl, createDecisions, createModels, createHarness } from "./agent-tools.ts";
 import { agentSpendImpl, admitRequestImpl, endUserLimitImpl, requestUsageImpl, usageViewImpl, usageForRequestImpl, flushBillingImpl, createLimits } from "./agent-billing.ts";
-import { admitDelegateWakeImpl, receiveAgentMessageImpl, receiveAgentProgressImpl, hasBackgroundChildImpl, delegateImpl, createNotifications, createDelegation } from "./agent-delegation.ts";
+import { admitDelegateWakeImpl, receiveAgentMessageImpl, receiveAgentProgressImpl, hasBackgroundChildImpl, delegateImpl, createNotifications, createDelegation, createPiSubagents } from "./agent-delegation.ts";
+import type { PiSubagents } from "./pi-subagents.ts";
 import { replayedRequestImpl, requestResponseImpl, activityImpl, stateImpl, historyImpl, fetchImpl, fetchRequestImpl } from "./agent-http.ts";
 import { emitImpl, flushTerminalEventsImpl, recoverWatchersImpl, closeWatchersImpl, checkWatchersImpl, webSocketEventsImpl, negotiateAgentEventsImpl, restoreWebSocketsImpl, sendAttachedSocketImpl, closeBrowserSocketImpl, retireAttachedSocketImpl, webSocketMessageImpl, webSocketCloseImpl, webSocketErrorImpl, replayEventsImpl, runReplayImpl, eventsImpl } from "./agent-transport.ts";
 import { purgeAccountDataImpl, configImpl, scheduleToolsImpl, createScheduleImpl, armImpl, onStartImpl, restorePendingImpl, onJobImpl, wakeImpl } from "./agent-lifecycle.ts";
@@ -135,6 +136,9 @@ export class AgentRuntime extends AgentContext {
   notifications: DelegationNotifications = createNotifications.call(this);
 
   delegation: Delegation = createDelegation.call(this);
+
+  /** SPIKE (AGENT_PI_SUBAGENTS=1): subagents as Pi child conversations of this agent. Undefined when off. */
+  piSubagents: PiSubagents | undefined = createPiSubagents.call(this);
 
   decisions: ReturnType<typeof decisionService> = createDecisions.call(this);
 

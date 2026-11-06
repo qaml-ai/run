@@ -85,6 +85,8 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
       // invents EmailTags, ConfigurationSetName, or sender formatting for it.
       ...(env.AWS_ENDPOINT_URL_SESV2 && !env.MAIL_TEST_URL ? { MAIL_TEST_URL: new URL("/v2/email/outbound-emails", env.AWS_ENDPOINT_URL_SESV2).href } : {}),
       TEST_MODE: "1", TEST_MODEL: "1", MODEL: modelReference(configuredModel(env)),
+      // The Pi-owned subagents spike (backends/workers/docs/pi-owned-subagents.md), off unless the run sets it.
+      ...(process.env.AGENT_PI_SUBAGENTS ? { AGENT_PI_SUBAGENTS: process.env.AGENT_PI_SUBAGENTS } : {}),
       ...(options.failImageResizeOnce ? { TEST_IMAGE_RESIZE_FAILURE_ONCE: "1" } : {}),
       // An explicitly supplied gateway speaks the configured provider API.
       // The default fake responder speaks OpenAI completions for every model.

@@ -36,6 +36,7 @@ import { agentBuiltins } from "./agent-builtins.ts";
 import { writtenFile, presentedFile } from "./file-output.ts";
 import { selectAgentTools, wordedFileTools } from "./file-tool-selection.ts";
 import { Env } from "./agent-types.ts";
+import { delegationExtension } from "./agent-delegation.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
 
 export function createDecisions(this: AgentRuntime): ReturnType<typeof decisionService> {
@@ -83,7 +84,9 @@ export function createModels(this: AgentRuntime): ReturnType<typeof modelRuntime
       },
       // Pi batches its live document. Project the provider's individual deltas
       // through the same projection so short chunks remain observable.
-      onStreamEvent: async (event) => {
+      onStreamEvent: async (event, session) => {
+        // SPIKE: a Pi child conversation's stream is relayed as subagent events, never as the parent's own message.
+        if (this.piSubagents && await this.piSubagents.isChildSession(session)) return this.piSubagents.childEvent(session!, event);
         if (event.type === "error") {
           const conf = await this.config();
           const endpoints = (await keyServices(this.env)).tenants.modelEndpoints(conf.tenantId);
@@ -103,7 +106,8 @@ export function createModels(this: AgentRuntime): ReturnType<typeof modelRuntime
             },
           } });
       },
-      onDiscardedOutput: async (message) => {
+      onDiscardedOutput: async (message, session) => {
+        if (this.piSubagents && await this.piSubagents.isChildSession(session)) return;
         const run = await this.currentRun();
         await this.ctx.storage.put({ [`discarded-output:${run.id}`]: message, [`output-reminded:${run.id}`]: true });
         await this.projectMessage(run.id, message, true);
@@ -115,9 +119,11 @@ export function createModels(this: AgentRuntime): ReturnType<typeof modelRuntime
         const run = await this.currentRun();
         await this.emit({ type: "event", requestId: run.id, event: { type: "model_stream_stalled", ...stall } });
       },
-      beforeRequest: async () => {
+      beforeRequest: async (session) => {
         const stopped = await this.limits.check();
         if (stopped) throw new Error(stopped.error);
+        // SPIKE: a child's requests count against the parent run's limits; the root's context range is not theirs.
+        if (this.piSubagents && await this.piSubagents.isChildSession(session)) return;
         await assertContextRange(
           contextRangeLimit((this.env as Env & { AGENT_CONTEXT_RANGE_MAX_BYTES?: string }).AGENT_CONTEXT_RANGE_MAX_BYTES),
           await (await this.harness.pi()).root(BACKGROUND_CONTEXT),
@@ -210,8 +216,12 @@ export async function refreshComputerToolsImpl(this: AgentRuntime) {
 
 export async function enabledToolsImpl(this: AgentRuntime,
   config: AgentConfiguration) {
+    // SPIKE: the Pi subagents' child-only tools are installed with the agent's own; only children are given them.
+    const childOnly = this.piSubagents && config.type !== "subagent"
+      ? new Set(["report_progress", ...(config.builtins?.includes("agents") ? [] : ["send_message"])])
+      : undefined;
     return selectAgentTools(
-      this.availableTools,
+      childOnly ? this.availableTools.filter(tool => !childOnly.has(tool.name)) : this.availableTools,
       new Set(this.workspaceToolNames),
       config,
       await this.computerNames(),
@@ -245,6 +255,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
             const run = await this.currentRun();
             return { ...config, output: "params" in run ? run.params?.output : undefined } as never;
           },
+          this.piSubagents ? (input) => this.piSubagents!.childPrompt(input.read as never, input.conversationId) : undefined,
         ),
       );
       registry.install(senderExtension());
@@ -392,6 +403,12 @@ export function createHarness(this: AgentRuntime): PiHarness {
             callers: ["model"],
             replay: "safe",
             execute: async (args, api) => {
+              // SPIKE: a Pi child conversation answers in the schema its delegate call asked for.
+              const childSchema = await this.piSubagents?.outputSchema(api);
+              if (childSchema) {
+                if (!schemaAccepts(childSchema, args)) throw new Error('Validation failed for tool "final_output": arguments do not match the requested schema');
+                return { output: [{ type: "text", text: "Accepted." }], details: { output: args as JsonValue }, control: { terminate: true } };
+              }
               const run = await this.currentRun(api);
               const schema = (
                 "params" in run ? run.params?.output : undefined
@@ -411,14 +428,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
           },
         ],
       });
-      registry.install({
-        name: "camel.delegation",
-        tools: await this.delegation.toolsFor(
-          conf.config.delegate ?? {},
-          conf.config.builtins ?? [],
-          conf.config.type === "subagent",
-        ),
-      });
+      registry.install(await delegationExtension.call(this, conf.config));
       registry.install({
         name: "camel.linux",
         tools: [computerTool(this.env, this.ctx.id.toString())],

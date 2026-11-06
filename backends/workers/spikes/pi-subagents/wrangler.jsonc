@@ -1,0 +1,18 @@
+{
+  // Throwaway load spike. Deploy only under this script name, never over the pilot or production; delete it after
+  // the run (README.md). MODEL_URL is set at deploy time to the fake model's workers.dev URL.
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "camelrun-spike-pi-subagents",
+  "account_id": "85bbd288051330fb51ee1c86031a299b",
+  "main": "worker.ts",
+  "compatibility_date": "2026-11-05",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": { "enabled": true, "logs": { "enabled": true, "invocation_logs": true } },
+  "durable_objects": { "bindings": [{ "name": "LOAD", "class_name": "LoadAgent" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["LoadAgent"] }],
+  "vars": { "MODEL_URL": "https://invalid.test/v1" },
+  // The pilot's agent objects run with the same CPU limit.
+  "limits": { "cpu_ms": 30000 }
+}

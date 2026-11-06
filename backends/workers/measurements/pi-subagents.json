@@ -1,0 +1,6009 @@
+{
+ "date": "2026-11-06",
+ "what": "Pi-owned subagents: N child conversations in one agent Durable Object (and the middle ground: children in objects of their own), against a fake model streaming 50 tokens/s. See docs/pi-owned-subagents.md.",
+ "deployment": {
+  "scripts": [
+   "camelrun-spike-pi-subagents",
+   "camelrun-spike-pi-subagents-model"
+  ],
+  "account": "85bbd288051330fb51ee1c86031a299b",
+  "deleted": "2026-11-06T21:18Z, confirmed by the scripts API and workers.dev 404",
+  "cpu_ms": 30000,
+  "piDurable": "1.5.0"
+ },
+ "deployed": [
+  {
+   "name": "n1-ctx0-mw5fgiqj",
+   "n": 1,
+   "ctx": 0,
+   "remote": false,
+   "crashAt": null,
+   "wallMs": 47673,
+   "reset": false,
+   "pi": {
+    "toolResults": 1,
+    "toolErrors": 0,
+    "parentAnswered": true
+   },
+   "children": null,
+   "summary": {
+    "answered": 1,
+    "statuses": {
+     "done": 1
+    },
+    "errors": [],
+    "firstDeltaMs": {
+     "p50": 70,
+     "p95": 70,
+     "max": 70
+    },
+    "childDurationMs": {
+     "p50": 43314,
+     "p95": 43314,
+     "max": 43314
+    },
+    "streamLatencyMs": {
+     "samples": 2152,
+     "p50": 59,
+     "p95": 100,
+     "p99": 100,
+     "max": 100
+    },
+    "loopLagMs": {
+     "samples": 472,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0,
+     "max": 0
+    },
+    "sqlStatements": 832,
+    "parentDoneMs": 43656,
+    "maxStreaming": 1,
+    "reports": []
+   },
+   "databaseBytes": 155648,
+   "tail": {
+    "events": 11,
+    "outcomes": {
+     "ok": 11
+    },
+    "byKind": {
+     "fetch": {
+      "count": 11,
+      "cpuMs": 1812,
+      "maxCpuMs": 436,
+      "maxWallMs": 852862
+     }
+    },
+    "cpuMs": 1812,
+    "cpuUsPerDelta": 839.3
+   },
+   "concurrency": [
+    [
+     1000,
+     1,
+     1
+    ],
+    [
+     6000,
+     1,
+     1
+    ],
+    [
+     11000,
+     1,
+     1
+    ],
+    [
+     16000,
+     1,
+     1
+    ],
+    [
+     21000,
+     1,
+     1
+    ],
+    [
+     26000,
+     1,
+     1
+    ],
+    [
+     31000,
+     1,
+     1
+    ],
+    [
+     36000,
+     1,
+     1
+    ],
+    [
+     41000,
+     1,
+     1
+    ],
+    [
+     46000,
+     0,
+     0
+    ]
+   ]
+  },
+  {
+   "name": "n5-ctx0-mw5fhjis",
+   "n": 5,
+   "ctx": 0,
+   "remote": false,
+   "crashAt": null,
+   "wallMs": 47521,
+   "reset": false,
+   "pi": {
+    "toolResults": 5,
+    "toolErrors": 0,
+    "parentAnswered": true
+   },
+   "children": null,
+   "summary": {
+    "answered": 5,
+    "statuses": {
+     "done": 5
+    },
+    "errors": [],
+    "firstDeltaMs": {
+     "p50": 30,
+     "p95": 50,
+     "max": 50
+    },
+    "childDurationMs": {
+     "p50": 43369,
+     "p95": 43371,
+     "max": 43371
+    },
+    "streamLatencyMs": {
+     "samples": 10747,
+     "p50": 59,
+     "p95": 100,
+     "p99": 100,
+     "max": 100
+    },
+    "loopLagMs": {
+     "samples": 470,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0,
+     "max": 0
+    },
+    "sqlStatements": 2969,
+    "parentDoneMs": 43670,
+    "maxStreaming": 5,
+    "reports": []
+   },
+   "databaseBytes": 258048,
+   "tail": {
+    "events": 13,
+    "outcomes": {
+     "ok": 13
+    },
+    "byKind": {
+     "fetch": {
+      "count": 13,
+      "cpuMs": 8133,
+      "maxCpuMs": 1381,
+      "maxWallMs": 852982
+     }
+    },
+    "cpuMs": 8133,
+    "cpuUsPerDelta": 754.8
+   },
+   "concurrency": [
+    [
+     1000,
+     5,
+     5
+    ],
+    [
+     6000,
+     5,
+     5
+    ],
+    [
+     11000,
+     5,
+     5
+    ],
+    [
+     16000,
+     5,
+     5
+    ],
+    [
+     21000,
+     5,
+     5
+    ],
+    [
+     26000,
+     5,
+     5
+    ],
+    [
+     31000,
+     5,
+     5
+    ],
+    [
+     36000,
+     5,
+     5
+    ],
+    [
+     41000,
+     5,
+     5
+    ],
+    [
+     46000,
+     0,
+     0
+    ]
+   ]
+  },
+  {
+   "name": "n10-ctx0-mw5fik6u",
+   "n": 10,
+   "ctx": 0,
+   "remote": false,
+   "crashAt": null,
+   "wallMs": 88796,
+   "reset": false,
+   "pi": {
+    "toolResults": 10,
+    "toolErrors": 0,
+    "parentAnswered": true
+   },
+   "children": null,
+   "summary": {
+    "answered": 10,
+    "statuses": {
+     "done": 10
+    },
+    "errors": [],
+    "firstDeltaMs": {
+     "p50": 40,
+     "p95": 994,
+     "max": 994
+    },
+    "childDurationMs": {
+     "p50": 44094,
+     "p95": 83379,
+     "max": 83379
+    },
+    "streamLatencyMs": {
+     "samples": 10753,
+     "p50": 59,
+     "p95": 100,
+     "p99": 100,
+     "max": 100
+    },
+    "loopLagMs": {
+     "samples": 884,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0,
+     "max": 0
+    },
+    "sqlStatements": 5705,
+    "parentDoneMs": 83632,
+    "maxStreaming": 9,
+    "reports": []
+   },
+   "databaseBytes": 376832,
+   "tail": {
+    "events": 22,
+    "outcomes": {
+     "ok": 22
+    },
+    "byKind": {
+     "fetch": {
+      "count": 21,
+      "cpuMs": 9369,
+      "maxCpuMs": 1280,
+      "maxWallMs": 852982
+     },
+     "alarm": {
+      "count": 1,
+      "cpuMs": 92,
+      "maxCpuMs": 92,
+      "maxWallMs": 2318
+     }
+    },
+    "cpuMs": 9461,
+    "cpuUsPerDelta": 439.1
+   },
+   "concurrency": [
+    [
+     1000,
+     10,
+     8
+    ],
+    [
+     6000,
+     10,
+     8
+    ],
+    [
+     11000,
+     10,
+     8
+    ],
+    [
+     16000,
+     10,
+     8
+    ],
+    [
+     21000,
+     10,
+     8
+    ],
+    [
+     26000,
+     10,
+     8
+    ],
+    [
+     31000,
+     10,
+     8
+    ],
+    [
+     36000,
+     10,
+     8
+    ],
+    [
+     41000,
+     10,
+     8
+    ],
+    [
+     46000,
+     2,
+     2
+    ],
+    [
+     51000,
+     2,
+     2
+    ],
+    [
+     56000,
+     2,
+     2
+    ],
+    [
+     61000,
+     2,
+     2
+    ],
+    [
+     66000,
+     2,
+     2
+    ],
+    [
+     71000,
+     2,
+     2
+    ],
+    [
+     76000,
+     2,
+     2
+    ],
+    [
+     81000,
+     2,
+     2
+    ],
+    [
+     86000,
+     0,
+     0
+    ]
+   ]
+  },
+  {
+   "name": "n25-ctx0-mw5fkgpe",
+   "n": 25,
+   "ctx": 0,
+   "remote": false,
+   "crashAt": null,
+   "wallMs": 129869,
+   "reset": false,
+   "pi": {
+    "toolResults": 25,
+    "toolErrors": 0,
+    "parentAnswered": true
+   },
+   "children": null,
+   "summary": {
+    "answered": 25,
+    "statuses": {
+     "done": 25
+    },
+    "errors": [],
+    "firstDeltaMs": {
+     "p50": 1158,
+     "p95": 3167,
+     "max": 3167
+    },
+    "childDurationMs": {
+     "p50": 87325,
+     "p95": 127419,
+     "max": 127420
+    },
+    "streamLatencyMs": {
+     "samples": 10746,
+     "p50": 59,
+     "p95": 100,
+     "p99": 100,
+     "max": 107
+    },
+    "loopLagMs": {
+     "samples": 1294,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0,
+     "max": 16
+    },
+    "sqlStatements": 13902,
+    "parentDoneMs": 127853,
+    "maxStreaming": 19,
+    "reports": []
+   },
+   "databaseBytes": 774144,
+   "tail": {
+    "events": 31,
+    "outcomes": {
+     "ok": 31
+    },
+    "byKind": {
+     "fetch": {
+      "count": 29,
+      "cpuMs": 20145,
+      "maxCpuMs": 1513,
+      "maxWallMs": 811660
+     },
+     "alarm": {
+      "count": 2,
+      "cpuMs": 954,
+      "maxCpuMs": 567,
+      "maxWallMs": 4323
+     }
+    },
+    "cpuMs": 21099,
+    "cpuUsPerDelta": 391.8
+   },
+   "concurrency": [
+    [
+     1016,
+     25,
+     8
+    ],
+    [
+     6016,
+     25,
+     16
+    ],
+    [
+     11016,
+     25,
+     8
+    ],
+    [
+     16016,
+     25,
+     8
+    ],
+    [
+     21016,
+     25,
+     8
+    ],
+    [
+     26016,
+     25,
+     8
+    ],
+    [
+     31016,
+     25,
+     8
+    ],
+    [
+     36016,
+     25,
+     8
+    ],
+    [
+     41016,
+     25,
+     8
+    ],
+    [
+     46016,
+     25,
+     8
+    ],
+    [
+     51016,
+     17,
+     11
+    ],
+    [
+     56016,
+     17,
+     11
+    ],
+    [
+     61016,
+     17,
+     11
+    ],
+    [
+     66016,
+     17,
+     11
+    ],
+    [
+     71016,
+     17,
+     11
+    ],
+    [
+     76016,
+     17,
+     11
+    ],
+    [
+     81016,
+     17,
+     11
+    ],
+    [
+     86016,
+     17,
+     11
+    ],
+    [
+     91016,
+     6,
+     6
+    ],
+    [
+     96016,
+     6,
+     6
+    ],
+    [
+     101016,
+     6,
+     6
+    ],
+    [
+     106016,
+     6,
+     6
+    ],
+    [
+     111016,
+     6,
+     6
+    ],
+    [
+     116016,
+     6,
+     6
+    ],
+    [
+     121016,
+     6,
+     6
+    ],
+    [
+     126016,
+     6,
+     6
+    ]
+   ]
+  },
+  {
+   "name": "n50-ctx0-mw5fn8wv",
+   "n": 50,
+   "ctx": 0,
+   "remote": false,
+   "crashAt": null,
+   "wallMs": 176987,
+   "reset": false,
+   "pi": {
+    "toolResults": 50,
+    "toolErrors": 0,
+    "parentAnswered": true
+   },
+   "children": null,
+   "summary": {
+    "answered": 50,
+    "statuses": {
+     "done": 50
+    },
+    "errors": [],
+    "firstDeltaMs": {
+     "p50": 3167,
+     "p95": 5190,
+     "max": 5786
+    },
+    "childDurationMs": {
+     "p50": 92301,
+     "p95": 172873,
+     "max": 173924
+    },
+    "streamLatencyMs": {
+     "samples": 10748,
+     "p50": 57,
+     "p95": 100,
+     "p99": 164,
+     "max": 1518
+    },
+    "loopLagMs": {
+     "samples": 1737,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0,
+     "max": 1463
+    },
+    "sqlStatements": 27720,
+    "parentDoneMs": 174295,
+    "maxStreaming": 22,
+    "reports": []
+   },
+   "databaseBytes": 1445888,
+   "tail": {
+    "events": 40,
+    "outcomes": {
+     "ok": 40
+    },
+    "byKind": {
+     "fetch": {
+      "count": 38,
+      "cpuMs": 59118,
+      "maxCpuMs": 3297,
+      "maxWallMs": 770472
+     },
+     "alarm": {
+      "count": 2,
+      "cpuMs": 2069,
+      "maxCpuMs": 1096,
+      "maxWallMs": 4472
+     }
+    },
+    "cpuMs": 61187,
+    "cpuUsPerDelta": 568.1
+   },
+   "concurrency": [
+    [
+     1071,
+     50,
+     8
+    ],
+    [
+     6109,
+     50,
+     16
+    ],
+    [
+     12710,
+     50,
+     16
+    ],
+    [
+     17710,
+     50,
+     16
+    ],
+    [
+     22710,
+     50,
+     16
+    ],
+    [
+     27710,
+     50,
+     16
+    ],
+    [
+     32710,
+     50,
+     16
+    ],
+    [
+     37710,
+     50,
+     16
+    ],
+    [
+     42710,
+     50,
+     16
+    ],
+    [
+     47710,
+     50,
+     16
+    ],
+    [
+     53754,
+     35,
+     18
+    ],
+    [
+     58754,
+     34,
+     18
+    ],
+    [
+     63754,
+     34,
+     18
+    ],
+    [
+     68754,
+     34,
+     18
+    ],
+    [
+     73754,
+     34,
+     18
+    ],
+    [
+     78754,
+     34,
+     18
+    ],
+    [
+     83760,
+     34,
+     18
+    ],
+    [
+     88760,
+     34,
+     18
+    ],
+    [
+     93760,
+     17,
+     9
+    ],
+    [
+     98760,
+     16,
+     8
+    ],
+    [
+     103760,
+     16,
+     8
+    ],
+    [
+     108760,
+     16,
+     8
+    ],
+    [
+     113760,
+     16,
+     8
+    ],
+    [
+     118760,
+     16,
+     8
+    ],
+    [
+     123760,
+     16,
+     8
+    ],
+    [
+     128760,
+     16,
+     8
+    ],
+    [
+     133760,
+     9,
+     8
+    ],
+    [
+     138760,
+     8,
+     8
+    ],
+    [
+     143760,
+     8,
+     8
+    ],
+    [
+     148760,
+     8,
+     8
+    ],
+    [
+     153760,
+     8,
+     8
+    ],
+    [
+     158760,
+     8,
+     8
+    ],
+    [
+     163760,
+     8,
+     8
+    ],
+    [
+     168760,
+     8,
+     8
+    ],
+    [
+     173760,
+     1,
+     1
+    ]
+   ]
+  },
+  {
+   "name": "n100-ctx0-mw5fr1h7",
+   "n": 100,
+   "ctx": 0,
+   "remote": false,
+   "crashAt": null,
+   "wallMs": 218711,
+   "reset": false,
+   "pi": {
+    "toolResults": 100,
+    "toolErrors": 0,
+    "parentAnswered": true
+   },
+   "children": null,
+   "summary": {
+    "answered": 100,
+    "statuses": {
+     "done": 100
+    },
+    "errors": [],
+    "firstDeltaMs": {
+     "p50": 6345,
+     "p95": 11053,
+     "max": 11934
+    },
+    "childDurationMs": {
+     "p50": 85036,
+     "p95": 173790,
+     "max": 212894
+    },
+    "streamLatencyMs": {
+     "samples": 10739,
+     "p50": 58,
+     "p95": 100,
+     "p99": 100,
+     "max": 1425
+    },
+    "loopLagMs": {
+     "samples": 2136,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0,
+     "max": 1305
+    },
+    "sqlStatements": 53707,
+    "parentDoneMs": 213223,
+    "maxStreaming": 55,
+    "reports": []
+   },
+   "databaseBytes": 2760704,
+   "tail": {
+    "events": 48,
+    "outcomes": {
+     "ok": 48
+    },
+    "byKind": {
+     "fetch": {
+      "count": 45,
+      "cpuMs": 61417,
+      "maxCpuMs": 3577,
+      "maxWallMs": 723468
+     },
+     "alarm": {
+      "count": 3,
+      "cpuMs": 2701,
+      "maxCpuMs": 1569,
+      "maxWallMs": 4562
+     }
+    },
+    "cpuMs": 64118,
+    "cpuUsPerDelta": 297.7
+   },
+   "concurrency": [
+    [
+     1011,
+     100,
+     8
+    ],
+    [
+     6011,
+     100,
+     16
+    ],
+    [
+     11023,
+     100,
+     24
+    ],
+    [
+     16092,
+     100,
+     28
+    ],
+    [
+     21098,
+     100,
+     27
+    ],
+    [
+     26098,
+     100,
+     33
+    ],
+    [
+     31098,
+     100,
+     38
+    ],
+    [
+     36098,
+     100,
+     43
+    ],
+    [
+     41098,
+     100,
+     48
+    ],
+    [
+     46098,
+     100,
+     51
+    ],
+    [
+     54439,
+     86,
+     47
+    ],
+    [
+     60715,
+     77,
+     51
+    ],
+    [
+     65715,
+     68,
+     42
+    ],
+    [
+     70715,
+     63,
+     37
+    ],
+    [
+     75715,
+     59,
+     33
+    ],
+    [
+     80715,
+     55,
+     29
+    ],
+    [
+     85715,
+     49,
+     23
+    ],
+    [
+     90715,
+     49,
+     23
+    ],
+    [
+     95715,
+     39,
+     21
+    ],
+    [
+     100715,
+     27,
+     18
+    ],
+    [
+     105715,
+     26,
+     17
+    ],
+    [
+     110715,
+     26,
+     17
+    ],
+    [
+     115715,
+     26,
+     17
+    ],
+    [
+     120715,
+     26,
+     17
+    ],
+    [
+     125715,
+     26,
+     17
+    ],
+    [
+     130715,
+     26,
+     17
+    ],
+    [
+     135715,
+     18,
+     17
+    ],
+    [
+     140715,
+     9,
+     8
+    ],
+    [
+     145715,
+     9,
+     8
+    ],
+    [
+     150715,
+     9,
+     8
+    ],
+    [
+     155715,
+     9,
+     8
+    ],
+    [
+     160715,
+     9,
+     8
+    ],
+    [
+     165715,
+     9,
+     8
+    ],
+    [
+     170715,
+     9,
+     8
+    ],
+    [
+     175715,
+     1,
+     1
+    ],
+    [
+     180715,
+     1,
+     1
+    ],
+    [
+     185715,
+     1,
+     1
+    ],
+    [
+     190715,
+     1,
+     1
+    ],
+    [
+     195715,
+     1,
+     1
+    ],
+    [
+     200715,
+     1,
+     1
+    ],
+    [
+     205715,
+     1,
+     1
+    ],
+    [
+     210715,
+     1,
+     1
+    ],
+    [
+     215715,
+     0,
+     0
+    ]
+   ]
+  },
+  {
+   "name": "n1-ctx100000-mw5fvq9x",
+   "n": 1,
+   "ctx": 100000,
+   "remote": false,
+   "crashAt": null,
+   "wallMs": 47351,
+   "reset": false,
+   "pi": {
+    "toolResults": 1,
+    "toolErrors": 0,
+    "parentAnswered": true
+   },
+   "children": null,
+   "summary": {
+    "answered": 1,
+    "statuses": {
+     "done": 1
+    },
+    "errors": [],
+    "firstDeltaMs": {
+     "p50": 125,
+     "p95": 125,
+     "max": 125
+    },
+    "childDurationMs": {
+     "p50": 43337,
+     "p95": 43337,
+     "max": 43337
+    },
+    "streamLatencyMs": {
+     "samples": 2149,
+     "p50": 59,
+     "p95": 100,
+     "p99": 100,
+     "max": 100
+    },
+    "loopLagMs": {
+     "samples": 469,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0,
+     "max": 0
+    },
+    "sqlStatements": 832,
+    "parentDoneMs": 43697,
+    "maxStreaming": 1,
+    "reports": []
+   },
+   "databaseBytes": 557056,
+   "tail": {
+    "events": 11,
+    "outcomes": {
+     "ok": 11
+    },
+    "byKind": {
+     "fetch": {
+      "count": 11,
+      "cpuMs": 1279,
+      "maxCpuMs": 268,
+      "maxWallMs": 5374
+     }
+    },
+    "cpuMs": 1279,
+    "cpuUsPerDelta": 592.4
+   },
+   "concurrency": [
+    [
+     1000,
+     1,
+     1
+    ],
+    [
+     6000,
+     1,
+     1
+    ],
+    [
+     11000,
+     1,
+     1
+    ],
+    [
+     16000,
+     1,
+     1
+    ],
+    [
+     21000,
+     1,
+     1
+    ],
+    [
+     26000,
+     1,
+     1
+    ],
+    [
+     31000,
+     1,
+     1
+    ],
+    [
+     36000,
+     1,
+     1
+    ],
+    [
+     41000,
+     1,
+     1
+    ],
+    [
+     46000,
+     0,
+     0
+    ]
+   ]
+  },
+  {
+   "name": "n5-ctx100000-mw5fwqt9",
+   "n": 5,
+   "ctx": 100000,
+   "remote": false,
+   "crashAt": null,
+   "wallMs": 47320,
+   "reset": false,
+   "pi": {
+    "toolResults": 5,
+    "toolErrors": 0,
+    "parentAnswered": true
+   },
+   "children": null,
+   "summary": {
+    "answered": 5,
+    "statuses": {
+     "done": 5
+    },
+    "errors": [],
+    "firstDeltaMs": {
+     "p50": 71,
+     "p95": 91,
+     "max": 91
+    },
+    "childDurationMs": {
+     "p50": 43705,
+     "p95": 43705,
+     "max": 43705
+    },
+    "streamLatencyMs": {
+     "samples": 10747,
+     "p50": 59,
+     "p95": 100,
+     "p99": 100,
+     "max": 100
+    },
+    "loopLagMs": {
+     "samples": 468,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0,
+     "max": 0
+    },
+    "sqlStatements": 2969,
+    "parentDoneMs": 44028,
+    "maxStreaming": 5,
+    "reports": []
+   },
+   "databaseBytes": 2269184,
+   "tail": {
+    "events": 11,
+    "outcomes": {
+     "ok": 11
+    },
+    "byKind": {
+     "fetch": {
+      "count": 11,
+      "cpuMs": 7522,
+      "maxCpuMs": 1693,
+      "maxWallMs": 5357
+     }
+    },
+    "cpuMs": 7522,
+    "cpuUsPerDelta": 698.1
+   },
+   "concurrency": [
+    [
+     1000,
+     5,
+     5
+    ],
+    [
+     6000,
+     5,
+     5
+    ],
+    [
+     11000,
+     5,
+     5
+    ],
+    [
+     16000,
+     5,
+     5
+    ],
+    [
+     21000,
+     5,
+     5
+    ],
+    [
+     26000,
+     5,
+     5
+    ],
+    [
+     31000,
+     5,
+     5
+    ],
+    [
+     36000,
+     5,
+     5
+    ],
+    [
+     41000,
+     5,
+     5
+    ],
+    [
+     46000,
+     0,
+     0
+    ]
+   ]
+  },
+  {
+   "name": "n10-ctx100000-mw5fxrbp",
+   "n": 10,
+   "ctx": 100000,
+   "remote": false,
+   "crashAt": null,
+   "wallMs": 47188,
+   "reset": false,
+   "pi": {
+    "toolResults": 10,
+    "toolErrors": 2,
+    "parentAnswered": true
+   },
+   "children": null,
+   "summary": {
+    "answered": 10,
+    "statuses": {
+     "done": 8,
+     "unanswered:model_error": 2
+    },
+    "errors": [],
+    "firstDeltaMs": {
+     "p50": 60,
+     "p95": 1078,
+     "max": 1078
+    },
+    "childDurationMs": {
+     "p50": 44098,
+     "p95": 44308,
+     "max": 44308
+    },
+    "streamLatencyMs": {
+     "samples": 6750,
+     "p50": 59,
+     "p95": 100,
+     "p99": 100,
+     "max": 100
+    },
+    "loopLagMs": {
+     "samples": 468,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0,
+     "max": 0
+    },
+    "sqlStatements": 5253,
+    "parentDoneMs": 44574,
+    "maxStreaming": 9,
+    "reports": []
+   },
+   "databaseBytes": 4370432,
+   "tail": {
+    "events": 11,
+    "outcomes": {
+     "ok": 11
+    },
+    "byKind": {
+     "fetch": {
+      "count": 11,
+      "cpuMs": 7605,
+      "maxCpuMs": 1423,
+      "maxWallMs": 5455
+     }
+    },
+    "cpuMs": 7605,
+    "cpuUsPerDelta": 433.5
+   },
+   "concurrency": [
+    [
+     1000,
+     10,
+     8
+    ],
+    [
+     6000,
+     10,
+     8
+    ],
+    [
+     11000,
+     10,
+     8
+    ],
+    [
+     16000,
+     10,
+     8
+    ],
+    [
+     21000,
+     10,
+     8
+    ],
+    [
+     26000,
+     10,
+     8
+    ],
+    [
+     31000,
+     10,
+     8
+    ],
+    [
+     36000,
+     10,
+     8
+    ],
+    [
+     41000,
+     8,
+     8
+    ],
+    [
+     46000,
+     0,
+     0
+    ]
+   ]
+  },
+  {
+   "name": "n25-ctx100000-mw5fyrqh",
+   "n": 25,
+   "ctx": 100000,
+   "remote": false,
+   "crashAt": null,
+   "wallMs": 94056,
+   "reset": false,
+   "pi": {
+    "toolResults": 25,
+    "toolErrors": 8,
+    "parentAnswered": true
+   },
+   "children": null,
+   "summary": {
+    "answered": 25,
+    "statuses": {
+     "unanswered:model_error": 8,
+     "done": 17
+    },
+    "errors": [],
+    "firstDeltaMs": {
+     "p50": 1210,
+     "p95": 2087,
+     "max": 2823
+    },
+    "childDurationMs": {
+     "p50": 48657,
+     "p95": 88821,
+     "max": 88836
+    },
+    "streamLatencyMs": {
+     "samples": 4608,
+     "p50": 57,
+     "p95": 100,
+     "p99": 100,
+     "max": 1268
+    },
+    "loopLagMs": {
+     "samples": 922,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0,
+     "max": 1193
+    },
+    "sqlStatements": 12118,
+    "parentDoneMs": 89160,
+    "maxStreaming": 17,
+    "reports": []
+   },
+   "databaseBytes": 10719232,
+   "tail": {
+    "events": 21,
+    "outcomes": {
+     "ok": 21
+    },
+    "byKind": {
+     "fetch": {
+      "count": 20,
+      "cpuMs": 24460,
+      "maxCpuMs": 2980,
+      "maxWallMs": 5323
+     },
+     "alarm": {
+      "count": 1,
+      "cpuMs": 666,
+      "maxCpuMs": 666,
+      "maxWallMs": 2325
+     }
+    },
+    "cpuMs": 25126,
+    "cpuUsPerDelta": 666.4
+   },
+   "concurrency": [
+    [
+     1078,
+     25,
+     8
+    ],
+    [
+     7393,
+     25,
+     14
+    ],
+    [
+     12432,
+     25,
+     8
+    ],
+    [
+     17432,
+     25,
+     8
+    ],
+    [
+     22432,
+     25,
+     8
+    ],
+    [
+     27432,
+     25,
+     8
+    ],
+    [
+     32432,
+     25,
+     8
+    ],
+    [
+     37432,
+     25,
+     8
+    ],
+    [
+     42432,
+     19,
+     8
+    ],
+    [
+     47432,
+     16,
+     8
+    ],
+    [
+     52432,
+     11,
+     9
+    ],
+    [
+     57432,
+     11,
+     9
+    ],
+    [
+     62432,
+     11,
+     9
+    ],
+    [
+     67432,
+     11,
+     9
+    ],
+    [
+     72432,
+     11,
+     9
+    ],
+    [
+     77432,
+     11,
+     9
+    ],
+    [
+     82432,
+     9,
+     9
+    ],
+    [
+     87432,
+     7,
+     7
+    ],
+    [
+     92432,
+     0,
+     0
+    ]
+   ]
+  },
+  {
+   "name": "n50-ctx100000-mw5g0sb5",
+   "n": 50,
+   "ctx": 100000,
+   "remote": false,
+   "crashAt": null,
+   "wallMs": 99769,
+   "reset": false,
+   "pi": {
+    "toolResults": 50,
+    "toolErrors": 14,
+    "parentAnswered": true
+   },
+   "children": null,
+   "summary": {
+    "answered": 50,
+    "statuses": {
+     "done": 36,
+     "unanswered:model_error": 14
+    },
+    "errors": [],
+    "firstDeltaMs": {
+     "p50": 3403,
+     "p95": 6340,
+     "max": 6356
+    },
+    "childDurationMs": {
+     "p50": 52483,
+     "p95": 92833,
+     "max": 93696
+    },
+    "streamLatencyMs": {
+     "samples": 8699,
+     "p50": 57,
+     "p95": 100,
+     "p99": 100,
+     "max": 170
+    },
+    "loopLagMs": {
+     "samples": 993,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0,
+     "max": 32
+    },
+    "sqlStatements": 24447,
+    "parentDoneMs": 93976,
+    "maxStreaming": 20,
+    "reports": []
+   },
+   "databaseBytes": 21360640,
+   "tail": {
+    "events": 22,
+    "outcomes": {
+     "ok": 22
+    },
+    "byKind": {
+     "fetch": {
+      "count": 21,
+      "cpuMs": 26508,
+      "maxCpuMs": 2230,
+      "maxWallMs": 5368
+     },
+     "alarm": {
+      "count": 1,
+      "cpuMs": 909,
+      "maxCpuMs": 909,
+      "maxWallMs": 3045
+     }
+    },
+    "cpuMs": 27417,
+    "cpuUsPerDelta": 345.1
+   },
+   "concurrency": [
+    [
+     1027,
+     50,
+     8
+    ],
+    [
+     6027,
+     50,
+     16
+    ],
+    [
+     11059,
+     50,
+     18
+    ],
+    [
+     16065,
+     50,
+     16
+    ],
+    [
+     21065,
+     50,
+     16
+    ],
+    [
+     26065,
+     50,
+     16
+    ],
+    [
+     31065,
+     50,
+     16
+    ],
+    [
+     36065,
+     50,
+     16
+    ],
+    [
+     41065,
+     50,
+     16
+    ],
+    [
+     46065,
+     39,
+     16
+    ],
+    [
+     51065,
+     36,
+     18
+    ],
+    [
+     56065,
+     22,
+     20
+    ],
+    [
+     61065,
+     22,
+     20
+    ],
+    [
+     66065,
+     22,
+     20
+    ],
+    [
+     71065,
+     22,
+     20
+    ],
+    [
+     76065,
+     22,
+     20
+    ],
+    [
+     81065,
+     22,
+     20
+    ],
+    [
+     86065,
+     20,
+     20
+    ],
+    [
+     91065,
+     18,
+     18
+    ],
+    [
+     96065,
+     0,
+     0
+    ]
+   ]
+  },
+  {
+   "name": "n100-ctx100000-mw5g2xaj",
+   "n": 100,
+   "ctx": 100000,
+   "remote": false,
+   "crashAt": null,
+   "wallMs": 140766,
+   "reset": false,
+   "pi": {
+    "toolResults": 100,
+    "toolErrors": 35,
+    "parentAnswered": true
+   },
+   "children": null,
+   "summary": {
+    "answered": 100,
+    "statuses": {
+     "unanswered:model_error": 35,
+     "done": 65
+    },
+    "errors": [],
+    "firstDeltaMs": {
+     "p50": 6511,
+     "p95": 12138,
+     "max": 12569
+    },
+    "childDurationMs": {
+     "p50": 91320,
+     "p95": 134029,
+     "max": 136894
+    },
+    "streamLatencyMs": {
+     "samples": 4759,
+     "p50": 54,
+     "p95": 100,
+     "p99": 849,
+     "max": 897
+    },
+    "loopLagMs": {
+     "samples": 1327,
+     "p50": 0,
+     "p95": 0,
+     "p99": 14,
+     "max": 1734
+    },
+    "sqlStatements": 45445,
+    "parentDoneMs": 137155,
+    "maxStreaming": 36,
+    "reports": []
+   },
+   "databaseBytes": 42438656,
+   "tail": {
+    "events": 31,
+    "outcomes": {
+     "ok": 31
+    },
+    "byKind": {
+     "fetch": {
+      "count": 29,
+      "cpuMs": 60980,
+      "maxCpuMs": 4305,
+      "maxWallMs": 5286
+     },
+     "alarm": {
+      "count": 2,
+      "cpuMs": 2289,
+      "maxCpuMs": 1210,
+      "maxWallMs": 4720
+     }
+    },
+    "cpuMs": 63269,
+    "cpuUsPerDelta": 438.8
+   },
+   "concurrency": [
+    [
+     1489,
+     100,
+     8
+    ],
+    [
+     6489,
+     100,
+     16
+    ],
+    [
+     17846,
+     100,
+     24
+    ],
+    [
+     22847,
+     100,
+     24
+    ],
+    [
+     27847,
+     100,
+     24
+    ],
+    [
+     32847,
+     100,
+     24
+    ],
+    [
+     37847,
+     100,
+     24
+    ],
+    [
+     42847,
+     100,
+     24
+    ],
+    [
+     47847,
+     91,
+     24
+    ],
+    [
+     52850,
+     69,
+     25
+    ],
+    [
+     57852,
+     61,
+     28
+    ],
+    [
+     62852,
+     58,
+     28
+    ],
+    [
+     67852,
+     58,
+     28
+    ],
+    [
+     72852,
+     58,
+     28
+    ],
+    [
+     77852,
+     58,
+     28
+    ],
+    [
+     82852,
+     58,
+     28
+    ],
+    [
+     87852,
+     52,
+     28
+    ],
+    [
+     92852,
+     38,
+     31
+    ],
+    [
+     98697,
+     24,
+     19
+    ],
+    [
+     103697,
+     18,
+     13
+    ],
+    [
+     108697,
+     18,
+     13
+    ],
+    [
+     113697,
+     18,
+     13
+    ],
+    [
+     118697,
+     18,
+     13
+    ],
+    [
+     123697,
+     18,
+     13
+    ],
+    [
+     128697,
+     14,
+     13
+    ],
+    [
+     133697,
+     7,
+     7
+    ],
+    [
+     138697,
+     0,
+     0
+    ]
+   ]
+  },
+  {
+   "name": "r1-ctx0-mw5g5xxv",
+   "n": 1,
+   "ctx": 0,
+   "remote": true,
+   "crashAt": null,
+   "wallMs": 21347,
+   "reset": false,
+   "pi": {
+    "toolResults": 1,
+    "toolErrors": 1,
+    "parentAnswered": true
+   },
+   "children": {
+    "objects": 1,
+    "starts": 1,
+    "inputs": 1,
+    "duplicated": 0
+   },
+   "summary": {
+    "answered": 1,
+    "statuses": {
+     "faulted": 1
+    },
+    "errors": [],
+    "firstDeltaMs": {
+     "p50": null,
+     "p95": null,
+     "max": null
+    },
+    "childDurationMs": {
+     "p50": 20443,
+     "p95": 20443,
+     "max": 20443
+    },
+    "streamLatencyMs": {
+     "samples": 0,
+     "p50": null,
+     "p95": null,
+     "p99": null,
+     "max": null
+    },
+    "loopLagMs": {
+     "samples": 208,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0,
+     "max": 0
+    },
+    "sqlStatements": 263,
+    "parentDoneMs": 20721,
+    "maxStreaming": 1,
+    "reports": [
+     "task_faulted: Task spike.remote-child phase wait returned without durable progress"
+    ]
+   },
+   "databaseBytes": 131072,
+   "tail": {
+    "events": 9,
+    "outcomes": {
+     "ok": 9
+    },
+    "byKind": {
+     "fetch": {
+      "count": 6,
+      "cpuMs": 175,
+      "maxCpuMs": 131,
+      "maxWallMs": 5322
+     },
+     "rpc": {
+      "count": 3,
+      "cpuMs": 1130,
+      "maxCpuMs": 550,
+      "maxWallMs": 22895
+     }
+    },
+    "cpuMs": 1305,
+    "cpuUsPerDelta": 217500.0
+   },
+   "concurrency": [
+    [
+     1000,
+     0,
+     0
+    ],
+    [
+     6000,
+     0,
+     0
+    ],
+    [
+     11000,
+     0,
+     0
+    ],
+    [
+     16000,
+     0,
+     0
+    ]
+   ]
+  },
+  {
+   "name": "r10-ctx0-mw5g6eev",
+   "n": 10,
+   "ctx": 0,
+   "remote": true,
+   "crashAt": null,
+   "wallMs": 26384,
+   "reset": false,
+   "pi": {
+    "toolResults": 10,
+    "toolErrors": 10,
+    "parentAnswered": true
+   },
+   "children": {
+    "objects": 10,
+    "starts": 10,
+    "inputs": 10,
+    "duplicated": 0
+   },
+   "summary": {
+    "answered": 10,
+    "statuses": {
+     "faulted": 10
+    },
+    "errors": [],
+    "firstDeltaMs": {
+     "p50": null,
+     "p95": null,
+     "max": null
+    },
+    "childDurationMs": {
+     "p50": 20510,
+     "p95": 20731,
+     "max": 20731
+    },
+    "streamLatencyMs": {
+     "samples": 0,
+     "p50": null,
+     "p95": null,
+     "p99": null,
+     "max": null
+    },
+    "loopLagMs": {
+     "samples": 261,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0,
+     "max": 0
+    },
+    "sqlStatements": 681,
+    "parentDoneMs": 20934,
+    "maxStreaming": 1,
+    "reports": [
+     "task_faulted: Task spike.remote-child phase wait returned without durable progress",
+     "task_faulted: Task spike.remote-child phase wait returned without durable progress",
+     "task_faulted: Task spike.remote-child phase wait returned without durable progress",
+     "task_faulted: Task spike.remote-child phase wait returned without durable progress",
+     "task_faulted: Task spike.remote-child phase wait returned without durable progress",
+     "task_faulted: Task spike.remote-child phase wait returned without durable progress",
+     "task_faulted: Task spike.remote-child phase wait returned without durable progress",
+     "task_faulted: Task spike.remote-child phase wait returned without durable progress",
+     "task_faulted: Task spike.remote-child phase wait returned without durable progress",
+     "task_faulted: Task spike.remote-child phase wait returned without durable progress"
+    ]
+   },
+   "databaseBytes": 151552,
+   "tail": {
+    "events": 38,
+    "outcomes": {
+     "ok": 38
+    },
+    "byKind": {
+     "fetch": {
+      "count": 7,
+      "cpuMs": 303,
+      "maxCpuMs": 192,
+      "maxWallMs": 5253
+     },
+     "rpc": {
+      "count": 31,
+      "cpuMs": 15333,
+      "maxCpuMs": 1240,
+      "maxWallMs": 25682
+     }
+    },
+    "cpuMs": 15636,
+    "cpuUsPerDelta": 1042400.0
+   },
+   "concurrency": [
+    [
+     1000,
+     0,
+     0
+    ],
+    [
+     6000,
+     0,
+     0
+    ],
+    [
+     11000,
+     0,
+     0
+    ],
+    [
+     16000,
+     0,
+     0
+    ],
+    [
+     21000,
+     0,
+     0
+    ],
+    [
+     26000,
+     0,
+     0
+    ]
+   ]
+  },
+  {
+   "name": "r25-ctx0-mw5g6yrs",
+   "n": 25,
+   "ctx": 0,
+   "remote": true,
+   "crashAt": null,
+   "wallMs": 26343,
+   "reset": false,
+   "pi": {
+    "toolResults": 25,
+    "toolErrors": 25,
+    "parentAnswered": true
+   },
+   "children": {
+    "objects": 25,
+    "starts": 25,
+    "inputs": 25,
+    "duplicated": 0
+   },
+   "summary": {
+    "answered": 25,
+    "statuses": {
+     "faulted": 25
+    },
+    "errors": [],
+    "firstDeltaMs": {
+     "p50": null,
+     "p95": null,
+     "max": null
+    },
+    "childDurationMs": {
+     "p50": 20757,
+     "p95": 21003,
+     "max": 21004
+    },
+    "streamLatencyMs": {
+     "samples": 0,
+     "p50": null,
+     "p95": null,
+     "p99": null,
+     "max": null
+    },
+    "loopLagMs": {
+     "samples": 260,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0,
+     "max": 0
+    },
+    "sqlStatements": 1371,
+    "parentDoneMs": 21263,
+    "maxStreaming": 1,
+    "reports": [
+     "task_faulted: Task spike.remote-child phase wait returned without durable progress",
+     "task_faulted: Task spike.remote-child phase wait returned without durable progress",
+     "task_faulted: Task spike.remote-child phase wait returned without durable progress",
+     "task_faulted: Task spike.remote-child phase wait returned without durable progress",
+     "task_faulted: Task spike.remote-child phase wait returned without durable progress",
+     "task_faulted: Task spike.remote-child phase wait returned without durable progress",
+     "task_faulted: Task spike.remote-child phase wait returned without durable progress",
+     "task_faulted: Task spike.remote-child phase wait returned without durable progress",
+     "task_faulted: Task spike.remote-child phase wait returned without durable progress",
+     "task_faulted: Task spike.remote-child phase wait returned without durable progress"
+    ]
+   },
+   "databaseBytes": 176128,
+   "tail": {
+    "events": 76,
+    "outcomes": {
+     "ok": 76
+    },
+    "byKind": {
+     "fetch": {
+      "count": 6,
+      "cpuMs": 430,
+      "maxCpuMs": 270,
+      "maxWallMs": 5281
+     },
+     "rpc": {
+      "count": 70,
+      "cpuMs": 30342,
+      "maxCpuMs": 1101,
+      "maxWallMs": 25141
+     }
+    },
+    "cpuMs": 30772,
+    "cpuUsPerDelta": 1025733.3
+   },
+   "concurrency": [
+    [
+     1000,
+     0,
+     0
+    ],
+    [
+     6000,
+     0,
+     0
+    ],
+    [
+     11000,
+     0,
+     0
+    ],
+    [
+     16000,
+     0,
+     0
+    ],
+    [
+     21000,
+     0,
+     0
+    ],
+    [
+     26000,
+     0,
+     0
+    ]
+   ]
+  },
+  {
+   "name": "r100-ctx0-mw5g7j3j",
+   "n": 100,
+   "ctx": 0,
+   "remote": true,
+   "crashAt": null,
+   "wallMs": 26956,
+   "reset": false,
+   "pi": {
+    "toolResults": 100,
+    "toolErrors": 100,
+    "parentAnswered": true
+   },
+   "children": {
+    "objects": 100,
+    "starts": 100,
+    "inputs": 100,
+    "duplicated": 0
+   },
+   "summary": {
+    "answered": 100,
+    "statuses": {
+     "faulted": 100
+    },
+    "errors": [],
+    "firstDeltaMs": {
+     "p50": null,
+     "p95": null,
+     "max": null
+    },
+    "childDurationMs": {
+     "p50": 22988,
+     "p95": 22988,
+     "max": 23132
+    },
+    "streamLatencyMs": {
+     "samples": 0,
+     "p50": null,
+     "p95": null,
+     "p99": null,
+     "max": null
+    },
+    "loopLagMs": {
+     "samples": 263,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0,
+     "max": 23
+    },
+    "sqlStatements": 4821,
+    "parentDoneMs": 23638,
+    "maxStreaming": 1,
+    "reports": [
+     "task_faulted: Task spike.remote-child phase wait returned without durable progress",
+     "task_faulted: Task spike.remote-child phase wait returned without durable progress",
+     "task_faulted: Task spike.remote-child phase wait returned without durable progress",
+     "task_faulted: Task spike.remote-child phase wait returned without durable progress",
+     "task_faulted: Task spike.remote-child phase wait returned without durable progress",
+     "task_faulted: Task spike.remote-child phase wait returned without durable progress",
+     "task_faulted: Task spike.remote-child phase wait returned without durable progress",
+     "task_faulted: Task spike.remote-child phase wait returned without durable progress",
+     "task_faulted: Task spike.remote-child phase wait returned without durable progress",
+     "task_faulted: Task spike.remote-child phase wait returned without durable progress"
+    ]
+   },
+   "databaseBytes": 294912,
+   "tail": {
+    "events": 235,
+    "outcomes": {
+     "ok": 235
+    },
+    "byKind": {
+     "rpc": {
+      "count": 230,
+      "cpuMs": 104180,
+      "maxCpuMs": 1193,
+      "maxWallMs": 23090
+     },
+     "fetch": {
+      "count": 5,
+      "cpuMs": 1915,
+      "maxCpuMs": 982,
+      "maxWallMs": 5309
+     }
+    },
+    "cpuMs": 106095,
+    "cpuUsPerDelta": 1010428.6
+   },
+   "concurrency": [
+    [
+     1023,
+     0,
+     0
+    ],
+    [
+     6023,
+     0,
+     0
+    ],
+    [
+     11023,
+     0,
+     0
+    ],
+    [
+     16023,
+     0,
+     0
+    ],
+    [
+     21023,
+     0,
+     0
+    ],
+    [
+     26040,
+     0,
+     0
+    ]
+   ]
+  },
+  {
+   "name": "n10-ctx0-crash-mw5g83x7",
+   "n": 10,
+   "ctx": 0,
+   "remote": false,
+   "crashAt": 20000,
+   "wallMs": 32046,
+   "reset": true,
+   "pi": {
+    "toolResults": 10,
+    "toolErrors": 10,
+    "parentAnswered": true
+   },
+   "children": null,
+   "summary": {
+    "answered": 10,
+    "statuses": {
+     "unanswered:interrupted": 10
+    },
+    "errors": [],
+    "firstDeltaMs": {
+     "p50": null,
+     "p95": null,
+     "max": null
+    },
+    "childDurationMs": {
+     "p50": 0,
+     "p95": 0,
+     "max": 0
+    },
+    "streamLatencyMs": {
+     "samples": 0,
+     "p50": null,
+     "p95": null,
+     "p99": null,
+     "max": null
+    },
+    "loopLagMs": {
+     "samples": 0,
+     "p50": null,
+     "p95": null,
+     "p99": null,
+     "max": null
+    },
+    "sqlStatements": 847,
+    "parentDoneMs": null,
+    "maxStreaming": 1,
+    "reports": [
+     "task_interrupted: The host stopped while the model was answering, on attempt 1",
+     "task_interrupted: The host stopped while the model was answering, on attempt 1",
+     "task_interrupted: The host stopped while the model was answering, on attempt 1",
+     "task_interrupted: The host stopped while the model was answering, on attempt 1",
+     "task_interrupted: The host stopped while the model was answering, on attempt 1",
+     "task_interrupted: The host stopped while the model was answering, on attempt 1",
+     "task_interrupted: The host stopped while the model was answering, on attempt 1",
+     "task_interrupted: The host stopped while the model was answering, on attempt 1",
+     "task_interrupted: The host stopped while the model was answering, on attempt 1",
+     "task_interrupted: The host stopped while the model was answering, on attempt 1"
+    ]
+   },
+   "databaseBytes": 299008,
+   "tail": {
+    "events": 43,
+    "outcomes": {
+     "ok": 42,
+     "aborted": 1
+    },
+    "byKind": {
+     "fetch": {
+      "count": 7,
+      "cpuMs": 2112,
+      "maxCpuMs": 742,
+      "maxWallMs": 5208
+     },
+     "rpc": {
+      "count": 36,
+      "cpuMs": 19372,
+      "maxCpuMs": 935,
+      "maxWallMs": 20472
+     }
+    },
+    "cpuMs": 21484,
+    "cpuUsPerDelta": 4296800.0
+   },
+   "concurrency": []
+  },
+  {
+   "name": "r10-ctx0-crash-mw5g8soo",
+   "n": 10,
+   "ctx": 0,
+   "remote": true,
+   "crashAt": 20000,
+   "wallMs": 27144,
+   "reset": true,
+   "pi": {
+    "toolResults": 10,
+    "toolErrors": 10,
+    "parentAnswered": true
+   },
+   "children": {
+    "objects": 10,
+    "starts": 10,
+    "inputs": 10,
+    "duplicated": 0
+   },
+   "summary": {
+    "answered": 0,
+    "statuses": {},
+    "errors": [],
+    "firstDeltaMs": {
+     "p50": null,
+     "p95": null,
+     "max": null
+    },
+    "childDurationMs": {
+     "p50": null,
+     "p95": null,
+     "max": null
+    },
+    "streamLatencyMs": {
+     "samples": 0,
+     "p50": null,
+     "p95": null,
+     "p99": null,
+     "max": null
+    },
+    "loopLagMs": {
+     "samples": 0,
+     "p50": null,
+     "p95": null,
+     "p99": null,
+     "max": null
+    },
+    "sqlStatements": 15,
+    "parentDoneMs": null,
+    "maxStreaming": 0,
+    "reports": []
+   },
+   "databaseBytes": 151552,
+   "tail": {
+    "events": 19,
+    "outcomes": {
+     "ok": 18,
+     "aborted": 1
+    },
+    "byKind": {
+     "fetch": {
+      "count": 9,
+      "cpuMs": 230,
+      "maxCpuMs": 131,
+      "maxWallMs": 5377
+     },
+     "rpc": {
+      "count": 10,
+      "cpuMs": 716,
+      "maxCpuMs": 115,
+      "maxWallMs": 243
+     }
+    },
+    "cpuMs": 946,
+    "cpuUsPerDelta": null
+   },
+   "concurrency": []
+  },
+  {
+   "name": "r1-ctx0-mw5gagwp",
+   "n": 1,
+   "ctx": 0,
+   "remote": true,
+   "crashAt": null,
+   "wallMs": 48469,
+   "reset": false,
+   "pi": {
+    "toolResults": 1,
+    "toolErrors": 0,
+    "parentAnswered": true
+   },
+   "children": {
+    "objects": 1,
+    "starts": 1,
+    "inputs": 1,
+    "duplicated": 0
+   },
+   "summary": {
+    "answered": 1,
+    "statuses": {
+     "done": 1
+    },
+    "errors": [],
+    "firstDeltaMs": {
+     "p50": 351,
+     "p95": 351,
+     "max": 351
+    },
+    "childDurationMs": {
+     "p50": 43620,
+     "p95": 43620,
+     "max": 43620
+    },
+    "streamLatencyMs": {
+     "samples": 0,
+     "p50": null,
+     "p95": null,
+     "p99": null,
+     "max": null
+    },
+    "loopLagMs": {
+     "samples": 480,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0,
+     "max": 0
+    },
+    "sqlStatements": 278,
+    "parentDoneMs": 43898,
+    "maxStreaming": 1,
+    "reports": []
+   },
+   "databaseBytes": 143360,
+   "tail": {
+    "events": 16,
+    "outcomes": {
+     "ok": 16
+    },
+    "byKind": {
+     "rpc": {
+      "count": 5,
+      "cpuMs": 1505,
+      "maxCpuMs": 719,
+      "maxWallMs": 20032
+     },
+     "fetch": {
+      "count": 11,
+      "cpuMs": 686,
+      "maxCpuMs": 482,
+      "maxWallMs": 852099
+     }
+    },
+    "cpuMs": 2191,
+    "cpuUsPerDelta": 365166.7
+   },
+   "concurrency": [
+    [
+     1000,
+     0,
+     0
+    ],
+    [
+     6000,
+     0,
+     0
+    ],
+    [
+     11000,
+     0,
+     0
+    ],
+    [
+     16000,
+     0,
+     0
+    ],
+    [
+     21000,
+     0,
+     0
+    ],
+    [
+     26000,
+     0,
+     0
+    ],
+    [
+     31000,
+     0,
+     0
+    ],
+    [
+     36000,
+     0,
+     0
+    ],
+    [
+     41000,
+     0,
+     0
+    ],
+    [
+     46000,
+     0,
+     0
+    ]
+   ]
+  },
+  {
+   "name": "r10-ctx0-mw5gbib2",
+   "n": 10,
+   "ctx": 0,
+   "remote": true,
+   "crashAt": null,
+   "wallMs": 47412,
+   "reset": false,
+   "pi": {
+    "toolResults": 10,
+    "toolErrors": 0,
+    "parentAnswered": true
+   },
+   "children": {
+    "objects": 10,
+    "starts": 10,
+    "inputs": 10,
+    "duplicated": 0
+   },
+   "summary": {
+    "answered": 10,
+    "statuses": {
+     "done": 10
+    },
+    "errors": [],
+    "firstDeltaMs": {
+     "p50": 521,
+     "p95": 689,
+     "max": 689
+    },
+    "childDurationMs": {
+     "p50": 43899,
+     "p95": 44100,
+     "max": 44100
+    },
+    "streamLatencyMs": {
+     "samples": 0,
+     "p50": null,
+     "p95": null,
+     "p99": null,
+     "max": null
+    },
+    "loopLagMs": {
+     "samples": 470,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0,
+     "max": 7
+    },
+    "sqlStatements": 739,
+    "parentDoneMs": 44409,
+    "maxStreaming": 1,
+    "reports": []
+   },
+   "databaseBytes": 274432,
+   "tail": {
+    "events": 53,
+    "outcomes": {
+     "ok": 53
+    },
+    "byKind": {
+     "fetch": {
+      "count": 11,
+      "cpuMs": 1669,
+      "maxCpuMs": 782,
+      "maxWallMs": 852978
+     },
+     "rpc": {
+      "count": 42,
+      "cpuMs": 14702,
+      "maxCpuMs": 980,
+      "maxWallMs": 20051
+     }
+    },
+    "cpuMs": 16371,
+    "cpuUsPerDelta": 1091400.0
+   },
+   "concurrency": [
+    [
+     1007,
+     0,
+     0
+    ],
+    [
+     6007,
+     0,
+     0
+    ],
+    [
+     11007,
+     0,
+     0
+    ],
+    [
+     16007,
+     0,
+     0
+    ],
+    [
+     21007,
+     0,
+     0
+    ],
+    [
+     26007,
+     0,
+     0
+    ],
+    [
+     31007,
+     0,
+     0
+    ],
+    [
+     36007,
+     0,
+     0
+    ],
+    [
+     41007,
+     0,
+     0
+    ],
+    [
+     46007,
+     0,
+     0
+    ]
+   ]
+  },
+  {
+   "name": "r25-ctx0-mw5gciw2",
+   "n": 25,
+   "ctx": 0,
+   "remote": true,
+   "crashAt": null,
+   "wallMs": 47221,
+   "reset": false,
+   "pi": {
+    "toolResults": 25,
+    "toolErrors": 0,
+    "parentAnswered": true
+   },
+   "children": {
+    "objects": 25,
+    "starts": 25,
+    "inputs": 25,
+    "duplicated": 0
+   },
+   "summary": {
+    "answered": 25,
+    "statuses": {
+     "done": 25
+    },
+    "errors": [],
+    "firstDeltaMs": {
+     "p50": 646,
+     "p95": 1043,
+     "max": 1126
+    },
+    "childDurationMs": {
+     "p50": 43993,
+     "p95": 44347,
+     "max": 44523
+    },
+    "streamLatencyMs": {
+     "samples": 0,
+     "p50": null,
+     "p95": null,
+     "p99": null,
+     "max": null
+    },
+    "loopLagMs": {
+     "samples": 468,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0,
+     "max": 0
+    },
+    "sqlStatements": 1504,
+    "parentDoneMs": 44835,
+    "maxStreaming": 1,
+    "reports": []
+   },
+   "databaseBytes": 483328,
+   "tail": {
+    "events": 95,
+    "outcomes": {
+     "ok": 95
+    },
+    "byKind": {
+     "rpc": {
+      "count": 86,
+      "cpuMs": 30153,
+      "maxCpuMs": 1109,
+      "maxWallMs": 20075
+     },
+     "fetch": {
+      "count": 9,
+      "cpuMs": 1847,
+      "maxCpuMs": 782,
+      "maxWallMs": 853332
+     }
+    },
+    "cpuMs": 32000,
+    "cpuUsPerDelta": 1066666.7
+   },
+   "concurrency": [
+    [
+     1000,
+     0,
+     0
+    ],
+    [
+     6000,
+     0,
+     0
+    ],
+    [
+     11000,
+     0,
+     0
+    ],
+    [
+     16000,
+     0,
+     0
+    ],
+    [
+     21000,
+     0,
+     0
+    ],
+    [
+     26000,
+     0,
+     0
+    ],
+    [
+     31000,
+     0,
+     0
+    ],
+    [
+     36000,
+     0,
+     0
+    ],
+    [
+     41000,
+     0,
+     0
+    ],
+    [
+     46000,
+     0,
+     0
+    ]
+   ]
+  },
+  {
+   "name": "r100-ctx0-mw5gdjbr",
+   "n": 100,
+   "ctx": 0,
+   "remote": true,
+   "crashAt": null,
+   "wallMs": 52165,
+   "reset": false,
+   "pi": {
+    "toolResults": 100,
+    "toolErrors": 0,
+    "parentAnswered": true
+   },
+   "children": {
+    "objects": 100,
+    "starts": 100,
+    "inputs": 100,
+    "duplicated": 0
+   },
+   "summary": {
+    "answered": 100,
+    "statuses": {
+     "done": 100
+    },
+    "errors": [],
+    "firstDeltaMs": {
+     "p50": 1576,
+     "p95": 2701,
+     "max": 2783
+    },
+    "childDurationMs": {
+     "p50": 44874,
+     "p95": 45894,
+     "max": 48882
+    },
+    "streamLatencyMs": {
+     "samples": 0,
+     "p50": null,
+     "p95": null,
+     "p99": null,
+     "max": null
+    },
+    "loopLagMs": {
+     "samples": 519,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0,
+     "max": 8
+    },
+    "sqlStatements": 5331,
+    "parentDoneMs": 49131,
+    "maxStreaming": 1,
+    "reports": []
+   },
+   "databaseBytes": 1515520,
+   "tail": {
+    "events": 246,
+    "outcomes": {
+     "ok": 246
+    },
+    "byKind": {
+     "rpc": {
+      "count": 237,
+      "cpuMs": 86973,
+      "maxCpuMs": 1071,
+      "maxWallMs": 20167
+     },
+     "fetch": {
+      "count": 9,
+      "cpuMs": 1796,
+      "maxCpuMs": 681,
+      "maxWallMs": 853332
+     }
+    },
+    "cpuMs": 88769,
+    "cpuUsPerDelta": 845419.0
+   },
+   "concurrency": [
+    [
+     1008,
+     0,
+     0
+    ],
+    [
+     6008,
+     0,
+     0
+    ],
+    [
+     11008,
+     0,
+     0
+    ],
+    [
+     16008,
+     0,
+     0
+    ],
+    [
+     21008,
+     0,
+     0
+    ],
+    [
+     26008,
+     0,
+     0
+    ],
+    [
+     31008,
+     0,
+     0
+    ],
+    [
+     36008,
+     0,
+     0
+    ],
+    [
+     41008,
+     0,
+     0
+    ],
+    [
+     46008,
+     0,
+     0
+    ],
+    [
+     51008,
+     0,
+     0
+    ]
+   ]
+  },
+  {
+   "name": "n10-ctx0-crash-retry-mw5genlm",
+   "n": 10,
+   "ctx": 0,
+   "remote": false,
+   "crashAt": 20000,
+   "wallMs": 108756,
+   "reset": true,
+   "pi": {
+    "toolResults": 10,
+    "toolErrors": 0,
+    "parentAnswered": true
+   },
+   "children": null,
+   "summary": {
+    "answered": 10,
+    "statuses": {
+     "done": 10
+    },
+    "errors": [],
+    "firstDeltaMs": {
+     "p50": 535,
+     "p95": 40494,
+     "max": 40494
+    },
+    "childDurationMs": {
+     "p50": 40494,
+     "p95": 80570,
+     "max": 80570
+    },
+    "streamLatencyMs": {
+     "samples": 9983,
+     "p50": 59,
+     "p95": 100,
+     "p99": 100,
+     "max": 100
+    },
+    "loopLagMs": {
+     "samples": 0,
+     "p50": null,
+     "p95": null,
+     "p99": null,
+     "max": null
+    },
+    "sqlStatements": 3414,
+    "parentDoneMs": null,
+    "maxStreaming": 9,
+    "reports": []
+   },
+   "databaseBytes": 421888,
+   "tail": {
+    "events": 39,
+    "outcomes": {
+     "ok": 38,
+     "aborted": 1
+    },
+    "byKind": {
+     "rpc": {
+      "count": 13,
+      "cpuMs": 20,
+      "maxCpuMs": 3,
+      "maxWallMs": 8
+     },
+     "fetch": {
+      "count": 24,
+      "cpuMs": 9872,
+      "maxCpuMs": 1206,
+      "maxWallMs": 848288
+     },
+     "alarm": {
+      "count": 2,
+      "cpuMs": 765,
+      "maxCpuMs": 714,
+      "maxWallMs": 4698
+     }
+    },
+    "cpuMs": 10657,
+    "cpuUsPerDelta": 532.7
+   },
+   "concurrency": []
+  },
+  {
+   "name": "r10-ctx0-crash-mw5ggzjj",
+   "n": 10,
+   "ctx": 0,
+   "remote": true,
+   "crashAt": 20000,
+   "wallMs": 47356,
+   "reset": true,
+   "pi": {
+    "toolResults": 10,
+    "toolErrors": 0,
+    "parentAnswered": true
+   },
+   "children": {
+    "objects": 10,
+    "starts": 10,
+    "inputs": 10,
+    "duplicated": 0
+   },
+   "summary": {
+    "answered": 10,
+    "statuses": {
+     "done": 10
+    },
+    "errors": [],
+    "firstDeltaMs": {
+     "p50": 411,
+     "p95": 561,
+     "max": 561
+    },
+    "childDurationMs": {
+     "p50": 17934,
+     "p95": 18162,
+     "max": 18162
+    },
+    "streamLatencyMs": {
+     "samples": 0,
+     "p50": null,
+     "p95": null,
+     "p99": null,
+     "max": null
+    },
+    "loopLagMs": {
+     "samples": 0,
+     "p50": null,
+     "p95": null,
+     "p99": null,
+     "max": null
+    },
+    "sqlStatements": 463,
+    "parentDoneMs": null,
+    "maxStreaming": 1,
+    "reports": []
+   },
+   "databaseBytes": 274432,
+   "tail": {
+    "events": 53,
+    "outcomes": {
+     "ok": 42,
+     "aborted": 1,
+     "canceled": 10
+    },
+    "byKind": {
+     "fetch": {
+      "count": 10,
+      "cpuMs": 361,
+      "maxCpuMs": 235,
+      "maxWallMs": 5332
+     },
+     "rpc": {
+      "count": 43,
+      "cpuMs": 14655,
+      "maxCpuMs": 988,
+      "maxWallMs": 25355
+     }
+    },
+    "cpuMs": 15016,
+    "cpuUsPerDelta": 3003200.0
+   },
+   "concurrency": []
+  },
+  {
+   "name": "n25-ctx100000-mw5gi04c",
+   "n": 25,
+   "ctx": 100000,
+   "remote": false,
+   "crashAt": null,
+   "wallMs": 93331,
+   "reset": false,
+   "pi": {
+    "toolResults": 25,
+    "toolErrors": 9,
+    "parentAnswered": true
+   },
+   "children": null,
+   "summary": {
+    "answered": 25,
+    "statuses": {
+     "done": 16,
+     "unanswered:model_error": 9
+    },
+    "errors": [
+     "502 error code: 502\n"
+    ],
+    "firstDeltaMs": {
+     "p50": 1224,
+     "p95": 3194,
+     "max": 3194
+    },
+    "childDurationMs": {
+     "p50": 48066,
+     "p95": 88107,
+     "max": 89230
+    },
+    "streamLatencyMs": {
+     "samples": 2607,
+     "p50": 58,
+     "p95": 100,
+     "p99": 100,
+     "max": 870
+    },
+    "loopLagMs": {
+     "samples": 919,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0,
+     "max": 870
+    },
+    "sqlStatements": 11757,
+    "parentDoneMs": 89552,
+    "maxStreaming": 17,
+    "reports": []
+   },
+   "databaseBytes": 10706944,
+   "tail": {
+    "events": 31,
+    "outcomes": {
+     "ok": 31
+    },
+    "byKind": {
+     "rpc": {
+      "count": 10,
+      "cpuMs": 11,
+      "maxCpuMs": 2,
+      "maxWallMs": 10
+     },
+     "fetch": {
+      "count": 20,
+      "cpuMs": 21635,
+      "maxCpuMs": 2380,
+      "maxWallMs": 807044
+     },
+     "alarm": {
+      "count": 1,
+      "cpuMs": 356,
+      "maxCpuMs": 356,
+      "maxWallMs": 1955
+     }
+    },
+    "cpuMs": 22002,
+    "cpuUsPerDelta": 616.3
+   },
+   "concurrency": [
+    [
+     1052,
+     25,
+     8
+    ],
+    [
+     6069,
+     25,
+     16
+    ],
+    [
+     12025,
+     25,
+     8
+    ],
+    [
+     17025,
+     25,
+     8
+    ],
+    [
+     22025,
+     25,
+     8
+    ],
+    [
+     27025,
+     25,
+     8
+    ],
+    [
+     32025,
+     25,
+     8
+    ],
+    [
+     37025,
+     25,
+     8
+    ],
+    [
+     42025,
+     20,
+     8
+    ],
+    [
+     47025,
+     19,
+     8
+    ],
+    [
+     52025,
+     11,
+     8
+    ],
+    [
+     57025,
+     11,
+     8
+    ],
+    [
+     62025,
+     11,
+     8
+    ],
+    [
+     67025,
+     11,
+     8
+    ],
+    [
+     72025,
+     11,
+     8
+    ],
+    [
+     77025,
+     11,
+     8
+    ],
+    [
+     82025,
+     8,
+     8
+    ],
+    [
+     87025,
+     8,
+     8
+    ],
+    [
+     92025,
+     0,
+     0
+    ]
+   ]
+  },
+  {
+   "name": "n25-ctx0-p240000-mw5gk06a",
+   "n": 25,
+   "ctx": 0,
+   "remote": false,
+   "crashAt": null,
+   "wallMs": 240815,
+   "reset": false,
+   "pi": {
+    "toolResults": 25,
+    "toolErrors": 0,
+    "parentAnswered": true
+   },
+   "children": null,
+   "summary": {
+    "answered": 25,
+    "statuses": {
+     "done": 25
+    },
+    "errors": [],
+    "firstDeltaMs": {
+     "p50": 1043,
+     "p95": 2981,
+     "max": 2981
+    },
+    "childDurationMs": {
+     "p50": 88974,
+     "p95": 131025,
+     "max": 169085
+    },
+    "streamLatencyMs": {
+     "samples": 10740,
+     "p50": 59,
+     "p95": 100,
+     "p99": 100,
+     "max": 104
+    },
+    "loopLagMs": {
+     "samples": 2403,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0,
+     "max": 16
+    },
+    "sqlStatements": 13932,
+    "parentDoneMs": 169332,
+    "maxStreaming": 13,
+    "reports": []
+   },
+   "databaseBytes": 774144,
+   "tail": {
+    "events": 7,
+    "outcomes": {
+     "ok": 7
+    },
+    "byKind": {
+     "fetch": {
+      "count": 5,
+      "cpuMs": 10443,
+      "maxCpuMs": 9435,
+      "maxWallMs": 807044
+     },
+     "alarm": {
+      "count": 2,
+      "cpuMs": 10687,
+      "maxCpuMs": 8389,
+      "maxWallMs": 120287
+     }
+    },
+    "cpuMs": 21130,
+    "cpuUsPerDelta": 392.3
+   },
+   "concurrency": [
+    [
+     1000,
+     25,
+     8
+    ],
+    [
+     6000,
+     25,
+     8
+    ],
+    [
+     11000,
+     25,
+     8
+    ],
+    [
+     16000,
+     25,
+     8
+    ],
+    [
+     21000,
+     25,
+     8
+    ],
+    [
+     26000,
+     25,
+     8
+    ],
+    [
+     31000,
+     25,
+     8
+    ],
+    [
+     36000,
+     25,
+     8
+    ],
+    [
+     41000,
+     25,
+     8
+    ],
+    [
+     46000,
+     25,
+     8
+    ],
+    [
+     51000,
+     18,
+     8
+    ],
+    [
+     56000,
+     17,
+     8
+    ],
+    [
+     61000,
+     17,
+     8
+    ],
+    [
+     66000,
+     17,
+     8
+    ],
+    [
+     71000,
+     17,
+     8
+    ],
+    [
+     76000,
+     17,
+     8
+    ],
+    [
+     81000,
+     17,
+     8
+    ],
+    [
+     86000,
+     17,
+     8
+    ],
+    [
+     91000,
+     10,
+     8
+    ],
+    [
+     96000,
+     9,
+     8
+    ],
+    [
+     101016,
+     9,
+     8
+    ],
+    [
+     106016,
+     9,
+     8
+    ],
+    [
+     111016,
+     9,
+     8
+    ],
+    [
+     116016,
+     9,
+     8
+    ],
+    [
+     121016,
+     9,
+     8
+    ],
+    [
+     126016,
+     9,
+     8
+    ],
+    [
+     131016,
+     2,
+     2
+    ],
+    [
+     136016,
+     1,
+     1
+    ],
+    [
+     141016,
+     1,
+     1
+    ],
+    [
+     146016,
+     1,
+     1
+    ],
+    [
+     151016,
+     1,
+     1
+    ],
+    [
+     156016,
+     1,
+     1
+    ],
+    [
+     161016,
+     1,
+     1
+    ],
+    [
+     166016,
+     1,
+     1
+    ],
+    [
+     171016,
+     0,
+     0
+    ],
+    [
+     176016,
+     0,
+     0
+    ],
+    [
+     181016,
+     0,
+     0
+    ],
+    [
+     186016,
+     0,
+     0
+    ],
+    [
+     191016,
+     0,
+     0
+    ],
+    [
+     196016,
+     0,
+     0
+    ],
+    [
+     201016,
+     0,
+     0
+    ],
+    [
+     206016,
+     0,
+     0
+    ],
+    [
+     211016,
+     0,
+     0
+    ],
+    [
+     216016,
+     0,
+     0
+    ],
+    [
+     221016,
+     0,
+     0
+    ],
+    [
+     226016,
+     0,
+     0
+    ],
+    [
+     231016,
+     0,
+     0
+    ],
+    [
+     236016,
+     0,
+     0
+    ]
+   ]
+  },
+  {
+   "name": "n100-ctx0-p240000-mw5gp5zl",
+   "n": 100,
+   "ctx": 0,
+   "remote": false,
+   "crashAt": null,
+   "wallMs": 481000,
+   "reset": false,
+   "pi": {
+    "toolResults": 88,
+    "toolErrors": 0,
+    "parentAnswered": false
+   },
+   "children": null,
+   "summary": {
+    "answered": 88,
+    "statuses": {
+     "running": 12,
+     "done": 88
+    },
+    "errors": [],
+    "firstDeltaMs": {
+     "p50": 6414,
+     "p95": 11413,
+     "max": 12305
+    },
+    "childDurationMs": {
+     "p50": 277966,
+     "p95": 476970,
+     "max": 477923
+    },
+    "streamLatencyMs": {
+     "samples": 883,
+     "p50": 55,
+     "p95": 100,
+     "p99": 100,
+     "max": 100
+    },
+    "loopLagMs": {
+     "samples": 4804,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0,
+     "max": 43
+    },
+    "sqlStatements": 52174,
+    "parentDoneMs": null,
+    "maxStreaming": 13,
+    "reports": []
+   },
+   "databaseBytes": 2654208,
+   "tail": {
+    "events": 14,
+    "outcomes": {
+     "ok": 14
+    },
+    "byKind": {
+     "fetch": {
+      "count": 6,
+      "cpuMs": 27399,
+      "maxCpuMs": 11680,
+      "maxWallMs": 659622
+     },
+     "alarm": {
+      "count": 8,
+      "cpuMs": 49420,
+      "maxCpuMs": 8410,
+      "maxWallMs": 60002
+     }
+    },
+    "cpuMs": 76819,
+    "cpuUsPerDelta": 399.0
+   },
+   "concurrency": [
+    [
+     1043,
+     100,
+     8
+    ],
+    [
+     6043,
+     100,
+     8
+    ],
+    [
+     11043,
+     100,
+     8
+    ],
+    [
+     16043,
+     100,
+     8
+    ],
+    [
+     21043,
+     100,
+     8
+    ],
+    [
+     26043,
+     100,
+     8
+    ],
+    [
+     31043,
+     100,
+     8
+    ],
+    [
+     36043,
+     100,
+     8
+    ],
+    [
+     41043,
+     100,
+     8
+    ],
+    [
+     46043,
+     100,
+     8
+    ],
+    [
+     51043,
+     100,
+     8
+    ],
+    [
+     56043,
+     100,
+     8
+    ],
+    [
+     61043,
+     100,
+     8
+    ],
+    [
+     66043,
+     100,
+     8
+    ],
+    [
+     71043,
+     100,
+     8
+    ],
+    [
+     76043,
+     100,
+     8
+    ],
+    [
+     81043,
+     92,
+     8
+    ],
+    [
+     86043,
+     92,
+     8
+    ],
+    [
+     91043,
+     92,
+     8
+    ],
+    [
+     96043,
+     92,
+     8
+    ],
+    [
+     101043,
+     92,
+     8
+    ],
+    [
+     106043,
+     92,
+     8
+    ],
+    [
+     111043,
+     92,
+     8
+    ],
+    [
+     116043,
+     92,
+     8
+    ],
+    [
+     121043,
+     84,
+     8
+    ],
+    [
+     126043,
+     84,
+     8
+    ],
+    [
+     131043,
+     84,
+     8
+    ],
+    [
+     136043,
+     84,
+     8
+    ],
+    [
+     141043,
+     84,
+     8
+    ],
+    [
+     146043,
+     84,
+     8
+    ],
+    [
+     151043,
+     84,
+     8
+    ],
+    [
+     156043,
+     84,
+     8
+    ],
+    [
+     161043,
+     76,
+     8
+    ],
+    [
+     166043,
+     76,
+     8
+    ],
+    [
+     171043,
+     76,
+     8
+    ],
+    [
+     176043,
+     76,
+     8
+    ],
+    [
+     181043,
+     76,
+     8
+    ],
+    [
+     186043,
+     76,
+     8
+    ],
+    [
+     191043,
+     76,
+     8
+    ],
+    [
+     196043,
+     76,
+     8
+    ],
+    [
+     201043,
+     68,
+     8
+    ],
+    [
+     206043,
+     68,
+     8
+    ],
+    [
+     211043,
+     68,
+     8
+    ],
+    [
+     216043,
+     68,
+     8
+    ],
+    [
+     221043,
+     68,
+     8
+    ],
+    [
+     226043,
+     68,
+     8
+    ],
+    [
+     231043,
+     68,
+     8
+    ],
+    [
+     236043,
+     68,
+     8
+    ],
+    [
+     241043,
+     60,
+     8
+    ],
+    [
+     246043,
+     60,
+     8
+    ],
+    [
+     251043,
+     60,
+     8
+    ],
+    [
+     256043,
+     60,
+     8
+    ],
+    [
+     261043,
+     60,
+     8
+    ],
+    [
+     266043,
+     60,
+     8
+    ],
+    [
+     271043,
+     60,
+     8
+    ],
+    [
+     276043,
+     60,
+     8
+    ],
+    [
+     281043,
+     52,
+     8
+    ],
+    [
+     286043,
+     52,
+     8
+    ],
+    [
+     291043,
+     52,
+     8
+    ],
+    [
+     296043,
+     52,
+     8
+    ],
+    [
+     301043,
+     52,
+     8
+    ],
+    [
+     306043,
+     52,
+     8
+    ],
+    [
+     311043,
+     52,
+     8
+    ],
+    [
+     316043,
+     52,
+     8
+    ],
+    [
+     321043,
+     44,
+     8
+    ],
+    [
+     326043,
+     44,
+     8
+    ],
+    [
+     331043,
+     44,
+     8
+    ],
+    [
+     336043,
+     44,
+     8
+    ],
+    [
+     341043,
+     44,
+     8
+    ],
+    [
+     346043,
+     44,
+     8
+    ],
+    [
+     351043,
+     44,
+     8
+    ],
+    [
+     356043,
+     44,
+     8
+    ],
+    [
+     361043,
+     36,
+     8
+    ],
+    [
+     366043,
+     36,
+     8
+    ],
+    [
+     371043,
+     36,
+     8
+    ],
+    [
+     376043,
+     36,
+     8
+    ],
+    [
+     381043,
+     36,
+     8
+    ],
+    [
+     386043,
+     36,
+     8
+    ],
+    [
+     391043,
+     36,
+     8
+    ],
+    [
+     396043,
+     36,
+     8
+    ],
+    [
+     401043,
+     28,
+     8
+    ],
+    [
+     406043,
+     28,
+     8
+    ],
+    [
+     411043,
+     28,
+     8
+    ],
+    [
+     416043,
+     28,
+     8
+    ],
+    [
+     421043,
+     28,
+     8
+    ],
+    [
+     426043,
+     28,
+     8
+    ],
+    [
+     431043,
+     28,
+     8
+    ],
+    [
+     436043,
+     28,
+     8
+    ],
+    [
+     441043,
+     20,
+     8
+    ],
+    [
+     446043,
+     20,
+     8
+    ],
+    [
+     451043,
+     20,
+     8
+    ],
+    [
+     456043,
+     20,
+     8
+    ],
+    [
+     461043,
+     20,
+     8
+    ],
+    [
+     466043,
+     20,
+     8
+    ],
+    [
+     471043,
+     20,
+     8
+    ],
+    [
+     476043,
+     20,
+     8
+    ]
+   ]
+  },
+  {
+   "name": "n50-ctx100000-p240000-mw5gzh5l",
+   "n": 50,
+   "ctx": 100000,
+   "remote": false,
+   "crashAt": null,
+   "wallMs": 241019,
+   "reset": false,
+   "pi": {
+    "toolResults": 50,
+    "toolErrors": 18,
+    "parentAnswered": true
+   },
+   "children": null,
+   "summary": {
+    "answered": 50,
+    "statuses": {
+     "done": 32,
+     "unanswered:model_error": 18
+    },
+    "errors": [
+     "502 error code: 502\n"
+    ],
+    "firstDeltaMs": {
+     "p50": 3409,
+     "p95": 5526,
+     "max": 6462
+    },
+    "childDurationMs": {
+     "p50": 99536,
+     "p95": 179557,
+     "max": 179557
+    },
+    "streamLatencyMs": {
+     "samples": 10752,
+     "p50": 59,
+     "p95": 100,
+     "p99": 100,
+     "max": 100
+    },
+    "loopLagMs": {
+     "samples": 2405,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0,
+     "max": 1
+    },
+    "sqlStatements": 24080,
+    "parentDoneMs": 179929,
+    "maxStreaming": 11,
+    "reports": []
+   },
+   "databaseBytes": 21331968,
+   "tail": {
+    "events": 10,
+    "outcomes": {
+     "ok": 7,
+     "canceled": 3
+    },
+    "byKind": {
+     "alarm": {
+      "count": 6,
+      "cpuMs": 17059,
+      "maxCpuMs": 8415,
+      "maxWallMs": 60401
+     },
+     "fetch": {
+      "count": 4,
+      "cpuMs": 18174,
+      "maxCpuMs": 11135,
+      "maxWallMs": 60002
+     }
+    },
+    "cpuMs": 35233,
+    "cpuUsPerDelta": 491.4
+   },
+   "concurrency": [
+    [
+     1000,
+     50,
+     8
+    ],
+    [
+     6000,
+     50,
+     8
+    ],
+    [
+     11001,
+     50,
+     8
+    ],
+    [
+     16001,
+     50,
+     8
+    ],
+    [
+     21001,
+     50,
+     8
+    ],
+    [
+     26001,
+     50,
+     8
+    ],
+    [
+     31001,
+     50,
+     8
+    ],
+    [
+     36001,
+     50,
+     8
+    ],
+    [
+     41001,
+     50,
+     8
+    ],
+    [
+     46001,
+     50,
+     8
+    ],
+    [
+     51001,
+     50,
+     8
+    ],
+    [
+     56001,
+     44,
+     8
+    ],
+    [
+     61001,
+     36,
+     8
+    ],
+    [
+     66001,
+     36,
+     8
+    ],
+    [
+     71001,
+     36,
+     8
+    ],
+    [
+     76001,
+     36,
+     8
+    ],
+    [
+     81001,
+     36,
+     8
+    ],
+    [
+     86001,
+     36,
+     8
+    ],
+    [
+     91001,
+     36,
+     8
+    ],
+    [
+     96001,
+     30,
+     8
+    ],
+    [
+     101001,
+     22,
+     8
+    ],
+    [
+     106001,
+     22,
+     8
+    ],
+    [
+     111001,
+     22,
+     8
+    ],
+    [
+     116001,
+     22,
+     8
+    ],
+    [
+     121001,
+     22,
+     8
+    ],
+    [
+     126001,
+     22,
+     8
+    ],
+    [
+     131001,
+     22,
+     8
+    ],
+    [
+     136001,
+     16,
+     8
+    ],
+    [
+     141001,
+     8,
+     8
+    ],
+    [
+     146001,
+     8,
+     8
+    ],
+    [
+     151001,
+     8,
+     8
+    ],
+    [
+     156001,
+     8,
+     8
+    ],
+    [
+     161001,
+     8,
+     8
+    ],
+    [
+     166001,
+     8,
+     8
+    ],
+    [
+     171001,
+     8,
+     8
+    ],
+    [
+     176001,
+     8,
+     8
+    ],
+    [
+     181001,
+     0,
+     0
+    ],
+    [
+     186001,
+     0,
+     0
+    ],
+    [
+     191001,
+     0,
+     0
+    ],
+    [
+     196001,
+     0,
+     0
+    ],
+    [
+     201001,
+     0,
+     0
+    ],
+    [
+     206001,
+     0,
+     0
+    ],
+    [
+     211001,
+     0,
+     0
+    ],
+    [
+     216001,
+     0,
+     0
+    ],
+    [
+     221001,
+     0,
+     0
+    ],
+    [
+     226001,
+     0,
+     0
+    ],
+    [
+     231001,
+     0,
+     0
+    ],
+    [
+     236001,
+     0,
+     0
+    ]
+   ]
+  }
+ ],
+ "nodeHeap": [
+  {
+   "run": {
+    "n": 1,
+    "tps": 50,
+    "tokens": 2000,
+    "tools": 3,
+    "ctx": 0,
+    "id": "bench"
+   },
+   "elapsedMs": 43092,
+   "children": 1,
+   "answered": 1,
+   "statuses": {
+    "done": 1
+   },
+   "errors": [],
+   "deltas": 2159,
+   "firstDeltaMs": {
+    "p50": 7,
+    "p95": 7,
+    "max": 7
+   },
+   "childDurationMs": {
+    "p50": 42952,
+    "p95": 42952,
+    "max": 42952
+   },
+   "streamLatencyMs": {
+    "samples": 2150,
+    "p50": 60,
+    "p95": 101,
+    "p99": 102,
+    "max": 107
+   },
+   "loopLagMs": {
+    "samples": 427,
+    "p50": 1,
+    "p95": 2,
+    "p99": 2,
+    "max": 11
+   },
+   "sqlStatements": 0,
+   "parentDoneMs": 43091,
+   "peakHeapMiB": 27.7,
+   "reports": [],
+   "maxStreaming": 1,
+   "concurrency": [
+    [
+     1012,
+     1,
+     1
+    ],
+    [
+     6051,
+     1,
+     1
+    ],
+    [
+     11087,
+     1,
+     1
+    ],
+    [
+     16116,
+     1,
+     1
+    ],
+    [
+     21138,
+     1,
+     1
+    ],
+    [
+     26188,
+     1,
+     1
+    ],
+    [
+     31233,
+     1,
+     1
+    ],
+    [
+     36266,
+     1,
+     1
+    ],
+    [
+     41293,
+     1,
+     1
+    ]
+   ],
+   "baselineHeapMiB": 16.7,
+   "liveHeapMiB": [
+    21.3,
+    21.4,
+    21.5
+   ],
+   "peakRssMiB": 126.7,
+   "databaseMiB": 2.4
+  },
+  {
+   "run": {
+    "n": 5,
+    "tps": 50,
+    "tokens": 2000,
+    "tools": 3,
+    "ctx": 0,
+    "id": "bench"
+   },
+   "elapsedMs": 43180,
+   "children": 5,
+   "answered": 5,
+   "statuses": {
+    "done": 5
+   },
+   "errors": [],
+   "deltas": 10775,
+   "firstDeltaMs": {
+    "p50": 20,
+    "p95": 21,
+    "max": 21
+   },
+   "childDurationMs": {
+    "p50": 43031,
+    "p95": 43038,
+    "max": 43038
+   },
+   "streamLatencyMs": {
+    "samples": 10743,
+    "p50": 60,
+    "p95": 101,
+    "p99": 102,
+    "max": 121
+   },
+   "loopLagMs": {
+    "samples": 430,
+    "p50": 0,
+    "p95": 1,
+    "p99": 1,
+    "max": 12
+   },
+   "sqlStatements": 0,
+   "parentDoneMs": 43179,
+   "peakHeapMiB": 38,
+   "reports": [],
+   "maxStreaming": 5,
+   "concurrency": [
+    [
+     1010,
+     5,
+     5
+    ],
+    [
+     6031,
+     5,
+     5
+    ],
+    [
+     11048,
+     5,
+     5
+    ],
+    [
+     16063,
+     5,
+     5
+    ],
+    [
+     21066,
+     5,
+     5
+    ],
+    [
+     26080,
+     5,
+     5
+    ],
+    [
+     31105,
+     5,
+     5
+    ],
+    [
+     36127,
+     5,
+     5
+    ],
+    [
+     41144,
+     5,
+     5
+    ]
+   ],
+   "baselineHeapMiB": 16.7,
+   "liveHeapMiB": [
+    24,
+    24.4,
+    24.6
+   ],
+   "peakRssMiB": 145.3,
+   "databaseMiB": 4.1
+  },
+  {
+   "run": {
+    "n": 10,
+    "tps": 50,
+    "tokens": 2000,
+    "tools": 3,
+    "ctx": 0,
+    "id": "bench"
+   },
+   "elapsedMs": 43174,
+   "children": 10,
+   "answered": 10,
+   "statuses": {
+    "done": 10
+   },
+   "errors": [],
+   "deltas": 21545,
+   "firstDeltaMs": {
+    "p50": 60,
+    "p95": 63,
+    "max": 63
+   },
+   "childDurationMs": {
+    "p50": 43036,
+    "p95": 43042,
+    "max": 43042
+   },
+   "streamLatencyMs": {
+    "samples": 10751,
+    "p50": 60,
+    "p95": 101,
+    "p99": 102,
+    "max": 106
+   },
+   "loopLagMs": {
+    "samples": 430,
+    "p50": 0,
+    "p95": 1,
+    "p99": 2,
+    "max": 4
+   },
+   "sqlStatements": 0,
+   "parentDoneMs": 43174,
+   "peakHeapMiB": 41.6,
+   "reports": [],
+   "maxStreaming": 10,
+   "concurrency": [
+    [
+     1008,
+     10,
+     10
+    ],
+    [
+     6027,
+     10,
+     10
+    ],
+    [
+     11042,
+     10,
+     10
+    ],
+    [
+     16056,
+     10,
+     10
+    ],
+    [
+     21068,
+     10,
+     10
+    ],
+    [
+     26086,
+     10,
+     10
+    ],
+    [
+     31102,
+     10,
+     10
+    ],
+    [
+     36114,
+     10,
+     10
+    ],
+    [
+     41137,
+     10,
+     10
+    ]
+   ],
+   "baselineHeapMiB": 16.7,
+   "liveHeapMiB": [
+    25.4,
+    26,
+    26.5
+   ],
+   "peakRssMiB": 150.9,
+   "databaseMiB": 4.4
+  },
+  {
+   "run": {
+    "n": 25,
+    "tps": 50,
+    "tokens": 2000,
+    "tools": 3,
+    "ctx": 0,
+    "id": "bench"
+   },
+   "elapsedMs": 43339,
+   "children": 25,
+   "answered": 25,
+   "statuses": {
+    "done": 25
+   },
+   "errors": [],
+   "deltas": 53855,
+   "firstDeltaMs": {
+    "p50": 64,
+    "p95": 75,
+    "max": 75
+   },
+   "childDurationMs": {
+    "p50": 43183,
+    "p95": 43198,
+    "max": 43203
+   },
+   "streamLatencyMs": {
+    "samples": 10755,
+    "p50": 60,
+    "p95": 101,
+    "p99": 102,
+    "max": 116
+   },
+   "loopLagMs": {
+    "samples": 431,
+    "p50": 0,
+    "p95": 1,
+    "p99": 5,
+    "max": 20
+   },
+   "sqlStatements": 0,
+   "parentDoneMs": 43339,
+   "peakHeapMiB": 54.4,
+   "reports": [],
+   "maxStreaming": 25,
+   "concurrency": [
+    [
+     1010,
+     25,
+     25
+    ],
+    [
+     6071,
+     25,
+     25
+    ],
+    [
+     11082,
+     25,
+     25
+    ],
+    [
+     16104,
+     25,
+     25
+    ],
+    [
+     21121,
+     25,
+     25
+    ],
+    [
+     26144,
+     25,
+     25
+    ],
+    [
+     31158,
+     25,
+     25
+    ],
+    [
+     36172,
+     25,
+     25
+    ],
+    [
+     41183,
+     25,
+     25
+    ]
+   ],
+   "baselineHeapMiB": 16.7,
+   "cpuMs": 7761,
+   "cpuUsPerDelta": 144,
+   "liveHeapMiB": [
+    28.8,
+    29.4,
+    30.1
+   ],
+   "peakRssMiB": 172.2,
+   "databaseMiB": 4.9
+  },
+  {
+   "run": {
+    "n": 50,
+    "tps": 50,
+    "tokens": 2000,
+    "tools": 3,
+    "ctx": 0,
+    "id": "bench"
+   },
+   "elapsedMs": 43669,
+   "children": 50,
+   "answered": 50,
+   "statuses": {
+    "done": 50
+   },
+   "errors": [],
+   "deltas": 107705,
+   "firstDeltaMs": {
+    "p50": 105,
+    "p95": 126,
+    "max": 127
+   },
+   "childDurationMs": {
+    "p50": 43467,
+    "p95": 43507,
+    "max": 43509
+   },
+   "streamLatencyMs": {
+    "samples": 10753,
+    "p50": 60,
+    "p95": 101,
+    "p99": 103,
+    "max": 134
+   },
+   "loopLagMs": {
+    "samples": 432,
+    "p50": 0,
+    "p95": 2,
+    "p99": 10,
+    "max": 162
+   },
+   "sqlStatements": 0,
+   "parentDoneMs": 43669,
+   "peakHeapMiB": 69.5,
+   "reports": [],
+   "maxStreaming": 50,
+   "concurrency": [
+    [
+     1022,
+     50,
+     50
+    ],
+    [
+     6255,
+     50,
+     50
+    ],
+    [
+     11270,
+     50,
+     50
+    ],
+    [
+     16277,
+     50,
+     50
+    ],
+    [
+     21289,
+     50,
+     50
+    ],
+    [
+     26319,
+     50,
+     50
+    ],
+    [
+     31342,
+     50,
+     50
+    ],
+    [
+     36359,
+     50,
+     50
+    ],
+    [
+     41380,
+     50,
+     50
+    ]
+   ],
+   "baselineHeapMiB": 16.7,
+   "cpuMs": 12743,
+   "cpuUsPerDelta": 118,
+   "liveHeapMiB": [
+    33.1,
+    34.4,
+    35.6
+   ],
+   "peakRssMiB": 188.6,
+   "databaseMiB": 5.9
+  },
+  {
+   "run": {
+    "n": 100,
+    "tps": 50,
+    "tokens": 2000,
+    "tools": 3,
+    "ctx": 0,
+    "id": "bench"
+   },
+   "elapsedMs": 44357,
+   "children": 100,
+   "answered": 100,
+   "statuses": {
+    "done": 100
+   },
+   "errors": [],
+   "deltas": 215405,
+   "firstDeltaMs": {
+    "p50": 192,
+    "p95": 237,
+    "max": 238
+   },
+   "childDurationMs": {
+    "p50": 43887,
+    "p95": 44158,
+    "max": 44179
+   },
+   "streamLatencyMs": {
+    "samples": 10746,
+    "p50": 60,
+    "p95": 101,
+    "p99": 103,
+    "max": 352
+   },
+   "loopLagMs": {
+    "samples": 434,
+    "p50": 0,
+    "p95": 2,
+    "p99": 73,
+    "max": 248
+   },
+   "sqlStatements": 0,
+   "parentDoneMs": 44357,
+   "peakHeapMiB": 68.1,
+   "reports": [],
+   "maxStreaming": 100,
+   "concurrency": [
+    [
+     1085,
+     100,
+     100
+    ],
+    [
+     6485,
+     100,
+     100
+    ],
+    [
+     11506,
+     100,
+     100
+    ],
+    [
+     16531,
+     100,
+     100
+    ],
+    [
+     21558,
+     100,
+     100
+    ],
+    [
+     26571,
+     100,
+     100
+    ],
+    [
+     31586,
+     100,
+     100
+    ],
+    [
+     36619,
+     100,
+     100
+    ],
+    [
+     41647,
+     100,
+     100
+    ]
+   ],
+   "baselineHeapMiB": 16.6,
+   "cpuMs": 19551,
+   "cpuUsPerDelta": 91,
+   "liveHeapMiB": [
+    36.9,
+    39.4,
+    41.9
+   ],
+   "peakRssMiB": 192.6,
+   "databaseMiB": 7.6
+  },
+  {
+   "run": {
+    "n": 1,
+    "tps": 50,
+    "tokens": 2000,
+    "tools": 3,
+    "ctx": 100000,
+    "id": "bench"
+   },
+   "elapsedMs": 43119,
+   "children": 1,
+   "answered": 1,
+   "statuses": {
+    "done": 1
+   },
+   "errors": [],
+   "deltas": 2159,
+   "firstDeltaMs": {
+    "p50": 12,
+    "p95": 12,
+    "max": 12
+   },
+   "childDurationMs": {
+    "p50": 42984,
+    "p95": 42984,
+    "max": 42984
+   },
+   "streamLatencyMs": {
+    "samples": 2151,
+    "p50": 60,
+    "p95": 101,
+    "p99": 102,
+    "max": 208
+   },
+   "loopLagMs": {
+    "samples": 427,
+    "p50": 1,
+    "p95": 2,
+    "p99": 3,
+    "max": 48
+   },
+   "sqlStatements": 0,
+   "parentDoneMs": 43119,
+   "peakHeapMiB": 35.5,
+   "reports": [],
+   "maxStreaming": 1,
+   "concurrency": [
+    [
+     1007,
+     1,
+     1
+    ],
+    [
+     6057,
+     1,
+     1
+    ],
+    [
+     11091,
+     1,
+     1
+    ],
+    [
+     16183,
+     1,
+     1
+    ],
+    [
+     21226,
+     1,
+     1
+    ],
+    [
+     26244,
+     1,
+     1
+    ],
+    [
+     31270,
+     1,
+     1
+    ],
+    [
+     36292,
+     1,
+     1
+    ],
+    [
+     41312,
+     1,
+     1
+    ]
+   ],
+   "baselineHeapMiB": 16.7,
+   "cpuMs": 1789,
+   "cpuUsPerDelta": 829,
+   "liveHeapMiB": [
+    22.8,
+    22.9,
+    23.1
+   ],
+   "peakRssMiB": 139.1,
+   "databaseMiB": 2.8
+  },
+  {
+   "run": {
+    "n": 5,
+    "tps": 50,
+    "tokens": 2000,
+    "tools": 3,
+    "ctx": 100000,
+    "id": "bench"
+   },
+   "elapsedMs": 43177,
+   "children": 5,
+   "answered": 5,
+   "statuses": {
+    "done": 5
+   },
+   "errors": [],
+   "deltas": 10775,
+   "firstDeltaMs": {
+    "p50": 41,
+    "p95": 42,
+    "max": 42
+   },
+   "childDurationMs": {
+    "p50": 43031,
+    "p95": 43042,
+    "max": 43042
+   },
+   "streamLatencyMs": {
+    "samples": 10751,
+    "p50": 60,
+    "p95": 101,
+    "p99": 102,
+    "max": 113
+   },
+   "loopLagMs": {
+    "samples": 430,
+    "p50": 0,
+    "p95": 1,
+    "p99": 2,
+    "max": 2
+   },
+   "sqlStatements": 0,
+   "parentDoneMs": 43177,
+   "peakHeapMiB": 44.2,
+   "reports": [],
+   "maxStreaming": 5,
+   "concurrency": [
+    [
+     1011,
+     5,
+     5
+    ],
+    [
+     6025,
+     5,
+     5
+    ],
+    [
+     11036,
+     5,
+     5
+    ],
+    [
+     16045,
+     5,
+     5
+    ],
+    [
+     21062,
+     5,
+     5
+    ],
+    [
+     26081,
+     5,
+     5
+    ],
+    [
+     31098,
+     5,
+     5
+    ],
+    [
+     36114,
+     5,
+     5
+    ],
+    [
+     41131,
+     5,
+     5
+    ]
+   ],
+   "baselineHeapMiB": 16.7,
+   "cpuMs": 4538,
+   "cpuUsPerDelta": 421,
+   "liveHeapMiB": [
+    31.5,
+    31.9,
+    32.2
+   ],
+   "peakRssMiB": 174,
+   "databaseMiB": 6.1
+  },
+  {
+   "run": {
+    "n": 10,
+    "tps": 50,
+    "tokens": 2000,
+    "tools": 3,
+    "ctx": 100000,
+    "id": "bench"
+   },
+   "elapsedMs": 43227,
+   "children": 10,
+   "answered": 10,
+   "statuses": {
+    "done": 10
+   },
+   "errors": [],
+   "deltas": 21545,
+   "firstDeltaMs": {
+    "p50": 85,
+    "p95": 88,
+    "max": 88
+   },
+   "childDurationMs": {
+    "p50": 43068,
+    "p95": 43085,
+    "max": 43085
+   },
+   "streamLatencyMs": {
+    "samples": 10751,
+    "p50": 60,
+    "p95": 101,
+    "p99": 102,
+    "max": 153
+   },
+   "loopLagMs": {
+    "samples": 430,
+    "p50": 0,
+    "p95": 1,
+    "p99": 5,
+    "max": 33
+   },
+   "sqlStatements": 0,
+   "parentDoneMs": 43227,
+   "peakHeapMiB": 56.4,
+   "reports": [],
+   "maxStreaming": 10,
+   "concurrency": [
+    [
+     1004,
+     10,
+     10
+    ],
+    [
+     6020,
+     10,
+     10
+    ],
+    [
+     11028,
+     10,
+     10
+    ],
+    [
+     16049,
+     10,
+     10
+    ],
+    [
+     21067,
+     10,
+     10
+    ],
+    [
+     26129,
+     10,
+     10
+    ],
+    [
+     31151,
+     10,
+     10
+    ],
+    [
+     36166,
+     10,
+     10
+    ],
+    [
+     41186,
+     10,
+     10
+    ]
+   ],
+   "baselineHeapMiB": 16.7,
+   "cpuMs": 7001,
+   "cpuUsPerDelta": 325,
+   "liveHeapMiB": [
+    40.7,
+    41.3,
+    41.8
+   ],
+   "peakRssMiB": 197.5,
+   "databaseMiB": 8.5
+  },
+  {
+   "run": {
+    "n": 25,
+    "tps": 50,
+    "tokens": 2000,
+    "tools": 3,
+    "ctx": 100000,
+    "id": "bench"
+   },
+   "elapsedMs": 43603,
+   "children": 25,
+   "answered": 25,
+   "statuses": {
+    "done": 25
+   },
+   "errors": [],
+   "deltas": 53855,
+   "firstDeltaMs": {
+    "p50": 173,
+    "p95": 191,
+    "max": 191
+   },
+   "childDurationMs": {
+    "p50": 43428,
+    "p95": 43453,
+    "max": 43456
+   },
+   "streamLatencyMs": {
+    "samples": 10745,
+    "p50": 60,
+    "p95": 101,
+    "p99": 102,
+    "max": 130
+   },
+   "loopLagMs": {
+    "samples": 431,
+    "p50": 0,
+    "p95": 2,
+    "p99": 20,
+    "max": 85
+   },
+   "sqlStatements": 0,
+   "parentDoneMs": 43603,
+   "peakHeapMiB": 115.8,
+   "reports": [],
+   "maxStreaming": 25,
+   "concurrency": [
+    [
+     1059,
+     25,
+     25
+    ],
+    [
+     6339,
+     25,
+     25
+    ],
+    [
+     11359,
+     25,
+     25
+    ],
+    [
+     16382,
+     25,
+     25
+    ],
+    [
+     21403,
+     25,
+     25
+    ],
+    [
+     26423,
+     25,
+     25
+    ],
+    [
+     31443,
+     25,
+     25
+    ],
+    [
+     36464,
+     25,
+     25
+    ],
+    [
+     41483,
+     25,
+     25
+    ]
+   ],
+   "baselineHeapMiB": 16.7,
+   "cpuMs": 11976,
+   "cpuUsPerDelta": 222,
+   "liveHeapMiB": [
+    66.8,
+    67.5,
+    68.2
+   ],
+   "peakRssMiB": 295.5,
+   "databaseMiB": 14.7
+  },
+  {
+   "run": {
+    "n": 50,
+    "tps": 50,
+    "tokens": 2000,
+    "tools": 3,
+    "ctx": 100000,
+    "id": "bench"
+   },
+   "elapsedMs": 44051,
+   "children": 50,
+   "answered": 50,
+   "statuses": {
+    "done": 50
+   },
+   "errors": [],
+   "deltas": 107705,
+   "firstDeltaMs": {
+    "p50": 344,
+    "p95": 385,
+    "max": 385
+   },
+   "childDurationMs": {
+    "p50": 43837,
+    "p95": 43876,
+    "max": 43881
+   },
+   "streamLatencyMs": {
+    "samples": 10747,
+    "p50": 60,
+    "p95": 101,
+    "p99": 102,
+    "max": 213
+   },
+   "loopLagMs": {
+    "samples": 434,
+    "p50": 0,
+    "p95": 2,
+    "p99": 30,
+    "max": 180
+   },
+   "sqlStatements": 0,
+   "parentDoneMs": 44051,
+   "peakHeapMiB": 169.2,
+   "reports": [],
+   "maxStreaming": 50,
+   "concurrency": [
+    [
+     1189,
+     50,
+     50
+    ],
+    [
+     6431,
+     50,
+     50
+    ],
+    [
+     11447,
+     50,
+     50
+    ],
+    [
+     16464,
+     50,
+     50
+    ],
+    [
+     21476,
+     50,
+     50
+    ],
+    [
+     26493,
+     50,
+     50
+    ],
+    [
+     31503,
+     50,
+     50
+    ],
+    [
+     36522,
+     50,
+     50
+    ],
+    [
+     41539,
+     50,
+     50
+    ]
+   ],
+   "baselineHeapMiB": 16.7,
+   "cpuMs": 15008,
+   "cpuUsPerDelta": 139,
+   "liveHeapMiB": [
+    104.7,
+    106,
+    107.4
+   ],
+   "peakRssMiB": 392,
+   "databaseMiB": 25.3
+  },
+  {
+   "run": {
+    "n": 100,
+    "tps": 50,
+    "tokens": 2000,
+    "tools": 3,
+    "ctx": 100000,
+    "id": "bench"
+   },
+   "elapsedMs": 44866,
+   "children": 100,
+   "answered": 100,
+   "statuses": {
+    "done": 100
+   },
+   "errors": [],
+   "deltas": 215405,
+   "firstDeltaMs": {
+    "p50": 634,
+    "p95": 717,
+    "max": 720
+   },
+   "childDurationMs": {
+    "p50": 44555,
+    "p95": 44673,
+    "max": 44688
+   },
+   "streamLatencyMs": {
+    "samples": 10754,
+    "p50": 60,
+    "p95": 101,
+    "p99": 102,
+    "max": 230
+   },
+   "loopLagMs": {
+    "samples": 436,
+    "p50": 0,
+    "p95": 3,
+    "p99": 65,
+    "max": 365
+   },
+   "sqlStatements": 0,
+   "parentDoneMs": 44865,
+   "peakHeapMiB": 278.3,
+   "reports": [],
+   "maxStreaming": 100,
+   "concurrency": [
+    [
+     1431,
+     100,
+     100
+    ],
+    [
+     6958,
+     100,
+     100
+    ],
+    [
+     11974,
+     100,
+     100
+    ],
+    [
+     17001,
+     100,
+     100
+    ],
+    [
+     22019,
+     100,
+     100
+    ],
+    [
+     27040,
+     100,
+     100
+    ],
+    [
+     32067,
+     100,
+     100
+    ],
+    [
+     37095,
+     100,
+     100
+    ],
+    [
+     42112,
+     100,
+     100
+    ]
+   ],
+   "baselineHeapMiB": 16.7,
+   "cpuMs": 23011,
+   "cpuUsPerDelta": 107,
+   "liveHeapMiB": [
+    189.4,
+    191.9,
+    194.5
+   ],
+   "peakRssMiB": 584.3,
+   "databaseMiB": 45.9
+  }
+ ]
+}

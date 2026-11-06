@@ -32,7 +32,8 @@ export async function abortRequestsImpl(this: AgentRuntime,
     });
     if (queued === 'cancel') {
       await Promise.all([
-        keepChildren ? Promise.resolve() : this.delegation.cancel(),
+        // SPIKE: Pi aborts delegate children with their calls; background ones sit behind their anchors.
+        keepChildren ? Promise.resolve() : this.piSubagents ? this.piSubagents.abortBackground() : this.delegation.cancel(),
         (async () => {
           await this.cancelHumanInputs();
           await this.abortExecutions();

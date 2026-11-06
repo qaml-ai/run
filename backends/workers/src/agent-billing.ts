@@ -155,9 +155,11 @@ export async function usageForRequestImpl(this: AgentRuntime,
     const conf = await this.config();
     const [auxiliary, subagentCostUsd] = await Promise.all([
       auxiliaryRunCosts(this.env, conf.tenantId, conf.id, id),
-      this.delegation.cost(id),
+      this.piSubagents ? this.piSubagents.cost(id) : this.delegation.cost(id),
     ]);
-    const children = new Map((await this.delegation.children()).filter(child => child.parentRequestId === id).map(child => [child.callId ?? child.toolCallId, child.id]));
+    const children = this.piSubagents
+      ? new Map(Object.values(await this.piSubagents.rows()).filter(row => row.runId === id).map(row => [row.toolCallId, row.agentId]))
+      : new Map((await this.delegation.children()).filter(child => child.parentRequestId === id).map(child => [child.callId ?? child.toolCallId, child.id]));
     const projection = new RunProjection(id, children);
     let cursor,
       active: string | undefined,
