@@ -1,16 +1,16 @@
 {
   "backend": "node",
   "area": "cached",
-  "nodeKey": "032bb59c89da8ee61077af9a16552c87c8b6369fb011fe22b49fbf451e02afaa",
-  "suiteHash": "7096899c165ebe2979caeb251978140796d3b6759b0df3988bc2accc2ead2d3d",
-  "revision": "240fa9f99f3ca71b118517b56859e1ff1b748c24",
-  "durationMs": 155404.509184,
+  "nodeKey": "d240964ba94cdc4ea9ce45974eff75faac40538940136b47288bbfd858b454a4",
+  "suiteHash": "1c956e67e286546e21f0e6ef49e72b2aaa5e7120632006d990e32b4e60b7327c",
+  "revision": "4298f453af1f1afa72ce0506a4a4622dd34940e4",
+  "durationMs": 156034.58227,
   "runtime": {
     "node": "v24.22.1",
     "platform": "linux",
     "arch": "x64"
   },
-  "recordedAt": "2026-11-06T05:29:46.944Z",
+  "recordedAt": "2026-11-06T06:05:07.521Z",
   "expectedCases": 970,
   "rows": [
     {
@@ -18,7 +18,7 @@
       "source": "tests/browser-tokens.test.ts:119",
       "name": "a snapshot shows a token's reader only what its scopes and event list let it read",
       "status": "pass",
-      "durationMs": 4346.398447,
+      "durationMs": 4411.56423,
       "reason": "",
       "backend": "node"
     },
@@ -27,7 +27,7 @@
       "source": "tests/browser-tokens.test.ts:154",
       "name": "a token that redacts usage.cost reads no cost anywhere: the catalog's or the provider's, in events, snapshots, state, history and inputs",
       "status": "pass",
-      "durationMs": 4828.203537,
+      "durationMs": 3933.63291,
       "reason": "",
       "backend": "node"
     },
@@ -36,7 +36,7 @@
       "source": "tests/browser-tokens.test.ts:15",
       "name": "a browser token reads its one agent's events, state, history and inputs, and nothing else",
       "status": "pass",
-      "durationMs": 8694.738065,
+      "durationMs": 9565.98385,
       "reason": "",
       "backend": "node"
     },
@@ -45,7 +45,7 @@
       "source": "tests/browser-tokens.test.ts:75",
       "name": "a browser token's scopes, event list and redaction limit what it reads; a forged or expired one reads nothing",
       "status": "pass",
-      "durationMs": 9604.362559,
+      "durationMs": 10197.65878,
       "reason": "",
       "backend": "node"
     },
@@ -54,7 +54,7 @@
       "source": "tests/outbound-origins.test.ts:5",
       "name": "an allowed origin serves a custom provider over http, while web_fetch still cannot reach it",
       "status": "pass",
-      "durationMs": 6450.505795,
+      "durationMs": 8224.84345,
       "reason": "",
       "backend": "node"
     },
@@ -63,7 +63,7 @@
       "source": "tests/tenant-reads.test.ts:117",
       "name": "an agent with work left that cannot be loaded is tried again with capped backoff, never for good, and says so",
       "status": "pass",
-      "durationMs": 9918.326971,
+      "durationMs": 9429.634636,
       "reason": "",
       "backend": "node"
     },
@@ -72,7 +72,7 @@
       "source": "tests/tenant-reads.test.ts:144",
       "name": "a request whose open-work mark could not be written is not taken, and its retry runs",
       "status": "pass",
-      "durationMs": 4357.508116,
+      "durationMs": 3529.5646,
       "reason": "",
       "backend": "node"
     },
@@ -81,7 +81,7 @@
       "source": "tests/tenant-reads.test.ts:44",
       "name": "?request= keeps a stream or poll to one request's events and response",
       "status": "pass",
-      "durationMs": 5328.227128,
+      "durationMs": 5082.992866,
       "reason": "",
       "backend": "node"
     },
@@ -90,7 +90,7 @@
       "source": "tests/tenant-reads.test.ts:60",
       "name": "a subscriber that goes away before its stream opens gives its place back",
       "status": "pass",
-      "durationMs": 8187.033986,
+      "durationMs": 8206.561552,
       "reason": "",
       "backend": "node"
     },
@@ -99,7 +99,7 @@
       "source": "tests/tenant-reads.test.ts:6",
       "name": "a tenant reads its agent's events, state, history and inputs with its own token, and no other tenant can",
       "status": "pass",
-      "durationMs": 7542.278384,
+      "durationMs": 6264.089051,
       "reason": "",
       "backend": "node"
     },
@@ -108,7 +108,7 @@
       "source": "tests/tenant-reads.test.ts:82",
       "name": "a tenant's own watcher bound, from the tenants file, replaces the default",
       "status": "pass",
-      "durationMs": 4088.625352,
+      "durationMs": 3489.155182,
       "reason": "",
       "backend": "node"
     },
@@ -117,7 +117,7 @@
       "source": "tests/tenant-reads.test.ts:95",
       "name": "an idle agent's history, state and inputs are read without loading it",
       "status": "pass",
-      "durationMs": 6439.3435,
+      "durationMs": 5884.092099,
       "reason": "",
       "backend": "node"
     },
@@ -126,7 +126,7 @@
       "source": "tests/account.test.ts",
       "name": "an account exports everything it stores, then deletes it all but the ledger, and its identity signs up afresh without new credit",
       "status": "pass",
-      "durationMs": 8806.30053,
+      "durationMs": 10574.65812,
       "reason": "",
       "backend": "node"
     },
@@ -135,7 +135,7 @@
       "source": "tests/operator-tenants.test.ts",
       "name": "the platform operator makes a prepaid tenant like a sign-up's, with an API token, credits it and deletes it",
       "status": "pass",
-      "durationMs": 5362.80966,
+      "durationMs": 5271.197074,
       "reason": "",
       "backend": "node"
     },
@@ -144,7 +144,7 @@
       "source": "tests/agent-lifetime.test.ts:108",
       "name": "the same key with a changed configuration reconfigures the agent instead of refusing; what cannot change says so",
       "status": "pass",
-      "durationMs": 4952.599053,
+      "durationMs": 4260.112043,
       "reason": "",
       "backend": "node"
     },
@@ -153,7 +153,7 @@
       "source": "tests/agent-lifetime.test.ts:11",
       "name": "an agent made with an idempotency key lives until deleted by default; one made without lives a day",
       "status": "pass",
-      "durationMs": 6701.28824,
+      "durationMs": 7884.945473,
       "reason": "",
       "backend": "node"
     },
@@ -162,7 +162,7 @@
       "source": "tests/agent-lifetime.test.ts:142",
       "name": "the last upsert wins: back to an earlier configuration, and upserts queued behind a running turn",
       "status": "pass",
-      "durationMs": 4202.097962,
+      "durationMs": 4755.794133,
       "reason": "",
       "backend": "node"
     },
@@ -171,7 +171,7 @@
       "source": "tests/agent-lifetime.test.ts:23",
       "name": "an agent with an idle lifetime lives on from each run it is sent",
       "status": "pass",
-      "durationMs": 4280.382235,
+      "durationMs": 4314.149198,
       "reason": "",
       "backend": "node"
     },
@@ -180,7 +180,7 @@
       "source": "tests/agent-lifetime.test.ts:37",
       "name": "agents are listed with the key they were made with, and their name",
       "status": "pass",
-      "durationMs": 3737.081326,
+      "durationMs": 3830.295807,
       "reason": "",
       "backend": "node"
     },
@@ -189,7 +189,7 @@
       "source": "tests/agent-lifetime.test.ts:50",
       "name": "an agent is made without a model key; its first run says which key to set",
       "status": "pass",
-      "durationMs": 5866.120393,
+      "durationMs": 6703.279847,
       "reason": "",
       "backend": "node"
     },
@@ -198,7 +198,7 @@
       "source": "tests/agent-lifetime.test.ts:83",
       "name": "a key whose agent was deleted or expired makes a fresh agent, with a new token; the old one stays gone",
       "status": "pass",
-      "durationMs": 65821.444229,
+      "durationMs": 66309.812316,
       "reason": "",
       "backend": "node"
     },
@@ -207,7 +207,7 @@
       "source": "tests/agent-mcp.test.ts:135",
       "name": "a turn waiting on a person asks through the client, or says how to answer",
       "status": "pass",
-      "durationMs": 15607.235709,
+      "durationMs": 16110.033345,
       "reason": "",
       "backend": "node"
     },
@@ -216,7 +216,7 @@
       "source": "tests/agent-mcp.test.ts:33",
       "name": "an agent's MCP endpoint takes whatever may prompt it, and no other tenant's token",
       "status": "pass",
-      "durationMs": 16200.190754,
+      "durationMs": 15754.681713,
       "reason": "",
       "backend": "node"
     },
@@ -225,7 +225,7 @@
       "source": "tests/agent-mcp.test.ts:87",
       "name": "a message streams progress, is sent once when called again, and a full queue is busy",
       "status": "pass",
-      "durationMs": 19223.220784,
+      "durationMs": 18890.583656,
       "reason": "",
       "backend": "node"
     },
@@ -234,7 +234,7 @@
       "source": "tests/agents-list.test.ts:17",
       "name": "GET /v1/agents pages by cursor, filters by workspace, status and search, and lists activity and the last failure",
       "status": "pass",
-      "durationMs": 9211.84203,
+      "durationMs": 10296.2624,
       "reason": "",
       "backend": "node"
     },
@@ -243,7 +243,7 @@
       "source": "tests/agents-upsert.test.ts:107",
       "name": "a browser token minted through the SDK reads its agent, and only that",
       "status": "pass",
-      "durationMs": 4103.425211,
+      "durationMs": 4380.5635,
       "reason": "",
       "backend": "node"
     },
@@ -252,7 +252,7 @@
       "source": "tests/agents-upsert.test.ts:118",
       "name": "a process that connects with other tools than the agent has declares them; one with none connected is refused unless it allows that",
       "status": "pass",
-      "durationMs": 6419.944906,
+      "durationMs": 6438.66608,
       "reason": "",
       "backend": "node"
     },
@@ -261,7 +261,7 @@
       "source": "tests/agents-upsert.test.ts:134",
       "name": "steer answers as soon as the runtime has the message; with wait it is a run: with no turn running, it starts one and resolves with it",
       "status": "pass",
-      "durationMs": 6314.252029,
+      "durationMs": 6620.38247,
       "reason": "",
       "backend": "node"
     },
@@ -270,7 +270,7 @@
       "source": "tests/agents-upsert.test.ts:154",
       "name": "the lower-level createAgent makes a scratch agent (a day's lifetime) unless the caller gives it a key",
       "status": "pass",
-      "durationMs": 4162.539772,
+      "durationMs": 4084.74884,
       "reason": "",
       "backend": "node"
     },
@@ -279,7 +279,7 @@
       "source": "tests/agents-upsert.test.ts:165",
       "name": "upsert gives an agent builtins without a definition",
       "status": "pass",
-      "durationMs": 3506.305542,
+      "durationMs": 3790.65724,
       "reason": "",
       "backend": "node"
     },
@@ -288,7 +288,7 @@
       "source": "tests/agents-upsert.test.ts:171",
       "name": "an agent's history is the list of its messages",
       "status": "pass",
-      "durationMs": 4149.135503,
+      "durationMs": 3976.15166,
       "reason": "",
       "backend": "node"
     },
@@ -297,7 +297,7 @@
       "source": "tests/agents-upsert.test.ts:180",
       "name": "send returns the request as soon as the runtime has it; wait gets its run",
       "status": "pass",
-      "durationMs": 5182.910929,
+      "durationMs": 4499.3857,
       "reason": "",
       "backend": "node"
     },
@@ -306,7 +306,7 @@
       "source": "tests/agents-upsert.test.ts:191",
       "name": "a run takes limits of its own: at its maxResponses it stops as turn_limit, and the agent's stay as they were",
       "status": "pass",
-      "durationMs": 4961.296421,
+      "durationMs": 3898.9534,
       "reason": "",
       "backend": "node"
     },
@@ -315,7 +315,7 @@
       "source": "tests/agents-upsert.test.ts:202",
       "name": "a run takes a budget of its own",
       "status": "pass",
-      "durationMs": 4397.367645,
+      "durationMs": 4494.26371,
       "reason": "",
       "backend": "node"
     },
@@ -324,7 +324,7 @@
       "source": "tests/agents-upsert.test.ts:35",
       "name": "upsert: the same key is the same agent, and a changed configuration reconfigures it",
       "status": "pass",
-      "durationMs": 8610.99358,
+      "durationMs": 9650.91856,
       "reason": "",
       "backend": "node"
     },
@@ -333,7 +333,7 @@
       "source": "tests/agents-upsert.test.ts:52",
       "name": "the same create sent twice at once makes one agent, and the same prompt twice at once runs once",
       "status": "pass",
-      "durationMs": 4137.313577,
+      "durationMs": 5712.83645,
       "reason": "",
       "backend": "node"
     },
@@ -342,7 +342,7 @@
       "source": "tests/agents-upsert.test.ts:66",
       "name": "a create can carry the first prompt: sent once per requestId, a refused one leaves the agent made, a malformed one makes nothing",
       "status": "pass",
-      "durationMs": 5261.580872,
+      "durationMs": 5342.63763,
       "reason": "",
       "backend": "node"
     },
@@ -351,7 +351,7 @@
       "source": "tests/agents-upsert.test.ts:89",
       "name": "one process serves an agent's tools at a time; others may still run it, and takeover replaces the one serving",
       "status": "pass",
-      "durationMs": 5545.839622,
+      "durationMs": 3995.33341,
       "reason": "",
       "backend": "node"
     },
@@ -360,7 +360,7 @@
       "source": "tests/agents.test.ts:102",
       "name": "an agent's credentials are for the account's own tokens: a browser token gets 403, an agent's token 401, and no browser origin is allowed",
       "status": "pass",
-      "durationMs": 4002.53946,
+      "durationMs": 4217.7684,
       "reason": "",
       "backend": "node"
     },
@@ -369,7 +369,7 @@
       "source": "tests/agents.test.ts:124",
       "name": "a tool that returns nothing succeeds with null; its context has a stable idempotency key and reports progress",
       "status": "pass",
-      "durationMs": 4757.67762,
+      "durationMs": 5300.368369,
       "reason": "",
       "backend": "node"
     },
@@ -378,7 +378,7 @@
       "source": "tests/agents.test.ts:142",
       "name": "a slow onEvent never holds up the agent's tool calls",
       "status": "pass",
-      "durationMs": 17354.20029,
+      "durationMs": 18125.498214,
       "reason": "",
       "backend": "node"
     },
@@ -387,7 +387,7 @@
       "source": "tests/agents.test.ts:165",
       "name": "an onEvent that throws is reported to onError, and the connection goes on",
       "status": "pass",
-      "durationMs": 4352.64134,
+      "durationMs": 4506.814557,
       "reason": "",
       "backend": "node"
     },
@@ -396,7 +396,7 @@
       "source": "tests/agents.test.ts:174",
       "name": "an approval: the run waits with its input, and answering it resolves with the resumed run",
       "status": "pass",
-      "durationMs": 4239.79371,
+      "durationMs": 4962.87825,
       "reason": "",
       "backend": "node"
     },
@@ -405,7 +405,7 @@
       "source": "tests/agents.test.ts:195",
       "name": "a run's wait has no timeout, and an AbortSignal stops the wait without stopping the run",
       "status": "pass",
-      "durationMs": 5702.8482,
+      "durationMs": 5757.683014,
       "reason": "",
       "backend": "node"
     },
@@ -414,7 +414,7 @@
       "source": "tests/agents.test.ts:203",
       "name": "the same key sent again while its run goes on joins that run, and one caller's timeout leaves the other waiting",
       "status": "pass",
-      "durationMs": 4652.8184,
+      "durationMs": 5085.523084,
       "reason": "",
       "backend": "node"
     },
@@ -423,7 +423,7 @@
       "source": "tests/agents.test.ts:24",
       "name": "run() resolves with a typed Run; the agent's id is public and its token stays out of logs",
       "status": "pass",
-      "durationMs": 8239.6762,
+      "durationMs": 8143.788086,
       "reason": "",
       "backend": "node"
     },
@@ -432,7 +432,7 @@
       "source": "tests/agents.test.ts:42",
       "name": "a key the provider refuses fails the run as model_key_invalid, with where to set a working one",
       "status": "pass",
-      "durationMs": 4349.08194,
+      "durationMs": 4205.022498,
       "reason": "",
       "backend": "node"
     },
@@ -441,7 +441,7 @@
       "source": "tests/agents.test.ts:50",
       "name": "a failed run throws a RunError with the run, or resolves with it given throwOnError: false",
       "status": "pass",
-      "durationMs": 4592.12145,
+      "durationMs": 4664.944723,
       "reason": "",
       "backend": "node"
     },
@@ -450,7 +450,7 @@
       "source": "tests/agents.test.ts:63",
       "name": "stream() yields tool calls, results and text, then done with the run",
       "status": "pass",
-      "durationMs": 4671.16684,
+      "durationMs": 4141.013175,
       "reason": "",
       "backend": "node"
     },
@@ -459,7 +459,7 @@
       "source": "tests/agents.test.ts:83",
       "name": "get() takes an existing agent by key or id without changing it; 404 for none, 409 for one made without a key",
       "status": "pass",
-      "durationMs": 5505.56553,
+      "durationMs": 5272.490856,
       "reason": "",
       "backend": "node"
     },
@@ -468,7 +468,7 @@
       "source": "tests/idempotency.test.ts:35",
       "name": "a response carrying a secret shown once is never kept or replayed: its key's retry is a conflict",
       "status": "pass",
-      "durationMs": 3675.540165,
+      "durationMs": 6023.782203,
       "reason": "",
       "backend": "node"
     },
@@ -477,7 +477,7 @@
       "source": "tests/idempotency.test.ts:58",
       "name": "a key whose request died mid-way is taken over after a while, and a body past the limit is refused before it is read whole",
       "status": "pass",
-      "durationMs": 3635.386399,
+      "durationMs": 3965.387936,
       "reason": "",
       "backend": "node"
     },
@@ -486,7 +486,7 @@
       "source": "tests/idempotency.test.ts:7",
       "name": "an Idempotency-Key header on any POST replays its first success, refuses other parameters, and names a prompt's request",
       "status": "pass",
-      "durationMs": 4672.648822,
+      "durationMs": 7069.119009,
       "reason": "",
       "backend": "node"
     },
@@ -495,7 +495,7 @@
       "source": "tests/service-api.test.ts:102",
       "name": "tenants provision and see only their own agents, billed to their own provider keys",
       "status": "pass",
-      "durationMs": 3980.15692,
+      "durationMs": 4494.89902,
       "reason": "",
       "backend": "node"
     },
@@ -504,7 +504,7 @@
       "source": "tests/service-api.test.ts:43",
       "name": "operator provisioning imports native history once; scoped reads do not journal transcript copies",
       "status": "pass",
-      "durationMs": 3362.66419,
+      "durationMs": 4112.82453,
       "reason": "",
       "backend": "node"
     },
@@ -513,7 +513,7 @@
       "source": "tests/service-api.test.ts:62",
       "name": "scoped configuration persists allowed fields and rejects provider credentials or endpoints",
       "status": "pass",
-      "durationMs": 3800.19155,
+      "durationMs": 4953.56236,
       "reason": "",
       "backend": "node"
     },
@@ -522,7 +522,7 @@
       "source": "tests/service-api.test.ts:88",
       "name": "provisioning takes models by name only, never an endpoint or credentials",
       "status": "pass",
-      "durationMs": 2445.99523,
+      "durationMs": 3036.71311,
       "reason": "",
       "backend": "node"
     },
@@ -531,7 +531,7 @@
       "source": "tests/api.test.ts:261",
       "name": "console sessions require same-origin mutations; an email and password an operator set sign in",
       "status": "pass",
-      "durationMs": 5866.356644,
+      "durationMs": 6126.121072,
       "reason": "",
       "backend": "node"
     },
@@ -540,7 +540,7 @@
       "source": "tests/api.test.ts:306",
       "name": "password sign-in: a person's session; unknown addresses fail like wrong passwords; setting, changing or clearing a password ends its sessions; token sign-in is gone",
       "status": "pass",
-      "durationMs": 6181.816967,
+      "durationMs": 6106.099196,
       "reason": "",
       "backend": "node"
     },
@@ -549,7 +549,7 @@
       "source": "tests/api.test.ts:390",
       "name": "failed password sign-ins are limited per address and per source; a success still counts nothing",
       "status": "pass",
-      "durationMs": 4050.779875,
+      "durationMs": 4463.864887,
       "reason": "",
       "backend": "node"
     },
@@ -558,7 +558,7 @@
       "source": "tests/api.test.ts:411",
       "name": "sign-ups per address per day: behind Cloudflare, a new account past the limit waits a day; existing accounts still sign in",
       "status": "pass",
-      "durationMs": 4191.576856,
+      "durationMs": 3915.520586,
       "reason": "",
       "backend": "node"
     },
@@ -567,7 +567,7 @@
       "source": "tests/api.test.ts:434",
       "name": "GitHub sign-in admits active org members, links admin tenants, and creates new tenants",
       "status": "pass",
-      "durationMs": 3074.167025,
+      "durationMs": 3415.661128,
       "reason": "",
       "backend": "node"
     },
@@ -576,7 +576,7 @@
       "source": "tests/api.test.ts:468",
       "name": "Google sign-in verifies the ID token, creates separate tenants, and returns to the consent page",
       "status": "pass",
-      "durationMs": 3369.405716,
+      "durationMs": 3309.744453,
       "reason": "",
       "backend": "node"
     },
@@ -585,7 +585,7 @@
       "source": "tests/api.test.ts:562",
       "name": "console routes serve the app shell as HTML, never as a download",
       "status": "pass",
-      "durationMs": 2716.120124,
+      "durationMs": 3064.105626,
       "reason": "",
       "backend": "node"
     },
@@ -594,7 +594,7 @@
       "source": "tests/email-signup.test.ts",
       "name": "adding a password: a Google account's own address at once, any other address through a link confirmed with the password",
       "status": "pass",
-      "durationMs": 4799.036194,
+      "durationMs": 4182.233677,
       "reason": "",
       "backend": "node"
     },
@@ -603,7 +603,7 @@
       "source": "tests/email-signup.test.ts",
       "name": "an address a Google account signed up with is not joined, taken over or given a second account: its owner is told to use Google",
       "status": "pass",
-      "durationMs": 3084.043419,
+      "durationMs": 3445.987598,
       "reason": "",
       "backend": "node"
     },
@@ -612,7 +612,7 @@
       "source": "tests/email-signup.test.ts",
       "name": "email sign-up: a link to finish it with the chosen password makes the tenant and signs in; nothing before that",
       "status": "pass",
-      "durationMs": 4706.212178,
+      "durationMs": 4496.109851,
       "reason": "",
       "backend": "node"
     },
@@ -621,7 +621,7 @@
       "source": "tests/email-signup.test.ts",
       "name": "mailing a link is limited per source and per address, whether or not the address has an account",
       "status": "pass",
-      "durationMs": 3127.548522,
+      "durationMs": 3115.745424,
       "reason": "",
       "backend": "node"
     },
@@ -630,7 +630,7 @@
       "source": "tests/email-signup.test.ts",
       "name": "password reset: the same answer for any address; the link sets a new password once and ends every password session",
       "status": "pass",
-      "durationMs": 4429.082693,
+      "durationMs": 4454.364359,
       "reason": "",
       "backend": "node"
     },
@@ -639,7 +639,7 @@
       "source": "tests/email-signup.test.ts",
       "name": "sign-up links: tampered, expired and used links fail alike; a second sign-up for an address with an account gets the same answer and a different mail",
       "status": "pass",
-      "durationMs": 4073.987533,
+      "durationMs": 4565.935478,
       "reason": "",
       "backend": "node"
     },
@@ -648,7 +648,7 @@
       "source": "tests/email-signup.test.ts",
       "name": "the MCP consent page: sign up there, follow the link, and come back signed in to consent",
       "status": "pass",
-      "durationMs": 3092.391231,
+      "durationMs": 3231.075632,
       "reason": "",
       "backend": "node"
     },
@@ -657,7 +657,7 @@
       "source": "tests/email-signup.test.ts",
       "name": "without account mail, or with sign-up closed, the forms are not offered and their routes refuse",
       "status": "pass",
-      "durationMs": 5660.565985,
+      "durationMs": 5562.805228,
       "reason": "",
       "backend": "node"
     },
@@ -666,7 +666,7 @@
       "source": "tests/auto-topup.test.ts",
       "name": "auto top-up REST requires the exact quote version and explicit consent",
       "status": "pass",
-      "durationMs": 5514.464997,
+      "durationMs": 7065.932413,
       "reason": "",
       "backend": "node"
     },
@@ -675,7 +675,7 @@
       "source": "tests/billing-mail.test.ts",
       "name": "billing recipient API, scanner-safe confirmation, and SES delivery work together",
       "status": "pass",
-      "durationMs": 14599.809571,
+      "durationMs": 16084.301984,
       "reason": "",
       "backend": "node"
     },
@@ -684,7 +684,7 @@
       "source": "tests/billing-mail.test.ts",
       "name": "disabled email is explicit and never queues a recipient",
       "status": "pass",
-      "durationMs": 2475.880598,
+      "durationMs": 3460.414666,
       "reason": "",
       "backend": "node"
     },
@@ -693,7 +693,7 @@
       "source": "tests/billing-payments.test.ts",
       "name": "billing REST routes bind portal ownership to authentication and reject caller-supplied redirects",
       "status": "pass",
-      "durationMs": 5816.720958,
+      "durationMs": 6637.497648,
       "reason": "",
       "backend": "node"
     },
@@ -702,7 +702,7 @@
       "source": "tests/billing.test.ts:623",
       "name": "without Stripe, checkout answers 503 and the webhook 404",
       "status": "pass",
-      "durationMs": 2453.26396,
+      "durationMs": 2500.405633,
       "reason": "",
       "backend": "node"
     },
@@ -711,7 +711,7 @@
       "source": "tests/billing.test.ts",
       "name": "a prepaid tenant pays the catalog fallback plus funding when actual cost is absent; spent credit stops runs",
       "status": "pass",
-      "durationMs": 7737.314373,
+      "durationMs": 10134.59054,
       "reason": "",
       "backend": "node"
     },
@@ -720,7 +720,7 @@
       "source": "tests/billing.test.ts",
       "name": "credit is bought through Stripe Checkout with the fee on top, added once the webhook reports payment, and refunds take it back",
       "status": "pass",
-      "durationMs": 4931.971264,
+      "durationMs": 8042.33653,
       "reason": "",
       "backend": "node"
     },
@@ -729,7 +729,7 @@
       "source": "tests/billing.test.ts",
       "name": "disabled card credit is absent from billing and its start endpoint refuses while GitHub grants remain",
       "status": "pass",
-      "durationMs": 2740.350012,
+      "durationMs": 3018.1874,
       "reason": "",
       "backend": "node"
     },
@@ -738,7 +738,7 @@
       "source": "tests/billing.test.ts",
       "name": "free credit brings fewer busy agents (its usage tier) and an hourly spend limit, both lifted by the first purchase",
       "status": "pass",
-      "durationMs": 6168.149973,
+      "durationMs": 6428.32077,
       "reason": "",
       "backend": "node"
     },
@@ -747,7 +747,7 @@
       "source": "tests/billing.test.ts",
       "name": "only a billing-admin operator can issue the one-time support grant",
       "status": "pass",
-      "durationMs": 2524.501679,
+      "durationMs": 3488.82382,
       "reason": "",
       "backend": "node"
     },
@@ -756,7 +756,7 @@
       "source": "tests/billing.test.ts",
       "name": "open sign-up admits any GitHub account; starting credit is once per account id and uses the configured signup policy; a renamed login keeps its tenant",
       "status": "pass",
-      "durationMs": 2700.015464,
+      "durationMs": 3726.29126,
       "reason": "",
       "backend": "node"
     },
@@ -765,7 +765,7 @@
       "source": "tests/billing.test.ts",
       "name": "responses on the tenant's own key cost no credit for tokens, but time in turns is charged",
       "status": "pass",
-      "durationMs": 9819.933267,
+      "durationMs": 9897.71437,
       "reason": "",
       "backend": "node"
     },
@@ -774,7 +774,7 @@
       "source": "tests/billing.test.ts",
       "name": "signup retries an incomplete profile before creating an account, and does not block an existing login",
       "status": "pass",
-      "durationMs": 2745.587337,
+      "durationMs": 3589.07223,
       "reason": "",
       "backend": "node"
     },
@@ -783,7 +783,7 @@
       "source": "tests/billing.test.ts",
       "name": "streamed OpenRouter actual cost reaches the credit ledger instead of the catalog estimate",
       "status": "pass",
-      "durationMs": 4842.368556,
+      "durationMs": 5983.75933,
       "reason": "",
       "backend": "node"
     },
@@ -792,7 +792,7 @@
       "source": "tests/credit-holds.test.ts:114",
       "name": "a run on a tenant with too little credit stops before any call, as a spend limit; a small balance caps the call's max_tokens",
       "status": "pass",
-      "durationMs": 5822.572764,
+      "durationMs": 8903.089016,
       "reason": "",
       "backend": "node"
     },
@@ -801,7 +801,7 @@
       "source": "tests/pi-durable-accounting.test.ts:48",
       "name": "imported usage and forks are free; the next real turn is billed once (inline)",
       "status": "pass",
-      "durationMs": 5008.586179,
+      "durationMs": 4929.85109,
       "reason": "",
       "backend": "node"
     },
@@ -810,7 +810,7 @@
       "source": "tests/pi-durable-accounting.test.ts:48",
       "name": "imported usage and forks are free; the next real turn is billed once (process)",
       "status": "pass",
-      "durationMs": 6588.231342,
+      "durationMs": 8645.871686,
       "reason": "",
       "backend": "node"
     },
@@ -1503,7 +1503,7 @@
       "source": "tests/cli.test.ts",
       "name": "a manifest's delegate settings bring their builtin",
       "status": "pass",
-      "durationMs": 0.22194,
+      "durationMs": 0.249511,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -1512,7 +1512,7 @@
       "source": "tests/cli.test.ts",
       "name": "a run waiting on a person exits 2 and resumes once answered",
       "status": "pass",
-      "durationMs": 5422.222432,
+      "durationMs": 5282.246928,
       "reason": "",
       "backend": "node"
     },
@@ -1521,7 +1521,7 @@
       "source": "tests/cli.test.ts",
       "name": "login saves a checked key readable only by its owner",
       "status": "pass",
-      "durationMs": 2845.747638,
+      "durationMs": 2772.878736,
       "reason": "",
       "backend": "node"
     },
@@ -1530,7 +1530,7 @@
       "source": "tests/cli.test.ts",
       "name": "run --stateless answers in one call and leaves no agent; runs get reads it back",
       "status": "pass",
-      "durationMs": 4036.294466,
+      "durationMs": 4322.254528,
       "reason": "",
       "backend": "node"
     },
@@ -1539,7 +1539,7 @@
       "source": "tests/cli.test.ts",
       "name": "the CLI deploys a manifest, runs its agent, and manages agents and definitions",
       "status": "pass",
-      "durationMs": 10819.218496,
+      "durationMs": 12201.352341,
       "reason": "",
       "backend": "node"
     },
@@ -1548,7 +1548,7 @@
       "source": "tests/cli.test.ts",
       "name": "the CLI reads the runtime's URL from CAMELAI_BASE_URL, as the SDKs do, or CAMELAI_URL",
       "status": "pass",
-      "durationMs": 1.166,
+      "durationMs": 0.778744,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -1557,7 +1557,7 @@
       "source": "tests/cli.test.ts",
       "name": "the MCP server deploys and runs agents for a coding agent",
       "status": "pass",
-      "durationMs": 7048.010943,
+      "durationMs": 6544.957028,
       "reason": "",
       "backend": "node"
     },
@@ -1566,7 +1566,7 @@
       "source": "tests/computers-api.test.ts",
       "name": "a computer connected during eager startup is available on the first turn",
       "status": "pass",
-      "durationMs": 6929.716764,
+      "durationMs": 5202.69941,
       "reason": "",
       "backend": "node"
     },
@@ -1575,7 +1575,7 @@
       "source": "tests/computers-api.test.ts",
       "name": "agents child creation inherits computer attachments: false",
       "status": "pass",
-      "durationMs": 4976.154837,
+      "durationMs": 6585.71358,
       "reason": "",
       "backend": "node"
     },
@@ -1584,7 +1584,7 @@
       "source": "tests/computers-api.test.ts",
       "name": "agents child creation inherits computer attachments: true",
       "status": "pass",
-      "durationMs": 5004.054899,
+      "durationMs": 6606.05208,
       "reason": "",
       "backend": "node"
     },
@@ -1593,7 +1593,7 @@
       "source": "tests/computers-api.test.ts",
       "name": "delegate child creation inherits computer attachments: false",
       "status": "pass",
-      "durationMs": 5549.638139,
+      "durationMs": 6644.56931,
       "reason": "",
       "backend": "node"
     },
@@ -1602,7 +1602,7 @@
       "source": "tests/computers-api.test.ts",
       "name": "delegate child creation inherits computer attachments: true",
       "status": "pass",
-      "durationMs": 8065.509923,
+      "durationMs": 6253.09547,
       "reason": "",
       "backend": "node"
     },
@@ -1611,7 +1611,7 @@
       "source": "tests/computers-api.test.ts",
       "name": "native daytona computer API is tenant scoped and tools refresh on an existing agent",
       "status": "pass",
-      "durationMs": 7131.14476,
+      "durationMs": 7420.69304,
       "reason": "",
       "backend": "node"
     },
@@ -1620,7 +1620,7 @@
       "source": "tests/computers-api.test.ts",
       "name": "native sprites computer API is tenant scoped and tools refresh on an existing agent",
       "status": "pass",
-      "durationMs": 7318.948601,
+      "durationMs": 6139.61344,
       "reason": "",
       "backend": "node"
     },
@@ -1629,7 +1629,7 @@
       "source": "tests/end-user-balance-events.test.ts",
       "name": "the API: a person's lowBalance, and the end users under their threshold",
       "status": "pass",
-      "durationMs": 3877.766319,
+      "durationMs": 3219.127857,
       "reason": "",
       "backend": "node"
     },
@@ -1638,7 +1638,7 @@
       "source": "tests/end-user-credits.test.ts:145",
       "name": "the end-user API: settings, entries, an end user and their ledger, for the tenant only",
       "status": "pass",
-      "durationMs": 2732.716241,
+      "durationMs": 2719.607553,
       "reason": "",
       "backend": "node"
     },
@@ -1647,7 +1647,7 @@
       "source": "tests/end-user-history.test.ts",
       "name": "the history API and the TypeScript SDK: ledger filters and per-day totals, for the tenant only",
       "status": "pass",
-      "durationMs": 2747.761156,
+      "durationMs": 2774.98144,
       "reason": "",
       "backend": "node"
     },
@@ -1656,7 +1656,7 @@
       "source": "tests/end-user-lots.test.ts",
       "name": "the lots API and the TypeScript SDK: expiring grants, lots on the end user, marking, refunds by lot, for the tenant only",
       "status": "pass",
-      "durationMs": 3316.945589,
+      "durationMs": 3933.45237,
       "reason": "",
       "backend": "node"
     },
@@ -1665,7 +1665,7 @@
       "source": "tests/end-user-reasons.test.ts",
       "name": "a queued run refused as it starts for a bucket limit above 0 carries end_user_credit and bucket_limit: its record, request and run.failed",
       "status": "pass",
-      "durationMs": 4651.36096,
+      "durationMs": 4080.029775,
       "reason": "",
       "backend": "node"
     },
@@ -1674,7 +1674,7 @@
       "source": "tests/end-user-reasons.test.ts",
       "name": "a queued run refused as it starts for a bucket limit of 0 carries end_user_credit and bucket_limit: its record, request and run.failed",
       "status": "pass",
-      "durationMs": 4342.35473,
+      "durationMs": 4509.629773,
       "reason": "",
       "backend": "node"
     },
@@ -1683,7 +1683,7 @@
       "source": "tests/end-user-reasons.test.ts",
       "name": "a queued run refused as it starts for no balance carries end_user_credit and balance: its record, request and run.failed",
       "status": "pass",
-      "durationMs": 4277.85667,
+      "durationMs": 4609.063214,
       "reason": "",
       "backend": "node"
     },
@@ -1692,7 +1692,7 @@
       "source": "tests/end-user-reasons.test.ts",
       "name": "a queued run refused as it starts for the agent's spend limit carries spend_limit and which limit",
       "status": "pass",
-      "durationMs": 7296.203332,
+      "durationMs": 5174.636344,
       "reason": "",
       "backend": "node"
     },
@@ -1701,7 +1701,7 @@
       "source": "tests/end-user-reasons.test.ts",
       "name": "a queued run refused as it starts for the daily limit carries end_user_credit and daily_limit: its record, request and run.failed",
       "status": "pass",
-      "durationMs": 4540.47268,
+      "durationMs": 5222.893923,
       "reason": "",
       "backend": "node"
     },
@@ -1710,7 +1710,7 @@
       "source": "tests/end-user-reasons.test.ts",
       "name": "the TypeScript SDK: a queued run refused as it starts is a failed run with code end_user_credit and its reason, not runtime_error",
       "status": "pass",
-      "durationMs": 8876.56673,
+      "durationMs": 5307.093563,
       "reason": "",
       "backend": "node"
     },
@@ -1719,7 +1719,7 @@
       "source": "tests/end-user-runs.test.ts",
       "name": "a long reply stops at the end of its end user's credit, mid-stream, and is not retried",
       "status": "pass",
-      "durationMs": 4728.767003,
+      "durationMs": 5958.43639,
       "reason": "",
       "backend": "node"
     },
@@ -1728,7 +1728,7 @@
       "source": "tests/end-user-runs.test.ts",
       "name": "a run's own bucket is what its start is checked against, and the runs after it that name none (the runtime's own too) inherit it, never \"default\"",
       "status": "pass",
-      "durationMs": 6689.692582,
+      "durationMs": 7073.666798,
       "reason": "",
       "backend": "node"
     },
@@ -1737,7 +1737,7 @@
       "source": "tests/end-user-runs.test.ts",
       "name": "a run's own bucket, the agent's bucket and a stateless run's each spend their own allowance",
       "status": "pass",
-      "durationMs": 9500.008246,
+      "durationMs": 10996.250126,
       "reason": "",
       "backend": "node"
     },
@@ -1746,7 +1746,7 @@
       "source": "tests/end-user-runs.test.ts",
       "name": "an end user's allowance pays first, then their balance; out of both, the turn stops and their next run is refused",
       "status": "pass",
-      "durationMs": 5489.536204,
+      "durationMs": 8686.842574,
       "reason": "",
       "backend": "node"
     },
@@ -1755,7 +1755,7 @@
       "source": "tests/end-user-runs.test.ts",
       "name": "concurrent replies for one end user share their credit: their holds never add up to more than it",
       "status": "pass",
-      "durationMs": 5126.898574,
+      "durationMs": 4665.932797,
       "reason": "",
       "backend": "node"
     },
@@ -1764,7 +1764,7 @@
       "source": "tests/end-user-runs.test.ts",
       "name": "the TypeScript SDK: endUsers configure, grant, get and ledger; an agent's bucket; a run out of credit fails with code end_user_credit",
       "status": "pass",
-      "durationMs": 7272.339896,
+      "durationMs": 8330.388457,
       "reason": "",
       "backend": "node"
     },
@@ -1773,7 +1773,7 @@
       "source": "tests/end-user-usage.test.ts:96",
       "name": "usage API and TypeScript SDK parse times, group usage and isolate tenants",
       "status": "pass",
-      "durationMs": 3448.79211,
+      "durationMs": 3866.982043,
       "reason": "",
       "backend": "node"
     },
@@ -1782,7 +1782,7 @@
       "source": "tests/end-user-webhooks.test.ts",
       "name": "end-user events reach an endpoint that selected them, signed",
       "status": "pass",
-      "durationMs": 5166.40354,
+      "durationMs": 5381.956197,
       "reason": "",
       "backend": "node"
     },
@@ -1791,7 +1791,7 @@
       "source": "tests/decisions-api.test.ts:104",
       "name": "a tenant's own OpenRouter key answers its decisions, and is not charged",
       "status": "pass",
-      "durationMs": 3335.10915,
+      "durationMs": 2711.139927,
       "reason": "",
       "backend": "node"
     },
@@ -1800,7 +1800,7 @@
       "source": "tests/decisions-api.test.ts:130",
       "name": "the decide builtin answers from codemode in batches and directly, billed to the run and the agent",
       "status": "pass",
-      "durationMs": 5009.97915,
+      "durationMs": 5127.525015,
       "reason": "",
       "backend": "node"
     },
@@ -1809,7 +1809,7 @@
       "source": "tests/decisions-api.test.ts:151",
       "name": "an agent that denies data collection has decide by default, its calls sent with that data policy",
       "status": "pass",
-      "durationMs": 4625.78442,
+      "durationMs": 4831.644185,
       "reason": "",
       "backend": "node"
     },
@@ -1818,7 +1818,7 @@
       "source": "tests/decisions-api.test.ts:164",
       "name": "decide is every agent's by default, and opts out with decide: false on the agent, its update or its definition; a toolless run and a tenant without an OpenRouter key have none",
       "status": "pass",
-      "durationMs": 13585.46828,
+      "durationMs": 14081.261837,
       "reason": "",
       "backend": "node"
     },
@@ -1827,7 +1827,7 @@
       "source": "tests/decisions-api.test.ts:60",
       "name": "POST /v1/decisions answers one state or a batch on the platform's OpenRouter key, bills what OpenRouter charged, and logs no state",
       "status": "pass",
-      "durationMs": 4112.43115,
+      "durationMs": 4343.08871,
       "reason": "",
       "backend": "node"
     },
@@ -1836,7 +1836,7 @@
       "source": "tests/definitions.test.ts:137",
       "name": "a definition with applyOnUpdate reaches its live agents on every save that revises it, upserts included",
       "status": "pass",
-      "durationMs": 4918.863143,
+      "durationMs": 4791.338858,
       "reason": "",
       "backend": "node"
     },
@@ -1845,7 +1845,7 @@
       "source": "tests/definitions.test.ts:177",
       "name": "an agent's own model, thinking level and prompt addition survive applying its definition",
       "status": "pass",
-      "durationMs": 4971.56125,
+      "durationMs": 5810.553438,
       "reason": "",
       "backend": "node"
     },
@@ -1854,7 +1854,7 @@
       "source": "tests/definitions.test.ts:17",
       "name": "definitions are the tenant's own, validated, and revised",
       "status": "pass",
-      "durationMs": 3205.295306,
+      "durationMs": 3839.344928,
       "reason": "",
       "backend": "node"
     },
@@ -1863,7 +1863,7 @@
       "source": "tests/definitions.test.ts:217",
       "name": "fileTools: false leaves the model present_file, and the file tools to code",
       "status": "pass",
-      "durationMs": 6575.063312,
+      "durationMs": 6872.660051,
       "reason": "",
       "backend": "node"
     },
@@ -1872,7 +1872,7 @@
       "source": "tests/definitions.test.ts:244",
       "name": "the SDK makes an agent from a definition with its attached server's tools, which survive an apply",
       "status": "pass",
-      "durationMs": 4586.332693,
+      "durationMs": 4246.918489,
       "reason": "",
       "backend": "node"
     },
@@ -1881,7 +1881,7 @@
       "source": "tests/definitions.test.ts:328",
       "name": "public configuration waits between turns, preserves history, and reports validation and outcome",
       "status": "pass",
-      "durationMs": 7549.260004,
+      "durationMs": 4649.61675,
       "reason": "",
       "backend": "node"
     },
@@ -1890,7 +1890,7 @@
       "source": "tests/definitions.test.ts:390",
       "name": "a tenant's definitions are capped by its limit (409 DEFINITIONS_LIMIT), and the ones no agent uses can be listed to delete",
       "status": "pass",
-      "durationMs": 4252.194043,
+      "durationMs": 3984.492413,
       "reason": "",
       "backend": "node"
     },
@@ -1899,7 +1899,7 @@
       "source": "tests/definitions.test.ts:53",
       "name": "a definition's key upserts it: the same key is the same definition, revised only when it changes",
       "status": "pass",
-      "durationMs": 2700.868027,
+      "durationMs": 3207.735626,
       "reason": "",
       "backend": "node"
     },
@@ -1908,7 +1908,7 @@
       "source": "tests/definitions.test.ts:75",
       "name": "a definition's idle lifetime applies, and a lifetime given with the agent replaces it",
       "status": "pass",
-      "durationMs": 4324.336799,
+      "durationMs": 3930.985812,
       "reason": "",
       "backend": "node"
     },
@@ -1917,7 +1917,7 @@
       "source": "tests/definitions.test.ts:85",
       "name": "agents are made from a definition, record its revision, and take a new one when it is applied",
       "status": "pass",
-      "durationMs": 6337.729136,
+      "durationMs": 5484.387758,
       "reason": "",
       "backend": "node"
     },
@@ -1926,7 +1926,7 @@
       "source": "tests/agent-messaging.test.ts:136",
       "name": "a browser token with the children scope reads its agent's sub-agents, and only theirs",
       "status": "pass",
-      "durationMs": 7316.05952,
+      "durationMs": 8129.238172,
       "reason": "",
       "backend": "node"
     },
@@ -1935,7 +1935,7 @@
       "source": "tests/agent-messaging.test.ts:156",
       "name": "a child that waits on a person notifies its parent, and notifies again when it resumes and ends",
       "status": "pass",
-      "durationMs": 6883.54198,
+      "durationMs": 7790.28937,
       "reason": "",
       "backend": "node"
     },
@@ -1944,7 +1944,7 @@
       "source": "tests/agent-messaging.test.ts:21",
       "name": "a parent messages its finished child, which works again with its history and notifies again; a child messages its parent",
       "status": "pass",
-      "durationMs": 11389.26068,
+      "durationMs": 13462.092842,
       "reason": "",
       "backend": "node"
     },
@@ -1953,7 +1953,7 @@
       "source": "tests/agent-messaging.test.ts:61",
       "name": "two agents messaging each other in a loop stop at the wake cap with agent_loop_limit, and a turn sends at most 20 messages",
       "status": "pass",
-      "durationMs": 14944.18802,
+      "durationMs": 14969.200268,
       "reason": "",
       "backend": "node"
     },
@@ -1962,7 +1962,7 @@
       "source": "tests/agent-messaging.test.ts:97",
       "name": "interrupt_agent aborts a child; aborting the parent aborts its children unless children: keep; deleting it deletes the children it made",
       "status": "pass",
-      "durationMs": 13784.6178,
+      "durationMs": 14264.224073,
       "reason": "",
       "backend": "node"
     },
@@ -1971,7 +1971,7 @@
       "source": "tests/agent-progress.test.ts:109",
       "name": "a child's message joins its busy parent's running turn at its next step, without a turn of its own",
       "status": "pass",
-      "durationMs": 5876.59216,
+      "durationMs": 5809.999859,
       "reason": "",
       "backend": "node"
     },
@@ -1980,7 +1980,7 @@
       "source": "tests/agent-progress.test.ts:141",
       "name": "a child's message cuts its parent's wait_agent short, and the parent reads it next",
       "status": "pass",
-      "durationMs": 6290.17796,
+      "durationMs": 5760.171473,
       "reason": "",
       "backend": "node"
     },
@@ -1989,7 +1989,7 @@
       "source": "tests/agent-progress.test.ts:168",
       "name": "a response that starts a sub-agent and, beside it, messages and waits for it: those calls run once it has started",
       "status": "pass",
-      "durationMs": 5609.25164,
+      "durationMs": 6201.604714,
       "reason": "",
       "backend": "node"
     },
@@ -1998,7 +1998,7 @@
       "source": "tests/agent-progress.test.ts:16",
       "name": "a background child's progress rides on its parent's next tool result, latest only and once, without a turn; an ending supersedes it",
       "status": "pass",
-      "durationMs": 10223.8086,
+      "durationMs": 10281.475012,
       "reason": "",
       "backend": "node"
     },
@@ -2007,7 +2007,7 @@
       "source": "tests/agent-progress.test.ts:195",
       "name": "a message to a sub-agent that already answered starts a turn, and wait_agent waits for that turn's answer, not the earlier one",
       "status": "pass",
-      "durationMs": 6624.44423,
+      "durationMs": 5024.466623,
       "reason": "",
       "backend": "node"
     },
@@ -2016,7 +2016,7 @@
       "source": "tests/agent-progress.test.ts:217",
       "name": "a sub-agent of the model's own design gets its instructions with its task, as its first message; one from a definition keeps its own prompt",
       "status": "pass",
-      "durationMs": 6146.17203,
+      "durationMs": 6560.287611,
       "reason": "",
       "backend": "node"
     },
@@ -2025,7 +2025,7 @@
       "source": "tests/agent-progress.test.ts:244",
       "name": "a sub-agent of the model's own design shares its parent's files at the same paths",
       "status": "pass",
-      "durationMs": 6387.40366,
+      "durationMs": 6464.494295,
       "reason": "",
       "backend": "node"
     },
@@ -2034,7 +2034,7 @@
       "source": "tests/agent-progress.test.ts:265",
       "name": "wait_agent with untilProgress returns on a report it has not seen, after its floor, so the parent can correct a sub-agent mid-run",
       "status": "pass",
-      "durationMs": 6508.91443,
+      "durationMs": 7502.639433,
       "reason": "",
       "backend": "node"
     },
@@ -2043,7 +2043,7 @@
       "source": "tests/agent-progress.test.ts:75",
       "name": "a delegate child's progress reaches its parent's watchers as subagent_progress and the delegate call's progress",
       "status": "pass",
-      "durationMs": 6037.36751,
+      "durationMs": 5607.013961,
       "reason": "",
       "backend": "node"
     },
@@ -2052,7 +2052,7 @@
       "source": "tests/agent-progress.test.ts:91",
       "name": "only a sub-agent reports progress, and a report is short",
       "status": "pass",
-      "durationMs": 5702.76887,
+      "durationMs": 6132.096856,
       "reason": "",
       "backend": "node"
     },
@@ -2061,7 +2061,7 @@
       "source": "tests/background-agents.test.ts:103",
       "name": "spawn_agent refuses past maxParallel running children and past the depth limit",
       "status": "pass",
-      "durationMs": 12242.225443,
+      "durationMs": 11416.435062,
       "reason": "",
       "backend": "node"
     },
@@ -2070,7 +2070,7 @@
       "source": "tests/background-agents.test.ts:131",
       "name": "two agents waking each other through notifications stop at the wake cap with agent_loop_limit, the notification still in history",
       "status": "pass",
-      "durationMs": 12983.553618,
+      "durationMs": 12782.742635,
       "reason": "",
       "backend": "node"
     },
@@ -2079,7 +2079,7 @@
       "source": "tests/background-agents.test.ts:154",
       "name": "a child's spend is charged to its parent when its notification lands, and a parent at its spend limit gets no turn",
       "status": "pass",
-      "durationMs": 6537.211451,
+      "durationMs": 8712.738479,
       "reason": "",
       "backend": "node"
     },
@@ -2088,7 +2088,7 @@
       "source": "tests/background-agents.test.ts:183",
       "name": "aborting a parent while a child's notification waits keeps the notification: it lands without a turn",
       "status": "pass",
-      "durationMs": 6342.886558,
+      "durationMs": 6644.601293,
       "reason": "",
       "backend": "node"
     },
@@ -2097,7 +2097,7 @@
       "source": "tests/background-agents.test.ts:20",
       "name": "spawn_agent returns at once, and the child's ending arrives once, as a notification with its source and marker",
       "status": "pass",
-      "durationMs": 11668.418257,
+      "durationMs": 12961.763374,
       "reason": "",
       "backend": "node"
     },
@@ -2106,7 +2106,7 @@
       "source": "tests/background-agents.test.ts:213",
       "name": "children started together share what the parent may spend, and limits alone bound a tool's spawns without a tool for the model",
       "status": "pass",
-      "durationMs": 9587.868865,
+      "durationMs": 10507.114062,
       "reason": "",
       "backend": "node"
     },
@@ -2115,7 +2115,7 @@
       "source": "tests/background-agents.test.ts:75",
       "name": "wait_agent answers a child's ending in its result, so no notification follows; list_agents lists children",
       "status": "pass",
-      "durationMs": 6851.658429,
+      "durationMs": 7898.940631,
       "reason": "",
       "backend": "node"
     },
@@ -2124,7 +2124,7 @@
       "source": "tests/multi-agent.test.ts:119",
       "name": "parallel children share what their parent's run has left, rather than each getting all of it",
       "status": "pass",
-      "durationMs": 5884.46843,
+      "durationMs": 7449.016758,
       "reason": "",
       "backend": "node"
     },
@@ -2133,7 +2133,7 @@
       "source": "tests/multi-agent.test.ts:140",
       "name": "children of one response share what their parent's run has left even when they run one after another",
       "status": "pass",
-      "durationMs": 7042.17129,
+      "durationMs": 8043.489951,
       "reason": "",
       "backend": "node"
     },
@@ -2142,7 +2142,7 @@
       "source": "tests/multi-agent.test.ts:160",
       "name": "a caller cannot move a run's place in the delegation chain with prompt metadata",
       "status": "pass",
-      "durationMs": 6836.78413,
+      "durationMs": 6493.161495,
       "reason": "",
       "backend": "node"
     },
@@ -2151,7 +2151,7 @@
       "source": "tests/multi-agent.test.ts:16",
       "name": "delegate starts a child from a definition, returns its answer, and links it to its parent",
       "status": "pass",
-      "durationMs": 6584.19424,
+      "durationMs": 7446.161572,
       "reason": "",
       "backend": "node"
     },
@@ -2160,7 +2160,7 @@
       "source": "tests/multi-agent.test.ts:179",
       "name": "aborting a parent aborts the children it waits on; the stream shows them to subscribers that ask",
       "status": "pass",
-      "durationMs": 4712.79549,
+      "durationMs": 4794.527363,
       "reason": "",
       "backend": "node"
     },
@@ -2169,7 +2169,7 @@
       "source": "tests/multi-agent.test.ts:203",
       "name": "aborting a parent answers once its delegate child has ended, charges what the child spent, and deleting the parent deletes the child",
       "status": "pass",
-      "durationMs": 4978.83328,
+      "durationMs": 5093.889635,
       "reason": "",
       "backend": "node"
     },
@@ -2178,7 +2178,7 @@
       "source": "tests/multi-agent.test.ts:232",
       "name": "a delegate child whose ending no call took, its parent's run over, is landed by the sweep and charged to the parent",
       "status": "pass",
-      "durationMs": 6799.98014,
+      "durationMs": 6374.134632,
       "reason": "",
       "backend": "node"
     },
@@ -2187,7 +2187,7 @@
       "source": "tests/multi-agent.test.ts:57",
       "name": "delegate calls in one response run at once, at most maxParallel together, and one with output answers in its schema",
       "status": "pass",
-      "durationMs": 7627.84699,
+      "durationMs": 9755.04481,
       "reason": "",
       "backend": "node"
     },
@@ -2196,7 +2196,7 @@
       "source": "tests/multi-agent.test.ts:86",
       "name": "delegation stops at its depth limit, and a run's spend limit bounds its children and counts what they spent",
       "status": "pass",
-      "durationMs": 8653.01374,
+      "durationMs": 12058.557137,
       "reason": "",
       "backend": "node"
     },
@@ -2205,7 +2205,7 @@
       "source": "tests/sdk-multi-agent.test.ts:13",
       "name": "SDK: delegate settings on upsert bring their builtin; a run lists its child's id, and a stream with subagents shows it start and end",
       "status": "pass",
-      "durationMs": 7910.041242,
+      "durationMs": 9203.921992,
       "reason": "",
       "backend": "node"
     },
@@ -2214,7 +2214,7 @@
       "source": "tests/tool-spawn.test.ts:15",
       "name": "a trusted tool prepares a persistent worker and starts it as a background sub-agent; a busy worker queues the next task",
       "status": "pass",
-      "durationMs": 8691.43289,
+      "durationMs": 9137.921238,
       "reason": "",
       "backend": "node"
     },
@@ -2223,7 +2223,7 @@
       "source": "tests/tool-spawn.test.ts:75",
       "name": "a spawn directive from a tool without runtime auth (an attached application's) is refused",
       "status": "pass",
-      "durationMs": 4310.38713,
+      "durationMs": 4870.577332,
       "reason": "",
       "backend": "node"
     },
@@ -2232,7 +2232,7 @@
       "source": "tests/workflows.test.ts:106",
       "name": "an agent's workflow settings reach its definition and its detail",
       "status": "pass",
-      "durationMs": 3214.12714,
+      "durationMs": 3022.68744,
       "reason": "",
       "backend": "node"
     },
@@ -2241,7 +2241,7 @@
       "source": "tests/workflows.test.ts:122",
       "name": "an agent with the workflow builtin is offered run_workflow; one without never sees it",
       "status": "pass",
-      "durationMs": 4317.3011,
+      "durationMs": 4159.83117,
       "reason": "",
       "backend": "node"
     },
@@ -2250,7 +2250,7 @@
       "source": "tests/workflows.test.ts:23",
       "name": "the SDK runs a stateless workflow with its builtin added automatically",
       "status": "pass",
-      "durationMs": 5116.12175,
+      "durationMs": 4937.75753,
       "reason": "",
       "backend": "node"
     },
@@ -2259,7 +2259,7 @@
       "source": "tests/workflows.test.ts:37",
       "name": "run_workflow coordinates child agents from a script and returns only the script's value",
       "status": "pass",
-      "durationMs": 6208.30015,
+      "durationMs": 5773.98526,
       "reason": "",
       "backend": "node"
     },
@@ -2268,7 +2268,7 @@
       "source": "tests/workflows.test.ts:90",
       "name": "an agent call the settings do not allow answers null instead of failing the script",
       "status": "pass",
-      "durationMs": 3651.20708,
+      "durationMs": 3469.12841,
       "reason": "",
       "backend": "node"
     },
@@ -2277,7 +2277,7 @@
       "source": "tests/errors.test.ts:5",
       "name": "every error body names a machine-readable code beside its message",
       "status": "pass",
-      "durationMs": 8091.39465,
+      "durationMs": 7658.947692,
       "reason": "",
       "backend": "node"
     },
@@ -2286,7 +2286,7 @@
       "source": "tests/agent-links.test.ts:5",
       "name": "a tenant signs links to its agent's files with its own token, as for its volumes",
       "status": "pass",
-      "durationMs": 5758.388917,
+      "durationMs": 7279.503275,
       "reason": "",
       "backend": "node"
     },
@@ -2295,7 +2295,7 @@
       "source": "tests/file-arguments.test.ts",
       "name": "fileArguments: other parties' servers are not offered or sent files unless a definition turns it on",
       "status": "pass",
-      "durationMs": 6682.790241,
+      "durationMs": 6998.231559,
       "reason": "",
       "backend": "node"
     },
@@ -2304,7 +2304,7 @@
       "source": "tests/file-arguments.test.ts",
       "name": "files reach a tool as URLs bound to the call: a file at its version, a directory as a snapshot, small ones inline",
       "status": "pass",
-      "durationMs": 6914.904653,
+      "durationMs": 6442.618999,
       "reason": "",
       "backend": "node"
     },
@@ -2313,7 +2313,7 @@
       "source": "tests/files.test.ts:261",
       "name": "the TypeScript SDK attaches bytes, Blobs, local paths and workspace files; a file deleted or replaced after attaching still reads as attached",
       "status": "pass",
-      "durationMs": 3831.736032,
+      "durationMs": 4674.65871,
       "reason": "",
       "backend": "node"
     },
@@ -2322,7 +2322,7 @@
       "source": "tests/files.test.ts:76",
       "name": "the REST API stores the upload's type and serves downloads with safe headers",
       "status": "pass",
-      "durationMs": 2171.762932,
+      "durationMs": 2574.32155,
       "reason": "",
       "backend": "node"
     },
@@ -2331,7 +2331,7 @@
       "source": "tests/files.test.ts:98",
       "name": "signed links: bound to tenant, volume, path, method, expiry, size and content type; tampering fails",
       "status": "pass",
-      "durationMs": 3349.857374,
+      "durationMs": 3868.40953,
       "reason": "",
       "backend": "node"
     },
@@ -2340,7 +2340,7 @@
       "source": "tests/files.test.ts",
       "name": "a run's outcome lists the files it wrote and presented, and a presented file is an event with a download link",
       "status": "pass",
-      "durationMs": 4807.287785,
+      "durationMs": 5079.6752,
       "reason": "",
       "backend": "node"
     },
@@ -2349,7 +2349,7 @@
       "source": "tests/files.test.ts",
       "name": "an upload streams to storage a chunk at a time: the source is never more than a few chunks ahead of storage",
       "status": "pass",
-      "durationMs": 5707.405427,
+      "durationMs": 3284.68664,
       "reason": "",
       "backend": "node"
     },
@@ -2358,7 +2358,7 @@
       "source": "tests/files.test.ts",
       "name": "attachments over REST land in the workspace, the transcript keeps references, and the model sees them natively",
       "status": "pass",
-      "durationMs": 4129.483359,
+      "durationMs": 4415.39527,
       "reason": "",
       "backend": "node"
     },
@@ -2367,7 +2367,7 @@
       "source": "tests/tool-files.test.ts",
       "name": "application-attached MCP files are saved to the workspace like a server's",
       "status": "pass",
-      "durationMs": 3938.56777,
+      "durationMs": 5302.864735,
       "reason": "",
       "backend": "node"
     },
@@ -2376,7 +2376,7 @@
       "source": "tests/tool-files.test.ts",
       "name": "MCP images, audio, blobs and long text are saved to the workspace, under sanitized names",
       "status": "pass",
-      "durationMs": 5623.96425,
+      "durationMs": 9093.317593,
       "reason": "",
       "backend": "node"
     },
@@ -2385,7 +2385,7 @@
       "source": "tests/tool-files.test.ts",
       "name": "MCP tools take files by {$file}: base64 or a call-bound URL, only from the agent's mounts",
       "status": "pass",
-      "durationMs": 6152.59783,
+      "durationMs": 8521.573729,
       "reason": "",
       "backend": "node"
     },
@@ -2394,7 +2394,7 @@
       "source": "tests/tool-files.test.ts",
       "name": "OpenAPI operations upload files (multipart, raw bytes, base64) and save binary responses",
       "status": "pass",
-      "durationMs": 4600.71194,
+      "durationMs": 6111.031195,
       "reason": "",
       "backend": "node"
     },
@@ -2403,7 +2403,7 @@
       "source": "tests/tool-files.test.ts",
       "name": "web_fetch saves PDFs and images to the workspace and shows them to the model",
       "status": "pass",
-      "durationMs": 4341.43023,
+      "durationMs": 5283.845186,
       "reason": "",
       "backend": "node"
     },
@@ -2412,7 +2412,7 @@
       "source": "tests/agent-fork.test.ts:132",
       "name": "a fork of an agent mid-turn ends before the running turn: no partial turn, and the fork loads idle",
       "status": "pass",
-      "durationMs": 8632.182886,
+      "durationMs": 8934.996729,
       "reason": "",
       "backend": "node"
     },
@@ -2421,7 +2421,7 @@
       "source": "tests/agent-fork.test.ts:160",
       "name": "a fork of a compacted agent keeps its summary: the model sees the summary and what follows, history keeps every message",
       "status": "pass",
-      "durationMs": 6787.067789,
+      "durationMs": 7722.434879,
       "reason": "",
       "backend": "node"
     },
@@ -2430,7 +2430,7 @@
       "source": "tests/agent-fork.test.ts:18",
       "name": "a fork has the source's configuration, history and workspace, and from then on each goes its own way",
       "status": "pass",
-      "durationMs": 9919.103125,
+      "durationMs": 9839.224141,
       "reason": "",
       "backend": "node"
     },
@@ -2439,7 +2439,7 @@
       "source": "tests/agent-fork.test.ts:196",
       "name": "a fork's key makes it idempotent: a retry returns the same fork, another source's fork with it is refused",
       "status": "pass",
-      "durationMs": 8048.209596,
+      "durationMs": 7721.378994,
       "reason": "",
       "backend": "node"
     },
@@ -2448,7 +2448,7 @@
       "source": "tests/agent-fork.test.ts:225",
       "name": "only the source's tenant forks it, and never with a browser token",
       "status": "pass",
-      "durationMs": 3618.879391,
+      "durationMs": 3608.01869,
       "reason": "",
       "backend": "node"
     },
@@ -2457,7 +2457,7 @@
       "source": "tests/agent-fork.test.ts:235",
       "name": "a fork pins the files its history refers to: they stay stored after the source, its workspace and the fork's copy are gone",
       "status": "pass",
-      "durationMs": 6569.696559,
+      "durationMs": 5987.882125,
       "reason": "",
       "backend": "node"
     },
@@ -2466,7 +2466,7 @@
       "source": "tests/agent-fork.test.ts:256",
       "name": "the SDK's fork() makes a new agent from this one: its history, configuration and files; a key returns the same fork",
       "status": "pass",
-      "durationMs": 6610.384374,
+      "durationMs": 6478.525214,
       "reason": "",
       "backend": "node"
     },
@@ -2475,7 +2475,7 @@
       "source": "tests/agent-fork.test.ts:279",
       "name": "a fork is cut from the source's journal: its history, and Pi's context as of the cut",
       "status": "pass",
-      "durationMs": 6305.699066,
+      "durationMs": 5907.028249,
       "reason": "",
       "backend": "node"
     },
@@ -2484,7 +2484,7 @@
       "source": "tests/agent-fork.test.ts:295",
       "name": "a fork after a context reset starts from the context the reset left, where the source stood and at a cut after the reset",
       "status": "pass",
-      "durationMs": 9384.924889,
+      "durationMs": 8912.951977,
       "reason": "",
       "backend": "node"
     },
@@ -2493,7 +2493,7 @@
       "source": "tests/agent-fork.test.ts:76",
       "name": "a fork may act for someone else and carry its own prompt addition and model headers: what a create fixes, the fork's create sets",
       "status": "pass",
-      "durationMs": 5910.071498,
+      "durationMs": 5445.853282,
       "reason": "",
       "backend": "node"
     },
@@ -2502,7 +2502,7 @@
       "source": "tests/agent-fork.test.ts:95",
       "name": "a fork ends at a message: that message and the tool results answering it, or a request's whole turn",
       "status": "pass",
-      "durationMs": 8856.112252,
+      "durationMs": 8864.901824,
       "reason": "",
       "backend": "node"
     },
@@ -2511,7 +2511,7 @@
       "source": "tests/context-reset.test.ts:118",
       "name": "a context too large to load resets over the API, and the next prompt runs from the new context",
       "status": "pass",
-      "durationMs": 11596.209458,
+      "durationMs": 12062.45465,
       "reason": "",
       "backend": "node"
     },
@@ -2520,7 +2520,7 @@
       "source": "tests/history-formats.test.ts:88",
       "name": "an agent made with importMessages begins with the conversation, and a refused import makes no agent",
       "status": "pass",
-      "durationMs": 6321.222929,
+      "durationMs": 4971.19011,
       "reason": "",
       "backend": "node"
     },
@@ -2529,7 +2529,7 @@
       "source": "tests/history-import.test.ts:33",
       "name": "a refused import answers 400 INVALID_HISTORY, or 413 HISTORY_TOO_LARGE, and makes no agent",
       "status": "pass",
-      "durationMs": 4084.89104,
+      "durationMs": 4142.04888,
       "reason": "",
       "backend": "node"
     },
@@ -2538,7 +2538,7 @@
       "source": "tests/history-import.test.ts:46",
       "name": "a compactionSummary in imported history stands for everything before it: history keeps every message, the model sees the summary and what follows",
       "status": "pass",
-      "durationMs": 4215.19041,
+      "durationMs": 4136.22659,
       "reason": "",
       "backend": "node"
     },
@@ -2547,7 +2547,7 @@
       "source": "tests/history-import.test.ts:66",
       "name": "imported messages need only their role and content: usage, stopReason, timestamps and isError are filled in",
       "status": "pass",
-      "durationMs": 4150.30594,
+      "durationMs": 4548.93366,
       "reason": "",
       "backend": "node"
     },
@@ -2556,7 +2556,7 @@
       "source": "tests/history-none-ignored.test.ts:12",
       "name": "a prompt's history: \"none\" is accepted and ignored: the run sees the agent's history, logged once per agent",
       "status": "pass",
-      "durationMs": 4182.70715,
+      "durationMs": 4510.624619,
       "reason": "",
       "backend": "node"
     },
@@ -2565,7 +2565,7 @@
       "source": "tests/history-none-ignored.test.ts:32",
       "name": "the SDK still takes history: \"none\" (ignored), codeMode and configHash",
       "status": "pass",
-      "durationMs": 4521.99765,
+      "durationMs": 5092.352852,
       "reason": "",
       "backend": "node"
     },
@@ -2574,7 +2574,7 @@
       "source": "tests/history-none-ignored.test.ts:51",
       "name": "a schedule's history: \"none\", sent or stored, is accepted and ignored: its wake-up sees the agent's history",
       "status": "pass",
-      "durationMs": 4443.65205,
+      "durationMs": 4444.021121,
       "reason": "",
       "backend": "node"
     },
@@ -2583,7 +2583,7 @@
       "source": "tests/history-pages.test.ts:266",
       "name": "history comes in pages of whole turns, newest first, from Pi storage wherever the agent runs or not",
       "status": "pass",
-      "durationMs": 7230.710817,
+      "durationMs": 9259.065574,
       "reason": "",
       "backend": "node"
     },
@@ -2592,7 +2592,7 @@
       "source": "tests/history-pages.test.ts:321",
       "name": "history maxBytes works alone on the API and through the SDK, with validated bounds",
       "status": "pass",
-      "durationMs": 4470.190385,
+      "durationMs": 4771.26134,
       "reason": "",
       "backend": "node"
     },
@@ -2601,7 +2601,7 @@
       "source": "tests/history-pages.test.ts:346",
       "name": "history after pages forward on the API and through the SDK; after with before is a 400",
       "status": "pass",
-      "durationMs": 4125.540682,
+      "durationMs": 3912.415177,
       "reason": "",
       "backend": "node"
     },
@@ -2610,7 +2610,7 @@
       "source": "tests/history-pages.test.ts:400",
       "name": "the newest page has the running turn's finished messages, at their indexes; purging removes the agent's history",
       "status": "pass",
-      "durationMs": 5945.327394,
+      "durationMs": 6477.802027,
       "reason": "",
       "backend": "node"
     },
@@ -2619,7 +2619,7 @@
       "source": "tests/pi-durable-context-guard.test.ts:107",
       "name": "an oversized resumed range fails once, clears pending work, and remains readable and abortable",
       "status": "pass",
-      "durationMs": 6114.97559,
+      "durationMs": 6727.463494,
       "reason": "",
       "backend": "node"
     },
@@ -2628,7 +2628,7 @@
       "source": "tests/pi-durable-context-guard.test.ts:79",
       "name": "a newly seeded oversized range fails startup with a coded outcome",
       "status": "pass",
-      "durationMs": 4713.243084,
+      "durationMs": 5936.536543,
       "reason": "",
       "backend": "node"
     },
@@ -2637,7 +2637,7 @@
       "source": "tests/pi-durable-context-guard.test.ts:90",
       "name": "a live range stops with context_too_large and does not retry the model",
       "status": "pass",
-      "durationMs": 6478.74248,
+      "durationMs": 6794.350703,
       "reason": "",
       "backend": "node"
     },
@@ -2646,7 +2646,7 @@
       "source": "tests/api.test.ts:577",
       "name": "the OpenAPI document is served without credentials",
       "status": "pass",
-      "durationMs": 2809.737331,
+      "durationMs": 2773.879205,
       "reason": "",
       "backend": "node"
     },
@@ -2655,7 +2655,7 @@
       "source": "tests/docs.test.ts:104",
       "name": "an unknown path is a 404 that says where to start, and a known one without credentials a 401 that says how to get them",
       "status": "pass",
-      "durationMs": 2918.429627,
+      "durationMs": 2696.510728,
       "reason": "",
       "backend": "node"
     },
@@ -2664,7 +2664,7 @@
       "source": "tests/docs.test.ts:11",
       "name": "the docs are served without credentials: llms.txt, llms-full.txt and every page, the operators' too, pointing at this runtime",
       "status": "pass",
-      "durationMs": 3456.830782,
+      "durationMs": 3537.92388,
       "reason": "",
       "backend": "node"
     },
@@ -2673,7 +2673,7 @@
       "source": "tests/docs.test.ts:49",
       "name": "coding agents' setup skill is at /SKILL.md (and /skill.md), uncached; /docs sends people to the docs site",
       "status": "pass",
-      "durationMs": 2648.245849,
+      "durationMs": 3531.524063,
       "reason": "",
       "backend": "node"
     },
@@ -2682,7 +2682,7 @@
       "source": "tests/docs.test.ts:69",
       "name": "search engines may crawl everything but list neither the console nor the docs' Markdown copies; the API and MCP answer as before",
       "status": "pass",
-      "durationMs": 2612.350022,
+      "durationMs": 3564.575895,
       "reason": "",
       "backend": "node"
     },
@@ -2691,7 +2691,7 @@
       "source": "tests/human-input.test.ts:102",
       "name": "abort cancels waiting inputs and closes the turn without the model; expiry does the same",
       "status": "pass",
-      "durationMs": 63978.325326,
+      "durationMs": 64274.90507,
       "reason": "",
       "backend": "node"
     },
@@ -2700,7 +2700,7 @@
       "source": "tests/human-input.test.ts:121",
       "name": "only whoever started the turn, or an approver, may answer",
       "status": "pass",
-      "durationMs": 3553.72968,
+      "durationMs": 3260.45171,
       "reason": "",
       "backend": "node"
     },
@@ -2709,7 +2709,7 @@
       "source": "tests/human-input.test.ts:135",
       "name": "an approval policy asks before a gated tool runs: the approved call runs once, with proof; a declined one never runs",
       "status": "pass",
-      "durationMs": 4907.908995,
+      "durationMs": 5286.54181,
       "reason": "",
       "backend": "node"
     },
@@ -2718,7 +2718,7 @@
       "source": "tests/human-input.test.ts:185",
       "name": "an MCP server's input_required (form and url, and the older -32042) suspends the call; the retry carries the answers and its state",
       "status": "pass",
-      "durationMs": 3959.780013,
+      "durationMs": 3662.5332,
       "reason": "",
       "backend": "node"
     },
@@ -2727,7 +2727,7 @@
       "source": "tests/human-input.test.ts:223",
       "name": "an agent with no one to ask does not tell servers it can elicit",
       "status": "pass",
-      "durationMs": 4000.73157,
+      "durationMs": 4121.16721,
       "reason": "",
       "backend": "node"
     },
@@ -2736,7 +2736,7 @@
       "source": "tests/human-input.test.ts:231",
       "name": "an attached tool asks with ctx.confirm and ctx.ask: the call runs again with the answers, everything before an ask included",
       "status": "pass",
-      "durationMs": 4436.003958,
+      "durationMs": 4953.56585,
       "reason": "",
       "backend": "node"
     },
@@ -2745,7 +2745,7 @@
       "source": "tests/human-input.test.ts:262",
       "name": "inputs from parallel calls are one suspension: answered together, all or none, and listed in the tenant's inbox",
       "status": "pass",
-      "durationMs": 4784.266465,
+      "durationMs": 4591.95897,
       "reason": "",
       "backend": "node"
     },
@@ -2754,7 +2754,7 @@
       "source": "tests/human-input.test.ts:286",
       "name": "an application answers with onInput, from its SDK",
       "status": "pass",
-      "durationMs": 4555.426217,
+      "durationMs": 4604.67429,
       "reason": "",
       "backend": "node"
     },
@@ -2763,7 +2763,7 @@
       "source": "tests/human-input.test.ts:303",
       "name": "a remote MCP tool sets its own exposure in _meta, over its source's; approval keeps its exposure",
       "status": "pass",
-      "durationMs": 4366.600916,
+      "durationMs": 4148.82342,
       "reason": "",
       "backend": "node"
     },
@@ -2772,7 +2772,7 @@
       "source": "tests/human-input.test.ts:314",
       "name": "an input for particular people must be answered naming who answers",
       "status": "pass",
-      "durationMs": 6013.768117,
+      "durationMs": 4372.31516,
       "reason": "",
       "backend": "node"
     },
@@ -2781,7 +2781,7 @@
       "source": "tests/human-input.test.ts:330",
       "name": "approval tools stay searchable in code and refuse before asking or executing",
       "status": "pass",
-      "durationMs": 5695.499887,
+      "durationMs": 4097.71495,
       "reason": "",
       "backend": "node"
     },
@@ -2790,7 +2790,7 @@
       "source": "tests/human-input.test.ts:45",
       "name": "ask_user suspends the turn; the answer, after the agent unloaded, resumes it with the answer as the call's result",
       "status": "pass",
-      "durationMs": 6599.442686,
+      "durationMs": 7592.632337,
       "reason": "",
       "backend": "node"
     },
@@ -2799,7 +2799,7 @@
       "source": "tests/human-input.test.ts:91",
       "name": "a new message supersedes a waiting input; its call is closed and the prompt runs",
       "status": "pass",
-      "durationMs": 4345.607226,
+      "durationMs": 4794.266352,
       "reason": "",
       "backend": "node"
     },
@@ -2808,7 +2808,7 @@
       "source": "tests/judged-approval.test.ts:105",
       "name": "a judge that cannot answer asks the person rather than letting the call run",
       "status": "pass",
-      "durationMs": 4517.641852,
+      "durationMs": 4920.120914,
       "reason": "",
       "backend": "node"
     },
@@ -2817,7 +2817,7 @@
       "source": "tests/judged-approval.test.ts:113",
       "name": "an approval mode that is not one of the four is refused when the definition is saved",
       "status": "pass",
-      "durationMs": 2557.275333,
+      "durationMs": 3175.008468,
       "reason": "",
       "backend": "node"
     },
@@ -2826,7 +2826,7 @@
       "source": "tests/judged-approval.test.ts:120",
       "name": "after an approval, a judged call in the resumed turn is still judged against the request that started it",
       "status": "pass",
-      "durationMs": 4250.719086,
+      "durationMs": 5338.007481,
       "reason": "",
       "backend": "node"
     },
@@ -2835,7 +2835,7 @@
       "source": "tests/judged-approval.test.ts:137",
       "name": "a description longer than the model sees is cut for the judge, not refused",
       "status": "pass",
-      "durationMs": 4069.130265,
+      "durationMs": 4575.751668,
       "reason": "",
       "backend": "node"
     },
@@ -2844,7 +2844,7 @@
       "source": "tests/judged-approval.test.ts:62",
       "name": "a judged call the judge calls ordinary runs with nobody asked, and the judge sees the request and the arguments",
       "status": "pass",
-      "durationMs": 5343.281536,
+      "durationMs": 5269.713034,
       "reason": "",
       "backend": "node"
     },
@@ -2853,7 +2853,7 @@
       "source": "tests/judged-approval.test.ts:81",
       "name": "a judged call the judge calls exfiltration does not run, and the model reads the denial as the call's result",
       "status": "pass",
-      "durationMs": 4113.012328,
+      "durationMs": 4338.775843,
       "reason": "",
       "backend": "node"
     },
@@ -2862,7 +2862,7 @@
       "source": "tests/judged-approval.test.ts:89",
       "name": "a judged call the judge is unsure about asks the person, and the approved call runs without a second judgement",
       "status": "pass",
-      "durationMs": 4252.5512,
+      "durationMs": 4059.204752,
       "reason": "",
       "backend": "node"
     },
@@ -2871,7 +2871,7 @@
       "source": "tests/image-generation-api.test.ts",
       "name": "POST /v1/images makes images on the platform's OpenAI key for a prepaid tenant, edits images given as base64, multipart or a URL, and is billed per token",
       "status": "pass",
-      "durationMs": 3978.23361,
+      "durationMs": 4077.45851,
       "reason": "",
       "backend": "node"
     },
@@ -2880,7 +2880,7 @@
       "source": "tests/image-generation-api.test.ts",
       "name": "POST /v1/images needs an OpenAI key, and a monthly cap refuses it",
       "status": "pass",
-      "durationMs": 2442.42755,
+      "durationMs": 2365.46316,
       "reason": "",
       "backend": "node"
     },
@@ -2889,7 +2889,7 @@
       "source": "tests/image-generation-api.test.ts",
       "name": "POST /v1/images with volumeId saves the images to the volume and answers their paths",
       "status": "pass",
-      "durationMs": 3661.21296,
+      "durationMs": 2901.51283,
       "reason": "",
       "backend": "node"
     },
@@ -2898,7 +2898,7 @@
       "source": "tests/image-generation-sdk.test.ts:7",
       "name": "the TypeScript SDK: images.generate and images.edit from bytes, a Blob or a URL, answered as base64 or saved to a volume",
       "status": "pass",
-      "durationMs": 2902.9796,
+      "durationMs": 2830.95141,
       "reason": "",
       "backend": "node"
     },
@@ -2907,7 +2907,7 @@
       "source": "tests/images.test.ts:187",
       "name": "an image whose scaling failed for now (its parse job crashed) is tried again on the next request, not held as omitted",
       "status": "pass",
-      "durationMs": 6210.072934,
+      "durationMs": 5331.950647,
       "reason": "",
       "backend": "node"
     },
@@ -2916,7 +2916,7 @@
       "source": "tests/images.test.ts",
       "name": "a thread with over 20 images, one of them 2,400 px, gets a request where every image is at most 1,568 px; the stored history is unchanged",
       "status": "pass",
-      "durationMs": 6519.93514,
+      "durationMs": 10430.522786,
       "reason": "",
       "backend": "node"
     },
@@ -2925,7 +2925,7 @@
       "source": "tests/journey-server.test.ts:120",
       "name": "an account's export holds its journey: what this runtime kept and what the store holds; an account journey never knew has none",
       "status": "pass",
-      "durationMs": 3893.38379,
+      "durationMs": 3693.055568,
       "reason": "",
       "backend": "node"
     },
@@ -2934,7 +2934,7 @@
       "source": "tests/journey-server.test.ts:148",
       "name": "an email sign-up is an account made when its mailed link is finished, in the browser that finishes it",
       "status": "pass",
-      "durationMs": 3625.51219,
+      "durationMs": 3968.880424,
       "reason": "",
       "backend": "node"
     },
@@ -2943,7 +2943,7 @@
       "source": "tests/journey-server.test.ts:46",
       "name": "a runtime with journey events off serves the console as ever: no tag, no cookie, no endpoint",
       "status": "pass",
-      "durationMs": 3713.97425,
+      "durationMs": 3363.164164,
       "reason": "",
       "backend": "node"
     },
@@ -2952,7 +2952,7 @@
       "source": "tests/journey-server.test.ts:57",
       "name": "with journey events on, an arrival is noted through the redirect, the browser gets its visitor id, and the console's pages reach the store",
       "status": "pass",
-      "durationMs": 2933.73323,
+      "durationMs": 3478.914731,
       "reason": "",
       "backend": "node"
     },
@@ -2961,7 +2961,7 @@
       "source": "tests/journey-server.test.ts:88",
       "name": "with journey events on, making an agent and running it tells the store of the agent, the day's activity and the account's first run",
       "status": "pass",
-      "durationMs": 5213.38307,
+      "durationMs": 6587.32762,
       "reason": "",
       "backend": "node"
     },
@@ -2970,7 +2970,7 @@
       "source": "tests/api.test.ts:132",
       "name": "tenants set provider keys over REST; keys are never returned by public endpoints",
       "status": "pass",
-      "durationMs": 3282.307749,
+      "durationMs": 4160.308061,
       "reason": "",
       "backend": "node"
     },
@@ -2979,7 +2979,7 @@
       "source": "tests/api.test.ts:238",
       "name": "tenants mint and revoke their own API tokens",
       "status": "pass",
-      "durationMs": 2797.826228,
+      "durationMs": 3466.461992,
       "reason": "",
       "backend": "node"
     },
@@ -2988,7 +2988,7 @@
       "source": "tests/credential-exchange.test.ts",
       "name": "through the API: saving lists the server with a credential for the definition, agents get their own, and nothing shows the credential",
       "status": "pass",
-      "durationMs": 8873.61603,
+      "durationMs": 9121.047909,
       "reason": "",
       "backend": "node"
     },
@@ -2997,7 +2997,7 @@
       "source": "tests/key-scopes.test.ts:10",
       "name": "key scopes store sealed entries, and an agent's calls use its scope's current key, gateway and headers, else the tenant's",
       "status": "pass",
-      "durationMs": 4611.545413,
+      "durationMs": 4648.719194,
       "reason": "",
       "backend": "node"
     },
@@ -3006,7 +3006,7 @@
       "source": "tests/key-scopes.test.ts",
       "name": "a scope's baseUrl is a public address the runtime may call, checked when saved and at every call",
       "status": "pass",
-      "durationMs": 9766.539498,
+      "durationMs": 13354.002235,
       "reason": "",
       "backend": "node"
     },
@@ -3015,7 +3015,7 @@
       "source": "tests/key-scopes.test.ts",
       "name": "a scope's baseUrl replaces the provider's root, a keyless entry sends only its gateway's headers, and an agent's modelHeaders come after them",
       "status": "pass",
-      "durationMs": 5618.358082,
+      "durationMs": 6028.199789,
       "reason": "",
       "backend": "node"
     },
@@ -3024,7 +3024,7 @@
       "source": "tests/key-scopes.test.ts",
       "name": "a scope's model provider need not be the tenant's: an agent may be created on it, and Bedrock takes its key as a bearer token",
       "status": "pass",
-      "durationMs": 6808.685936,
+      "durationMs": 8029.109956,
       "reason": "",
       "backend": "node"
     },
@@ -3033,7 +3033,7 @@
       "source": "tests/key-scopes.test.ts",
       "name": "Bedrock's region comes from the entry or its regional endpoint",
       "status": "pass",
-      "durationMs": 3028.346239,
+      "durationMs": 4023.947019,
       "reason": "",
       "backend": "node"
     },
@@ -3042,7 +3042,7 @@
       "source": "tests/hosted-mcp.test.ts",
       "name": "a tool's result is cut at MAX_RESULT characters, saying so",
       "status": "pass",
-      "durationMs": 65.106897,
+      "durationMs": 60.62894,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -3051,7 +3051,7 @@
       "source": "tests/hosted-mcp.test.ts",
       "name": "AGENT_ISSUER must be one of the origins served",
       "status": "pass",
-      "durationMs": 3.338302,
+      "durationMs": 2.2891,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -3060,7 +3060,7 @@
       "source": "tests/hosted-mcp.test.ts",
       "name": "an alias serves everything, names MCP resources as reached, keeps the issuer, and sends browser pages to the public URL",
       "status": "pass",
-      "durationMs": 3072.497707,
+      "durationMs": 3117.48115,
       "reason": "",
       "backend": "node"
     },
@@ -3069,7 +3069,7 @@
       "source": "tests/hosted-mcp.test.ts",
       "name": "MCP clients sign in with OAuth: registration, consent, PKCE, rotating refresh tokens, revocation",
       "status": "pass",
-      "durationMs": 7575.097923,
+      "durationMs": 6091.46735,
       "reason": "",
       "backend": "node"
     },
@@ -3078,7 +3078,7 @@
       "source": "tests/hosted-mcp.test.ts",
       "name": "the hosted MCP endpoint runs the CLI's tools as the caller, and reads no files or environment",
       "status": "pass",
-      "durationMs": 6156.356183,
+      "durationMs": 4898.64123,
       "reason": "",
       "backend": "node"
     },
@@ -3087,7 +3087,7 @@
       "source": "tests/hosted-mcp.test.ts",
       "name": "the OpenAI apps domain challenge is served as plain text from AGENT_OPENAI_APPS_CHALLENGE",
       "status": "pass",
-      "durationMs": 3586.226184,
+      "durationMs": 2723.19351,
       "reason": "",
       "backend": "node"
     },
@@ -3096,7 +3096,7 @@
       "source": "tests/prompt-options.test.ts:109",
       "name": "the legacy /clients steer holds a message sent while idle for the next run, which a prompt sent in the same tick starts: one turn, in order",
       "status": "pass",
-      "durationMs": 6206.516135,
+      "durationMs": 4113.96507,
       "reason": "",
       "backend": "node"
     },
@@ -3105,7 +3105,7 @@
       "source": "tests/prompt-options.test.ts:49",
       "name": "a message sent just after a first prompt joins its turn, though the agent is still starting",
       "status": "pass",
-      "durationMs": 5853.405546,
+      "durationMs": 5373.57102,
       "reason": "",
       "backend": "node"
     },
@@ -3114,7 +3114,7 @@
       "source": "tests/prompt-options.test.ts:60",
       "name": "whileRunning: steer hands a running turn the message; with no turn running it starts one; retries are idempotent",
       "status": "pass",
-      "durationMs": 6571.592433,
+      "durationMs": 6004.13692,
       "reason": "",
       "backend": "node"
     },
@@ -3123,7 +3123,7 @@
       "source": "tests/prompt-options.test.ts:7",
       "name": "a prompt's requestId and metadata are kept on its user message and its request: in history, the stream and snapshots, never shown to the model",
       "status": "pass",
-      "durationMs": 7127.07908,
+      "durationMs": 6670.77318,
       "reason": "",
       "backend": "node"
     },
@@ -3132,7 +3132,7 @@
       "source": "tests/prompt-options.test.ts:94",
       "name": "a steered message the running turn did not take (it was aborted, keeping the queue) runs once, as a turn of its own",
       "status": "pass",
-      "durationMs": 5128.14688,
+      "durationMs": 3933.63541,
       "reason": "",
       "backend": "node"
     },
@@ -3141,7 +3141,7 @@
       "source": "tests/request-wait.test.ts:36",
       "name": "the SDK's requestStatus takes wait: one call that waits for a request sent without waiting",
       "status": "pass",
-      "durationMs": 4826.48362,
+      "durationMs": 6979.037453,
       "reason": "",
       "backend": "node"
     },
@@ -3150,7 +3150,7 @@
       "source": "tests/request-wait.test.ts:6",
       "name": "a request read with ?wait answers as soon as it settles, or when the wait ends, still running",
       "status": "pass",
-      "durationMs": 11959.89284,
+      "durationMs": 13074.200003,
       "reason": "",
       "backend": "node"
     },
@@ -3159,7 +3159,7 @@
       "source": "tests/sender.test.ts:8",
       "name": "a message's sender reaches the model in a block only the runtime can write, and acts in the turn",
       "status": "pass",
-      "durationMs": 5923.960384,
+      "durationMs": 4986.00206,
       "reason": "",
       "backend": "node"
     },
@@ -3168,7 +3168,7 @@
       "source": "tests/added-models.test.ts:62",
       "name": "an agent on it calls OpenRouter's Chat Completions with the 1017 id and the reasoning it asks for",
       "status": "pass",
-      "durationMs": 6284.820497,
+      "durationMs": 8174.95379,
       "reason": "",
       "backend": "node"
     },
@@ -3177,7 +3177,7 @@
       "source": "tests/agent-language.test.ts:108",
       "name": "a definition's language: its agents inherit it, an agent's own stays when it is applied, and a run takes its own or the definition's",
       "status": "pass",
-      "durationMs": 8370.01476,
+      "durationMs": 11315.939899,
       "reason": "",
       "backend": "node"
     },
@@ -3186,7 +3186,7 @@
       "source": "tests/agent-language.test.ts:145",
       "name": "the TypeScript SDK sends language when it makes, configures and runs agents",
       "status": "pass",
-      "durationMs": 5699.64329,
+      "durationMs": 7314.95874,
       "reason": "",
       "backend": "node"
     },
@@ -3195,7 +3195,7 @@
       "source": "tests/agent-language.test.ts:29",
       "name": "an agent's language: in its prompt once and the same every turn, shown, changed and cleared by PATCH, refused when junk",
       "status": "pass",
-      "durationMs": 13339.68947,
+      "durationMs": 14273.116814,
       "reason": "",
       "backend": "node"
     },
@@ -3204,7 +3204,7 @@
       "source": "tests/anthropic-federation.test.ts:170",
       "name": "existing agents recover from static fallback on their next call; tenant and scope keys never exchange",
       "status": "pass",
-      "durationMs": 10514.74841,
+      "durationMs": 10847.83911,
       "reason": "",
       "backend": "node"
     },
@@ -3213,7 +3213,7 @@
       "source": "tests/api.test.ts:172",
       "name": "agents can live until deleted, or for a chosen time",
       "status": "pass",
-      "durationMs": 7099.38129,
+      "durationMs": 8120.256327,
       "reason": "",
       "backend": "node"
     },
@@ -3222,7 +3222,7 @@
       "source": "tests/api.test.ts:188",
       "name": "models are chosen by name over REST, at creation and mid-conversation",
       "status": "pass",
-      "durationMs": 4873.76839,
+      "durationMs": 5325.846962,
       "reason": "",
       "backend": "node"
     },
@@ -3231,7 +3231,7 @@
       "source": "tests/azure-models.test.ts:146",
       "name": "an azure model without a deployment, a refused key, a missing deployment and a rate limit each end the run with Azure's reason",
       "status": "pass",
-      "durationMs": 20690.080066,
+      "durationMs": 22614.935997,
       "reason": "",
       "backend": "node"
     },
@@ -3240,7 +3240,7 @@
       "source": "tests/azure-models.test.ts:241",
       "name": "Azure Flash uses platform credentials and catalog billing and replays reasoning with tool results",
       "status": "pass",
-      "durationMs": 4260.880655,
+      "durationMs": 4947.382924,
       "reason": "",
       "backend": "node"
     },
@@ -3249,7 +3249,7 @@
       "source": "tests/azure-models.test.ts:89",
       "name": "a tenant on the platform's keys runs azure models the platform deploys, through the deployment, billed at the catalog's price",
       "status": "pass",
-      "durationMs": 7494.730392,
+      "durationMs": 11407.694524,
       "reason": "",
       "backend": "node"
     },
@@ -3258,7 +3258,7 @@
       "source": "tests/content-filter-fallback.test.ts:115",
       "name": "an agent with no key for the fallback's provider ends as the content filter ended it",
       "status": "pass",
-      "durationMs": 3740.967918,
+      "durationMs": 6134.554537,
       "reason": "",
       "backend": "node"
     },
@@ -3267,7 +3267,7 @@
       "source": "tests/content-filter-fallback.test.ts:126",
       "name": "billing: the blocked Azure call is the platform's cost, recorded but never charged; the account pays once, for the fallback's answer",
       "status": "pass",
-      "durationMs": 4014.008008,
+      "durationMs": 7038.700819,
       "reason": "",
       "backend": "node"
     },
@@ -3276,7 +3276,7 @@
       "source": "tests/content-filter-fallback.test.ts:69",
       "name": "a response Azure's content filter blocks is asked once more on OpenRouter's DeepSeek, leaving only the answer in history",
       "status": "pass",
-      "durationMs": 4504.435413,
+      "durationMs": 7707.748086,
       "reason": "",
       "backend": "node"
     },
@@ -3285,7 +3285,7 @@
       "source": "tests/data-collection.test.ts:100",
       "name": "Pi's compaction summaries carry the agent's data policy too",
       "status": "pass",
-      "durationMs": 5831.13951,
+      "durationMs": 6149.34916,
       "reason": "",
       "backend": "node"
     },
@@ -3294,7 +3294,7 @@
       "source": "tests/data-collection.test.ts:39",
       "name": "agents, runs, definitions and configure: data_collection deny sent when set, on Chat Completions and Responses; nothing by default",
       "status": "pass",
-      "durationMs": 14726.60386,
+      "durationMs": 15178.95447,
       "reason": "",
       "backend": "node"
     },
@@ -3303,7 +3303,7 @@
       "source": "tests/deepseek-replay.test.ts:103",
       "name": "if DeepSeek's endpoint refuses anyway, the same request is asked again: no host kept off, no order",
       "status": "pass",
-      "durationMs": 6848.205626,
+      "durationMs": 6463.094631,
       "reason": "",
       "backend": "node"
     },
@@ -3312,7 +3312,7 @@
       "source": "tests/deepseek-replay.test.ts:138",
       "name": "DeepSeek's refusal as OpenRouter's Chat Completions gives it (127 characters) is classed and retried as it was; the answer names its host",
       "status": "pass",
-      "durationMs": 6236.492822,
+      "durationMs": 6586.105867,
       "reason": "",
       "backend": "node"
     },
@@ -3321,7 +3321,7 @@
       "source": "tests/deepseek-replay.test.ts:85",
       "name": "a multi-turn tool conversation, then a turn on DeepSeek's own endpoint: never refused",
       "status": "pass",
-      "durationMs": 5759.095681,
+      "durationMs": 5331.680889,
       "reason": "",
       "backend": "node"
     },
@@ -3330,7 +3330,7 @@
       "source": "tests/default-model.test.ts:40",
       "name": "an agent that names no model gets the first default its tenant or key scope has a key for, and /v1/me says which",
       "status": "pass",
-      "durationMs": 6152.86404,
+      "durationMs": 10355.732896,
       "reason": "",
       "backend": "node"
     },
@@ -3339,7 +3339,7 @@
       "source": "tests/default-model.test.ts:69",
       "name": "a tenant's own key comes before the platform's: only an Anthropic key is Sonnet 5.5 on it, never DeepSeek on the platform's credit",
       "status": "pass",
-      "durationMs": 3746.26918,
+      "durationMs": 5369.846077,
       "reason": "",
       "backend": "node"
     },
@@ -3348,7 +3348,7 @@
       "source": "tests/default-model.test.ts:83",
       "name": "the default is for agents being made: an upsert or a definition applied that names no model leaves an existing agent's",
       "status": "pass",
-      "durationMs": 5969.66243,
+      "durationMs": 6170.065317,
       "reason": "",
       "backend": "node"
     },
@@ -3357,7 +3357,7 @@
       "source": "tests/model-endpoints.test.ts:140",
       "name": "a Codex model on a tenant's endpoint gets the ChatGPT backend's own request, with a placeholder account for the endpoint to replace",
       "status": "pass",
-      "durationMs": 4795.860514,
+      "durationMs": 4312.82358,
       "reason": "",
       "backend": "node"
     },
@@ -3366,7 +3366,7 @@
       "source": "tests/model-endpoints.test.ts:18",
       "name": "an Anthropic model on a tenant's endpoint gets Anthropic's own request, signatures included, with identity tokens and at no token cost",
       "status": "pass",
-      "durationMs": 5189.446397,
+      "durationMs": 5386.17957,
       "reason": "",
       "backend": "node"
     },
@@ -3375,7 +3375,7 @@
       "source": "tests/model-endpoints.test.ts:192",
       "name": "a tenant endpoint's errors end the turn with its message, without retries",
       "status": "pass",
-      "durationMs": 4496.645678,
+      "durationMs": 4663.77327,
       "reason": "",
       "backend": "node"
     },
@@ -3384,7 +3384,7 @@
       "source": "tests/model-endpoints.test.ts:61",
       "name": "OpenRouter models on a tenant's endpoint use its Responses API, reasoning carried back, and compact through it",
       "status": "pass",
-      "durationMs": 5367.732586,
+      "durationMs": 4818.01665,
       "reason": "",
       "backend": "node"
     },
@@ -3393,7 +3393,7 @@
       "source": "tests/model-endpoints.test.ts:89",
       "name": "a Bedrock model on a tenant's endpoint gets Converse's own request at its region's path, unsigned, with its signatures sent back",
       "status": "pass",
-      "durationMs": 4867.345612,
+      "durationMs": 4828.38492,
       "reason": "",
       "backend": "node"
     },
@@ -3402,7 +3402,7 @@
       "source": "tests/model-pricing-trust.test.ts:27",
       "name": "a tenant cannot give its agent a model object: a free copy of a catalog model on the platform's key is refused",
       "status": "pass",
-      "durationMs": 4303.251807,
+      "durationMs": 4616.405206,
       "reason": "",
       "backend": "node"
     },
@@ -3411,7 +3411,7 @@
       "source": "tests/model-pricing-trust.test.ts:51",
       "name": "on a platform key a response is billed at the catalog's price, whatever the agent's stored model says, and one without usage is charged an estimate",
       "status": "pass",
-      "durationMs": 7214.956368,
+      "durationMs": 7821.868964,
       "reason": "",
       "backend": "node"
     },
@@ -3420,7 +3420,7 @@
       "source": "tests/model-pricing-trust.test.ts:95",
       "name": "an unbilled admin tenant's responses on platform or admin keys are as the provider reported them, never estimated",
       "status": "pass",
-      "durationMs": 4579.799479,
+      "durationMs": 3801.293997,
       "reason": "",
       "backend": "node"
     },
@@ -3429,7 +3429,7 @@
       "source": "tests/model-settings.test.ts:112",
       "name": "a definition's maxOutputTokens and temperature: its agents take them, an agent's own stay when it is applied, and a stateless run takes them too",
       "status": "pass",
-      "durationMs": 6250.607686,
+      "durationMs": 7561.713716,
       "reason": "",
       "backend": "node"
     },
@@ -3438,7 +3438,7 @@
       "source": "tests/model-settings.test.ts:153",
       "name": "the TypeScript SDK sends maxOutputTokens and temperature when it makes, configures and runs agents",
       "status": "pass",
-      "durationMs": 5538.741523,
+      "durationMs": 6667.666429,
       "reason": "",
       "backend": "node"
     },
@@ -3447,7 +3447,7 @@
       "source": "tests/model-settings.test.ts:39",
       "name": "an agent's maxOutputTokens and temperature go on its model calls, are refused where its model takes none, and stay its own",
       "status": "pass",
-      "durationMs": 7408.687192,
+      "durationMs": 8232.032532,
       "reason": "",
       "backend": "node"
     },
@@ -3456,7 +3456,7 @@
       "source": "tests/openrouter-hosts.test.ts:37",
       "name": "an agent's calls send their model's hosts: V4.1 Flash five, 1017 two ignored with at most 131,072 tokens; nothing else",
       "status": "pass",
-      "durationMs": 5831.203742,
+      "durationMs": 6540.75517,
       "reason": "",
       "backend": "node"
     },
@@ -3465,7 +3465,7 @@
       "source": "tests/openrouter-hosts.test.ts:57",
       "name": "1017:nitro resolves as 1017 does (catalog, price, 131,072, Chat Completions, no hosts, two ignored) and is sent with its variant",
       "status": "pass",
-      "durationMs": 3901.74004,
+      "durationMs": 4423.69927,
       "reason": "",
       "backend": "node"
     },
@@ -3474,7 +3474,7 @@
       "source": "tests/openrouter-hosts.test.ts:77",
       "name": "1017:morph is 1017 served by Morph alone: sent as 1017 with provider.only morph, priced and resolved as 1017",
       "status": "pass",
-      "durationMs": 3711.241555,
+      "durationMs": 4290.48876,
       "reason": "",
       "backend": "node"
     },
@@ -3483,7 +3483,7 @@
       "source": "tests/openrouter-model.test.ts:109",
       "name": "over the API: the lookup's price reaches an end user's hold, so a dear model is refused where the mid-range price would have started",
       "status": "pass",
-      "durationMs": 4960.819363,
+      "durationMs": 6211.171245,
       "reason": "",
       "backend": "node"
     },
@@ -3492,7 +3492,7 @@
       "source": "tests/openrouter-model.test.ts:56",
       "name": "over the API: an agent keeps what the lookup said, a move looks up too, and its calls name the id and add no routing",
       "status": "pass",
-      "durationMs": 4467.999792,
+      "durationMs": 5314.763564,
       "reason": "",
       "backend": "node"
     },
@@ -3501,7 +3501,7 @@
       "source": "tests/reasoning.test.ts:11",
       "name": "a model that always reasons is called with its least reasoning when an agent asks for none, and as asked otherwise",
       "status": "pass",
-      "durationMs": 8107.022101,
+      "durationMs": 7612.83942,
       "reason": "",
       "backend": "node"
     },
@@ -3510,7 +3510,7 @@
       "source": "tests/reasoning.test.ts:51",
       "name": "a run whose first model call is refused fails with the provider's error, on every API, before its stream or in it",
       "status": "pass",
-      "durationMs": 7971.589008,
+      "durationMs": 6716.090472,
       "reason": "",
       "backend": "node"
     },
@@ -3519,7 +3519,7 @@
       "source": "tests/structured-output.test.ts:138",
       "name": "a structured run forces final_output from the first request when it is the model's only tool, and on the reminder when it has others",
       "status": "pass",
-      "durationMs": 5487.64024,
+      "durationMs": 4689.320848,
       "reason": "",
       "backend": "node"
     },
@@ -3528,7 +3528,7 @@
       "source": "tests/structured-output.test.ts:166",
       "name": "a provider that refuses a forced tool_choice is asked again without it; forcing stops after three requests",
       "status": "pass",
-      "durationMs": 9972.63625,
+      "durationMs": 12760.542476,
       "reason": "",
       "backend": "node"
     },
@@ -3537,7 +3537,7 @@
       "source": "tests/structured-output.test.ts:185",
       "name": "codeMode: false leaves out codemode and the runtime's code rules; with no tools at all, the prompt is the instructions and the sender note",
       "status": "pass",
-      "durationMs": 5822.83069,
+      "durationMs": 5033.199215,
       "reason": "",
       "backend": "node"
     },
@@ -3546,7 +3546,7 @@
       "source": "tests/structured-output.test.ts:24",
       "name": "a prompt with output ends on a final_output call that fits its schema, which the outcome returns",
       "status": "pass",
-      "durationMs": 5055.67661,
+      "durationMs": 4970.545109,
       "reason": "",
       "backend": "node"
     },
@@ -3555,7 +3555,7 @@
       "source": "tests/structured-output.test.ts:45",
       "name": "a structured run the model ends in text is reminded once, then fails with output_missing; a prompt without output takes the tool away",
       "status": "pass",
-      "durationMs": 5167.47901,
+      "durationMs": 4981.211086,
       "reason": "",
       "backend": "node"
     },
@@ -3564,7 +3564,7 @@
       "source": "tests/structured-output.test.ts:79",
       "name": "output is refused unless it is a schema for an object, on a prompt that starts its own turn",
       "status": "pass",
-      "durationMs": 4110.71133,
+      "durationMs": 3645.275349,
       "reason": "",
       "backend": "node"
     },
@@ -3573,7 +3573,7 @@
       "source": "tests/structured-output.test.ts:97",
       "name": "the SDK's run() takes a zod, TypeBox or JSON schema for output and types run.output by it",
       "status": "pass",
-      "durationMs": 4492.19116,
+      "durationMs": 4829.459291,
       "reason": "",
       "backend": "node"
     },
@@ -3582,7 +3582,7 @@
       "source": "tests/tool-streaming.test.ts:42",
       "name": "GET /v1/models carries toolCallStreaming; a model on an operator's endpoint has its upstream model's",
       "status": "pass",
-      "durationMs": 3144.920166,
+      "durationMs": 3626.109847,
       "reason": "",
       "backend": "node"
     },
@@ -3591,7 +3591,7 @@
       "source": "tests/virtual-models.test.ts:117",
       "name": "an agent naming no model stores the alias; Particle's outage moves that call to 1017, with history, routing and records on the model that ran",
       "status": "pass",
-      "durationMs": 4107.029613,
+      "durationMs": 4599.830306,
       "reason": "",
       "backend": "node"
     },
@@ -3600,7 +3600,7 @@
       "source": "tests/virtual-models.test.ts:164",
       "name": "a request the model would refuse anywhere does not move; a real model never moves",
       "status": "pass",
-      "durationMs": 16874.540545,
+      "durationMs": 17514.682984,
       "reason": "",
       "backend": "node"
     },
@@ -3609,7 +3609,7 @@
       "source": "tests/virtual-models.test.ts:185",
       "name": "a tenant with no OpenRouter key falls to what it holds; an upsert keeps the alias, and naming a model leaves it",
       "status": "pass",
-      "durationMs": 2349.285828,
+      "durationMs": 2493.286892,
       "reason": "",
       "backend": "node"
     },
@@ -3618,7 +3618,7 @@
       "source": "tests/virtual-models.test.ts:207",
       "name": "over the API: Particle's failed attempt releases its end user's hold and costs nothing; only the model that answered is charged",
       "status": "pass",
-      "durationMs": 2677.367413,
+      "durationMs": 2662.126592,
       "reason": "",
       "backend": "node"
     },
@@ -3627,7 +3627,7 @@
       "source": "tests/chatgpt-plugin.test.ts:16",
       "name": "the plugin's path works end to end, with the issuer on another origin than the MCP endpoint and sign-in pages: discovery, registration, email and password sign-in, consent, /v1/me, the review cases' tools, refresh, revocation",
       "status": "pass",
-      "durationMs": 7129.26651,
+      "durationMs": 6220.02939,
       "reason": "",
       "backend": "node"
     },
@@ -3636,7 +3636,7 @@
       "source": "tests/chatgpt-plugin.test.ts:16",
       "name": "the plugin's path works end to end: discovery, registration, email and password sign-in, consent, /v1/me, the review cases' tools, refresh, revocation",
       "status": "pass",
-      "durationMs": 6626.402561,
+      "durationMs": 8269.91496,
       "reason": "",
       "backend": "node"
     },
@@ -3645,7 +3645,7 @@
       "source": "tests/admin-site.test.ts:25",
       "name": "the admin site answers only on its hostname, to people Cloudflare Access signed in, with every tenant's stats",
       "status": "pass",
-      "durationMs": 7378.813667,
+      "durationMs": 8780.05694,
       "reason": "",
       "backend": "node"
     },
@@ -3654,7 +3654,7 @@
       "source": "tests/ops-mcp.test.ts:38",
       "name": "the operations endpoint names its own protected resource, and answers nobody who is not signed in",
       "status": "pass",
-      "durationMs": 3658.24702,
+      "durationMs": 3014.12123,
       "reason": "",
       "backend": "node"
     },
@@ -3663,7 +3663,7 @@
       "source": "tests/ops-mcp.test.ts:59",
       "name": "only the tenants on AGENT_OPS_ADMINS connect: anyone else is refused at consent, and /mcp is untouched",
       "status": "pass",
-      "durationMs": 3024.82851,
+      "durationMs": 2680.85583,
       "reason": "",
       "backend": "node"
     },
@@ -3672,7 +3672,7 @@
       "source": "tests/ops-mcp.test.ts:86",
       "name": "the tools: read-only rows a dashboard charts, and a token that works here works nowhere else",
       "status": "pass",
-      "durationMs": 3941.56512,
+      "durationMs": 4648.09713,
       "reason": "",
       "backend": "node"
     },
@@ -3681,7 +3681,7 @@
       "source": "tests/custom-providers.test.ts:121",
       "name": "a server without usage or finish_reason (so declared) still runs tools; images reach only a model declared to see them",
       "status": "pass",
-      "durationMs": 6260.106446,
+      "durationMs": 6502.72014,
       "reason": "",
       "backend": "node"
     },
@@ -3690,7 +3690,7 @@
       "source": "tests/custom-providers.test.ts:150",
       "name": "a key scope can bring its own key and endpoint for a custom provider, and spend limits count its declared pricing",
       "status": "pass",
-      "durationMs": 5495.901821,
+      "durationMs": 5555.65482,
       "reason": "",
       "backend": "node"
     },
@@ -3699,7 +3699,7 @@
       "source": "tests/custom-providers.test.ts:169",
       "name": "deleting a provider takes its key scopes' entries with it: its agents call nothing, anywhere",
       "status": "pass",
-      "durationMs": 4368.614829,
+      "durationMs": 4363.48564,
       "reason": "",
       "backend": "node"
     },
@@ -3708,7 +3708,7 @@
       "source": "tests/custom-providers.test.ts:195",
       "name": "the SDK manages a tenant's custom providers",
       "status": "pass",
-      "durationMs": 2654.468569,
+      "durationMs": 2540.88377,
       "reason": "",
       "backend": "node"
     },
@@ -3717,7 +3717,7 @@
       "source": "tests/custom-providers.test.ts:48",
       "name": "a tenant's OpenAI-compatible provider: stored sealed, listed with its models, and called with its key and headers",
       "status": "pass",
-      "durationMs": 7666.971482,
+      "durationMs": 8469.82732,
       "reason": "",
       "backend": "node"
     },
@@ -3726,7 +3726,7 @@
       "source": "tests/scope-providers.test.ts",
       "name": "a key scope's providers serve only its agents: each scope its own, shadowing the tenant's of the same name, over every API",
       "status": "pass",
-      "durationMs": 9162.344178,
+      "durationMs": 8759.78324,
       "reason": "",
       "backend": "node"
     },
@@ -3735,7 +3735,7 @@
       "source": "tests/scope-providers.test.ts",
       "name": "an Anthropic Messages provider can take its key as a bearer token, as some gateways do; Authorization stays the runtime's",
       "status": "pass",
-      "durationMs": 7023.961359,
+      "durationMs": 5046.12526,
       "reason": "",
       "backend": "node"
     },
@@ -3745,7 +3745,7 @@
       "name": "HistoryPagingTest.test_history_collects_bounded_pages_async_and_sync",
       "status": "pass",
       "backend": "sdk-unit",
-      "durationMs": 623.0382920002739,
+      "durationMs": 379.7238670003935,
       "reason": "",
       "error": null
     },
@@ -3755,7 +3755,7 @@
       "name": "OriginTest.test_plain_http_reaches_only_private_hosts",
       "status": "pass",
       "backend": "sdk-unit",
-      "durationMs": 0.6186600003275089,
+      "durationMs": 0.6805769999118638,
       "reason": "",
       "error": null
     },
@@ -3765,7 +3765,7 @@
       "name": "PythonSDKTest.test_a_deploy_loses_no_tool_call_close_finishes_the_calls_running",
       "status": "pass",
       "backend": "node",
-      "durationMs": 9076.864840999406,
+      "durationMs": 10543.351033999897,
       "reason": "",
       "error": null
     },
@@ -3775,7 +3775,7 @@
       "name": "PythonSDKTest.test_a_failed_run_raises_run_error_or_returns_it",
       "status": "pass",
       "backend": "node",
-      "durationMs": 9050.123802999224,
+      "durationMs": 10562.489665000612,
       "reason": "",
       "error": null
     },
@@ -3785,7 +3785,7 @@
       "name": "PythonSDKTest.test_a_tool_process_that_dies_mid_run_the_restarted_one_serves_its_calls_and_the_same_key_fetches_it",
       "status": "pass",
       "backend": "node",
-      "durationMs": 9531.812234001336,
+      "durationMs": 11035.63155899974,
       "reason": "",
       "error": null
     },
@@ -3795,7 +3795,7 @@
       "name": "PythonSDKTest.test_an_approval_answered_by_on_input_resumes_the_turn",
       "status": "pass",
       "backend": "node",
-      "durationMs": 7531.679294999776,
+      "durationMs": 9529.836406999493,
       "reason": "",
       "error": null
     },
@@ -3805,7 +3805,7 @@
       "name": "PythonSDKTest.test_an_approval_answered_through_the_run_resumes_it",
       "status": "pass",
       "backend": "node",
-      "durationMs": 6025.72239499932,
+      "durationMs": 7532.635819000461,
       "reason": "",
       "error": null
     },
@@ -3815,7 +3815,7 @@
       "name": "PythonSDKTest.test_annotations_reconnect_and_lost_acknowledgements",
       "status": "pass",
       "backend": "node",
-      "durationMs": 7521.788285999719,
+      "durationMs": 7563.177368000652,
       "reason": "",
       "error": null
     },
@@ -3825,7 +3825,7 @@
       "name": "PythonSDKTest.test_async_and_slow_on_event_run_apart_from_the_connection",
       "status": "pass",
       "backend": "node",
-      "durationMs": 9531.03891399951,
+      "durationMs": 10030.759604000195,
       "reason": "",
       "error": null
     },
@@ -3835,7 +3835,7 @@
       "name": "PythonSDKTest.test_attachments_and_the_agents_files",
       "status": "pass",
       "backend": "node",
-      "durationMs": 6022.209296001165,
+      "durationMs": 6531.0521000001245,
       "reason": "",
       "error": null
     },
@@ -3845,7 +3845,7 @@
       "name": "PythonSDKTest.test_audio_is_transcribed_in_messages_runs_and_on_its_own",
       "status": "out-of-scope",
       "backend": "sdk-unit",
-      "durationMs": 0.12181999954918865,
+      "durationMs": 0.06602600024052663,
       "reason": "Voice/audio is out of scope",
       "error": null
     },
@@ -3855,7 +3855,7 @@
       "name": "PythonSDKTest.test_code_mode_false_history_none_and_config_hash",
       "status": "pass",
       "backend": "node",
-      "durationMs": 5519.556825000109,
+      "durationMs": 7018.555291000666,
       "reason": "",
       "error": null
     },
@@ -3865,7 +3865,7 @@
       "name": "PythonSDKTest.test_connecting_with_changed_tools_declares_them_and_a_run_needs_them_served",
       "status": "pass",
       "backend": "node",
-      "durationMs": 8526.739983999505,
+      "durationMs": 8519.218750000618,
       "reason": "",
       "error": null
     },
@@ -3875,7 +3875,7 @@
       "name": "PythonSDKTest.test_delegate_settings_bring_their_builtin_and_a_run_names_its_child_and_streams_it",
       "status": "pass",
       "backend": "node",
-      "durationMs": 7518.772975001411,
+      "durationMs": 8028.664230000686,
       "reason": "",
       "error": null
     },
@@ -3885,7 +3885,7 @@
       "name": "PythonSDKTest.test_end_users_credit_their_users_and_a_run_spends_from_its_bucket",
       "status": "pass",
       "backend": "node",
-      "durationMs": 6018.3367259996885,
+      "durationMs": 6020.093451000321,
       "reason": "",
       "error": null
     },
@@ -3895,7 +3895,7 @@
       "name": "PythonSDKTest.test_events_start_from_a_snapshot_and_updates_are_deltas",
       "status": "pass",
       "backend": "node",
-      "durationMs": 6019.715667000128,
+      "durationMs": 5517.22489399981,
       "reason": "",
       "error": null
     },
@@ -3905,7 +3905,7 @@
       "name": "PythonSDKTest.test_fork_copies_the_agent_and_a_key_returns_the_same_fork",
       "status": "pass",
       "backend": "node",
-      "durationMs": 8526.728004999313,
+      "durationMs": 8526.097440999365,
       "reason": "",
       "error": null
     },
@@ -3915,7 +3915,7 @@
       "name": "PythonSDKTest.test_get_takes_an_existing_agent_by_key_or_id_without_changing_it",
       "status": "pass",
       "backend": "node",
-      "durationMs": 6020.549405999191,
+      "durationMs": 6018.223522999506,
       "reason": "",
       "error": null
     },
@@ -3925,7 +3925,7 @@
       "name": "PythonSDKTest.test_images_on_their_own",
       "status": "pass",
       "backend": "node",
-      "durationMs": 4755.451502000142,
+      "durationMs": 4179.253096000139,
       "reason": "",
       "error": null
     },
@@ -3935,7 +3935,7 @@
       "name": "PythonSDKTest.test_import_messages_converts_another_apis_conversation",
       "status": "pass",
       "backend": "node",
-      "durationMs": 7019.570764001401,
+      "durationMs": 7017.831887999819,
       "reason": "",
       "error": null
     },
@@ -3945,7 +3945,7 @@
       "name": "PythonSDKTest.test_initial_messages_begin_an_agents_history_when_it_is_made",
       "status": "pass",
       "backend": "node",
-      "durationMs": 6527.959855000518,
+      "durationMs": 6520.053624999491,
       "reason": "",
       "error": null
     },
@@ -3955,7 +3955,7 @@
       "name": "PythonSDKTest.test_key_scopes_tokens_usage_webhooks_and_rotated_credentials",
       "status": "pass",
       "backend": "node",
-      "durationMs": 7029.721893999522,
+      "durationMs": 7021.054069000456,
       "reason": "",
       "error": null
     },
@@ -3965,7 +3965,7 @@
       "name": "PythonSDKTest.test_lazy_handles_hold_no_stream_while_idle_run_without_one_and_stream_for_a_run",
       "status": "pass",
       "backend": "node",
-      "durationMs": 8526.544604001174,
+      "durationMs": 8525.158671999634,
       "reason": "",
       "error": null
     },
@@ -3975,7 +3975,7 @@
       "name": "PythonSDKTest.test_max_output_tokens_and_temperature_go_on_model_calls_and_configure_removes_them",
       "status": "pass",
       "backend": "node",
-      "durationMs": 7529.108054999597,
+      "durationMs": 7027.17906900034,
       "reason": "",
       "error": null
     },
@@ -3985,7 +3985,7 @@
       "name": "PythonSDKTest.test_parity_history_configure_tools_and_wait_for_request",
       "status": "pass",
       "backend": "node",
-      "durationMs": 8526.987604000169,
+      "durationMs": 8024.307697999575,
       "reason": "",
       "error": null
     },
@@ -3995,7 +3995,7 @@
       "name": "PythonSDKTest.test_projects_publish_checked_snapshots_and_the_tool_finds_the_project_from_identity",
       "status": "pass",
       "backend": "node",
-      "durationMs": 5618.407889998707,
+      "durationMs": 5012.407656000505,
       "reason": "",
       "error": null
     },
@@ -4005,7 +4005,7 @@
       "name": "PythonSDKTest.test_run_resolves_with_a_run_and_the_token_stays_out_of_logs",
       "status": "pass",
       "backend": "node",
-      "durationMs": 7524.485445001119,
+      "durationMs": 6026.657129000341,
       "reason": "",
       "error": null
     },
@@ -4015,7 +4015,7 @@
       "name": "PythonSDKTest.test_run_with_output_returns_a_pydantic_model_or_the_json_schema_value",
       "status": "pass",
       "backend": "node",
-      "durationMs": 7023.045315001582,
+      "durationMs": 6514.407397000468,
       "reason": "",
       "error": null
     },
@@ -4025,7 +4025,7 @@
       "name": "PythonSDKTest.test_send_returns_at_once_and_wait_gets_the_run",
       "status": "pass",
       "backend": "node",
-      "durationMs": 7015.925804998915,
+      "durationMs": 6520.800151000003,
       "reason": "",
       "error": null
     },
@@ -4035,7 +4035,7 @@
       "name": "PythonSDKTest.test_stateless_runs_one_call_stream_get_abort_and_no_agent_left",
       "status": "pass",
       "backend": "node",
-      "durationMs": 9526.490734000618,
+      "durationMs": 9521.035652000137,
       "reason": "",
       "error": null
     },
@@ -4045,7 +4045,7 @@
       "name": "PythonSDKTest.test_steer_answers_once_the_runtime_has_it_and_abort_cancels_the_queue",
       "status": "pass",
       "backend": "node",
-      "durationMs": 7524.804734999634,
+      "durationMs": 7020.412591000422,
       "reason": "",
       "error": null
     },
@@ -4055,7 +4055,7 @@
       "name": "PythonSDKTest.test_stream_yields_tool_calls_results_text_then_done_and_plain_functions_are_tools",
       "status": "pass",
       "backend": "node",
-      "durationMs": 5512.47359700028,
+      "durationMs": 5514.901511000062,
       "reason": "",
       "error": null
     },
@@ -4065,7 +4065,7 @@
       "name": "PythonSDKTest.test_the_sync_client_upserts_runs_streams_answers_and_runs_statelessly",
       "status": "pass",
       "backend": "node",
-      "durationMs": 9525.11391400003,
+      "durationMs": 9523.725107000246,
       "reason": "",
       "error": null
     },
@@ -4075,7 +4075,7 @@
       "name": "PythonSDKTest.test_upsert_is_the_same_agent_for_a_key_and_one_process_serves_its_tools",
       "status": "pass",
       "backend": "node",
-      "durationMs": 5515.557757000352,
+      "durationMs": 5513.99600700006,
       "reason": "",
       "error": null
     },
@@ -4085,7 +4085,7 @@
       "name": "PythonSDKTest.test_voice_sessions_need_the_runtime_to_hold_calls",
       "status": "out-of-scope",
       "backend": "sdk-unit",
-      "durationMs": 0.0550599997950485,
+      "durationMs": 0.0647409997327486,
       "reason": "Voice/audio is out of scope",
       "error": null
     },
@@ -4095,7 +4095,7 @@
       "name": "PythonSDKTest.test_volumes_files_snapshots_and_mounts",
       "status": "pass",
       "backend": "node",
-      "durationMs": 6519.927325998651,
+      "durationMs": 6518.061185000079,
       "reason": "",
       "error": null
     },
@@ -4105,7 +4105,7 @@
       "name": "RateLimitRetryTest.test_rate_limited_requests_wait_and_retry",
       "status": "pass",
       "backend": "sdk-unit",
-      "durationMs": 5759.059152000191,
+      "durationMs": 7143.083498000124,
       "reason": "",
       "error": null
     },
@@ -4115,7 +4115,7 @@
       "name": "ReconnectHintTest.test_a_hinted_close_reconnects_at_once_and_an_unhinted_one_backs_off",
       "status": "pass",
       "backend": "sdk-unit",
-      "durationMs": 358.3149690002756,
+      "durationMs": 359.3149739999717,
       "reason": "",
       "error": null
     },
@@ -4125,7 +4125,7 @@
       "name": "ServeToolsTest.test_a_confirmation_takes_true_or_false",
       "status": "pass",
       "backend": "sdk-unit",
-      "durationMs": 25.87184799995157,
+      "durationMs": 26.46083799936605,
       "reason": "",
       "error": null
     },
@@ -4135,7 +4135,7 @@
       "name": "ServeToolsTest.test_a_function_of_identity_lists_each_caller_its_own_tools",
       "status": "pass",
       "backend": "sdk-unit",
-      "durationMs": 29.762038999251672,
+      "durationMs": 29.70830400045088,
       "reason": "",
       "error": null
     },
@@ -4145,7 +4145,7 @@
       "name": "ServeToolsTest.test_a_token_from_another_tenant_is_refused_and_tenant_is_required",
       "status": "pass",
       "backend": "sdk-unit",
-      "durationMs": 26.19770799901744,
+      "durationMs": 26.49224000015238,
       "reason": "",
       "error": null
     },
@@ -4155,7 +4155,7 @@
       "name": "ServeToolsTest.test_a_tool_answers_with_a_spawn_directive_and_notices_are_told_apart",
       "status": "pass",
       "backend": "sdk-unit",
-      "durationMs": 29.772728001262294,
+      "durationMs": 27.250332000221533,
       "reason": "",
       "error": null
     },
@@ -4165,7 +4165,7 @@
       "name": "ServeToolsTest.test_a_tool_asks_the_user_and_runs_again_with_each_answer",
       "status": "pass",
       "backend": "sdk-unit",
-      "durationMs": 25.643468999987817,
+      "durationMs": 23.523640000348678,
       "reason": "",
       "error": null
     },
@@ -4175,7 +4175,7 @@
       "name": "ServeToolsTest.test_a_tool_that_needs_approval_asks_first_and_runs_once_approved",
       "status": "pass",
       "backend": "sdk-unit",
-      "durationMs": 26.58355799940182,
+      "durationMs": 28.20132399938302,
       "reason": "",
       "error": null
     },
@@ -4185,7 +4185,7 @@
       "name": "ServeToolsTest.test_anything_but_the_runtimes_token_for_this_server_is_refused",
       "status": "pass",
       "backend": "sdk-unit",
-      "durationMs": 33.217727999726776,
+      "durationMs": 32.7548539999043,
       "reason": "",
       "error": null
     },
@@ -4195,7 +4195,7 @@
       "name": "ServeToolsTest.test_attached_calls_carry_the_identity_the_runtime_sent",
       "status": "pass",
       "backend": "sdk-unit",
-      "durationMs": 26.591078998535522,
+      "durationMs": 22.27337299973442,
       "reason": "",
       "error": null
     },
@@ -4205,7 +4205,7 @@
       "name": "ServeToolsTest.test_each_call_is_answered_as_the_user_the_token_names",
       "status": "pass",
       "backend": "sdk-unit",
-      "durationMs": 29.373827999734203,
+      "durationMs": 29.449874000420095,
       "reason": "",
       "error": null
     },
@@ -4215,7 +4215,7 @@
       "name": "ServeToolsTest.test_protected_resource_metadata_and_post_only",
       "status": "pass",
       "backend": "sdk-unit",
-      "durationMs": 24.47594899967953,
+      "durationMs": 24.88474900019355,
       "reason": "",
       "error": null
     },
@@ -4225,7 +4225,7 @@
       "name": "ServeToolsTest.test_the_hosted_runtime_signs_as_agents_camelai_dev_at_either_url",
       "status": "pass",
       "backend": "sdk-unit",
-      "durationMs": 27.300018000460113,
+      "durationMs": 26.733693000096537,
       "reason": "",
       "error": null
     },
@@ -4235,7 +4235,7 @@
       "name": "ServeToolsTest.test_verify_file_url_checks_the_url_is_the_runtimes_for_a_file_of_the_agent",
       "status": "pass",
       "backend": "sdk-unit",
-      "durationMs": 29.08859799936181,
+      "durationMs": 44.72743200039986,
       "reason": "",
       "error": null
     },
@@ -4245,7 +4245,7 @@
       "name": "VersionTest.test_version_is_pyprojects",
       "status": "pass",
       "backend": "sdk-unit",
-      "durationMs": 24.171748000298976,
+      "durationMs": 37.011790000178735,
       "reason": "",
       "error": null
     },
@@ -4255,7 +4255,7 @@
       "name": "VoiceLibraryTest.test_get_async_and_sync",
       "status": "out-of-scope",
       "backend": "sdk-unit",
-      "durationMs": 0.06854000093881041,
+      "durationMs": 0.06523600040964084,
       "reason": "Voice/audio is out of scope",
       "error": null
     },
@@ -4265,7 +4265,7 @@
       "name": "VoiceLibraryTest.test_search_async_and_sync",
       "status": "out-of-scope",
       "backend": "sdk-unit",
-      "durationMs": 0.060540000049513765,
+      "durationMs": 0.06623100034630625,
       "reason": "Voice/audio is out of scope",
       "error": null
     },
@@ -4275,7 +4275,7 @@
       "name": "WebhookTest.test_a_signed_event_verifies_and_anything_else_is_refused",
       "status": "pass",
       "backend": "sdk-unit",
-      "durationMs": 1.0443800001667114,
+      "durationMs": 0.8736909994695452,
       "reason": "",
       "error": null
     },
@@ -4285,7 +4285,7 @@
       "name": "WebhookTest.test_during_a_rotation_either_secret_verifies",
       "status": "pass",
       "backend": "sdk-unit",
-      "durationMs": 0.406979999752366,
+      "durationMs": 0.39503300013166154,
       "reason": "",
       "error": null
     },
@@ -4295,7 +4295,7 @@
       "name": "WsgiServeToolsTest.test_a_real_wsgi_server_runs_plain_tools_in_the_request_thread",
       "status": "pass",
       "backend": "sdk-unit",
-      "durationMs": 80.25654499942902,
+      "durationMs": 82.19487800033676,
       "reason": "",
       "error": null
     },
@@ -4305,7 +4305,7 @@
       "name": "WsgiServeToolsTest.test_anything_but_the_runtimes_token_for_this_server_is_refused",
       "status": "pass",
       "backend": "sdk-unit",
-      "durationMs": 26.994177998858504,
+      "durationMs": 27.27354600028775,
       "reason": "",
       "error": null
     },
@@ -4315,7 +4315,7 @@
       "name": "WsgiServeToolsTest.test_each_call_is_answered_as_the_user_the_token_names",
       "status": "pass",
       "backend": "sdk-unit",
-      "durationMs": 29.011897999225766,
+      "durationMs": 28.16615699975955,
       "reason": "",
       "error": null
     },
@@ -4325,7 +4325,7 @@
       "name": "WsgiServeToolsTest.test_verify_file_url_is_synchronous",
       "status": "pass",
       "backend": "sdk-unit",
-      "durationMs": 26.452578000316862,
+      "durationMs": 25.05481099979079,
       "reason": "",
       "error": null
     },
@@ -4335,7 +4335,7 @@
       "name": "WsgiServeToolsTest.test_verify_runtime_token_is_synchronous_and_takes_a_list_of_audiences",
       "status": "pass",
       "backend": "sdk-unit",
-      "durationMs": 24.69731800010777,
+      "durationMs": 23.22588600054587,
       "reason": "",
       "error": null
     },
@@ -4344,7 +4344,7 @@
       "source": "tests/api.test.ts:584",
       "name": "a tenant at its agent quota gets 429 with Retry-After and nothing half-created; the same key succeeds once a slot frees",
       "status": "pass",
-      "durationMs": 8071.725279,
+      "durationMs": 9759.227462,
       "reason": "",
       "backend": "node"
     },
@@ -4353,7 +4353,7 @@
       "source": "tests/api.test.ts:615",
       "name": "a tenant's own maxAgents replaces the default limit, and a change applies at the next tenants reload without a restart",
       "status": "pass",
-      "durationMs": 4018.289902,
+      "durationMs": 4334.772808,
       "reason": "",
       "backend": "node"
     },
@@ -4362,7 +4362,7 @@
       "source": "tests/api.test.ts:656",
       "name": "a tenant's monthly spend cap ends a turn after the response that crosses it, refuses new runs, and a reload raising it lets the turn continue",
       "status": "pass",
-      "durationMs": 4678.340615,
+      "durationMs": 4128.212484,
       "reason": "",
       "backend": "node"
     },
@@ -4371,7 +4371,7 @@
       "source": "tests/rate-limits.test.ts",
       "name": "an admin tenant's traffic (camelAI's servers behind a few Cloudflare egress addresses, its users' browser tokens) is never rate limited",
       "status": "pass",
-      "durationMs": 5499.265373,
+      "durationMs": 5756.837993,
       "reason": "",
       "backend": "node"
     },
@@ -4380,7 +4380,7 @@
       "source": "tests/rate-limits.test.ts",
       "name": "creates and runs answer with X-RateLimit-* headers; an upsert that changes nothing is not a create, and gives the same configHash",
       "status": "pass",
-      "durationMs": 11557.212986,
+      "durationMs": 7105.421951,
       "reason": "",
       "backend": "node"
     },
@@ -4389,7 +4389,7 @@
       "source": "tests/rate-limits.test.ts",
       "name": "the server answers 429 RATE_LIMITED with Retry-After and the limit: per address behind Cloudflare, per tenant for creates and runs",
       "status": "pass",
-      "durationMs": 5279.855448,
+      "durationMs": 5671.534433,
       "reason": "",
       "backend": "node"
     },
@@ -4398,7 +4398,7 @@
       "source": "tests/rate-limits.test.ts",
       "name": "without AGENT_TRUST_CF_CONNECTING_IP, CF-Connecting-IP is ignored and the load balancer's X-Forwarded-For entry counts",
       "status": "pass",
-      "durationMs": 2841.59168,
+      "durationMs": 3020.425708,
       "reason": "",
       "backend": "node"
     },
@@ -4407,7 +4407,7 @@
       "source": "tests/spend-limits.test.ts",
       "name": "a run's own spend limit ends that run once it crosses it, and leaves the agent's limit and later runs alone",
       "status": "pass",
-      "durationMs": 3835.650558,
+      "durationMs": 3654.22586,
       "reason": "",
       "backend": "node"
     },
@@ -4416,7 +4416,7 @@
       "source": "tests/spend-limits.test.ts",
       "name": "an agent's spend limit ends the turn that crosses it and refuses new prompts until a new limit, which counts from zero",
       "status": "pass",
-      "durationMs": 106835.86898,
+      "durationMs": 79651.41877,
       "reason": "",
       "backend": "node"
     },
@@ -4425,7 +4425,7 @@
       "source": "tests/storage-limits.test.ts",
       "name": "over the API: uploads need credit, stop at the free limit with STORAGE_LIMIT, and the operator can raise a tenant's limit",
       "status": "pass",
-      "durationMs": 3697.790419,
+      "durationMs": 3672.37385,
       "reason": "",
       "backend": "node"
     },
@@ -4434,7 +4434,7 @@
       "source": "tests/loop-reliability.test.ts:118",
       "name": "stopping an agent ends its turn and cancels the runs queued behind it, so nothing runs after the stop; queued: keep stops the turn only",
       "status": "pass",
-      "durationMs": 5142.333547,
+      "durationMs": 6011.42553,
       "reason": "",
       "backend": "node"
     },
@@ -4443,7 +4443,7 @@
       "source": "tests/loop-reliability.test.ts:151",
       "name": "a stop drops the messages the agent holds for its next turn (the legacy steer): the next prompt never reads them",
       "status": "pass",
-      "durationMs": 3633.273132,
+      "durationMs": 4080.90458,
       "reason": "",
       "backend": "node"
     },
@@ -4452,7 +4452,7 @@
       "source": "tests/loop-reliability.test.ts:167",
       "name": "every view of an agent agrees whether it is busy: during a stall, and after a stop",
       "status": "pass",
-      "durationMs": 4397.371526,
+      "durationMs": 4204.78543,
       "reason": "",
       "backend": "node"
     },
@@ -4461,7 +4461,7 @@
       "source": "tests/loop-reliability.test.ts:179",
       "name": "a steer is acknowledged at once and completes when the running turn takes it: a turn fed steers forever never fills the queue",
       "status": "pass",
-      "durationMs": 10157.194839,
+      "durationMs": 13098.02753,
       "reason": "",
       "backend": "node"
     },
@@ -4470,7 +4470,7 @@
       "source": "tests/loop-reliability.test.ts:67",
       "name": "a run past its agent's own maxSeconds is aborted inside a hung model request, and ends as its time limit's",
       "status": "pass",
-      "durationMs": 11477.372216,
+      "durationMs": 11598.34219,
       "reason": "",
       "backend": "node"
     },
@@ -4479,7 +4479,7 @@
       "source": "tests/loop-reliability.test.ts:83",
       "name": "a stalled model is retried, watchers see the stall, and a model that never answers fails its run with model_stream_stalled",
       "status": "pass",
-      "durationMs": 25622.278181,
+      "durationMs": 25947.7968,
       "reason": "",
       "backend": "node"
     },
@@ -4488,7 +4488,7 @@
       "source": "tests/run-limits.test.ts:111",
       "name": "a run stops at its time limit before its next model request",
       "status": "pass",
-      "durationMs": 4871.666492,
+      "durationMs": 5543.293124,
       "reason": "",
       "backend": "node"
     },
@@ -4497,7 +4497,7 @@
       "source": "tests/run-limits.test.ts:12",
       "name": "a run stops at its agent's limit of model responses with stopped turn_limit, and the next message continues",
       "status": "pass",
-      "durationMs": 6147.520767,
+      "durationMs": 7065.032475,
       "reason": "",
       "backend": "node"
     },
@@ -4506,7 +4506,7 @@
       "source": "tests/run-limits.test.ts:42",
       "name": "self-serve tenants get the runtime's maximums (or the operator's per tenant); admin tenants the admin backstop unless their entry sets one",
       "status": "pass",
-      "durationMs": 12176.121358,
+      "durationMs": 12655.768469,
       "reason": "",
       "backend": "node"
     },
@@ -4515,7 +4515,7 @@
       "source": "tests/run-limits.test.ts:85",
       "name": "an admin tenant's runaway run stops at the admin backstop",
       "status": "pass",
-      "durationMs": 3921.306135,
+      "durationMs": 5150.50763,
       "reason": "",
       "backend": "node"
     },
@@ -4524,7 +4524,7 @@
       "source": "tests/run-limits.test.ts:94",
       "name": "a definition's run limits reach its agents, and an agent's own stay when the definition is applied",
       "status": "pass",
-      "durationMs": 4513.005437,
+      "durationMs": 5339.854981,
       "reason": "",
       "backend": "node"
     },
@@ -4533,7 +4533,7 @@
       "source": "tests/runs-busy-limit.test.ts:12",
       "name": "at a busy limit of 1, the next run starts as soon as one is seen to end: 40 stateless runs, then agent prompts alternating between two agents",
       "status": "pass",
-      "durationMs": 72000.22775,
+      "durationMs": 69724.330083,
       "reason": "",
       "backend": "node"
     },
@@ -4542,7 +4542,7 @@
       "source": "tests/runs-messages-at-end.test.ts:8",
       "name": "a run's messages read as it ends are its messages, though its agent stops while answering",
       "status": "pass",
-      "durationMs": 27136.607161,
+      "durationMs": 33278.121598,
       "reason": "",
       "backend": "node"
     },
@@ -4551,7 +4551,7 @@
       "source": "tests/runs-stall.test.ts:8",
       "name": "a run whose model stalls ends failed with model_stream_stalled, never hanging busy",
       "status": "pass",
-      "durationMs": 23150.009022,
+      "durationMs": 23973.560157,
       "reason": "",
       "backend": "node"
     },
@@ -4560,7 +4560,7 @@
       "source": "tests/runs.test.ts:109",
       "name": "two runs with the same configuration share nothing: each model call has only its own input",
       "status": "pass",
-      "durationMs": 5859.47838,
+      "durationMs": 5491.78798,
       "reason": "",
       "backend": "node"
     },
@@ -4569,7 +4569,7 @@
       "source": "tests/runs.test.ts:121",
       "name": "a run with output answers with an object that fits its schema",
       "status": "pass",
-      "durationMs": 4686.16751,
+      "durationMs": 4229.54097,
       "reason": "",
       "backend": "node"
     },
@@ -4578,7 +4578,7 @@
       "source": "tests/runs.test.ts:130",
       "name": "an Idempotency-Key names one run: again with the same body it is that run, with another body a 409",
       "status": "pass",
-      "durationMs": 6191.30988,
+      "durationMs": 6877.17209,
       "reason": "",
       "backend": "node"
     },
@@ -4587,7 +4587,7 @@
       "source": "tests/runs.test.ts:151",
       "name": "abort ends a running run as failed, code aborted",
       "status": "pass",
-      "durationMs": 3770.17111,
+      "durationMs": 5278.6005,
       "reason": "",
       "backend": "node"
     },
@@ -4596,7 +4596,7 @@
       "source": "tests/runs.test.ts:161",
       "name": "runs count against busy agents and runs per minute, as agent runs do, and not against agent creates",
       "status": "pass",
-      "durationMs": 13748.19161,
+      "durationMs": 14060.24033,
       "reason": "",
       "backend": "node"
     },
@@ -4605,7 +4605,7 @@
       "source": "tests/runs.test.ts:195",
       "name": "a run's event stream follows it to its end, and picks up after Last-Event-ID without a gap or a repeat",
       "status": "pass",
-      "durationMs": 4061.4457,
+      "durationMs": 3434.4199,
       "reason": "",
       "backend": "node"
     },
@@ -4614,7 +4614,7 @@
       "source": "tests/runs.test.ts:216",
       "name": "an ended run is kept for its retention, then everything it stored is deleted",
       "status": "pass",
-      "durationMs": 5302.56685,
+      "durationMs": 5308.81292,
       "reason": "",
       "backend": "node"
     },
@@ -4623,7 +4623,7 @@
       "source": "tests/runs.test.ts:236",
       "name": "a run's configuration is checked before anything is made",
       "status": "pass",
-      "durationMs": 2202.53015,
+      "durationMs": 2243.97328,
       "reason": "",
       "backend": "node"
     },
@@ -4632,7 +4632,7 @@
       "source": "tests/runs.test.ts:254",
       "name": "the TypeScript SDK: agents.run in one call, runs.stream as it happens, runs.get, abort and messages",
       "status": "pass",
-      "durationMs": 6145.6885,
+      "durationMs": 6303.01034,
       "reason": "",
       "backend": "node"
     },
@@ -4641,7 +4641,7 @@
       "source": "tests/runs.test.ts:290",
       "name": "a run with no tools gets none: no codemode and no file tools, only its instructions; one with tools, or that asks, has codemode",
       "status": "pass",
-      "durationMs": 5256.56925,
+      "durationMs": 5443.88957,
       "reason": "",
       "backend": "node"
     },
@@ -4650,7 +4650,7 @@
       "source": "tests/runs.test.ts:38",
       "name": "a stateless run takes its configuration and input and answers with its result, in one call; it is no agent",
       "status": "pass",
-      "durationMs": 4585.36909,
+      "durationMs": 4131.85003,
       "reason": "",
       "backend": "node"
     },
@@ -4659,7 +4659,7 @@
       "source": "tests/runs.test.ts:76",
       "name": "a run a model call failed says how in its error, beside code and message, and in its events",
       "status": "pass",
-      "durationMs": 6877.29847,
+      "durationMs": 6297.7202,
       "reason": "",
       "backend": "node"
     },
@@ -4668,7 +4668,7 @@
       "source": "tests/runs.test.ts:98",
       "name": "without wait a run answers 202 at once; GET with wait has it end",
       "status": "pass",
-      "durationMs": 5231.25029,
+      "durationMs": 4411.10399,
       "reason": "",
       "backend": "node"
     },
@@ -4677,7 +4677,7 @@
       "source": "tests/schedule-api.test.ts:21",
       "name": "public accounts can email their verified address and cannot email strangers or suppressed recipients",
       "status": "pass",
-      "durationMs": 4157.438542,
+      "durationMs": 4138.73422,
       "reason": "",
       "backend": "node"
     },
@@ -4686,7 +4686,7 @@
       "source": "tests/schedule-api.test.ts:37",
       "name": "a calendar wake-up tells the model its fixed local edition date",
       "status": "pass",
-      "durationMs": 4419.79918,
+      "durationMs": 4461.30309,
       "reason": "",
       "backend": "node"
     },
@@ -4695,7 +4695,7 @@
       "source": "tests/schedule-api.test.ts:7",
       "name": "calendar schedules and owner-configured email round trip through the API without crossing accounts",
       "status": "pass",
-      "durationMs": 4852.291832,
+      "durationMs": 5029.66823,
       "reason": "",
       "backend": "node"
     },
@@ -4704,7 +4704,7 @@
       "source": "tests/cli-api.test.ts",
       "name": "the default fetch keeps the global receiver for JSON and text requests",
       "status": "pass",
-      "durationMs": 8.20389,
+      "durationMs": 11.878217,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -4713,7 +4713,7 @@
       "source": "tests/sdk-lazy-connections.test.ts",
       "name": "a lazy handle's stream() connects for the run, yields it from its start, and lets the stream go after",
       "status": "pass",
-      "durationMs": 4643.619711,
+      "durationMs": 5080.8255,
       "reason": "",
       "backend": "node"
     },
@@ -4722,7 +4722,7 @@
       "source": "tests/sdk-lazy-connections.test.ts",
       "name": "a lazy run whose agent is deleted mid-run settles, and close() stops its wait",
       "status": "pass",
-      "durationMs": 14437.881141,
+      "durationMs": 14035.42022,
       "reason": "",
       "backend": "node"
     },
@@ -4731,7 +4731,7 @@
       "source": "tests/sdk-lazy-connections.test.ts",
       "name": "handles that need the stream keep it: onEvent, served tools, or connection: eager",
       "status": "pass",
-      "durationMs": 14572.335147,
+      "durationMs": 15062.37004,
       "reason": "",
       "backend": "node"
     },
@@ -4740,7 +4740,7 @@
       "source": "tests/sdk-lazy-connections.test.ts",
       "name": "lazy handles (the Agents default) hold no event stream while idle, and run without one",
       "status": "pass",
-      "durationMs": 6331.343139,
+      "durationMs": 6453.34246,
       "reason": "",
       "backend": "node"
     },
@@ -4749,7 +4749,7 @@
       "source": "tests/sdk-portable.test.ts",
       "name": "a file transfer that stalls fails instead of hanging its caller",
       "status": "pass",
-      "durationMs": 14.109079,
+      "durationMs": 5.5544,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -4758,7 +4758,7 @@
       "source": "tests/sdk-portable.test.ts",
       "name": "a file's version comes from X-File-Version, whatever a proxy made of its ETag",
       "status": "pass",
-      "durationMs": 7.107639,
+      "durationMs": 2.35126,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -4767,7 +4767,7 @@
       "source": "tests/sdk-portable.test.ts",
       "name": "history collects bounded pages in chronological order with unchanged message values",
       "status": "pass",
-      "durationMs": 3.6701,
+      "durationMs": 3.06133,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -4776,7 +4776,7 @@
       "source": "tests/sdk-portable.test.ts",
       "name": "JSON transport uses manual redirects and rejects them without following credentials",
       "status": "pass",
-      "durationMs": 1.736879,
+      "durationMs": 1.65166,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -4785,7 +4785,7 @@
       "source": "tests/sdk-portable.test.ts",
       "name": "native fetch is bound to the global receiver required by Workers",
       "status": "pass",
-      "durationMs": 1.21153,
+      "durationMs": 1.12345,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -4794,7 +4794,7 @@
       "source": "tests/sdk-portable.test.ts",
       "name": "portable SDK hands events to consumers apart from the stream, and attaches with saved credentials",
       "status": "pass",
-      "durationMs": 34.222067,
+      "durationMs": 34.36297,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -4803,7 +4803,7 @@
       "source": "tests/sdk-portable.test.ts",
       "name": "SSE transport uses manual redirects and cancels redirect bodies without following",
       "status": "pass",
-      "durationMs": 0.70904,
+      "durationMs": 0.65778,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -4812,7 +4812,7 @@
       "source": "tests/sdk-portable.test.ts",
       "name": "the SDK is its agent's MCP server: it answers initialize, tools/list and tools/call on the connection it was given, and honours cancellation",
       "status": "pass",
-      "durationMs": 5.9974,
+      "durationMs": 5.69925,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -4821,7 +4821,7 @@
       "source": "tests/sdk-portable.test.ts",
       "name": "the SDK keeps no cursor store: a restarted client resumes from a snapshot",
       "status": "pass",
-      "durationMs": 23.868199,
+      "durationMs": 17.80231,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -4830,7 +4830,7 @@
       "source": "tests/sdk-portable.test.ts",
       "name": "the SDK retries 429s, honouring Retry-After, even for requests it does not otherwise retry",
       "status": "pass",
-      "durationMs": 5210.752906,
+      "durationMs": 7588.78574,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -4839,7 +4839,7 @@
       "source": "tests/sdk-server.test.ts",
       "name": "a token from another tenant is refused, whatever it says about the user; tenant is required",
       "status": "pass",
-      "durationMs": 9.881855,
+      "durationMs": 9.12776,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -4848,7 +4848,7 @@
       "source": "tests/sdk-server.test.ts",
       "name": "nodeListener checks tokens against the URL the runtime called, behind a proxy that ends TLS",
       "status": "pass",
-      "durationMs": 17.204353,
+      "durationMs": 19.11488,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -4857,7 +4857,7 @@
       "source": "tests/sdk-server.test.ts",
       "name": "nodeListener streams a response: an SSE body's chunks arrive as they are written",
       "status": "pass",
-      "durationMs": 22.840174,
+      "durationMs": 24.78828,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -4866,7 +4866,7 @@
       "source": "tests/sdk-server.test.ts",
       "name": "nodeListener trusts X-Forwarded-Proto and -Host only when told to",
       "status": "pass",
-      "durationMs": 21.142513,
+      "durationMs": 18.77044,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -4875,7 +4875,7 @@
       "source": "tests/sdk-server.test.ts",
       "name": "runtimeAuth gives MCP SDK servers the same identity; verifyRuntimeToken checks tokens directly",
       "status": "pass",
-      "durationMs": 4.140728,
+      "durationMs": 3.76955,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -4884,7 +4884,7 @@
       "source": "tests/sdk-server.test.ts",
       "name": "serveTools answers each call as the user the runtime's token names, and refuses anything else",
       "status": "pass",
-      "durationMs": 43.645965,
+      "durationMs": 42.10157,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -4893,7 +4893,7 @@
       "source": "tests/sdk-server.test.ts",
       "name": "serveTools lists each caller its own tools: a function of identity, or a ToolServer whose listTools gets the context",
       "status": "pass",
-      "durationMs": 23.87347,
+      "durationMs": 18.29376,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -4902,7 +4902,7 @@
       "source": "tests/sdk-server.test.ts",
       "name": "the hosted runtime signs as https://agents.camelai.dev whichever of its URLs a server names",
       "status": "pass",
-      "durationMs": 6.346145,
+      "durationMs": 3.99247,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -4911,7 +4911,7 @@
       "source": "tests/sdk-server.test.ts",
       "name": "through a real runtime: served tools get its signed identity, attached tools the same identity from the call",
       "status": "pass",
-      "durationMs": 6386.645961,
+      "durationMs": 6757.69006,
       "reason": "",
       "backend": "node"
     },
@@ -4920,7 +4920,7 @@
       "source": "tests/ui-ai-sdk.test.ts",
       "name": "a question the agent asks arrives as a data part; answering it for the chat, then resuming, streams the rest",
       "status": "pass",
-      "durationMs": 13933.23789,
+      "durationMs": 14226.911577,
       "reason": "",
       "backend": "node"
     },
@@ -4929,7 +4929,7 @@
       "source": "tests/ui-ai-sdk.test.ts",
       "name": "an approval the agent waits on is a tool approval request; answering it in the chat resumes the run",
       "status": "pass",
-      "durationMs": 14450.73521,
+      "durationMs": 14116.827954,
       "reason": "",
       "backend": "node"
     },
@@ -4938,7 +4938,7 @@
       "source": "tests/ui-ai-sdk.test.ts",
       "name": "resumeStream() after the resumed run already finished still ends, with what the run said",
       "status": "pass",
-      "durationMs": 16418.21542,
+      "durationMs": 16760.877495,
       "reason": "",
       "backend": "node"
     },
@@ -4947,7 +4947,7 @@
       "source": "tests/ui-ai-sdk.test.ts",
       "name": "resumeStream() joining a run mid-answer shows each word once, whatever arrived while it looked",
       "status": "pass",
-      "durationMs": 14387.19376,
+      "durationMs": 14525.065893,
       "reason": "",
       "backend": "node"
     },
@@ -4956,7 +4956,7 @@
       "source": "tests/ui-ai-sdk.test.ts",
       "name": "useChat's transport sends the new message and streams the agent's reply, tool calls included",
       "status": "pass",
-      "durationMs": 15874.92391,
+      "durationMs": 15537.850498,
       "reason": "",
       "backend": "node"
     },
@@ -4965,7 +4965,7 @@
       "source": "tests/web-render.test.ts",
       "name": "web_fetch has Firecrawl render JavaScript shells, and only those, charging a platform render",
       "status": "pass",
-      "durationMs": 4515.70892,
+      "durationMs": 5064.88633,
       "reason": "",
       "backend": "node"
     },
@@ -4974,7 +4974,7 @@
       "source": "tests/web-search.test.ts",
       "name": "a definition pins web_search's providers; a platform search is charged at the answering provider's price and counted in the hour's ledger entry",
       "status": "pass",
-      "durationMs": 3397.498126,
+      "durationMs": 4269.040046,
       "reason": "",
       "backend": "node"
     },
@@ -4983,7 +4983,7 @@
       "source": "tests/web-search.test.ts",
       "name": "a search key the operator set for a tenant (its apiKeys) is used, and is not counted as the platform's",
       "status": "pass",
-      "durationMs": 3556.381071,
+      "durationMs": 4461.04149,
       "reason": "",
       "backend": "node"
     },
@@ -4992,7 +4992,7 @@
       "source": "tests/web-search.test.ts",
       "name": "an operator's tenant without a key of its own searches on the platform's, recorded as platform usage and never charged; its own key wins; platformKeys: false keeps the refusal",
       "status": "pass",
-      "durationMs": 4852.090511,
+      "durationMs": 5514.342011,
       "reason": "",
       "backend": "node"
     },
@@ -5001,7 +5001,7 @@
       "source": "tests/web-search.test.ts",
       "name": "codemode's searches on the platform's key stop once the tenant's credit is spent, without waiting for the next model request",
       "status": "pass",
-      "durationMs": 3518.68637,
+      "durationMs": 4081.737038,
       "reason": "",
       "backend": "node"
     },
@@ -5010,7 +5010,7 @@
       "source": "tests/web-search.test.ts",
       "name": "web_search uses the tenant's own search key, else the platform's billed to credit, and pairs with web_fetch",
       "status": "pass",
-      "durationMs": 5922.128868,
+      "durationMs": 8301.770859,
       "reason": "",
       "backend": "node"
     },
@@ -5019,7 +5019,7 @@
       "source": "tests/x-search.test.ts",
       "name": "X search works in agents and stateless runs, uses tenant keys first and bills only platform requests",
       "status": "pass",
-      "durationMs": 12539.747512,
+      "durationMs": 8670.418445,
       "reason": "",
       "backend": "node"
     },
@@ -5028,7 +5028,7 @@
       "source": "tests/selfhost.test.ts:39",
       "name": "a runtime bootstrapped from AGENT_TENANT and AGENT_OPERATOR_TOKEN serves that tenant",
       "status": "pass",
-      "durationMs": 5089.86203,
+      "durationMs": 5262.01088,
       "reason": "",
       "backend": "node"
     },
@@ -5037,7 +5037,7 @@
       "source": "tests/selfhost.test.ts:48",
       "name": "on a runtime configured by AGENT_TENANT, a run without a model key also names AGENT_TENANT_API_KEYS",
       "status": "pass",
-      "durationMs": 3808.39204,
+      "durationMs": 4055.51299,
       "reason": "",
       "backend": "node"
     },
@@ -5046,7 +5046,7 @@
       "source": "tests/selfhost.test.ts:57",
       "name": "a private runtime names no URL to browsers: AGENT_BROWSER_URL overrides the browser token's url, or empty leaves it out, and links carry their path on the runtime",
       "status": "pass",
-      "durationMs": 6970.33367,
+      "durationMs": 7660.03702,
       "reason": "",
       "backend": "node"
     },
@@ -5055,7 +5055,7 @@
       "source": "tests/openapi-sources.test.ts:58",
       "name": "an OpenAPI spec's operations are tools: requests built from the spec, data back, errors as tool errors",
       "status": "pass",
-      "durationMs": 5085.836897,
+      "durationMs": 4812.9469,
       "reason": "",
       "backend": "node"
     },
@@ -5064,7 +5064,7 @@
       "source": "tests/openapi-sources.test.ts:94",
       "name": "OpenAPI sources are checked when the definition is saved",
       "status": "pass",
-      "durationMs": 3125.224526,
+      "durationMs": 2808.57756,
       "reason": "",
       "backend": "node"
     },
@@ -5073,7 +5073,7 @@
       "source": "tests/stream-deltas.test.ts:110",
       "name": "a snapshot too large for one frame drops the turn's finished messages first, keeping the message still streaming",
       "status": "pass",
-      "durationMs": 3866.406555,
+      "durationMs": 4472.404305,
       "reason": "",
       "backend": "node"
     },
@@ -5082,7 +5082,7 @@
       "source": "tests/stream-deltas.test.ts:132",
       "name": "a tool call's updates are Pi's, less the message: toolcall_start names the call, toolcall_end carries it",
       "status": "pass",
-      "durationMs": 4722.17246,
+      "durationMs": 5333.660556,
       "reason": "",
       "backend": "node"
     },
@@ -5091,7 +5091,7 @@
       "source": "tests/stream-deltas.test.ts:29",
       "name": "message_update carries its delta alone; a subscriber that asks gets a snapshot of the running turn where it cannot replay, and one that does not a replay gap",
       "status": "pass",
-      "durationMs": 4685.789009,
+      "durationMs": 4841.587272,
       "reason": "",
       "backend": "node"
     },
@@ -5100,7 +5100,7 @@
       "source": "tests/stream-deltas.test.ts:91",
       "name": "the SDK's events carry no partial message, and it starts from a snapshot",
       "status": "pass",
-      "durationMs": 4078.288327,
+      "durationMs": 4280.131253,
       "reason": "",
       "backend": "node"
     },
@@ -5109,7 +5109,7 @@
       "source": "tests/attach.test.ts:31",
       "name": "the application's own connection still answers a replay gap with 409 unless it asks for a snapshot, as relays that do not read snapshots expect",
       "status": "pass",
-      "durationMs": 13820.909332,
+      "durationMs": 16119.024244,
       "reason": "",
       "backend": "node"
     },
@@ -5118,7 +5118,7 @@
       "source": "tests/attach.test.ts:43",
       "name": "a run for an agent whose tools need its application is refused while none is connected, after a short wait for one reconnecting",
       "status": "pass",
-      "durationMs": 10911.801265,
+      "durationMs": 11489.946799,
       "reason": "",
       "backend": "node"
     },
@@ -5127,7 +5127,7 @@
       "source": "tests/attach.test.ts:69",
       "name": "the application's ready event carries the hash of the tools it last declared, so an SDK reconfigures only on a change; a run's outcome carries its usage",
       "status": "pass",
-      "durationMs": 4262.213797,
+      "durationMs": 5002.029741,
       "reason": "",
       "backend": "node"
     },
@@ -5136,7 +5136,7 @@
       "source": "tests/attach.test.ts:6",
       "name": "one application serves an agent's tools at a time: another connection is refused unless it takes over, and the replaced one is told why",
       "status": "pass",
-      "durationMs": 5851.794631,
+      "durationMs": 8714.884043,
       "reason": "",
       "backend": "node"
     },
@@ -5145,7 +5145,7 @@
       "source": "tests/attach.test.ts:89",
       "name": "a connection that holds an agent but no longer answers (half-open) is replaced without a takeover",
       "status": "pass",
-      "durationMs": 4633.407551,
+      "durationMs": 5213.609245,
       "reason": "",
       "backend": "node"
     },
@@ -5154,7 +5154,7 @@
       "source": "tests/builtins.test.ts:117",
       "name": "an agent takes builtins without a definition: at creation, by upsert and by configuration, and only from its tenant",
       "status": "pass",
-      "durationMs": 4508.82602,
+      "durationMs": 4659.05333,
       "reason": "",
       "backend": "node"
     },
@@ -5163,7 +5163,7 @@
       "source": "tests/builtins.test.ts:18",
       "name": "web_fetch reads public pages as text, from the model and codemode, and never reaches inside",
       "status": "pass",
-      "durationMs": 8741.17049,
+      "durationMs": 10299.85368,
       "reason": "",
       "backend": "node"
     },
@@ -5172,7 +5172,7 @@
       "source": "tests/builtins.test.ts:46",
       "name": "web_fetch refuses internal addresses when nothing is allowed",
       "status": "pass",
-      "durationMs": 4426.89645,
+      "durationMs": 5779.55851,
       "reason": "",
       "backend": "node"
     },
@@ -5181,7 +5181,7 @@
       "source": "tests/builtins.test.ts:55",
       "name": "an agent schedules, lists and cancels its own wake-ups, and wakes up",
       "status": "pass",
-      "durationMs": 6520.20482,
+      "durationMs": 6113.18824,
       "reason": "",
       "backend": "node"
     },
@@ -5190,7 +5190,7 @@
       "source": "tests/builtins.test.ts:85",
       "name": "a schedule of an agent at its spend limit records the 402 and moves to its next occurrence instead of retrying",
       "status": "pass",
-      "durationMs": 3590.9454,
+      "durationMs": 3392.57459,
       "reason": "",
       "backend": "node"
     },
@@ -5199,7 +5199,7 @@
       "source": "tests/code-engine.test.ts:21",
       "name": "codemode runs on V8 for every tenant, and the limits API refuses an engine",
       "status": "pass",
-      "durationMs": 11773.762234,
+      "durationMs": 8992.80948,
       "reason": "",
       "backend": "node"
     },
@@ -5208,7 +5208,7 @@
       "source": "tests/inline-mcp-servers.test.ts:131",
       "name": "an upsert's mcpServers are part of its configuration and configHash",
       "status": "pass",
-      "durationMs": 4939.805801,
+      "durationMs": 4534.74106,
       "reason": "",
       "backend": "node"
     },
@@ -5217,7 +5217,7 @@
       "source": "tests/inline-mcp-servers.test.ts:158",
       "name": "a stateless run calls its own MCP servers",
       "status": "pass",
-      "durationMs": 4883.194435,
+      "durationMs": 4088.960628,
       "reason": "",
       "backend": "node"
     },
@@ -5226,7 +5226,7 @@
       "source": "tests/inline-mcp-servers.test.ts:42",
       "name": "an agent without a definition has MCP servers of its own, called with identity tokens that name it and no definition",
       "status": "pass",
-      "durationMs": 8028.704383,
+      "durationMs": 7881.497378,
       "reason": "",
       "backend": "node"
     },
@@ -5235,7 +5235,7 @@
       "source": "tests/inline-mcp-servers.test.ts:93",
       "name": "an agent's or run's own MCP servers take no credentials, and an agent from a definition takes none of its own",
       "status": "pass",
-      "durationMs": 4053.992816,
+      "durationMs": 4470.124481,
       "reason": "",
       "backend": "node"
     },
@@ -5244,7 +5244,7 @@
       "source": "tests/mcp.test.ts:101",
       "name": "tool lists refresh when the server says they changed, and edits keep sealed credentials",
       "status": "pass",
-      "durationMs": 7348.04499,
+      "durationMs": 7254.12946,
       "reason": "",
       "backend": "node"
     },
@@ -5253,7 +5253,7 @@
       "source": "tests/mcp.test.ts:130",
       "name": "applying a definition lists its servers afresh: a tool added without a list_changed notice reaches the agent at once",
       "status": "pass",
-      "durationMs": 4182.9072,
+      "durationMs": 4168.85888,
       "reason": "",
       "backend": "node"
     },
@@ -5262,7 +5262,7 @@
       "source": "tests/mcp.test.ts:156",
       "name": "an agent shows every tool source and what its model gets, connecting to MCP servers only when asked",
       "status": "pass",
-      "durationMs": 5959.51338,
+      "durationMs": 6232.94123,
       "reason": "",
       "backend": "node"
     },
@@ -5271,7 +5271,7 @@
       "source": "tests/mcp.test.ts:206",
       "name": "MCP servers must be on public addresses, checked when saved and again when connecting",
       "status": "pass",
-      "durationMs": 4042.63063,
+      "durationMs": 4240.18147,
       "reason": "",
       "backend": "node"
     },
@@ -5280,7 +5280,7 @@
       "source": "tests/mcp.test.ts:224",
       "name": "a server that only speaks the older SSE transport is reached through it",
       "status": "pass",
-      "durationMs": 4679.72976,
+      "durationMs": 4067.907,
       "reason": "",
       "backend": "node"
     },
@@ -5289,7 +5289,7 @@
       "source": "tests/mcp.test.ts:270",
       "name": "tool servers get the model's call id, codemode's too, and the actor; their progress reaches the event stream",
       "status": "pass",
-      "durationMs": 4773.74861,
+      "durationMs": 4217.22527,
       "reason": "",
       "backend": "node"
     },
@@ -5298,7 +5298,7 @@
       "source": "tests/mcp.test.ts:297",
       "name": "a burst of progress is coalesced per call: the stream gets the first, then the latest of each window, and the last before the result",
       "status": "pass",
-      "durationMs": 4539.40492,
+      "durationMs": 4510.11078,
       "reason": "",
       "backend": "node"
     },
@@ -5307,7 +5307,7 @@
       "source": "tests/mcp.test.ts:312",
       "name": "a call that keeps reporting progress outlasts its timeout, which limits only silence",
       "status": "pass",
-      "durationMs": 6253.09404,
+      "durationMs": 6804.99501,
       "reason": "",
       "backend": "node"
     },
@@ -5316,7 +5316,7 @@
       "source": "tests/mcp.test.ts:61",
       "name": "an MCP server's tools reach the model and codemode; its credentials are sealed and go only to it",
       "status": "pass",
-      "durationMs": 5563.47639,
+      "durationMs": 4836.36501,
       "reason": "",
       "backend": "node"
     },
@@ -5325,7 +5325,7 @@
       "source": "tests/tool-calls.test.ts:121",
       "name": "a tool source that cannot be listed is named in every run's outcome",
       "status": "pass",
-      "durationMs": 3994.70589,
+      "durationMs": 3206.02385,
       "reason": "",
       "backend": "node"
     },
@@ -5334,7 +5334,7 @@
       "source": "tests/tool-calls.test.ts:136",
       "name": "an MCP server is listed when its definition is saved: refused credentials are a 400 then, and what it lists or why it could not is in the answer",
       "status": "pass",
-      "durationMs": 2280.02369,
+      "durationMs": 2145.04392,
       "reason": "",
       "backend": "node"
     },
@@ -5343,7 +5343,7 @@
       "source": "tests/tool-calls.test.ts:160",
       "name": "a direct tool's large result is cut for the model, as codemode's output is, with the whole of it saved to the workspace",
       "status": "pass",
-      "durationMs": 5228.99073,
+      "durationMs": 4506.8177,
       "reason": "",
       "backend": "node"
     },
@@ -5352,7 +5352,7 @@
       "source": "tests/tool-calls.test.ts:187",
       "name": "history and forks keep capped tool details and deduplicated prompts without changing model content",
       "status": "pass",
-      "durationMs": 5051.63356,
+      "durationMs": 4447.06367,
       "reason": "",
       "backend": "node"
     },
@@ -5361,7 +5361,7 @@
       "source": "tests/tool-calls.test.ts:28",
       "name": "every tool call carries a stable idempotency key: MCP servers in _meta, OpenAPI operations as an Idempotency-Key header",
       "status": "pass",
-      "durationMs": 5862.88809,
+      "durationMs": 5366.25581,
       "reason": "",
       "backend": "node"
     },
@@ -5370,7 +5370,7 @@
       "source": "tests/tool-calls.test.ts:55",
       "name": "calls whose ids repeat across turns (as providers that number calls per response give them) get keys of their own",
       "status": "pass",
-      "durationMs": 5082.73229,
+      "durationMs": 3642.63211,
       "reason": "",
       "backend": "node"
     },
@@ -5379,7 +5379,7 @@
       "source": "tests/tool-calls.test.ts:67",
       "name": "a run's outcome lists its tool calls, those from code too, by name and id with how each went, the first 100 only",
       "status": "pass",
-      "durationMs": 8021.26852,
+      "durationMs": 6993.09685,
       "reason": "",
       "backend": "node"
     },
@@ -5388,7 +5388,7 @@
       "source": "tests/tool-calls.test.ts:96",
       "name": "an attached tool's own timeoutMs bounds its call; progress extends it; a timeout is an unknown outcome, in the run's outcome too",
       "status": "pass",
-      "durationMs": 9014.03321,
+      "durationMs": 8044.28277,
       "reason": "",
       "backend": "node"
     },
@@ -5397,7 +5397,7 @@
       "source": "tests/webmcp.test.ts:38",
       "name": "the console registers the tools with the browser, runs them as the signed-in tenant, and unregisters on sign-out",
       "status": "pass",
-      "durationMs": 4641.88909,
+      "durationMs": 6179.497347,
       "reason": "",
       "backend": "node"
     },
@@ -5406,7 +5406,7 @@
       "source": "tests/webmcp.test.ts:63",
       "name": "in the console, the tools authenticate with the session cookie and the console header, not a key",
       "status": "pass",
-      "durationMs": 4021.98138,
+      "durationMs": 3883.796527,
       "reason": "",
       "backend": "node"
     },
@@ -5415,7 +5415,7 @@
       "source": "tests/cors.test.ts",
       "name": "any origin may read an agent with a browser token, on the four read routes only; the tenant's own tokens never get CORS",
       "status": "pass",
-      "durationMs": 9700.785393,
+      "durationMs": 12502.786762,
       "reason": "",
       "backend": "node"
     },
@@ -5424,7 +5424,7 @@
       "source": "tests/deploy-drain.test.ts:117",
       "name": "close() waits for no call the runtime gave up on, nor when there is nothing to finish",
       "status": "pass",
-      "durationMs": 15536.915798,
+      "durationMs": 15051.53968,
       "reason": "",
       "backend": "node"
     },
@@ -5433,7 +5433,7 @@
       "source": "tests/deploy-drain.test.ts:130",
       "name": "a tool process that dies mid-run: the run goes on, the restarted process serves its next calls, and the same idempotencyKey fetches its result",
       "status": "pass",
-      "durationMs": 6069.628064,
+      "durationMs": 5276.63999,
       "reason": "",
       "backend": "node"
     },
@@ -5442,7 +5442,7 @@
       "source": "tests/deploy-drain.test.ts:26",
       "name": "a rolling deploy loses no tool call: the new process takes over, and the old one finishes its call as it closes",
       "status": "pass",
-      "durationMs": 5248.342133,
+      "durationMs": 6406.46484,
       "reason": "",
       "backend": "node"
     },
@@ -5451,7 +5451,7 @@
       "source": "tests/deploy-drain.test.ts:55",
       "name": "a stop-then-start deploy loses no tool call: close() finishes the call, and the next process connects without a takeover even while it drains",
       "status": "pass",
-      "durationMs": 4749.372036,
+      "durationMs": 5169.06104,
       "reason": "",
       "backend": "node"
     },
@@ -5460,7 +5460,7 @@
       "source": "tests/deploy-drain.test.ts:78",
       "name": "a call cut off with its connection tells the model, in plain words, that it may or may not have run",
       "status": "pass",
-      "durationMs": 13902.090889,
+      "durationMs": 14658.64243,
       "reason": "",
       "backend": "node"
     },
@@ -5469,7 +5469,7 @@
       "source": "tests/deploy-drain.test.ts:97",
       "name": "a takeover while a call runs lets the replaced process answer it, then tells it it was replaced",
       "status": "pass",
-      "durationMs": 5299.848058,
+      "durationMs": 5092.56901,
       "reason": "",
       "backend": "node"
     },
@@ -5478,7 +5478,7 @@
       "source": "tests/http-drain.test.ts:15",
       "name": "idle sockets outlive the load balancer's 360 s; a drain answers a long poll under way in full, with Connection: close",
       "status": "pass",
-      "durationMs": 6761.523879,
+      "durationMs": 4849.50373,
       "reason": "",
       "backend": "node"
     },
@@ -5487,7 +5487,7 @@
       "source": "tests/identity-tokens.test.ts",
       "name": "a child's run's identity tokens name its parent (par) and its chain's first agent (root), from the signed chain",
       "status": "pass",
-      "durationMs": 9992.92558,
+      "durationMs": 10644.89933,
       "reason": "",
       "backend": "node"
     },
@@ -5496,7 +5496,7 @@
       "source": "tests/identity-tokens.test.ts",
       "name": "tool servers with auth \"runtime\" get a short-lived token the runtime signs, naming the agent's subject, context and the turn's actor",
       "status": "pass",
-      "durationMs": 5344.01682,
+      "durationMs": 5362.2704,
       "reason": "",
       "backend": "node"
     },
@@ -5505,7 +5505,7 @@
       "source": "tests/registry.test.ts",
       "name": "the UI registry's JSON is served at /r/<name>.json without credentials, pointing at this runtime",
       "status": "pass",
-      "durationMs": 4033.494616,
+      "durationMs": 3259.23127,
       "reason": "",
       "backend": "node"
     },
@@ -5514,7 +5514,7 @@
       "source": "tests/revocation.test.ts",
       "name": "a rotation right after an upsert waits for the upsert's header write: it is never refused, and the token it replaced is",
       "status": "pass",
-      "durationMs": 4327.298768,
+      "durationMs": 4148.512637,
       "reason": "",
       "backend": "node"
     },
@@ -5523,7 +5523,7 @@
       "source": "tests/revocation.test.ts",
       "name": "an agent's token can be rotated: the old one stops working at once, and credentials give the new one",
       "status": "pass",
-      "durationMs": 5611.255361,
+      "durationMs": 5940.585586,
       "reason": "",
       "backend": "node"
     },
@@ -5532,7 +5532,7 @@
       "source": "tests/revocation.test.ts",
       "name": "revoking an API token lists the webhooks it set, which keep sending",
       "status": "pass",
-      "durationMs": 3301.071471,
+      "durationMs": 4018.180777,
       "reason": "",
       "backend": "node"
     },
@@ -5541,7 +5541,7 @@
       "source": "tests/ui-chat.test.ts",
       "name": "a call waiting on a person carries its input; errors, stops and presented files show as such",
       "status": "pass",
-      "durationMs": 0.88566,
+      "durationMs": 9.024413,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -5550,7 +5550,7 @@
       "source": "tests/ui-chat.test.ts",
       "name": "a chat destroyed (or disconnected) before its token arrives never opens a stream",
       "status": "pass",
-      "durationMs": 127.06999,
+      "durationMs": 126.753505,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -5559,7 +5559,7 @@
       "source": "tests/ui-chat.test.ts",
       "name": "a failed send stays with its error and can be retried; a refused token stops the chat with an error",
       "status": "pass",
-      "durationMs": 3458.621368,
+      "durationMs": 4088.701983,
       "reason": "",
       "backend": "node"
     },
@@ -5568,7 +5568,7 @@
       "source": "tests/ui-chat.test.ts",
       "name": "a sent message shows at once, keeps its id when it arrives, and the reply streams into one message",
       "status": "pass",
-      "durationMs": 4033.084355,
+      "durationMs": 5745.798202,
       "reason": "",
       "backend": "node"
     },
@@ -5577,7 +5577,7 @@
       "source": "tests/ui-chat.test.ts",
       "name": "a turn is one assistant message; tool results fold into their calls; a user message keeps the id it was sent with",
       "status": "pass",
-      "durationMs": 3.659721,
+      "durationMs": 8.123987,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -5586,7 +5586,7 @@
       "source": "tests/ui-chat.test.ts",
       "name": "an agent's question shows on its call, is answered through the store, and the turn goes on",
       "status": "pass",
-      "durationMs": 3887.276225,
+      "durationMs": 4868.805962,
       "reason": "",
       "backend": "node"
     },
@@ -5595,7 +5595,7 @@
       "source": "tests/ui-chat.test.ts",
       "name": "answerValue turns plain values into answers",
       "status": "pass",
-      "durationMs": 0.789161,
+      "durationMs": 0.850769,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -5604,7 +5604,7 @@
       "source": "tests/ui-chat.test.ts",
       "name": "connect, disconnect, connect (StrictMode) opens one stream, whichever token arrives first",
       "status": "pass",
-      "durationMs": 169.238164,
+      "durationMs": 173.012737,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -5613,7 +5613,7 @@
       "source": "tests/ui-chat.test.ts",
       "name": "messages and parts that did not change are the same objects; a streamed delta rebuilds only what it changed",
       "status": "pass",
-      "durationMs": 0.857304,
+      "durationMs": 0.906162,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -5622,7 +5622,7 @@
       "source": "tests/ui-chat.test.ts",
       "name": "sub-agents' progress riding on a tool result is kept apart from the tool's own text and data",
       "status": "pass",
-      "durationMs": 0.472165,
+      "durationMs": 0.592928,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -5631,7 +5631,7 @@
       "source": "tests/ui-chat.test.ts",
       "name": "while a message is on its way, the running turn does not take the last answer, and it follows the message",
       "status": "pass",
-      "durationMs": 0.850615,
+      "durationMs": 0.976855,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -5640,7 +5640,7 @@
       "source": "tests/ui-handler.test.ts",
       "name": "a send prompts as the user, is idempotent by its client id, and keeps the client id on the message",
       "status": "pass",
-      "durationMs": 3755.784091,
+      "durationMs": 4816.491539,
       "reason": "",
       "backend": "node"
     },
@@ -5649,7 +5649,7 @@
       "source": "tests/ui-handler.test.ts",
       "name": "a send with wait answers with the reply once the run ends; wait asks again without sending again",
       "status": "pass",
-      "durationMs": 8576.578212,
+      "durationMs": 9791.221563,
       "reason": "",
       "backend": "node"
     },
@@ -5658,7 +5658,7 @@
       "source": "tests/ui-handler.test.ts",
       "name": "agentKeyFor is stable, a valid agent key, and distinct per user and thread without collisions",
       "status": "pass",
-      "durationMs": 8.679275,
+      "durationMs": 14.88889,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -5667,7 +5667,7 @@
       "source": "tests/ui-handler.test.ts",
       "name": "an agent several users share (authorize names its key) takes each user's messages as theirs",
       "status": "pass",
-      "durationMs": 3375.300759,
+      "durationMs": 3516.763273,
       "reason": "",
       "backend": "node"
     },
@@ -5676,7 +5676,7 @@
       "source": "tests/ui-handler.test.ts",
       "name": "an agent whose setup changes is reattached, not attached twice",
       "status": "pass",
-      "durationMs": 3202.842697,
+      "durationMs": 3232.444298,
       "reason": "",
       "backend": "node"
     },
@@ -5685,7 +5685,7 @@
       "source": "tests/ui-handler.test.ts",
       "name": "an agent's own tools run in the handler's process, for the user it acts for",
       "status": "pass",
-      "durationMs": 13420.74684,
+      "durationMs": 13508.328964,
       "reason": "",
       "backend": "node"
     },
@@ -5694,7 +5694,7 @@
       "source": "tests/ui-handler.test.ts",
       "name": "answers go to the user's own agent as the user; another user's input is not theirs to answer",
       "status": "pass",
-      "durationMs": 4193.08405,
+      "durationMs": 4917.16934,
       "reason": "",
       "backend": "node"
     },
@@ -5703,7 +5703,7 @@
       "source": "tests/ui-handler.test.ts",
       "name": "browserToken.scopes chooses what the handler's tokens read, e.g. without events",
       "status": "pass",
-      "durationMs": 3032.920141,
+      "durationMs": 3009.565599,
       "reason": "",
       "backend": "node"
     },
@@ -5712,7 +5712,7 @@
       "source": "tests/ui-handler.test.ts",
       "name": "link signs a download of a file in the user's agent's mounts",
       "status": "pass",
-      "durationMs": 3144.381879,
+      "durationMs": 3188.939206,
       "reason": "",
       "backend": "node"
     },
@@ -5721,7 +5721,7 @@
       "source": "tests/ui-handler.test.ts",
       "name": "link signs only files the agent presented or its own workspace holds, unless linkAnyMountedPath",
       "status": "pass",
-      "durationMs": 3454.561529,
+      "durationMs": 3524.227162,
       "reason": "",
       "backend": "node"
     },
@@ -5730,7 +5730,7 @@
       "source": "tests/ui-handler.test.ts",
       "name": "onSend sees the client's data, may rewrite the message or add metadata, and may refuse it",
       "status": "pass",
-      "durationMs": 3550.837493,
+      "durationMs": 3550.782743,
       "reason": "",
       "backend": "node"
     },
@@ -5739,7 +5739,7 @@
       "source": "tests/ui-handler.test.ts",
       "name": "stop aborts the user's running turn",
       "status": "pass",
-      "durationMs": 3137.564278,
+      "durationMs": 3506.301536,
       "reason": "",
       "backend": "node"
     },
@@ -5748,7 +5748,7 @@
       "source": "tests/ui-handler.test.ts",
       "name": "the handler mints a browser token for the user's own agent, and each user and thread has its own",
       "status": "pass",
-      "durationMs": 3880.430697,
+      "durationMs": 5228.985727,
       "reason": "",
       "backend": "node"
     },
@@ -5757,7 +5757,7 @@
       "source": "tests/ui-handler.test.ts",
       "name": "the handler refuses what is not a JSON POST from the same site",
       "status": "pass",
-      "durationMs": 3185.127971,
+      "durationMs": 3212.536307,
       "reason": "",
       "backend": "node"
     },
@@ -5766,7 +5766,7 @@
       "source": "tests/ui-handler.test.ts",
       "name": "what authorize returns is checked: a user id or name over 200 characters is the app's bug, not a user",
       "status": "pass",
-      "durationMs": 2257.529272,
+      "durationMs": 2226.995651,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -5775,7 +5775,7 @@
       "source": "tests/ui-proxy.test.ts",
       "name": "proxy: a browser that goes away aborts the upstream stream",
       "status": "pass",
-      "durationMs": 13530.75778,
+      "durationMs": 13426.59806,
       "reason": "",
       "backend": "node"
     },
@@ -5784,7 +5784,7 @@
       "source": "tests/ui-proxy.test.ts",
       "name": "proxy: a fetch-style route (Next.js route handlers, Workers) streams the user's own agent's events as they come",
       "status": "pass",
-      "durationMs": 5564.52346,
+      "durationMs": 5093.08041,
       "reason": "",
       "backend": "node"
     },
@@ -5793,7 +5793,7 @@
       "source": "tests/ui-proxy.test.ts",
       "name": "proxy: a file link goes through the route too, so the browser never needs to reach the runtime",
       "status": "pass",
-      "durationMs": 3034.26887,
+      "durationMs": 3437.61523,
       "reason": "",
       "backend": "node"
     },
@@ -5802,7 +5802,7 @@
       "source": "tests/ui-proxy.test.ts",
       "name": "proxy: Express (nodeListener) streams it",
       "status": "pass",
-      "durationMs": 3570.27584,
+      "durationMs": 3760.798993,
       "reason": "",
       "backend": "node"
     },
@@ -5811,7 +5811,7 @@
       "source": "tests/ui-proxy.test.ts",
       "name": "proxy: Hono streams it",
       "status": "pass",
-      "durationMs": 3625.13623,
+      "durationMs": 3950.562067,
       "reason": "",
       "backend": "node"
     },
@@ -5820,7 +5820,7 @@
       "source": "tests/ui-proxy.test.ts",
       "name": "proxy: the chat store reads only through the route, per thread",
       "status": "pass",
-      "durationMs": 3363.10976,
+      "durationMs": 3938.64699,
       "reason": "",
       "backend": "node"
     },
@@ -5829,7 +5829,7 @@
       "source": "tests/watch.test.ts",
       "name": "a snapshot's history is read before whether a turn runs, so a message never shows with its turn not running",
       "status": "pass",
-      "durationMs": 26.6987,
+      "durationMs": 27.012011,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -5838,7 +5838,7 @@
       "source": "tests/watch.test.ts",
       "name": "a watcher (poll) folds the stream into Pi messages as they grow, tool arguments included, and renews its token",
       "status": "pass",
-      "durationMs": 9949.93238,
+      "durationMs": 9965.865218,
       "reason": "",
       "backend": "node"
     },
@@ -5847,7 +5847,7 @@
       "source": "tests/watch.test.ts",
       "name": "a watcher (sse) folds the stream into Pi messages as they grow, tool arguments included, and renews its token",
       "status": "pass",
-      "durationMs": 10695.48491,
+      "durationMs": 10717.218451,
       "reason": "",
       "backend": "node"
     },
@@ -5856,7 +5856,7 @@
       "source": "tests/watch.test.ts",
       "name": "a watcher joining a turn whose snapshot was too large to carry its messages still places what follows",
       "status": "pass",
-      "durationMs": 3529.84095,
+      "durationMs": 4060.842062,
       "reason": "",
       "backend": "node"
     },
@@ -5865,7 +5865,7 @@
       "source": "tests/watch.test.ts",
       "name": "a watcher reads pending inputs beside the stream, and history and state together, then says it has loaded",
       "status": "pass",
-      "durationMs": 50.49386,
+      "durationMs": 52.690921,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -5874,7 +5874,7 @@
       "source": "tests/watch.test.ts",
       "name": "a watcher starts from the newest page and loads older pages on request",
       "status": "pass",
-      "durationMs": 3329.01963,
+      "durationMs": 4229.328113,
       "reason": "",
       "backend": "node"
     },
@@ -5883,7 +5883,7 @@
       "source": "tests/watch.test.ts",
       "name": "a watcher takes the runtime's reconnect hint as no event, and reconnects at once with Last-Event-ID",
       "status": "pass",
-      "durationMs": 26.72858,
+      "durationMs": 27.116715,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -5892,7 +5892,7 @@
       "source": "tests/watch.test.ts",
       "name": "a watcher that cannot reach the runtime says it may be CORS, not just \"Failed to fetch\"",
       "status": "pass",
-      "durationMs": 25.19939,
+      "durationMs": 25.686503,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -5901,7 +5901,7 @@
       "source": "tests/watch.test.ts",
       "name": "a watcher whose streams deliver nothing (a proxy that buffers them) falls back to long polls",
       "status": "pass",
-      "durationMs": 3241.60361,
+      "durationMs": 3654.703519,
       "reason": "",
       "backend": "node"
     },
@@ -5910,7 +5910,7 @@
       "source": "tests/watch.test.ts",
       "name": "a watcher whose token does not read history follows the stream without it",
       "status": "pass",
-      "durationMs": 3237.62988,
+      "durationMs": 3637.507982,
       "reason": "",
       "backend": "node"
     },
@@ -5919,7 +5919,7 @@
       "source": "tests/watch.test.ts",
       "name": "a watcher whose token expires with no getToken stops, and says so",
       "status": "pass",
-      "durationMs": 26.09504,
+      "durationMs": 25.920461,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -5928,7 +5928,7 @@
       "source": "tests/watch.test.ts",
       "name": "a watcher whose token hides the running turn still knows a turn runs",
       "status": "pass",
-      "durationMs": 3633.83702,
+      "durationMs": 4127.476999,
       "reason": "",
       "backend": "node"
     },
@@ -5937,7 +5937,7 @@
       "source": "tests/watch.test.ts",
       "name": "partial JSON is linear: long arguments, or a bad escape early in them, parse at once",
       "status": "pass",
-      "durationMs": 4.59199,
+      "durationMs": 4.957016,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -5946,7 +5946,7 @@
       "source": "tests/watch.test.ts",
       "name": "partial JSON parses as far as it goes",
       "status": "pass",
-      "durationMs": 3.26856,
+      "durationMs": 3.136667,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -5955,7 +5955,7 @@
       "source": "tests/watch.test.ts",
       "name": "partial JSON: every prefix of real tool arguments parses as the previous implementation did",
       "status": "pass",
-      "durationMs": 35.74819,
+      "durationMs": 33.239344,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -5964,7 +5964,7 @@
       "source": "tests/watch.test.ts",
       "name": "the watcher is browser code: it bundles for a browser with nothing from Node",
       "status": "pass",
-      "durationMs": 89.73255,
+      "durationMs": 124.499442,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -8673,7 +8673,7 @@
       "source": "tests/projects.test.ts",
       "name": "a project is a keyed volume seeded once, mounted with the workspace beside it, and published as checked snapshots",
       "status": "pass",
-      "durationMs": 3968.21816,
+      "durationMs": 4690.469524,
       "reason": "",
       "backend": "node"
     },
@@ -8682,7 +8682,7 @@
       "source": "tests/projects.test.ts",
       "name": "a project is restored in place to a published version, and a check hands what it computed to store and the result",
       "status": "pass",
-      "durationMs": 2465.54352,
+      "durationMs": 3331.731711,
       "reason": "",
       "backend": "node"
     },
@@ -8691,7 +8691,7 @@
       "source": "tests/projects.test.ts",
       "name": "pinned versions outlast keep and the snapshot cap, carry labels, and a snapshot can be made from contents",
       "status": "pass",
-      "durationMs": 3307.934891,
+      "durationMs": 4418.294167,
       "reason": "",
       "backend": "node"
     },
@@ -8700,7 +8700,7 @@
       "source": "tests/projects.test.ts",
       "name": "publishTool finds the project from the call's identity, never its arguments, and tells the model what to fix",
       "status": "pass",
-      "durationMs": 3688.64577,
+      "durationMs": 3718.26168,
       "reason": "",
       "backend": "node"
     },
@@ -8709,7 +8709,7 @@
       "source": "tests/volumes.test.ts:538",
       "name": "the REST API and SDK manage volumes within a tenant, and nothing crosses tenants",
       "status": "pass",
-      "durationMs": 9971.593493,
+      "durationMs": 10393.36176,
       "reason": "",
       "backend": "node"
     },
@@ -8718,7 +8718,7 @@
       "source": "tests/billing-alerts.test.ts",
       "name": "registered billing webhooks are delivered by the existing worker with valid signatures",
       "status": "pass",
-      "durationMs": 5526.096496,
+      "durationMs": 5915.46223,
       "reason": "",
       "backend": "node"
     },
@@ -8727,7 +8727,7 @@
       "source": "tests/usage-webhooks.test.ts",
       "name": "a rotated usage webhook secret signs beside the old one for a day, and removing the webhook stops events",
       "status": "pass",
-      "durationMs": 4251.619909,
+      "durationMs": 7686.349002,
       "reason": "",
       "backend": "node"
     },
@@ -8736,7 +8736,7 @@
       "source": "tests/usage-webhooks.test.ts",
       "name": "calls through a tenant's own endpoint are sent too, named as the agent names its model",
       "status": "pass",
-      "durationMs": 4637.89937,
+      "durationMs": 5466.083312,
       "reason": "",
       "backend": "node"
     },
@@ -8745,7 +8745,7 @@
       "source": "tests/usage-webhooks.test.ts",
       "name": "each model response's usage is POSTed, signed, to the tenant's webhook: retried after a failure, and kept across a restart",
       "status": "pass",
-      "durationMs": 7609.984737,
+      "durationMs": 11159.016635,
       "reason": "",
       "backend": "node"
     },
@@ -8754,7 +8754,7 @@
       "source": "tests/webhooks.test.ts:103",
       "name": "a run that ends with an error is sent as run.failed",
       "status": "pass",
-      "durationMs": 3762.66107,
+      "durationMs": 6732.667564,
       "reason": "",
       "backend": "node"
     },
@@ -8763,7 +8763,7 @@
       "source": "tests/webhooks.test.ts:118",
       "name": "the usage webhook still works, apart from endpoints, and gets usage in its original body",
       "status": "pass",
-      "durationMs": 3413.23592,
+      "durationMs": 6171.515505,
       "reason": "",
       "backend": "node"
     },
@@ -8772,7 +8772,7 @@
       "source": "tests/webhooks.test.ts:25",
       "name": "webhook endpoints: registered with the event types they want, managed, and each sent its events in a signed envelope",
       "status": "pass",
-      "durationMs": 5105.62738,
+      "durationMs": 8788.630965,
       "reason": "",
       "backend": "node"
     },
@@ -8781,7 +8781,7 @@
       "source": "tests/webhooks.test.ts",
       "name": "a run whose event could not be written when it ended has it written with the agent's next load or run, once",
       "status": "pass",
-      "durationMs": 10750.07977,
+      "durationMs": 9770.815262,
       "reason": "",
       "backend": "node"
     },
@@ -8790,7 +8790,7 @@
       "source": "tests/webhooks.test.ts",
       "name": "in a rolling deploy, nodes of the previous release see only usage webhook deliveries, and their usage webhook changes take effect",
       "status": "pass",
-      "durationMs": 3742.28549,
+      "durationMs": 3955.162974,
       "reason": "",
       "backend": "node"
     },
@@ -8799,7 +8799,7 @@
       "source": "tests/workspaces.test.ts:48",
       "name": "workspaces API validates ownership, inherits definitions, and accounts agent and stateless model calls",
       "status": "pass",
-      "durationMs": 7526.810185,
+      "durationMs": 7394.52663,
       "reason": "",
       "backend": "node"
     }
@@ -8808,32 +8808,32 @@
     {
       "index": 1,
       "total": 6,
-      "durationMs": 155404.509184
+      "durationMs": 111059.70978399999
     },
     {
       "index": 2,
       "total": 6,
-      "durationMs": 142451.235899
+      "durationMs": 148361.57004299999
     },
     {
       "index": 3,
       "total": 6,
-      "durationMs": 126707.78213400001
+      "durationMs": 141476.840027
     },
     {
       "index": 4,
       "total": 6,
-      "durationMs": 109012.180581
+      "durationMs": 136749.12331
     },
     {
       "index": 5,
       "total": 6,
-      "durationMs": 109260.24375000001
+      "durationMs": 156034.58227
     },
     {
       "index": 6,
       "total": 6,
-      "durationMs": 132025.97287
+      "durationMs": 137638.536231
     }
   ]
 }

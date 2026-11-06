@@ -737,7 +737,7 @@
       "file": "backends/workers/test/computers.integration.ts",
       "test": "container",
       "classification": "b",
-      "reason": "The fixture migrated from wrangler dev to unstable_dev, whose programmatic API disables containers by default. The declared Durable Object therefore had no ctx.container and every native operation failed. The nested prompt fixture also used a tenant token where src requires the agent token, and inspected obsolete request.status instead of request.state.",
+      "reason": "The fixture migrated from wrangler dev to unstable_dev, whose programmatic API disables containers by default. The declared Durable Object therefore had no ctx.container and every native operation failed. The nested prompt fixture also used a tenant token where src requires the agent token, and inspected obsolete request.status instead of request.state. The first required native CI run then reached Docker successfully but both nested codemode calls failed because enabledToolsImpl unconditionally disabled the registered computer tool even when a native provider binding was configured.",
       "evidence": [
         "backends/workers/test/local-worker-process.mjs:4",
         "backends/workers/test/local-worker-process.mjs:32",
@@ -746,9 +746,15 @@
         "backends/workers/src/index.ts:253-254",
         "backends/workers/src/request-view.ts:30",
         "backends/workers/test/computers.integration.ts:8-28",
-        ".github/workflows/workers-tests.yml:54"
+        ".github/workflows/workers-tests.yml:54",
+        "backends/workers/src/agent-tools.ts:211-220",
+        "backends/workers/src/file-tool-selection.ts:3-23",
+        "backends/workers/src/agent-tools.ts:422-424",
+        "src/computers/service.ts:112-115",
+        "backends/workers/test/native-tool-selection.test.ts:5-21",
+        "https://github.com/qaml-ai/run/actions/runs/42169760234/job/127734571051"
       ],
-      "change": "Enable declared native containers in unstable_dev and use agent credentials and source-defined request state for nested execution. Retain every exec/read/write/parse/network/snapshot assertion. Per coordinator instruction, explicitly skip this native suite on unsupported Sprite hosts or unavailable local Docker/Buildx; WORKERS_REQUIRE_DOCKER=1 in CI converts host unavailability to a failure. No proxy image, Docker wrapper, or runtime changes remain.",
+      "change": "Enable declared native containers in unstable_dev and use agent credentials and source-defined request state for nested execution. Retain every exec/read/write/parse/network/snapshot assertion. Per coordinator instruction, explicitly skip this native suite on unsupported Sprite hosts or unavailable local Docker/Buildx; WORKERS_REQUIRE_DOCKER=1 in CI converts host unavailability to a failure. No proxy image, Docker wrapper, or runtime changes remain. Select the native computer tool only when COMPUTER_CONTAINERS or COMPUTER_SANDBOXES is configured and codeMode is enabled. Extract the actual selector into the existing pure file-tool-selection module and retain every native integration assertion.",
       "hostEvidence": {
         "spriteKernel": "6.12.115-fly: CONFIG_NFT_SOCKET=y, CONFIG_NETFILTER_XT_MATCH_SOCKET unset",
         "runtime": "Docker 29.1.3 with runc 1.4.0-0ubuntu1 failed target creation: mount source thread could not open container mntns (permission denied)",
@@ -757,13 +763,32 @@
       },
       "parent": "optional native Container and Sandbox SDK providers in local Docker",
       "suite": "integration",
-      "discovered": "baseline"
+      "discovered": "baseline",
+      "validation": "Sprite snapshot 82e5f88f09590c24f8f5c07dda92b19510a7b897: 10/10 focused native-provider/selection/file-policy/priority tests passed, no skips; backend typecheck passed; command exit 0 in 44s. Selection regression verifies no bindings stays hidden, either/both native bindings enable the registered tool, codeMode:false hides it, and host_execute/exec/unattached remote tools remain hidden. Artifacts /tmp/workers-native-selection-pure/shard-1. Full native Container/Sandbox integration passed on required GitHub Docker CI at 4298f453: both providers passed, 104/104 tests passed, zero skips; assertions unchanged.",
+      "sourceCorrespondence": "src/computers/service.ts:112-115 exposes computer tools only for a configured provider. The Workers-only native providers now use the same configured-capability principle while the default contract fixture, which has no native bindings, retains its existing tool set.",
+      "validationNotes": "An initial uncommitted Worker-entrypoint test fixture hit a module-initialization cycle. The same selection assertions were retained in the pure production-selector test. This development harness failure is not a new historical failing-test record.",
+      "nativeCI": {
+        "revision": "4298f453af1f1afa72ce0506a4a4622dd34940e4",
+        "runId": 42171862117,
+        "jobId": 127741303099,
+        "status": "success",
+        "passed": 104,
+        "failed": 0,
+        "skipped": 0,
+        "cancelled": 0,
+        "durationMs": 737854.800678,
+        "nativeSubtests": [
+          "container",
+          "sandbox"
+        ],
+        "url": "https://github.com/qaml-ai/run/actions/runs/42171862117/job/127741303099"
+      }
     },
     {
       "file": "backends/workers/test/computers.integration.ts",
       "test": "sandbox",
       "classification": "b",
-      "reason": "The fixture migrated from wrangler dev to unstable_dev, whose programmatic API disables containers by default. The declared Durable Object therefore had no ctx.container and every native operation failed. The nested prompt fixture also used a tenant token where src requires the agent token, and inspected obsolete request.status instead of request.state.",
+      "reason": "The fixture migrated from wrangler dev to unstable_dev, whose programmatic API disables containers by default. The declared Durable Object therefore had no ctx.container and every native operation failed. The nested prompt fixture also used a tenant token where src requires the agent token, and inspected obsolete request.status instead of request.state. The first required native CI run then reached Docker successfully but both nested codemode calls failed because enabledToolsImpl unconditionally disabled the registered computer tool even when a native provider binding was configured.",
       "evidence": [
         "backends/workers/test/local-worker-process.mjs:4",
         "backends/workers/test/local-worker-process.mjs:32",
@@ -772,9 +797,15 @@
         "backends/workers/src/index.ts:253-254",
         "backends/workers/src/request-view.ts:30",
         "backends/workers/test/computers.integration.ts:8-28",
-        ".github/workflows/workers-tests.yml:54"
+        ".github/workflows/workers-tests.yml:54",
+        "backends/workers/src/agent-tools.ts:211-220",
+        "backends/workers/src/file-tool-selection.ts:3-23",
+        "backends/workers/src/agent-tools.ts:422-424",
+        "src/computers/service.ts:112-115",
+        "backends/workers/test/native-tool-selection.test.ts:5-21",
+        "https://github.com/qaml-ai/run/actions/runs/42169760234/job/127734571051"
       ],
-      "change": "Enable declared native containers in unstable_dev and use agent credentials and source-defined request state for nested execution. Retain every exec/read/write/parse/network/snapshot assertion. Per coordinator instruction, explicitly skip this native suite on unsupported Sprite hosts or unavailable local Docker/Buildx; WORKERS_REQUIRE_DOCKER=1 in CI converts host unavailability to a failure. No proxy image, Docker wrapper, or runtime changes remain.",
+      "change": "Enable declared native containers in unstable_dev and use agent credentials and source-defined request state for nested execution. Retain every exec/read/write/parse/network/snapshot assertion. Per coordinator instruction, explicitly skip this native suite on unsupported Sprite hosts or unavailable local Docker/Buildx; WORKERS_REQUIRE_DOCKER=1 in CI converts host unavailability to a failure. No proxy image, Docker wrapper, or runtime changes remain. Select the native computer tool only when COMPUTER_CONTAINERS or COMPUTER_SANDBOXES is configured and codeMode is enabled. Extract the actual selector into the existing pure file-tool-selection module and retain every native integration assertion.",
       "hostEvidence": {
         "spriteKernel": "6.12.115-fly: CONFIG_NFT_SOCKET=y, CONFIG_NETFILTER_XT_MATCH_SOCKET unset",
         "runtime": "Docker 29.1.3 with runc 1.4.0-0ubuntu1 failed target creation: mount source thread could not open container mntns (permission denied)",
@@ -783,7 +814,26 @@
       },
       "parent": "optional native Container and Sandbox SDK providers in local Docker",
       "suite": "integration",
-      "discovered": "baseline"
+      "discovered": "baseline",
+      "validation": "Sprite snapshot 82e5f88f09590c24f8f5c07dda92b19510a7b897: 10/10 focused native-provider/selection/file-policy/priority tests passed, no skips; backend typecheck passed; command exit 0 in 44s. Selection regression verifies no bindings stays hidden, either/both native bindings enable the registered tool, codeMode:false hides it, and host_execute/exec/unattached remote tools remain hidden. Artifacts /tmp/workers-native-selection-pure/shard-1. Full native Container/Sandbox integration passed on required GitHub Docker CI at 4298f453: both providers passed, 104/104 tests passed, zero skips; assertions unchanged.",
+      "sourceCorrespondence": "src/computers/service.ts:112-115 exposes computer tools only for a configured provider. The Workers-only native providers now use the same configured-capability principle while the default contract fixture, which has no native bindings, retains its existing tool set.",
+      "validationNotes": "An initial uncommitted Worker-entrypoint test fixture hit a module-initialization cycle. The same selection assertions were retained in the pure production-selector test. This development harness failure is not a new historical failing-test record.",
+      "nativeCI": {
+        "revision": "4298f453af1f1afa72ce0506a4a4622dd34940e4",
+        "runId": 42171862117,
+        "jobId": 127741303099,
+        "status": "success",
+        "passed": 104,
+        "failed": 0,
+        "skipped": 0,
+        "cancelled": 0,
+        "durationMs": 737854.800678,
+        "nativeSubtests": [
+          "container",
+          "sandbox"
+        ],
+        "url": "https://github.com/qaml-ai/run/actions/runs/42171862117/job/127741303099"
+      }
     },
     {
       "file": "tests/chatgpt-plugin.test.ts",
@@ -1074,7 +1124,14 @@
         },
         "repairedFilesVerified": 1006,
         "nativeCryptoAndPydanticImport": "pass",
-        "finalFullParity": "pending"
+        "finalFullParity": {
+          "revision": "4298f453af1f1afa72ce0506a4a4622dd34940e4",
+          "exitCode": 0,
+          "nodePass": 590,
+          "workersPass": 573,
+          "fail": 0,
+          "artifactDirectory": "backends/workers/measurements/runs/2026-11-06T06-02-03-264Z-69783"
+        }
       }
     },
     {
@@ -1135,7 +1192,14 @@
         },
         "repairedFilesVerified": 1006,
         "nativeCryptoAndPydanticImport": "pass",
-        "finalFullParity": "pending"
+        "finalFullParity": {
+          "revision": "4298f453af1f1afa72ce0506a4a4622dd34940e4",
+          "exitCode": 0,
+          "nodePass": 590,
+          "workersPass": 573,
+          "fail": 0,
+          "artifactDirectory": "backends/workers/measurements/runs/2026-11-06T06-02-03-264Z-69783"
+        }
       }
     },
     {
@@ -1196,7 +1260,14 @@
         },
         "repairedFilesVerified": 1006,
         "nativeCryptoAndPydanticImport": "pass",
-        "finalFullParity": "pending"
+        "finalFullParity": {
+          "revision": "4298f453af1f1afa72ce0506a4a4622dd34940e4",
+          "exitCode": 0,
+          "nodePass": 590,
+          "workersPass": 573,
+          "fail": 0,
+          "artifactDirectory": "backends/workers/measurements/runs/2026-11-06T06-02-03-264Z-69783"
+        }
       }
     },
     {
@@ -1257,7 +1328,14 @@
         },
         "repairedFilesVerified": 1006,
         "nativeCryptoAndPydanticImport": "pass",
-        "finalFullParity": "pending"
+        "finalFullParity": {
+          "revision": "4298f453af1f1afa72ce0506a4a4622dd34940e4",
+          "exitCode": 0,
+          "nodePass": 590,
+          "workersPass": 573,
+          "fail": 0,
+          "artifactDirectory": "backends/workers/measurements/runs/2026-11-06T06-02-03-264Z-69783"
+        }
       }
     },
     {
@@ -1318,7 +1396,14 @@
         },
         "repairedFilesVerified": 1006,
         "nativeCryptoAndPydanticImport": "pass",
-        "finalFullParity": "pending"
+        "finalFullParity": {
+          "revision": "4298f453af1f1afa72ce0506a4a4622dd34940e4",
+          "exitCode": 0,
+          "nodePass": 590,
+          "workersPass": 573,
+          "fail": 0,
+          "artifactDirectory": "backends/workers/measurements/runs/2026-11-06T06-02-03-264Z-69783"
+        }
       }
     },
     {
@@ -1379,7 +1464,14 @@
         },
         "repairedFilesVerified": 1006,
         "nativeCryptoAndPydanticImport": "pass",
-        "finalFullParity": "pending"
+        "finalFullParity": {
+          "revision": "4298f453af1f1afa72ce0506a4a4622dd34940e4",
+          "exitCode": 0,
+          "nodePass": 590,
+          "workersPass": 573,
+          "fail": 0,
+          "artifactDirectory": "backends/workers/measurements/runs/2026-11-06T06-02-03-264Z-69783"
+        }
       }
     },
     {
@@ -1440,7 +1532,14 @@
         },
         "repairedFilesVerified": 1006,
         "nativeCryptoAndPydanticImport": "pass",
-        "finalFullParity": "pending"
+        "finalFullParity": {
+          "revision": "4298f453af1f1afa72ce0506a4a4622dd34940e4",
+          "exitCode": 0,
+          "nodePass": 590,
+          "workersPass": 573,
+          "fail": 0,
+          "artifactDirectory": "backends/workers/measurements/runs/2026-11-06T06-02-03-264Z-69783"
+        }
       }
     },
     {
@@ -1501,7 +1600,14 @@
         },
         "repairedFilesVerified": 1006,
         "nativeCryptoAndPydanticImport": "pass",
-        "finalFullParity": "pending"
+        "finalFullParity": {
+          "revision": "4298f453af1f1afa72ce0506a4a4622dd34940e4",
+          "exitCode": 0,
+          "nodePass": 590,
+          "workersPass": 573,
+          "fail": 0,
+          "artifactDirectory": "backends/workers/measurements/runs/2026-11-06T06-02-03-264Z-69783"
+        }
       }
     },
     {
@@ -1562,7 +1668,14 @@
         },
         "repairedFilesVerified": 1006,
         "nativeCryptoAndPydanticImport": "pass",
-        "finalFullParity": "pending"
+        "finalFullParity": {
+          "revision": "4298f453af1f1afa72ce0506a4a4622dd34940e4",
+          "exitCode": 0,
+          "nodePass": 590,
+          "workersPass": 573,
+          "fail": 0,
+          "artifactDirectory": "backends/workers/measurements/runs/2026-11-06T06-02-03-264Z-69783"
+        }
       }
     },
     {
@@ -1623,7 +1736,14 @@
         },
         "repairedFilesVerified": 1006,
         "nativeCryptoAndPydanticImport": "pass",
-        "finalFullParity": "pending"
+        "finalFullParity": {
+          "revision": "4298f453af1f1afa72ce0506a4a4622dd34940e4",
+          "exitCode": 0,
+          "nodePass": 590,
+          "workersPass": 573,
+          "fail": 0,
+          "artifactDirectory": "backends/workers/measurements/runs/2026-11-06T06-02-03-264Z-69783"
+        }
       }
     },
     {
@@ -1684,7 +1804,14 @@
         },
         "repairedFilesVerified": 1006,
         "nativeCryptoAndPydanticImport": "pass",
-        "finalFullParity": "pending"
+        "finalFullParity": {
+          "revision": "4298f453af1f1afa72ce0506a4a4622dd34940e4",
+          "exitCode": 0,
+          "nodePass": 590,
+          "workersPass": 573,
+          "fail": 0,
+          "artifactDirectory": "backends/workers/measurements/runs/2026-11-06T06-02-03-264Z-69783"
+        }
       }
     },
     {
@@ -1745,7 +1872,14 @@
         },
         "repairedFilesVerified": 1006,
         "nativeCryptoAndPydanticImport": "pass",
-        "finalFullParity": "pending"
+        "finalFullParity": {
+          "revision": "4298f453af1f1afa72ce0506a4a4622dd34940e4",
+          "exitCode": 0,
+          "nodePass": 590,
+          "workersPass": 573,
+          "fail": 0,
+          "artifactDirectory": "backends/workers/measurements/runs/2026-11-06T06-02-03-264Z-69783"
+        }
       }
     },
     {
@@ -1806,7 +1940,14 @@
         },
         "repairedFilesVerified": 1006,
         "nativeCryptoAndPydanticImport": "pass",
-        "finalFullParity": "pending"
+        "finalFullParity": {
+          "revision": "4298f453af1f1afa72ce0506a4a4622dd34940e4",
+          "exitCode": 0,
+          "nodePass": 590,
+          "workersPass": 573,
+          "fail": 0,
+          "artifactDirectory": "backends/workers/measurements/runs/2026-11-06T06-02-03-264Z-69783"
+        }
       }
     },
     {
@@ -1867,7 +2008,14 @@
         },
         "repairedFilesVerified": 1006,
         "nativeCryptoAndPydanticImport": "pass",
-        "finalFullParity": "pending"
+        "finalFullParity": {
+          "revision": "4298f453af1f1afa72ce0506a4a4622dd34940e4",
+          "exitCode": 0,
+          "nodePass": 590,
+          "workersPass": 573,
+          "fail": 0,
+          "artifactDirectory": "backends/workers/measurements/runs/2026-11-06T06-02-03-264Z-69783"
+        }
       }
     },
     {
@@ -1928,7 +2076,14 @@
         },
         "repairedFilesVerified": 1006,
         "nativeCryptoAndPydanticImport": "pass",
-        "finalFullParity": "pending"
+        "finalFullParity": {
+          "revision": "4298f453af1f1afa72ce0506a4a4622dd34940e4",
+          "exitCode": 0,
+          "nodePass": 590,
+          "workersPass": 573,
+          "fail": 0,
+          "artifactDirectory": "backends/workers/measurements/runs/2026-11-06T06-02-03-264Z-69783"
+        }
       }
     },
     {
@@ -1989,7 +2144,14 @@
         },
         "repairedFilesVerified": 1006,
         "nativeCryptoAndPydanticImport": "pass",
-        "finalFullParity": "pending"
+        "finalFullParity": {
+          "revision": "4298f453af1f1afa72ce0506a4a4622dd34940e4",
+          "exitCode": 0,
+          "nodePass": 590,
+          "workersPass": 573,
+          "fail": 0,
+          "artifactDirectory": "backends/workers/measurements/runs/2026-11-06T06-02-03-264Z-69783"
+        }
       }
     },
     {
@@ -2050,7 +2212,14 @@
         },
         "repairedFilesVerified": 1006,
         "nativeCryptoAndPydanticImport": "pass",
-        "finalFullParity": "pending"
+        "finalFullParity": {
+          "revision": "4298f453af1f1afa72ce0506a4a4622dd34940e4",
+          "exitCode": 0,
+          "nodePass": 590,
+          "workersPass": 573,
+          "fail": 0,
+          "artifactDirectory": "backends/workers/measurements/runs/2026-11-06T06-02-03-264Z-69783"
+        }
       }
     },
     {
@@ -2111,7 +2280,14 @@
         },
         "repairedFilesVerified": 1006,
         "nativeCryptoAndPydanticImport": "pass",
-        "finalFullParity": "pending"
+        "finalFullParity": {
+          "revision": "4298f453af1f1afa72ce0506a4a4622dd34940e4",
+          "exitCode": 0,
+          "nodePass": 590,
+          "workersPass": 573,
+          "fail": 0,
+          "artifactDirectory": "backends/workers/measurements/runs/2026-11-06T06-02-03-264Z-69783"
+        }
       }
     },
     {
@@ -2172,7 +2348,14 @@
         },
         "repairedFilesVerified": 1006,
         "nativeCryptoAndPydanticImport": "pass",
-        "finalFullParity": "pending"
+        "finalFullParity": {
+          "revision": "4298f453af1f1afa72ce0506a4a4622dd34940e4",
+          "exitCode": 0,
+          "nodePass": 590,
+          "workersPass": 573,
+          "fail": 0,
+          "artifactDirectory": "backends/workers/measurements/runs/2026-11-06T06-02-03-264Z-69783"
+        }
       }
     },
     {
@@ -2233,37 +2416,46 @@
         },
         "repairedFilesVerified": 1006,
         "nativeCryptoAndPydanticImport": "pass",
-        "finalFullParity": "pending"
+        "finalFullParity": {
+          "revision": "4298f453af1f1afa72ce0506a4a4622dd34940e4",
+          "exitCode": 0,
+          "nodePass": 590,
+          "workersPass": 573,
+          "fail": 0,
+          "artifactDirectory": "backends/workers/measurements/runs/2026-11-06T06-02-03-264Z-69783"
+        }
       }
     }
   ],
   "validation": {
     "unit": {
-      "revision": "240fa9f99f3ca71b118517b56859e1ff1b748c24",
-      "passed": 506,
+      "revision": "4298f453af1f1afa72ce0506a4a4622dd34940e4",
+      "command": "npm test",
+      "passed": 507,
       "failed": 0,
       "skipped": 0,
       "sprite": "rt-pool-1",
-      "run": "20261105-232652-15636-1",
-      "durationMs": 227763.775573,
+      "run": "20261106-000131-68468-1",
+      "durationMs": 250482.873115,
       "exitCode": 0,
-      "command": "npm test",
-      "artifact": "/tmp/workers-final-frozen-suites/shard-1/suite.tap"
+      "artifact": "/tmp/workers-final-native-fix/shard-1/unit.tap",
+      "exitArtifact": "/tmp/workers-final-native-fix/shard-1/unit.exit"
     },
     "integration": {
-      "revision": "240fa9f99f3ca71b118517b56859e1ff1b748c24",
+      "revision": "4298f453af1f1afa72ce0506a4a4622dd34940e4",
       "command": "npm run test:integration",
       "passed": 101,
       "failed": 0,
       "skipped": 1,
       "skippedSuite": "optional native Container and Sandbox SDK providers in local Docker",
       "skipReason": "Native Docker computer tests are unsupported on Sprites: the host restricts required kernel modules and OCI namespace operations.",
-      "sprite": "rt-pool-3",
-      "run": "20261105-232652-15636-2",
-      "durationMs": 673766.541916,
+      "skipOutput": "\ufe63 optional native Container and Sandbox SDK providers in local Docker (0.905445ms) # Native Docker computer tests are unsupported on Sprites: the host restricts required kernel modules and OCI namespace operations.",
+      "sprite": "rt-pool-2",
+      "run": "20261106-000131-68468-2",
+      "durationMs": 702673.449735,
       "exitCode": 0,
-      "artifact": "/tmp/workers-final-frozen-suites/shard-2/suite.tap",
-      "skipOutput": "\ufe63 optional native Container and Sandbox SDK providers in local Docker (0.80082ms) # Native Docker computer tests are unsupported on Sprites: the host restricts required kernel modules and OCI namespace operations."
+      "artifact": "/tmp/workers-final-native-fix/shard-2/integration.tap",
+      "exitArtifact": "/tmp/workers-final-native-fix/shard-2/integration.exit"
     },
     "groups": {
       "command": "npm run parity -- --backend=workers --group=<name>",
@@ -2309,15 +2501,17 @@
         },
         {
           "group": "tools-mcp",
+          "command": "npm run parity -- --backend=workers --group=tools-mcp --shards=2",
+          "revision": "4298f453af1f1afa72ce0506a4a4622dd34940e4",
           "status": 0,
           "counts": {
             "pass": 75,
-            "accepted-difference": 3,
-            "fail": 0,
-            "out-of-scope": 0
+            "accepted-difference": 3
           },
-          "revision": "ee38bbce01b9593eb361e7ba0b8e7c07c9774aec",
-          "report": "/tmp/workers-tools-group/shard-1/parity-workers-group-tools-mcp.json"
+          "report": "backends/workers/measurements/runs/2026-11-06T06-05-30-715Z-78843/merged-workers.json",
+          "suiteHash": "1c956e67e286546e21f0e6ef49e72b2aaa5e7120632006d990e32b4e60b7327c",
+          "nodeKey": "d240964ba94cdc4ea9ce45974eff75faac40538940136b47288bbfd858b454a4",
+          "elapsedMs": 234637
         },
         {
           "group": "lifecycle",
@@ -2365,13 +2559,13 @@
       ]
     },
     "parity": {
-      "status": "pass before docs-only heading fix; final refreshed run pending",
+      "status": "pass",
       "command": "npm run parity",
-      "revision": "240fa9f99f3ca71b118517b56859e1ff1b748c24",
-      "nodeKey": "032bb59c89da8ee61077af9a16552c87c8b6369fb011fe22b49fbf451e02afaa",
-      "suiteHash": "7096899c165ebe2979caeb251978140796d3b6759b0df3988bc2accc2ead2d3d",
+      "revision": "4298f453af1f1afa72ce0506a4a4622dd34940e4",
+      "nodeKey": "d240964ba94cdc4ea9ce45974eff75faac40538940136b47288bbfd858b454a4",
+      "suiteHash": "1c956e67e286546e21f0e6ef49e72b2aaa5e7120632006d990e32b4e60b7327c",
       "exitCode": 0,
-      "elapsedMs": 601148,
+      "elapsedMs": 622836,
       "node": {
         "pass": 590,
         "out-of-scope": 380
@@ -2384,26 +2578,31 @@
       "phases": [
         {
           "backend": "node",
-          "elapsedMs": 176218,
+          "elapsedMs": 186694,
           "status": 0,
           "mergeStatus": 0
         },
         {
           "backend": "workers",
-          "elapsedMs": 424928,
+          "elapsedMs": 436140,
           "status": 0,
           "mergeStatus": 0
         }
       ],
-      "artifactDirectory": "backends/workers/measurements/runs/2026-11-06T05-26-53-101Z-15818",
-      "previousAttempt": {
-        "revision": "3416481955ebac574a7316e77302b650793b7e69",
-        "nodePass": 590,
-        "workersPass": 573,
-        "acceptedDifferences": 17,
-        "testFailures": 0,
-        "reportMergeStatus": 1,
-        "reason": "Diagnostic source edits during execution changed suiteHash; frozen-source rerun required."
+      "artifactDirectory": "backends/workers/measurements/runs/2026-11-06T06-02-03-264Z-69783",
+      "earlierValidation": {
+        "revision": "240fa9f99f3ca71b118517b56859e1ff1b748c24",
+        "exitCode": 0,
+        "artifactDirectory": "backends/workers/measurements/runs/2026-11-06T05-26-53-101Z-15818",
+        "previousAttempt": {
+          "revision": "3416481955ebac574a7316e77302b650793b7e69",
+          "nodePass": 590,
+          "workersPass": 573,
+          "acceptedDifferences": 17,
+          "testFailures": 0,
+          "reportMergeStatus": 1,
+          "reason": "Diagnostic source edits during execution changed suiteHash; frozen-source rerun required."
+        }
       }
     },
     "dockerHostPolicy": {
@@ -2411,28 +2610,30 @@
       "ci": ".github/workflows/workers-tests.yml runs full integration with Docker/Buildx preflight and WORKERS_REQUIRE_DOCKER=1; unavailable Docker fails rather than skips."
     },
     "typecheck": {
-      "revision": "240fa9f99f3ca71b118517b56859e1ff1b748c24",
+      "revision": "4298f453af1f1afa72ce0506a4a4622dd34940e4",
       "command": "npm run typecheck",
       "exitCode": 0,
-      "sprite": "rt-pool-1",
-      "run": "20261105-232652-15636-1",
-      "artifact": "/tmp/workers-final-frozen-suites/shard-1/typecheck.log"
+      "sprite": "rt-pool-3",
+      "run": "20261106-000131-68468-3",
+      "artifact": "/tmp/workers-final-native-fix/shard-3/backend-typecheck.log"
     },
     "rootTypecheck": {
+      "revision": "4298f453af1f1afa72ce0506a4a4622dd34940e4",
       "command": "npm run typecheck",
       "exitCode": 0,
-      "revision": "51a821d92a2fe942bb7fac6be5265a98ddecedb5",
-      "artifactDirectory": "/tmp/workers-protocol-close/shard-1",
-      "note": "All root changes typechecked with the stream regression; subsequent changes affect only Workers fixture diagnostics and have a separate passing backend typecheck.",
-      "artifact": "/tmp/workers-protocol-close/shard-1/root-typecheck.log"
+      "sprite": "rt-pool-3",
+      "run": "20261106-000131-68468-3",
+      "artifact": "/tmp/workers-final-native-fix/shard-3/root-typecheck.log"
     },
     "invocationCorrections": [
       "Run group jobs with bash -c: login-shell .bash_logout plus errexit changed successful npm exits into failures. All groups are verified with captured command exit codes.",
       "The initial full-parity local inventory lacked dependencies. Reused the existing main-worktree node_modules cache for local report assembly; all actual contract execution remains on Sprites.",
-      "CI helper tests need Git metadata. The first docs validation used the normal Sprite archive without .git; the corrected command creates and removes a temporary Git repository on the Sprite."
+      "CI helper tests need Git metadata. The first docs validation used the normal Sprite archive without .git; the corrected command creates and removes a temporary Git repository on the Sprite.",
+      "Final suite wrapper used bash -lc despite the earlier correction. npm unit/integration and both typechecks write independent exit files; use those and the complete TAP counts. The login-shell wrapper exit is recorded separately and is not a suite failure. No tests were rerun to hide it.",
+      "The first final-parity launcher lacked sandbox permission for the Sprites CLI organization-selection file and launched no tests. The authorized invocation runs the same npm run parity command on Sprites."
     ],
     "baseRevision": "20443b494d9079a5023b818f6d4fb2b0c64a6540",
-    "validatedCodeRevision": "240fa9f99f3ca71b118517b56859e1ff1b748c24",
+    "validatedCodeRevision": "4298f453af1f1afa72ce0506a4a4622dd34940e4",
     "docs": {
       "snapshot": "fcc993fa",
       "sprite": "rt-pool-18",
@@ -2448,7 +2649,59 @@
       },
       "exitCode": 0,
       "artifacts": "/tmp/workers-docs-git-validation/shard-1"
-    }
+    },
+    "ci": {
+      "revision": "4298f453af1f1afa72ce0506a4a4622dd34940e4",
+      "workflow": "Workers tests",
+      "runId": 42171862117,
+      "url": "https://github.com/qaml-ai/run/actions/runs/42171862117",
+      "unit": {
+        "jobId": 127741303433,
+        "status": "success",
+        "passed": 507,
+        "failed": 0,
+        "skipped": 0,
+        "durationSeconds": 358.6,
+        "cancelled": 0,
+        "durationMs": 358570.153956,
+        "url": "https://github.com/qaml-ai/run/actions/runs/42171862117/job/127741303433"
+      },
+      "integration": {
+        "jobId": 127741303099,
+        "status": "success",
+        "passed": 104,
+        "failed": 0,
+        "skipped": 0,
+        "cancelled": 0,
+        "durationMs": 737854.800678,
+        "nativeSubtests": [
+          "container",
+          "sandbox"
+        ],
+        "url": "https://github.com/qaml-ai/run/actions/runs/42171862117/job/127741303099"
+      },
+      "regular": {
+        "runId": 42171862053,
+        "status": "success",
+        "url": "https://github.com/qaml-ai/run/actions/runs/42171862053"
+      },
+      "status": "success",
+      "requiredDocker": true
+    },
+    "spriteRunner": {
+      "summary": "/tmp/workers-final-native-fix/summary.json",
+      "suiteNpmExitCodes": [
+        0,
+        0
+      ],
+      "typecheckNpmExitCodes": [
+        0,
+        0
+      ],
+      "wrapperExitCode": 1,
+      "wrapperIssue": "The login-shell logout returned 1 after every npm command completed with exit 0. No suite was rerun."
+    },
+    "measurementOnlyFinalCommit": true
   },
   "countsByClassification": {
     "a": 42,
@@ -2470,7 +2723,7 @@
       "tests": 1
     },
     {
-      "issue": "Programmatic Wrangler disabled declared native containers; native tests also need a Docker-capable host.",
+      "issue": "Programmatic Wrangler disabled declared native containers, and tool selection hid the native computer tool even with configured bindings. Native tests require a Docker-capable host.",
       "tests": 2
     },
     {
