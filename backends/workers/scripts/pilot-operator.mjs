@@ -78,7 +78,8 @@ export async function withPilotOperator(options, callback) {
       return response.json();
     };
     for (let attempt = 0; ; attempt++) {
-      try { await request("/healthz"); break; }
+      // Warm both routing and Hyperdrive with reads before attempting a mutation.
+      try { await request("/healthz"); await request("/pilot/inspect"); break; }
       catch (error) { if (attempt === 19) throw error; await new Promise(resolveWait => setTimeout(resolveWait, 1000)); }
     }
     return await callback({ baseUrl, token, request, workerName: name });
