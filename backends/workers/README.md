@@ -88,7 +88,7 @@ scripts/sprite-test --shards=4 HEAD bash -lc \
 
 The native computer test (`test/computers.integration.ts`) runs on Sprites as on
 CI, `WORKERS_REQUIRE_DOCKER=1` included. `scripts/sprite-test` sets Docker up once
-per sprite (`docker_up` there): Ubuntu's `docker.io` and `docker-buildx`, `dockerd`
+per sprite (`docker_up` in the shared sprite-test core of the sprites skill): Ubuntu's `docker.io` and `docker-buildx`, `dockerd`
 as a `sprite-env` service (sprites have no systemd), `overlay2` on the sprite's own
 `/var/lib/docker` volume, the default bridge kept, and the socket in the sprite
 user's group. Three things differ from a stock host, all measured on 2026-11-06
