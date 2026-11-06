@@ -15,7 +15,7 @@ test("human input binds source audience and expiry once before it is published",
   assert.equal(bound.requestId, "run-a");
   assert.strictEqual(bindHumanInput(bound, "run-b", "mallory", undefined, null), bound);
   assert.deepEqual(humanInputView("input-a", bound, "agent-a", "run-a").responders, { audience: ["alice"] });
-  for (const invalid of [{ expiresInSeconds: 59 }, { onExpire: "ignore" }, { approvers: [""] }, { unknown: true }])
+  for (const invalid of [{ expiresInSeconds: 59 }, { onExpire: "resume" }, { approvers: [""] }, { unknown: true }])
     assert.throws(() => humanInputSettings(invalid));
 });
 
@@ -36,8 +36,11 @@ test("human answers enforce source identity and produce source question metadata
   assert.equal(humanInputResult(cancelledHumanInput(bound)).isError, true);
   assert.equal(humanInputResult(cancelledHumanInput(bound)).control?.terminate, true);
   const expired = { ...bound, ...systemHumanAnswer("expired") };
-  assert.equal(humanInputResult(expired).control?.terminate, true);
-  assert.equal(humanInputResult({ ...expired, resumeOnExpire: true }).control?.terminate, false);
+  assert.equal(humanInputResult(expired).control?.terminate, false);
+  const auto = JSON.parse(humanInputResult(expired).output[0].text);
+  assert.deepEqual([auto.answers, auto.timedOut, auto.answeredBy], [{}, true, "the runtime"]);
+  assert.match(auto.message, /^The user did not respond in a timely manner\. Continue\. \(An automatic answer from the runtime/);
+  assert.equal(humanInputResult({ ...expired, resumeOnExpire: false } as typeof expired).control?.terminate, false, "an input bound before onExpire was removed resumes too");
   assert.match(humanInputResult({ ...bound, ...systemHumanAnswer("superseded") }).output[0].text, /sent a new message instead/);
 });
 

@@ -4,9 +4,11 @@ A run can stop and wait for a person: the model asks a question, a tool needs
 approval before it runs, or a tool asks for a form or a setup step. The call that
 needs the person stays open and the run **suspends**: it ends with
 `status: "input_required"` and the `inputs` it waits on, the agent goes to sleep
-(nothing is billed while it waits), and once the last input is answered, minutes
-or days later and from any process, the turn resumes. The model sees an ordinary
-tool call and result, told who answered and how long it took.
+(nothing is billed while it waits), and once the last input is answered, from any
+process, the turn resumes. The model sees an ordinary tool call and result, told
+who answered and how long it took. If no one answers within 15 minutes (the
+default), the runtime answers for the person and the turn goes on: see
+[Waiting, and giving up](#waiting-and-giving-up).
 
 ```ts
 let run = await agent.run("Delete the staging database", { user: "alice" });
@@ -85,8 +87,11 @@ script goes on from where it was: calls it had finished are not made again, and
 the call that asked starts again with the answer (an approved call runs, a
 question's call returns the answer, a tool gets its answers as above). Calls
 from the same script that ask at once are one suspension, answered together.
-Inputs closed without an answer (an abort, expiry) end the `codemode` call as
-aborted, and a new message instead of an answer does the same. A script's own
+An input no one answers in time gets the runtime's answer there, and the script
+goes on: an approval's call rejects as a declined one does, and `ask_user`
+returns `{answers: {}, timedOut: true, message}`. Inputs closed by an abort end
+the `codemode` call as aborted, and a new message instead of an answer does the
+same. A script's own
 `timeout_ms` counts the wait; the runtime's deadline does not. Set
 `exposure: "direct"` to always declare such a tool to the model as well.
 
@@ -138,10 +143,24 @@ no way to answer.
 
 - A new message to the agent supersedes its waiting inputs: their calls close
   with "Not answered: the user sent a new message instead", then the message runs.
-- `agent.abort()` cancels them.
-- Inputs expire after `humanInput.expiresInSeconds` (7 days by default, at most
-  30). Expired and cancelled inputs close their calls and the turn without
-  calling the model, unless `humanInput.onExpire` is `resume`.
+- `agent.abort()` cancels them: their calls and the turn close without calling
+  the model.
+- Inputs expire after `humanInput.expiresInSeconds`: 900 (15 minutes) by
+  default, 60 to 2,592,000 (30 days), never past the agent's own expiry. Then the
+  runtime answers for the person, and the model goes on with its turn. The answer
+  says it is automatic, not the user's:
+  - an approval is **never** given: the call does not run, and its result is
+    `The user did not respond in a timely manner, so this call was not approved
+    and did not run. Continue without it, or ask again later.`;
+  - `ask_user` returns `{"answers": {}, "timedOut": true, "message": "The user
+    did not respond in a timely manner. Continue. …"}`;
+  - a tool's own request (a form, a URL, `context.confirm`) is cancelled: the
+    tool is not called again, and the model reads that the request was cancelled.
+
+  The input's `state` is `expired`, its `answer.by` is `{system: "expired"}`, and
+  the agent's `input_resolved` event and the `input.resolved` webhook say the
+  same. An answer that comes later is a 409 (`This input expired: no one answered
+  in time…`); send a new message instead.
 
 ```json
 {"name": "Ops", "builtins": ["ask_user"], "humanInput": {"expiresInSeconds": 86400, "approvers": ["slack:U0123"]},

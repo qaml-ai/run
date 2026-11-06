@@ -33,6 +33,8 @@ export interface ContractFixture {
   seedTenant(id: string, options?: TenantSeed): Promise<{ id: string; token: string }>;
   seedIdempotencyLock(lock: { tenant: string; key: string; fingerprint: string; createdAt: number }): Promise<void>;
   setScheduleDueAt(agent: string, schedule: string, dueAt: number): Promise<void>;
+  /** Make an agent's pending inputs due now, as if no one had answered in time; the backend's own expiry (its scheduler, or its alarm) then answers them. */
+  expireInputs(agent: string): Promise<void>;
   setScheduleLegacyHistory(agent: string, schedule: string, history: "none"): Promise<void>;
   resetChildSettlement(parent: string): Promise<void>;
   /** A definition as stored before the workflow builtin was removed (#624): its builtins and settings name it. */

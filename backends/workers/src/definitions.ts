@@ -57,7 +57,14 @@ export async function definitionApplication(env: ControlEnv, tenant: string, con
   return merged;
 }
 const reply = (value: unknown, status = 200) => Response.json(value, { status, headers: { "cache-control": "no-store" } });
-const fromRow = (row: Record<string, any>): Definition => ({ id: row.id, tenant: row.tenant, name: row.name, revision: Number(row.revision), spec: withoutWorkflow(row.spec), createdAt: Number(row.created_at), updatedAt: Number(row.updated_at) });
+const fromRow = (row: Record<string, any>): Definition => ({ id: row.id, tenant: row.tenant, name: row.name, revision: Number(row.revision), spec: withoutOnExpire(withoutWorkflow(row.spec)), createdAt: Number(row.created_at), updatedAt: Number(row.updated_at) });
+/** A stored `humanInput.onExpire`, from before every expired input resumed the turn, is ignored; new input refuses it. */
+export function withoutOnExpire<T extends { humanInput?: object }>(spec: T): T {
+  const humanInput = spec.humanInput as { onExpire?: unknown } | undefined;
+  if (!humanInput || !("onExpire" in humanInput)) return spec;
+  const { onExpire: _onExpire, ...rest } = humanInput;
+  return { ...spec, humanInput: rest };
+}
 /** Stored workflow settings are ignored; only new API input is refused (workflow-refusal.ts). */
 export function withoutWorkflow<T extends { builtins?: string[] }>(spec: T): T {
   const { workflow: _workflow, ...rest } = spec as T & { workflow?: unknown };
@@ -65,7 +72,7 @@ export function withoutWorkflow<T extends { builtins?: string[] }>(spec: T): T {
 }
 const view = ({ tenant, spec, ...definition }: Definition) => ({ ...definition, ...spec, toolSources: sourceDefinitionViews(spec as never), ...(spec.mcpServers ? { mcpServers: spec.mcpServers.map(x => sourceView(x as RemoteSource)) } : {}), ...(spec.openApi ? { openApi: spec.openApi.map(x => sourceView(x as RemoteSource)) } : {}) });
 export function visibleConfiguration(config: AgentConfiguration) {
-  const { definitionOverrides, definitionRevision, ...visible } = withoutWorkflow(config);
+  const { definitionOverrides, definitionRevision, ...visible } = withoutOnExpire(withoutWorkflow(config));
   return { ...visible, keyScope: config.keyScope ?? null, modelHeaders: config.modelHeaders ?? null, decide: config.decide ?? null, language: config.language ?? null, runLimits: config.runLimits ?? null, tools: config.mcp?.tools ?? [], mcp: config.mcp ?? { tools: [] }, mcpServers: (config.mcpServers ?? []).map(source => sourceView(source as RemoteSource)), openApi: (config.openApi ?? []).map(source => sourceView(source as RemoteSource)) };
 }
 export async function resolveDefinition(env: ControlEnv, tenant: string, ref: string): Promise<Definition> {

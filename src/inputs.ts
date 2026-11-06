@@ -43,10 +43,15 @@ type Stored = Pick<Input, "message" | "detail" | "responders"> & {
 export type InputRow = Input & { stored: Stored };
 /** How a call is run again once its inputs are answered: with the approval's proof, and the tool's requests' answers. */
 export type RetryPlan = { argumentsHash: string; approval?: { input: string; by: Responder; at: number }; inputResponses?: Record<string, unknown>; requestState?: string; note: string };
-export type HumanInputSettings = { expiresInSeconds?: number; onExpire?: "close" | "resume"; approvers?: string[] };
+export type HumanInputSettings = { expiresInSeconds?: number; approvers?: string[] };
 type Sealer = { seal(aad: string, plaintext: string): Sealed; unseal(aad: string, sealed: Sealed): string };
 
-export const INPUT_LIMITS = Object.freeze({ defaultExpiresSeconds: 7 * 86_400, maxExpiresSeconds: 30 * 86_400, perCall: 8, text: 4_000, arguments: 4_000 });
+/**
+ * How long inputs wait by default: 15 minutes. Then the runtime answers for the person (`timedOut`) and the turn goes on.
+ * Long enough for someone who stepped away briefly; short enough that a turn left
+ * waiting does not hold its agent (on Workers, a call waiting on a person keeps the agent's Durable Object in memory).
+ */
+export const INPUT_LIMITS = Object.freeze({ defaultExpiresSeconds: 15 * 60, maxExpiresSeconds: 30 * 86_400, perCall: 8, text: 4_000, arguments: 4_000 });
 const FINAL: Record<Action, InputState> = { accept: "answered", decline: "declined", cancel: "cancelled" };
 
 export const argumentsHash = (name: string, args: unknown) => createHash("sha256").update(canonical({ name, arguments: args })).digest("hex");
@@ -154,12 +159,28 @@ export function mayAnswer(input: Pick<Input, "responders">, by: Responder, appro
   return allowed.includes(who);
 }
 
-/** Why a system-closed input got no answer, as the model reads it. */
-const CLOSED: Record<NonNullable<Responder["system"]>, string> = {
-  expired: "Not answered: the request for input expired.",
+/** Why a system-closed input got no answer, as the model reads it (an expired one: `timedOut`). */
+const CLOSED: Record<"aborted" | "superseded", string> = {
   aborted: "Cancelled by the application before anyone answered.",
   superseded: "Not answered: the user sent a new message instead (next).",
 };
+
+/**
+ * The runtime's automatic answer to an input no one answered in time, as the model reads it: never an approval (the
+ * call did not run), and marked as the runtime's, not the user's.
+ */
+export function timedOut(kind: InputKind, waitedFor: string) {
+  const automatic = `(An automatic answer from the runtime after ${waitedFor} without a response: the user did not write this.)`;
+  if (kind === "approval") return `The user did not respond in a timely manner, so this call was not approved and did not run. Continue without it, or ask again later. ${automatic}`;
+  if (kind === "question") return `The user did not respond in a timely manner. Continue. ${automatic}`;
+  return `The user did not respond in a timely manner, so this request was cancelled and the call did not finish. Continue without it, or ask again later. ${automatic}`;
+}
+
+/** A late answer's refusal (409): what became of an input that settled without the answer given now. */
+export function settledAlready(input: Pick<Input, "state" | "answer">) {
+  if (input.answer?.by.system === "expired") return "This input expired: no one answered in time, so the runtime answered for the user and the agent went on without it. Send a new message instead";
+  return `This input is already ${input.state}`;
+}
 
 /**
  * What one suspended call becomes once its inputs have settled: a result to give the model now,
@@ -172,7 +193,17 @@ export function resolution(inputs: InputRow[], unseal: (row: InputRow) => string
   const who = [...new Set(inputs.map(input => responderName(input.answer!.by)))].join(", ");
   const note = { answeredBy: who, waited: waited(last - Math.min(...inputs.map(input => input.createdAt))) };
   const closed = inputs.find(input => input.answer?.by.system);
-  if (closed) return text(CLOSED[closed.answer!.by.system!], true);
+  if (closed?.answer!.by.system === "expired") {
+    // No one answered in time, so the runtime answers. A question gets an empty answer that the model and code read on
+    // from; an approval is not given and a tool's own request is cancelled, so the call does not run (an error, as a
+    // decline is).
+    const expired = inputs.filter(input => input.answer?.by.system === "expired");
+    const kind = expired.find(input => input.kind === "approval")?.kind ?? expired.find(input => input.kind !== "question")?.kind ?? "question";
+    const message = timedOut(kind, note.waited);
+    if (kind === "question") return text(JSON.stringify({ answers: {}, timedOut: true, message, ...note }));
+    return text(message, true);
+  }
+  if (closed) return text(CLOSED[closed.answer!.by.system as "aborted" | "superseded"], true);
   // A question's answer is the call's result; nothing runs again.
   const question = inputs.find(input => input.kind === "question");
   if (question) {
@@ -317,7 +348,7 @@ export class Inputs {
   }
 }
 
-/** When an input expires: the definition's `expiresInSeconds` (7 days by default, at most 30), and never after its agent. */
+/** When an input expires: the definition's `expiresInSeconds` (15 minutes by default, at most 30 days), and never after its agent. */
 export function expiresAt(settings: HumanInputSettings | undefined, agentExpiresAt: number | null, now = Date.now()) {
   const seconds = Math.min(settings?.expiresInSeconds ?? INPUT_LIMITS.defaultExpiresSeconds, INPUT_LIMITS.maxExpiresSeconds);
   return Math.min(now + seconds * 1000, agentExpiresAt ?? Infinity);
@@ -325,10 +356,9 @@ export function expiresAt(settings: HumanInputSettings | undefined, agentExpires
 
 /** A definition's `humanInput` settings, checked. */
 export function humanInputSettings(value: unknown): HumanInputSettings {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => !["expiresInSeconds", "onExpire", "approvers"].includes(key))) throw new HttpError(400, "humanInput is { expiresInSeconds?, onExpire?, approvers? }");
-  const { expiresInSeconds, onExpire, approvers } = value as Record<string, unknown>;
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => !["expiresInSeconds", "approvers"].includes(key))) throw new HttpError(400, "humanInput is { expiresInSeconds?, approvers? }");
+  const { expiresInSeconds, approvers } = value as Record<string, unknown>;
   if (expiresInSeconds !== undefined && (!Number.isInteger(expiresInSeconds) || (expiresInSeconds as number) < 60 || (expiresInSeconds as number) > INPUT_LIMITS.maxExpiresSeconds)) throw new HttpError(400, `humanInput.expiresInSeconds is an integer from 60 to ${INPUT_LIMITS.maxExpiresSeconds}`);
-  if (onExpire !== undefined && onExpire !== "close" && onExpire !== "resume") throw new HttpError(400, "humanInput.onExpire is close or resume");
   if (approvers !== undefined && (!Array.isArray(approvers) || approvers.length > 100 || approvers.some(entry => typeof entry !== "string" || !entry.trim() || entry.length > 200))) throw new HttpError(400, "humanInput.approvers is a list of at most 100 ids (an actor, or a channel sender like slack:U0123)");
   return value as HumanInputSettings;
 }

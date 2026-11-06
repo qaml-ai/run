@@ -13,7 +13,7 @@ import { replacementConfiguration } from "./replacement-configuration.ts";
 import { digest, configuration } from "./api-contract.ts";
 import { configurationModelError, validateAgentModel } from "./default-model.ts";
 import { MAX_OPEN_REQUESTS } from "./access-policy.ts";
-import { configurationPatch, definitionApplication, definitionUpsert, type DefinitionTarget } from "./definitions.ts";
+import { configurationPatch, withoutOnExpire, definitionApplication, definitionUpsert, type DefinitionTarget } from "./definitions.ts";
 import { executionParams } from "./host-execution.ts";
 import { outputInput } from "./output-validation.ts";
 import { runLimitsInput } from "./model-policy.ts";
@@ -85,7 +85,7 @@ export async function acceptConfigurationRequestImpl(this: AgentRuntime,
       : given;
     if (params.subject !== undefined && params.subject !== conf.config.subject)
       throw Object.assign(new Error("An agent's subject cannot change"), { status: 409 });
-    const patched = replacement ? configuration(params, conf.config.model ?? this.env.MODEL).config : await configurationPatch(this.env, conf.tenantId, conf.config, params);
+    const patched = replacement ? configuration(params, conf.config.model ?? this.env.MODEL).config : await configurationPatch(this.env, conf.tenantId, withoutOnExpire(conf.config), params);
     configuration(patched, conf.config.model ?? this.env.MODEL, "patch");
     await validateAgentModel(this.env, conf.tenantId, patched, { reference: conf.config.model, model: conf.resolvedModel });
     if (replacement && (params.model !== undefined || params.keyScope !== undefined)) {
@@ -129,8 +129,8 @@ export async function applyConfigurationRequestImpl(this: AgentRuntime,
       : given;
     const replacementInput = replacement && params.definition !== undefined && !applying
       ? definitionUpsert(params, conf.config) : params;
-    const replacementParams = replacement ? replacementConfiguration(conf.config, replacementInput) : params;
-    const patched = configuration(replacement ? replacementParams : { ...conf.config, ...params }, conf.config.model ?? this.env.MODEL, replacement ? "create" : "patch").config;
+    const replacementParams = replacement ? replacementConfiguration(withoutOnExpire(conf.config), replacementInput) : params;
+    const patched = configuration(replacement ? replacementParams : { ...withoutOnExpire(conf.config), ...params }, conf.config.model ?? this.env.MODEL, replacement ? "create" : "patch").config;
     const modelError = (params.model !== undefined || params.keyScope !== undefined)
       ? await configurationModelError(this.env, conf.tenantId, patched) : undefined;
     const fingerprint = canonical(request);
