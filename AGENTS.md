@@ -57,7 +57,7 @@ while you are in it.
 scripts/sprite-test                                     # the full suite at HEAD, sharded over 8 sprites (8-10 minutes)
 scripts/sprite-test origin/main npm test                 # any command, at a ref
 scripts/sprite-test HEAD bash -lc 'npm run -s typecheck && npm run -s openapi'
-scripts/sprite-test --dirty HEAD npm run build:console   # tracked changes you have not committed
+scripts/sprite-test --dirty HEAD npm run build:console   # the working tree you have not committed (no secrets)
 scripts/sprite-test --status                            # who holds which sprite, and the commit each has
 scripts/sprite-test --warm                              # prepare every free sprite at HEAD, so the next runs start at once
 ```
@@ -74,10 +74,13 @@ wait
 ```
 
 A run gets the committed tree at the ref, put together with `git archive`: never the working directory, so `.env` and
-ignored files stay on the laptop. Commit before a run that matters, and before pushing; `--dirty` sends the tracked
-changes you have not committed as a temporary commit (untracked files are still not sent), which is enough for a build
-or a test of work in progress. Leases, sync, retries and exit codes: the header of `scripts/sprite-test` and the
-`sprites-agent-runtime` skill.
+ignored files stay on the laptop. Commit before a run that matters, and before pushing; `--dirty` sends the working
+tree you have not committed (untracked files too; `.gitignore` applies) as a temporary commit, which is enough for a
+build or a test of work in progress, and never sends secrets: changes to `.env*`, `.dev.vars*`, keys, `*.tfvars` or
+credentials files stay on the laptop even when nothing ignores them, and the run lists them. `scripts/sprite-test` is
+only this repo's configuration; the machinery is `scripts/sprite-test-core.sh`, a copy of the core camel-bots
+keeps too (change both). Options, leases, sync, retries and
+exit codes: `scripts/sprite-test --help`, the core's header and the `sprites-agent-runtime` skill.
 
 ## Where things are written down
 

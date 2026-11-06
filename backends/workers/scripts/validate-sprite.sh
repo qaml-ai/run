@@ -25,7 +25,7 @@ if [[ ! -x node_modules/.bin/wrangler || $(cat "$HOME/.workers-lock" 2>/dev/null
   printf '%s' "$lock" > "$HOME/.workers-lock"
 fi
 if [[ $mode == integration || $mode == compat ]]; then
-  # scripts/sprite-test sets Docker up on every pool sprite (docker_up there; README.md, "Docker on a sprite"), so the
+  # scripts/sprite-test sets Docker up on every pool sprite (docker_up in scripts/sprite-test-core.sh; README.md, "Docker on a sprite"), so the
   # native computer tests run here as on CI, which allows them no skip.
   if ! docker info >/dev/null 2>&1 || ! docker buildx version >/dev/null 2>&1; then
     echo "Docker with Buildx is not running on this sprite; run this through scripts/sprite-test, which sets it up." >&2

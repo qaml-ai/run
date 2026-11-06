@@ -25,11 +25,19 @@ scripts/sprite-test --warm                               # prepare every free sp
 ```
 
 A run gets the tree from `git archive` (never the working directory: `.env` and ignored files stay on the laptop), then
-Postgres 16 in `/tmp` with `fsync` off, `npm ci` when `package-lock.json` changed, and a v8-exec rebuild when
-`sandbox/v8-exec` changed. `--dirty` sends the working tree as a temporary commit: staged, unstaged and untracked files (what `.gitignore` keeps out stays out), without touching your index.
-`SPRITE_SHARDS` sets the shards (default 8), `SPRITE_NAME` pins sprites, `SPRITE_POOL` the pool size (default 42).
+Node 22 (as CI), a fresh Postgres 16 container with CI's flags (tmpfs, `fsync` off, 1000 connections), `npm ci` when
+`package-lock.json` or Node changed, and a v8-exec rebuild when `sandbox/v8-exec` changed. `--dirty` sends the working
+tree as a temporary commit: staged, unstaged and untracked files (what `.gitignore` keeps out stays out), without
+touching your index, and never secrets (`.env*`, `.dev.vars*`, keys, `*.tfvars`, credentials files: it lists what it
+kept back). `SPRITE_SHARDS` sets the shards (default 8), `SPRITE_NAME` pins sprites, `SPRITE_POOL` the pool size
+(default 42); `scripts/sprite-test --help` lists the rest.
 
-Every pool sprite also has Docker with Buildx (set up once per sprite by `docker_up` in the script), so the Workers
+`scripts/sprite-test` is only this repo's configuration: the machinery is `scripts/sprite-test-core.sh`, and camel-bots
+keeps a copy of the same core at the same path. Change the machinery in both repos, keeping the copies the same;
+if this repo starts relying on a new core feature, name it in `sprite_requires`, so a core without it stops with a
+clear error (`scripts/sprite-test --check-core`, and `tests/sprite-test.test.ts`).
+
+Every pool sprite also has Docker with Buildx (set up once per sprite by the core), so the Workers
 backend's native container tests run there as on CI, `WORKERS_REQUIRE_DOCKER=1` included:
 `scripts/sprite-test --shards=3 HEAD bash backends/workers/scripts/validate-sprite.sh integration '{shard}/{shards}'`.
 It differs from a stock host in three ways, all because a sprite's root has no `CAP_SYS_PTRACE` and its kernel no
