@@ -58,7 +58,7 @@ test(
         },
       ],
     });
-    assert.equal(result.outcome.result.reply, "seen");
+    assert.equal(result.outcome.result.reply, "seen", JSON.stringify(result));
     const body = r.model.bodies.at(-1);
     const user = body.messages.find(
       (message: any) => message.role === "user",
