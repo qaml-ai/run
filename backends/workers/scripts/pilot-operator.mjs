@@ -66,7 +66,15 @@ export async function withPilotOperator(options, callback) {
         headers: { Authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "Content-Type": "application/json" }), ...rest.headers },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: rest.signal ?? AbortSignal.timeout(120_000),
       });
-      if (!response.ok) throw new Error(`Pilot operator ${init.method ?? (body === undefined ? "GET" : "POST")} ${new URL(path, PILOT_URL).pathname} failed (${response.status}).`);
+      if (!response.ok) {
+        // Diagnose routing without echoing response content, credentials or queries.
+        const final = new URL(response.url);
+        const contentType = response.headers.get("content-type") ?? "unknown";
+        const data = contentType.includes("application/json") ? await response.json().catch(() => null) : null;
+        const known = new Set(["Not found", "Pilot operator request failed", "Tenant outside bootstrap scope", "Agent outside bootstrap scope", "Bootstrap expired", "Unauthorized"]);
+        const category = known.has(data?.error) ? data.error : "unclassified";
+        throw new Error(`Pilot operator ${init.method ?? (body === undefined ? "GET" : "POST")} ${new URL(path, PILOT_URL).pathname} failed (${response.status}); category=${category}; type=${contentType}; target=${final.host}${final.pathname}; redirected=${response.redirected}; ray=${response.headers.get("cf-ray") ?? "none"}.`);
+      }
       return response.json();
     };
     for (let attempt = 0; ; attempt++) {
