@@ -1,6 +1,6 @@
 import { applyWorkspaceUsage } from "./workspaces.ts";
 import { createHash } from "node:crypto";
-import { Accounts, applyUsageRows, type Totals } from "./accounts.ts";
+import { Accounts, applyUsageRows, lockBalances, type Totals } from "./accounts.ts";
 import { postLedger } from "./billing.ts";
 import { databaseUnavailable, databaseRetryable, transaction, type Db } from "./db.ts";
 import { isSubscriptionProvider, platformUsage, usageMissing } from "./platform-pricing.ts";
@@ -239,10 +239,13 @@ export class ModelAttempts {
       // it is known, as the tenant's charge is).
       // The end user's row first, as everything that touches their holds locks it (end-user-credits.ts).
       let hold: { allowance: string; paid: string } | undefined;
-      if (row.end_user && !reconciled) {
+      if (row.end_user) {
         await lockEndUser(sql, tenant, row.end_user);
-        hold = (await sql.query("delete from end_user_holds where id=$1 returning allowance, paid", [id])).rows[0];
+        if (!reconciled) hold = (await sql.query("delete from end_user_holds where id=$1 returning allowance, paid", [id])).rows[0];
       }
+      // Then the tenant's balance row, before its hold, usage rows and ledger entry: the order turn receipts, usage
+      // flushes and holds lock them in (accounts.ts lockBalances), so none of them waits on a row this holds.
+      if (row.prepaid) await lockBalances(sql, [tenant]);
       if (!reconciled) await sql.query("delete from credit_holds where id=$1", [id]);
       // A provider-reconciled or completed record is final. Delayed host deliveries cannot overwrite it.
       if (row.state === "settled" || (!reconciled && !completed && row.totals)) return;

@@ -70,6 +70,7 @@ export async function applyWorkspaceUsage(sql: Sql, rows: AttributedUsage[]) {
     from jsonb_to_recordset($1::jsonb) as t(tenant text, agent text, timestamp bigint, day text, model text, responses bigint, input bigint, output bigint, "cacheRead" bigint, "cacheWrite" bigint, cost double precision, "platformResponses" bigint, "platformCost" double precision)
     cross join lateral (select workspace from workspace_assignments where tenant = t.tenant and kind = 'agent' and resource = t.agent and assigned_at <= t.timestamp order by assigned_at desc, sequence desc limit 1) a
     where a.workspace is not null group by t.tenant, a.workspace, t.day, t.model
+    order by t.tenant collate "C", a.workspace, t.day, t.model collate "C"
     on conflict (tenant, workspace, day, model) do update set responses = workspace_usage.responses + excluded.responses,
       input = workspace_usage.input + excluded.input, output = workspace_usage.output + excluded.output,
       cache_read = workspace_usage.cache_read + excluded.cache_read, cache_write = workspace_usage.cache_write + excluded.cache_write,
