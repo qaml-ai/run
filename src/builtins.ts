@@ -39,7 +39,6 @@ export const BUILTINS = {
   delegate: [],
   generate_image: [],
   agents: [],
-  workflow: [],
   decide: [],
 } as const;
 export type Builtin = keyof typeof BUILTINS;
@@ -73,6 +72,7 @@ export async function builtinWarnings(sources: { builtins?: readonly string[]; w
 }
 /** `builtins` as a definition or an agent gives them: distinct names of BUILTINS. */
 export function builtinsInput(value: unknown): Builtin[] {
+  rejectWorkflow({ builtins: value });
   if (!Array.isArray(value) || new Set(value).size !== value.length || value.some(name => typeof name !== "string" || !Object.hasOwn(BUILTINS, name))) {
     throw new HttpError(400, `builtins is a list of: ${Object.keys(BUILTINS).join(", ")}`);
   }
@@ -140,9 +140,9 @@ const DEFINITIONS: Record<string, ToolDefinition> = {
     name: "list_schedules", exposure: "both", description: "List your scheduled wake-ups.",
     parameters: { type: "object", additionalProperties: false, properties: {} },
   },
-  // AskUserQuestion's shape, which models already use well. Direct only: code cannot wait for an answer.
+  // AskUserQuestion's shape, which models already use well. From code too: the turn pauses for the answer either way.
   ask_user: {
-    name: "ask_user", exposure: "direct", callers: ["model"],
+    name: "ask_user", exposure: "direct", callers: ["model", "tools"],
     description: "Ask the user 1-4 questions, each with 2-4 options, when you are blocked on a choice only they can make. Your turn pauses until they answer, which may take days; the answers come back as this call's result. Don't ask about what you can find out yourself.",
     parameters: { type: "object", additionalProperties: false, required: ["questions"], properties: {
       questions: { type: "array", minItems: 1, maxItems: 4, items: { type: "object", additionalProperties: false, required: ["question", "header", "options"], properties: {
@@ -252,4 +252,13 @@ async function webFetch({ outbound, render }: BuiltinServices, context: BuiltinC
   }
   const text = page.text.length > maxCharacters ? page.text.slice(0, maxCharacters) : page.text;
   return jsonResult({ url: finalUrl, status: response.status, contentType: type.split(";")[0] || undefined, ...(page.title ? { title: page.title } : {}), text, ...(text.length < page.text.length ? { truncated: true, totalCharacters: page.text.length } : {}) });
+}
+
+/** Old workflow input must not silently turn into an agent without its intended tools. */
+export function rejectWorkflow(value: unknown) {
+  if (!value || typeof value !== "object") return;
+  const input = value as { builtins?: unknown; workflow?: unknown };
+  if (Object.hasOwn(input, "workflow") || (Array.isArray(input.builtins) && input.builtins.includes("workflow"))) {
+    throw new HttpError(400, "The workflow builtin was removed: a workflow is now a codemode script that calls tools.delegate (the delegate builtin)");
+  }
 }

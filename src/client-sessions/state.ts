@@ -204,8 +204,13 @@ export type Session = {
   activeSince?: number;
   /** What the running run wrote and handed over with present_file, for its outcome. */
   outputs?: { files: Map<string, WrittenFile>; presented: (FileRef & { caption?: string })[] };
-  /** In a `resume` run, how each answered call is run again, by tool call id. */
-  retries?: Map<string, RetryPlan>;
+  /**
+   * In a `resume` run, how each answered call is run again, by tool call id (`<codemode call>/<key>` for a call from
+   * code), or for a call from code that is not run again, the result it gets as its code goes on.
+   */
+  retries?: Map<string, RetryPlan | { result: { content: { type: "text"; text: string }[]; isError?: boolean } }>;
+  /** Whether the agent's host closed for good in the run that just ended, to be stopped once it has (`enqueue`). */
+  unload?: boolean;
   /** A channel's conversation: someone there answers the agent's inputs. */
   channel?: boolean;
   /** Where each of the running agent's tools comes from. */
@@ -399,14 +404,13 @@ export type DefinitionConfig = { id: string; revision: number; config: Partial<P
 /** One model response's usage; `kind` separates compaction summaries from the agent's turns. */
 /**
  * A model response's usage, a web tool's call (`searches`: web searches, `renders`: pages web_fetch had
- * rendered), tool search's ranking by meaning (`toolSearch`: `toolSearches` searches, none for
- * embedding a catalog ahead of them), audio transcribed (kind `transcription`: `audioSeconds` of it), or
+ * rendered), audio transcribed (kind `transcription`: `audioSeconds` of it), or
  * images made (kind `image`: `images` of them, their tokens in `usage`), decisions (kind `decision`: `decisions` answered),
  * or time on a managed computer (kind `computer`: `seconds` of it),
  * with its cost in `usage.cost.total`.
  */
 export type UsageRecord = {
-  provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction" | "transcription" | "image" | "speech" | "decision" | "computer"; platform?: boolean; searches?: number; renders?: number; toolSearch?: boolean; toolSearches?: number;
+  provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction" | "transcription" | "image" | "speech" | "decision" | "computer"; platform?: boolean; searches?: number; renders?: number;
   transcriptions?: number; audioSeconds?: number; images?: number; speeches?: number;
   /** Kind `decision`: questions answered (decisions.ts). */
   decisions?: number;

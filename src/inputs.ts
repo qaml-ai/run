@@ -220,7 +220,10 @@ export class Inputs {
   private readonly sealer?: Sealer;
   constructor(options: { db: Db; sealer?: Sealer }) { this.db = options.db; this.sealer = options.sealer; }
 
-  /** Record a call's inputs. `requestState` is sealed when the runtime can seal. */
+  /**
+   * Record a call's inputs. `requestState` is sealed when the runtime can seal. Made again (a retry whose first answer
+   * was lost), it returns the rows the call's run already has pending, and records nothing new.
+   */
   async create(base: Pick<Input, "agent" | "tenant" | "requestId" | "toolCallId" | "responders" | "expiresAt"> & { tool: string; argumentsHash: string; requestState?: string },
     requests: { key?: string; kind: InputKind; message: string; detail: Record<string, unknown> }[], claim?: Claim): Promise<InputRow[]> {
     const createdAt = Date.now();
@@ -233,14 +236,19 @@ export class Inputs {
       };
       return row({ id, agent: base.agent, tenant: base.tenant, request_id: base.requestId, tool_call_id: base.toolCallId, kind: request.kind, state: "pending", input: stored, created_at: createdAt, expires_at: base.expiresAt });
     });
-    await underClaim(this.db, claim, async sql => {
+    return underClaim(this.db, claim, async sql => {
+      const pending = (await sql.query("select * from agent_inputs where agent = $1 and request_id = $2 and tool_call_id = $3 and state = 'pending' order by created_at, id",
+        [base.agent, base.requestId, base.toolCallId])).rows.map(row);
+      const keys = new Set(requests.map(request => request.key ?? null));
+      const same = pending.filter(input => keys.has(input.stored.key ?? null));
+      if (same.length === requests.length) return same;
       for (const input of rows) {
         await sql.query("insert into agent_inputs (id, agent, tenant, request_id, tool_call_id, kind, input, created_at, expires_at) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
           [input.id, input.agent, input.tenant, input.requestId, input.toolCallId, input.kind, JSON.stringify(input.stored), input.createdAt, input.expiresAt]);
       }
       await enqueueEvents(sql, rows.map(input => inputEvent("input.requested", input)));
+      return rows;
     });
-    return rows;
   }
 
   /** The tool's opaque request state, unsealed for its retry. */

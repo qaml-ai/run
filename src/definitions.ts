@@ -8,9 +8,8 @@ import { HttpError } from "./http.ts";
 import { jsonWithinLimit } from "./limits.ts";
 import type { Accounts } from "./accounts.ts";
 import type { Outbound } from "./outbound.ts";
-import { builtinsInput, managedBuiltinsRefusal } from "./builtins.ts";
+import { rejectWorkflow, builtinsInput, managedBuiltinsRefusal } from "./builtins.ts";
 import { delegateSettings, startsChildren, type DelegateSettings } from "./multi-agent.ts";
-import { workflowSettings, type WorkflowSettings } from "./workflows.ts";
 import { decideInput } from "./decisions.ts";
 import { searchOrder } from "./web-search.ts";
 import { canonical } from "../shared/durable-json.ts";
@@ -58,8 +57,6 @@ export interface DefinitionSpec {
   humanInput?: HumanInputSettings;
   /** With the delegate or agents builtin: the agents its agents may start or message, and how deep and wide (multi-agent.ts). */
   delegate?: DelegateSettings;
-  /** With the workflow builtin: who its agents' workflow scripts may coordinate, and how wide and deep (workflows.ts). */
-  workflow?: WorkflowSettings;
   /** false: its agents get no decide tool; true: they get it even with no code mode and no other tools (decisions.ts). */
   decide?: boolean;
   /** Made for this channel, and deleted with it. */
@@ -81,7 +78,7 @@ export interface ApplyResult { agent: string; requestId: string; status: "update
 /** Agent parameters from a definition, as `createAgent` takes them. */
 export type AgentParams = Record<string, unknown> & { tools?: ToolDefinition[] };
 
-const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "limits", "runLimits", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "workflow", "decide", "applyOnUpdate"] as const;
+const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "limits", "runLimits", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "decide", "applyOnUpdate"] as const;
 /** Configuration an agent made from a definition may set as its own, which applying the definition leaves. */
 export const OVERRIDES = ["model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "runLimits"] as const;
 const PROVISION_FIELDS = ["name", "type", "ttlSeconds", "idleTtlSeconds", "mounts", "tools", "initialMessages", "systemPromptAppend"];
@@ -94,7 +91,6 @@ export function sources(spec: DefinitionSpec): Sources | undefined {
     ...(spec.builtins?.length ? { builtins: spec.builtins } : {}), ...(spec.webSearch && spec.builtins?.includes("web_search") ? { webSearch: spec.webSearch } : {}), ...(spec.mcpServers?.length ? { mcpServers: spec.mcpServers } : {}),
     ...(spec.openApi?.length ? { openApi: spec.openApi } : {}), ...(spec.humanInput ? { humanInput: spec.humanInput } : {}),
     ...(spec.delegate && startsChildren(spec.builtins) ? { delegate: spec.delegate } : {}),
-    ...(spec.workflow && spec.builtins?.includes("workflow") ? { workflow: spec.workflow } : {}),
     ...(spec.decide !== undefined ? { decide: spec.decide } : {}),
   };
   return Object.keys(found).length ? found : undefined;
@@ -125,7 +121,7 @@ export class Definitions {
   }
 
   private row(row: any): Definition {
-    return { id: row.id, tenant: row.tenant, name: row.name, revision: row.revision, spec: row.spec, createdAt: row.created_at, updatedAt: row.updated_at };
+    return { id: row.id, tenant: row.tenant, name: row.name, revision: row.revision, spec: withoutWorkflow(row.spec), createdAt: row.created_at, updatedAt: row.updated_at };
   }
   async read(tenant: string, id: string): Promise<Definition> {
     const row = validId(id) ? (await this.db.query("select * from definitions where id = $1 and tenant = $2", [id, tenant])).rows[0] : undefined;
@@ -161,6 +157,7 @@ export class Definitions {
    * changes nothing. The same key is the same definition.
    */
   async upsert(tenant: string, key: string, input: DefinitionInput): Promise<Definition> {
+    rejectWorkflow(input);
     if (!/^[A-Za-z0-9_-]{1,80}$/.test(key)) throw new HttpError(400, "An Idempotency-Key is 1 to 80 letters, digits, _ and -");
     const id = `def_${createHash("sha256").update(`${tenant}:${key}`).digest("hex").slice(0, 20)}`;
     const current = await this.read(tenant, id).catch(error => { if ((error as HttpError).status === 404) return undefined; throw error; });
@@ -180,6 +177,7 @@ export class Definitions {
 
   /** A new definition, at revision 1. */
   async create(tenant: string, input: DefinitionInput, internal: Pick<DefinitionSpec, "channel"> = {}, id = `def_${randomBytes(10).toString("hex")}`): Promise<Definition> {
+    rejectWorkflow(input);
     const name = this.name(input.name);
     if (!name) throw new HttpError(400, "A definition needs a name");
     const limit = this.maxDefinitions(tenant);
@@ -202,6 +200,7 @@ export class Definitions {
 
   /** Replace the given fields; with `revision`, only if the definition is still at that revision. */
   async update(tenant: string, id: string, input: DefinitionInput): Promise<Definition> {
+    rejectWorkflow(input);
     const current = await this.read(tenant, id);
     if (input.revision !== undefined && input.revision !== current.revision) throw new HttpError(409, `The definition is at revision ${current.revision}, not ${input.revision}`);
     if (input.name === undefined && FIELDS.every(key => input[key] === undefined)) return current;
@@ -306,6 +305,7 @@ export class Definitions {
   /** `current` with `input`'s fields applied, checked as agent configuration is. */
   private async merge(tenant: string, id: string, current: DefinitionSpec, input: DefinitionInput): Promise<DefinitionSpec> {
     if (!input || typeof input !== "object" || Array.isArray(input)) throw new HttpError(400, "Send a definition object");
+    rejectWorkflow(input);
     for (const key of Object.keys(input)) if (![...FIELDS, "name", "revision", "apply"].includes(key)) throw new HttpError(400, `Unknown definition field: ${key}`);
     const spec: DefinitionSpec = { ...current };
     for (const key of FIELDS) {
@@ -347,12 +347,16 @@ export class Definitions {
     if (spec.humanInput !== undefined) humanInputSettings(spec.humanInput);
     const delegate = delegateSettings(spec.builtins, spec.delegate);
     if (delegate) spec.delegate = delegate;
-    const workflow = workflowSettings(spec.builtins, spec.workflow);
-    if (workflow) spec.workflow = workflow;
     const prefixes = [...spec.mcpServers ?? [], ...spec.openApi ?? []].map(source => source.name);
     const twice = prefixes.find((name, index) => prefixes.indexOf(name) !== index);
     if (twice) throw new HttpError(400, `${twice} names both an MCP server and an OpenAPI source; their tools would share ${twice}__`);
     try { jsonWithinLimit(spec, 512 * 1024, "Definition"); } catch (error) { throw new HttpError(413, errorText(error)); }
     return spec;
   }
+}
+
+/** Stored workflow settings are ignored; only new API input is refused. */
+function withoutWorkflow(spec: DefinitionSpec): DefinitionSpec {
+  const { workflow: _workflow, ...rest } = spec as DefinitionSpec & { workflow?: unknown };
+  return { ...rest, ...(rest.builtins ? { builtins: rest.builtins.filter(name => name !== "workflow") } : {}) };
 }

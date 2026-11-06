@@ -16,6 +16,7 @@ import { type Child, type Session, type ClientSessionOptions, runningRun } from 
 
 export type DelegationContext = {
   options: ClientSessionOptions;
+  isClosed(): boolean;
   db: Db;
   sessions: Map<string, Session>;
   spendContext: spend.SpendContext;
@@ -57,7 +58,7 @@ export async function delegate(ctx: DelegationContext, session: Session, setting
   const run = runningRun(session);
   const { createAgent, submit } = ctx.options;
   if (!createAgent || !submit) throw new Error("Delegation is not enabled on this runtime");
-  if (!run || !call.toolCallId || call.innerCallId || !call.idempotencyKey) throw new Error("delegate is called directly, not from code");
+  if (!run || !call.toolCallId || !call.idempotencyKey) throw new Error("delegate requires a running tool call");
   const toolCallId = call.toolCallId;
   const { target, task, output } = childTarget(settings, call.args, "delegate to");
   const { depth, maxDepth, chain } = childPlace(ctx, session, run, settings, "Delegation");
@@ -83,7 +84,7 @@ export async function delegate(ctx: DelegationContext, session: Session, setting
     let record = await requestOf(ctx, agent, tenant, requestId, 0, call.signal).catch(error => { if ((error as HttpError).status === 404) return undefined; throw error; });
     if (!record && made) agent = await makeChild(ctx, session, run, target, key, toolCallId, depth);
     child = { agent, requestId, made };
-    (session.children ??= new Map()).set(toolCallId, child);
+    (session.children ??= new Map()).set(call.innerCallId ? `${toolCallId}/${call.innerCallId}` : toolCallId, child);
     const at = { toolCallId, agentId: agent, requestId };
     const end = (status: string, error?: string) => ctx.publish(session, { type: "event", requestId: run.id, event: { type: "subagent_end", ...at, status, ...(error ? { error } : {}) } });
     ctx.publish(session, { type: "event", requestId: run.id, event: { type: "subagent_start", ...at, name: target?.name ?? "subagent", depth } });
@@ -126,6 +127,11 @@ export async function delegate(ctx: DelegationContext, session: Session, setting
     return { ...jsonResult(value), ...(status === "completed" ? {} : { isError: true }) };
   } finally {
     untap?.();
+    // A lost owner leaves the child for replay. A script ending stops only this nested call's child, and so does its
+    // agent's process dying: that turn ends there (no replay goes on with the script), so a child left would run unread.
+    if (call.innerCallId && call.signal.aborted && !(session.leaving || session.fault || ctx.isClosed())) {
+      await stopDelegates(ctx, session, { run: run.id, toolCallId, requestId: `delegate_${call.idempotencyKey}` });
+    }
     // What the child spent is in `childSpend` by now: its hold goes.
     if (held !== undefined) spend.releaseBudget(session, run.id, held);
     releaseDelegation(session);
@@ -331,13 +337,13 @@ function relay(ctx: DelegationContext, session: Session, runId: string, at: { to
  * here, whose ending waits for this (`stoppingChildren`). Those still running then are logged, and left to the sweep
  * (`sweepDelegate`). Never rejects.
  */
-export function stopDelegates(ctx: DelegationContext, session: Session, scope?: { run: string; toolCallId: string }): Promise<void> {
+export function stopDelegates(ctx: DelegationContext, session: Session, scope?: { run: string; toolCallId: string; requestId?: string }): Promise<void> {
   const { id } = session.header;
   const deadline = Date.now() + STOP_CHILDREN_MS;
   const stopping = (async () => {
-    // A scope stops one call's children (a workflow's, when its script ends); no scope stops every child the agent has.
+    // A nested call stops just its child; a codemode call or agent stop reaches all its children.
     const { rows } = scope
-      ? await ctx.db.query("select * from agent_children where parent = $1 and kind = 'delegate' and ended_at is null and parent_run = $2 and tool_call_id = $3", [id, scope.run, scope.toolCallId])
+      ? await ctx.db.query("select * from agent_children where parent = $1 and kind = 'delegate' and ended_at is null and parent_run = $2 and tool_call_id = $3 and ($4::text is null or id = $4)", [id, scope.run, scope.toolCallId, scope.requestId ?? null])
       : await ctx.db.query("select * from agent_children where parent = $1 and kind = 'delegate' and ended_at is null", [id]);
     if (!rows.length) return;
     const ended = new Set<string>();

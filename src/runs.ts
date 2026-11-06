@@ -1,3 +1,4 @@
+import { rejectWorkflow } from "./builtins.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { createRoute, z, type RouteConfig } from "@hono/zod-openapi";
 import type { Context } from "hono";
@@ -112,6 +113,7 @@ export function runRoutes(route: Route, context: () => RunsContext) {
     const tenant = c.var.principal.tenant;
     // Room for inline files (4 MiB, as base64) besides the configuration.
     const body = await readJson(c.req.raw.body, 7 * 1024 * 1024, {});
+    rejectWorkflow(body);
     const parsed = schema.RunInput.safeParse(body);
     if (!parsed.success) throw new HttpError(400, `${parsed.error.issues[0].path.join(".") || "body"}: ${parsed.error.issues[0].message}`);
     const { input, wait, retentionSeconds, output, spendLimit, actor, from, metadata, name, mounts, ...config } = parsed.data;

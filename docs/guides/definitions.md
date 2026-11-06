@@ -45,9 +45,8 @@ for when another definition can delegate to it.
 definitions not saved yet, so two can name each other. See
 [Multi-agent](multi-agent.md).
 
-`workflow`, with its builtin, lets them run a script that coordinates those
-agents: `"builtins": ["workflow"], "workflow": {"agents": ["researcher"],
-"maxAgents": 40}`. See [Workflows](workflows.md).
+A code mode script can coordinate these agents with `tools.delegate`. See
+[Workflows in code](multi-agent.md#workflows-in-code).
 
 The definition supplies the model, prompt, thinking level, `maxOutputTokens`,
 `temperature` and tool sources;

@@ -76,7 +76,7 @@ constructors stay inside the guest's V8 context; they never create host function
 Guest code is contained by layers, each assuming the one inside it failed:
 
 1. **A bare V8 isolate in a process of its own.** v8-exec has no Node: its one
-   context holds the ECMAScript built-ins and the bootstrap's helpers, and
+   context holds the ECMAScript built-ins and Pi's helpers, and
    nothing else. Nothing is reused between executions, so no globals, heap or
    memory carry over, and a process serves one tenant's one execution. It
    confines itself further (no JIT, a seccomp allowlist, rlimits): see
@@ -132,17 +132,18 @@ checkout needs the binary built first (`npm run build:v8-exec`; or
 `AGENT_V8_EXEC` names one). `tests/image-isolation.ts` boots the image and
 proves the other layers from inside a parse job and a v8-exec process.
 
-What guest code can reach on the host, all through the trusted bootstrap
-(`sandbox/v8-exec/src/bootstrap.js`) and never as globals:
+The only start request is `pi-start-v1`. The host supplies Pi's prelude and its
+SHA-256, tool declarations, store and deterministic clock. The guest reports a
+fingerprint; the host accepts it with `pi-run-v1` before user code runs.
+`pi-result-v1` delivers nested-call results in their journal order.
 
-- `call(name, argsJson)`: a string name of at most 80 characters and a JSON
-  string of at most 128 KiB. It returns a promise settled with the result as a
-  JSON string, or rejected with an error carrying only a message of at most
-  2,048 characters (tool errors keep the message the application's tool threw).
-- `emit(text, flags)`: a string of at most 128,000 characters and whether it was
-  cut there, is the code's return value, or is JSON, returning nothing.
-- The tool catalog (names, descriptions and parameter schemas), as one JSON
-  string at start.
+What guest code can reach on the host, through Pi's prelude and
+`sandbox/v8-exec/src/pi-glue.js`:
+
+- Tool calls: their name and JSON arguments (at most 128 KiB), with sequential
+  call IDs. At most 256 calls per script and 32 in flight.
+- Text and image output: at most 128,000 bytes and 1,024 events.
+- A completion: its JSON value and store writes, or its serialized error.
 
 Arguments cross as strings the host copies out after checking their length;
 guest objects are never read from the host, so getters, proxies and `toJSON`

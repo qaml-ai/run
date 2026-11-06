@@ -93,7 +93,7 @@ export const fund = async (f: Awaited<ReturnType<typeof fixture>>, amount = micr
 
 export const USER = { id: "u", bucket: "work" };
 
-// Exercise the shared child factory used by delegate, spawn_agent and run_workflow.
+// Exercise the shared child factory used by delegate and spawn_agent.
 export async function family(t: { after(fn: () => Promise<void> | void): void }, subagents?: boolean) {
   const f = await fixture();
   const root = await mkdtemp(join(tmpdir(), "computer-children-"));
@@ -103,7 +103,14 @@ export async function family(t: { after(fn: () => Promise<void> | void): void },
   const sessions = new ClientSessions(supervisor, { db: f.db, storage, secret: "computer-children-test-secret-32-chars", computers: f.service });
   // One teardown, in order: the sessions and their log tail stop before the database they use closes, or the tail keeps
   // retrying against a closed pool and the file never exits.
-  t.after(async () => { await sessions.close(); await supervisor.close(); await rm(root, { recursive: true, force: true }); await f.done(); });
+  t.after(async () => {
+    // Creation starts hosts in the background. Let them settle before removing their directories.
+    await Promise.all([...sessions.sessions.values()].map(session => session.starting?.catch(() => {})));
+    await sessions.close();
+    await supervisor.close();
+    await rm(root, { recursive: true, force: true });
+    await f.done();
+  });
   // No model calls are needed: the factory attaches computers before any child is prompted.
   const model = { id: "fixture", name: "Fixture", api: "openai-completions", provider: "openai", baseUrl: "http://127.0.0.1:9/v1", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 1024 } as Model<Api>;
   const parent = (await sessions.create([], { model }, "computer-parent", {}, "payg")).id;

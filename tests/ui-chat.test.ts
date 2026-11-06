@@ -143,7 +143,8 @@ test("the chat store is browser code: it bundles for a browser with nothing from
   assert.equal(result.errors.length, 0);
   const { gzipSync } = await import("node:zlib");
   const gzipped = gzipSync(result.outputFiles[0].contents).length;
-  assert.ok(gzipped < 9 * 1024, `the store and watcher are ${gzipped} bytes gzipped`);
+  // The WebSocket transport (clients/event-transport.ts, about 1.15 KB gzipped) is required because the Workers backend is WebSocket-only; main was 8,560 B.
+  assert.ok(gzipped < 10 * 1024, `the store and watcher are ${gzipped} bytes gzipped`);
 });
 
 // ---------------------------------------------------------------------------------------------

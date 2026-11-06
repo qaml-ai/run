@@ -19,7 +19,6 @@ import * as events from "./events.ts";
 import * as spend from "./spend.ts";
 import * as delegation from "./delegation.ts";
 import * as childSessions from "./children.ts";
-import * as workflows from "./workflows.ts";
 import * as humanInput from "./inputs.ts";
 import { type Session, type ClientSessionOptions, type AgentRef, type UsageRecord, RUN_METHODS, validId } from "./state.ts";
 import type { RequestRecord } from "../../shared/client-protocol.ts";
@@ -63,22 +62,20 @@ async function toolServers(ctx: ToolsContext, session: Session, tools: ToolDefin
   const view = (kind: ToolSourceView["kind"], server: ToolServer, extra: Partial<ToolSourceView> = {}): ToolServer =>
     ({ ...server, sources: async () => [{ kind, name: kind, status: "listed", ...extra, tools: await server.tools() }] });
   const multiAgent = childSessions.multiAgentServer(ctx.childrenContext, session, sources);
-  const workflow = workflows.workflowServer(ctx.childrenContext, session, sources);
   const images = spend.imageServer(ctx.spendContext, session, sources);
   // Sources that give tools (`decide` alone is a setting).
   const sourced = !!sources && Object.keys(sources).some(key => key !== "decide");
   // An agent with no code mode and no tools of its own gets no decide tool unless it asks for it (decide: true).
-  const plain = codeMode === false && !tools.length && !feature && !multiAgent && !workflow && !images && !sourced;
+  const plain = codeMode === false && !tools.length && !feature && !multiAgent && !images && !sourced;
   const decisions = spend.decisionServer(ctx.spendContext, session, sources, plain);
   const definition = header.definition;
   // An agent with no tools at all (no code mode, file tools or tools of any source) has nothing to present a file from: no present_file either.
-  const bare = codeMode === false && fileTools === false && !tools.length && !feature && !multiAgent && !workflow && !images && !sourced;
+  const bare = codeMode === false && fileTools === false && !tools.length && !feature && !multiAgent && !images && !sourced;
   return [
     ...feature ? [view("channel", feature)] : [],
     { tools: () => defaultExposure(tools), call: call => events.callAttached(ctx.eventContext, session, call), sources: async () => [{ kind: "application", name: "application", status: "listed", connected: !!session.attached?.open, tools: defaultExposure(tools) }] },
     ...volumes && (header.mounts?.length || await ctx.options.sources?.computerFilesystem(tenant, header.id) !== undefined) && !bare ? [view("files", fileServer(fileToolsFor(volumes.definitions(), fileTools, codeMode), ({ name, args, signal }) => volumes.tool(toolContext(ctx, session), name, args, signal)))] : [],
     ...multiAgent ? [multiAgent] : [],
-    ...workflow ? [workflow] : [],
     ...images ? [images] : [],
     ...decisions ? [decisions] : [],
     ...ctx.options.sources ? [ctx.options.sources.server({ tenant, agent: header.id, ...(definition ? { definition: definition.id } : {}), claim: session.claim, ...(header.identity ? { identity: header.identity } : {}), mounts: () => session.header.mounts ?? [], onWrite: toolContext(ctx, session).onWrite, judge: spend.judgeFor(ctx.spendContext, session) }, sources)] : [],
@@ -120,7 +117,28 @@ export function toolContext(ctx: ToolsContext, session: Session): ToolContext {
  * its code (its attachments, tool outputs and saved results are files it reads there), none without code mode.
  */
 const fileToolsFor = (tools: ToolDefinition[], fileTools: boolean | undefined, codeMode: boolean | undefined): ToolDefinition[] =>
-  tools.flatMap(tool => fileTools !== false || tool.name === "present_file" ? [tool] : codeMode !== false ? [{ ...tool, callers: ["tools"] as const }] : []);
+  tools.flatMap(tool => {
+    if (fileTools !== false || tool.name === "present_file") return [codeMode !== false ? nudged(tool, IN_CODE) : tool];
+    return codeMode !== false ? [{ ...nudged(tool, ONLY_IN_CODE), callers: ["tools"] as const }] : [];
+  });
+
+/**
+ * A sentence for read, write and edit in code mode, where models do worse with them inside scripts (a failed edit ends
+ * the script; a file's text inside a JavaScript string breaks on its backticks, ${ and quotes): call them directly. With
+ * `fileTools: false` scripts are the only way, and the sentence says how.
+ */
+const IN_CODE: Record<string, string> = {
+  read: "Call it directly to read a file; read from a codemode script only to go through many files at once or filter large results.",
+  write: "Call it directly, not from a codemode script: a file's text inside a JavaScript string breaks on backticks, ${ and quotes.",
+  edit: "Call it directly, not from a codemode script: there a failed edit ends the script.",
+};
+const ONLY_IN_CODE: Record<string, string> = {
+  read: "This is how scripts read files (or with await fs.readFile(path)).",
+  write: "This is how scripts write files (or with await fs.writeFile(path, text)): pass the text as a plain string, as a template literal breaks on backticks and ${ inside it.",
+  edit: "This is how scripts edit files: wrap the call in try/catch, as a failed edit ends the script otherwise.",
+};
+const nudged = (tool: ToolDefinition, sentences: Record<string, string>): ToolDefinition =>
+  sentences[tool.name] ? { ...tool, description: `${tool.description} ${sentences[tool.name]}` } : tool;
 
 export async function toolset(ctx: ToolsContext, session: Session, next: { tools?: ToolDefinition[]; sources?: Sources; fileTools?: boolean; codeMode?: boolean; warm?: boolean } = {}) {
   const { header } = session;
@@ -171,7 +189,7 @@ export async function callTool(ctx: ToolsContext, session: Session, call: ToolCa
     // Listed in the run's outcome (`toolCalls`), ids only: its arguments and result are in history.
     const calls = session.toolCalls ??= [];
     // A call that started a child (delegate, spawn_agent, a tool's spawn directive) names it.
-    const child = call.toolCallId && !call.innerCallId ? session.children?.get(call.toolCallId)?.agent : undefined;
+    const child = call.toolCallId ? session.children?.get(call.innerCallId ? `${call.toolCallId}/${call.innerCallId}` : call.toolCallId)?.agent : undefined;
     if (calls.length < OUTPUT_TOOL_CALLS) calls.push({ tool: call.name, ...(call.toolCallId ? { toolCallId: call.toolCallId } : {}), ...(call.innerCallId ? { innerCallId: call.innerCallId } : {}), ok: !code, ...(code ? { code } : {}), ...(child ? { agentId: child } : {}) });
   }
 }
@@ -195,7 +213,9 @@ async function answerToolCall(ctx: ToolsContext, session: Session, call: ToolCal
   const server = session.route?.get(call.name);
   if (!server) throw new Error(`Unknown tool ${call.name}`);
   const request = [...session.running.values()].find(r => RUN_METHODS.includes(r.method) && r.began);
-  const plan = call.toolCallId && !call.innerCallId ? session.retries?.get(call.toolCallId) : undefined;
+  const plan = call.toolCallId ? session.retries?.get(humanInput.callKey(call)) : undefined;
+  // A question's answer, a refusal or a closed input: the result of a call from code that starts again with it.
+  if (plan && "result" in plan) return plan.result;
   if (plan && plan.argumentsHash !== argumentsHash(call.name, call.args)) throw new Error("These are not the arguments the user answered for; the call did not run");
   const origin = await ctx.options.hooks?.origin?.({ id: session.header.id, tenant: session.header.tenant, claim: session.claim }, request?.id);
   const lineage = delegation.lineage(ctx.delegationContext, session, request);
@@ -241,7 +261,7 @@ async function answerToolCall(ctx: ToolsContext, session: Session, call: ToolCal
   }
   const content = contentResult(result, server.returnsFiles);
   // The model learns who answered, and how long ago: it should check what may have changed meanwhile.
-  if (plan) content.content.push({ type: "text", text: plan.note });
+  if (plan && !call.innerCallId) content.content.push({ type: "text", text: plan.note });
   // Its background children's progress since it last saw it rides on the model's next result (never a script's).
   const updates = call.innerCallId ? undefined : await childSessions.pendingUpdates(ctx.childrenContext, session).catch(error => {
     console.error(JSON.stringify({ type: "agent_updates_failed", agent: session.header.id, error: safeError(error) }));
