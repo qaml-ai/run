@@ -33,6 +33,28 @@ export async function configurationPatch(env: ControlEnv, tenant: string, config
   if(duplicate) throw new ApiError(400,`${duplicate.name} names both an MCP server and an OpenAPI source`);
   return updated;
 }
+/** A definition revision as an apply request carries it to each agent. */
+export type DefinitionTarget = { id: string; revision: number; spec: Definition["spec"] };
+/**
+ * The configuration an agent takes from a definition revision: the revision's settings over the agent's, except those
+ * the agent set itself (definitionOverrides). `config` is the agent's configuration as the request applies, so a change
+ * queued before it is kept. A revision older than the agent's leaves the agent as it is.
+ */
+export async function definitionApplication(env: ControlEnv, tenant: string, config: AgentConfiguration, target: DefinitionTarget): Promise<AgentConfiguration> {
+  if (config.definition !== target.id) throw new ApiError(409, "This agent was not made from that definition");
+  if ((config.definitionRevision ?? 0) > target.revision) return config;
+  const { description, applyOnUpdate, limits, ...updates } = target.spec;
+  const own = Object.fromEntries((config.definitionOverrides ?? []).map(field => [field, config[field as keyof AgentConfiguration]]));
+  const cleared = { ...config };
+  for (const field of DEFINED) delete cleared[field];
+  const merged = { ...cleared, ...updates, ...own, language: Object.hasOwn(own, "language") ? own.language : updates.language ?? null, definition: target.id, definitionRevision: target.revision } as AgentConfiguration;
+  if (merged.temperature != null && merged.model) {
+    const services = await keyServices(env);
+    const model = resolveModel(merged.model, services.tenants.modelEndpoints(tenant), await services.modelProviders.resolvable(tenant, merged.keyScope));
+    if (modelSettingsRefusal(model, { ...merged, maxOutputTokens: undefined })) delete merged.temperature;
+  }
+  return merged;
+}
 const reply = (value: unknown, status = 200) => Response.json(value, { status, headers: { "cache-control": "no-store" } });
 const fromRow = (row: Record<string, any>): Definition => ({ id: row.id, tenant: row.tenant, name: row.name, revision: Number(row.revision), spec: row.spec, createdAt: Number(row.created_at), updatedAt: Number(row.updated_at) });
 const view = ({ tenant, spec, ...definition }: Definition) => ({ ...definition, ...spec, toolSources: sourceDefinitionViews(spec as never), ...(spec.mcpServers ? { mcpServers: spec.mcpServers.map(x => sourceView(x as RemoteSource)) } : {}), ...(spec.openApi ? { openApi: spec.openApi.map(x => sourceView(x as RemoteSource)) } : {}) });
@@ -159,19 +181,13 @@ export async function definitionRoutes(request: Request, env: ControlEnv, auth: 
   });
   const applied: { agent: string; requestId: string; status: string; error?: string }[] = [];
   if (input.apply === "all" || saved.spec.applyOnUpdate && existing && !unchanged) for (const agent of (await directory.list()).filter(x => x.config.definition === saved.id)) {
-    const { description, applyOnUpdate, limits, ...updates } = saved.spec;
-    const own = Object.fromEntries((agent.config.definitionOverrides ?? []).map(field => [field, agent.config[field as keyof AgentConfiguration]]));
-    const cleared = { ...agent.config };
-    for (const field of DEFINED) delete cleared[field];
-    const merged = { ...cleared, ...updates, ...own, language: Object.hasOwn(own, "language") ? own.language : updates.language ?? null, definition: saved.id, definitionRevision: saved.revision };
-    if (merged.temperature != null && merged.model) {
-      const model = resolveModel(merged.model, services.tenants.modelEndpoints(auth.tenantId), await services.modelProviders.resolvable(auth.tenantId, merged.keyScope));
-      if (modelSettingsRefusal(model, { ...merged, maxOutputTokens: undefined })) delete merged.temperature;
-    }
+    // The agent merges the revision with its own settings when this request reaches the head of its queue, after the
+    // configuration queued before it. Merging here, from the listing, would overwrite a change still in that queue.
+    const target: DefinitionTarget = { id: saved.id, revision: saved.revision, spec: saved.spec };
     const requestId = `apply_${saved.id}_${saved.revision}`;
     const response = await env.AGENTS.getByName(agent.id).fetch(new Request("https://agent/configuration-target", {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ id: requestId, config: merged, origin: url.origin }),
+      body: JSON.stringify({ id: requestId, definition: target, origin: url.origin }),
     }));
     const result = await response.json() as { state?: string; outcome?: { error?: string }; error?: string };
     const error = result.error ?? result.outcome?.error;

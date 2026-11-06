@@ -61,6 +61,38 @@ test('prompts submitted between upserts use their preceding configuration', { ti
   }
 });
 
+test('a definition applied behind a queued configuration change keeps that change', { timeout: 90_000 }, async t => {
+  const gate = Promise.withResolvers<void>();
+  t.after(() => gate.resolve());
+  const fixture = await createWorkersFixture(t, { respond: body => ({
+    role: 'assistant', content: 'ok', ...(lastUser(body) === 'hold' ? { wait: gate.promise } : {}),
+  }) });
+  const definition = (await fixture.call('/v1/definitions', { body: { name: 'Queued', systemPrompt: 'Revision one.', maxOutputTokens: 100 } })).json;
+  const agent = (await fixture.call('/v1/agents', { body: { definition: definition.id } })).json;
+  const path = `/v1/agents/${agent.id}`;
+  const held = (await fixture.call(`${path}/prompt`, { body: { text: 'hold', requestId: 'hold' } })).json.id;
+  await until(() => fixture.model.bodies.length === 1, 'held turn');
+  // Both wait for the turn: the agent's own change first, then the revision.
+  const patched = await fixture.call(`${path}/configuration`, { method: 'PATCH', body: { requestId: 'own-limit', maxOutputTokens: 175 } });
+  assert.equal(patched.status, 202, patched.text);
+  assert.notEqual(patched.json.state, 'completed');
+  const apply = () => fixture.call(`/v1/definitions/${definition.id}`, { method: 'PATCH', body: { systemPrompt: 'Revision two.', maxOutputTokens: 200, apply: 'all' } });
+  const applied = await apply();
+  assert.equal(applied.status, 200, applied.text);
+  assert.deepEqual(applied.json.applied.map((entry: { status: string }) => entry.status), ['queued']);
+  gate.resolve();
+  for (const id of [held, 'own-limit', applied.json.applied[0].requestId])
+    await until(async () => (await fixture.call(`${path}/requests/${id}`)).json.state === 'completed', `request ${id}`);
+  const configuration = (await fixture.call(`${path}/configuration`)).json;
+  assert.equal(configuration.maxOutputTokens, 175, 'the agent set its own limit before the revision applied');
+  assert.equal(configuration.systemPrompt, 'Revision two.');
+  assert.deepEqual((await fixture.call(`/v1/definitions/${definition.id}/agents`)).json, [{ id: agent.id, revision: 2 }]);
+  // Applying the same revision again is the same request, whatever the agent changed since.
+  const again = await apply();
+  assert.deepEqual(again.json.applied.map((entry: { status: string }) => entry.status), ['updated'], again.text);
+  assert.equal((await fixture.call(`${path}/configuration`)).json.maxOutputTokens, 175);
+});
+
 test('spend configuration applies before a queued turn and a retry preserves consumed allowance', { timeout: 90_000 }, async t => {
   const gate = Promise.withResolvers<void>();
   t.after(() => gate.resolve());
