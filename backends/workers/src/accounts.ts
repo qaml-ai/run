@@ -624,6 +624,8 @@ export class Accounts {
     }
     const commit = async (sql: Sql) => {
       if (!(await sql.query("insert into usage_flushes (id) values ($1) on conflict (id) do nothing returning id", [id])).rowCount) return;
+      // Balance rows before the usage rows and the hour's entries, as turn receipts, settlements and holds take them.
+      await lockBalances(sql, billed.map(charge => charge.tenant));
       await applyUsageRows(sql, rows);
       await applyWorkspaceUsage(sql, attributed);
       await accrueUsage(sql, billed);
@@ -727,9 +729,23 @@ export async function applyUsageRows(sql: import("./postgres.ts").Sql, rows: Arr
         insert into usage (tenant, day, model, responses, input, output, cache_read, cache_write, cost, platform_responses, platform_cost)
         select tenant, day::date, model, responses, input, output, "cacheRead", "cacheWrite", cost, "platformResponses", "platformCost"
         from jsonb_to_recordset($1::jsonb) as t(tenant text, day text, model text, responses bigint, input bigint, output bigint, "cacheRead" bigint, "cacheWrite" bigint, cost double precision, "platformResponses" bigint, "platformCost" double precision)
+        order by tenant collate "C", day, model collate "C"
         on conflict (tenant, day, model) do update set
           responses = usage.responses + excluded.responses, input = usage.input + excluded.input, output = usage.output + excluded.output,
           cache_read = usage.cache_read + excluded.cache_read, cache_write = usage.cache_write + excluded.cache_write, cost = usage.cost + excluded.cost,
           platform_responses = usage.platform_responses + excluded.platform_responses, platform_cost = usage.platform_cost + excluded.platform_cost`,
       [JSON.stringify(rows)]);
+}
+
+/**
+ * Lock tenants' balance rows (made when missing), in one order. Every transaction that moves money takes its tenants'
+ * balance rows before anything that hangs off them (usage totals, the hour's usage entry, spend minutes, holds, billing
+ * outboxes), so two of them never hold each other's next row. Several tenants are locked in code point order,
+ * the order JavaScript sorts them in, as other multi-tenant transactions take them.
+ */
+export async function lockBalances(sql: Sql, tenants: string[]) {
+  const sorted = [...new Set(tenants)].sort();
+  if (!sorted.length) return;
+  await sql.query("insert into credit_accounts (tenant) select unnest($1::text[]) on conflict (tenant) do nothing", [sorted]);
+  await sql.query(`select tenant from credit_accounts where tenant = any($1::text[]) order by tenant collate "C" for update`, [sorted]);
 }
