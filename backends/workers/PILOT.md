@@ -200,9 +200,47 @@ account deletion path and wait for `state=deleted`. This revokes keys, deletes
 agents, end-user records and user files, and purges DO content. Accounting audit
 records are retained by application policy; do not describe them as erased.
 
-After reviewing the names, remove the three pilot Workers, their custom domain,
-the `camelrun-pilot-delivery` queue and the `camelrun-pilot-files` bucket. Drain
-or delete queue messages and remove bucket objects before deleting the bucket.
+Deleting a Worker alone does not delete its Durable Object storage. Before
+deleting the Workers, remove any temporary `camelrun-pilot-bootstrap-*` Workers
+and any other external bindings to the pilot's classes. Prepare temporary copies
+of the API and sandbox Wrangler configurations with a no-op Worker entry point,
+no Durable Object bindings, no routes, no cron triggers, and no queue bindings.
+Retain their existing `v1` migrations and append these migrations respectively:
+
+```json
+{ "tag": "pilot-teardown-v2", "deleted_classes": ["CamelAgent", "TenantAdmission", "Volume"] }
+```
+
+```json
+{ "tag": "pilot-teardown-v2", "deleted_classes": ["CodemodeSandbox"] }
+```
+
+Remove the class exports from those temporary entry points as well. Deploy the
+API teardown configuration first: this removes its external binding to
+`camelrun-pilot-codemode`. Then deploy the sandbox teardown configuration. These
+[deletion migrations](https://developers.cloudflare.com/durable-objects/reference/durable-objects-migrations-legacy/)
+permanently remove all four namespaces and their stored data. Verify success
+before deleting either Worker. Do not run `scripts/pilot-deploy` afterward,
+because its original migrations would try to recreate the namespaces.
+
+For temporary config copies saved beside the original files, run from the repo
+root after reviewing their contents:
+
+```sh
+backends/workers/node_modules/.bin/wrangler deploy -c backends/workers/wrangler.pilot-teardown.jsonc
+backends/workers/node_modules/.bin/wrangler deploy -c backends/workers/codemode/wrangler.pilot-teardown.jsonc
+backends/workers/node_modules/.bin/wrangler delete camelrun-pilot -c backends/workers/wrangler.pilot-teardown.jsonc
+backends/workers/node_modules/.bin/wrangler delete camelrun-pilot-codemode -c backends/workers/codemode/wrangler.pilot-teardown.jsonc
+backends/workers/node_modules/.bin/wrangler delete camelrun-pilot-fakemodel -c backends/workers/pilot-fakemodel/wrangler.jsonc
+backends/workers/node_modules/.bin/wrangler queues delete camelrun-pilot-delivery -c backends/workers/wrangler.pilot-teardown.jsonc
+backends/workers/node_modules/.bin/wrangler r2 bucket delete camelrun-pilot-files -c backends/workers/wrangler.pilot-teardown.jsonc
+```
+
+Verify the `run-pilot.camelai.dev` custom domain and its DNS record are removed
+in the Cloudflare dashboard. Drain or purge the queue first. Empty the R2 bucket
+before its deletion command, using the dashboard's **Empty bucket** action or
+the S3 API with the operator's existing R2 authentication; the command refuses a
+nonempty bucket. Remove the temporary config copies and entry points afterward.
 Delete only pilot objects from Analytics Engine if supported, or let retention
 expire. Delete the pilot model secret only if no longer used. Do not delete the
 shared Secrets Store. Hyperdrive and PlanetScale were pre-existing test resources:
