@@ -4,6 +4,7 @@ import { type ConversationView, type LiveState, LiveDoc } from "@earendil-works/
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { body } from "./validation.ts";
 import { answerHuman, bindHumanInput, sameHumanAnswer, systemHumanAnswer, humanInputView, HumanInputs, resumedHumanTools, type HumanInput } from "./human.ts";
+import { settledAlready } from "./input-policy.ts";
 import { releaseTurn } from "./control.ts";
 import { attachmentMessage } from "./prompt-attachments.ts";
 import { publishScheduleEmails } from "./schedules.ts";
@@ -712,6 +713,13 @@ export async function submitImpl(this: AgentRuntime,
     return result;
   }
 
+/** A late answer's 409: what became of the input (one that expired says so), as Node words it. */
+function settledMessage(inputs: HumanInput[]) {
+  const expired = inputs.find(input => input.answerDetail?.by.system === "expired");
+  if (inputs.length === 1 && inputs[0].answerDetail) return settledAlready({ state: inputs[0].state ?? "answered", answer: inputs[0].answerDetail });
+  return expired ? settledAlready({ state: "expired", answer: expired.answerDetail }) : "An input is already settled";
+}
+
 export async function answerHumanInputsImpl(this: AgentRuntime,
   answers: Array<{ id: string; body: unknown }>,
   via: "api" | "agent",
@@ -743,7 +751,7 @@ export async function answerHumanInputsImpl(this: AgentRuntime,
       }
       const fresh = checked.every(entry => entry.pending.answer === undefined);
       if (!fresh && !checked.every(entry => sameHumanAnswer(entry.pending, entry.answer)))
-        throw Object.assign(new Error("An input is already settled"), { status: 409, input: checked.length === 1 ? humanInputView(checked[0].id, checked[0].pending, conf.id, checked[0].owner) : checked.map(entry => humanInputView(entry.id, entry.pending, conf!.id, entry.owner)) });
+        throw Object.assign(new Error(settledMessage(checked.map(entry => entry.pending))), { status: 409, input: checked.length === 1 ? humanInputView(checked[0].id, checked[0].pending, conf.id, checked[0].owner) : checked.map(entry => humanInputView(entry.id, entry.pending, conf!.id, entry.owner)) });
       const selected = new Set(answers.map(entry => entry.id));
       const unresolved = new Set(await Promise.all(Object.entries(snapshot?.requests ?? {})
         .filter(([key, input]) => !selected.has(key) && input.answer === undefined)
@@ -786,7 +794,7 @@ export async function answerHumanInputsImpl(this: AgentRuntime,
         for (const entry of checked) {
           const current = doc.requests[entry.id];
           if (current.answer !== undefined && !sameHumanAnswer(current, entry.answer))
-            throw Object.assign(new Error("An input is already settled"), { status: 409, input: humanInputView(entry.id, current, conf!.id, entry.owner) });
+            throw Object.assign(new Error(settledMessage([current])), { status: 409, input: humanInputView(entry.id, current, conf!.id, entry.owner) });
         }
         for (const entry of checked) {
           const current = doc.requests[entry.id];
