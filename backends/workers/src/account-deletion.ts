@@ -40,8 +40,8 @@ export interface AccountDeletionOptions {
   stripe?: Stripe;
   /** Delete one of the tenant's agents on whichever node serves it. */
   deleteAgent(agent: string, tenant: string): Promise<unknown>;
-  /** Purge deleted agents now, rather than at the next sweep. */
-  purgeAgents?(tenant: string, limit: number): Promise<void>;
+  /** Purge up to `limit` deleted agents now, rather than at the next sweep; resolves to how many it purged. */
+  purgeAgents?(tenant: string, limit: number): Promise<number>;
   /** Write storage-usage deltas, so none for the tenant's deleted objects is written after its rows go. */
   flushStorageUsage?(): Promise<void>;
   removeComputers?(tenant: string): Promise<void>;
@@ -66,6 +66,30 @@ const TENANT_TABLES = [
   // The tenant's own users' credit: their ids are the tenant's customers' data.
   "end_user_settings", "end_users", "end_user_ledger", "end_user_days", "end_user_holds", "end_user_lots",
 ];
+
+/**
+ * Agents a pass deletes or purges at once. Each agent's database queries and Durable Object calls run in turn, so a
+ * pass has at most this many open at once, within the six simultaneous connections a Workers invocation allows. The
+ * pass's total (about a dozen subrequests an agent, so about 300 for a batch of 25, against 1,000 per invocation) is
+ * set by the batch size, not by this.
+ */
+export const AGENT_CONCURRENCY = 5;
+
+/**
+ * Run `work` over `items`, at most `concurrency` at a time. After a failure no more start; the first error is thrown
+ * once the ones already started have finished, so nothing from the pass is still running when its lease is renewed.
+ */
+export async function eachLimited<T>(items: readonly T[], concurrency: number, work: (item: T) => Promise<unknown>) {
+  let next = 0, failed = false, error: unknown;
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (!failed && next < items.length) {
+      const item = items[next++];
+      try { await work(item); }
+      catch (caught) { if (!failed) { failed = true; error = caught; } }
+    }
+  }));
+  if (failed) throw error;
+}
 
 export class AccountDeletions {
   private readonly options: AccountDeletionOptions;
@@ -105,9 +129,9 @@ export class AccountDeletions {
     else void this.kick();
   }
 
-  /** The persisted lease is the retry clock, including a worker lost mid-pass. */
+  /** The persisted lease is the retry clock, including a worker lost mid-pass; a lease already over is due now. */
   async retryAfter(tenant: string): Promise<number | undefined> {
-    const row = (await this.db.query("select completed_at, greatest(1, ceil(extract(epoch from (claimed_until-now()))))::int delay from account_deletions where tenant=$1", [tenant])).rows[0];
+    const row = (await this.db.query("select completed_at, greatest(0, ceil(extract(epoch from (claimed_until-now()))))::int delay from account_deletions where tenant=$1", [tenant])).rows[0];
     if (!row || row.completed_at !== null) return undefined;
     return Math.min(300, Number(row.delay ?? 1));
   }
@@ -149,9 +173,11 @@ export class AccountDeletions {
     if (!tenant) return false;
     let retryMs = 60_000;
     try {
-      // Agents are purged by the sweep: until they all are, look again shortly.
-      if (!await this.run(tenant)) retryMs = 2_000;
-      else return true;
+      // Each pass takes one bounded batch of agents. After one that got somewhere the next is due now; one that could
+      // do nothing (agents still shutting down) looks again shortly.
+      const result = await this.run(tenant);
+      if (result === "done") return true;
+      retryMs = result === "progress" ? 0 : 2_000;
     } catch (error) {
       console.error(JSON.stringify({ type: "account_deletion_failed", tenant, error: safeError(error) }));
     }
@@ -159,8 +185,11 @@ export class AccountDeletions {
     return true;
   }
 
-  /** Every step, in order, each safe to repeat; false while the tenant's agents are still being purged. */
-  private async run(tenant: string): Promise<boolean> {
+  /**
+   * Every step, in order, each safe to repeat. While the tenant still has agents: "progress" when this pass deleted or
+   * purged some (the next pass may start at once), "waiting" when it could do nothing (look again shortly).
+   */
+  private async run(tenant: string): Promise<"done" | "progress" | "waiting"> {
     const { db, channels, volumes } = this.options;
     const ids = async (query: string) => (await db.query(query, [tenant])).rows.map(row => row.id as string);
     // Channels first, so no message makes the tenant a new agent meanwhile; each is torn down at its provider.
@@ -170,13 +199,14 @@ export class AccountDeletions {
     }
     await this.options.removeComputers?.(tenant);
     // Agents are revoked where they run, then purged (their logs, history, files' pins, schedules and threads).
+    // Each agent is its own Durable Object, so a batch's agents are deleted side by side, a few at a time.
     const limit = this.options.agentBatchSize ?? 25;
-    for (const { id } of (await db.query("select id from agents where tenant = $1 and not revoked order by id limit $2", [tenant, limit])).rows)
-      await this.options.deleteAgent(id, tenant);
+    const live = (await db.query("select id from agents where tenant = $1 and not revoked order by id limit $2", [tenant, limit])).rows;
+    await eachLimited(live, AGENT_CONCURRENCY, ({ id }) => this.options.deleteAgent(id, tenant));
     // A purged agent's tombstone no longer names its tenant.
     if ((await db.query("select 1 from agents where tenant = $1 limit 1", [tenant])).rowCount) {
-      await this.options.purgeAgents?.(tenant, limit);
-      if ((await db.query("select 1 from agents where tenant = $1 limit 1", [tenant])).rowCount) return false;
+      const purged = await this.options.purgeAgents?.(tenant, limit) ?? 0;
+      if ((await db.query("select 1 from agents where tenant = $1 limit 1", [tenant])).rowCount) return live.length || purged ? "progress" : "waiting";
     }
     if (volumes) {
       for (const id of await ids("select id from volumes where tenant = $1 and deleted_at is null")) {
@@ -203,7 +233,7 @@ export class AccountDeletions {
     });
     this.options.accounts.billing.invalidate([tenant]);
     console.log(JSON.stringify({ type: "account_deleted", tenant }));
-    return true;
+    return "done";
   }
 
   /**
