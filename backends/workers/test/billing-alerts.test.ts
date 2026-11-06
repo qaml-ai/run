@@ -253,3 +253,12 @@ test("a confirmation delivery decrypts only while claimed and removes its secret
   assert.equal((await db.query("select secret from billing_email_outbox where id=$1", [delivery.id])).rows[0].secret, null);
   assert.equal(await alerts.confirm(delivery.token!), true, "mailbox proof still works after sending");
 });
+
+test("confirmation limits tolerate concurrent adds reaching the tenant lock out of clock order", async () => {
+  const { alerts } = await fixture();
+  // A request reads its clock before it queues on the tenant's lock, so a later one can commit first.
+  await alerts.add("a", "later@example.test", ALL, NOW + 5);
+  await alerts.add("a", "earlier@example.test", ALL, NOW);
+  assert.equal((await alerts.get("a")).recipients.length, 2);
+  await assert.rejects(alerts.add("b", "later@example.test", ALL, NOW + 1), /wait/, "the per-address cooldown still holds");
+});
