@@ -1,7 +1,7 @@
 import type { AccountServices } from "./account-services.ts";
 import { personal } from "./account-console-auth.ts";
 import type { Principal } from "./accounts.ts";
-import { AccountDeletions } from "./account-deletion.ts";
+import { AccountDeletions, AGENT_CONCURRENCY, eachLimited } from "./account-deletion.ts";
 import { enqueueAccountDeletion } from "./account-deletion-queue.ts";
 import { exportAccount } from "./account-export.ts";
 import { Directory, type ControlEnv } from "./control.ts";
@@ -55,19 +55,20 @@ export function accountDeletions(env: AccountLifecycleEnv, service: AccountServi
       // Directory revokes before the DO drains. Retry an interrupted shutdown
       // before purging journals; the source deletion loop only visits live rows.
       const pending = (await db.query("select id, tenant from agents where revoked and purged_at is null and tenant=$1 order by id limit $2", [owner, limit])).rows;
-      for (const { id, tenant } of pending) {
+      await eachLimited(pending, AGENT_CONCURRENCY, async ({ id, tenant }) => {
         const result = await new Directory(env as unknown as ControlEnv, tenant).remove(id);
         if (result && typeof result === "object" && result.failed) throw new HttpError(result.status, result.error);
-      }
+      });
       const rows = (await db.query("select id, tenant from agents where revoked and purged_at is not null and tenant=$1 order by id limit $2", [owner, limit])).rows;
-      for (const { id, tenant } of rows) {
+      await eachLimited(rows, AGENT_CONCURRENCY, async ({ id, tenant }) => {
         await env.AGENTS.getByName(id).purgeAccountData(tenant, id);
         await transaction(db, async sql => {
           // This table is keyed by agent, so the tenant-wide cleanup cannot find it.
           await sql.query("delete from agent_spend_limits where agent = $1", [id]);
           await sql.query("update agents set tenant='', name=id, type='general', model='', expires_at=null, header=$3 where id=$1 and tenant=$2 and revoked", [id, tenant, { version: 3, id, revoked: true, purged: true }]);
         });
-      }
+      });
+      return rows.length;
     },
     removeComputers: async tenant => {
       for (const { agent } of (await db.query("select distinct agent from computer_connections where tenant=$1", [tenant])).rows)
