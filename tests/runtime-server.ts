@@ -65,7 +65,12 @@ export async function fakeModel(t: T, respond: (body: any, index: number) => obj
   const headers: Record<string, string | string[] | undefined>[] = [];
   const url = await listen(t, async (req, res) => {
     let text = "";
-    for await (const chunk of req) text += chunk;
+    try { for await (const chunk of req) text += chunk; }
+    catch (error) {
+      // Cancelling a model call can close its upload before the body is complete.
+      if (req.destroyed && !req.complete && (error as NodeJS.ErrnoException).code === "ECONNRESET") return;
+      throw error;
+    }
     const body = JSON.parse(text);
     bodies.push(body);
     keys.push(req.headers.authorization ?? "");

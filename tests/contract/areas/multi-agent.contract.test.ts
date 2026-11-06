@@ -199,7 +199,7 @@ contractTest("delegation", "tests/multi-agent.test.ts:179", "aborting a parent a
   assert.ok(childRun.endedAt - aborted < 10_000, "the child stopped at the abort, not when its model would have answered");
   const parentRun = await until(async () => { const record = (await r.call(`/v1/agents/${parent}/requests/${accepted.json.id}`)).json; return record.state === "completed" && record; }, "the parent's run ended");
   assert.ok(parentRun.outcome, JSON.stringify(parentRun));
-  await sleep(200);
+  await until(() => nested.frames.some(frame => frame.data.event?.type === "subagent_end" && frame.data.event.agentId === child), "the child's end event, relayed");
   assert.ok(nested.frames.some(frame => frame.data.event?.type === "subagent_end" && frame.data.event.agentId === child));
   assert.ok(!plain.frames.some(frame => String(frame.data.event?.type).startsWith("subagent_")), "a subscriber that did not ask gets none");
 });
