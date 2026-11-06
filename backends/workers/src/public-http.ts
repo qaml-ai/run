@@ -1,4 +1,4 @@
-import openapi from "../../../openapi.json";
+import openapi from "../../../openapi.json" with { type: "json" };
 import { publicDocs } from "./public-docs.ts";
 import { publicOrigins } from "./account-origins.ts";
 

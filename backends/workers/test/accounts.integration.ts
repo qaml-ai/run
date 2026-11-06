@@ -6,19 +6,21 @@ import { once } from "node:events";
 import { startFixture } from "./fixture.ts";
 
 // Product assertions ported from tests/email-signup.test.ts and tests/api.test.ts.
-// The fake receives the native Email Sending builder; it never sends an email.
+// The loopback sink receives the same SES envelope as tests/email-signup.test.ts.
 const PASSWORD = "a long and unusual passphrase";
 const PUBLIC = "https://agents.example.test";
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 test("Workers accounts preserve email/password, session and OAuth policy", { timeout: 180_000 }, async t => {
   const mails: { to: string; subject: string; html: string; text: string }[] = [];
+  const arrivals = new Set<() => void>();
   const server = createServer(async (request, response) => {
     let body = "";
     for await (const chunk of request) body += chunk;
-    mails.push(JSON.parse(body));
-    response.writeHead(200, { "Content-Type": "application/json" }).end('{"messageId":"fake"}');
+    const envelope = JSON.parse(body), simple = envelope.Content.Simple;
+    mails.push({ to: envelope.Destination.ToAddresses.join(","), subject: simple.Subject.Data, html: simple.Body.Html.Data, text: simple.Body.Text.Data });
+    for (const arrived of arrivals) arrived();
+    response.writeHead(200, { "Content-Type": "application/json" }).end('{"MessageId":"fake"}');
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -34,7 +36,14 @@ test("Workers accounts preserve email/password, session and OAuth policy", { tim
     return { status: response.status, json, headers: response.headers, cookie: response.headers.getSetCookie().find(value => value.startsWith("ar_session="))?.split(";")[0] };
   };
   const mail = async (count: number) => {
-    for (let i = 0; i < 100 && mails.length < count; i++) await sleep(25);
+    if (mails.length < count) await new Promise<void>((resolve, reject) => {
+      const arrived = () => {
+        if (mails.length < count) return;
+        clearTimeout(deadline); arrivals.delete(arrived); resolve();
+      };
+      const deadline = setTimeout(() => { arrivals.delete(arrived); reject(new Error(`Mail ${count} did not reach the local sink`)); }, 5000);
+      arrivals.add(arrived);
+    });
     assert.ok(mails.length >= count, "background mail reaches local fake");
     return mails[count - 1];
   };

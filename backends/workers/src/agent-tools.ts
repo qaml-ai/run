@@ -29,13 +29,13 @@ import { resolveCustomProviders } from "./model-credentials.ts";
 import { resolveModelCredentials } from "./model-endpoints.ts";
 import { decisionService, recordDecision } from "./decision-service.ts";
 import { offersDecisions } from "./decision-runtime.ts";
-import { hostExecutionTool, HOST_EXECUTION_TOOL } from "./host-execution.ts";
+import { hostExecutionTool } from "./host-execution.ts";
 import { schemaAccepts } from "./output-validation.ts";
 import { senderExtension } from "./sender-extension.ts";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { agentBuiltins } from "./agent-builtins.ts";
 import { writtenFile, presentedFile } from "./file-output.ts";
-import { selectFileTools } from "./file-tool-selection.ts";
+import { selectAgentTools } from "./file-tool-selection.ts";
 import { Env } from "./agent-types.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
 
@@ -210,19 +210,13 @@ export async function refreshComputerToolsImpl(this: AgentRuntime) {
 
 export async function enabledToolsImpl(this: AgentRuntime,
   config: AgentConfiguration) {
-    const names = await this.computerNames();
-    const disabled = new Set([
-      HOST_EXECUTION_TOOL, "computer", "exec",
-      ...(config.codeMode === false ? ["codemode"] : []),
-      ...(!config.builtins?.includes("ask_user") ? ["ask_user"] : []),
-      ...(!config.builtins?.includes("ask_human") ? ["ask_human"] : []),
-    ]);
-    const available = this.availableTools.filter(
-      (tool) =>
-        !disabled.has(tool.name) &&
-        (!/^(computer_|browser_)/.test(tool.name) || names.has(tool.name)),
+    return selectAgentTools(
+      this.availableTools,
+      new Set(this.workspaceToolNames),
+      config,
+      await this.computerNames(),
+      this.env,
     );
-    return selectFileTools(available, new Set(this.workspaceToolNames), config);
   }
 
 export function createHarness(this: AgentRuntime): PiHarness {

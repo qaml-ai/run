@@ -32,7 +32,7 @@ test("an audio prompt consumes one run admission and a rejected prompt never cal
   const result = await call(`${base}/requests/audio-once?wait=20`);
   assert.equal(result.body.state, "completed", JSON.stringify(result.body));
   assert.equal(transcriptions, 1);
-  assert.equal((await call(`${base}/requests`, input)).status, 202, "a replay reuses both the admission and transcript");
+  assert.equal((await call(`${base}/requests`, input)).status, 200, "a replay reuses both the admission and transcript");
   assert.equal(transcriptions, 1);
   const rejected = await call(`${base}/requests`, { ...input, id: "audio-rejected" });
   assert.equal(rejected.status, 429, JSON.stringify(rejected.body));

@@ -90,7 +90,7 @@ export async function agentToken(secret: string, id: string, version?: string): 
 }
 
 const BUILTINS = ["file_link", "file_import", "web_fetch", "web_search", "x_search", "schedule", "ask_user", "ask_human", "delegate", "generate_image", "agents", "decide", "workflow"];
-export function configuration(input: unknown, defaultModel: string): { config: AgentConfiguration; ttlSeconds?: number | null } {
+export function configuration(input: unknown, defaultModel: string, operation: "create" | "patch" = "create"): { config: AgentConfiguration; ttlSeconds?: number | null } {
   let fields: Record<string, unknown>;
   try {
     fields = object(input, ["model", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "name", "type", "thinkingLevel", "mcp", "ttlSeconds", "idleTtlSeconds", "builtins", "webSearch", "delegate", "workflow", "decide", "mounts", "maxOutputTokens", "temperature", "dataCollection", "language", "modelHeaders", "runLimits", "initialMessages", "importMessages", "definition", "subject", "context", "keyScope", "spendLimit", "bucket", "humanInput", "subagents", "workspaceId", "remount", "prompt", "mcpServers", "openApi", "definitionRevision", "definitionOverrides"]);
@@ -102,7 +102,8 @@ export function configuration(input: unknown, defaultModel: string): { config: A
   const config: AgentConfiguration = { model: defaultModel };
   Object.assign(config, identityInput(fields));
   if (fields.bucket !== undefined && fields.bucket !== null) config.bucket = bucketInput(fields.bucket);
-  if (fields.keyScope !== undefined && fields.keyScope !== null) config.keyScope = checkScope(fields.keyScope);
+  // Creation requires a scope name; only configuration updates use null to remove it.
+  if (fields.keyScope !== undefined && (operation !== "patch" || fields.keyScope !== null)) config.keyScope = checkScope(fields.keyScope);
   if (fields.workspaceId !== undefined) {
     if (fields.workspaceId !== null && typeof fields.workspaceId !== "string") throw new BadRequest("Invalid workspaceId");
     config.workspaceId = fields.workspaceId as string | null;

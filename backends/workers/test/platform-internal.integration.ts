@@ -11,9 +11,9 @@ test('public account and agent tokens cannot invoke internal computer maintenanc
   });
   assert.equal(created.status, 201, await created.clone().text());
   const agent = await created.json() as { id: string; token: string };
-  for (const token of [fixture.token, agent.token]) {
+  for (const [token, prefix] of [[fixture.token, "v1/agents"], [agent.token, "clients"]]) {
     for (const operation of ['confirm-cleanup', 'remove', 'refresh', 'sweep']) {
-      const response = await fetch(`${fixture.url}/v1/agents/${agent.id}/__computer`, {
+      const response = await fetch(`${fixture.url}/${prefix}/${agent.id}/__computer`, {
         method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
         body: JSON.stringify({ tenant: 'camelrun-proto-local', operation }),
       });

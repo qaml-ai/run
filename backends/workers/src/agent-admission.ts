@@ -81,7 +81,7 @@ export async function acceptConfigurationRequestImpl(this: AgentRuntime,
     if (params.subject !== undefined && params.subject !== conf.config.subject)
       throw Object.assign(new Error("An agent's subject cannot change"), { status: 409 });
     const patched = replacement ? configuration(params, conf.config.model ?? this.env.MODEL).config : await configurationPatch(this.env, conf.tenantId, conf.config, params);
-    configuration(patched, conf.config.model ?? this.env.MODEL);
+    configuration(patched, conf.config.model ?? this.env.MODEL, "patch");
     await validateAgentModel(this.env, conf.tenantId, patched, { reference: conf.config.model, model: conf.resolvedModel });
     if (replacement && (params.model !== undefined || params.keyScope !== undefined)) {
       try {
@@ -121,7 +121,7 @@ export async function applyConfigurationRequestImpl(this: AgentRuntime,
     const replacementInput = replacement && params.definition !== undefined && origin === undefined
       ? definitionUpsert(params, conf.config) : params;
     const replacementParams = replacement ? replacementConfiguration(conf.config, replacementInput) : params;
-    const patched = configuration(replacement ? replacementParams : { ...conf.config, ...params }, conf.config.model ?? this.env.MODEL).config;
+    const patched = configuration(replacement ? replacementParams : { ...conf.config, ...params }, conf.config.model ?? this.env.MODEL, replacement ? "create" : "patch").config;
     const modelError = (params.model !== undefined || params.keyScope !== undefined)
       ? await configurationModelError(this.env, conf.tenantId, patched) : undefined;
     const fingerprint = canonical(request);

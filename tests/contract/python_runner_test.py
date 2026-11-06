@@ -1,5 +1,8 @@
 """Run with python3 tests/contract/python_runner_test.py; no third-party packages."""
 from contextlib import redirect_stdout, redirect_stderr
+import base64
+import csv
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -12,6 +15,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from python_runner import checked_result, inventory, OwnedCaseSignals, RESULT_MARKER, run_cases
+from python_cache import validate
 
 
 def case(name):
@@ -23,6 +27,38 @@ def result(selected, status="pass", code=0):
 
 
 class PythonRunnerTest(unittest.TestCase):
+    def test_python_cache_rejects_truncated_and_same_size_corrupt_wheel_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory)
+            site = cache / "lib/python3.13/site-packages"
+            site.mkdir(parents=True)
+            native = site / "fixture/native.so"
+            native.parent.mkdir()
+            contents = b"native-wheel-fixture" * 256
+            native.write_bytes(contents)
+            record = site / "fixture-1.0.dist-info/RECORD"
+            record.parent.mkdir()
+            digest = base64.urlsafe_b64encode(hashlib.sha256(contents).digest()).decode().rstrip("=")
+            with record.open("w", newline="") as stream:
+                csv.writer(stream).writerows([
+                    ["fixture/native.so", "sha256=" + digest, len(contents)],
+                    ["fixture-1.0.dist-info/RECORD", "", ""],
+                ])
+            self.assertEqual(validate(cache), [])
+            native.write_bytes(contents[:4096])
+            self.assertEqual(validate(cache), ["Wheel size mismatch: lib/python3.13/site-packages/fixture/native.so (expected 5120, found 4096 bytes)"])
+            native.write_bytes(b"x" * len(contents))
+            self.assertEqual(validate(cache), ["Wheel hash mismatch: lib/python3.13/site-packages/fixture/native.so (5120 bytes)"])
+            native.unlink()
+            self.assertEqual(validate(cache), ["Missing wheel file: lib/python3.13/site-packages/fixture/native.so"])
+
+    def test_python_cache_rejects_missing_wheel_records(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory)
+            self.assertEqual(validate(cache), ["Python cache has no unique site-packages directory"])
+            (cache / "lib/python3.13/site-packages").mkdir(parents=True)
+            self.assertEqual(validate(cache), ["Python cache has no installed wheel records"])
+
     def test_signal_stops_only_the_active_cases_owned_session_and_runs_cleanup(self):
         task = Mock()
         task.done.return_value = False

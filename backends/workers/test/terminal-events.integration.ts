@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { startFixture } from "./fixture.ts";
+import { openEventStream } from "../../../clients/event-transport.ts";
 
 test("a completed run replays its terminal events after loss before delivery", { timeout: 90000 }, async t => {
   const f = await startFixture();
@@ -29,13 +30,31 @@ test("a completed run replays its terminal events after loss before delivery", {
   await f.worker.stop(true);
   await f.worker.start();
   const read = async (cursor?: string) => {
-    const response = await fetch(`${f.url}${experimental}/events?runId=${id}`, {
+    const response = await openEventStream(fetch, `${f.url}${experimental}/events?runId=${id}`, {
       headers: { ...headers, ...(cursor ? { "Last-Event-ID": cursor } : {}) }, signal: AbortSignal.timeout(10000),
     });
     assert.ok(response.ok);
-    return (await response.text()).split("\n\n").filter(frame => frame.includes("data: ")).map(frame => ({
-      cursor: /^id: (\d+)$/m.exec(frame)![1], value: JSON.parse(/^data: (.+)$/m.exec(frame)![1]),
-    }));
+    assert.equal(response.headers.get("X-Agent-Transport"), "websocket");
+    const reader = response.body!.getReader(), decoder = new TextDecoder();
+    const events: { cursor: string; value: any }[] = [];
+    let pending = "";
+    try {
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) return events;
+        pending += decoder.decode(chunk.value, { stream: true });
+        const frames = pending.split("\n\n"); pending = frames.pop()!;
+        for (const frame of frames) {
+          const cursor = /^id: (\d+)$/m.exec(frame)?.[1];
+          if (!cursor) continue;
+          const value = JSON.parse(/^data: (.+)$/m.exec(frame)![1]);
+          events.push({ cursor, value });
+          if (value.type === "response") return events;
+        }
+      }
+    } catch (error) {
+      throw new Error(`Terminal replay failed after ${JSON.stringify(events)}`, { cause: error });
+    } finally { await reader.cancel(); }
   };
   const events = await read();
   assert.equal(events.filter(event => event.value.event?.type === "agent_end").length, 1);

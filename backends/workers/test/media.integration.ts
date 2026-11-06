@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
+import { createHash } from 'node:crypto';
 import { startFixture } from './fixture.ts';
 import { pngBytes } from '../../../tests/file-fixtures.ts';
 
@@ -18,7 +19,8 @@ test('standalone media uses source providers, R2 volumes and durable usage; reje
   }
   res.writeHead(404).end();
  }).listen(0,'127.0.0.1');await once(fake,'listening');t.after(()=>new Promise<void>(r=>fake.close(()=>r())));
- const f=await startFixture({vars:{PLATFORM_OPENAI_KEY:'fake-only-key',MEDIA_BASE_URL:`http://127.0.0.1:${(fake.address() as any).port}`}});t.after(()=>f.stop());
+ const token='local-integration-only-token-with-at-least-32-characters', cappedToken='local-capped-media-token-with-at-least-32-characters';
+ const f=await startFixture({tenants:[{id:'camelrun-proto-local',token},{id:'capped-media',token:cappedToken}],vars:{AGENT_TENANTS_JSON:JSON.stringify({tenants:{'capped-media':{tokenSha256:createHash('sha256').update(cappedToken).digest('hex'),maxMonthlyCost:0}}}),PLATFORM_OPENAI_KEY:'fake-only-key',MEDIA_BASE_URL:`http://127.0.0.1:${(fake.address() as any).port}`}});t.after(()=>f.stop());
  const call=async(path:string,value:any)=>{const response=await fetch(f.url+path,{method:'POST',headers:{Authorization:`Bearer ${f.token}`,'Content-Type':'application/json'},body:JSON.stringify(value)});const body=await response.json() as any;assert.equal(response.status,200,JSON.stringify(body));return body;};
  const image=await call('/v1/images',{prompt:'synthetic image'});assert.equal(image.images[0].width,1024);assert.equal(image.model,'openai/gpt-image-2.5-flare');
  await call('/v1/images',{prompt:'synthetic edit',images:[{data:pngBytes(10,10).toString('base64')}]});assert.equal(calls[1].path,'/images/edits');
@@ -31,6 +33,6 @@ test('standalone media uses source providers, R2 volumes and durable usage; reje
  const transcript=await call('/v1/transcriptions',{data:wav.toString('base64'),language:'en'});assert.equal(transcript.text,'hello');assert.equal(transcript.durationSeconds,1);
  const speech=await fetch(f.url+'/v1/speech',{method:'POST',headers:{Authorization:`Bearer ${f.token}`,'Content-Type':'application/json'},body:JSON.stringify({text:'synthetic speech',format:'wav'})});assert.equal(speech.status,200);assert.equal((await speech.arrayBuffer()).byteLength,24044);
  const usage=await f.db.query('select model,responses from usage order by model');assert.deepEqual(usage.rows.map(r=>r.model),['image:openai/gpt-image-2.5-flare','speech:openai/gpt-4o-mini-tts','transcription:openai/gpt-transcribe']);
- await f.db.query('update tenants set limits=$1', [JSON.stringify({maxMonthlyCost:0.000001})]);
- const capped=await fetch(f.url+'/v1/images',{method:'POST',headers:{Authorization:`Bearer ${f.token}`,'Content-Type':'application/json'},body:JSON.stringify({prompt:'over cap'})});assert.equal(capped.status,402);assert.equal((await capped.json() as any).code,'SPEND_LIMIT');
+ // src/accounts.ts reads monthly caps from the operator's tenant configuration.
+ const capped=await fetch(f.url+'/v1/images',{method:'POST',headers:{Authorization:`Bearer ${cappedToken}`,'Content-Type':'application/json'},body:JSON.stringify({prompt:'over cap'})});assert.equal(capped.status,402);assert.equal((await capped.json() as any).code,'SPEND_LIMIT');
 });
