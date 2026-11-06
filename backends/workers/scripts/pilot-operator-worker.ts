@@ -37,14 +37,24 @@ export default function pilotOperator(options: Options) {
         }
         const targeted = /^\/v1\/tenants\/([a-z0-9-]+)(?:\/(limits|deletion))?$/.exec(path);
         const inspect = path === "/pilot/inspect" && request.method === "GET";
+        const cleanup = path === "/pilot/cleanup" && request.method === "POST";
         let tenant: string | undefined;
         if (targeted) tenant = targeted[1];
         else if (inspect) tenant = url.searchParams.get("tenant") ?? undefined;
-        else if ((path === "/v1/tenants" || path === "/v1/billing/adjustments") && request.method === "POST") {
+        else if (cleanup || (path === "/v1/tenants" || path === "/v1/billing/adjustments") && request.method === "POST") {
           const body = await request.clone().json() as { id?: string; tenant?: string };
           tenant = path === "/v1/tenants" ? body.id : body.tenant;
         } else return reply({ error: "Not found" }, 404);
         if ((!tenant || !allowed.has(tenant)) && !(inspect && tenant === undefined)) return reply({ error: "Tenant outside bootstrap scope" }, 403);
+
+        if (cleanup) {
+          // Foreground I/O may outlive waitUntil's post-response window. Both
+          // the claimed deletion and every host sweep are scoped to this ID.
+          const deletions = accountDeletions(setup, { accounts: services.accounts } as AccountServices, tenant);
+          if (!await deletions.status(tenant!)) return reply({ error: "No deletion" }, 404);
+          await deletions.next(tenant);
+          return reply(await deletions.status(tenant!));
+        }
 
         if (inspect) {
           const { rows: [row] } = await services.accounts.db.query(`select
@@ -68,7 +78,12 @@ export default function pilotOperator(options: Options) {
             (select count(*) from model_attempts where tenant=any($1::text[]) and state='pending')::int as pending_attempts,
             (select count(*) from model_attempts where tenant=any($1::text[]) and state='settled')::int as settled_attempts,
             (select coalesce(sum(charge),0)::bigint from model_attempts where tenant=any($1::text[])) as attempt_charge_micros,
-            (select count(*) from account_deletions where tenant=any($1::text[]) and completed_at is not null)::int as deleted_tenants`, [tenant ? [tenant] : [...allowed]]);
+            (select count(*) from account_deletions where tenant=any($1::text[]) and completed_at is not null)::int as deleted_tenants,
+            (select count(*) from agents where tenant=any($1::text[]) and revoked)::int as revoked_agents,
+            (select count(*) from agents where tenant=any($1::text[]) and purged_at is not null)::int as purged_agents,
+            (select count(*) from account_deletions where tenant=any($1::text[]) and completed_at is null)::int as deleting_tenants,
+            (select coalesce(sum(attempts),0) from account_deletions where tenant=any($1::text[]))::int as deletion_attempts,
+            (select count(*) from account_deletions where tenant=any($1::text[]) and completed_at is null and claimed_until > now())::int as claimed_deletions`, [tenant ? [tenant] : [...allowed]]);
           const agent = url.searchParams.get("agent");
           if (agent) {
             if (!tenant || !(await services.accounts.db.query("select 1 from agents where tenant=$1 and id=$2", [tenant, agent])).rowCount)
