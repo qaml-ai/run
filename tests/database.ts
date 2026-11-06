@@ -68,6 +68,29 @@ async function roleSettings(admin: pg.Client, template: string): Promise<string[
   return rows[0]?.comment ? JSON.parse(rows[0].comment) : [];
 }
 
+/** Give the connection's role the settings it lacks. Files share a role (CI's docs job, local runs), and two
+ * `alter role` statements on one role race on pg_db_role_setting ("tuple concurrently updated"), so a role that has them
+ * already is left alone, and the rest are set one file at a time under a lock taken in the maintenance database. */
+async function applyRoleSettings(db: pg.Pool, settings: string[]) {
+  const lacking = async (query: { query(text: string): Promise<pg.QueryResult> }) => {
+    const { rows } = await query.query("select coalesce(array_agg(setting), '{}') as have from (select unnest(s.setconfig) as setting from pg_db_role_setting s join pg_roles r on r.oid = s.setrole where r.rolname = current_user and s.setdatabase = 0) t");
+    return settings.filter(setting => !rows[0].have.includes(setting));
+  };
+  if (!(await lacking(db)).length) return;
+  const maintenance = new URL(TEST_DATABASE_URL);
+  maintenance.pathname = "/postgres";
+  const lock = new pg.Client({ connectionString: maintenance.toString(), connectionTimeoutMillis: 5_000 });
+  await lock.connect();
+  try {
+    await lock.query("select pg_advisory_lock(hashtext('agent-runtime:test-role-settings'))");
+    for (const setting of await lacking(db)) {
+      const [name, ...value] = setting.split("=");
+      if (!/^[a-z_.]+$/i.test(name!)) throw new Error(`Unexpected role setting ${name}`);
+      await db.query(`alter role current_user set ${name} = '${value.join("=").replaceAll("'", "''")}'`);
+    }
+  } finally { await lock.end(); }
+}
+
 /** Wait (up to 10 s) for the other sessions on a database to end, as `drop schema` waited for their locks. */
 async function ended(admin: pg.Client, database: string) {
   const deadline = Date.now() + 10_000;
@@ -122,10 +145,6 @@ export async function testDatabase(options: { migrate?: boolean } = {}) {
       await admin.end();
     } finally { clearTimeout(stuck); }
   });
-  if (copied) for (const setting of await roleSettings(admin, source!)) {
-    const [name, ...value] = setting.split("=");
-    if (!/^[a-z_.]+$/i.test(name!)) throw new Error(`Unexpected role setting ${name}`);
-    await db.query(`alter role current_user set ${name} = '${value.join("=").replaceAll("'", "''")}'`);
-  }
+  if (copied) await applyRoleSettings(db, await roleSettings(admin, source!));
   return { db, url, schema };
 }
