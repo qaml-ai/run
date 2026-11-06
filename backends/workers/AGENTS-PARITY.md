@@ -92,7 +92,8 @@ generation. Exact revisions and final results are in
 [agents-validation.json](measurements/agents-validation.json). No new full
 contract run or full integration run is part of wrap-up. Earlier integration
 coverage was 80/81; the remaining native-container test hit the Sprite kernel's
-missing `xt_socket` support.
+missing `xt_socket` support. (Since 2026-11-06 that test runs and passes on
+Sprites; see [README.md, "Docker on a sprite"](README.md#docker-on-a-sprite).)
 
 Two temporary deployed probes checked the sandbox memory/concurrency bounds,
 cancellation and attached-tool reconnection after a 35-second idle eviction.

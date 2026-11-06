@@ -1,14 +1,12 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { createServer, type AddressInfo } from "node:net";
 import test from "node:test";
 import { promisify } from "node:util";
 import { startFixture } from "./fixture.ts";
 
 async function dockerUnavailable() {
-  if (existsSync("/.sprite")) {
-    return "Native Docker computer tests are unsupported on Sprites: the host restricts required kernel modules and OCI namespace operations.";
-  }
   for (const args of [["info"], ["buildx", "version"]]) {
     try {
       await promisify(execFile)("docker", args, { timeout: 10_000 });
@@ -20,12 +18,79 @@ async function dockerUnavailable() {
 
 const unavailable = await dockerUnavailable();
 const requireDocker = process.env.WORKERS_REQUIRE_DOCKER === "1";
+const run = promisify(execFile);
+
+// workerd puts every local container behind an egress sidecar, Cloudflare's proxy-everything (the image Wrangler pins),
+// which steers the container's traffic with iptables TPROXY rules. One of them, `-m socket -j DIVERT`, needs the
+// kernel's xt_socket, and a kernel without it (Sprites, 6.12-fly, measured 2026-11-06) makes the sidecar exit with
+// "Extension socket revision 0 not supported", so no container starts. The rule only short-cuts packets of connections
+// that already have a local socket; the TPROXY target looks those sockets up itself. So when the probe below finds no
+// xt_socket, the fixture runs the same pinned image with an iptables wrapper that drops that one rule when the kernel
+// refuses it (any other failure still fails). Wrangler `docker pull`s the egress image before every start, so the
+// derived image is served from a throwaway registry on loopback. With xt_socket (CI), nothing changes.
+async function egressImageWithoutSocketMatch(t: { after(fn: () => Promise<void>): void; diagnostic(message: string): void }) {
+  const cli = await readFile(new URL("../node_modules/wrangler/wrangler-dist/cli.js", import.meta.url), "utf8");
+  const image = /DEFAULT_CONTAINER_EGRESS_INTERCEPTOR_IMAGE\w* = "([^"]+)"/.exec(cli)?.[1];
+  assert.ok(image, "Wrangler's pinned egress interceptor image");
+  try {
+    await run("docker", ["run", "--rm", "--cap-add", "NET_ADMIN", "--entrypoint", "iptables", image, "-t", "mangle", "-A", "PREROUTING", "-p", "tcp", "-m", "socket", "-j", "ACCEPT"], { timeout: 120_000 });
+    return;
+  } catch (error) {
+    if (!String((error as { stderr?: string }).stderr).includes("Extension socket")) throw error;
+  }
+  const port = await new Promise<number>((resolve, reject) => {
+    const server = createServer().listen(0, "127.0.0.1", () => {
+      const { port } = server.address() as AddressInfo;
+      server.close(() => resolve(port));
+    }).on("error", reject);
+  });
+  const registry = `camelrun-egress-registry-${port}`;
+  const tag = `127.0.0.1:${port}/camelrun-egress-without-socket-match:${image.split("@sha256:")[1]?.slice(0, 12) ?? "local"}`;
+  t.after(async () => {
+    await run("docker", ["rm", "-f", registry], { timeout: 30_000 }).catch(() => {});
+  });
+  await run("docker", ["run", "-d", "--name", registry, "--network", "host", "-e", `REGISTRY_HTTP_ADDR=127.0.0.1:${port}`, "registry:2"], { timeout: 120_000 });
+  // /usr/local/sbin comes first on the image's PATH, so the wrapper shadows iptables and calls the real one.
+  const wrapper = [
+    "#!/bin/sh",
+    'PATH=/usr/sbin:/usr/bin:/sbin:/bin "$(basename "$0")" "$@" && exit 0',
+    "code=$?",
+    'case " $* " in *" -m socket "*) echo "skipped (no xt_socket in this kernel): $(basename "$0") $*" >&2; exit 0 ;; esac',
+    "exit $code",
+  ].join("\n");
+  const dockerfile = ["iptables", "ip6tables"].reduce(
+    (file, name) => `${file}COPY --chmod=755 <<'EOF' /usr/local/sbin/${name}\n${wrapper}\nEOF\n`,
+    `FROM ${image}\n`,
+  );
+  const build = run("docker", ["build", "-q", "-t", tag, "-"], { timeout: 300_000 });
+  build.child.stdin?.end(dockerfile);
+  await build;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await run("docker", ["push", "-q", tag], { timeout: 120_000 });
+      break;
+    } catch (error) {
+      if (attempt >= 20) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+  t.diagnostic(`no xt_socket in this kernel: egress sidecar ${image} runs with its -m socket rule dropped, as ${tag}`);
+  return tag;
+}
 
 test(
   "optional native Container and Sandbox SDK providers in local Docker",
-  { timeout: 240_000, skip: requireDocker ? false : unavailable },
+  // On a sprite with a cold image cache, pulling and building every image inside this test took 206 s of the old 240.
+  { timeout: 360_000, skip: requireDocker ? false : unavailable },
   async (t) => {
     assert.equal(unavailable, undefined, unavailable);
+    const egressImage = await egressImageWithoutSocketMatch(t);
+    if (egressImage) {
+      process.env.MINIFLARE_CONTAINER_EGRESS_IMAGE = egressImage;
+      t.after(() => {
+        delete process.env.MINIFLARE_CONTAINER_EGRESS_IMAGE;
+      });
+    }
     const fixture = await startFixture({ config: "wrangler.computers.test.jsonc" });
     const { worker: server, token } = fixture;
     t.after(async () => {

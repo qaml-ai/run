@@ -81,8 +81,44 @@ shard (the repository root's `scripts/sprite-test` leases the Sprites):
 
 ```sh
 scripts/sprite-test --shards=4 HEAD bash -lc \
-  'cd backends/workers && npm ci && npm run test:integration -- --test-shard={shard}/{shards}'
+  'cd backends/workers && npm ci && WORKERS_REQUIRE_DOCKER=1 npm run test:integration -- --test-shard={shard}/{shards}'
 ```
+
+### Docker on a sprite
+
+The native computer test (`test/computers.integration.ts`) runs on Sprites as on
+CI, `WORKERS_REQUIRE_DOCKER=1` included. `scripts/sprite-test` sets Docker up once
+per sprite (`docker_up` there): Ubuntu's `docker.io` and `docker-buildx`, `dockerd`
+as a `sprite-env` service (sprites have no systemd), `overlay2` on the sprite's own
+`/var/lib/docker` volume, the default bridge kept, and the socket in the sprite
+user's group. Three things differ from a stock host, all measured on 2026-11-06
+(kernel 6.12.115-fly, Docker 29.1.3):
+
+- **runc 1.1.15, not Ubuntu's 1.4.** workerd runs each container in its egress
+  sidecar's network namespace. runc 1.2 and later open the new container's mount
+  namespace from the host to set it up, which needs `CAP_SYS_PTRACE`, and a
+  sprite's root lacks it: `error spawning mount remapping thread: ... open
+  /proc/<pid>/ns/mnt: permission denied`. crun (camel-bots' choice) runs those
+  but hangs any bridge container in `Created`; workerd's sidecar is one.
+- **`runc start` waits for the container's process.** Until it starts, the
+  container's init is runc's own and not dumpable, so an exec in that window
+  fails (`failed to open /proc/<pid>/ns/ipc: Permission denied`). workerd execs
+  at once, and then waits forever for an exec that never ran. A wrapper around
+  runc returns from `start` once the container's process has started.
+- **No `xt_socket`.** Cloudflare's egress sidecar (`cloudflare/proxy-everything`)
+  adds `iptables -m socket -j DIVERT` and exits when the kernel refuses it. The
+  test probes for that and, only then, runs the same pinned image with that one
+  rule dropped (the TPROXY rule that follows finds established sockets itself),
+  served from a throwaway local registry because Wrangler pulls the image before
+  each start. On CI the probe passes and the image is Cloudflare's own.
+
+Port publishing (`-p`, `-P`), outbound traffic from bridge containers, and image
+builds (`RUN` steps included) work. Two things do not, both for want of
+`CAP_SYS_PTRACE`: a bridge container whose image starts as non-root (`USER`,
+`-u`) fails to start (`bind-mount /proc/<pid>/ns/net -> /var/run/docker/netns/...:
+permission denied`; one that starts as root and drops privileges, like
+Postgres, is fine), and `docker exec` into a container whose process is not
+root fails (`error executing setns process`).
 
 Some tests have a slow variant that runs only with `WORKERS_SLOW_TESTS=1`: the
 "Workers tests" workflow runs them nightly, and on demand (Run workflow with

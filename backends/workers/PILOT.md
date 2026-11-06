@@ -563,11 +563,15 @@ token revocation, spend-limit removal and unchanged balance and ledger.
 The complete integration results are in
 `measurements/workers-rebase-suites.json`.
 
-The native Docker computer case has an explicit skip on Sprites because their
-kernel cannot host the required OCI runtime. Forcing that case failed with the
-same host-restriction assertion on both `e6e9a8a7` and upstream `9de3ed55`.
-The Ubuntu Workers integration CI job requires Docker and does not allow this
-skip. The Sprite result is not evidence that the native Docker case passed.
+The native Docker computer case had an explicit skip on Sprites at the time,
+and forcing it failed on that same assertion on both `e6e9a8a7` and upstream
+`9de3ed55` (the Sprites then had no Docker at all: `docker` exited 127). The
+Ubuntu Workers integration CI job requires Docker and does not allow a skip.
+That Sprite result is not evidence that the native Docker case passed. Since
+2026-11-06 the skip is gone: `scripts/sprite-test` sets Docker up on every pool
+sprite and the case passes there with `WORKERS_REQUIRE_DOCKER=1`; see
+[README.md, "Docker on a sprite"](README.md#docker-on-a-sprite) for what that
+takes (runc 1.1, and a sidecar without the kernel's missing `xt_socket`).
 
 The previous full comparison on `76f56096` had 25 Workers failures: three
 JavaScript timeouts and 22 Python missing-result or timeout failures. None
