@@ -1,0 +1,11 @@
+{
+  // The spike's fake model. Throwaway: deleted with the spike.
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "camelrun-spike-pi-subagents-model",
+  "account_id": "85bbd288051330fb51ee1c86031a299b",
+  "main": "fake-model.ts",
+  "compatibility_date": "2026-11-05",
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": { "enabled": false }
+}

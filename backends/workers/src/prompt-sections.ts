@@ -1,4 +1,4 @@
-import type { Extension } from '@earendil-works/pi-durable';
+import type { Extension, PromptInput } from '@earendil-works/pi-durable';
 import { approvalPrompt } from './tool-approval-prompt.ts';
 import { runtimeRules } from './prompt-policy.ts';
 import { languageInstructions } from '../../../src/language.ts';
@@ -6,12 +6,17 @@ import { languageInstructions } from '../../../src/language.ts';
 type Config = { codeMode?: boolean; fileTools?: boolean; language?: string; systemPrompt?: string; systemPromptAppend?: string; mounts?: { path: string; mode: string }[]; output?: unknown };
 const activeTools = <T extends { name: string }>(tools: readonly T[], config: Config) => tools.filter(tool => tool.name !== 'final_output' || config.output !== undefined);
 /** Pi renders these each request, so compaction cannot discard the runtime rules. */
-export function runtimePromptSections(config: () => Promise<Config>): Extension {
+export function runtimePromptSections(config: () => Promise<Config>, child?: (input: PromptInput) => Promise<{ systemPrompt?: string } | undefined>): Extension {
   return {
     name: 'camel.runtime',
     sections: [
       { key: 'runtime', tag: false, render: async ({ agent }) => { const current = await config(); return runtimeRules({ ...current, tools: activeTools(agent.tools, current) }); } },
-      { key: 'application', tag: false, render: async () => { const current = await config(); return [current.systemPrompt,current.systemPromptAppend].filter(Boolean).join('\n\n') || undefined; } },
+      { key: 'application', tag: false, render: async (input) => {
+        // SPIKE: a Pi child conversation (pi-subagents.ts) has its own system prompt, not its parent agent's.
+        const own = await child?.(input);
+        if (own) return own.systemPrompt || undefined;
+        const current = await config(); return [current.systemPrompt,current.systemPromptAppend].filter(Boolean).join('\n\n') || undefined;
+      } },
       { key: 'environment', tag: false, render: async ({ agent }) => {
         const current = await config();
         const tools = activeTools(agent.tools, current);

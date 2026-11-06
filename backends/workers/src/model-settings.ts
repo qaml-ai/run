@@ -23,9 +23,10 @@ export type ModelRequestSettings = AgentConfiguration & { requestId?: string; ou
 export type ModelCredentials = { apiKey?: string; baseUrl?: string; headers?: Record<string, string>; region?: string; bearer?: true; identity?: true; deployments?: Record<string, string> };
 export type ModelHooks = {
   agentId?: () => Promise<string>;
-  beforeRequest?: () => Promise<void>;
-  onStreamEvent?: (event: AssistantMessageEvent) => void | Promise<void>;
-  onDiscardedOutput?: (message: AssistantMessage) => void | Promise<void>;
+  /** `session`: the conversation's provider session id (Pi's `pi.provider`), which tells a child conversation's requests apart. */
+  beforeRequest?: (session?: string) => Promise<void>;
+  onStreamEvent?: (event: AssistantMessageEvent, session?: string) => void | Promise<void>;
+  onDiscardedOutput?: (message: AssistantMessage, session?: string) => void | Promise<void>;
   onRetryEvent?: (event: ModelRetryEvent) => void | Promise<void>;
   onStall?: (stall: Stall & { provider: string; model: string }) => void | Promise<void>;
   wrapProvider?: (provider: Provider) => Provider;
@@ -43,7 +44,7 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
   const filterFallbacks = contentFilterFallbacks(env.AGENT_CONTENT_FILTER_FALLBACKS);
   const prepare = async (model: Model<Api>, context: TranscriptContext, options: StreamOptions = {}) => {
     const callKind = modelCallKind(context);
-    await hooks.beforeRequest?.();
+    await hooks.beforeRequest?.(options.sessionId);
     const config = await hooks.settings?.() ?? {};
     if (config.model?.startsWith("camelrun/")) {
       const user = config.requestId ?? String([...context.messages].reverse().find(message => message.role === "user")?.timestamp ?? 0);
@@ -163,7 +164,7 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
             continue;
           }
           if (event.type === "done" && prepared.callKind === "response" && !options?.signal?.aborted && outputRequest.remind(event.message, prepared.config)) {
-            await hooks.onDiscardedOutput?.(event.message);
+            await hooks.onDiscardedOutput?.(event.message, options?.sessionId);
             prepared = await prepare(prepared.model, context, options);
             retry = true;
             continue;
@@ -171,11 +172,11 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
           if (routing && event.type === "error") routing.failed = prepared.model;
           if (routing && event.type === "done") { routing.previous = prepared.model; routing.failed = undefined; }
           if (event.type === "done") await replayRetry.success();
-          await hooks.onStreamEvent?.(event);
+          await hooks.onStreamEvent?.(event, options?.sessionId);
           output.push(event);
         }
         const result = await stream.result();
-        if (retry) await hooks.beforeRequest?.();
+        if (retry) await hooks.beforeRequest?.(options?.sessionId);
         else output.end(result);
         } while (retry);
       } catch (error) {

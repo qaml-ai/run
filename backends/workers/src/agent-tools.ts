@@ -36,6 +36,7 @@ import { agentBuiltins } from "./agent-builtins.ts";
 import { writtenFile, presentedFile } from "./file-output.ts";
 import { selectAgentTools, wordedFileTools } from "./file-tool-selection.ts";
 import { Env } from "./agent-types.ts";
+import { delegationExtension } from "./agent-delegation.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
 
 export function createDecisions(this: AgentRuntime): ReturnType<typeof decisionService> {
@@ -83,7 +84,9 @@ export function createModels(this: AgentRuntime): ReturnType<typeof modelRuntime
       },
       // Pi batches its live document. Project the provider's individual deltas
       // through the same projection so short chunks remain observable.
-      onStreamEvent: async (event) => {
+      onStreamEvent: async (event, session) => {
+        // SPIKE: a Pi child conversation's stream is relayed as subagent events, never as the parent's own message.
+        if (this.piSubagents && await this.piSubagents.isChildSession(session)) return this.piSubagents.childEvent(session!, event);
         if (event.type === "error") {
           const conf = await this.config();
           const endpoints = (await keyServices(this.env)).tenants.modelEndpoints(conf.tenantId);
@@ -103,7 +106,8 @@ export function createModels(this: AgentRuntime): ReturnType<typeof modelRuntime
             },
           } });
       },
-      onDiscardedOutput: async (message) => {
+      onDiscardedOutput: async (message, session) => {
+        if (this.piSubagents && await this.piSubagents.isChildSession(session)) return;
         const run = await this.currentRun();
         await this.ctx.storage.put({ [`discarded-output:${run.id}`]: message, [`output-reminded:${run.id}`]: true });
         await this.projectMessage(run.id, message, true);
@@ -115,9 +119,11 @@ export function createModels(this: AgentRuntime): ReturnType<typeof modelRuntime
         const run = await this.currentRun();
         await this.emit({ type: "event", requestId: run.id, event: { type: "model_stream_stalled", ...stall } });
       },
-      beforeRequest: async () => {
+      beforeRequest: async (session) => {
         const stopped = await this.limits.check();
         if (stopped) throw new Error(stopped.error);
+        // SPIKE: a child's requests count against the parent run's limits; the root's context range is not theirs.
+        if (this.piSubagents && await this.piSubagents.isChildSession(session)) return;
         await assertContextRange(
           contextRangeLimit((this.env as Env & { AGENT_CONTEXT_RANGE_MAX_BYTES?: string }).AGENT_CONTEXT_RANGE_MAX_BYTES),
           await (await this.harness.pi()).root(BACKGROUND_CONTEXT),
@@ -245,6 +251,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
             const run = await this.currentRun();
             return { ...config, output: "params" in run ? run.params?.output : undefined } as never;
           },
+          this.piSubagents ? (input) => this.piSubagents!.childPrompt(input.read as never, input.conversationId) : undefined,
         ),
       );
       registry.install(senderExtension());
@@ -411,14 +418,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
           },
         ],
       });
-      registry.install({
-        name: "camel.delegation",
-        tools: await this.delegation.toolsFor(
-          conf.config.delegate ?? {},
-          conf.config.builtins ?? [],
-          conf.config.type === "subagent",
-        ),
-      });
+      registry.install(await delegationExtension.call(this, conf.config));
       registry.install({
         name: "camel.linux",
         tools: [computerTool(this.env, this.ctx.id.toString())],

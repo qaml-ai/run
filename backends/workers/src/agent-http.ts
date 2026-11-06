@@ -31,6 +31,7 @@ import { setAgentSpendLimit } from "./agent-spend.ts";
 import { releasePresentedFiles } from "./file-output.ts";
 import { Config, RequestRecord, Env, json, canonical, Child, reqKey } from "./agent-types.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
+import { delegationExtension } from "./agent-delegation.ts";
 
 export function replayedRequestImpl(this: AgentRuntime,
   record: RequestRecord) {
@@ -215,14 +216,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
             name: "camel.images",
             tools: await this.imageTools(),
           });
-          this.registry.install({
-            name: "camel.delegation",
-            tools: await this.delegation.toolsFor(
-              incoming.config.delegate ?? {},
-              incoming.config.builtins ?? [],
-              incoming.config.type === "subagent",
-            ),
-          });
+          this.registry.install(await delegationExtension.call(this, incoming.config));
           this.registry.install({ name: "camel.files", tools: wordedFileTools(this.workspaceFileTools, incoming.config), sections: [] });
           this.availableTools = prioritizedTools(this.registry.snapshot().tools());
           const enabled = await this.enabledTools(incoming.config);

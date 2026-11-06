@@ -11,6 +11,8 @@ import type { ChildProgressReport } from "./delegation.ts";
 import { runSpend } from "./agent-spend.ts";
 import { withSql } from "./postgres.ts";
 import { Config, RequestRecord, canonical, Child, reqKey } from "./agent-types.ts";
+import { PiSubagents } from "./pi-subagents.ts";
+import { agentMessage } from "./multi-agent-policy.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
 
 export async function admitDelegateWakeImpl(this: AgentRuntime,
@@ -212,3 +214,56 @@ export async function delegateImpl(this: AgentRuntime,
       });
     return child;
   }
+
+/** The delegation tools this agent installs: the Pi spike's with AGENT_PI_SUBAGENTS=1, otherwise delegation.ts's. */
+export async function delegationExtension(this: AgentRuntime, config: { delegate?: unknown; builtins?: string[]; type?: string }) {
+  const settings = (config.delegate ?? {}) as Parameters<Delegation["toolsFor"]>[0];
+  if (this.piSubagents)
+    return { name: "camel.delegation", tools: this.piSubagents.tools(settings, config.builtins ?? [], await this.delegation.targetDescriptions(settings)), tasks: this.piSubagents.tasks() };
+  return { name: "camel.delegation", tools: await this.delegation.toolsFor(settings, config.builtins ?? [], config.type === "subagent") };
+}
+
+/** SPIKE: Pi-owned subagents (pi-subagents.ts), only with AGENT_PI_SUBAGENTS=1. */
+export function createPiSubagents(this: AgentRuntime): PiSubagents | undefined {
+  if ((this.env as { AGENT_PI_SUBAGENTS?: string }).AGENT_PI_SUBAGENTS !== "1") return undefined;
+  const web = ["web_search", "web_fetch", "ask_user", "ask_human"];
+  const multi: Record<string, string[]> = { delegate: ["delegate"], agents: ["spawn_agent", "wait_agent", "list_agents", "send_message", "interrupt_agent"] };
+  return new PiSubagents({
+    pi: () => this.harness.pi(),
+    context: async (api) => {
+      const conf = await this.config();
+      const run = await this.currentRun(api);
+      return { id: conf.id, config: conf.config as never, run: run as never };
+    },
+    target: async (ref) => {
+      const conf = await this.config();
+      if (ref.definition) {
+        const definition = await resolveDefinition(this.env, conf.tenantId, ref.definition);
+        return { config: await provisionDefinition(this.env, conf.tenantId, { definition: definition.id }) as never, description: definition.spec.description };
+      }
+      const entry = await new Directory(this.env, conf.tenantId).get(ref.agent!);
+      if (!entry) throw new BadRequest("Unknown delegate agent");
+      return { id: entry.id, config: entry.config as never };
+    },
+    model: (config) => {
+      const model = this.models.resolve(config.model as string | undefined);
+      return { provider: model.provider, modelId: model.id };
+    },
+    tools: async (config) => {
+      // A child can only use tools this agent installed: its files, code mode, the builtins it names, and the
+      // delegation tools its own builtins give it. A definition's own MCP servers or computers are not available here.
+      const builtins = (config.builtins as string[] | undefined) ?? [];
+      const allowed = new Set([...this.workspaceToolNames, "codemode", "final_output", "report_progress", "send_message",
+        ...web.filter(name => builtins.includes(name)), ...builtins.flatMap(name => multi[name] ?? [])]);
+      const enabled = await this.enabledTools({ ...(await this.config()).config, ...config } as never);
+      return { tools: enabled.tools.filter(tool => allowed.has(tool.name)) };
+    },
+    emit: (event) => this.emit(event),
+    notify: (child) => this.notifications.deliver(child),
+    messageParent: async (from, text, requestId) => {
+      const conf = await this.config();
+      const message = agentMessage({ agentId: from.agentId, name: from.name, root: conf.id }, text, "parent");
+      return this.notifications.deliverMessage({ id: requestId, method: "prompt", params: { text, allowDisconnected: true, whileRunning: "followUp" } }, message.notice);
+    },
+  });
+}
