@@ -13,6 +13,7 @@ import { outputInput } from './output-validation.ts';
 import type { Context } from '@earendil-works/chord';
 import type { McpResult } from './attached-tools.ts';
 import { waitsForProgress } from './delegation-progress.ts';
+import { followEvents } from './event-follow.ts';
 
 type Configuration = { model?: string | object; systemPrompt?: string; delegate?: DelegateSettings; builtins?: string[]; spendLimit?: { usd: number }; [key: string]: unknown };
 export type ParentRun = { id: string; piId?: string; startedAt?: number; params?: { spendLimit?: { usd: number }; bucket?: string; actor?: string }; metadata?: unknown };
@@ -243,28 +244,21 @@ export class Delegation {
     const abort = new AbortController();
     let drain!: () => void;
     const drained = new Promise<void>(resolve => { drain = resolve; });
-    const response = await this.host.fetch(child.id, new Request('https://agent/events?watch=1&subagents=1', { signal: abort.signal }));
-    const read = async () => {
-      const reader = response.body?.getReader(); if (!reader) return;
-      let buffer = ''; const decoder = new TextDecoder();
-      try {
-        while (!abort.signal.aborted) {
-          const chunk = await reader.read(); if (chunk.done) break;
-          buffer += decoder.decode(chunk.value, { stream: true });
-          let end: number;
-          while ((end = buffer.indexOf('\n\n')) >= 0) {
-            const frame = buffer.slice(0, end); buffer = buffer.slice(end + 2);
-            const data = frame.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
-            if (!data) continue;
-            const event = JSON.parse(data);
-            if (event.type === 'event' && event.requestId === child.requestId) await this.host.emit({ type: 'event', requestId: child.parentRequestId, event: { type: 'subagent_event', toolCallId: child.toolCallId, agentId: child.id, requestId: child.requestId, event: event.event } });
-            if (event.type === 'response' && event.id === child.requestId) drain();
-          }
-        }
-      } finally { drain(); await reader.cancel().catch(() => {}); }
-    };
-    this.host.waitUntil(read().catch(() => {}));
-    return { abort: () => abort.abort(), drained };
+    let queued = Promise.resolve();
+    await followEvents({
+      events: 'https://agent/events?watch=1&subagents=1',
+      fetch: (input, init) => this.host.fetch(child.id, new Request(input, init)),
+    }, { push: item => {
+      if (item.kind === 'failed') { abort.abort(); drain(); return; }
+      if (item.kind !== 'event') return;
+      const event = item.data as { type: string; requestId?: string; id?: string; event?: unknown };
+      queued = queued.then(async () => {
+        if (event.type === 'event' && event.requestId === child.requestId) await this.host.emit({ type: 'event', requestId: child.parentRequestId, event: { type: 'subagent_event', toolCallId: child.toolCallId, agentId: child.id, requestId: child.requestId, event: event.event } });
+        if (event.type === 'response' && event.id === child.requestId) drain();
+      }).catch(() => { abort.abort(); drain(); });
+    } }, abort.signal);
+    this.host.waitUntil(drained);
+    return { abort: () => { abort.abort(); void queued.finally(drain); }, drained };
   }
   private follow(child: DelegatedChild, relay?: ChildRelay) {
     if (this.following.has(child.key) || (child.status !== 'running' && (!child.background || child.notified))) return;

@@ -1,29 +1,27 @@
-import type { Call } from "./agent-mcp-core.ts";
-import { ApiError } from "./agent-mcp-api.ts";
+import { HttpError } from "./errors.ts";
 import { EVENT_PROTOCOL } from "./live-transport.ts";
 
 type Inbox = { push(item: { kind: "event"; data: unknown } | { kind: "reconnected" } | { kind: "failed"; error: Error }): void };
 
-/** MCP keeps its standard HTTP transport; its internal agent watcher uses a
- * hibernatable socket, like the SDK. No SSE connection reaches the agent DO. */
-export function followEvents(call: Pick<Call, "fetch" | "events" | "authorization">, inbox: Inbox, signal: AbortSignal): Promise<void> {
+/** Internal watchers use the same hibernatable socket protocol as the SDK. */
+export function followEvents(call: { fetch: typeof fetch; events: string; authorization?: string }, inbox: Inbox, signal: AbortSignal): Promise<void> {
   const opened = Promise.withResolvers<void>();
   void (async () => {
     let cursor: string | undefined, first = true;
     while (!signal.aborted) {
       try {
         const response = await call.fetch(call.events, { headers: {
-          Authorization: call.authorization, Upgrade: "websocket", "Sec-WebSocket-Protocol": EVENT_PROTOCOL,
+          ...(call.authorization ? { Authorization: call.authorization } : {}), Upgrade: "websocket", "Sec-WebSocket-Protocol": EVENT_PROTOCOL,
           ...(cursor ? { "Last-Event-ID": cursor } : {}),
         }, signal });
         if (response.status === 409) { cursor = undefined; await response.body?.cancel(); continue; }
         const socket = response.webSocket;
         if (response.status !== 101 || !socket) {
-          const error = new ApiError(response.status, (await response.json().catch(() => ({})) as { error?: string }).error ?? response.statusText);
+          const error = new HttpError(response.status, (await response.json().catch(() => ({})) as { error?: string }).error ?? response.statusText);
           if (response.status !== 503) { opened.reject(error); inbox.push({ kind: "failed", error }); return; }
         } else {
           const closed = Promise.withResolvers<void>();
-          const close = () => { try { socket.close(1000, "MCP call ended"); } catch {} closed.resolve(); };
+          const close = () => { try { socket.close(1000, "Watcher ended"); } catch {} closed.resolve(); };
           const message = (event: MessageEvent) => {
             try {
               const frame = JSON.parse(String(event.data));

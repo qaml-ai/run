@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { followEvents } from '../src/agent-mcp-events.ts';
+import { followEvents } from '../src/event-follow.ts';
 
 test('the internal MCP watcher resumes its socket cursor and releases it on abort', async () => {
   const stop = new AbortController(), items: any[] = [], cursors: (string | null)[] = [];

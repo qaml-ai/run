@@ -17,7 +17,7 @@ content = content.replace('interface Call {', 'export interface Call {\n  fetch:
   .replace('async function converse(', 'export async function converse(')
   .replace('async function settle(', 'export async function settle(')
   .replace('(await response.json().catch(() => ({}))).error', '(await response.json().catch(() => ({})) as { error?: string }).error');
-const output = "// Generated from src/agent-mcp.ts by scripts/reuse-agent-mcp.mjs. Only host dependencies change.\nimport type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';\nimport { Api, ApiError, summarize, type RunSummary } from './agent-mcp-api.ts';\nimport { digest } from './api-contract.ts';\nimport { followEvents as follow } from './agent-mcp-events.ts';\nconst resumeId = async (id: string) => 'resume_' + (await digest(id)).slice(0, 40);\n\n" + content;
+const output = "// Generated from src/agent-mcp.ts by scripts/reuse-agent-mcp.mjs. Only host dependencies change.\nimport type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';\nimport { Api, ApiError, summarize, type RunSummary } from './agent-mcp-api.ts';\nimport { digest } from './api-contract.ts';\nimport { followEvents as follow } from './event-follow.ts';\nconst resumeId = async (id: string) => 'resume_' + (await digest(id)).slice(0, 40);\n\n" + content;
 const path = new URL('../src/agent-mcp-core.ts', import.meta.url);
 if (process.argv.includes('--check')) { if (await readFile(path, 'utf8') !== output) throw new Error('Agent MCP source drifted'); }
 else await writeFile(path, output);

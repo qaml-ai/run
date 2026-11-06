@@ -2,7 +2,7 @@
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { Api, ApiError, summarize, type RunSummary } from './agent-mcp-api.ts';
 import { digest } from './api-contract.ts';
-import { followEvents as follow } from './agent-mcp-events.ts';
+import { followEvents as follow } from './event-follow.ts';
 const resumeId = async (id: string) => 'resume_' + (await digest(id)).slice(0, 40);
 
 /** An input as GET .../inputs lists it. */
