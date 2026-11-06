@@ -8,7 +8,7 @@ const watchers = new Map<string, number>();
 const agentWatchers = new Map<string, number>();
 const nodeWatchers = new Map<string, number>();
 const encoder = new TextEncoder();
-export async function eventRead(request: Request, env: SecurityEnv, tenant: string, agentId: string, forward: (request: Request) => Promise<Response>): Promise<Response> {
+export async function eventRead(request: Request, env: SecurityEnv, tenant: string, agentId: string, forward: (request: Request) => Promise<Response>, waitUntil: (task: Promise<unknown>) => void): Promise<Response> {
   const url = new URL(request.url);
   const watch = url.searchParams.get("watch") === "1";
   const polling = url.searchParams.get("poll") === "1";
@@ -51,37 +51,32 @@ export async function eventRead(request: Request, env: SecurityEnv, tenant: stri
       return Response.json(result, { status: response.status, headers });
     }
     if (!response.headers.get("content-type")?.includes("text/event-stream")) { release(); return response; }
-    const reader = response.body.getReader(), decoder = new TextDecoder();
+    const decoder = new TextDecoder();
     let pending = "";
-    const body = new ReadableStream<Uint8Array>({
-      async pull(controller) {
-        try {
-          for (;;) {
-            const boundary = /\r?\n\r?\n/.exec(pending);
-            if (boundary) {
-              const frame = pending.slice(0, boundary.index);
-              pending = pending.slice(boundary.index + boundary[0].length);
-              const lines = frame.split(/\r?\n/);
-              const data = lines.filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
-              if (!data) { controller.enqueue(encoder.encode(`${frame}\n\n`)); return; }
-              const value = JSON.parse(data);
-              const ready = lines.some(line => /^event:\s*ready$/.test(line));
-              if (ready) value.watch = true;
-              if (ready || visible(value)) {
-                controller.enqueue(encoder.encode(`${lines.filter(line => !line.startsWith("data:")).join("\n")}\ndata: ${JSON.stringify(value)}\n\n`));
-                return;
-              }
-              continue;
-            }
-            const chunk = await reader.read();
-            if (chunk.done) { release(); controller.close(); return; }
-            pending += decoder.decode(chunk.value, { stream: true });
-            if (pending.length > 2 * 1024 * 1024) throw new Error("Event frame exceeds stream limit");
-          }
-        } catch (error) { release(); controller.error(error); await reader.cancel(error).catch(() => {}); }
+    const filter = new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        pending += decoder.decode(chunk, { stream: true });
+        for (;;) {
+          const boundary = /\r?\n\r?\n/.exec(pending);
+          if (!boundary) break;
+          const frame = pending.slice(0, boundary.index);
+          pending = pending.slice(boundary.index + boundary[0].length);
+          const lines = frame.split(/\r?\n/);
+          const data = lines.filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
+          if (!data) { controller.enqueue(encoder.encode(`${frame}\n\n`)); continue; }
+          const value = JSON.parse(data);
+          const ready = lines.some(line => /^event:\s*ready$/.test(line));
+          if (ready) value.watch = true;
+          if (ready || visible(value)) controller.enqueue(encoder.encode(`${lines.filter(line => !line.startsWith("data:")).join("\n")}\ndata: ${JSON.stringify(value)}\n\n`));
+        }
+        if (pending.length > 2 * 1024 * 1024) throw new Error("Event frame exceeds stream limit");
       },
-      async cancel(reason) { release(); await reader.cancel(reason); },
     });
-    return new Response(body, { status: response.status, headers });
+    // Native piping sees downstream cancellation while the source waits for its
+    // next event. An async pull() defers cancel() until that event arrives,
+    // retaining the subscriber's place after its client has already gone.
+    waitUntil(response.body.pipeTo(filter.writable, { signal: request.signal })
+      .catch(() => {}).finally(release));
+    return new Response(filter.readable, { status: response.status, headers });
   } catch (error) { release(); throw error; }
 }

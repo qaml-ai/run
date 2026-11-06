@@ -583,7 +583,7 @@ const worker = {
         request = new Request(request.url, { method: 'POST', headers: request.headers, body: JSON.stringify({ ...input, requestId: request.headers.get('idempotency-key') }) });
       }
       const response = tail === "/events"
-        ? await eventRead(request, env, entry.tenantId, entry.id, request => forward(request, env, entry!.id, tail, ctx))
+        ? await eventRead(request, env, entry.tenantId, entry.id, request => forward(request, env, entry!.id, tail, ctx), task => ctx.waitUntil(task))
         : await forward(request, env, entry.id, tail, ctx);
       return browser ? browserResponse(response, browser, tail) : response;
     } catch (error) {
