@@ -14,7 +14,7 @@ if (!Number.isInteger(originLimit) || originLimit < 5 || originLimit > 100)
 async function run(args, { input, quiet = false } = {}) {
   return new Promise((yes, no) => {
     const child = spawn(process.execPath, [bin, ...args], { cwd,
-      env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: account, WRANGLER_SEND_METRICS: 'false', WRANGLER_LOG_SANITIZE: 'true', WRANGLER_LOG: 'info', WRANGLER_LOG_PATH: resolve(tmpdir(), 'camelrun-pilot-wrangler'), CI: 'true' },
+      env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: account, WRANGLER_SEND_METRICS: 'false', WRANGLER_LOG_SANITIZE: 'true', WRANGLER_LOG: 'log', WRANGLER_LOG_PATH: resolve(tmpdir(), 'camelrun-pilot-wrangler'), CI: 'true' },
       stdio: ['pipe', 'pipe', 'pipe'] });
     let output = '';
     child.stdout.on('data', b => { output += b; if (!quiet) process.stdout.write(b); });

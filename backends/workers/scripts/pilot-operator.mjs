@@ -13,7 +13,7 @@ function wrangler(args, directory) {
   return new Promise((resolveRun, reject) => {
     const child = spawn(process.execPath, [join(workers, "node_modules/wrangler/bin/wrangler.js"), ...args], {
       cwd: workers,
-      env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: PILOT_ACCOUNT, WRANGLER_SEND_METRICS: "false", WRANGLER_LOG_SANITIZE: "true", WRANGLER_LOG: "info", WRANGLER_LOG_PATH: join(directory, "wrangler.log"), CI: "true" },
+      env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: PILOT_ACCOUNT, WRANGLER_SEND_METRICS: "false", WRANGLER_LOG_SANITIZE: "true", WRANGLER_LOG: "log", WRANGLER_LOG_PATH: join(directory, "wrangler.log"), CI: "true" },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let output = "";
