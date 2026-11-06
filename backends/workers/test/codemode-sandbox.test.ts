@@ -90,6 +90,37 @@ test("an input closed without an answer ends its script there, the call unmade",
   } finally { await h.close(); }
 });
 
+test("calls a script makes while one waits on a person are held: made after the answer, never if the input closes unanswered", { timeout: 20_000 }, async () => {
+  const code = "const asking = tools.approve({}); await tools.read({}); const wiping = tools.slow({}); return [await asking, await wiping];";
+  for (const ending of ["answer", "close"] as const) {
+    const seed = ending === "answer" ? 8 : 9;
+    let answer: ((outcome: CodemodeOutcome) => void) | undefined, release: (() => void) | undefined;
+    const h = await host(code, call => {
+      if (call.name === "approve") { release = waitsOnPerson(1_000, seed, call.id); return new Promise<CodemodeOutcome>(resolve => { answer = resolve; }); }
+      // The read answers once the question waits, so the script's next call comes during the wait.
+      if (call.name === "read") return new Promise<CodemodeOutcome>(resolve => setTimeout(() => resolve({ ok: true, value: "r" }), 200));
+      return { ok: true, value: "wiped" };
+    }, { seed });
+    try {
+      while (!answer) await new Promise(resolve => setTimeout(resolve, 10));
+      await new Promise(resolve => setTimeout(resolve, 600));
+      assert.deepEqual(h.calls.map(call => call.name), ["approve", "read"], `${ending}: the later call is held`);
+      if (ending === "answer") {
+        release!();
+        answer({ ok: true, value: "yes" });
+        const result = await h.run.result;
+        assert.deepEqual(result.ok && result.value, ["yes", "wiped"], JSON.stringify(result));
+        assert.deepEqual(h.calls.map(call => call.name), ["approve", "read", "slow"], "made once, after the answer");
+      } else {
+        endScript(1_000, seed, "closed: superseded");
+        const result = await h.run.result;
+        assert.equal(result.ok, false);
+        assert.deepEqual(h.calls.map(call => call.name), ["approve", "read"], "never made");
+      }
+    } finally { await h.close(); }
+  }
+});
+
 test("past 32 calls out at once, a script's calls wait their turn instead of failing", { timeout: 20_000 }, async () => {
   let out = 0, most = 0;
   const h = await host("return (await Promise.all(Array.from({ length: 40 }, (_, i) => tools.delegate({ i })))).length", async () => {

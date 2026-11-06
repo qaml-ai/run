@@ -85,6 +85,8 @@ class ScriptRun implements CodemodeRun {
   private issuedMax = 0;
   /** Calls waiting for their result, by id: their names. */
   private readonly outstanding = new Map<number, string>();
+  /** Calls the script made after one began to wait on a person, not passed on yet (release). */
+  private held: CodemodeHostCall[] = [];
   /** The last result the script processed, as reported to Pi (-1: not even its first run yet). */
   private idle = -1;
   private fingerprint?: string;
@@ -128,6 +130,7 @@ class ScriptRun implements CodemodeRun {
   /** A call began or stopped waiting on a person. */
   changed() {
     if (this.finished) return;
+    this.release();
     this.tick();
     this.park();
   }
@@ -141,6 +144,8 @@ class ScriptRun implements CodemodeRun {
   private start() {
     const inner: Inner = { controller: new AbortController(), issued: new Set(), next: 0 };
     this.inner = inner;
+    // A new VM makes its held calls again as it replays.
+    this.held = [];
     const run = this.launch({
       startedAt: this.options.startedAt, seed: this.options.seed, tools: this.options.tools, globals: this.options.globals,
       store: this.options.store, signal: inner.controller.signal,
@@ -177,11 +182,24 @@ class ScriptRun implements CodemodeRun {
       else this.pump();
       return;
     }
+    // Once a call waits on a person, the script's later calls wait for the answer, as on ECS: an input closed without
+    // one ends the script (end), and they are never made. A VM stopped meanwhile makes them again as it replays.
+    if (this.entry.waiting.size || this.held.length) { this.held.push(call); return; }
+    this.forward(call);
+  }
+
+  private forward(call: CodemodeHostCall) {
     this.issuedMax = call.id;
-    this.made.set(call.id, made);
+    this.made.set(call.id, JSON.stringify([call.target, call.name, call.args ?? null]));
     this.outstanding.set(call.id, call.name);
     this.options.onCall(call);
     this.tick();
+  }
+
+  /** No call waits on a person any more: the calls held meanwhile go on, in the order the script made them. */
+  private release() {
+    if (this.entry.waiting.size || this.finished) return;
+    for (const call of this.held.splice(0)) this.forward(call);
   }
 
   /** Hand the running VM the results it has made the calls for, in order. */
