@@ -1,0 +1,555 @@
+{
+  "schemaVersion": 1,
+  "measurement": {
+    "target": "https://run-pilot.camelai.dev",
+    "fakeModelDelayMs": 15000,
+    "tenants": 20,
+    "originConnectionLimit": 16,
+    "databaseConnectionSlots": 25,
+    "roundTrip": "One pg query invocation, including BEGIN, COMMIT, ROLLBACK and failed statements. Connection acquisition is counted separately.",
+    "transactionHold": "From successful BEGIN acknowledgement until COMMIT or ROLLBACK returns. Includes SQL and application gaps; excludes initial connection and BEGIN wait.",
+    "scope": "Agent phases plus public prompt/status auth and directory SQL. Monitoring and cleanup SQL are excluded. Once-per-isolate outer webhook recovery is excluded.",
+    "phaseRules": "Explicit admission, hold, renew, settle, webhook and history contexts. Usage and webhook table statements override parent phase; other retains unclassified agent operations. Receipt and end-user accounting SQL remain in settle.",
+    "history": "The load runner does not request history; Workers history uses DO SQLite, not PostgreSQL."
+  },
+  "before": {
+    "revision": "247cc940",
+    "deploymentVersion": "7fc8d34c-647a-471a-8ff7-9c7a99630fe7",
+    "source": "backends/workers/measurements/turn-db-before-load.json",
+    "stages": [
+      {
+        "concurrency": 100,
+        "complete": true,
+        "objectRestarts": 0,
+        "queries": 28897,
+        "queriesPerRequestedTurn": 288.97,
+        "phases": {
+          "admission": {
+            "queries": 2600,
+            "queriesPerRequestedTurn": 26.0,
+            "queryMsTotal": 300456,
+            "queryErrors": 0,
+            "connections": 2100,
+            "connectMsTotal": 7089,
+            "transactions": 200,
+            "transactionHoldMsTotal": 16599,
+            "transactionHoldMs": {
+              "samples": 200,
+              "p50": 81,
+              "p95": 100,
+              "p99": 116,
+              "max": 171
+            }
+          },
+          "hold": {
+            "queries": 1400,
+            "queriesPerRequestedTurn": 14.0,
+            "queryMsTotal": 125311,
+            "queryErrors": 0,
+            "connections": 500,
+            "connectMsTotal": 1678,
+            "transactions": 100,
+            "transactionHoldMsTotal": 36366,
+            "transactionHoldMs": {
+              "samples": 100,
+              "p50": 359,
+              "p95": 427,
+              "p99": 446,
+              "max": 500
+            }
+          },
+          "renew": {
+            "queries": 0,
+            "queriesPerRequestedTurn": 0.0,
+            "queryMsTotal": 0,
+            "queryErrors": 0,
+            "connections": 0,
+            "connectMsTotal": 0,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            }
+          },
+          "settle": {
+            "queries": 4770,
+            "queriesPerRequestedTurn": 47.7,
+            "queryMsTotal": 902952,
+            "queryErrors": 0,
+            "connections": 1456,
+            "connectMsTotal": 4866,
+            "transactions": 392,
+            "transactionHoldMsTotal": 190831,
+            "transactionHoldMs": {
+              "samples": 392,
+              "p50": 325,
+              "p95": 1146,
+              "p99": 1273,
+              "max": 1432
+            }
+          },
+          "usage": {
+            "queries": 300,
+            "queriesPerRequestedTurn": 3.0,
+            "queryMsTotal": 12677,
+            "queryErrors": 0,
+            "connections": 0,
+            "connectMsTotal": 0,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            }
+          },
+          "webhooks": {
+            "queries": 1432,
+            "queriesPerRequestedTurn": 14.32,
+            "queryMsTotal": 491279,
+            "queryErrors": 0,
+            "connections": 800,
+            "connectMsTotal": 18258,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            }
+          },
+          "history": {
+            "queries": 0,
+            "queriesPerRequestedTurn": 0.0,
+            "queryMsTotal": 0,
+            "queryErrors": 0,
+            "connections": 0,
+            "connectMsTotal": 0,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            }
+          },
+          "other": {
+            "queries": 17510,
+            "queriesPerRequestedTurn": 175.1,
+            "queryMsTotal": 2873129,
+            "queryErrors": 0,
+            "connections": 13344,
+            "connectMsTotal": 133757,
+            "transactions": 200,
+            "transactionHoldMsTotal": 17120,
+            "transactionHoldMs": {
+              "samples": 200,
+              "p50": 84,
+              "p95": 107,
+              "p99": 119,
+              "max": 123
+            }
+          },
+          "edge": {
+            "queries": 885,
+            "queriesPerRequestedTurn": 8.85,
+            "queryMsTotal": 311976,
+            "queryErrors": 0,
+            "connections": 885,
+            "connectMsTotal": 2360,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            }
+          }
+        },
+        "load": {
+          "startedAt": "2026-11-06T03:36:40.115Z",
+          "finishedAt": "2026-11-06T03:37:18.475Z",
+          "completed": 100,
+          "failed": 0,
+          "errorRate": 0,
+          "durationMs": 38359.12617300001,
+          "turnsPerSecond": 2.60694155411672,
+          "turnLatency": {
+            "samples": 100,
+            "p50Ms": 36436.49880799999,
+            "p95Ms": 37712.33148099999,
+            "p99Ms": 37869.172292
+          }
+        }
+      },
+      {
+        "concurrency": 250,
+        "complete": true,
+        "objectRestarts": 0,
+        "queries": 65162,
+        "queriesPerRequestedTurn": 260.648,
+        "phases": {
+          "admission": {
+            "queries": 6500,
+            "queriesPerRequestedTurn": 26.0,
+            "queryMsTotal": 1920634,
+            "queryErrors": 0,
+            "connections": 5250,
+            "connectMsTotal": 15668,
+            "transactions": 500,
+            "transactionHoldMsTotal": 39785,
+            "transactionHoldMs": {
+              "samples": 500,
+              "p50": 79,
+              "p95": 91,
+              "p99": 114,
+              "max": 159
+            }
+          },
+          "hold": {
+            "queries": 3500,
+            "queriesPerRequestedTurn": 14.0,
+            "queryMsTotal": 639642,
+            "queryErrors": 0,
+            "connections": 1250,
+            "connectMsTotal": 3712,
+            "transactions": 250,
+            "transactionHoldMsTotal": 88281,
+            "transactionHoldMs": {
+              "samples": 250,
+              "p50": 351,
+              "p95": 411,
+              "p99": 428,
+              "max": 474
+            }
+          },
+          "renew": {
+            "queries": 0,
+            "queriesPerRequestedTurn": 0.0,
+            "queryMsTotal": 0,
+            "queryErrors": 0,
+            "connections": 0,
+            "connectMsTotal": 0,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            }
+          },
+          "settle": {
+            "queries": 11665,
+            "queriesPerRequestedTurn": 46.66,
+            "queryMsTotal": 4838850,
+            "queryErrors": 2,
+            "connections": 3572,
+            "connectMsTotal": 10650,
+            "transactions": 946,
+            "transactionHoldMsTotal": 455905,
+            "transactionHoldMs": {
+              "samples": 946,
+              "p50": 321,
+              "p95": 1132,
+              "p99": 1186,
+              "max": 1302
+            }
+          },
+          "usage": {
+            "queries": 750,
+            "queriesPerRequestedTurn": 3.0,
+            "queryMsTotal": 32017,
+            "queryErrors": 0,
+            "connections": 0,
+            "connectMsTotal": 0,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            }
+          },
+          "webhooks": {
+            "queries": 3562,
+            "queriesPerRequestedTurn": 14.248,
+            "queryMsTotal": 3231914,
+            "queryErrors": 0,
+            "connections": 2000,
+            "connectMsTotal": 41714,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            }
+          },
+          "history": {
+            "queries": 0,
+            "queriesPerRequestedTurn": 0.0,
+            "queryMsTotal": 0,
+            "queryErrors": 0,
+            "connections": 0,
+            "connectMsTotal": 0,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            }
+          },
+          "other": {
+            "queries": 36935,
+            "queriesPerRequestedTurn": 147.74,
+            "queryMsTotal": 18755751,
+            "queryErrors": 1,
+            "connections": 28288,
+            "connectMsTotal": 282084,
+            "transactions": 500,
+            "transactionHoldMsTotal": 39545,
+            "transactionHoldMs": {
+              "samples": 500,
+              "p50": 79,
+              "p95": 92,
+              "p99": 106,
+              "max": 130
+            }
+          },
+          "edge": {
+            "queries": 2250,
+            "queriesPerRequestedTurn": 9.0,
+            "queryMsTotal": 2414336,
+            "queryErrors": 1,
+            "connections": 2250,
+            "connectMsTotal": 5772,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            }
+          }
+        },
+        "load": {
+          "startedAt": "2026-11-06T03:37:23.204Z",
+          "finishedAt": "2026-11-06T03:38:32.139Z",
+          "completed": 248,
+          "failed": 2,
+          "errorRate": 0.008,
+          "durationMs": 68933.635354,
+          "turnsPerSecond": 3.5976631542269204,
+          "turnLatency": {
+            "samples": 248,
+            "p50Ms": 65367.607499999984,
+            "p95Ms": 66717.28371799999,
+            "p99Ms": 66920.83398599998
+          }
+        }
+      },
+      {
+        "concurrency": 500,
+        "complete": false,
+        "objectRestarts": 499,
+        "queries": null,
+        "queriesPerRequestedTurn": null,
+        "phases": {
+          "admission": {
+            "queries": 35,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 33075,
+            "queryErrors": 1,
+            "connections": 28,
+            "connectMsTotal": 77,
+            "transactions": 3,
+            "transactionHoldMsTotal": 261,
+            "transactionHoldMs": {
+              "samples": 3,
+              "p50": 86,
+              "p95": 89,
+              "p99": 89,
+              "max": 89
+            }
+          },
+          "hold": {
+            "queries": 14,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 1604,
+            "queryErrors": 0,
+            "connections": 5,
+            "connectMsTotal": 12,
+            "transactions": 1,
+            "transactionHoldMsTotal": 392,
+            "transactionHoldMs": {
+              "samples": 1,
+              "p50": 392,
+              "p95": 392,
+              "p99": 392,
+              "max": 392
+            }
+          },
+          "renew": {
+            "queries": 0,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 0,
+            "queryErrors": 0,
+            "connections": 0,
+            "connectMsTotal": 0,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            }
+          },
+          "settle": {
+            "queries": 56,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 3163,
+            "queryErrors": 0,
+            "connections": 17,
+            "connectMsTotal": 62,
+            "transactions": 5,
+            "transactionHoldMsTotal": 2716,
+            "transactionHoldMs": {
+              "samples": 5,
+              "p50": 473,
+              "p95": 944,
+              "p99": 944,
+              "max": 944
+            }
+          },
+          "usage": {
+            "queries": 3,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 116,
+            "queryErrors": 0,
+            "connections": 0,
+            "connectMsTotal": 0,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            }
+          },
+          "webhooks": {
+            "queries": 15,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 3721,
+            "queryErrors": 0,
+            "connections": 8,
+            "connectMsTotal": 147,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            }
+          },
+          "history": {
+            "queries": 0,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 0,
+            "queryErrors": 0,
+            "connections": 0,
+            "connectMsTotal": 0,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            }
+          },
+          "other": {
+            "queries": 222,
+            "queriesPerRequestedTurn": null,
+            "queryMsTotal": 139860,
+            "queryErrors": 0,
+            "connections": 169,
+            "connectMsTotal": 1235,
+            "transactions": 2,
+            "transactionHoldMsTotal": 161,
+            "transactionHoldMs": {
+              "samples": 2,
+              "p50": 80,
+              "p95": 81,
+              "p99": 81,
+              "max": 81
+            }
+          },
+          "edge": {
+            "queries": 4804,
+            "queriesPerRequestedTurn": 9.608,
+            "queryMsTotal": 6291045,
+            "queryErrors": 13,
+            "connections": 4804,
+            "connectMsTotal": 12523,
+            "transactions": 0,
+            "transactionHoldMsTotal": 0,
+            "transactionHoldMs": {
+              "samples": 0,
+              "p50": null,
+              "p95": null,
+              "p99": null,
+              "max": 0
+            }
+          }
+        },
+        "load": {
+          "startedAt": "2026-11-06T03:38:40.557Z",
+          "finishedAt": "2026-11-06T03:41:01.094Z",
+          "completed": 187,
+          "failed": 313,
+          "errorRate": 0.626,
+          "durationMs": 140534.58088599998,
+          "turnsPerSecond": 1.3306333488957585,
+          "turnLatency": {
+            "samples": 187,
+            "p50Ms": 115438.78359299997,
+            "p95Ms": 120150.58432700002,
+            "p99Ms": 121184.31372500001
+          }
+        },
+        "limitation": "Agent profiling was in memory; object recreation dropped counters. Raw surviving counts are lower bounds and are not normalized."
+      }
+    ]
+  },
+  "after": null
+}
