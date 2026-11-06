@@ -84,7 +84,7 @@ test("closing an attached connection fails in-flight calls without retrying them
     if (message.method === "tools/call") { calls++; queueMicrotask(handle.close); }
   });
   handle.start();
-  await assert.rejects(attached.call("charge", {}), /connection lost/);
+  await assert.rejects(attached.call("charge", {}), { code: "connection_lost", outcomeUnknown: true });
   assert.equal(calls, 1);
 });
 
