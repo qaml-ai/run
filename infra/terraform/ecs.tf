@@ -20,9 +20,6 @@ locals {
     }, var.storage_gc_enabled ? {
     AGENT_GC_ENABLED = "true"
     AGENT_GC_DRY_RUN = tostring(var.storage_gc_dry_run)
-    } : {}, var.discord_managed_enabled ? {
-    AGENT_DISCORD_MANAGED_ENABLED    = "true"
-    AGENT_DISCORD_MANAGED_SECRET_ARN = aws_secretsmanager_secret.runtime["discord-managed"].arn
     } : {}, {
     # Where people are sent; the other hostname is served too, and the issuer
     # stays the first hostname, which tool servers and MCP clients check.
@@ -170,7 +167,6 @@ resource "aws_iam_role_policy" "task" {
           aws_secretsmanager_secret.runtime["google-oauth"].arn,
           aws_secretsmanager_secret.runtime["stripe"].arn,
           aws_secretsmanager_secret.runtime["azure-openai"].arn,
-          aws_secretsmanager_secret.runtime["discord-managed"].arn,
           aws_secretsmanager_secret.runtime["journey"].arn,
           aws_secretsmanager_secret.runtime["journey-report"].arn,
         ]
