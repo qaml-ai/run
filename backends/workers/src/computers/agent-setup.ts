@@ -4,7 +4,18 @@ import type { OperateSetup } from "./objects.ts";
 import type { ComputerSettings } from "./egress.ts";
 
 // The parent link is written once, by the runtime, when a sub-agent is made (child-parent.ts); it never changes.
+// Bounded per isolate: past the limit the oldest entries go (a Map keeps insertion order), and a miss reads it again.
 const parents = new Map<string, string | null>();
+export const PARENT_CACHE_ENTRIES = 10_000;
+export function rememberParent(agent: string, parent: string | null) {
+  parents.delete(agent);
+  parents.set(agent, parent);
+  for (const oldest of parents.keys()) {
+    if (parents.size <= PARENT_CACHE_ENTRIES) break;
+    parents.delete(oldest);
+  }
+}
+export const parentCacheSize = () => parents.size;
 
 /**
  * What an agent's computer needs with each operation: its definition's settings, the identity its egress credentials
@@ -25,7 +36,7 @@ export async function computerSetup(env: ControlEnv & { AGENT_PUBLIC_URL?: strin
   if (parent === undefined) {
     const entry = await new Directory(env, conf.tenantId).get(conf.id);
     parent = entry?.parentAgentId ? env.AGENTS.idFromName(entry.parentAgentId).toString() : null;
-    if (entry) parents.set(conf.id, parent);
+    if (entry) rememberParent(conf.id, parent);
   }
   return { settings, identity: { issuer, claims }, ...(parent ? { parent } : {}) };
 }

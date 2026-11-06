@@ -214,3 +214,9 @@ test("a definition's instance size starts the machine at that size, and a new si
   await operate(at("standard-4"), { op: "exec", command: "true" });
   assert.deepEqual(calls.filter(call => call[0] === "destroy" || call[0] === "start").map(call => call[0] === "start" ? (call[1] as { instance: string }).instance : call[0]), ["destroy", "standard-4"]);
 });
+
+test("the parent-link cache stays bounded, dropping the oldest entries", async () => {
+  const { rememberParent, parentCacheSize, PARENT_CACHE_ENTRIES } = await import("../src/computers/agent-setup.ts");
+  for (let i = 0; i < PARENT_CACHE_ENTRIES + 50; i++) rememberParent(`client_${i}`, i % 2 ? `parent_${i}` : null);
+  assert.equal(parentCacheSize(), PARENT_CACHE_ENTRIES);
+});
