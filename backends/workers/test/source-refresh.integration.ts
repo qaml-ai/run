@@ -25,15 +25,15 @@ test("source refresh retries unavailable MCP discovery and controls schema outpu
   const read = async (query = "") => {
     const response = await fetch(`${fixture.url}/v1/agents/${id}${query}`, { headers });
     assert.equal(response.status, 200);
-    return response.json() as Promise<{ toolSources: { name: string; status: string; tools: { name: string; inputSchema?: unknown }[] }[] }>;
+    return response.json() as Promise<{ toolSources: { name: string; status: string; tools: { name: string; parameters?: unknown }[] }[] }>;
   };
   assert.equal((await read()).toolSources.find(source => source.name === "records")?.status, "error");
   available = true;
   const refreshed = (await read("?refresh=true&schemas=true")).toolSources.find(source => source.name === "records")!;
   assert.equal(refreshed.status, "listed");
   assert.equal(refreshed.tools[0].name, "records__lookup");
-  assert.deepEqual(refreshed.tools[0].inputSchema, { type: "object", properties: { id: { type: "string" } } });
-  assert.equal((await read()).toolSources.find(source => source.name === "records")!.tools[0].inputSchema, undefined);
+  assert.deepEqual(refreshed.tools[0].parameters, { type: "object", properties: { id: { type: "string" } } });
+  assert.equal((await read()).toolSources.find(source => source.name === "records")!.tools[0].parameters, undefined);
   assert.equal(listings, 1);
   assert.equal((await fetch(`${fixture.url}/v1/agents/${id}?refresh=yes`, { headers })).status, 400);
 });
