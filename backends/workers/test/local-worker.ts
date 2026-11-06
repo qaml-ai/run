@@ -91,18 +91,13 @@ export class LocalWorker {
       for (const connection of [socket, upstream]) {
         this.sockets.add(connection);
         connection.on("close", () => this.sockets.delete(connection));
+        connection.on("error", () => { socket.destroy(); upstream.destroy(); });
       }
       // A graceful FIN still permits an HTTP response. A disconnected client
       // needs a TCP reset so workerd cancels a request before its headers exist.
-      let resetRequested = false;
-      const resetUpstream = () => {
-        if (resetRequested || upstream.destroyed) return;
-        resetRequested = true;
-        upstream.resetAndDestroy();
-      };
-      socket.once("close", resetUpstream);
-      socket.on("error", () => { resetUpstream(); socket.destroy(); });
-      upstream.on("error", () => { socket.destroy(); upstream.destroy(); });
+      socket.once("close", () => {
+        if (!upstream.destroyed) upstream.resetAndDestroy();
+      });
       socket.pipe(upstream).pipe(socket);
     });
     const save = (data: Buffer) => {
