@@ -1,195 +1,150 @@
 {
   "backend": "node",
   "area": "human-input",
-  "nodeKey": "7eea15150beecf8474d6be9c01737e362ff6867c9e8270a8dd4d6989413accd2",
-  "suiteHash": "bc727e0714dc3687af7b2fb04b86cd93783f43fca9ce8fe72d770b46be771ea3",
-  "revision": "8041e7814b8120b413af09df3c2835dd38041faa",
-  "durationMs": 126897.170888,
+  "nodeKey": "b219d40c4e17bb810163d87e52c4fb4b8cafae1593a91ad514f0c6dec5e7f77b",
+  "suiteHash": "9a853f74fc2c7222de26e5c3fe27f254f90eb55aed41ffd3196ef10f0900eb86",
+  "revision": "2568ea72f62237cfa4a5e671e5e774164e35fc6c",
+  "durationMs": 109384.95860299999,
   "runtime": {
     "node": "v24.22.1",
     "platform": "linux",
     "arch": "x64"
   },
-  "recordedAt": "2026-11-06T14:40:07.459Z",
-  "expectedCases": 27,
+  "recordedAt": "2026-11-06T12:34:26.245Z",
+  "expectedCases": 22,
   "rows": [
     {
       "area": "human-input",
       "source": "tests/contract/areas/codemode-held-calls.contract.test.ts:1",
       "name": "a call a script makes while another waits on a person is held, and never made when the input closes unanswered",
       "status": "pass",
-      "durationMs": 5437.315015,
+      "durationMs": 6552.856346,
       "reason": "",
       "backend": "node"
     },
     {
       "area": "human-input",
-      "source": "tests/contract/areas/codemode-held-calls.contract.test.ts:2",
-      "name": "a call held while another waits on a person is made once no one answers in time and the runtime answers instead",
+      "source": "tests/human-input.test.ts:102",
+      "name": "abort cancels waiting inputs and closes the turn without the model; expiry does the same",
       "status": "pass",
-      "durationMs": 4860.18392,
+      "durationMs": 63468.279457,
       "reason": "",
       "backend": "node"
     },
     {
       "area": "human-input",
-      "source": "tests/human-input.test.ts:103",
-      "name": "abort cancels waiting inputs and closes the turn without the model; with onExpire close, expiry does the same",
-      "status": "pass",
-      "durationMs": 63840.459319,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "human-input",
-      "source": "tests/human-input.test.ts:126",
-      "name": "no answer in time: the runtime answers ask_user for the person, marked as its own, and the turn goes on",
-      "status": "pass",
-      "durationMs": 3358.076038,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "human-input",
-      "source": "tests/human-input.test.ts:158",
-      "name": "no answer in time: an approval is never given; the call does not run and the model goes on",
-      "status": "pass",
-      "durationMs": 3581.085281,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "human-input",
-      "source": "tests/human-input.test.ts:177",
-      "name": "no answer in time: a tool's own request (an MCP form) is cancelled with the same answer; the tool is not called again",
-      "status": "pass",
-      "durationMs": 3869.737721,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "human-input",
-      "source": "tests/human-input.test.ts:191",
-      "name": "no answer in time from code: the waiting call gets the runtime's answer as a decline or an answer would, and the script goes on",
-      "status": "pass",
-      "durationMs": 5682.772234,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "human-input",
-      "source": "tests/human-input.test.ts:221",
+      "source": "tests/human-input.test.ts:121",
       "name": "only whoever started the turn, or an approver, may answer",
       "status": "pass",
-      "durationMs": 3424.096903,
+      "durationMs": 3321.309657,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "human-input",
+      "source": "tests/human-input.test.ts:135",
+      "name": "an approval policy asks before a gated tool runs: the approved call runs once, with proof; a declined one never runs",
+      "status": "pass",
+      "durationMs": 5782.378118,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "human-input",
+      "source": "tests/human-input.test.ts:185",
+      "name": "an MCP server's input_required (form and url, and the older -32042) suspends the call; the retry carries the answers and its state",
+      "status": "pass",
+      "durationMs": 4795.372909,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "human-input",
+      "source": "tests/human-input.test.ts:227",
+      "name": "an agent with no one to ask does not tell servers it can elicit",
+      "status": "pass",
+      "durationMs": 3631.380622,
       "reason": "",
       "backend": "node"
     },
     {
       "area": "human-input",
       "source": "tests/human-input.test.ts:235",
-      "name": "an approval policy asks before a gated tool runs: the approved call runs once, with proof; a declined one never runs",
-      "status": "pass",
-      "durationMs": 5120.318061,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "human-input",
-      "source": "tests/human-input.test.ts:285",
-      "name": "an MCP server's input_required (form and url, and the older -32042) suspends the call; the retry carries the answers and its state",
-      "status": "pass",
-      "durationMs": 5156.232826,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "human-input",
-      "source": "tests/human-input.test.ts:327",
-      "name": "an agent with no one to ask does not tell servers it can elicit",
-      "status": "pass",
-      "durationMs": 3602.845698,
-      "reason": "",
-      "backend": "node"
-    },
-    {
-      "area": "human-input",
-      "source": "tests/human-input.test.ts:335",
       "name": "an attached tool asks with ctx.confirm and ctx.ask: the call runs again with the answers, everything before an ask included",
       "status": "pass",
-      "durationMs": 3674.255487,
+      "durationMs": 3583.155179,
       "reason": "",
       "backend": "node"
     },
     {
       "area": "human-input",
-      "source": "tests/human-input.test.ts:366",
+      "source": "tests/human-input.test.ts:266",
       "name": "inputs from parallel calls are one suspension: answered together, all or none, and listed in the tenant's inbox",
       "status": "pass",
-      "durationMs": 3600.522067,
+      "durationMs": 3389.286329,
       "reason": "",
       "backend": "node"
     },
     {
       "area": "human-input",
-      "source": "tests/human-input.test.ts:390",
+      "source": "tests/human-input.test.ts:290",
       "name": "an application answers with onInput, from its SDK",
       "status": "pass",
-      "durationMs": 3493.513052,
+      "durationMs": 3518.986776,
       "reason": "",
       "backend": "node"
     },
     {
       "area": "human-input",
-      "source": "tests/human-input.test.ts:407",
+      "source": "tests/human-input.test.ts:307",
       "name": "a remote MCP tool sets its own exposure in _meta, over its source's; approval keeps its exposure",
       "status": "pass",
-      "durationMs": 3182.454689,
+      "durationMs": 3152.794085,
       "reason": "",
       "backend": "node"
     },
     {
       "area": "human-input",
-      "source": "tests/human-input.test.ts:418",
+      "source": "tests/human-input.test.ts:318",
       "name": "an input for particular people must be answered naming who answers",
       "status": "pass",
-      "durationMs": 3384.674997,
+      "durationMs": 3629.747686,
       "reason": "",
       "backend": "node"
     },
     {
       "area": "human-input",
-      "source": "tests/human-input.test.ts:434",
+      "source": "tests/human-input.test.ts:334",
       "name": "code's calls that ask at once are one suspension: an approved one runs, a declined one rejects in the script",
       "status": "pass",
-      "durationMs": 4653.871594,
+      "durationMs": 4497.773664,
       "reason": "",
       "backend": "node"
     },
     {
       "area": "human-input",
-      "source": "tests/human-input.test.ts:454",
+      "source": "tests/human-input.test.ts:354",
       "name": "code pauses for people: an approval, a question and an MCP form, a run each, and every finished call runs once",
       "status": "pass",
-      "durationMs": 6730.808367,
+      "durationMs": 6150.060338,
       "reason": "",
       "backend": "node"
     },
     {
       "area": "human-input",
-      "source": "tests/human-input.test.ts:46",
+      "source": "tests/human-input.test.ts:45",
       "name": "ask_user suspends the turn; the answer, after the agent unloaded, resumes it with the answer as the call's result",
       "status": "pass",
-      "durationMs": 4429.022901,
+      "durationMs": 7721.601114,
       "reason": "",
       "backend": "node"
     },
     {
       "area": "human-input",
-      "source": "tests/human-input.test.ts:92",
+      "source": "tests/human-input.test.ts:91",
       "name": "a new message supersedes a waiting input; its call is closed and the prompt runs",
       "status": "pass",
-      "durationMs": 2344.208412,
+      "durationMs": 3953.9217,
       "reason": "",
       "backend": "node"
     },
@@ -198,7 +153,7 @@
       "source": "tests/judged-approval.test.ts:105",
       "name": "a judge that cannot answer asks the person rather than letting the call run",
       "status": "pass",
-      "durationMs": 3372.839493,
+      "durationMs": 3249.435535,
       "reason": "",
       "backend": "node"
     },
@@ -207,7 +162,7 @@
       "source": "tests/judged-approval.test.ts:113",
       "name": "an approval mode that is not one of the four is refused when the definition is saved",
       "status": "pass",
-      "durationMs": 2214.685292,
+      "durationMs": 2112.703218,
       "reason": "",
       "backend": "node"
     },
@@ -216,7 +171,7 @@
       "source": "tests/judged-approval.test.ts:120",
       "name": "after an approval, a judged call in the resumed turn is still judged against the request that started it",
       "status": "pass",
-      "durationMs": 3578.587171,
+      "durationMs": 3491.16675,
       "reason": "",
       "backend": "node"
     },
@@ -225,7 +180,7 @@
       "source": "tests/judged-approval.test.ts:137",
       "name": "a description longer than the model sees is cut for the judge, not refused",
       "status": "pass",
-      "durationMs": 3441.768028,
+      "durationMs": 3208.115673,
       "reason": "",
       "backend": "node"
     },
@@ -234,7 +189,7 @@
       "source": "tests/judged-approval.test.ts:62",
       "name": "a judged call the judge calls ordinary runs with nobody asked, and the judge sees the request and the arguments",
       "status": "pass",
-      "durationMs": 4148.375612,
+      "durationMs": 6290.859433,
       "reason": "",
       "backend": "node"
     },
@@ -243,7 +198,7 @@
       "source": "tests/judged-approval.test.ts:81",
       "name": "a judged call the judge calls exfiltration does not run, and the model reads the denial as the call's result",
       "status": "pass",
-      "durationMs": 3380.058188,
+      "durationMs": 3204.929523,
       "reason": "",
       "backend": "node"
     },
@@ -252,7 +207,7 @@
       "source": "tests/judged-approval.test.ts:89",
       "name": "a judged call the judge is unsure about asks the person, and the approved call runs without a second judgement",
       "status": "pass",
-      "durationMs": 3484.380317,
+      "durationMs": 3321.986006,
       "reason": "",
       "backend": "node"
     }
@@ -261,32 +216,32 @@
     {
       "index": 1,
       "total": 6,
-      "durationMs": 126897.170888
+      "durationMs": 109384.95860299999
     },
     {
       "index": 2,
       "total": 6,
-      "durationMs": 23849.467819
+      "durationMs": 25141.962924
     },
     {
       "index": 3,
       "total": 6,
-      "durationMs": 10500.447783000001
+      "durationMs": 12167.329834
     },
     {
       "index": 4,
       "total": 6,
-      "durationMs": 7098.497012999999
+      "durationMs": 6804.477715000001
     },
     {
       "index": 5,
       "total": 6,
-      "durationMs": 0.23135999999976775
+      "durationMs": 0.25839000000087253
     },
     {
       "index": 6,
       "total": 6,
-      "durationMs": 0.22701999999981126
+      "durationMs": 0.24141899999995076
     }
   ]
 }
