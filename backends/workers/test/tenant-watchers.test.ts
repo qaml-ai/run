@@ -15,7 +15,8 @@ test("tenant socket quotas survive waking, reconcile only their owner and releas
     try { const result = write(); db.exec("COMMIT"); return result; }
     catch (error) { db.exec("ROLLBACK"); throw error; }
   };
-  let watchers = new TenantWatchers(sql, atomic);
+  const clock = { now: 1000 };
+  let watchers = new TenantWatchers(sql, atomic, () => clock.now);
   assert.equal(watchers.canWatch(2), true);
   assert.equal(watchers.acquire("agent-a", "socket-1", 2), true);
   assert.equal(watchers.acquire("agent-b", "socket-2", 2), true);
@@ -23,7 +24,7 @@ test("tenant socket quotas survive waking, reconcile only their owner and releas
   assert.equal(watchers.acquire("agent-c", "socket-3", 2), false);
   assert.equal(watchers.acquire("agent-a", "socket-1", 2), true, "a replay consumes no slot");
   assert.equal(watchers.acquire("agent-b", "socket-1", 2), false, "IDs cannot change owners");
-  watchers = new TenantWatchers(sql, atomic);
+  watchers = new TenantWatchers(sql, atomic, () => clock.now);
   assert.equal(watchers.canWatch(2), false, "waking preserves all live reservations");
   watchers.reconcile("agent-a", ["socket-1", "unknown"]);
   assert.equal(watchers.canWatch(2), false);
@@ -46,4 +47,12 @@ test("tenant socket quotas survive waking, reconcile only their owner and releas
   assert.equal(watchers.acquire("agent-b", "poll:1", 100), false, "a socket wake leaves an active poll intact");
   assert.equal(watchers.canWatch(3), true);
   assert.equal(watchers.canWatch(2), false);
+  clock.now += 119_999;
+  assert.equal(watchers.canWatch(2), false, "a poll stays reserved throughout its bounded HTTP wait");
+  clock.now++;
+  assert.equal(watchers.canWatch(2), true, "an abandoned poll expires without a heartbeat");
+  assert.equal(watchers.canWatch(1), false, "the socket remains reserved after the poll expires");
+  assert.equal(watchers.acquire("agent-a", "poll:2", 2), true);
+  clock.now += 120_000;
+  assert.equal(watchers.acquire("agent-b", "socket-new", 2), true, "acquiring also prunes abandoned polls");
 });
