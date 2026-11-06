@@ -23,7 +23,7 @@ export function remoteDriver(env: RemoteBindings, tenant: string, agent: string,
     return {
       async create(id) { await namespace.getByName(id).operate({ op: 'exec', argv: ['true'] }); return { id }; },
       call: (ref, _op, args) => namespace.getByName(ref.id).operate({ op: 'exec', argv: ['bash', '-lc', args.command], timeoutMs: Math.min(args.timeoutSeconds * 1000, 30_000) }),
-      async close(ref) { await namespace.getByName(ref.id).operate({ op: 'sleep' }); },
+      async close(ref) { await namespace.getByName(ref.id).purge(); },
     };
   }
   const fake = testEndpoint(env.TEST_COMPUTER_ENDPOINT, env);

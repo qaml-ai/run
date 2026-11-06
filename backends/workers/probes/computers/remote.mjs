@@ -1,17 +1,19 @@
-// Exactly one synthetic native Container; no database or provider credentials.
+// Four synthetic native computers (one snapshotted, three restored from it); no database or provider credentials.
 import { readFile, writeFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-const root=resolve(import.meta.dirname,'../..'),name='camelrun-proto-platform-container',account='85bbd288051330fb51ee1c86031a299b';
+const root=resolve(import.meta.dirname,'../..'),name='camelrun-probe-do-computer',account='85bbd288051330fb51ee1c86031a299b';
 const token=process.env.CLOUDFLARE_API_TOKEN;if(!token)throw Error('Cloudflare credential unavailable');
-const bearer=randomBytes(32).toString('hex'),state=await mkdtemp(join(tmpdir(),'camelrun-platform-container-'));
+const bearer=randomBytes(32).toString('hex'),state=await mkdtemp(join(tmpdir(),'camelrun-probe-do-computer-'));
 await mkdir(join(state,'docker'));
 // Retain the installed buildx plugin while keeping registry login state ephemeral.
 await writeFile(join(state,'docker','config.json'),JSON.stringify({cliPluginsExtraDirs:[join(homedir(),'.docker/cli-plugins'),'/opt/homebrew/lib/docker/cli-plugins','/Applications/Docker.app/Contents/Resources/cli-plugins']}));
-const report={name,account,startedAt:new Date().toISOString(),budgetUsd:5,operations:[],cleanup:{}};
-const path=join(root,'measurements/platform-container-cloud.json');
+// --cleanup only removes a previous run's resources (after a run that failed during cleanup), recorded in the same report.
+const cleanupOnly=process.argv.includes('--cleanup');
+const path=join(root,'measurements/computer-snapshot-cloud.json');
+const report=cleanupOnly?{...JSON.parse(await readFile(path,'utf8')),cleanup:{},cleanupRerunAt:new Date().toISOString()}:{name,account,startedAt:new Date().toISOString(),budgetUsd:5,operations:[],cleanup:{}};
 const clean=value=>String(value).replaceAll(token,'[redacted]').replaceAll(bearer,'[redacted]').replace(/\u001b\[[0-9;]*m/g,'');
 const save=()=>writeFile(path,clean(JSON.stringify(report,null,2))+'\n');
 const phase=value=>{console.log(value);report.operations.push({phase:value,at:new Date().toISOString()});};
@@ -36,6 +38,7 @@ async function namespaces(){const rows=[];for(let page=1;page<=20;page++){const 
 const applications=async()=>{const value=await api('/containers/applications');return Array.isArray(value)?value:value.applications??[];};
 let owned=false,base;
 try{
+  if(cleanupOnly){owned=true;base=`https://${name}.${(await api('/workers/subdomain')).subdomain}.workers.dev`;throw Object.assign(Error('cleanup only'),{cleanupOnly:true});}
   phase('preflight');
   const [workers,ns,apps,priorImages]=await Promise.all([api('/workers/scripts'),namespaces(),applications(),images()]);
   if(workers.some(w=>w.id===name)||ns.some(n=>n.script===name)||apps.some(a=>a.name===name)||priorImages.length)throw Error('Probe name already exists; refusing reuse');
@@ -52,13 +55,23 @@ try{
     await new Promise(r=>setTimeout(r,2000));
   }
   phase('executing');
-  let response;for(let i=0;i<45;i++){response=await fetch(base+'/run',{method:'POST',headers:{authorization:`Bearer ${bearer}`},signal:AbortSignal.timeout(90000)});if(![401,404].includes(response.status)||i===44)break;await response.body?.cancel();await new Promise(r=>setTimeout(r,1000));}
-  report.status=response.status;const result=await response.text();try{report.result=JSON.parse(result);}catch{report.result=clean(result.slice(0,1500));}await save();
-  if(!response.ok||report.result.command?.exitCode!==0||report.result.command?.stdout!=='container-probe-ready'||report.result.read?.content!=='synthetic-container-file')throw Error('Native container lifecycle assertions failed');
+  // Three runs: the first after a deploy may include the image's first pull; each run starts and purges its own four
+  // computers. A failed run (HTTP 500, e.g. while the new image propagates) is recorded and retried, at most 8 times.
+  report.runs=[];report.failedRuns=[];
+  for(let i=0;report.runs.length<3;i++){
+    const response=await fetch(base+'/run',{method:'POST',headers:{authorization:`Bearer ${bearer}`},signal:AbortSignal.timeout(240000)});
+    const text=await response.text();let result;try{result=JSON.parse(text);}catch{result=clean(text.slice(0,1500));}
+    if(response.ok){report.runs.push({at:new Date().toISOString(),...result});await save();continue;}
+    report.failedRuns.push({status:response.status,result});await save();
+    if(report.failedRuns.length>8)throw Error('Probe runs kept failing');
+    await new Promise(r=>setTimeout(r,[401,404].includes(response.status)?1000:15000));
+  }
+  report.result=report.runs[0];
+  if(report.runs.some(run=>run.command?.exitCode!==0||run.command?.stdout!=='container-probe-ready'||run.forks?.length!==3||run.forks.some(f=>f.read?.content!=='synthetic-container-file')))throw Error('Native container snapshot assertions failed');
   report.applications=(await applications()).filter(a=>a.name===name).map(a=>({id:a.id,name:a.name}));
-  for(const app of report.applications)report.instancesAfterStop=await api(`/containers/applications/${app.id}/instances-v2`);
+  for(const app of report.applications)report.instancesAfterStop=await api(`/containers/applications/${app.id}/instances-v2`).catch(error=>({error:clean(error)}));
   phase('verified');
-}catch(error){report.error=clean(error);await save();process.exitCode=1;}
+}catch(error){if(!error.cleanupOnly){report.error=clean(error);await save();process.exitCode=1;}}
 finally{
   phase('cleanup');const errors=[];const attempt=async(label,run)=>{try{return await run();}catch(error){errors.push({label,error:clean(error)});}};
   if(owned){
