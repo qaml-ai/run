@@ -40,7 +40,9 @@ Run heavy dependency installs, typechecking, builds and tests on the Sprites poo
 Wrangler uploads may run on the operator's laptop. The deploy script creates
 missing named R2/Queue resources, deploys the sandbox and fake model before the
 API, and creates missing signing/encryption secrets without displaying values.
-Repeat deploys preserve those secrets. Never rotate `AGENT_SECRETS_KEY` casually:
+Repeat deploys preserve those secrets and set the measured Hyperdrive limit to
+12 connections. `PILOT_ORIGIN_CONNECTION_LIMIT` overrides that value after an
+operator reviews database capacity. Never rotate `AGENT_SECRETS_KEY` casually:
 it encrypts stored provider credentials. Never put secrets in `vars`.
 
 The platform model secret was created by the CTO on 2026-11-06. Deployments
@@ -106,6 +108,20 @@ PILOT_FAKE_URL=https://camelrun-pilot-fakemodel.miguel-85b.workers.dev \
   node backends/workers/scripts/pilot-load-run.mjs
 ```
 
+Workers live streams are WebSocket-only by CTO decision on 2026-11-05. The SDKs'
+default capability offer selects a hibernatable WebSocket. A live request without
+that capability or a WebSocket upgrade fails with HTTP 406, code
+`WEBSOCKET_REQUIRED`, and a message directing the caller to WebSocket. Bounded
+JSON event polling remains available. The Node runtime retains SSE, and the SDKs
+retain their Node compatibility. The pilot idle check uses the default SDK path.
+
+Twelve exact SSE-dependent cases have been added to the accepted-differences
+registry (17 total). They cover direct SSE attachment, CORS content type, HTTP
+response-body lifetime instrumentation, SSE proxies and explicit SSE watchers.
+SDK-only tests of Node-compatible SSE still run. Shared contract stream helpers
+negotiate through the existing SDK without changing assertions; Node still runs
+every accepted-difference case.
+
 The load driver leases a Sprite through `scripts/sprite-test`; credentials travel
 through stdin and a kernel FIFO, never in command arguments, reports or regular
 files. It ramps through 1, 10, 50, 100, 250, 500, 1,000 and 2,000 metered agents,
@@ -115,7 +131,32 @@ Fake model calls cost no provider money. Custom provider calls settle tenant
 active-time charges; enabled end-user metering exercises nonzero reservation and
 settlement through Hyperdrive. They do not reserve platform model-token credit.
 
-Validation results and observed costs are recorded below after the live runs.
+The first 1/10-agent warmup at the original 20-connection Hyperdrive limit
+passed one turn, then completed 8/10 turns (20% errors), and stopped as required.
+The error included PostgreSQL `53300` (too many connections). Live origin
+inspection found `max_connections=25`, three reserved slots, and 18 application
+connections plus Hyperdrive/database-internal connections. The pilot Hyperdrive
+limit was lowered to **12**, not raised; caching remains disabled. Raising it
+would exceed this database's headroom. Larger capacity needs an independently
+reviewed PlanetScale resize. Subsequent results are recorded below.
+
+The image transport now uses the B path for R2-backed image references: request
+scoped markers pass through Pi and expand directly into a known-length streamed
+model request inside the agent. OpenAI-compatible endpoints (including
+OpenRouter), Anthropic and Google use it. Native Bedrock and Workers AI retain
+the bounded materialization path. Existing limits remain 40 images and 20 MiB of
+base64 image data per model request.
+
+## Verified source checks
+
+- Workers and pilot SDK typechecks pass on Sprites.
+- 15 image-stream/fake-provider unit checks pass, including missing objects,
+  nonce isolation, bounded chunks, retries, abort and early HTTP failure.
+- Eight workerd image/file integration checks pass.
+- Five secret/credential policy checks pass.
+- Cold-object account deletion and agent spend regression checks pass. A second
+  regression covers recovery of an already-revoked, partially purged agent.
+- Documentation build and both `llms.txt` checks pass.
 
 ## Limits and rollback
 
