@@ -49,7 +49,7 @@ function origin(value: string, name: string) {
 }
 
 /** The runtime's origins from its environment; `fallback` is where it listens, when AGENT_PUBLIC_URL is unset. */
-export function publicOrigins(env: NodeJS.ProcessEnv, fallback: string) {
+export function publicOrigins(env: Pick<NodeJS.ProcessEnv, "AGENT_PUBLIC_URL" | "AGENT_PUBLIC_ALIASES" | "AGENT_ISSUER">, fallback: string) {
   const aliases = (env.AGENT_PUBLIC_ALIASES ?? "").split(",").map(value => value.trim()).filter(Boolean);
   if (!env.AGENT_PUBLIC_URL && (aliases.length || env.AGENT_ISSUER)) throw new Error("AGENT_PUBLIC_ALIASES and AGENT_ISSUER need AGENT_PUBLIC_URL");
   return new PublicOrigins(env.AGENT_PUBLIC_URL || fallback, aliases, env.AGENT_ISSUER || undefined);
