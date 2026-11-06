@@ -155,10 +155,10 @@ async function entryCalls(t: T, apiKeys: Record<string, string>) {
   const days = await until(async () => {
     const found = (await r.call("/v1/usage", { token: ENTRY })).json.days;
     return found.some((day: any) => day.kind === "decision") && found.some((day: any) => day.model === "brave/web_search")
-      && found.some((day: any) => !day.kind && day.model.endsWith("gpt-5.5-pro") && day.responses === 2) && found;
+      && found.some((day: any) => day.kind === "turn" && day.model.endsWith("gpt-5.5-pro") && day.responses === 2) && found;
   }, "the calls' usage");
   const usage = {
-    model: days.find((day: any) => !day.kind && day.model.endsWith("gpt-5.5-pro")),
+    model: days.find((day: any) => day.kind === "turn" && day.model.endsWith("gpt-5.5-pro")),
     search: days.find((day: any) => day.model === "brave/web_search"),
     decision: days.find((day: any) => day.kind === "decision"),
   };
