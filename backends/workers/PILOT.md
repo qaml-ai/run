@@ -44,7 +44,7 @@ Wrangler uploads may run on the operator's laptop. The deploy script creates
 missing named R2/Queue resources, deploys the sandbox and fake model before the
 API, and creates missing signing/encryption secrets without displaying values.
 Repeat deploys preserve those secrets and set the measured Hyperdrive limit to
-12 connections. `PILOT_ORIGIN_CONNECTION_LIMIT` overrides that value after an
+16 connections. `PILOT_ORIGIN_CONNECTION_LIMIT` overrides that value after an
 operator reviews database capacity. Never rotate `AGENT_SECRETS_KEY` casually:
 it encrypts stored provider credentials. Never put secrets in `vars`.
 
@@ -106,6 +106,7 @@ Run disposable deployed validation:
 ```sh
 PILOT_FAKE_URL=https://camelrun-pilot-fakemodel.miguel-85b.workers.dev \
   PILOT_AGENT_NAMESPACE_ID=b7a05e64caac4a9dbd59df0956a89a5c \
+  PILOT_IDLE_MS=180000 \
   node --experimental-strip-types backends/workers/scripts/pilot-validate.mjs
 PILOT_FAKE_URL=https://camelrun-pilot-fakemodel.miguel-85b.workers.dev \
   node backends/workers/scripts/pilot-load-run.mjs
@@ -136,6 +137,23 @@ SDK-only tests of Node-compatible SSE still run. Shared contract stream helpers
 negotiate through the existing SDK without changing assertions; Node still runs
 every accepted-difference case.
 
+The first complete deployed fake-provider smoke passed **10/10** checks on
+2026-11-06: TypeScript create/message/history and WebSocket streaming, human
+input, schedule alarms, files, image streaming, code mode, delegation, Python
+message/stream/history, and the default SDK idle connection. Separate public
+probes confirmed agent SSE watch fails with HTTP 406 and `WEBSOCKET_REQUIRED`,
+and standalone MCP GET fails with HTTP 405. The connection stayed open for
+90,001 ms with no frames and received a wake turn over the same socket.
+This establishes behavior; it does not isolate billed duration from Cloudflare's
+minute buckets. The final repeat uses 180 seconds to include complete idle
+minutes. See `measurements/pilot-smoke-90s.json` for the first run and object ID.
+
+That run made 15 settled synthetic model attempts, with no provider charge and
+$0.000147 of tenant active-time charges. Its temporary tenant, agent rows, API
+keys, providers, volumes and outstanding holds were removed; accounting audit
+records remain. Final deployment verification and the single real-model call
+are pending the remaining transport fixes.
+
 The load driver leases a Sprite through `scripts/sprite-test`; credentials travel
 through stdin and a kernel FIFO, never in command arguments, reports or regular
 files. It ramps through 1, 10, 50, 100, 250, 500, 1,000 and 2,000 metered agents,
@@ -150,9 +168,44 @@ passed one turn, then completed 8/10 turns (20% errors), and stopped as required
 The error included PostgreSQL `53300` (too many connections). Live origin
 inspection found `max_connections=25`, three reserved slots, and 18 application
 connections plus Hyperdrive/database-internal connections. The pilot Hyperdrive
-limit was lowered to **12**, not raised; caching remains disabled. Raising it
-would exceed this database's headroom. Larger capacity needs an independently
-reviewed PlanetScale resize. Subsequent results are recorded below.
+limit was initially lowered to **12**; caching remains disabled. After the load
+test demonstrated a saturated regional pool, it was raised to **16** and
+verified live. Returning to 20 would leave too little room for the database's
+other connections. Review origin capacity before any further increase.
+
+At the 12-connection limit after the pool fixes, all **2,000 agents were created**, and the
+1-, 10-, 50- and 100-concurrent-turn stages completed without errors. The
+250-turn stage crossed the 5% stop threshold, so the 500-, 1,000- and 2,000-turn
+stages were not run. This proves provisioning at 2,000 agents and an error-free
+100-concurrent-turn sample; it does not prove 2,000 concurrent turns.
+
+| Concurrent turns | Observed completed | Errors | Turns/second | p50 / p95 / p99 |
+| --- | --- | --- | --- | --- |
+| 1 | 1 | 0 | 0.04349 | 21.711 / 21.711 / 21.711 s |
+| 10 | 10 | 0 | 0.37023 | 24.328 / 25.279 / 25.279 s |
+| 50 | 50 | 0 | 1.423 | 32.70 / 33.55 / 33.69 s |
+| 100 | 100 | 0 | 2.062 | 46.41 / 47.56 / 47.71 s |
+| 250 | 167 | 83 (33.2%) | 1.690 | 94.46 / 96.07 / 96.92 s |
+
+The fake provider adds a fixed 15-second delay; these latencies include it and
+the client round trips. Percentiles describe observed completed turns. At 250,
+all prompts were accepted (p95 acceptance 16.73 seconds). There were 79 client
+status-read timeouts at 40 seconds and four HTTP 500 responses. By the end of
+the stage, 249/250 model attempts were settled, with one still pending. Client
+observation failures therefore exceed the number of failed backend turns.
+The peak was 240 simultaneous end-user credit holds, proving actual concurrent
+reserves through Hyperdrive. Cumulative tenant active-time charges before
+cleanup were $0.057711; this is neither a provider charge nor a Cloudflare
+invoice. Final cleanup of the 20 load tenants is pending.
+
+During the 250-turn stage, the IAD Hyperdrive pool had two connections, averaged
+96.9 waiting clients and peaked at 157. Completed uncached queries averaged
+1,094 ms waiting for a connection versus about 4 ms of query execution; this
+supports the diagnosis of pool saturation. That window recorded no Durable
+Object CPU-limit, memory-limit or fatal internal errors. Logs also showed long
+`camel-wake` dispatch warnings, so pool saturation is not assumed to explain
+every timeout. The 16-connection setting has not passed a repeat of this ramp.
+See `measurements/pilot-load-telemetry.json`.
 
 The image transport now uses the B path for R2-backed image references: request
 scoped markers pass through Pi and expand directly into a known-length streamed
