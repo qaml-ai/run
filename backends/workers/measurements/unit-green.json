@@ -19,7 +19,7 @@
       "failedParentContainers": 2
     }
   },
-  "counting": "51 baseline failing leaf tests or failed module loads, plus 7 additionally exposed tests, for 58 classified records. Two failing parent containers duplicate their failed subtests and are not classified again. Additional records cover the restored agent-tools assertion, Node startup readiness, durable-clock time limits, OAuth cancellation ownership, aborted fake-model uploads, run-stream completion, and an unreproduced native fixture startup exit. Unknown original causes remain explicit.",
+  "counting": "51 baseline failing leaf tests or failed module loads, plus 8 additionally exposed tests, for 59 classified records. Two failing parent containers duplicate their failed subtests and are not classified again. Additional records cover the restored agent-tools assertion, Node startup readiness, durable-clock time limits, OAuth cancellation ownership, aborted fake-model uploads, run-stream completion, an unreproduced native fixture startup exit, and a malformed release-note heading caught by CI. Unknown original causes remain explicit.",
   "tests": [
     {
       "file": "backends/workers/test/admission.test.ts",
@@ -979,6 +979,42 @@
       "validation": "Sprite snapshot 9665d9bba74bbd074cd199faf15cae911e782058: diagnostics 3/3 pass, backend typecheck pass, exact failed fork case 1/1 pass in 36219.413435ms, command exit 0. This single diagnostic run did not reproduce the native startup failure. Artifacts /tmp/workers-exit-diagnostic/shard-1. Final complete lifecycle group at commit 240fa9f99f3ca71b118517b56859e1ff1b748c24 passed 100 cases with 2 accepted differences, 0 failures and command exit 0 in 526s; artifacts /tmp/workers-final-lifecycle/shard-1. Original cause remains unconfirmed.",
       "suite": "contract-workers",
       "discovered": "final-validation"
+    },
+    {
+      "file": "tests/docs.test.ts",
+      "test": "unreleased notes are a file per change, gathered by heading into a version's notes",
+      "classification": "b",
+      "suite": "ci-docs",
+      "discovered": "CI",
+      "reason": "The existing Workers transport release-note fragment had no section heading. The source release-note parser requires every fragment to begin with a ### heading and failed before gathering the notes. The assertion is correct.",
+      "change": "Add the required Event transport negotiation heading; preserve the note body and every docs assertion.",
+      "evidence": [
+        "scripts/release-notes.ts:14-18",
+        "docs/operations/unreleased/workers-event-transport.md:1",
+        "tests/docs.test.ts:190-197"
+      ],
+      "originalFailure": {
+        "revision": "c1d92ec707cf46fcef06f879dd1c0a3e9f814d48",
+        "runId": 42169760218,
+        "jobId": 127734850591,
+        "error": "workers-event-transport.md: begin with a \"### <heading>\" section"
+      },
+      "validation": {
+        "snapshot": "fcc993fa",
+        "sprite": "rt-pool-18",
+        "command": "npm run docs; node --experimental-strip-types --test --test-name-pattern=\"llms.txt\" tests/docs.test.ts; exact CI docs test command",
+        "docsGeneration": "pass",
+        "llms": {
+          "passed": 2,
+          "failed": 0
+        },
+        "ciDocs": {
+          "passed": 45,
+          "failed": 0
+        },
+        "exitCode": 0,
+        "artifacts": "/tmp/workers-docs-git-validation/shard-1"
+      }
     }
   ],
   "validation": {
@@ -1109,7 +1145,7 @@
       ]
     },
     "parity": {
-      "status": "pass",
+      "status": "pass before docs-only heading fix; final refreshed run pending",
       "command": "npm run parity",
       "revision": "240fa9f99f3ca71b118517b56859e1ff1b748c24",
       "nodeKey": "032bb59c89da8ee61077af9a16552c87c8b6369fb011fe22b49fbf451e02afaa",
@@ -1172,17 +1208,34 @@
     },
     "invocationCorrections": [
       "Run group jobs with bash -c: login-shell .bash_logout plus errexit changed successful npm exits into failures. All groups are verified with captured command exit codes.",
-      "The initial full-parity local inventory lacked dependencies. Reused the existing main-worktree node_modules cache for local report assembly; all actual contract execution remains on Sprites."
+      "The initial full-parity local inventory lacked dependencies. Reused the existing main-worktree node_modules cache for local report assembly; all actual contract execution remains on Sprites.",
+      "CI helper tests need Git metadata. The first docs validation used the normal Sprite archive without .git; the corrected command creates and removes a temporary Git repository on the Sprite."
     ],
     "baseRevision": "20443b494d9079a5023b818f6d4fb2b0c64a6540",
-    "validatedCodeRevision": "240fa9f99f3ca71b118517b56859e1ff1b748c24"
+    "validatedCodeRevision": "240fa9f99f3ca71b118517b56859e1ff1b748c24",
+    "docs": {
+      "snapshot": "fcc993fa",
+      "sprite": "rt-pool-18",
+      "command": "npm run docs; node --experimental-strip-types --test --test-name-pattern=\"llms.txt\" tests/docs.test.ts; exact CI docs test command",
+      "docsGeneration": "pass",
+      "llms": {
+        "passed": 2,
+        "failed": 0
+      },
+      "ciDocs": {
+        "passed": 45,
+        "failed": 0
+      },
+      "exitCode": 0,
+      "artifacts": "/tmp/workers-docs-git-validation/shard-1"
+    }
   },
   "countsByClassification": {
     "a": 42,
-    "b": 11,
+    "b": 12,
     "c": 5
   },
-  "classifiedTests": 58,
+  "classifiedTests": 59,
   "realBugs": [
     {
       "issue": "Creation accepted null keyScope; clearing a scope also needed removal before stored-configuration revalidation.",
@@ -1207,9 +1260,18 @@
     {
       "issue": "Completed Workers run streams waited for the physical WebSocket close handshake instead of sending the existing protocol close marker.",
       "tests": 1
+    },
+    {
+      "issue": "An existing Workers release-note fragment omitted the section heading required by the release-note parser.",
+      "tests": 1
     }
   ],
   "countsBySuite": {
+    "ci-docs": {
+      "a": 0,
+      "b": 1,
+      "c": 0
+    },
     "contract-node": {
       "a": 0,
       "b": 0,
@@ -1232,5 +1294,5 @@
     }
   },
   "baselineClassifiedTests": 51,
-  "additionalExposedTests": 7
+  "additionalExposedTests": 8
 }
