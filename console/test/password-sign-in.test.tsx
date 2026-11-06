@@ -36,15 +36,16 @@ describe("email and password sign-in", () => {
     expect(location.pathname).toBe("/console/");
   });
 
-  it("passes a Discord install to resume, and goes there", async () => {
+  it("passes an app's consent page to resume, and goes there", async () => {
     const assign = vi.fn();
     vi.stubGlobal("location", { ...location, assign });
-    reply = () => json({ tenant: "chatgpt-review", next: "/console/discord/install" });
-    render(<PasswordForm onSignedIn={() => {}} next="/console/discord/install" />);
+    const next = "/oauth/authorize?client_id=x&state=y";
+    reply = () => json({ tenant: "chatgpt-review", next });
+    render(<PasswordForm onSignedIn={() => {}} next={next} />);
     fill("reviewer@example.com", "correct horse battery");
     fireEvent.click(screen.getByRole("button", { name: "Sign in with email" }));
-    await waitFor(() => expect(assign).toHaveBeenCalledWith("/console/discord/install"));
-    expect((calls[0].body as { next?: string }).next).toBe("/console/discord/install");
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(next));
+    expect((calls[0].body as { next?: string }).next).toBe(next);
   });
 
   it("says why a sign-in failed, and clears the password", async () => {

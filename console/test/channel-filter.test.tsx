@@ -14,7 +14,7 @@ function stub() {
     const method = init?.method ?? 'GET', body = init?.body ? JSON.parse(String(init.body)) : undefined;
     if (method !== 'GET') writes.push({ path, method, body });
     if (path.endsWith('/deliver')) events = [{ ...held, deliverableUntil: undefined, message: undefined, deliveredAt: 1790000001000 }, failed];
-    const result = path.startsWith('/v1/channels/ch_one/events') ? { events } : path === '/v1/channels' ? [channel] : path === '/v1/channels/ch_one' ? channel : path === '/console/discord/config' ? { enabled: false } : [];
+    const result = path.startsWith('/v1/channels/ch_one/events') ? { events } : path === '/v1/channels' ? [channel] : path === '/v1/channels/ch_one' ? channel : [];
     return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
   }));
   return writes;
@@ -50,4 +50,14 @@ it('edits a channel\'s filter, and removes it', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Save' }));
   await waitFor(() => expect(writes.length).toBe(2));
   expect(writes[1].body.filter).toBeNull();
+});
+
+it('shows a retired Discord channel as disabled, with Delete only, and offers no Discord type', async () => {
+  const retired = { id: 'ch_old', type: 'discord', name: 'Old bot', definition: 'def_one', access: { public: true, allow: [] }, limits: { perSenderPerMinute: 10, turnsPerDay: 1000 }, account: { id: '1' }, credentials: {}, createdAt: 1790000000000, disabled: true };
+  vi.stubGlobal('fetch', vi.fn(async (path: string) => new Response(JSON.stringify(path === '/v1/channels' ? [retired] : []), { headers: { 'Content-Type': 'application/json' } })));
+  render(<ChannelsPage />);
+  expect(await screen.findByText('Disabled')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Delete' })).toBeTruthy();
+  expect(screen.queryByText(/Add Camel to Discord/)).toBeNull();
 });

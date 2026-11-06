@@ -18,7 +18,7 @@ export type AdminEnv = PostgresEnv & {
   ADMIN_JOURNEY_TRACKING?: string;
 };
 const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { "cache-control": "no-store" } });
-const CHANNELS = new Set(["discord-managed", "discord", "slack", "telegram", "email", "github", "webhook", "voice"]);
+const CHANNELS = new Set(["slack", "telegram", "email", "github", "webhook", "voice"]);
 
 /** Reuse the Node dashboard's SQL. Its channel/voice and ECS-node diagnostics
  * are deliberately excluded; a Workers deployment has no ECS actor leases. */

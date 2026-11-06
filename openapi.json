@@ -8780,7 +8780,7 @@
           },
           "webhookUrl": {
             "type": "string",
-            "description": "Where the service delivers messages. Telegram's is registered for you; paste Slack's into the app's Event Subscriptions. Discord channels have none: they connect to Discord's gateway. Paste GitHub's into the app's Webhook URL"
+            "description": "Where the service delivers messages. Telegram's is registered for you; paste Slack's into the app's Event Subscriptions. Paste GitHub's into the app's Webhook URL"
           },
           "definition": {
             "type": "string",
@@ -8871,6 +8871,10 @@
           },
           "updatedAt": {
             "type": "number"
+          },
+          "disabled": {
+            "type": "boolean",
+            "description": "True for a channel of a type this runtime no longer serves (discord, discord-managed): kept as it was, never answered, and deletable"
           }
         },
         "required": [
@@ -8894,11 +8898,11 @@
             "enum": [
               "telegram",
               "slack",
-              "discord",
               "github",
               "webhook",
               "email"
-            ]
+            ],
+            "description": "Discord is not a channel type: Discord bots live in camelBots (https://bots.camelai.com), and creating a discord channel is refused (400 CHANNEL_TYPE_RETIRED)"
           },
           "name": {
             "type": "string",
@@ -8911,7 +8915,7 @@
               "type": "string",
               "maxLength": 4096
             },
-            "description": "Telegram: { botToken }. Slack: { botToken, signingSecret }. Discord: { botToken }. GitHub: { appId, privateKey, webhookSecret }. Webhook: { secret, replyUrl? }. Email: none. Required for every other type; stored encrypted and never returned"
+            "description": "Telegram: { botToken }. Slack: { botToken, signingSecret }. GitHub: { appId, privateKey, webhookSecret }. Webhook: { secret, replyUrl? }. Email: none. Required for every other type; stored encrypted and never returned"
           },
           "definition": {
             "type": "string",
@@ -8932,7 +8936,7 @@
                   "maxLength": 64
                 },
                 "maxItems": 1000,
-                "description": "Senders allowed in: user ids, or @usernames (Telegram, Discord)"
+                "description": "Senders allowed in: user ids, or @usernames (Telegram)"
               }
             }
           },
@@ -9025,7 +9029,7 @@
               "type": "string",
               "maxLength": 4096
             },
-            "description": "Telegram: { botToken }. Slack: { botToken, signingSecret }. Discord: { botToken }. GitHub: { appId, privateKey, webhookSecret }. Webhook: { secret, replyUrl? }. Email: none. Required for every other type; stored encrypted and never returned"
+            "description": "Telegram: { botToken }. Slack: { botToken, signingSecret }. GitHub: { appId, privateKey, webhookSecret }. Webhook: { secret, replyUrl? }. Email: none. Required for every other type; stored encrypted and never returned"
           },
           "definition": {
             "type": "string",
@@ -9046,7 +9050,7 @@
                   "maxLength": 64
                 },
                 "maxItems": 1000,
-                "description": "Senders allowed in: user ids, or @usernames (Telegram, Discord)"
+                "description": "Senders allowed in: user ids, or @usernames (Telegram)"
               }
             }
           },

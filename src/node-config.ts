@@ -173,9 +173,7 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
       domain: env.AGENT_EMAIL_DOMAIN, topics: (env.AGENT_EMAIL_SNS_TOPICS ?? "").split(",").map(topic => topic.trim()).filter(Boolean),
       ...(env.AGENT_EMAIL_BUCKET ? { bucket: env.AGENT_EMAIL_BUCKET } : {}), region: env.AGENT_EMAIL_REGION ?? env.AWS_REGION,
     } : undefined,
-    channelApis: { telegram: env.AGENT_TELEGRAM_API_URL, slack: env.AGENT_SLACK_API_URL, discord: env.AGENT_DISCORD_API_URL, github: env.AGENT_GITHUB_API_URL },
-    // Managed Discord servers a tenant may connect, on free credit and otherwise, unless its tenants entry says.
-    discordServers: { free: Number(env.AGENT_DISCORD_MANAGED_FREE_SERVERS ?? 1), paid: Number(env.AGENT_DISCORD_MANAGED_SERVERS ?? 10) },
+    channelApis: { telegram: env.AGENT_TELEGRAM_API_URL, slack: env.AGENT_SLACK_API_URL, github: env.AGENT_GITHUB_API_URL },
     // Voice sessions (src/voice-sessions.ts): on with AGENT_VOICE=true; live ones per tenant, and the most one node holds.
     voice: {
       enabled: env.AGENT_VOICE === "true",

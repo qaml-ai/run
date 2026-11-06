@@ -25,6 +25,7 @@ retry.
 | Status | `code` | Meaning |
 | --- | --- | --- |
 | 400 | `INVALID_REQUEST` | The request is malformed or invalid; the message says how |
+| 400 | `CHANNEL_TYPE_RETIRED` | A Discord channel (`discord`, `discord-managed`) was to be created or changed: Discord bots live in camelBots (https://bots.camelai.com). See [Channels](../guides/channels.md) |
 | 400 | `INVALID_HISTORY` | An imported history (`initialMessages`) has a message it cannot take; the message names which, and what it lacks |
 | 400 | `TRANSCRIPTION_UNAVAILABLE` | Audio was to be transcribed (an upload, or a listening voice session) and the account has no OpenAI key to do it with (nor the platform's); the message says how to add one |
 | 400 | `REALTIME_UNAVAILABLE` | A voice session's realtime provider needs a key, and the account has none for it (nor the platform's); the message says how to add one |
@@ -85,7 +86,7 @@ In more detail:
 | 412 | A versioned write lost (a volume file changed since the `version` you gave) | Read it again and retry with the new version |
 | 413 | Too large: the request body, inline files over 4 MiB, a file over 256 MiB, an upload over a link's `maxBytes` | See [Limits](limits.md); upload large files first and attach them by path |
 | 415 | An upload through a signed link with another content type | Send the type the link names |
-| 422 | A channel's credentials were rejected by the provider (Slack, Telegram, Discord) | Fix the bot token |
+| 422 | A channel's credentials were rejected by the provider (Slack, Telegram, GitHub) | Fix the bot token |
 | 429 | Too many: a [rate limit](limits.md#rate-limits) (requests from one address, agents created or runs started a minute, sign-in requests), the tenant's agents awake at once, the agent's 32 open requests, event-stream subscribers, or free credit's hourly allowance | Retry after `Retry-After` (the SDKs do, up to 8 times). A rate limit's body names it in `limit`; to go faster for good, ask for a higher limit |
 | 500 | A bug | Retry; report it with the request id |
 | 503 | The runtime cannot serve it right now: a node is draining or starting, lost ownership of an agent, has no room for its work, or the database is failing over; also a feature this runtime is not configured for | Retry after `Retry-After` (the SDKs retry); nothing happened |

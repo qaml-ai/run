@@ -9,7 +9,6 @@ with the [Quickstart](../quickstart.md) and [Concepts](../concepts.md) instead.
 - [Configuration](configuration.md): environment variables, starting a runtime
 - [Operations MCP server](ops-mcp.md): `/v1/ops/mcp`, the team's read-only operations endpoint for dashboards: connecting, who may (`AGENT_OPS_ADMINS`), the tools, and what it never answers
 - [Lambda managed computers](microvm-computers.md): image builds, runtime settings, IAM and metering
-- [Managed Discord](managed-discord.md): the shared Camel application, onboarding, platform secrets and pilot checks
 - [Self-hosting](self-host.md): the image, Docker Compose, storage, networking
 - [Persistence](persistence.md): transcripts, history chunks, journals, retries, idle unload, limits per node and tenant
 - [Backups and restore](backup-restore.md): what is kept and for how long, the restore drill, restoring production

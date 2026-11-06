@@ -285,7 +285,7 @@ check before repeating anything.
 
 An agent can be woken by a schedule (`agent.client.schedule({ text, inSeconds |
 at, everySeconds })`, or the `schedule` built-in for the agent to set its own), by
-a [channel](guides/channels.md) (Slack, Telegram, Discord), or by your own code
+a [channel](guides/channels.md) (Slack, Telegram, email), or by your own code
 from a [webhook](guides/webhooks.md).
 
 A repeating schedule's wake-ups are turns of the agent: each one sees the

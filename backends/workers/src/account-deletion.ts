@@ -10,7 +10,7 @@ interface VolumeService {
   call(id: string, tenant: string, action: "delete"): Promise<unknown>;
   purge(id: string): Promise<void>;
 }
-interface Channels { remove(tenant: string, id: string, options: { managed: boolean }): Promise<unknown> }
+interface Channels { remove(tenant: string, id: string): Promise<unknown> }
 interface Storage { removeBlobs(prefix: string): Promise<void> }
 
 /**
@@ -194,7 +194,7 @@ export class AccountDeletions {
     const ids = async (query: string) => (await db.query(query, [tenant])).rows.map(row => row.id as string);
     // Channels first, so no message makes the tenant a new agent meanwhile; each is torn down at its provider.
     for (const id of await ids("select id from channels where tenant = $1")) {
-      if (channels) await channels.remove(tenant, id, { managed: true });
+      if (channels) await channels.remove(tenant, id);
       await db.query("delete from channel_conversations where channel = $1", [id]);
     }
     await this.options.removeComputers?.(tenant);

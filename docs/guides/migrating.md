@@ -183,6 +183,6 @@ conversations](multi-user.md#bringing-in-existing-conversations).
 - **Tools anywhere.** Tools run in your process (attached) or behind an HTTPS
   endpoint (served, for serverless and many workers), and the model can call
   many of them from code in `codemode`. See [Tools](tools.md).
-- **Channels and schedules.** Slack, Telegram, Discord, GitHub and email can
+- **Channels and schedules.** Slack, Telegram, GitHub and email can
   reach an agent directly, and agents can wake themselves. See
   [Channels](channels.md).

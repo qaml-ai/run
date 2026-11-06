@@ -14,7 +14,7 @@ or a file chunk in memory at a time:
 - `agents/<id>/history/<index>.json`: its whole history, a page of whole turns per file, named by the page's first message index
 - `definitions.json`, `channels.json`, `webhooks.json`, `tokens.json`, `keys.json`, `oauth-grants.json`: as the API lists them,
   so secrets, keys and tokens are left out (keys show their last four characters)
-- `discord.json`: managed server bindings, installation names and states, allowed channels, the Discord IDs of
+- `discord.json`: server bindings from the retired managed Discord bot (kept in the database until a later migration drops them), installation names and states, allowed channels, the Discord IDs of
   the administrators who added Camel, and pending setup expiry times; never OAuth tokens or session/state hashes
 - `volumes/<id>/volume.json` and `volumes/<id>/files/...`: every volume's files (agents' workspaces included)
 - `billing/ledger.jsonl` (newest first), `billing/usage.json` (per day and model), and `billing/attempts.jsonl` (model attempt settlement state, without key fingerprints)

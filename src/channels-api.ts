@@ -1,7 +1,7 @@
 import { createRoute, z, type RouteConfig } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
-import type { Channels } from "./channels.ts";
+import { RETIRED_CHANNEL_MESSAGE, RETIRED_CHANNEL_TYPES, type Channels } from "./channels.ts";
 import { HttpError, readJson } from "./http.ts";
 import * as schema from "./api-schemas.ts";
 
@@ -12,7 +12,11 @@ const body = (value: z.ZodType) => ({ content: { "application/json": { schema: v
 const channelId = z.object({ id: z.string() });
 
 async function parse<T extends z.ZodType>(type: T, c: Context): Promise<z.infer<T>> {
-  const result = type.safeParse(await readJson(c.req.raw.body, 512 * 1024, {}));
+  const input = await readJson(c.req.raw.body, 512 * 1024, {});
+  // A retired type is told where it went, not that it is not in the list.
+  const kind = (input as { type?: unknown } | null)?.type;
+  if ((type as z.ZodType) === schema.ChannelInput && typeof kind === "string" && RETIRED_CHANNEL_TYPES.has(kind)) throw new HttpError(400, RETIRED_CHANNEL_MESSAGE, "CHANNEL_TYPE_RETIRED");
+  const result = type.safeParse(input);
   if (!result.success) throw new HttpError(400, `${result.error.issues[0].path.join(".") || "body"}: ${result.error.issues[0].message}`);
   return result.data;
 }

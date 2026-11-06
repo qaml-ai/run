@@ -24,7 +24,6 @@ const FORBIDDEN = new Set(["text", "prompt", "content", "message", "messages", "
 const ALLOWED_KEYS: Record<string, string[]> = {
   "src/node.ts": ["address"], // The listening line: the server's own listen address.
   "src/auto-topup.ts": ["code"], // Stripe's error code, an identifier.
-  "src/channels-discord.ts": ["code"], // The gateway WebSocket's close code, a number.
   // The `log` account mail provider writes each link and its address for the operator to pass on: only where no one
   // else may sign up (accountMailConfig refuses it with open sign-up on a public URL).
   "src/account-mail.ts": ["to", "link"],

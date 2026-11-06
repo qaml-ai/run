@@ -10,18 +10,17 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ConfirmButton, EmptyState, ErrorAlert, PageHeader } from "@/components/common";
-import { api, formatTime, useApi, type Channel, type ChannelEvent, type Definition, type ManagedDiscordConfig } from "@/lib/api";
+import { api, formatTime, useApi, type Channel, type ChannelEvent, type Definition } from "@/lib/api";
 import { DefinitionDialog } from "./definitions";
 import { WorkspaceTag } from "@/components/workspace-ui";
 import { useWorkspaceDirectory } from "@/lib/workspace";
-import { ManagedDiscord } from "./discord-managed";
 import { Link } from "@/lib/router";
 
 /** How long a filtered message can be delivered (FILTERED_DAYS in src/channel-filter.ts). */
 const FILTER_DAYS = 14;
 const senders = (value: string) => value.split(/[\s,]+/).map(entry => entry.trim()).filter(Boolean);
 
-type ChannelType = "telegram" | "slack" | "discord" | "github" | "webhook" | "email";
+type ChannelType = "telegram" | "slack" | "github" | "webhook" | "email";
 type Field = { key: string; label: string; placeholder: string; multiline?: boolean; optional?: boolean };
 /** What each service needs, and how to get it. `webhook` says where to paste the channel's webhook URL, for services that cannot be told it. */
 const TYPES: Record<ChannelType, { label: string; help: string; fields: Field[]; senders: string; webhook?: string }> = {
@@ -37,12 +36,6 @@ const TYPES: Record<ChannelType, { label: string; help: string; fields: Field[];
     fields: [{ key: "botToken", label: "Bot token", placeholder: "xoxb-…" }, { key: "signingSecret", label: "Signing secret", placeholder: "From Basic Information" }],
     senders: "Member IDs: U0123ABCD",
     webhook: "Event Subscriptions → Request URL",
-  },
-  discord: {
-    label: "Discord",
-    help: "Each DM, and each channel or thread where someone @mentions the bot, gets its own agent.",
-    fields: [{ key: "botToken", label: "Bot token", placeholder: "From the Bot page" }],
-    senders: "@username, 123456789012345678",
   },
   github: {
     label: "GitHub",
@@ -408,12 +401,6 @@ function ChannelDialog({ channel, initialType = "telegram", onClose, onSaved }: 
               <p className="text-muted-foreground text-xs">Paste it into {info.webhook}.</p>
             </div>
           )}
-          {type === "discord" && !channel && <ol className="list-decimal pl-5 text-sm space-y-2">
-            <li>In the <a className="underline" href="https://discord.com/developers/applications" target="_blank" rel="noreferrer">Discord Developer Portal</a>, create an application.</li>
-            <li>On its Bot page, copy the bot token and paste it below.</li>
-            <li>Save: the token is checked, and you get the bot's invite link.</li>
-          </ol>}
-          {channel?.type === "discord" && <DiscordHelp channel={channel} />}
           {info.fields.map(field => (
             <div key={field.key} className="flex flex-col gap-2">
               <Label htmlFor={`channel-${field.key}`}>{field.label}{channel && channel.credentials[field.key] && <span className="text-muted-foreground font-normal"> (leave empty to keep {channel.credentials[field.key]})</span>}</Label>
@@ -462,39 +449,26 @@ function ChannelDialog({ channel, initialType = "telegram", onClose, onSaved }: 
   );
 }
 
-/** View Channel, Send Messages, Attach Files, Read Message History and Send Messages in Threads. */
-const DISCORD_PERMISSIONS = (1n << 10n | 1n << 11n | 1n << 15n | 1n << 16n | 1n << 38n).toString();
-
-function DiscordHelp({ channel }: { channel: Channel }) {
-  return <div className="border p-3 text-sm space-y-2">
-    <a className="underline" href={`https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(channel.account.id)}&scope=bot&permissions=${DISCORD_PERMISSIONS}`} target="_blank" rel="noreferrer">Invite {channel.account.username ?? "bot"} to your server</a>
-    <p>To test it, send this in a channel the bot can see. In autocomplete, pick the bot with the App badge: mentioning a role of the same name does not reach it.</p>
-    <Input aria-label="Discord test message" readOnly value={`<@${channel.account.id}> status`} onFocus={event => event.target.select()} />
-  </div>;
-}
-
 export function ChannelsPage() {
   const channels = useApi<Channel[]>("/v1/channels");
-  const managedConfig = useApi<ManagedDiscordConfig>("/console/discord/config");
   const definitions = useApi<Definition[]>("/v1/definitions");
   const [modelDefinition, setModelDefinition] = useState<Definition>();
-  const [connected, setConnected] = useState<Channel>();
-  const [editing, setEditing] = useState<Channel | "new" | "own-discord">();
+  const [editing, setEditing] = useState<Channel | "new">();
   const [activity, setActivity] = useState<Channel>();
   const [error, setError] = useState<string>();
-  const ownChannels = channels.data?.filter(channel => channel.type !== "discord-managed");
+  const ownChannels = channels.data;
   // Channels are account-wide; the workspace their conversations' agents join comes from the channel's definition.
   const directory = useWorkspaceDirectory();
   const grouped = !!directory.workspaces?.length && directory.loaded;
   return (
     <>
       <PageHeader title="Channels" docs="channels" description="Let people talk to agents from messaging apps, and start agents from GitHub and webhooks. Each conversation (a chat, a pull request, a key) gets its own agent, made from the channel's definition."
-        actions={<>{managedConfig.data?.enabled && <><Button size="sm" variant="outline" asChild><a href={managedConfig.data.installPath ?? "/console/discord/install"}><Plus />Add Camel to Discord</a></Button><Button size="sm" variant="outline" onClick={() => setEditing("own-discord")}>Connect your own bot</Button></>}<Button size="sm" onClick={() => setEditing("new")}><Plus />New channel</Button></>} />
+        actions={<Button size="sm" onClick={() => setEditing("new")}><Plus />New channel</Button>} />
       <ErrorAlert error={channels.error ?? error} />
       {!ownChannels ? <Skeleton className="h-32 w-full" /> : ownChannels.length === 0 ? (
         <EmptyState icon={<MessageCircle />} title="No channels"
-          action={managedConfig.data?.enabled ? <Button size="sm" asChild><Link to="start?start=discord">Build a Discord bot</Link></Button> : <Button size="sm" onClick={() => setEditing("new")}><Plus />New channel</Button>}>
-          A channel lets people talk to your agents from Telegram, Slack or Discord, has a GitHub App answer pull requests, or starts agents from any service's webhooks.</EmptyState>
+          action={<Button size="sm" onClick={() => setEditing("new")}><Plus />New channel</Button>}>
+          A channel lets people talk to your agents from Telegram or Slack, has a GitHub App answer pull requests, or starts agents from any service's webhooks or email. Discord bots live in <a className="underline" href="https://bots.camelai.com" target="_blank" rel="noreferrer">camelBots</a>.</EmptyState>
       ) : (
         <div className="bg-card border">
           <Table>
@@ -502,15 +476,17 @@ export function ChannelsPage() {
             <TableBody>
               {ownChannels.map(channel => (
                 <TableRow key={channel.id}>
-                  <TableCell className="font-medium">{channel.name}<div className="text-muted-foreground text-xs">{channel.type}</div></TableCell>
+                  <TableCell className="font-medium">{channel.name}<div className="text-muted-foreground text-xs">{channel.type}{channel.disabled && <> · <Badge variant="outline" title="Discord channels are no longer supported: Discord bots live in camelBots (bots.camelai.com)">Disabled</Badge></>}</div></TableCell>
                   <TableCell className="font-mono text-xs">{channel.type === "email" ? channel.settings?.address : channel.account.username ? `@${channel.account.username}` : channel.account.id ?? "—"}</TableCell>
                   <TableCell>{channel.access.public ? <Badge>Public</Badge> : <Badge variant="outline">{channel.access.allow.length} allowed</Badge>}</TableCell>
                   {grouped && <TableCell className="hidden md:table-cell">{channel.definition ? <WorkspaceTag directory={directory} id={directory.workspaceOf("definition", channel.definition)} /> : <span className="text-muted-foreground text-sm">Unassigned</span>}</TableCell>}
                   <TableCell className="text-muted-foreground hidden text-xs lg:table-cell">{formatTime(channel.createdAt)}</TableCell>
                   <TableCell className="text-right whitespace-nowrap">
+                    {!channel.disabled && <>
                     <Button size="xs" variant="outline" className="mr-2" disabled={!definitions.data?.some(d => d.id === channel.definition)} onClick={() => setModelDefinition(definitions.data?.find(d => d.id === channel.definition))}>Model &amp; prompt</Button>
                     {channel.filter && <Button size="xs" variant="outline" className="mr-2" onClick={() => setActivity(channel)}>Activity</Button>}
                     <Button size="xs" variant="outline" className="mr-2" onClick={() => setEditing(channel)}>Edit</Button>
+                    </>}
                     <ConfirmButton size="xs" label="Delete" title={`Delete “${channel.name}”?`} description="The channel stops answering (a Telegram bot's webhook is removed; other webhooks get 404). Its conversations' agents are kept until they expire." confirm="Delete channel"
                       onConfirm={async () => { try { await api(`/v1/channels/${channel.id}`, { method: "DELETE" }); await channels.reload(); } catch (caught) { setError((caught as Error).message); } }} />
                   </TableCell>
@@ -520,18 +496,11 @@ export function ChannelsPage() {
           </Table>
         </div>
       )}
-      {managedConfig.data && <ManagedDiscord config={managedConfig.data} onChanged={() => { void channels.reload(); void definitions.reload(); }} />}
       {modelDefinition && <DefinitionDialog definition={modelDefinition} forChannel onClose={() => setModelDefinition(undefined)} onSaved={() => void definitions.reload()} />}
       {activity && <FilterActivity channel={activity} onClose={() => setActivity(undefined)} />}
-      {connected && <Dialog open onOpenChange={value => { if (!value) setConnected(undefined); }}><DialogContent>
-        <DialogHeader><DialogTitle>{connected.name} connected</DialogTitle><DialogDescription>Token validated and stored. Invite the bot, then send a test message.</DialogDescription></DialogHeader>
-        <DiscordHelp channel={connected} />
-        <DialogFooter><Button onClick={() => setConnected(undefined)}>Done</Button></DialogFooter>
-      </DialogContent></Dialog>}
-      {editing && <ChannelDialog key={typeof editing === "string" ? editing : editing.id} channel={typeof editing === "string" ? undefined : editing} initialType={editing === "own-discord" ? "discord" : "telegram"} onClose={() => setEditing(undefined)} onSaved={created => {
+      {editing && <ChannelDialog key={typeof editing === "string" ? editing : editing.id} channel={typeof editing === "string" ? undefined : editing} initialType="telegram" onClose={() => setEditing(undefined)} onSaved={created => {
         void channels.reload();
         void definitions.reload();
-        if (created?.type === "discord") setConnected(created);
         // Slack, GitHub and webhook senders need the webhook URL pasted into their settings: show it straight away.
         if (created && created.webhookUrl && TYPES[created.type as ChannelType]?.webhook) setTimeout(() => setEditing(created));
         // An email channel's address is where people write to: show it straight away.

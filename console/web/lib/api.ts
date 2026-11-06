@@ -213,6 +213,8 @@ export interface Channel {
   id: string; type: string; name: string; webhookUrl?: string; definition?: string;
   access: { public: boolean; allow: string[] }; limits: { perSenderPerMinute: number; turnsPerDay: number };
   greeting?: string; settings?: Record<string, any>; filter?: ChannelFilter; account: Record<string, string>; credentials: Record<string, string>; createdAt: number;
+  /** A channel of a type the runtime no longer serves (Discord): kept, never answered, and deletable. */
+  disabled?: boolean;
 }
 export interface ChannelFilter { instructions: string; criteria?: { true?: string; false?: string }; threshold: number }
 /** What a channel's filter said about one message; `message` while a filtered one can still be delivered. */
@@ -221,18 +223,6 @@ export interface ChannelEvent {
   threshold: number; score?: number; error?: { status: number; code?: string }; agent?: string; deliveredAt?: number; deliverableUntil?: number;
   message?: { from: { id: string; name?: string; username?: string }; unverified?: boolean; title?: string; text: string; files: { name: string; size?: number | null }[] };
 }
-
-export interface ManagedDiscordConfig { enabled: boolean; applicationId?: string; installPath?: string; limits?: { servers: number; turnsPerDay: number } }
-export interface ManagedDiscordBinding {
-  guildId: string; guildName: string; state: "active" | "paused" | "disconnected";
-  installationState: "present" | "unavailable" | "removed"; channelId: string | null;
-  allowedChannelIds: string[]; channel?: Channel;
-  applied?: { agent: string; status: "updated" | "queued" | "failed"; error?: string }[];
-  /** On a save: builtins of its definition it cannot use yet (no key), and how to fix it. */
-  warnings?: string[];
-}
-/** `system`: the server's system channel; `canPost`: whether Camel may view and send there (absent when unknown). */
-export interface DiscordGuildChannel { id: string; name: string; type: number; system?: boolean; canPost?: boolean }
 
 export interface VolumeSummary { id: string; name: string; createdAt: number }
 export interface Volume extends VolumeSummary { seq: number; files: number; bytes: number; origin?: { volume: string; snapshot?: string; seq: number } }

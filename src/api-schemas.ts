@@ -1093,7 +1093,7 @@ export const ConfigureInput = z.object({
 
 const ChannelAccess = z.object({
   public: z.boolean().optional().openapi({ description: "Let anyone message the channel; off by default" }),
-  allow: z.array(z.string().trim().min(1).max(64)).max(1000).optional().openapi({ description: "Senders allowed in: user ids, or @usernames (Telegram, Discord)" }),
+  allow: z.array(z.string().trim().min(1).max(64)).max(1000).optional().openapi({ description: "Senders allowed in: user ids, or @usernames (Telegram)" }),
 });
 const ChannelLimits = z.object({
   perSenderPerMinute: z.number().int().min(1).max(600).optional().openapi({ description: "Messages per sender per minute; default 10" }),
@@ -1106,7 +1106,7 @@ const ChannelFilter = z.object({
 }).strict().openapi("ChannelFilter", { description: "A yes/no question about each message, answered by the decision model before it starts a turn, and billed as a decision" });
 const channelFields = {
   name: z.string().trim().min(1).max(120).optional(),
-  credentials: z.record(z.string(), z.string().max(4096)).optional().openapi({ description: "Telegram: { botToken }. Slack: { botToken, signingSecret }. Discord: { botToken }. GitHub: { appId, privateKey, webhookSecret }. Webhook: { secret, replyUrl? }. Email: none. Required for every other type; stored encrypted and never returned" }),
+  credentials: z.record(z.string(), z.string().max(4096)).optional().openapi({ description: "Telegram: { botToken }. Slack: { botToken, signingSecret }. GitHub: { appId, privateKey, webhookSecret }. Webhook: { secret, replyUrl? }. Email: none. Required for every other type; stored encrypted and never returned" }),
   definition: z.string().optional().openapi({ description: "The definition each conversation's agent is made from (GET /v1/definitions); a channel created without one gets an empty definition of its own" }),
   access: ChannelAccess.optional(),
   limits: ChannelLimits.optional(),
@@ -1114,14 +1114,14 @@ const channelFields = {
   settings: z.record(z.string(), z.unknown()).optional().openapi({ description: "Configuration particular to the channel's type; types without any reject it. GitHub: { events, repos, ignoreDrafts, reply, authors, debounceSeconds }. Webhook: { signature, key, prompt, sender, filter, idPath, idHeader }. Email: { address?, fromName?, replies?: \"sender\" | \"none\" | { to }, forwarders?: [address or @domain], replyToForwarded? }" }),
   filter: ChannelFilter.nullable().optional().openapi({ description: "Messages the decision model answers below the threshold start no turn; they are listed at GET /v1/channels/{id}/events and can be delivered. If it cannot answer, the message goes on. Null removes it" }),
 };
-export const ChannelInput = z.object({ type: z.enum(["telegram", "slack", "discord", "github", "webhook", "email"]), ...channelFields }).openapi("ChannelInput");
+export const ChannelInput = z.object({ type: z.enum(["telegram", "slack", "github", "webhook", "email"]).openapi({ description: "Discord is not a channel type: Discord bots live in camelBots (https://bots.camelai.com), and creating a discord channel is refused (400 CHANNEL_TYPE_RETIRED)" }), ...channelFields }).openapi("ChannelInput");
 export const ChannelUpdate = z.object(channelFields).openapi("ChannelUpdate");
 export const Channel = z.object({
   id: z.string(),
   tenant: z.string(),
   type: z.string(),
   name: z.string(),
-  webhookUrl: z.string().optional().openapi({ description: "Where the service delivers messages. Telegram's is registered for you; paste Slack's into the app's Event Subscriptions. Discord channels have none: they connect to Discord's gateway. Paste GitHub's into the app's Webhook URL" }),
+  webhookUrl: z.string().optional().openapi({ description: "Where the service delivers messages. Telegram's is registered for you; paste Slack's into the app's Event Subscriptions. Paste GitHub's into the app's Webhook URL" }),
   definition: z.string().optional().openapi({ description: "The definition each conversation's agent is made from" }),
   access: z.object({ public: z.boolean(), allow: z.array(z.string()) }),
   limits: z.object({ perSenderPerMinute: z.number(), turnsPerDay: z.number() }),
@@ -1132,6 +1132,7 @@ export const Channel = z.object({
   credentials: z.record(z.string(), z.string()).openapi({ description: "Masked credentials" }),
   createdAt: z.number(),
   updatedAt: z.number(),
+  disabled: z.boolean().optional().openapi({ description: "True for a channel of a type this runtime no longer serves (discord, discord-managed): kept as it was, never answered, and deletable" }),
 }).openapi("Channel");
 export const ChannelEventsQuery = z.object({
   limit: z.coerce.number().int().min(1).max(200).optional().openapi({ description: "How many; default 50" }),
