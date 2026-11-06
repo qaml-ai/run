@@ -2,24 +2,24 @@
   "backend": "workers",
   "area": "all",
   "group": "delegation",
-  "nodeKey": "6e758149cf7712540970a9067b22ada5d533aaa8e421e22efdf790bf2c9fed7f",
-  "suiteHash": "3c8866b86a76a67a5027bf6f5db786ebc54eedcfde67705649f57db74db15f72",
-  "revision": "76f5609635adacb5250d4d39cc8ff7dd4dcce5a7",
-  "durationMs": 122301.820028,
+  "nodeKey": "09d28ad8e5892cc12f4358519386a2f8a41b0c98f62e7d6402e1a18090e8576d",
+  "suiteHash": "9f9b5201334635a44cee7cade5cf866f2e736ab5a6c1c9608a7b550045f864cb",
+  "revision": "e9f27c128cb3f6a7100a50f42c9ccb59d932fd72",
+  "durationMs": 101364.34789599999,
   "runtime": {
     "node": "v24.22.1",
     "platform": "linux",
     "arch": "x64"
   },
-  "recordedAt": "2026-11-06T04:47:10.824Z",
-  "expectedCases": 39,
+  "recordedAt": "2026-11-06T12:04:44.572Z",
+  "expectedCases": 38,
   "rows": [
     {
       "area": "delegation",
       "source": "tests/agent-messaging.test.ts:136",
       "name": "a browser token with the children scope reads its agent's sub-agents, and only theirs",
       "status": "pass",
-      "durationMs": 9238.54927,
+      "durationMs": 7859.61464,
       "reason": "",
       "backend": "workers"
     },
@@ -28,7 +28,7 @@
       "source": "tests/agent-messaging.test.ts:156",
       "name": "a child that waits on a person notifies its parent, and notifies again when it resumes and ends",
       "status": "pass",
-      "durationMs": 10322.915807,
+      "durationMs": 9103.110428,
       "reason": "",
       "backend": "workers"
     },
@@ -37,7 +37,7 @@
       "source": "tests/agent-messaging.test.ts:21",
       "name": "a parent messages its finished child, which works again with its history and notifies again; a child messages its parent",
       "status": "pass",
-      "durationMs": 15391.513542,
+      "durationMs": 11620.405463,
       "reason": "",
       "backend": "workers"
     },
@@ -46,7 +46,7 @@
       "source": "tests/agent-messaging.test.ts:61",
       "name": "two agents messaging each other in a loop stop at the wake cap with agent_loop_limit, and a turn sends at most 20 messages",
       "status": "pass",
-      "durationMs": 18758.638389,
+      "durationMs": 18527.072292,
       "reason": "",
       "backend": "workers"
     },
@@ -55,7 +55,7 @@
       "source": "tests/agent-messaging.test.ts:97",
       "name": "interrupt_agent aborts a child; aborting the parent aborts its children unless children: keep; deleting it deletes the children it made",
       "status": "pass",
-      "durationMs": 16101.633189,
+      "durationMs": 15331.376486,
       "reason": "",
       "backend": "workers"
     },
@@ -64,7 +64,7 @@
       "source": "tests/agent-progress.test.ts:109",
       "name": "a child's message joins its busy parent's running turn at its next step, without a turn of its own",
       "status": "pass",
-      "durationMs": 7346.499825,
+      "durationMs": 6962.528886,
       "reason": "",
       "backend": "workers"
     },
@@ -73,7 +73,7 @@
       "source": "tests/agent-progress.test.ts:141",
       "name": "a child's message cuts its parent's wait_agent short, and the parent reads it next",
       "status": "pass",
-      "durationMs": 7895.898493,
+      "durationMs": 6570.295113,
       "reason": "",
       "backend": "workers"
     },
@@ -82,7 +82,7 @@
       "source": "tests/agent-progress.test.ts:168",
       "name": "a response that starts a sub-agent and, beside it, messages and waits for it: those calls run once it has started",
       "status": "pass",
-      "durationMs": 7509.494966,
+      "durationMs": 6413.397067,
       "reason": "",
       "backend": "workers"
     },
@@ -91,7 +91,7 @@
       "source": "tests/agent-progress.test.ts:16",
       "name": "a background child's progress rides on its parent's next tool result, latest only and once, without a turn; an ending supersedes it",
       "status": "pass",
-      "durationMs": 12178.187804,
+      "durationMs": 15156.671292,
       "reason": "",
       "backend": "workers"
     },
@@ -100,7 +100,7 @@
       "source": "tests/agent-progress.test.ts:195",
       "name": "a message to a sub-agent that already answered starts a turn, and wait_agent waits for that turn's answer, not the earlier one",
       "status": "pass",
-      "durationMs": 8890.415544,
+      "durationMs": 6565.443802,
       "reason": "",
       "backend": "workers"
     },
@@ -109,7 +109,7 @@
       "source": "tests/agent-progress.test.ts:217",
       "name": "a sub-agent of the model's own design gets its instructions with its task, as its first message; one from a definition keeps its own prompt",
       "status": "pass",
-      "durationMs": 7936.13769,
+      "durationMs": 7499.580526,
       "reason": "",
       "backend": "workers"
     },
@@ -118,7 +118,7 @@
       "source": "tests/agent-progress.test.ts:244",
       "name": "a sub-agent of the model's own design shares its parent's files at the same paths",
       "status": "pass",
-      "durationMs": 7948.165379,
+      "durationMs": 6781.946402,
       "reason": "",
       "backend": "workers"
     },
@@ -127,7 +127,7 @@
       "source": "tests/agent-progress.test.ts:265",
       "name": "wait_agent with untilProgress returns on a report it has not seen, after its floor, so the parent can correct a sub-agent mid-run",
       "status": "pass",
-      "durationMs": 23610.315142,
+      "durationMs": 21561.281782,
       "reason": "",
       "backend": "workers"
     },
@@ -136,7 +136,7 @@
       "source": "tests/agent-progress.test.ts:75",
       "name": "a delegate child's progress reaches its parent's watchers as subagent_progress and the delegate call's progress",
       "status": "pass",
-      "durationMs": 7883.533464,
+      "durationMs": 7266.623516,
       "reason": "",
       "backend": "workers"
     },
@@ -145,7 +145,7 @@
       "source": "tests/agent-progress.test.ts:91",
       "name": "only a sub-agent reports progress, and a report is short",
       "status": "pass",
-      "durationMs": 7755.739421,
+      "durationMs": 7175.630553,
       "reason": "",
       "backend": "workers"
     },
@@ -154,7 +154,7 @@
       "source": "tests/background-agents.test.ts:103",
       "name": "spawn_agent refuses past maxParallel running children and past the depth limit",
       "status": "pass",
-      "durationMs": 12234.329,
+      "durationMs": 19596.74033,
       "reason": "",
       "backend": "workers"
     },
@@ -163,25 +163,25 @@
       "source": "tests/background-agents.test.ts:131",
       "name": "two agents waking each other through notifications stop at the wake cap with agent_loop_limit, the notification still in history",
       "status": "pass",
-      "durationMs": 10851.705588,
+      "durationMs": 13285.318508,
       "reason": "",
       "backend": "workers"
     },
     {
       "area": "delegation",
-      "source": "tests/background-agents.test.ts:154",
+      "source": "tests/background-agents.test.ts:157",
       "name": "a child's spend is charged to its parent when its notification lands, and a parent at its spend limit gets no turn",
       "status": "pass",
-      "durationMs": 10012.734448,
+      "durationMs": 8581.428325,
       "reason": "",
       "backend": "workers"
     },
     {
       "area": "delegation",
-      "source": "tests/background-agents.test.ts:183",
+      "source": "tests/background-agents.test.ts:186",
       "name": "aborting a parent while a child's notification waits keeps the notification: it lands without a turn",
       "status": "pass",
-      "durationMs": 7096.153143,
+      "durationMs": 7465.166577,
       "reason": "",
       "backend": "workers"
     },
@@ -189,17 +189,20 @@
       "area": "delegation",
       "source": "tests/background-agents.test.ts:20",
       "name": "spawn_agent returns at once, and the child's ending arrives once, as a notification with its source and marker",
-      "status": "pass",
-      "durationMs": 15134.862026,
-      "reason": "",
+      "status": "fail",
+      "durationMs": 30440.246655,
+      "reason": "test timed out after 30000ms",
+      "error": {
+        "message": "test timed out after 30000ms"
+      },
       "backend": "workers"
     },
     {
       "area": "delegation",
-      "source": "tests/background-agents.test.ts:213",
+      "source": "tests/background-agents.test.ts:216",
       "name": "children started together share what the parent may spend, and limits alone bound a tool's spawns without a tool for the model",
       "status": "pass",
-      "durationMs": 11487.330783,
+      "durationMs": 12344.492488,
       "reason": "",
       "backend": "workers"
     },
@@ -208,7 +211,57 @@
       "source": "tests/background-agents.test.ts:75",
       "name": "wait_agent answers a child's ending in its result, so no notification follows; list_agents lists children",
       "status": "pass",
-      "durationMs": 9013.700316,
+      "durationMs": 9159.448334,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/codemode-delegation.test.ts:10",
+      "name": "code fans out three delegates once, returns their structured answers, and records each child",
+      "status": "fail",
+      "durationMs": 19079.268114,
+      "reason": "The input did not match the regular expression /\\[{\"answer\":\"one\"},{\"answer\":\"two\"},{\"answer\":\"three\"}\\]/. Input: 'Script completed\\nWall time 1.8 seconds\\nOutput:\\n\\n[null,null,null]'",
+      "error": {
+        "message": "The input did not match the regular expression /\\[{\"answer\":\"one\"},{\"answer\":\"two\"},{\"answer\":\"three\"}\\]/. Input:\n\n'Script completed\\nWall time 1.8 seconds\\nOutput:\\n\\n[null,null,null]'\n",
+        "stack": "AssertionError [ERR_ASSERTION]: The input did not match the regular expression /\\[{\"answer\":\"one\"},{\"answer\":\"two\"},{\"answer\":\"three\"}\\]/. Input:\n\n'Script completed\\nWall time 1.8 seconds\\nOutput:\\n\\n[null,null,null]'\n\n    at file:///home/sprite/rt/tests/contract/areas/codemode-delegation.contract.test.ts:44:10\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/support.ts:24:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)",
+        "expected": {},
+        "actual": "Script completed\nWall time 1.8 seconds\nOutput:\n\n[null,null,null]",
+        "operator": "match"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/codemode-delegation.test.ts:38",
+      "name": "a script returning without awaiting a delegate stops that child",
+      "status": "pass",
+      "durationMs": 7457.948607,
+      "reason": "",
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/codemode-delegation.test.ts:61",
+      "name": "scripts waiting on children longer than their deadline, on an account with one code slot, finish: the wait is off their clock and holds no slot",
+      "status": "fail",
+      "durationMs": 10015.436802,
+      "reason": "The input did not match the regular expression /child done,child done/. Input: 'Script completed\\nWall time 4.4 seconds\\nOutput:\\n\\n,'",
+      "error": {
+        "message": "The input did not match the regular expression /child done,child done/. Input:\n\n'Script completed\\nWall time 4.4 seconds\\nOutput:\\n\\n,'\n",
+        "stack": "AssertionError [ERR_ASSERTION]: The input did not match the regular expression /child done,child done/. Input:\n\n'Script completed\\nWall time 4.4 seconds\\nOutput:\\n\\n,'\n\n    at contractTest.timeout (file:///home/sprite/rt/tests/contract/areas/codemode-delegation.contract.test.ts:93:12)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/support.ts:24:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)",
+        "expected": {},
+        "actual": "Script completed\nWall time 4.4 seconds\nOutput:\n\n,",
+        "operator": "match"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/codemode-delegation.test.ts:81",
+      "name": "workflow input is refused on agents, definitions, runs, upserts and configure; stored settings are ignored",
+      "status": "pass",
+      "durationMs": 6771.21,
       "reason": "",
       "backend": "workers"
     },
@@ -217,7 +270,7 @@
       "source": "tests/multi-agent.test.ts:119",
       "name": "parallel children share what their parent's run has left, rather than each getting all of it",
       "status": "pass",
-      "durationMs": 7590.214501,
+      "durationMs": 6983.686407,
       "reason": "",
       "backend": "workers"
     },
@@ -226,7 +279,7 @@
       "source": "tests/multi-agent.test.ts:140",
       "name": "children of one response share what their parent's run has left even when they run one after another",
       "status": "pass",
-      "durationMs": 8071.415472,
+      "durationMs": 7358.556445,
       "reason": "",
       "backend": "workers"
     },
@@ -235,7 +288,7 @@
       "source": "tests/multi-agent.test.ts:160",
       "name": "a caller cannot move a run's place in the delegation chain with prompt metadata",
       "status": "pass",
-      "durationMs": 10428.27589,
+      "durationMs": 8356.891063,
       "reason": "",
       "backend": "workers"
     },
@@ -244,7 +297,7 @@
       "source": "tests/multi-agent.test.ts:16",
       "name": "delegate starts a child from a definition, returns its answer, and links it to its parent",
       "status": "pass",
-      "durationMs": 12163.453104,
+      "durationMs": 9734.589081,
       "reason": "",
       "backend": "workers"
     },
@@ -253,7 +306,7 @@
       "source": "tests/multi-agent.test.ts:179",
       "name": "aborting a parent aborts the children it waits on; the stream shows them to subscribers that ask",
       "status": "pass",
-      "durationMs": 7467.637009,
+      "durationMs": 6582.107663,
       "reason": "",
       "backend": "workers"
     },
@@ -262,7 +315,7 @@
       "source": "tests/multi-agent.test.ts:203",
       "name": "aborting a parent answers once its delegate child has ended, charges what the child spent, and deleting the parent deletes the child",
       "status": "pass",
-      "durationMs": 7690.861835,
+      "durationMs": 6977.879677,
       "reason": "",
       "backend": "workers"
     },
@@ -271,7 +324,7 @@
       "source": "tests/multi-agent.test.ts:232",
       "name": "a delegate child whose ending no call took, its parent's run over, is landed by the sweep and charged to the parent",
       "status": "pass",
-      "durationMs": 12025.475993,
+      "durationMs": 11071.786311,
       "reason": "",
       "backend": "workers"
     },
@@ -280,7 +333,7 @@
       "source": "tests/multi-agent.test.ts:57",
       "name": "delegate calls in one response run at once, at most maxParallel together, and one with output answers in its schema",
       "status": "pass",
-      "durationMs": 10197.291574,
+      "durationMs": 9416.792531,
       "reason": "",
       "backend": "workers"
     },
@@ -289,7 +342,7 @@
       "source": "tests/multi-agent.test.ts:86",
       "name": "delegation stops at its depth limit, and a run's spend limit bounds its children and counts what they spent",
       "status": "pass",
-      "durationMs": 11264.452809,
+      "durationMs": 11205.988583,
       "reason": "",
       "backend": "workers"
     },
@@ -298,7 +351,7 @@
       "source": "tests/sdk-multi-agent.test.ts:13",
       "name": "SDK: delegate settings on upsert bring their builtin; a run lists its child's id, and a stream with subagents shows it start and end",
       "status": "pass",
-      "durationMs": 9031.658297,
+      "durationMs": 12558.796685,
       "reason": "",
       "backend": "workers"
     },
@@ -307,7 +360,7 @@
       "source": "tests/tool-spawn.test.ts:15",
       "name": "a trusted tool prepares a persistent worker and starts it as a background sub-agent; a busy worker queues the next task",
       "status": "pass",
-      "durationMs": 9854.120586,
+      "durationMs": 14417.877599,
       "reason": "",
       "backend": "workers"
     },
@@ -316,52 +369,7 @@
       "source": "tests/tool-spawn.test.ts:75",
       "name": "a spawn directive from a tool without runtime auth (an attached application's) is refused",
       "status": "pass",
-      "durationMs": 5725.892251,
-      "reason": "",
-      "backend": "workers"
-    },
-    {
-      "area": "delegation",
-      "source": "tests/workflows.test.ts:106",
-      "name": "an agent's workflow settings reach its definition and its detail",
-      "status": "pass",
-      "durationMs": 5464.77596,
-      "reason": "",
-      "backend": "workers"
-    },
-    {
-      "area": "delegation",
-      "source": "tests/workflows.test.ts:122",
-      "name": "an agent with the workflow builtin is offered run_workflow; one without never sees it",
-      "status": "pass",
-      "durationMs": 6470.078569,
-      "reason": "",
-      "backend": "workers"
-    },
-    {
-      "area": "delegation",
-      "source": "tests/workflows.test.ts:23",
-      "name": "the SDK runs a stateless workflow with its builtin added automatically",
-      "status": "pass",
-      "durationMs": 7884.937583,
-      "reason": "",
-      "backend": "workers"
-    },
-    {
-      "area": "delegation",
-      "source": "tests/workflows.test.ts:37",
-      "name": "run_workflow coordinates child agents from a script and returns only the script's value",
-      "status": "pass",
-      "durationMs": 8869.960833,
-      "reason": "",
-      "backend": "workers"
-    },
-    {
-      "area": "delegation",
-      "source": "tests/workflows.test.ts:90",
-      "name": "an agent call the settings do not allow answers null instead of failing the script",
-      "status": "pass",
-      "durationMs": 5648.142049,
+      "durationMs": 5638.541992,
       "reason": "",
       "backend": "workers"
     }
@@ -369,13 +377,33 @@
   "shards": [
     {
       "index": 1,
-      "total": 2,
-      "durationMs": 92607.840988
+      "total": 6,
+      "durationMs": 92191.07469400001
     },
     {
       "index": 2,
-      "total": 2,
-      "durationMs": 122301.820028
+      "total": 6,
+      "durationMs": 77953.892245
+    },
+    {
+      "index": 3,
+      "total": 6,
+      "durationMs": 101364.34789599999
+    },
+    {
+      "index": 4,
+      "total": 6,
+      "durationMs": 62685.039790999996
+    },
+    {
+      "index": 5,
+      "total": 6,
+      "durationMs": 43561.483896000005
+    },
+    {
+      "index": 6,
+      "total": 6,
+      "durationMs": 20560.955501
     }
   ]
 }

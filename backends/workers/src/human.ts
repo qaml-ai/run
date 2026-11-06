@@ -206,10 +206,16 @@ export const askUser: ToolRegistration = {
   description: "Ask the user 1–4 questions with 2–4 options. The turn pauses until the user answers.",
   parameters: { type: "object", required: ["questions"], properties: { questions: { type: "array", minItems: 1, maxItems: 4, items: { type: "object" } } }, additionalProperties: false },
   replay: "safe",
+  structuredOutputSchema: {},
   // From code too: the turn pauses for the answer either way.
   callers: ["model", "tools"],
   async execute(args, api, context) {
     const questions = questionsInput((args as { questions: unknown }).questions);
-    return waitForHuman({ kind: "question", question: questions.length === 1 ? questions[0].question : `${questions.length} questions`, detail: { questions } }, api, context);
+    const result = await waitForHuman({ kind: "question", question: questions.length === 1 ? questions[0].question : `${questions.length} questions`, detail: { questions } }, api, context);
+    // Code gets the answers themselves (structuredOutput); the model, their text.
+    const text = result.output.length === 1 && result.output[0].type === "text" ? result.output[0].text : undefined;
+    let value: unknown;
+    try { value = text === undefined ? undefined : JSON.parse(text); } catch { value = text; }
+    return { ...result, ...(value !== undefined ? { structuredOutput: value as never } : {}) };
   },
 };

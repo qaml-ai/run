@@ -388,7 +388,8 @@ export class Delegation {
   }
   private async toolResult(value: unknown, api?: ToolExecutionApi) {
     const reports = await this.takeProgress(api);
-    return { output: [{ type: 'text' as const, text: JSON.stringify(value) }, ...(reports.length ? [agentUpdates(reports)] : [])] };
+    // Code gets the value itself (structuredOutput); the model, its text.
+    return { output: [{ type: 'text' as const, text: JSON.stringify(value) }, ...(reports.length ? [agentUpdates(reports)] : [])], structuredOutput: value as never };
   }
   private async send(args: Record<string, unknown>, callId: string, api?: ToolExecutionApi, signal?: AbortSignal) {
     if (!this.host.sendMessage) throw new HttpError(400, 'Agent messages are unavailable');
@@ -506,7 +507,7 @@ export class Delegation {
   tools(settings: DelegateSettings, builtins: readonly string[], subagent = false, describe: Parameters<typeof delegateTool>[1] = () => undefined): ToolRegistration[] {
     const definitions: ToolDefinition[] = [...(builtins.includes('delegate') ? [delegateTool(settings, describe)] : []), ...(builtins.includes('agents') ? agentsTools(settings, describe) : [])];
     if (subagent) definitions.push(REPORT_PROGRESS, ...(!definitions.some(tool => tool.name === 'send_message') ? [SEND_MESSAGE] : []));
-    return definitions.map(definition => defineTool({ name: definition.name, description: definition.description, parameters: definition.parameters as never, ...(definition.callers ? { callers: definition.callers as ('model' | 'tools')[] } : {}), replay: 'safe', execute: async (args: Record<string, unknown>, api, context) => {
+    return definitions.map(definition => defineTool({ name: definition.name, description: definition.description, parameters: definition.parameters as never, ...(definition.callers ? { callers: definition.callers as ('model' | 'tools')[] } : {}), structuredOutputSchema: {}, replay: 'safe', execute: async (args: Record<string, unknown>, api, context) => {
       const signal = context.abortSignal ?? new AbortController().signal;
       if (definition.name === 'delegate') {
         try {
