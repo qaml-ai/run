@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { readFile, writeFile, rm } from 'node:fs/promises';
 
 const cwd = fileURLToPath(new URL('../', import.meta.url));
 const bin = resolve(cwd, 'node_modules/wrangler/bin/wrangler.js');
@@ -29,7 +30,21 @@ const queues = await run(['queues', 'list'], { quiet: true });
 if (!queues.includes('camelrun-pilot-delivery')) await run(['queues', 'create', 'camelrun-pilot-delivery']);
 await run(['deploy', '-c', 'codemode/wrangler.pilot.jsonc']);
 await run(['deploy', '-c', 'pilot-fakemodel/wrangler.jsonc']);
-await run(['deploy', '-c', 'wrangler.pilot.jsonc']);
+const store = await run(['secrets-store', 'secret', 'list', 'c8c66b0210e64900864182073dcd5e09', '--per-page', '100', '--remote'], { quiet: true });
+if (store.includes('CAMELRUN_PILOT_OPENROUTER_KEY')) {
+  await run(['deploy', '-c', 'wrangler.pilot.jsonc']);
+} else {
+  // Cloudflare rejects nonexistent secret references (10182). Keep the desired
+  // binding in source; omit it only from this temporary deployment manifest.
+  const config = JSON.parse(await readFile(resolve(cwd, 'wrangler.pilot.jsonc'), 'utf8'));
+  delete config.secrets_store_secrets;
+  const pending = resolve(cwd, `.pilot-deploy-${randomBytes(8).toString('hex')}.jsonc`);
+  try {
+    await writeFile(pending, JSON.stringify(config));
+    await run(['deploy', '-c', pending]);
+  } finally { await rm(pending, { force: true }); }
+  console.log('Model key pending: rerun scripts/pilot-deploy after creating CAMELRUN_PILOT_OPENROUTER_KEY.');
+}
 const configured = await run(['secret', 'list', '-c', 'wrangler.pilot.jsonc'], { quiet: true });
 const missing = {};
 for (const name of ['API_TOKEN', 'FILE_SIGNING_SECRET', 'AGENT_SECRETS_KEY']) {

@@ -2,12 +2,21 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, createDecipheriv } from "node:crypto";
 import { testDatabase } from "./billing-database.ts";
-import { keyServices, providerCredentials } from "../src/security-services.ts";
+import { createTenants, keyServices, providerCredentials } from "../src/security-services.ts";
 import { keyRoutes } from "../src/key-routes.ts";
 import { Tenants } from "../src/tenants.ts";
 import { Outbound, OutboundBlocked } from "../src/security-outbound.ts";
 import { BrowserTokens, readableMessage, readableFrame } from "../src/browser-tokens.ts";
 import { corsPreflight, corsResponse } from "../src/cors.ts";
+
+test("account secret supplies platform OpenRouter credentials and missing secret leaves own providers usable", async () => {
+  const tenants = await createTenants({ PILOT_OPENROUTER_KEY: { get: async () => "test-only-platform-key" } });
+  assert.equal(tenants.platformKey("openrouter"), "test-only-platform-key");
+  const absent = await createTenants({ PILOT_OPENROUTER_KEY: { get: async () => { throw new Error("Secret absent"); } } });
+  assert.equal(absent.platformKey("openrouter"), undefined);
+  const unchanged = await createTenants({ AGENT_TENANTS_JSON: '{"tenants":{},"platformKeys":{"openai":"test-only-existing-key"}}' });
+  assert.equal(unchanged.platformKey("openai"), "test-only-existing-key");
+});
 
 test("source tenant policy rejects reused tokens, bad keys and ambiguous billing", async () => {
   const token = "a-test-operator-secret-at-least-24-characters";
