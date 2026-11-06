@@ -93,9 +93,11 @@ export class LocalWorker {
         connection.on("close", () => this.sockets.delete(connection));
         connection.on("error", () => { socket.destroy(); upstream.destroy(); });
       }
-      // pipe() forwards EOF but can leave the response side open. Once the
-      // client is gone, close the upstream too so workerd observes the loss.
-      socket.once("close", () => upstream.destroy());
+      // A graceful FIN still permits an HTTP response. A disconnected client
+      // needs a TCP reset so workerd cancels a request before its headers exist.
+      socket.once("close", () => {
+        if (!upstream.destroyed) upstream.resetAndDestroy();
+      });
       socket.pipe(upstream).pipe(socket);
     });
     const save = (data: Buffer) => {
