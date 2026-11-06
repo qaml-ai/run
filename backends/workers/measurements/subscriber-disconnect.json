@@ -12,7 +12,8 @@
       "enable_request_signal"
     ],
     "minified": true,
-    "temporaryBuildOnlySideEffectsFalse": true
+    "temporaryBuildOnlySideEffectsFalse": true,
+    "log": "~/runs/20261105-182458-16143-1.log"
   },
   "deployment": {
     "worker": "camelrun-proto-subscriber-fin",
@@ -42,7 +43,7 @@
     "noResponseDataBeforeClose": true,
     "abortAfterForwardResponseMs": 8,
     "runtimeSetupTtlAdded": false,
-    "interpretation": "Full abandonment released within the delayed setup. A write-half-close alone kept receiving the stream, so it was not evidence of abandonment."
+    "interpretation": "Full abandonment released 927 ms after closure, when the delayed setup returned. The abort signal arrived 8 ms after the source response. A write-half-close alone kept receiving the stream, so it was not evidence of abandonment."
   },
   "cost": {
     "capUsd": 5,
@@ -276,7 +277,10 @@
         "event": "forward-response",
         "aborted": false
       }
-    ]
+    ],
+    "runner": "rt-pool-1",
+    "log": "~/runs/20261105-182709-21832-1.log",
+    "sourceCommit": "cf6e4b58"
   },
   "halfCloseControl": {
     "startedAt": "2026-11-06T00:26:33.500Z",
@@ -1011,6 +1015,9 @@
         "event": "gate-error",
         "aborted": false
       }
-    ]
+    ],
+    "runner": "rt-pool-22",
+    "log": "~/runs/20261105-182620-19788-1.log",
+    "sourceCommit": "1585c86e"
   }
 }

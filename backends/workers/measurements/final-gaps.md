@@ -10,6 +10,22 @@ This trace starts with the 25 failures at `ff848798`, after group PRs
 The generated [scorecard](../PARITY.md) contains the final per-case results.
 Original contract assertions and their explicit timeouts are unchanged.
 
+The one full `npm run parity` finished in 604.479 seconds on six Sprites at
+`bfbf4a34`. Node: 524 HTTP passes, 66 SDK-only passes, zero accepted differences,
+zero failures. Workers: 519 HTTP passes, 66 SDK-only passes, five accepted
+differences, zero failures. The 380 out-of-scope cases are unchanged. All 25
+original failures were matched by exact case identity: 20 now pass on Workers,
+five have the reviewed difference status, and all 25 pass on Node.
+
+The deployed [subscriber probe](subscriber-disconnect.json) imported the actual
+event reader. With a one-second setup delay, its occupied control returned 429.
+After `TLSSocket.end()`, writable finish and ordinary `destroy()` before any
+response data, the next subscriber returned 200 after 927 ms, when delayed setup
+returned. No explicit TCP reset API was used; packet order was not captured.
+The result did not require a setup expiry. The Worker and both DO namespaces
+were deleted and their absence checked. Cost is estimated below $0.01, not an
+observed bill.
+
 ## Integration seams
 
 | Original failure | Source trace and correction |
