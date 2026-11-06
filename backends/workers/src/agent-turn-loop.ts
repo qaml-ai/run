@@ -823,6 +823,28 @@ export async function answerHumanInputsImpl(this: AgentRuntime,
     } finally { releaseProjection(); }
   }
 
+/**
+ * Bring every pending input's expiry forward to `at` (never later than it was), and the alarm with it: the alarm then
+ * expires them as it would at their own time. Returns how many were pending. Reached only through a subclass capability.
+ */
+export async function dueHumanInputsImpl(this: AgentRuntime, at: number) {
+    const root = await (await this.harness.pi()).root(BACKGROUND_CONTEXT);
+    let due = 0;
+    await root.commit(async tx => {
+      const doc = await tx.doc(HumanInputs);
+      for (const input of Object.values(doc.requests)) if (input.answer === undefined) {
+        input.expiresAt = Math.min(input.expiresAt ?? at, at);
+        due++;
+      }
+    }, BACKGROUND_CONTEXT);
+    if (due) {
+      const deadline = await this.ctx.storage.get<number>("human-input-deadline");
+      await this.ctx.storage.put("human-input-deadline", Math.min(deadline ?? at, at));
+      await this.arm();
+    }
+    return due;
+  }
+
 export async function closeHumanInputsImpl(this: AgentRuntime,
   system: "expired" | "superseded") {
     const pi = await this.harness.pi();
