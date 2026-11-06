@@ -88,6 +88,9 @@ A definition's `computer` configures its agents' native `container` computer:
   or `Basic x-access-token:<token>` (`scheme: "basic"`, what Git over HTTPS sends
   to GitHub). Neither the machine nor the model ever holds it, so
   `git clone https://github.com/org/repo` and pushes just work.
+- `instance` (`lite`, `standard-1` … `standard-4`) picks the machine size for the
+  definition's agents; the deployment's `COMPUTER_INSTANCE` stays the default.
+  A changed size replaces a running machine on its next operation.
 - `idleSeconds` (10–3,600, default 60) is how long an idle machine stays up.
   `exec` takes `timeoutMs` up to 600,000.
 - Agents take `computer` only from their definition. `POST /v1/agents` and

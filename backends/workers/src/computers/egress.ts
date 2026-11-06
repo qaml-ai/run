@@ -9,10 +9,11 @@ import { HttpError } from "../errors.ts";
 import { ownAudience } from "../source-input-policy.ts";
 import type { ExchangeAuth } from "../exchange-auth.ts";
 import type { RuntimeIdentity } from "../tool-identity.ts";
+import { INSTANCE_TYPES, type InstanceType } from "./provider.ts";
 
 export type EgressGrant = { host: string; auth?: ExchangeAuth; scheme?: "bearer" | "basic" };
-/** A definition's `computer`: what its agents' native computers may reach, and how long they stay up idle. */
-export type ComputerSettings = { egress?: EgressGrant[]; idleSeconds?: number };
+/** A definition's `computer`: what its agents' native computers may reach, how long they stay up idle, and their size. */
+export type ComputerSettings = { egress?: EgressGrant[]; idleSeconds?: number; instance?: InstanceType };
 export type EgressIdentity = { issuer: string; claims: RuntimeIdentity };
 /** What the agent hands its computer object with each operation. */
 export type ComputerSetup = { settings: ComputerSettings; identity: EgressIdentity };
@@ -40,9 +41,14 @@ type UrlCheck = (value: unknown) => URL;
  */
 export function computerSettingsInput(value: unknown, checkUrl: UrlCheck, tenant: string): ComputerSettings {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw bad("computer must be an object");
-  const extra = Object.keys(value).find(key => !["egress", "idleSeconds"].includes(key));
+  const extra = Object.keys(value).find(key => !["egress", "idleSeconds", "instance"].includes(key));
   if (extra) throw bad(`computer: Unrecognized key: "${extra}"`);
-  const input = value as { egress?: unknown; idleSeconds?: unknown }, settings: ComputerSettings = {};
+  const input = value as { egress?: unknown; idleSeconds?: unknown; instance?: unknown }, settings: ComputerSettings = {};
+  if (input.instance !== undefined) {
+    // The deployment's COMPUTER_INSTANCE is the default; a definition picks another size for its agents.
+    if (!INSTANCE_TYPES.includes(input.instance as InstanceType)) throw bad(`computer.instance must be one of ${INSTANCE_TYPES.join(", ")}`);
+    settings.instance = input.instance as InstanceType;
+  }
   if (input.idleSeconds !== undefined) {
     const { min, max } = COMPUTER_LIMITS.idleSeconds;
     if (!Number.isInteger(input.idleSeconds) || (input.idleSeconds as number) < min || (input.idleSeconds as number) > max)

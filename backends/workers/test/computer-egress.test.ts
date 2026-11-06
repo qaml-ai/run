@@ -17,9 +17,10 @@ const check = (value: unknown) => {
 const exchange = { type: "exchange" as const, url: "https://app.example.net/token" };
 
 test("computer settings: hosts are public DNS names, auth is an exchange, scheme needs auth", () => {
-  assert.deepEqual(computerSettingsInput({ egress: [{ host: "github.com", auth: exchange, scheme: "basic" }, { host: "registry.npmjs.org" }], idleSeconds: 900 }, check, "acme"), {
+  assert.deepEqual(computerSettingsInput({ egress: [{ host: "github.com", auth: exchange, scheme: "basic" }, { host: "registry.npmjs.org" }], idleSeconds: 900, instance: "standard-2" }, check, "acme"), {
     egress: [{ host: "github.com", auth: { type: "exchange", url: "https://app.example.net/token" }, scheme: "basic" }, { host: "registry.npmjs.org" }],
     idleSeconds: 900,
+    instance: "standard-2",
   });
   // An exchange grant defaults to a bearer header.
   assert.equal(computerSettingsInput({ egress: [{ host: "api.github.com", auth: exchange }] }, check, "acme").egress![0].scheme, "bearer");
@@ -27,6 +28,7 @@ test("computer settings: hosts are public DNS names, auth is an exchange, scheme
     [[], /must be an object/],
     [{ network: true }, /Unrecognized key: "network"/],
     [{ idleSeconds: 5 }, /idleSeconds must be an integer from 10 to 3600/],
+    [{ instance: "huge" }, /instance must be one of lite, standard-1/],
     [{ egress: [{ host: "GitHub.com" }] }, /public DNS name/],
     [{ egress: [{ host: "github.com:443" }] }, /public DNS name/],
     [{ egress: [{ host: "*.github.com" }] }, /public DNS name/],
@@ -200,4 +202,15 @@ test("exec takes a shell command, run with bash -lc, as well as an argv list", a
   assert.deepEqual(calls.filter(call => call[0] === "exec").at(-1)![1], ["bash", "-lc", "cd /workspace && git status | head -3"]);
   await assert.rejects(operate(new ContainerProvider(box as never, store), { op: "exec", command: "" }), /Invalid command/);
   await assert.rejects(operate(new ContainerProvider(box as never, store), { op: "exec", command: "true", argv: ["true"] } as never), /command or argv/);
+});
+
+test("a definition's instance size starts the machine at that size, and a new size replaces a running one", async () => {
+  const { calls, box, store } = container();
+  const at = (instance: "standard-2" | "standard-4") => new ContainerProvider(box as never, store, { image: "workspace", instance }, Date.now,
+    { key: JSON.stringify([[], null, instance]), egress: [], idleMs: 60_000 });
+  await operate(at("standard-2"), { op: "exec", command: "true" });
+  assert.equal((calls.find(call => call[0] === "start")![1] as { instance: string }).instance, "standard-2");
+  calls.length = 0;
+  await operate(at("standard-4"), { op: "exec", command: "true" });
+  assert.deepEqual(calls.filter(call => call[0] === "destroy" || call[0] === "start").map(call => call[0] === "start" ? (call[1] as { instance: string }).instance : call[0]), ["destroy", "standard-4"]);
 });

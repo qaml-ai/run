@@ -26,12 +26,13 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
   private queue: Promise<unknown> = Promise.resolve();
   private network(setup?: OperateSetup): ComputerNetwork {
     const idleMs = (setup?.settings.idleSeconds ?? COMPUTER_LIMITS.idleSeconds.default) * 1000;
-    const grants = setup?.settings.egress ?? [];
-    if (!grants.length) return { key: "", egress: [], idleMs };
+    const grants = setup?.settings.egress ?? [], instance = setup?.settings.instance;
+    // The key names what a running container was started with; another key replaces it (ContainerProvider.ready).
+    if (!grants.length) return { key: instance ? JSON.stringify([[], null, instance]) : "", egress: [], idleMs };
     const gateway = (this.ctx as unknown as { exports: { ComputerEgress: EgressBinding } }).exports.ComputerEgress;
     return {
       // The identity is part of the key: a gateway's props carry it, so a new one needs new intercepts.
-      key: JSON.stringify([grants, setup!.identity.claims]),
+      key: JSON.stringify([grants, setup!.identity.claims, instance ?? null]),
       egress: grants.map(grant => ({ grant, gateway: gateway({ props: { grant, identity: setup!.identity } }) })),
       idleMs,
     };
@@ -42,7 +43,7 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
     return new ContainerProvider(
       this.ctx.container,
       this.ctx.storage,
-      computerSpec(this.env),
+      { ...computerSpec(this.env), ...(setup?.settings.instance ? { instance: setup.settings.instance } : {}) },
       Date.now,
       this.network(setup),
     );
