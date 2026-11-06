@@ -107,6 +107,11 @@ test("watcher reservations enforce one tenant limit across agents and release on
   t.after(() => controller.abort());
   const first = await openEventStream(fetch, `${f.url}/v1/agents/${a}/events`, { headers, signal: controller.signal });
   const second = await openEventStream(fetch, `${f.url}/v1/agents/${b}/events`, { headers, signal: controller.signal });
+  for (const response of [first, second]) {
+    const reader = response.body!.getReader();
+    assert.match(new TextDecoder().decode((await reader.read()).value), /event: ready/);
+    reader.releaseLock();
+  }
   const negotiate = () => fetch(`${f.url}/v1/agents/${a}/events`, { headers: { ...headers, accept: "application/vnd.camelrun.events+json, text/event-stream" } });
   assert.equal((await negotiate()).status, 429, "different agents share the configured tenant limit");
   await first.body!.cancel();
