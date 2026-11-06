@@ -1,4 +1,5 @@
-import { accountLifecycleRoutes, accountDeletions, type AccountLifecycleEnv } from "./account-lifecycle.ts";
+import { accountLifecycleRoutes, accountDeletions, resumeAccountDeletions, type AccountLifecycleEnv } from "./account-lifecycle.ts";
+import { consumeAccountDeletion } from "./account-deletion-queue.ts";
 import { keyServices, type KeyEnv } from './security-services.ts';
 import { keyRoutes } from './key-routes.ts';
 import { accountServices, publicAccountRoutes, accountPrincipal, accountManagementRoutes, oauthAllows, type AccountEnv } from './account-services.ts';
@@ -16,7 +17,7 @@ import { sweepAdmission } from './admission.ts';
 import { flushJourney } from './journey-delivery.ts';
 import { expireMoneyIdempotency } from './money-idempotency.ts';
 import { withSql } from './postgres.ts';
-import { publishPending, type WebhookEnv } from './webhooks.ts';
+import { publishPending, type WebhookEnv, type DeliveryMessage } from './webhooks.ts';
 import { z } from 'zod';
 const workspaceName = z.string().trim().min(1).max(120);
 const workspaceInput = z.object({ name: workspaceName });
@@ -155,6 +156,10 @@ export async function sendMoneyWebhooks(env: MoneyEnv): Promise<number | undefin
     select due from webhook_deliveries union all select due from usage_webhook_outbox) pending`))).rows[0];
   return row?.due == null ? undefined : Math.max(1, Math.ceil((Number(row.due) - Date.now()) / 1000));
 }
+export async function consumeAccountDeletionMessage(env: MoneyEnv, message: Message<DeliveryMessage>) {
+  const s = await services(env), lifecycle = env as unknown as AccountLifecycleEnv;
+  await consumeAccountDeletion(lifecycle, accountDeletions(lifecycle, s.account, message.body.id), message);
+}
 export async function moneyMaintenance(env: MoneyEnv) {
   const s = await services(env);
   await sweepAdmission(env);
@@ -164,5 +169,5 @@ export async function moneyMaintenance(env: MoneyEnv) {
   await new EndUserCredits(s.keys.accounts.db).expireDue();
   await s.webhooks.send();
   await pumpBillingMail(env, s.billing.alerts);
-  await accountDeletions(env as unknown as AccountLifecycleEnv, s.account).kick();
+  await resumeAccountDeletions(env as unknown as AccountLifecycleEnv, s.account);
 }

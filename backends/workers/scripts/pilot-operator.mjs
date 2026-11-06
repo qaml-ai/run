@@ -46,6 +46,7 @@ export async function withPilotOperator(options, callback) {
     observability: { enabled: false },
     hyperdrive: [{ binding: "HYPERDRIVE", id: "3e6d68e844ec480589e766119f52dead" }],
     r2_buckets: [{ binding: "BUCKET", bucket_name: "camelrun-pilot-files" }],
+    queues: { producers: [{ binding: "WEBHOOKS", queue: "camelrun-pilot-delivery" }] },
     durable_objects: { bindings: [
       { name: "AGENTS", class_name: "CamelAgent", script_name: "camelrun-pilot" },
       { name: "TENANTS", class_name: "TenantAdmission", script_name: "camelrun-pilot" },

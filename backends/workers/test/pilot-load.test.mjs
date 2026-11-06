@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { runPilotLoad } from '../scripts/pilot-load.mjs';
 
-test('pilot load awaits foreground cleanup, retries a live lease and verifies credential revocation', async () => {
+test('pilot load enqueues cleanup once, polls durable progress and verifies credential revocation', async () => {
   const original = globalThis.fetch;
   let cleanups = 0;
+  let polls = 0;
   const calls = [];
   globalThis.fetch = async (url, init) => {
     const path = new URL(url).pathname;
@@ -18,7 +19,12 @@ test('pilot load awaits foreground cleanup, retries a live lease and verifies cr
     else if (path === '/pilot/cleanup') {
       assert.equal(init.method, 'POST');
       assert.deepEqual(JSON.parse(init.body), { tenant: 'pilot-load-test-0' });
-      body = { state: ++cleanups === 1 ? 'deleting' : 'deleted' };
+      cleanups++;
+      body = { state: 'deleting' };
+    } else if (path === '/v1/tenants/pilot-load-test-0/deletion') {
+      assert.equal(init.method, 'GET');
+      polls++;
+      body = { state: 'deleted' };
     } else if (path === '/v1/me') { status = 401; body = { code: 'UNAUTHORIZED' }; }
     return Response.json(body, { status });
   };
@@ -32,8 +38,9 @@ test('pilot load awaits foreground cleanup, retries a live lease and verifies cr
     assert.equal(report.cleanup.deletedTenants, 1);
     assert.equal(report.cleanup.revokedCredentials, 1);
     assert.deepEqual(report.cleanup.failures, []);
-    assert.equal(cleanups, 2);
-    assert.ok(calls.every(call => call.method !== 'DELETE' && !call.path.endsWith('/deletion')), 'cleanup never depends on a background waitUntil request');
+    assert.equal(cleanups, 1);
+    assert.equal(polls, 1);
+    assert.ok(calls.every(call => call.method !== 'DELETE'), 'cleanup intent is enqueued once instead of running in an HTTP background task');
     assert.ok(!JSON.stringify(report).includes('synthetic-pilot-key'));
   } finally { globalThis.fetch = original; }
 });

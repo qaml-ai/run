@@ -69,11 +69,10 @@ export default function pilotOperator(options: Options) {
         }
 
         if (cleanup) {
-          // Foreground I/O may outlive waitUntil's post-response window. Both
-          // the claimed deletion and every host sweep are scoped to this ID.
+          // The main Worker's queue consumer owns cleanup after this temporary
+          // operator returns; its durable intent is restricted to this tenant.
           const deletions = accountDeletions(setup, { accounts: services.accounts } as AccountServices, tenant);
           await deletions.request(tenant!, "operator:pilot-bootstrap");
-          await deletions.kick();
           return reply(await deletions.status(tenant!));
         }
 
@@ -118,12 +117,10 @@ export default function pilotOperator(options: Options) {
           const deletions = accountDeletions(setup, { accounts: services.accounts } as AccountServices, tenant);
           if (request.method === "DELETE" && !targeted[2]) {
             const result = await deletions.request(tenant!, "operator:pilot-bootstrap");
-            ctx.waitUntil(deletions.kick());
             return reply(result, 202);
           }
           if (request.method === "GET" && targeted[2] === "deletion") {
             const result = await deletions.status(tenant!);
-            ctx.waitUntil(deletions.kick());
             return result ? reply(result) : reply({ error: "No deletion" }, 404);
           }
           return reply({ error: "Not found" }, 404);

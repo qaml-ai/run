@@ -2,6 +2,7 @@ import type { AccountServices } from "./account-services.ts";
 import { personal } from "./account-console-auth.ts";
 import type { Principal } from "./accounts.ts";
 import { AccountDeletions } from "./account-deletion.ts";
+import { enqueueAccountDeletion } from "./account-deletion-queue.ts";
 import { exportAccount } from "./account-export.ts";
 import { Directory, type ControlEnv } from "./control.ts";
 import { definitionRoutes } from "./definitions.ts";
@@ -10,11 +11,13 @@ import { readText } from "./account-http.ts";
 import { volume, stub, type FileBindings } from "./files.ts";
 import type { FileEntry } from "./volume.ts";
 import type { Webhooks } from "./webhook-policy.ts";
+import type { DeliveryMessage } from "./webhooks.ts";
 import { createStripe, type BillingEnv } from "./billing-routes.ts";
 import { ComputerService, type ComputerEnv } from "./computers/service.ts";
 import { transaction } from "./postgres.ts";
 
 export type AccountLifecycleEnv = FileBindings & BillingEnv & {
+  WEBHOOKS?: Queue<DeliveryMessage>;
   TENANTS?: { getByName(id: string): { purgeAccountData(): Promise<void> } };
   AGENTS: { getByName(id: string): { fetch(request: Request): Promise<Response>; purgeAccountData(tenant: string, id: string): Promise<void> } };
 };
@@ -35,6 +38,7 @@ export function accountDeletions(env: AccountLifecycleEnv, service: AccountServi
   const tenantValues = tenantOnly === undefined ? [] : [tenantOnly];
   return new AccountDeletions({
     db, accounts: service.accounts, stripe: createStripe(env), onlyTenant: tenantOnly,
+    schedule: tenant => enqueueAccountDeletion(env, tenant),
     storage: { async removeBlobs(prefix) {
       const tenant = prefix.split("/")[1];
       await removePrefix(env, prefix);
@@ -47,15 +51,15 @@ export function accountDeletions(env: AccountLifecycleEnv, service: AccountServi
       const result = await new Directory(env as unknown as ControlEnv, tenant).remove(id);
       if (result && typeof result === "object" && result.failed) throw new HttpError(result.status, result.error);
     },
-    purgeAgents: async () => {
+    purgeAgents: async (owner, limit) => {
       // Directory revokes before the DO drains. Retry an interrupted shutdown
       // before purging journals; the source deletion loop only visits live rows.
-      const pending = (await db.query("select id, tenant from agents where revoked and purged_at is null and tenant <> '' and exists (select 1 from account_deletions d where d.tenant=agents.tenant and d.completed_at is null)" + tenantFilter, tenantValues)).rows;
+      const pending = (await db.query("select id, tenant from agents where revoked and purged_at is null and tenant=$1 order by id limit $2", [owner, limit])).rows;
       for (const { id, tenant } of pending) {
         const result = await new Directory(env as unknown as ControlEnv, tenant).remove(id);
         if (result && typeof result === "object" && result.failed) throw new HttpError(result.status, result.error);
       }
-      const rows = (await db.query("select id, tenant from agents where revoked and purged_at is not null and tenant <> '' and exists (select 1 from account_deletions d where d.tenant=agents.tenant and d.completed_at is null)" + tenantFilter, tenantValues)).rows;
+      const rows = (await db.query("select id, tenant from agents where revoked and purged_at is not null and tenant=$1 order by id limit $2", [owner, limit])).rows;
       for (const { id, tenant } of rows) {
         await env.AGENTS.getByName(id).purgeAccountData(tenant, id);
         await transaction(db, async sql => {
@@ -87,6 +91,12 @@ export function accountDeletions(env: AccountLifecycleEnv, service: AccountServi
       },
     },
   });
+}
+
+/** Cron repairs the commit-before-enqueue seam and exhausted queue delivery retries. */
+export async function resumeAccountDeletions(env: AccountLifecycleEnv, service: AccountServices) {
+  const { rows } = await service.accounts.db.query("select tenant from account_deletions where completed_at is null and (claimed_until is null or claimed_until < now()) order by requested_at limit 100");
+  for (const { tenant } of rows) await enqueueAccountDeletion(env, tenant);
 }
 
 async function exportResponse(env: AccountLifecycleEnv, service: AccountServices, webhooks: Webhooks, tenant: string) {
@@ -152,13 +162,11 @@ export async function accountLifecycleRoutes(request: Request, env: AccountLifec
     const deletions = accountDeletions(env, service);
     if (!operator[2] && request.method === "DELETE") {
       const status = await deletions.request(tenant, `operator:${principal.tenant}`);
-      ctx.waitUntil(deletions.kick());
       return reply(status, 202);
     }
     if (operator[2] === "/deletion" && request.method === "GET") {
       const status = await deletions.status(tenant);
       if (!status) throw new HttpError(404, "No deletion of this tenant");
-      ctx.waitUntil(deletions.kick());
       return reply(status);
     }
   }
@@ -168,7 +176,6 @@ export async function accountLifecycleRoutes(request: Request, env: AccountLifec
     try { input = JSON.parse(await readText(request.body, 4096)); } catch { throw new HttpError(400, "Invalid JSON"); }
     if (input?.confirm !== principal.tenant) throw new HttpError(400, "confirm must be this account's tenant id");
     const deletions = accountDeletions(env, service), status = await deletions.request(principal.tenant, "self");
-    ctx.waitUntil(deletions.kick());
     return reply(status, 202);
   }
   return null;

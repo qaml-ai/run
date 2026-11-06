@@ -45,7 +45,7 @@ import {
   type DeliveryMessage,
 } from "./webhooks.ts";
 import { handleFileRequest, handleSignedFileRequest } from "./files.ts";
-import { publicMoneyRoutes, authenticateMoney, moneyRoutes, moneyMaintenance, sendMoneyWebhooks } from "./money-api.ts";
+import { publicMoneyRoutes, authenticateMoney, moneyRoutes, moneyMaintenance, sendMoneyWebhooks, consumeAccountDeletionMessage } from "./money-api.ts";
 import { BrowserTokens, type BrowserClaims } from "./browser-tokens.ts";
 import { apiRequest, createAdmission, admissionError, admissionHeaders, errorFields, errorHeaders } from "./admission.ts";
 import { BROWSER_READS, corsPreflight, corsResponse } from "./cors.ts";
@@ -585,13 +585,19 @@ const worker = {
   },
   async queue(batch: MessageBatch<DeliveryMessage>, env: Env) {
     return withMoneyMetrics(env, async () => {
+    for (const message of batch.messages.filter(message => message.body.kind === "account_deletion")) {
+      try { await consumeAccountDeletionMessage(env, message); }
+      catch (error) { failure(env, "account_deletion_queue_failed", error); message.retry({ delaySeconds: 60 }); }
+    }
+    const deliveries = batch.messages.filter(message => message.body.kind !== "account_deletion");
+    if (!deliveries.length) return;
     const webhookRetry = await sendMoneyWebhooks(env);
-    for (const message of batch.messages.filter(message => message.body.kind === "schedule")) {
+    for (const message of deliveries.filter(message => message.body.kind === "schedule")) {
       try { if (await deliverScheduleEmail(env, message.body.id)) message.ack(); else message.retry({ delaySeconds: 10 }); }
       catch { message.retry({ delaySeconds: 30 }); }
     }
-    await consumeWebhooks({ ...batch, messages: batch.messages.filter(message => message.body.kind === "email") } as MessageBatch<DeliveryMessage>, env);
-    const webhookMessages = batch.messages.filter(message => message.body.kind !== "email" && message.body.kind !== "schedule");
+    await consumeWebhooks({ ...batch, messages: deliveries.filter(message => message.body.kind === "email") } as MessageBatch<DeliveryMessage>, env);
+    const webhookMessages = deliveries.filter(message => message.body.kind !== "email" && message.body.kind !== "schedule");
     // The outbox owns backoff and expiry. Queue delivery retries must not cap it.
     if (webhookRetry !== undefined && webhookMessages.length) {
       if (!env.WEBHOOKS) throw new Error("Webhook queue is not configured");
