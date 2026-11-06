@@ -807,7 +807,7 @@ export async function answerHumanInputsImpl(this: AgentRuntime,
         for (const event of events) await this.emit({ type: 'event', requestId: resumed.id, event });
       }
       if (fresh) for (const entry of checked)
-        await this.emit({ type: "event", requestId: entry.owner, event: { type: "input_resolved", id: entry.id } }, undefined,
+        await this.emit({ type: "event", requestId: entry.owner, event: { type: "input_resolved", id: entry.id, state: entry.answer.state, by: entry.answer.answerDetail.by } }, undefined,
           inputWebhook(conf, entry.owner ?? "", { id: entry.id, state: entry.answer.state }, true));
       for (const request of requests) this.track(request.id);
       if (requests.length) await this.arm();
