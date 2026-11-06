@@ -41,7 +41,7 @@ only after you type `apply`; `PLAN_ONLY=1` stops at the plan). By hand:
 ```sh
 cd infra/terraform
 tofu init
-# Production's settings that aren't defaults (billing email, Slack alerts, Discord, storage GC, ...).
+# Production's settings that aren't defaults (billing email, Slack alerts, storage GC, ...).
 # They are not in this public repository: fetch them first, every time. *.auto.tfvars is gitignored and
 # loaded without -var-file, so no plan runs without them.
 aws s3 cp s3://camelai-terraform-state-904534089871/agent-runtime/prod.tfvars prod.auto.tfvars

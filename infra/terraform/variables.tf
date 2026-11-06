@@ -241,12 +241,6 @@ variable "journey_internal_email_domains" {
   default     = ["camelai.com", "camelqa.com"]
 }
 
-variable "discord_managed_enabled" {
-  description = "Serve the managed Camel Discord bot (src/discord-managed.ts) with the application in the discord-managed secret. Fill the secret first; an empty secret leaves it off. See docs/operations/managed-discord.md."
-  type        = bool
-  default     = false
-}
-
 variable "storage_gc_enabled" {
   description = "Collect chunks nothing refers to, and deleted volumes' objects (src/storage-gc.ts, AGENT_GC_ENABLED). Run scripts/backfill-pins.ts once before a runtime with agents from before migration 026 enables it (docs/operations/persistence.md)."
   type        = bool
