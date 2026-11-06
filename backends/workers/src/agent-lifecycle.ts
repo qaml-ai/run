@@ -11,16 +11,14 @@ import { TERMINAL_EVENTS_PREFIX } from "./event-log.ts";
 import { scheduleError, type ScheduleToolsHost } from "./agent-schedules.ts";
 import { Config } from "./agent-types.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
+import { purgeStart } from "./account-purge.ts";
 
 /** Erase a revoked account's journal only after the normal shutdown completed. */
 export async function purgeAccountDataImpl(this: AgentRuntime,
   tenant: string,
   id: string) {
     await this.admission;
-    const config = await this.ctx.storage.get<Config>("configuration");
-    const deleted = await this.ctx.storage.get<boolean>("deleted");
-    if (!deleted || config && (config.tenantId !== tenant || config.id !== id))
-      throw new Error("Account purge requires the owned, deleted agent");
+    if (await purgeStart(this.ctx.storage, tenant, id) === "done") return;
     await Promise.all(this.pendingWaits.values());
     await this.eventsProcessed;
     for (;;) {
