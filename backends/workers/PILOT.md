@@ -29,9 +29,9 @@ Postgres or use customer credentials. All dates below are UTC.
 | Model secret | `PILOT_OPENROUTER_KEY` | Account secret `CAMELRUN_PILOT_OPENROUTER_KEY`, store `c8c66b0210e64900864182073dcd5e09` |
 | Runtime secrets | `API_TOKEN`, `FILE_SIGNING_SECRET`, `AGENT_SECRETS_KEY` | Stable authentication, signing and encryption keys; values never displayed |
 
-The verified API version is `8fc0599b-260d-4c64-aa30-4d8bf705ea99`.
-The sandbox version is `79f58b3f-7dfe-4dc0-90b4-fd972a5aaed8`; the fake
-provider version is `0ec52245-f557-437a-90ab-0f12732a2305`.
+The verified API version is `102ab697-ff46-423d-8852-d43c4f5d873d`.
+The sandbox version is `23b3d532-733f-4637-9456-a1ccc0f0a3d1`; the fake
+provider version is `da870c3e-d37c-4fcb-a787-b9ae9c81e17e`.
 
 The API enables structured runtime logs. Automatic invocation logs and traces
 are disabled because Cloudflare does not guarantee redaction of the bearer
