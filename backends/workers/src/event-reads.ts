@@ -59,6 +59,7 @@ export async function eventRead(request: Request, env: SecurityEnv, tenant: stri
         for (;;) {
           const boundary = /\r?\n\r?\n/.exec(pending);
           if (!boundary) break;
+          if (boundary.index > 2 * 1024 * 1024) throw new Error("Event frame exceeds stream limit");
           const frame = pending.slice(0, boundary.index);
           pending = pending.slice(boundary.index + boundary[0].length);
           const lines = frame.split(/\r?\n/);

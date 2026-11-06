@@ -144,6 +144,7 @@ import { runtimePromptSections } from "./prompt-sections.ts";
 import { projectRunFailure } from "./run-failure.ts";
 import { RunProjection } from "./run-projection.ts";
 import { requestView } from "./request-view.ts";
+import { waitForRequest } from "./request-wait.ts";
 import { AgentHistory } from "./history.ts";
 import type { AgentConfiguration } from "./api-contract.ts";
 import { recordAgentActivity } from "./agent-activity.ts";
@@ -3266,12 +3267,12 @@ export class CamelAgent extends DurableObject<Env> {
       if (path.startsWith("/requests/") && request.method === "GET") {
         const seconds = Number(url.searchParams.get("wait") ?? 0);
         if (!Number.isFinite(seconds) || seconds < 0) throw new BadRequest("wait is a number of seconds");
-        const wait = Math.max(1, Math.min(25000, seconds * 1000));
-        return json(
-          await requestView(
-            await this.settle(decodeURIComponent(path.slice(10)), wait),
-          ),
-        );
+        const id = decodeURIComponent(path.slice(10));
+        const record = await waitForRequest(() => this.settle(id, 1), wake => {
+          this.listeners.add(wake);
+          return () => this.listeners.delete(wake);
+        }, Math.min(25000, seconds * 1000), request.signal);
+        return json(await requestView(record));
       }
       if (path === "/history" && request.method === "GET") {
         const run = url.searchParams.get("run");
