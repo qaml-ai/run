@@ -45,6 +45,9 @@ import {
   type DeliveryMessage,
 } from "./webhooks.ts";
 import { handleFileRequest, handleSignedFileRequest } from "./files.ts";
+import { channelRoutes, channelWebhook } from "./channel-routes.ts";
+import { workerChannels } from "./channels.ts";
+import { receiveChannelEmail } from "./channel-email.ts";
 import { publicMoneyRoutes, authenticateMoney, moneyRoutes, moneyMaintenance, sendMoneyWebhooks, consumeAccountDeletionMessage } from "./money-api.ts";
 import { BrowserTokens, type BrowserClaims } from "./browser-tokens.ts";
 import { apiRequest, createAdmission, admissionError, admissionHeaders, errorFields, errorHeaders } from "./admission.ts";
@@ -215,6 +218,9 @@ const worker = {
           backend: "workers-native",
           experimental: true,
         });
+      // Channels' webhooks come before any authentication: each delivery proves itself.
+      const delivery = await channelWebhook(request, env, ctx);
+      if (delivery) return delivery;
       const publicResponse = await publicRoutes(request, env);
       if (publicResponse) return publicResponse;
       const publicMoney = await publicMoneyRoutes(request, env, ctx);
@@ -342,6 +348,8 @@ const worker = {
         if (files) return files;
         const definition = await definitionRoutes(request, env, auth);
         if (definition) return definition;
+        const channel = await channelRoutes(request, env, auth.tenantId, ctx);
+        if (channel) return channel;
         const provider = await providerRoutes(request, env, auth);
         if (provider) return provider;
         const run = await statelessRoutes(request, env, auth);
@@ -597,13 +605,20 @@ const worker = {
     }
     const deliveries = batch.messages.filter(message => message.body.kind !== "account_deletion");
     if (!deliveries.length) return;
+    // A channel item came due (a retry, a debounce, a turn whose end was not seen): scan for due work.
+    const channelWakes = deliveries.filter(message => message.body.kind === "channels");
+    if (channelWakes.length) {
+      try { await (await workerChannels(env)).scan(); for (const message of channelWakes) message.ack(); }
+      catch (error) { failure(env, "channel_scan_failed", error); for (const message of channelWakes) message.retry({ delaySeconds: 30 }); }
+    }
+    if (channelWakes.length === deliveries.length) return;
     const webhookRetry = await sendMoneyWebhooks(env);
     for (const message of deliveries.filter(message => message.body.kind === "schedule")) {
       try { if (await deliverScheduleEmail(env, message.body.id)) message.ack(); else message.retry({ delaySeconds: 10 }); }
       catch { message.retry({ delaySeconds: 30 }); }
     }
     await consumeWebhooks({ ...batch, messages: deliveries.filter(message => message.body.kind === "email") } as MessageBatch<DeliveryMessage>, env);
-    const webhookMessages = deliveries.filter(message => message.body.kind !== "email" && message.body.kind !== "schedule");
+    const webhookMessages = deliveries.filter(message => message.body.kind !== "email" && message.body.kind !== "schedule" && message.body.kind !== "channels");
     // The outbox owns backoff and expiry. Queue delivery retries must not cap it.
     if (webhookRetry !== undefined && webhookMessages.length) {
       if (!env.WEBHOOKS) throw new Error("Webhook queue is not configured");
@@ -611,6 +626,10 @@ const worker = {
     }
     for (const message of webhookMessages) message.ack();
     });
+  },
+  /** Mail Email Routing delivers to this Worker: each message for an email channel's address. */
+  async email(message: ForwardableEmailMessage, env: Env, ctx: ExecutionContext) {
+    await receiveChannelEmail(message, env, ctx);
   },
   async scheduled(_controller: ScheduledController, env: Env) {
     return withMoneyMetrics(env, async () => {
@@ -620,6 +639,8 @@ const worker = {
       await publishScheduleEmails(env);
       await sweepComputers(env);
       await sendJourney(env);
+      // The backstop for channel work whose wake was lost or is further out than a queue delay.
+      await (await workerChannels(env)).scan();
       metric(env, "maintenance", { MaintenanceRuns: 1 });
     } catch (error) { failure(env, "maintenance_failed", error); throw error; }
     });

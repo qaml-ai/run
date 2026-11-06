@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { sourceKeys, selectCases, partitionFiles, greenFor, saveBaseline, loadBaseline, mergeReports } from "./harness.mjs";
@@ -99,7 +99,7 @@ test("groups are exhaustive, file overrides win, and filters intersect", () => {
   assert.deepEqual(selectCases([file, a, b], { group: "tools-mcp", area: "agents" }), [file]);
   assert.deepEqual(selectCases([a, b], { files: "a.ts" }), [a]);
   assert.throws(() => selectCases([a], { group: "not-a-group" }), /Unknown group/);
-  assert.equal(Object.keys(groups).length, 10);
+  assert.equal(Object.keys(groups).length, 11);
 });
 
 test("sharding keeps each file together, balances measured durations and is deterministic", () => {
@@ -132,7 +132,10 @@ test("merge preserves failures and rejects missing, duplicate, stale or extra re
 
 test("accepted differences are exact reviewed Workers cases and never green Node evidence", async () => {
   const { acceptedDifferences, acceptedDifference, differenceResult, validateDifferences, validateDifferenceInventory } = await import("./accepted-differences.mjs");
-  assert.equal(acceptedDifferences.length, 5);
+  // Every row the module declares is exported (a dropped group once went unnoticed).
+  const declared = (await readFile(new URL("./accepted-differences.mjs", import.meta.url), "utf8")).match(/^\s*\{"area":/gm).length;
+  assert.equal(acceptedDifferences.length, declared);
+  assert.equal(acceptedDifferences.length, 10);
   validateDifferenceInventory(acceptedDifferences);
   assert.throws(() => validateDifferenceInventory(acceptedDifferences.slice(1)), /missing or duplicated/);
   assert.throws(() => validateDifferenceInventory([...acceptedDifferences, acceptedDifferences[0]]), /missing or duplicated/);

@@ -38,6 +38,8 @@ export function accountDeletions(env: AccountLifecycleEnv, service: AccountServi
   const tenantValues = tenantOnly === undefined ? [] : [tenantOnly];
   return new AccountDeletions({
     db, accounts: service.accounts, stripe: createStripe(env), onlyTenant: tenantOnly,
+    // Each channel goes as DELETE /v1/channels/:id takes it: its service torn down, its queue and threads with it.
+    channels: { remove: async (tenant, id) => (await (await import("./channels.ts")).workerChannels(env as never)).remove(tenant, id) },
     schedule: tenant => enqueueAccountDeletion(env, tenant),
     storage: { async removeBlobs(prefix) {
       const tenant = prefix.split("/")[1];
@@ -104,6 +106,7 @@ async function exportResponse(env: AccountLifecycleEnv, service: AccountServices
   const db = service.accounts.db;
   const chunks = exportAccount({
     accounts: service.accounts, oauth: service.oauth, webhooks, journey: service.journey,
+    channels: { list: async owner => (await (await import("./channels.ts")).workerChannels(env as never)).list(owner) },
     clients: {
       async historyPageFor(id, _tenant, query) {
         const response = await env.AGENTS.getByName(id).fetch(new Request(`https://agent/history?${new URLSearchParams(query as Record<string, string>)}`));

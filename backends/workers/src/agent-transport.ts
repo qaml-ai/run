@@ -16,6 +16,7 @@ export async function emitImpl(this: AgentRuntime,
   event: unknown,
   delivery?: TerminalDelivery,
   webhook?: WebhookEvent) {
+    let committed: { owner?: Config; record?: RequestRecord } = {};
     const work = this.serial.then(async () => {
       const cursor = await this.ctx.storage.transaction(async (tx) => {
         if (delivery && !(await acknowledgeTerminalEvent(tx, delivery)))
@@ -31,6 +32,7 @@ export async function emitImpl(this: AgentRuntime,
           : owner && value.event?.type === "input_required"
             ? inputWebhook(owner, value.requestId, value.event.input) : undefined);
         if (announcement) await stageWebhook(tx, announcement);
+        committed = { owner, record };
         const live = { cursor: next, events: [], turn: await tx.get<LiveTurn>("live-turn"), partial: this.partial };
         if (value.type === "event" && value.event?.type === "agent_start" && live.turn?.requestId !== value.requestId)
           live.turn = { requestId: value.requestId, count: 0, bytes: 0, messages: [] };
@@ -42,6 +44,8 @@ export async function emitImpl(this: AgentRuntime,
         return next;
       });
       if (cursor === undefined) return;
+      this.channels.observe(committed.owner, event as { type?: string; event?: { type?: string } }, committed.record && (event as { type?: string }).type === "response"
+        ? { ...committed.record, outcome: (event as { outcome?: RequestRecord["outcome"] }).outcome ?? committed.record.outcome } : committed.record);
       for (const listener of this.listeners) listener(cursor, event);
       for (const socket of this.ctx.getWebSockets()) {
         try {

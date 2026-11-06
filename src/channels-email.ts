@@ -1,35 +1,23 @@
-import { createHash, randomBytes, randomUUID, verify, X509Certificate, type KeyObject } from "node:crypto";
+import { verify, X509Certificate, type KeyObject } from "node:crypto";
 import { Hono } from "hono";
-import PostalMime, { type Email, type Mailbox } from "postal-mime";
 import type { Db } from "./db.ts";
-import { HttpError, readText } from "./http.ts";
-import { readableText } from "./html-text.ts";
+import { readText } from "./http.ts";
 import { errorText } from "./protocol.ts";
 import { safeError } from "./metrics.ts";
 import { fetchWithoutRedirects } from "./core/no-redirect.ts";
-import { SendError, type Channel, type ChannelProvider, type Channels, type ChannelSettings, type InboundFile, type Sender } from "./channels.ts";
+import { SendError, type ChannelProvider, type Channels } from "./channels.ts";
+import {
+  domainOf, emailProvider, forwarderOf, forwardingProof, parseMail, receiveEmail, replyMime, senderOf, vouches, type Forwarder,
+} from "./core/channels/email.ts";
+
+export { newText, replyMime, automatic, type Replies } from "./core/channels/email.ts";
 
 /**
- * Email channels on the runtime's own domain. Each channel has an address,
- * `<local>@AGENT_EMAIL_DOMAIN` (its id unless the tenant picks one); SES receives
- * the domain's mail and publishes each message to an SNS topic, whose HTTPS
- * subscription is one route for all channels, `/channels/email/inbound`. A message
- * is handed to every channel it is addressed to, once its SNS signature, topic and
- * SES's verdicts on the sender check out.
- *
- * A conversation is an email thread, found by its root Message-ID (or by any
- * message of ours it replies to), and replies go back as SES raw sends that
- * thread under the last message received. What a reply needs (who to, the
- * subject, References) is kept per conversation:
- *
- *   email_threads    a conversation's channel, who wrote last (and whether a forwarder brought it), subject and References
- *   email_messages   the Message-IDs of a channel's threads, so a reply to any of them finds its thread
- *
- * Who a reply is mailed to is the channel's `settings.replies`, read when it is sent:
- * whoever wrote last (`sender`, the default), nobody (`none`), or one fixed address
- * (`{ to }`) that has proven itself by writing to the channel. Mail a trusted
- * forwarder (`settings.forwarders`) passes on keeps its original From, which nothing
- * proves: such a sender is never mailed unless the channel says so (`replyToForwarded`).
+ * Email channels on ECS (src/core/channels/email.ts holds what Workers shares): SES receives
+ * the domain's mail and publishes each message to an SNS topic, whose HTTPS subscription is
+ * one route for all channels, `/channels/email/inbound`. A message is handed to every
+ * channel it is addressed to, once its SNS signature, topic and SES's verdicts on the
+ * sender check out. Replies go back as SES raw sends.
  */
 
 export interface EmailOptions {
@@ -56,54 +44,9 @@ const MAX_FILE_BYTES = 10 * 1024 * 1024;
  * in the channel item, up to this; mail SES stored in S3 is read back from there instead.
  */
 const MAX_INLINE_BYTES = 256 * 1024;
-/** What of a message's text the agent gets. */
-const MAX_TEXT = 20_000;
-/** References kept per thread: the root and the most recent. */
-const MAX_REFERENCES = 20;
 /** SNS notifications older than this are replays, not retries. */
 const MAX_AGE_MS = 24 * 60 * 60_000;
 const SNS_HOST = /^sns\.[a-z0-9-]+\.amazonaws\.com(\.cn)?$/;
-/** Local parts no channel may take: role addresses mail systems and people expect to mean something else. */
-const RESERVED = new Set(["postmaster", "abuse", "mailer-daemon", "hostmaster", "webmaster", "admin", "administrator", "root", "security", "noreply", "no-reply", "support-noreply"]);
-const LOCAL = /^[a-z0-9](?:[a-z0-9._+-]{0,62}[a-z0-9])?$/;
-
-const sha = (value: string) => createHash("sha256").update(value).digest("hex");
-const oneLine = (value: string) => value.replace(/[\r\n]+/g, " ").trim();
-/** Message-IDs in a header, without their angle brackets. */
-const messageIds = (value: string | undefined) => [...(value ?? "").matchAll(/<([^<>\s]+)>/g)].map(match => match[1]);
-const domainOf = (address: string) => address.slice(address.lastIndexOf("@") + 1).toLowerCase();
-/** A domain proven by SPF or DKIM vouches for a From domain that is it or under it. */
-const vouches = (proven: string, from: string) => proven.includes(".") && (from === proven || from.endsWith(`.${proven}`));
-const ADDRESS = /^[^@\s<>,;"]+@[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.[a-z]{2,}$/;
-const MAX_FORWARDERS = 20;
-
-/** Who a channel's replies are mailed to: the last sender, nobody, or one fixed address. */
-export type Replies = "sender" | "none" | { to: string };
-/** An email channel's settings as stored: defaults (`replies: "sender"`, no forwarders) are left out. */
-interface EmailSettings { address?: string; fromName?: string; replies?: Exclude<Replies, "sender">; forwarders?: string[]; replyToForwarded?: true }
-const repliesOf = (settings: EmailSettings): Replies => settings.replies ?? "sender";
-
-/** `settings.replies` as given: "sender", "none", or { to } with an address off the runtime's own domain. */
-function repliesInput(value: unknown, domain: string): Replies {
-  if (value === "sender" || value === "none") return value;
-  const to = value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).join() === "to" ? (value as { to: unknown }).to : undefined;
-  if (typeof to !== "string") throw new HttpError(400, 'settings.replies must be "sender", "none" or { "to": "<address>" }');
-  const address = to.trim().toLowerCase();
-  if (address.length > 254 || !ADDRESS.test(address)) throw new HttpError(400, "settings.replies.to must be an email address");
-  if (vouches(domain, domainOf(address))) throw new HttpError(400, `settings.replies.to may not be on ${domain}`);
-  return { to: address };
-}
-
-/** `settings.forwarders` as given: addresses, or @domain for every mailbox of a domain. */
-function forwardersInput(value: unknown, domain: string): string[] {
-  if (!Array.isArray(value) || value.length > MAX_FORWARDERS) throw new HttpError(400, `settings.forwarders must be a list of at most ${MAX_FORWARDERS} addresses or @domains`);
-  return [...new Set(value.map(entry => {
-    const text = typeof entry === "string" ? entry.trim().toLowerCase() : "";
-    if (text.length > 254 || !ADDRESS.test(text.startsWith("@") ? `x${text}` : text)) throw new HttpError(400, "settings.forwarders: each entry is an address or @domain");
-    if (vouches(domain, domainOf(text))) throw new HttpError(400, `settings.forwarders may not name ${domain}`);
-    return text;
-  }))];
-}
 
 /**
  * The forwarder a message's envelope proves, or undefined. SES's SPF verdict is on the envelope
@@ -115,109 +58,18 @@ function forwardersInput(value: unknown, domain: string): string[] {
  * the sender writes those. `address` is the envelope sender without its +tag, which is where
  * Google puts the forwarding mailbox (`support+caf_=…@acme.com`, `support+bnc…@acme.com`).
  */
-export function forwardedBy(notification: SesNotification): { address: string; domain: string } | undefined {
+export function forwardedBy(notification: SesNotification): Forwarder | undefined {
   const receipt = notification.receipt ?? {};
   const source = notification.mail?.source?.trim().toLowerCase() ?? "";
-  if (receipt.spfVerdict?.status?.toUpperCase() !== "PASS" || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(source)) return undefined;
+  if (receipt.spfVerdict?.status?.toUpperCase() !== "PASS") return undefined;
   if ([receipt.spamVerdict, receipt.virusVerdict].some(verdict => verdict?.status?.toUpperCase() === "FAIL")) return undefined;
-  const local = source.slice(0, source.lastIndexOf("@")), domain = domainOf(source);
-  return { address: `${local.split("+")[0]}@${domain}`, domain };
-}
-/** Whether a forwarders entry names a proven forwarder: its address, or @domain for its whole domain. */
-const forwarderMatches = (entry: string, forwarder: { address: string; domain: string }) => entry.startsWith("@") ? entry.slice(1) === forwarder.domain : entry === forwarder.address;
-
-/** A channel's address from the tenant's choice: a local part, or the whole address on this domain. */
-function address(value: unknown, domain: string, id: string): string {
-  if (typeof value !== "string") throw new HttpError(400, "settings.address must be a string");
-  let local = value.trim().toLowerCase();
-  if (local.includes("@")) {
-    if (!local.endsWith(`@${domain.toLowerCase()}`)) throw new HttpError(400, `settings.address must be on ${domain}`);
-    local = local.slice(0, local.lastIndexOf("@"));
-  }
-  if (!LOCAL.test(local)) throw new HttpError(400, "settings.address: letters, digits, and . _ + - inside, up to 64 characters");
-  if (RESERVED.has(local)) throw new HttpError(400, `settings.address: ${local} is reserved`);
-  // Channel ids are default addresses; only a channel's own id may be chosen.
-  if (local.startsWith("ch_") && local !== id) throw new HttpError(400, "settings.address may not start with ch_");
-  return `${local}@${domain.toLowerCase()}`;
-}
-
-/** Attachments the agent gets: not the images an HTML body shows inline (logos, signatures). */
-const attachmentsOf = (email: Email) => email.attachments.filter(attachment => !attachment.related);
-const bytesOf = (content: ArrayBuffer | Uint8Array | string) => typeof content === "string" ? Buffer.from(content) : Buffer.from(content instanceof Uint8Array ? content : new Uint8Array(content));
-const fileName = (name: string | null, index: number) => (name ?? "").replace(/[/\\\0\r\n]/g, "_").trim().slice(0, 200) || `attachment-${index + 1}`;
-
-/** What someone wrote, without the history their client quoted below it. */
-export function newText(text: string): string {
-  const lines = text.replace(/\r\n?/g, "\n").split("\n");
-  const kept: string[] = [];
-  for (let index = 0; index < lines.length; index++) {
-    const line = lines[index];
-    if (/^\s*-{2,}\s*Original Message\s*-{2,}\s*$/i.test(line) || /^_{10,}\s*$/.test(line)) break;
-    // "On <date>, <someone> wrote:", which clients wrap onto a second line.
-    if (/^On\b.*\bwrote:\s*$/.test(line) || (/^On\b/.test(line) && /^\s*\S*.*\bwrote:\s*$/.test(lines[index + 1] ?? "") && !/^On\b/.test(lines[index + 1] ?? ""))) break;
-    if (/^\s*>/.test(line)) continue;
-    kept.push(line);
-  }
-  return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
-}
-
-/** A header value as RFC 2047 encoded words when it is not plain ASCII, each at most 75 characters. */
-function encodeWord(value: string): string {
-  if (/^[\x20-\x7e]*$/.test(value)) return value;
-  const words: string[] = [];
-  let current = "";
-  for (const char of value) {
-    if (Buffer.byteLength(current + char) > 45) { words.push(current); current = ""; }
-    current += char;
-  }
-  if (current) words.push(current);
-  return words.map(word => `=?UTF-8?B?${Buffer.from(word).toString("base64")}?=`).join(" ");
-}
-const mailbox = (address: string, name?: string) => {
-  if (!name) return address;
-  const clean = oneLine(name);
-  return /^[\x20-\x7e]*$/.test(clean) ? `"${clean.replace(/["\\]/g, "\\$&")}" <${address}>` : `${encodeWord(clean)} <${address}>`;
-};
-const base64Lines = (data: Buffer) => data.toString("base64").replace(/.{76}/g, "$&\r\n");
-
-/** A reply as a raw MIME message: text, and optionally one file. */
-export function replyMime(reply: {
-  from: string; fromName?: string; to: string; subject: string; messageId: string; inReplyTo?: string; references: string[];
-  text: string; file?: { name: string; contentType: string; data: Buffer }; date?: Date;
-  /** Further headers, each a whole `Name: value` line. */
-  headers?: string[];
-}): string {
-  const subject = oneLine(reply.subject) || "(no subject)";
-  const headers = [
-    `From: ${mailbox(reply.from, reply.fromName)}`,
-    `To: ${reply.to}`,
-    `Subject: ${encodeWord(/^re:/i.test(subject) ? subject : `Re: ${subject}`)}`,
-    `Date: ${(reply.date ?? new Date()).toUTCString()}`,
-    `Message-ID: <${reply.messageId}>`,
-    ...(reply.inReplyTo ? [`In-Reply-To: <${reply.inReplyTo}>`] : []),
-    ...(reply.references.length ? [`References: ${reply.references.map(id => `<${id}>`).join(" ")}`] : []),
-    // Tells vacation responders and other agents not to answer an automatic message.
-    "Auto-Submitted: auto-replied",
-    ...(reply.headers ?? []),
-    "MIME-Version: 1.0",
-  ];
-  const text = ["Content-Type: text/plain; charset=utf-8", "Content-Transfer-Encoding: base64", "", base64Lines(Buffer.from(reply.text || " "))].join("\r\n");
-  if (!reply.file) return [...headers, text].join("\r\n");
-  const boundary = `=_${randomBytes(12).toString("hex")}`;
-  const name = oneLine(reply.file.name).replace(/["\\]/g, "_");
-  const ascii = /^[\x20-\x7e]*$/.test(name);
-  const part = [
-    `Content-Type: ${reply.file.contentType.replace(/[^\w.+/-]/g, "") || "application/octet-stream"}; name="${ascii ? name : "attachment"}"`,
-    `Content-Disposition: attachment; ${ascii ? `filename="${name}"` : `filename*=UTF-8''${encodeURIComponent(name)}`}`,
-    "Content-Transfer-Encoding: base64", "", base64Lines(reply.file.data),
-  ].join("\r\n");
-  return [...headers, `Content-Type: multipart/mixed; boundary="${boundary}"`, "", `--${boundary}`, text, `--${boundary}`, part, `--${boundary}--`, ""].join("\r\n");
+  return forwarderOf(source);
 }
 
 /** SES v2 errors that will not change on a retry. */
 const PERMANENT = new Set(["MessageRejected", "MailFromDomainNotVerifiedException", "BadRequestException", "NotFoundException", "AccountSuspendedException"]);
 
-/** The email channel provider: no credentials, one address per channel, replies through SES. */
+/** The email channel provider on ECS: replies as SES raw sends, stored mail read from S3. */
 export function email(options: EmailOptions): ChannelProvider {
   const domain = options.domain.toLowerCase();
   let ses: { send(command: unknown): Promise<unknown> } | undefined, command: (new (input: unknown) => unknown) | undefined;
@@ -229,92 +81,30 @@ export function email(options: EmailOptions): ChannelProvider {
     }
     await ses!.send(new command!({ FromEmailAddress: from, Destination: { ToAddresses: to }, Content: { Raw: { Data: raw } } }));
   });
-
-  async function sendMail(conversationId: string, text: string, file?: { name: string; contentType: string; data: Buffer }) {
-    const { rows } = await options.db.query(`
-      select t.channel as id, t.reply_to, t.forwarded, t.subject, t.refs, t.last_message, c.channel
-      from email_threads t join channels c on c.id = t.channel where t.conversation = $1`, [conversationId]);
-    const thread = rows[0];
-    if (!thread) throw new SendError("No such email thread", true);
-    const channel = thread.channel as Channel;
-    const settings = (channel.settings ?? {}) as EmailSettings;
-    const replies = repliesOf(settings);
-    // Decided here, by the settings as they are now, so no queued or retried message outlives a change of them.
-    const skip = (reason: string) => console.log(JSON.stringify({ type: "email_outbound", skipped: reason, channel: thread.id, conversation: conversationId }));
-    if (replies === "none") return skip("replies_none");
-    if (replies === "sender" && thread.forwarded && !settings.replyToForwarded) return skip("forwarded_sender");
-    if (replies !== "sender" && channel.account.verifiedReplyTo !== replies.to) return skip("reply_to_unverified");
-    const fixed = replies !== "sender";
-    const to = fixed ? replies.to : thread.reply_to as string;
-    const from = settings.address ?? `${thread.id}@${domain}`;
-    const messageId = `${randomUUID()}@${domain}`;
-    const raw = replyMime({
-      from, ...(settings.fromName ? { fromName: settings.fromName } : {}), to, subject: thread.subject, messageId,
-      inReplyTo: thread.last_message, references: thread.refs, ...(file ? { file } : {}),
-      // A fixed address is told whose message this answers; that person is not mailed.
-      text: fixed ? `Reply for ${thread.reply_to}${thread.forwarded ? " (forwarded, unverified)" : ""}, subject "${oneLine(thread.subject)}". Sent only to ${to}, not to them.\n\n${text}` : text,
-      ...(fixed && /^[\x21-\x7e]+$/.test(thread.reply_to) ? { headers: [`X-Original-From: ${thread.reply_to}`] } : {}),
-    });
-    // Recorded first: a reply to this message must find its thread even if it comes back at once.
-    await options.db.query("insert into email_messages (channel, message_id, conversation, created_at) values ($1, $2, $3, $4) on conflict do nothing", [thread.id, messageId, conversationId, Date.now()]);
-    try { await send({ from, to: [to], raw: Buffer.from(raw) }); }
-    catch (error) {
-      const name = (error as { name?: string }).name ?? "";
-      const status = (error as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode ?? 0;
-      throw new SendError(`SES SendEmail failed: ${name || errorText(error)}`, PERMANENT.has(name) || (status >= 400 && status < 500 && status !== 429 && !/Throttl|TooMany|LimitExceeded/.test(name)));
-    }
-  }
-
-  return {
-    label: "Email",
-    // One message a reply; the core's own cap (32,000 characters) applies.
-    maxMessageLength: 1_000_000,
-    needsCredentials: false,
-    async setup() { return { account: {}, masked: {} }; },
-    // The address stops receiving when the channel is deleted: nothing maps it to a channel.
-    async teardown() {},
-    settings(input: ChannelSettings | undefined, current?: ChannelSettings, channel?: { id: string }) {
-      if (!channel) throw new Error("The email provider needs the channel's id for its default address");
-      const merged = { ...current, ...input };
-      const supported = ["address", "fromName", "replies", "forwarders", "replyToForwarded"];
-      for (const key of Object.keys(merged)) if (!supported.includes(key)) throw new HttpError(400, `Unknown email setting ${key}; supported: ${supported.join(", ")}`);
-      const fromName = merged.fromName;
-      if (fromName !== undefined && (typeof fromName !== "string" || !oneLine(fromName) || fromName.length > 100)) throw new HttpError(400, "settings.fromName must be 1–100 characters");
-      const replies = merged.replies === undefined ? "sender" : repliesInput(merged.replies, domain);
-      const forwarders = merged.forwarders === undefined ? [] : forwardersInput(merged.forwarders, domain);
-      if (merged.replyToForwarded !== undefined && typeof merged.replyToForwarded !== "boolean") throw new HttpError(400, "settings.replyToForwarded must be true or false");
-      // Forwarded mail's From is whatever the message says: replying to it mails an address nobody proved.
-      if (forwarders.length && replies === "sender" && merged.replyToForwarded !== true) {
-        throw new HttpError(400, 'An email channel with settings.forwarders must set settings.replies to "none" or { "to": "<address>" }: a forwarded message\'s sender is unverified. To reply to such senders anyway, set settings.replyToForwarded to true');
+  return emailProvider({
+    sql: options.db, domain, setsMessageId: true, maxFileBytes: MAX_FILE_BYTES,
+    async deliver(mail) {
+      // replyMime writes Auto-Submitted itself; the rest go after it, as they always have.
+      const { "Auto-Submitted": _auto, ...headers } = mail.headers;
+      const raw = replyMime({
+        from: mail.from, ...(mail.fromName ? { fromName: mail.fromName } : {}), to: mail.to, subject: mail.subject, messageId: mail.messageId!,
+        inReplyTo: mail.inReplyTo, references: mail.references, text: mail.text, ...(mail.file ? { file: mail.file } : {}),
+        ...(Object.keys(headers).length ? { headers: Object.entries(headers).map(([name, value]) => `${name}: ${value}`) } : {}),
+      });
+      try { await send({ from: mail.from, to: [mail.to], raw: Buffer.from(raw) }); }
+      catch (error) {
+        const name = (error as { name?: string }).name ?? "";
+        const status = (error as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode ?? 0;
+        throw new SendError(`SES SendEmail failed: ${name || errorText(error)}`, PERMANENT.has(name) || (status >= 400 && status < 500 && status !== 429 && !/Throttl|TooMany|LimitExceeded/.test(name)));
       }
-      return {
-        address: address(merged.address ?? channel.id, domain, channel.id), ...(typeof fromName === "string" ? { fromName: oneLine(fromName) } : {}),
-        ...(replies !== "sender" ? { replies } : {}), ...(forwarders.length ? { forwarders } : {}), ...(merged.replyToForwarded === true ? { replyToForwarded: true } : {}),
-      };
     },
-    // With "none" nothing is mailed: a turn's reply stays in the agent's history, and send_message and files go nowhere.
-    replies: settings => settings.replies !== "none",
-    // Entries are addresses, or @domain for everyone at a domain.
-    allows(entry: string, sender: Sender) {
-      const value = entry.trim().toLowerCase();
-      return value.startsWith("@") ? domainOf(sender.id) === value.slice(1) : value === sender.id;
-    },
-    // Attachments of mail SES stored in S3 are read from the stored message; smaller mail brings them inline.
-    async download(_credentials, file) {
-      const match = /^s3:\/\/([^/]+)\/(.+)#(\d+)$/.exec(file.id);
+    // Mail SES stored in S3: `s3://<bucket>/<key>`, only from the configured bucket.
+    async stored(ref) {
+      const match = /^s3:\/\/([^/]+)\/(.+)$/.exec(ref);
       if (!match || match[1] !== options.bucket) throw new Error("Not a stored email attachment");
-      const message = await PostalMime.parse(await getObject(options, match[1], match[2]));
-      const attachment = attachmentsOf(message)[Number(match[3])];
-      if (!attachment) throw new Error("No such attachment");
-      const data = bytesOf(attachment.content);
-      return { body: (async function* () { yield data; })(), contentType: attachment.mimeType };
+      return getObject(options, match[1], match[2]!);
     },
-    async send(_credentials, conversationId, text) { await sendMail(conversationId, text); },
-    maxFileBytes: MAX_FILE_BYTES,
-    async sendFile(_credentials, conversationId, file, caption) {
-      await sendMail(conversationId, caption ?? file.name, { name: file.name, contentType: file.contentType, data: Buffer.from(await (await file.blob()).arrayBuffer()) });
-    },
-  };
+  });
 }
 
 let s3: { send(command: unknown): Promise<any> } | undefined, getCommand: (new (input: unknown) => unknown) | undefined;
@@ -392,18 +182,6 @@ export function authentic(notification: SesNotification, from: string): boolean 
   return status(receipt.spfVerdict) === "PASS" && !!notification.mail?.source && vouches(domainOf(notification.mail.source), domain);
 }
 
-/** Why a message is not for an agent (automatic, bulk, a bounce, or from this domain), or undefined when it is. */
-export function automatic(message: Email, from: string, domain: string): string | undefined {
-  const header = (name: string) => message.headers.find(entry => entry.key === name)?.value.trim().toLowerCase();
-  const sender = domainOf(from);
-  if (sender === domain || sender.endsWith(`.${domain}`)) return "own_domain";
-  const auto = header("auto-submitted");
-  if (auto && auto !== "no") return "auto_submitted";
-  if (["bulk", "list", "junk"].includes(header("precedence") ?? "")) return "bulk";
-  if (["mailer-daemon", "postmaster"].includes(from.slice(0, from.lastIndexOf("@")).toLowerCase())) return "bounce";
-  return undefined;
-}
-
 /**
  * The shared inbound route: SNS notifications from SES receipt rules, and SNS's
  * subscription handshake. Answers 5xx only when SNS should retry.
@@ -424,71 +202,18 @@ export function emailReceiver(channels: Channels, options: EmailOptions) {
     } else if (typeof notification.content === "string") {
       raw = Buffer.from(notification.content, action?.encoding === "BASE64" ? "base64" : "utf8");
     } else return log({ dropped: "no_content", ses: notification.mail?.messageId });
-    const message = await PostalMime.parse(raw);
-    const from = (message.from as Mailbox | undefined)?.address?.toLowerCase();
+    const message = await parseMail(raw);
     const ses = notification.mail?.messageId;
-    if (!from || !/^[^@\s]+@[^@\s]+$/.test(from)) return log({ dropped: "no_from", ses });
-    const skipped = automatic(message, from, domain);
-    if (skipped) return log({ dropped: skipped, ses });
+    const found = senderOf(message, domain);
+    if ("dropped" in found) return log({ dropped: found.dropped, ses });
+    const { from } = found;
     // Either SES proves the From address, or it proves a forwarder, which a channel may trust to pass on others' mail.
-    const direct = authentic(notification, from);
-    const proven = forwardedBy(notification);
-    // Mail from the forwarder's own domain is not a forward: its From is the one SPF proves.
-    const forwarder = proven && !vouches(proven.domain, domainOf(from)) && !vouches(domain, proven.domain) ? proven : undefined;
-    if (!direct && !forwarder) return log({ dropped: "unauthenticated", ses });
-
-    const recipients = [...new Set((notification.receipt?.recipients ?? []).map(value => value.toLowerCase()).filter(value => value.endsWith(`@${domain}`)))];
-    if (!recipients.length) return;
-    const { rows } = await options.db.query("select id from channels where channel->>'type' = 'email' and lower(channel->'settings'->>'address') = any($1)", [recipients]);
-    const messageId = message.messageId ? messageIds(message.messageId)[0] ?? oneLine(message.messageId) : `${ses}@amazonses.com`;
-    const earlier = [...messageIds(message.references), ...messageIds(message.inReplyTo)];
-    const subject = oneLine(message.subject ?? "").slice(0, 500) || "(no subject)";
-    const body = newText(message.text ?? (message.html ? readableText(message.html).text : ""));
-    const content = `Subject: ${subject}\n\n${body.length > MAX_TEXT ? `${body.slice(0, MAX_TEXT)}\n(message truncated)` : body}`.trim();
-    const files: InboundFile[] = attachmentsOf(message).map((attachment, index) => {
-      const data = bytesOf(attachment.content);
-      return {
-        id: stored ? `s3://${stored.bucket}/${stored.key}#${index}` : `inline:${index}`, name: fileName(attachment.filename, index),
-        size: data.length, contentType: attachment.mimeType, ...(!stored && data.length <= MAX_INLINE_BYTES ? { content: data.toString("base64") } : {}),
-      };
+    const proof = { direct: authentic(notification, from), forwarder: forwardingProof(forwardedBy(notification), from, domain) };
+    await receiveEmail(channels, options.db, {
+      domain, message, from, proof, recipients: notification.receipt?.recipients ?? [],
+      ...(stored ? { stored: `s3://${stored.bucket}/${stored.key}` } : {}), inlineBytes: MAX_INLINE_BYTES, fallbackId: `${ses}@amazonses.com`,
+      log: fields => log({ ...fields, ses }),
     });
-    const name = (message.from as Mailbox).name ? oneLine((message.from as Mailbox).name).slice(0, 200) : undefined;
-    const sender: Sender = { id: from, username: from, ...(name ? { name } : {}) };
-
-    for (const { id } of rows) {
-      const found = await channels.lookup(id);
-      if (!found) continue;
-      const settings = (found.channel.settings ?? {}) as EmailSettings;
-      // A forward counts only on a channel that names its forwarder; there the forwarder, not the From it carries, is who must be allowed.
-      const forwarded = !!forwarder && (settings.forwarders ?? []).some(entry => forwarderMatches(entry, forwarder));
-      if (!forwarded && !direct) { log({ dropped: "unauthenticated", channel: id, ses }); continue; }
-      // A fixed reply address proves itself by writing to the channel, so nobody is mailed who did not ask to be.
-      const replies = repliesOf(settings);
-      if (!forwarded && replies !== "sender" && replies !== "none" && replies.to === from && found.channel.account.verifiedReplyTo !== from) {
-        await options.db.query("update channels set channel = jsonb_set(channel::jsonb, '{account,verifiedReplyTo}', to_jsonb($2::text))::json where id = $1 and channel->'settings'->'replies'->>'to' = $2", [id, from]);
-        log({ verified: "reply_to", channel: id, ses });
-      }
-      // Only allowed senders move a thread: its replies go to whoever wrote last.
-      if (!channels.allowed(found.channel, forwarded ? { id: forwarder!.address, username: forwarder!.address } : sender)) { log({ dropped: "access", channel: id, ses, ...(forwarded ? { forwarded: true } : {}) }); continue; }
-      const text = forwarded ? `From (forwarded by ${forwarder!.address}, unverified): ${name ? `${name} <${from}>` : from}\n${content}` : content;
-      const known = earlier.length
-        ? (await options.db.query("select conversation from email_messages where channel = $1 and message_id = any($2) limit 1", [id, earlier])).rows[0]?.conversation as string | undefined
-        : undefined;
-      const conversationId = known ?? sha(`${id}:${earlier[0] ?? messageId}`).slice(0, 40);
-      const now = Date.now();
-      // References: the root, then the most recent, ending with this message.
-      const stored = (await options.db.query("select refs from email_threads where conversation = $1", [conversationId])).rows[0]?.refs as string[] | undefined;
-      const all = [...new Set([...stored ?? earlier, messageId])];
-      const refs = all.length > MAX_REFERENCES ? [all[0], ...all.slice(all.length - MAX_REFERENCES + 1)] : all;
-      await options.db.query(`
-        insert into email_threads (conversation, channel, reply_to, subject, refs, last_message, updated_at, forwarded) values ($1, $2, $3, $4, $5, $6, $7, $8)
-        on conflict (conversation) do update set reply_to = excluded.reply_to, refs = excluded.refs, last_message = excluded.last_message, updated_at = excluded.updated_at, forwarded = excluded.forwarded`,
-        [conversationId, id, from, subject, JSON.stringify(refs), messageId, now, forwarded]);
-      await options.db.query("insert into email_messages (channel, message_id, conversation, created_at) values ($1, $2, $3, $4) on conflict do nothing", [id, messageId, conversationId, now]);
-      log({ accepted: forwarded ? "forwarded" : "direct", channel: id, ses });
-      // The forwarder was checked against the allowlist above; the sender it carries is on nobody's.
-      await channels.inbound(id, { conversationId, messageId, sender, text, files, title: subject.slice(0, 100), ...(known ? { followUp: true } : {}), ...(forwarded ? { trusted: true, unverified: true } : {}) });
-    }
   }
 
   return new Hono().post("/channels/email/inbound", async c => {

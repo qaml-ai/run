@@ -10,6 +10,7 @@ export const groups = {
   webhooks: { areas: ["webhooks"], files: ["end-user-webhooks.ported.test.ts", "usage-webhook-recovery.ported.test.ts", "usage-webhooks.ported.test.ts"] },
   lifecycle: { areas: ["agents", "runs", "messages", "schedules", "history", "streaming"], files: ["deploy-drain.public.contract.test.ts", "http-drain.public.contract.test.ts"] },
   billing: { areas: ["billing", "credits", "quotas"], files: [] },
+  channels: { areas: ["channels"], files: [] },
   other: { areas: [], files: [] },
 };
 

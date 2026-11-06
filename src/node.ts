@@ -1042,7 +1042,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     db, accounts, definitions, node, publicUrl, ownership,
     providers: {
       telegram: telegram({ apiUrl: config.channelApis.telegram }),
-      slack: slack({ apiUrl: config.channelApis.slack }),
+      slack: slack({ apiUrl: config.channelApis.slack, maxFileBytes: config.channelApis.slackMaxFileBytes }),
       github: githubChannel({ apiUrl: config.channelApis.github }),
       webhook: webhook({ outbound }),
       ...(emailOptions ? { email: email(emailOptions) } : {}),
@@ -1071,6 +1071,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       record: (tenant, usage) => accounts.recordUsage(tenant, "", usage),
     },
     ...(config.channelRetryMs !== undefined ? { retryBaseMs: config.channelRetryMs } : {}),
+    ...(config.channelRecheckMs !== undefined ? { recheckMs: config.channelRecheckMs } : {}),
   });
   channels.start(config.schedulerIntervalMs);
   // Accounts being deleted, continued by whichever node claims each (and started at once on a request).

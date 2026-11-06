@@ -11,7 +11,7 @@ import { metric } from './observability.ts';
 
 export { webhookEvent, enqueueEvents, usageEvent, usageCost } from "./webhook-policy.ts";
 export type { WebhookEvent } from "./webhook-policy.ts";
-export type DeliveryMessage = { id: string; kind?: "email" | "schedule" | "account_deletion" };
+export type DeliveryMessage = { id: string; kind?: "email" | "schedule" | "account_deletion" | "channels" };
 export type WebhookEnv = PostgresEnv & {
   WEBHOOKS?: Queue<DeliveryMessage>;
   API_TOKEN: string;

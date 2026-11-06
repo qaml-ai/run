@@ -109,6 +109,8 @@ export async function sourceIdentityImpl(this: AgentRuntime,
           | undefined,
         req: run.id === "background" ? undefined : run.id,
         tcid: call?.toolCallId,
+        // A channel's agent: tools see the channel, the conversation and who sent the message.
+        ...(conf.config.type === "channel" ? { origin: await this.channels.origin(conf, run.id === "background" ? undefined : run.id) } : {}),
         ...(lineage ? { par: lineage.parent, root: lineage.root } : {}),
       },
     };

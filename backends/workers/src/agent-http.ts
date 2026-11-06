@@ -592,7 +592,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
         const input = await body(request, 1024 * 1024);
         const batch = path === "/inputs";
         const answers = batch ? answerList(input) : [{ id: decodeURIComponent(path.slice(8)), body: input }];
-        const answering = this.admission.then(() => this.answerHumanInputs(answers, request.headers.get("x-camel-input-via") === "agent" ? "agent" : "api"));
+        const answering = this.admission.then(() => this.answerHumanInputs(answers, request.headers.get("x-camel-input-via") === "agent" ? "agent" : request.headers.get("x-camel-input-via") === "channel" ? "channel" : "api"));
         this.admission = answering.catch(() => {});
         const answered = await answering;
         return json(batch ? { inputs: answered.inputs, requests: answered.requests } : { input: answered.inputs[0], request: answered.requests[0] ?? null }, answered.status);

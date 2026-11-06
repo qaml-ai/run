@@ -52,6 +52,13 @@ export interface ContractFixture {
   setRejectRunEvents(enabled: boolean): Promise<void>;
   updateLegacyUsageWebhook(url: string): Promise<void>;
   seedJourneyAccount(input: { login: string; githubId: number; startingGrant: number; accountRef?: string }): Promise<{ tenant: string; token: string }>;
+  /** Channel cases only: a query on the channel tables (fixtures/channel-state.ts), which both backends share. */
+  channelQuery(text: string, values?: unknown[]): Promise<{ rows: any[]; rowCount: number | null }>;
+  /**
+   * Email channel cases only (env AGENT_EMAIL_DOMAIN): a raw message as the backend's mail ingress receives it, with
+   * SES's verdicts on it (fixtures/email.ts translates them for Workers). Resolves with the ingress's HTTP status.
+   */
+  deliverEmail(raw: string, receipt?: import("./fixtures/email.ts").Receipt): Promise<number>;
   drain(): Promise<void>;
   waitForAgentIdle(agent: string): Promise<void>;
   failAgentLoad(agent: string): Promise<void>;

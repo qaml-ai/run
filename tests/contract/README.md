@@ -56,6 +56,7 @@ npm run parity -- --backend=workers --group=accounts-auth
 npm run parity -- --backend=workers --group=webhooks
 npm run parity -- --backend=workers --group=lifecycle
 npm run parity -- --backend=workers --group=billing
+npm run parity -- --backend=workers --group=channels
 npm run parity -- --backend=workers --group=other
 ```
 
@@ -100,7 +101,7 @@ logs in `backends/workers/measurements/`. Filtered runs have a suffix and leave 
 full scorecard intact. Raw shard artifacts and wall-clock metadata are kept in
 ignored `backends/workers/measurements/runs/`. Failures, missing results, and
 process cleanup failures remain failures. SDK-only cases never increase the
-backend HTTP pass count; channel and voice/audio cases are out of scope.
+backend HTTP pass count; voice/audio cases are out of scope.
 
 `accepted-difference` is a separate, reviewed Workers status. The exact cases,
 CTO review and reasons live in `accepted-differences.mjs`. Workers records those

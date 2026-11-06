@@ -25,5 +25,7 @@ export function caseTimeout(area: string, source: string, name: string): number 
   // The Node baseline's p99 is about 23 seconds. Measured concurrent Wrangler
   // startup exhausted a 10-second floor before reaching assertions. Include
   // that setup in a 30-second floor; slow cases keep three times their Node p99.
-  return observed === undefined ? 90_000 : Math.max(30_000, Math.ceil(observed * 3));
+  // Channel cases start their services' fakes (and a DNS stand-in for email) beside the fixture, and a file's first case
+  // also waits out a cold Wrangler build on its Sprite: 30 s was measured too short for that (2 of 70 cases), 60 s is not.
+  return observed === undefined ? 90_000 : Math.max(area === "channels" ? 60_000 : 30_000, Math.ceil(observed * 3));
 }
