@@ -421,6 +421,28 @@ test("a tool's spawn directive whose node is lost after the child's row, before 
   assert.ok(sim.hooks.reached.includes("a sweep found a child's ended run that no one had recorded"), sim.hooks.reached.join(", "));
 });
 
+test("a spawn whose child cannot be reached fails its call and its row together, not two minutes later (seed 36888719)", async t => {
+  // From seed 36888719: the parent's node wrote the worker's row, then asked the worker for a request it had not sent yet,
+  // and that lookup failed (there, a refused statement as the worker loaded). The call failed, but its row stayed running:
+  // it counted against the parent's children, and reached the parent only once the sweep's start grace (two minutes)
+  // called it never started. Here a, the parent's node, cannot reach b, the worker's.
+  const sim = await toolSpawnWorld(54);
+  t.after(() => sim.close());
+  const { parent, worker } = await toolSpawned(sim, () => sim.partition("a", "b"));
+  await outcome(sim, "a", parent, "turn-1");
+  const { rows } = await sim.db.query("select id, state, status, ended_at from agent_children where parent = $1", [parent]);
+  assert.equal(rows.length, 1, "the directive wrote its row");
+  assert.deepEqual([rows[0].state, rows[0].status], ["notified", "failed"], "the call failed, and its row with it");
+  sim.net.heal();
+  // Past the start grace and a few sweeps: the worker never ran the task, and nothing reached the parent about it.
+  await sim.advance(150_000);
+  const runs = (await sim.call("b", `/v1/agents/${worker}`)).json.requests.filter((request: any) => request.id.startsWith("spawn_"));
+  assert.deepEqual(runs, []);
+  const notices = (await sim.call("a", `/v1/agents/${parent}/history`)).json.messages.filter((message: any) => message.source?.kind === "agent");
+  assert.deepEqual(notices, [], "no notification of a child the call already said had failed");
+  assert.deepEqual(sim.hooks.violations, []);
+});
+
 test("a tool-prepared worker whose node is lost after its run ends, before delivery, notifies its parent once", async t => {
   const sim = await toolSpawnWorld(53);
   t.after(() => sim.close());

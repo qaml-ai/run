@@ -202,7 +202,7 @@ export class Sim {
       db,
       listen: this.db.listen(host, () => dead, work => this.env.deliver(clock, work)),
       sandbox: { mode: "simulated" },
-      network: this.net.networkFor(host),
+      network: this.net.networkFor(host, () => dead),
       clock,
       random: prng(`${this.seed}:${name}:${incarnation}`),
       codeSandbox: inlineSandboxes(),
