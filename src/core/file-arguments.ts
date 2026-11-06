@@ -1,5 +1,4 @@
-import type { Buffer } from 'node:buffer';
-import { TOOL_FILE_LIMITS } from '../limits.ts';
+import { TOOL_FILE_LIMITS } from './limits.ts';
 
 /** Portable file schemas and argument traversal. Hosts supply only reading and sending. */
 export type FileArguments = 'on' | 'off';
@@ -7,7 +6,7 @@ export const takesFiles = (source: { auth?: { type: string }; fileArguments?: Fi
   (source.fileArguments ?? (source.auth?.type === 'runtime' ? 'on' : 'off')) === 'on';
 export type FileValue = { uri: string; name: string; mimeType: string; size: number; digest?: { algorithm: 'sha-256'; value: string } };
 export interface FileAccess {
-  read(path: string): Promise<Buffer>;
+  read(path: string): Promise<Uint8Array>;
   send(path: string, directory: boolean, spec: FileSpec, describe: boolean): Promise<{ uri: string; value?: FileValue }>;
 }
 
@@ -78,7 +77,7 @@ export async function resolveFiles(value: unknown, schema: any, files: FileAcces
   if (isFileArgument(value)) {
     const available = need(files);
     const mode = fileMode(schema, name);
-    if (mode === "base64") return (await available.read(value.$file)).toString("base64");
+    if (mode === "base64") return base64(await available.read(value.$file));
     const file = await available.send(value.$file, mode === "directory", fileSpec(schema), !!sent);
     if (sent && file.value) sent.values[sent.at] = file.value;
     return file.uri;
@@ -88,6 +87,13 @@ export async function resolveFiles(value: unknown, schema: any, files: FileAcces
   if (!value || typeof value !== "object") return value;
   const entries = await Promise.all(Object.entries(value).map(async ([key, entry]) => [key, await resolveFiles(entry, schema?.properties?.[key], files, key, at(key))]));
   return Object.fromEntries(entries);
+}
+
+/** Standard base64 of bytes, as Buffer's toString("base64") writes it. */
+function base64(bytes: Uint8Array) {
+  let binary = "";
+  for (let at = 0; at < bytes.length; at += 0x8000) binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
+  return btoa(binary);
 }
 
 export function need<T extends FileAccess>(files: T | undefined): T {

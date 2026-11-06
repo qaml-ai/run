@@ -1,4 +1,4 @@
-import { JUDGE_LIMITS } from "../limits.ts";
+import { JUDGE_LIMITS } from "./limits.ts";
 
 /** Only the decision fields the judge reads; host usage records remain opaque. */
 type NoulQuestion = { type: "noul"; instructions: string; criteria: { true: string; false: string } };
