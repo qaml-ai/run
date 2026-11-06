@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run through the repo's leased scripts/sprite-test, one validation job per sprite.
 set -euo pipefail
-mode=${1:?Expected unit, integration, compat, python, contract or checks}
+mode=${1:?Expected unit, integration [I/N], compat, python, contract or checks}
 cd "$(dirname "$0")/.."
 repo=$(cd ../.. && pwd)
 artifact="$HOME/runs/workers-agents-$mode-$(date +%Y%m%d-%H%M%S)"
@@ -55,7 +55,7 @@ if [[ $mode == python || $mode == contract ]]; then
 fi
 case "$mode" in
   unit) npm test 2>&1 | tee "$artifact/unit.tap" ;;
-  integration) npm run test:integration 2>&1 | tee "$artifact/integration.tap" ;;
+  integration) npm run test:integration ${2:+-- --test-shard=$2} 2>&1 | tee "$artifact/integration.tap" ;;
   compat) npm run test:compat 2>&1 | tee "$artifact/compatibility-run.log" ;;
   python) npm run test:python 2>&1 | tee "$artifact/python-compat.log" ;;
   contract)
