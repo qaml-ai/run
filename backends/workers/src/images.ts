@@ -454,11 +454,11 @@ export function withImageReferences<A extends Api>(
   return {
     ...provider,
     stream(model, context, options) {
-      return defer(model, context, (p, fetcher) => provider.stream(model, p, { ...options, ...(fetcher ? { fetch: fetcher } : {}) }), options?.fetch);
+      return defer(model, context, (p, fetcher) => provider.stream(model, p, Object.assign({}, options, fetcher ? { fetch: fetcher } : {})), options?.fetch);
     },
     streamSimple(model, context, options) {
       return defer(model, context, (p, fetcher) =>
-        provider.streamSimple(model, p, { ...options, ...(fetcher ? { fetch: fetcher } : {}) }), options?.fetch,
+        provider.streamSimple(model, p, Object.assign({}, options, fetcher ? { fetch: fetcher } : {})), options?.fetch,
       );
     },
   };
