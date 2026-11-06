@@ -49,35 +49,25 @@ export async function bridgeEvents(request: Request, open: (request: Request) =>
   socket.accept();
   let controller!: ReadableStreamDefaultController<Uint8Array>;
   let ended = false, heartbeat: ReturnType<typeof setInterval> | undefined, idle: ReturnType<typeof setTimeout> | undefined;
-  const end = (last?: string) => {
+  /** Once: stop the timers, settle the stream as `settle` says, and close the object's socket. */
+  const finish = (code: number, reason: string, settle: () => void = () => {}) => {
     if (ended) return;
     ended = true;
     clearInterval(heartbeat);
     clearTimeout(idle);
     request.signal?.removeEventListener("abort", gone);
-    try { if (last) controller.enqueue(encoder.encode(last)); controller.close(); } catch {}
-    try { socket.close(1000, "Stream closed"); } catch {}
+    try { settle(); } catch {}
+    try { socket.close(code, reason); } catch {}
   };
-  const gone = () => {
-    if (ended) return;
-    ended = true;
-    clearInterval(heartbeat);
-    clearTimeout(idle);
-    try { socket.close(1000, "Subscriber gone"); } catch {}
-  };
+  const end = (last?: string) => finish(1000, "Stream closed", () => { if (last) controller.enqueue(encoder.encode(last)); controller.close(); });
+  const gone = () => finish(1000, "Subscriber gone");
   const quiet = () => { clearTimeout(idle); idle = setTimeout(() => end(reconnect("idle")), options.idleMs ?? SSE_IDLE_MS); };
   const write = (text: string) => {
     if (ended) return;
     const bytes = encoder.encode(text);
     // As Node's send(): a subscriber more than two frames behind is cut off, and resumes from its cursor.
-    if (-(controller.desiredSize ?? 0) + bytes.byteLength > 2 * FRAME_BYTES) {
-      ended = true;
-      clearInterval(heartbeat);
-      clearTimeout(idle);
-      try { controller.error(new Error("Event subscriber is too slow")); } catch {}
-      try { socket.close(1011, "Subscriber too slow"); } catch {}
-      return;
-    }
+    if (-(controller.desiredSize ?? 0) + bytes.byteLength > 2 * FRAME_BYTES)
+      return finish(1011, "Subscriber too slow", () => controller.error(new Error("Event subscriber is too slow")));
     controller.enqueue(bytes);
   };
   const body = new ReadableStream<Uint8Array>({
