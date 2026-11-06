@@ -120,7 +120,7 @@ export async function runPilotLoad(options) {
       agents[index] = { id: agent.id, tenant };
       if ((index + 1) % 250 === 0) emit({ type: 'load_setup_progress', created: index + 1 });
     });
-    report.setup = { durationMs: performance.now() - setupAt, before: await inspect() };
+    report.setup = { durationMs: performance.now() - setupAt, before: await inspect(), origin: await admin('/pilot/database-status') };
 
     for (const concurrency of stages) {
       if (interrupted) break;
@@ -173,6 +173,7 @@ export async function runPilotLoad(options) {
       stage.acceptLatency = latency(acceptTimes);
       stage.turnLatency = latency(turnTimes);
       stage.after = await inspect();
+      stage.origin = await admin('/pilot/database-status');
       report.stages.push(stage);
       emit({ type: 'load_stage_result', ...stage, samples: stage.samples.length });
       // Give already accepted work its result, then stop the next ramp immediately.
