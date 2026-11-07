@@ -145,7 +145,8 @@
     "AGENT_MAX_AGENTS_PER_TENANT": "2100",
     "TENANT_MAX_ACTIVE": "2100",
     "COMPUTER_IMAGE": "workspace",
-    "COMPUTER_INSTANCE": "standard-1"
+    "COMPUTER_INSTANCE": "standard-1",
+    "AGENT_FREE_HOURLY_SPEND_USD": "100"
   },
   "account_id": "85bbd288051330fb51ee1c86031a299b",
   "routes": [
