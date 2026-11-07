@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { AgentRuntime, schema, tool } from "../clients/typescript.ts";
 import { lastUser, listen, OPERATOR, runtime, toolCall, toolResults, until, watchEvents, type T } from "./runtime-server.ts";
-import { mayAnswer } from "../src/inputs.ts";
+import { mayAnswer, questionsInput } from "../src/inputs.ts";
 import { resumeId } from "../src/client-sessions/inputs.ts";
 
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
@@ -533,4 +533,10 @@ test("humanInput.onExpire is gone: new input with it is refused; a definition st
   const resumed = await request(r, agent, resumeId(input.requestId));
   assert.equal(resumed.outcome.result.reply, "Going on without it");
   assert.match(toolResults(r.model.bodies[1]).at(-1), /did not respond in a timely manner/);
+});
+
+test("ask_user: a header longer than its 12 characters is clipped, not a refused question", () => {
+  const [question] = questionsInput([{ question: "How should halves round?", header: "Rounding mode", options: [{ label: "Up" }, { label: "Even" }] }]);
+  assert.equal(question.header, "Rounding mod");
+  assert.throws(() => questionsInput([{ question: "Q?", header: " ", options: [{ label: "a" }, { label: "b" }] }]), /needs a header/);
 });

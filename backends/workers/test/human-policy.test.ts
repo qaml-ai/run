@@ -53,3 +53,9 @@ test("batch answers reuse source validation", () => {
   assert.deepEqual(answerList({ answers: [{ id: "input-a", ...accept }] }), [{ id: "input-a", body: accept }]);
   for (const body of [{}, { answers: [null] }, { answers: [{ id: {} }] }]) assert.throws(() => answerList(body), /Send/);
 });
+
+test("ask_user: a header longer than its 12 characters is clipped, not a refused question", () => {
+  const [question] = questionsInput([{ question: "How should halves round?", header: "Rounding mode", options: [{ label: "Up" }, { label: "Even" }] }]);
+  assert.equal(question.header, "Rounding mod");
+  assert.throws(() => questionsInput([{ question: "Q?", header: " ", options: [{ label: "a" }, { label: "b" }] }]), /needs a header/);
+});
