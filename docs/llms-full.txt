@@ -9663,7 +9663,7 @@ default, at most 128,000).
 | An input's message, an approval's shown arguments | 4,000 characters |
 | Answers in one batch (`POST …/inputs`) | 1–100; one answer's body 256 KiB |
 | Approvers (`humanInput.approvers`) | 100 |
-| `ask_user` | 1–4 questions, each with 2–4 options and a header of at most 12 characters |
+| `ask_user` | 1–4 questions, each with 2–4 options (or none: answered in the person's own words) and a header of at most 12 characters (a longer one is clipped; a missing one is the question's first words) |
 
 ## Sub-agents
 

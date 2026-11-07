@@ -115,7 +115,7 @@ function finished(run: RunSummary): CallToolResult {
 function inputRequired(call: Call, requestId: string, inputs: Input[]): CallToolResult {
   const lines = inputs.map(input => {
     const detail = input.detail ?? {};
-    const what = input.kind === "question" ? detail.questions.map((q: any) => `${q.question} (${q.options.map((option: any) => option.label).join(", ")}${q.allowOther ? ", or your own words" : ""})`).join("; ")
+    const what = input.kind === "question" ? detail.questions.map((q: any) => q.options.length ? `${q.question} (${q.options.map((option: any) => option.label).join(", ")}${q.allowOther ? ", or your own words" : ""})` : `${q.question} (in your own words)`).join("; ")
       : input.kind === "approval" ? `${input.message} ${clip(JSON.stringify(detail.arguments ?? detail.argumentsPreview ?? {}), 1000)}`
       : input.kind === "url" ? `${input.message} Open ${detail.url}, then confirm it is done.`
       : `${input.message} (fields: ${Object.keys(detail.requestedSchema?.properties ?? {}).join(", ")})`;
@@ -142,7 +142,7 @@ function elicitation(input: Input, can: { form: boolean; url: boolean }): Record
   const questions: { question: string; header: string; options: { label: string }[]; multiSelect: boolean; allowOther: boolean }[] = detail.questions;
   const field = (q: typeof questions[number]) => {
     const labels = q.options.map(option => option.label);
-    const described = { title: q.header, description: q.allowOther ? `${q.question} (${labels.join(", ")}, or your own words)` : q.question };
+    const described = { title: q.header, description: q.allowOther ? (labels.length ? `${q.question} (${labels.join(", ")}, or your own words)` : q.question) : q.question };
     const choice = q.allowOther ? { type: "string" } : { type: "string", enum: labels };
     return q.multiSelect ? { type: "array", ...described, items: choice } : { ...choice, ...described };
   };

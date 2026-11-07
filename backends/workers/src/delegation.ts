@@ -1,7 +1,7 @@
 import { defineTool, type ToolRegistration, type ToolExecutionApi } from '@earendil-works/pi-durable';
 import { HttpError } from './errors.ts';
 import { digest } from './api-contract.ts';
-import { MULTI_AGENT_LIMITS, PARENT_KEYS, roleAndTask, delegateTool, agentsTools, agentMessage, agentUpdates, REPORT_PROGRESS, SEND_MESSAGE, type DelegateSettings } from './multi-agent-policy.ts';
+import { modelOutputSchema, MULTI_AGENT_LIMITS, PARENT_KEYS, roleAndTask, delegateTool, agentsTools, agentMessage, agentUpdates, REPORT_PROGRESS, SEND_MESSAGE, type DelegateSettings } from './multi-agent-policy.ts';
 import type { ToolDefinition } from './policy-host.ts';
 import type { NoticeRequest, RuntimeNotice } from './delegation-notifications.ts';
 import { childConfig } from './child-config.ts';
@@ -291,7 +291,7 @@ export class Delegation {
           const relay = await this.relay(admitted);
           try { await this.checkCancellation(admitted, signal); }
           catch (error) { relay.abort(); throw error; }
-          const response = await this.host.fetch(admitted.id, new Request('https://agent/requests', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: admitted.requestId, method: 'prompt', params: { text: admitted.task, metadata: signed, whileRunning: 'queue', ...(run.params?.actor ? { actor: run.params.actor } : {}), ...(held !== undefined ? { spendLimit: { usd: held } } : {}), ...(args.output !== undefined ? { output: { schema: args.output } } : {}) } }) }));
+          const response = await this.host.fetch(admitted.id, new Request('https://agent/requests', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: admitted.requestId, method: 'prompt', params: { text: admitted.task, metadata: signed, whileRunning: 'queue', ...(run.params?.actor ? { actor: run.params.actor } : {}), ...(held !== undefined ? { spendLimit: { usd: held } } : {}), ...(args.output !== undefined ? { output: { schema: modelOutputSchema(args.output) } } : {}) } }) }));
           if (!response.ok) {
             relay.abort();
             const detail = await response.json().catch(() => undefined) as { error?: unknown } | undefined;

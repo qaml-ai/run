@@ -41,6 +41,21 @@ export const MULTI_AGENT_LIMITS = Object.freeze({
   progressWaitMs: 15_000,
 });
 
+/**
+ * A sub-agent's output schema as models send it in a delegate or spawn_agent call, repaired before it is checked
+ * (outputInput): a JSON string parsed, a { schema } wrapper unwrapped, and an object schema written without its type
+ * (properties or required, no type) given type "object". Anything else is returned as it is, for the check to refuse.
+ */
+export function modelOutputSchema(value: unknown): unknown {
+  let schema = value;
+  if (typeof schema === "string") { try { schema = JSON.parse(schema); } catch { return value; } }
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return schema;
+  const record = schema as Record<string, unknown>;
+  if (Object.keys(record).length === 1 && record.schema && typeof record.schema === "object") return modelOutputSchema(record.schema);
+  if (record.type === undefined && (record.properties !== undefined || record.required !== undefined)) return { type: "object", ...record };
+  return schema;
+}
+
 /** A delegate target: a definition (by id or key) or an existing agent (by key), named for the model. */
 export type AgentTarget = { name: string; definition?: string; agent?: string; description?: string };
 export interface DelegateSettings {
