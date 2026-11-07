@@ -92,3 +92,22 @@ test("the system prompt a sub-agent of the model's design gets names the block i
   const opening = (renderMessage(fromParent) as any).content[0].text.split("\n")[0];
   assert.ok(SUBAGENT_PROMPT.includes(opening), `${opening} is what the sub-agent sees`);
 });
+
+test("a child's notification says what its run took; one recorded before that renders as it always did", async () => {
+  const { childNotice } = await import("../src/multi-agent.ts");
+  const record = { status: "completed", outcome: { result: { reply: "PR opened", toolCalls: Array.from({ length: 7 }, () => ({})), usage: { responses: 5, input: 30_000, output: 1_200, cacheRead: 9_800, cacheWrite: 0, costUsd: 0.0281, subagentCostUsd: 0.003 } } } };
+  const { text, notice } = childNotice({ agentId: "client_w", name: "mul-1", root: "client_lead" }, record, { startedAt: 1_000, endedAt: 84_400 });
+  assert.equal(notice.metadata.durationMs, 83_400);
+  assert.equal(notice.metadata.toolCalls, 7);
+  const message = (metadata: Record<string, unknown>, source: unknown = notice.source) => (renderMessage({ role: "user", content: text, timestamp: 0, source, metadata } as any) as any).content[0].text;
+  assert.equal(message(notice.metadata).split("\n")[0], `<agent_notification name="mul-1" status="completed" took="1m23s" model_calls="5" tool_calls="7" tokens="41k" cost_usd="0.031">`);
+  // A notice stored before (usage, no time): unchanged, so a history renders the same and stays the cached prefix.
+  const { durationMs: _d, toolCalls: _t, ...before } = notice.metadata;
+  assert.equal(message(before).split("\n")[0], `<agent_notification name="mul-1" status="completed">`);
+  // Small runs, and a run past the 100 listed calls.
+  const small = childNotice({ agentId: "a", name: "q", root: "r" }, { status: "failed", error: "boom", outcome: { result: { toolCalls: Array.from({ length: 100 }, () => ({})), usage: { responses: 1, input: 800, output: 50, costUsd: 0.0004 } } } }, { startedAt: 0, endedAt: 4_400 });
+  assert.equal(message(small.notice.metadata, small.notice.source).split("\n")[0], `<agent_notification name="q" status="failed" took="4s" model_calls="1" tool_calls="100+" tokens="850" cost_usd="0.0004">`);
+  // No usage at all (a run that never reached its model) still says how long it took.
+  const bare = childNotice({ agentId: "a", name: "q", root: "r" }, { status: "failed", error: "refused" }, { startedAt: 0, endedAt: 1_000 });
+  assert.equal(message(bare.notice.metadata, bare.notice.source).split("\n")[0], `<agent_notification name="q" status="failed" took="1s" model_calls="0" tool_calls="0" tokens="0" cost_usd="0.0000">`);
+});

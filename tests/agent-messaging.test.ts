@@ -172,5 +172,5 @@ test("a child that waits on a person notifies its parent, and notifies again whe
   const [input] = (await r.call(`/v1/agents/${child}/inputs?state=pending`)).json;
   assert.equal((await r.call(`/v1/agents/${child}/inputs/${input.id}`, { body: { action: "accept", content: { answers: { "Which region?": "EU" } } } })).status, 202);
   const notices = await ended(r, parent, "child_", 2);
-  assert.match(notices[1].outcome.result.reply, /status="completed">\nregion EU/);
+  assert.match(notices[1].outcome.result.reply, /status="completed"[^>]*>\nregion EU/);
 });

@@ -279,13 +279,19 @@ source of its own, in history, events and exports:
 ```json
 { "role": "user", "content": [{ "type": "text", "text": "Found 3 sources: …" }],
   "source": { "kind": "agent", "agentId": "client_…", "name": "researcher-1" }, "requestId": "child_spawn_…",
-  "metadata": { "agentId": "client_…", "name": "researcher-1", "status": "completed", "output": { … }, "usage": { … } } }
+  "metadata": { "agentId": "client_…", "name": "researcher-1", "status": "completed", "output": { … }, "usage": { … },
+    "durationMs": 83400, "toolCalls": 7 } }
 ```
 
-The model reads it in a block only the runtime writes, never as the person:
+`durationMs` runs from the call that started the sub-agent to its ending.
+`toolCalls` counts its run's tool calls; its result lists the first 100.
+
+The model reads it in a block only the runtime writes, never as the person,
+with what the run took: its time, model responses, tool calls, tokens (input,
+output and cache) and cost, its own sub-agents' included:
 
 ```text
-<agent_notification name="researcher-1" status="completed">
+<agent_notification name="researcher-1" status="completed" took="1m23s" model_calls="5" tool_calls="7" tokens="41k" cost_usd="0.031">
 Found 3 sources: …
 </agent_notification>
 ```
