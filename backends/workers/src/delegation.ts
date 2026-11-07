@@ -517,7 +517,14 @@ export class Delegation {
     const chain = child.chain ?? [...lineage?.chain ?? [], id], maxDepth = child.maxDepth ?? config.delegate?.maxDepth ?? MULTI_AGENT_LIMITS.maxDepth;
     const metadata = { [PARENT_KEYS.agent]: id, [PARENT_KEYS.run]: run.id, [PARENT_KEYS.toolCall]: callId, [PARENT_KEYS.depth]: String(child.depth), [PARENT_KEYS.maxDepth]: String(maxDepth), [PARENT_KEYS.chain]: chain.join(','), [PARENT_KEYS.signature]: await signature(this.host.secret, child.id, requestId, String(child.depth), String(maxDepth), chain.join(',')) };
     const message = agentMessage({ agentId: id, name: 'parent', root: child.root ?? lineage?.root ?? id }, args.text, 'child');
-    await this.host.sendMessage(child.id, { id: requestId, method: 'prompt', params: { text: args.text, allowDisconnected: true, whileRunning: 'followUp', metadata } }, message.notice);
+    try {
+      await this.host.sendMessage(child.id, { id: requestId, method: 'prompt', params: { text: args.text, allowDisconnected: true, whileRunning: 'followUp', metadata } }, message.notice);
+    } catch (error) {
+      // As Node marks the message's row: it ends failed, with no notification to come. Left running, a later wait polled
+      // a request the child never had and called the child deleted (a child DO reset while starting, on the pilot).
+      await this.host.storage.put(prefix + key, { ...next, status: 'failed', endedAt: Date.now(), notified: true, error: `The message did not reach ${child.name}: ${error instanceof Error ? error.message : String(error)}` });
+      throw error;
+    }
     const response = await this.host.fetch(child.id, new Request(`https://agent/requests/${requestId}`));
     const record = response.ok ? await response.json() as { steer?: string; steeredInto?: string } : undefined;
     if (record?.steer === 'accepted' || record?.steeredInto) {
