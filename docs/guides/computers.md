@@ -33,9 +33,63 @@ provider account. There is no new shared computer budget or cap.
 A child's connection is detached and its session stopped when the child is
 deleted or expires, through the same cleanup as any detach. Cleanup failures
 are retried, and metering history stays. Sub-agents live for a day unless deleted
-earlier; finishing or aborting a turn does not delete the agent or detach its
-computer. Call `computer_stop` when its results are saved and the session is no
-longer needed.
+earlier. A `delegate` child's session stops when its call answers, so it bills
+nothing more; its connection stays. A `spawn_agent` child keeps its session
+until it calls `computer_stop`, its session expires, or it is deleted.
+
+### Forking a computer
+
+A sub-agent can start with its own copy of its parent's computer: the repos,
+installed packages and build caches, as they are at the call. Give `delegate` or
+`spawn_agent` (also from code) `computer`:
+
+| `computer` | The child's computer |
+| --- | --- |
+| `"fresh"` (default) | a new, empty computer with the parent's connection settings, as above |
+| `"fork"` | a copy of the parent's disk, taken now. Running processes are not copied |
+| `"none"` | no computer |
+
+```json
+{ "instructions": "You fix one flaky test on a branch.", "task": "Fix tests/cluster.test.ts and push a branch", "computer": "fork" }
+```
+
+- **One snapshot per call.** The snapshot is taken when the call is made, and
+  every child of that model response (or script) starts from the same one: five
+  `delegate` calls in one response take one snapshot.
+- **Each fork is its own machine.** A child's writes never reach its parent or
+  a sibling, and the parent's later writes never reach the child. Results come
+  back the usual way: push a branch, or copy files to a shared volume.
+- **Where it works.** Boat (managed, or your own key) and Cloudflare container
+  computers fork. Boat forks are exact: the runtime saves a snapshot of the
+  running machine (about 10 seconds for a 1.7 GB workspace) and makes each child
+  from it. A fork's files load in the background for the first few minutes, so
+  first reads of large trees are slower. Other providers (Lambda MicroVMs,
+  Sprites, E2B, Daytona, Modal, tunnels, browsers) answer `409
+  FORK_UNSUPPORTED`, and nothing is made: ask for `"fresh"` instead. A computer
+  with no running session answers `409 NO_SESSION`.
+- **Sessions.** Each new session of a forked connection starts from the fork's
+  snapshot. The connection shows where it came from in `forkedFrom`
+  (`{ agent, connection, snapshot, provider, at }`).
+- **Billing.** Each fork is billed as its own computer session, on the same
+  provider account or credit as any. Boat saved snapshots are on the provider
+  account. The runtime deletes the snapshot when the last connection made from
+  it is removed (a sweep retries failed deletes).
+- A fork is for a sub-agent the call makes. Delegating to an existing agent
+  with `"fork"` is refused.
+
+API users fork with `POST /v1/computers/{id}/fork`, or by agent with
+`POST /v1/agents/{id}/computer/fork`:
+
+```http
+POST /v1/computers/cmp_.../fork
+{ "agents": ["agt_worker_1", "agt_worker_2"] }
+
+201 { "snapshot": { "id": "cms_...", "provider": "boat", "createdAt": 1794010786578 },
+      "forks": [ { "id": "cmp_...", "agent": "agt_worker_1", "forkedFrom": { ... }, "session": null, ... }, ... ] }
+```
+
+Each agent (at most 16) must be the account's and have no computer connection
+yet. One snapshot serves all of them.
 
 The parent has no mount of a child's computer. Inline children share the
 parent's volume mounts at the same paths, including its workspace when mounted;
