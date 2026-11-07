@@ -302,3 +302,30 @@ contractTest("delegation", "tests/agent-progress.test.ts:265", "wait_agent with 
   assert.doesNotMatch(toolResults(bodies[2])[1], /<agent_updates>/, "what it answered is not repeated");
   assert.equal(JSON.parse(toolResults(bodies[4])[3]).agents[0].text, "used 2025", "the correction reached it while it worked");
 });
+
+contractTest("delegation", "docs/guides/multi-agent.md#progress", "a background child's progress rides on the result of any tool its parent calls, not only the multi-agent tools", async t => {
+  const reported = deferred(), release = deferred();
+  const seen: string[] = [];
+  const r = await runtime(t, body => {
+    if (roleText(body).includes("WORKER")) {
+      if (tools(body) === 0) return toolCall("report_progress", { text: "cloned; running the tests" }, "p1");
+      reported.resolve();
+      return { role: "assistant", content: "worker done", wait: release.promise };
+    }
+    if (userText(body).includes("<agent_notification")) return { role: "assistant", content: "heard" };
+    const results = toolResults(body);
+    if (!results.length) return toolCall("spawn_agent", { instructions: "You are a WORKER.", task: "run the tests", name: "w" }, "spawn");
+    seen.push(results.at(-1)!);
+    // Once the child reported, a tool that is not one of the multi-agent tools: its result carries the report.
+    if (results.length === 1) return { ...toolCall("list_schedules", {}, "schedules"), wait: reported.promise };
+    if (results.length === 2) return toolCall("list_schedules", {}, "again");
+    release.resolve();
+    return { role: "assistant", content: "lead done" };
+  });
+  const parent = await r.call("/v1/agents", { body: { systemPrompt: "You are LEAD.", builtins: ["agents", "schedule"], delegate: { instructions: true } } }).then(made => made.json.id as string);
+  const run = await r.prompt(parent, "start");
+  assert.equal(run.outcome.result.reply, "lead done");
+  const [, scheduled, again] = seen;
+  assert.match(scheduled, /<agent_updates>\nProgress your running sub-agents reported \(latest each; no answer needed\):\n- w \(\d+s ago\): cloned; running the tests\n<\/agent_updates>$/);
+  assert.doesNotMatch(again, /<agent_updates>/, "a report is shown once");
+});
