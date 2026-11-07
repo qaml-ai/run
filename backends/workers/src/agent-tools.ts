@@ -225,6 +225,10 @@ export function createHarness(this: AgentRuntime): PiHarness {
   return new PiHarness({
     defaults: { model: this.models.model },
     harness: async ({ storage, context, onWake }) => {
+      // Pi's open runs inside the SDK's startup (blockConcurrencyWhile, reset after 30 s): its slow parts are logged
+      // (agent_start_slow), as restorePending's are; on the pilot, resets came before onStart ran.
+      let lapAt = Date.now();
+      const lap = (step: string) => { const now = Date.now(); if (now - lapAt > 2_000) console.warn(JSON.stringify({ type: "agent_start_slow", step, ms: now - lapAt, sinceConstructedMs: now - this.constructedAt })); lapAt = now; };
       const registry = this.registry;
       const conf = await this.config();
       // A recreated object must register the stored custom model before Pi resumes tasks.
@@ -239,6 +243,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
         (await keyServices(this.env)).tenants.modelEndpoints(conf.tenantId),
         conf.resolvedModel,
       );
+      lap("harness model (config, custom providers, key services)");
       this.modelCompaction = fixed => modelCompactionSettings(model, conf.config.maxOutputTokens, fixed);
       registry.install(
         runtimePromptSections(
@@ -444,7 +449,8 @@ export function createHarness(this: AgentRuntime): PiHarness {
       });
       registry.install(this.codeExtension);
       this.availableTools = prioritizedTools(registry.snapshot().tools());
-      return Harness.open(
+      lap("harness tools");
+      const opened = await Harness.open(
         storage,
         {
           models: this.models.models,
@@ -458,6 +464,8 @@ export function createHarness(this: AgentRuntime): PiHarness {
         },
         context,
       );
+      lap("Harness.open");
+      return opened;
     },
   });
 }
