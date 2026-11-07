@@ -142,9 +142,9 @@ export async function armImpl(this: AgentRuntime,
   }
 
 export async function onStartImpl(this: AgentRuntime) {
-    const began = Date.now();
+    const began = Date.now(), stuck = startStuck(this, "onStart");
     try { return await withMoneyMetrics(this.env, () => this.restorePending()); }
-    finally { slowStart(this, "onStart", began); }
+    finally { clearTimeout(stuck); slowStart(this, "onStart", began); }
   }
 
 /**
@@ -158,8 +158,15 @@ function slowStart(runtime: AgentRuntime, step: string, began: number) {
   if (ms > SLOW_START_STEP_MS) console.warn(JSON.stringify({ type: "agent_start_slow", step, ms, sinceConstructedMs: Date.now() - runtime.constructedAt }));
 }
 async function timed<T>(runtime: AgentRuntime, step: string, run: () => Promise<T>): Promise<T> {
-  const began = Date.now();
-  try { return await run(); } finally { slowStart(runtime, step, began); }
+  const began = Date.now(), stuck = startStuck(runtime, step);
+  try { return await run(); } finally { clearTimeout(stuck); slowStart(runtime, step, began); }
+}
+/**
+ * A step still running after 10 s is logged then (agent_start_stuck): a step that the 30 s reset ends never reaches
+ * its slow log, so without this a reset says nothing of where it waited.
+ */
+export function startStuck(runtime: AgentRuntime, step: string) {
+  return setTimeout(() => console.warn(JSON.stringify({ type: "agent_start_stuck", step, sinceConstructedMs: Date.now() - runtime.constructedAt })), 10_000);
 }
 
 export async function restorePendingImpl(this: AgentRuntime) {
