@@ -9,6 +9,7 @@ import {
   type ProviderMeter,
 } from "./provider.ts";
 import { COMPUTER_LIMITS, type ComputerSetup } from "./egress.ts";
+import type { NativeForkAnswer, NativeForkOrigin, NativeForkedFrom } from "./native-fork.ts";
 import type { EgressProps } from "./egress-gateway.ts";
 import { ComputerMeter, type ComputerPayer } from "./meter.ts";
 export { payerSetup } from "./meter.ts";
@@ -88,15 +89,41 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
         request.op === "exec" ? (request.timeoutMs ?? 30_000) : 30_000;
       if (!Number.isInteger(timeout) || timeout < 1 || timeout > COMPUTER_LIMITS.execMs)
         throw new Error("Invalid computer timeout");
-      let parent: ComputerSnapshot | undefined;
-      if (request.op === "restore" && request.from === "parent") {
-        // The parent is the runtime's signed link, never the model's choice; its handle is a plain value.
-        if (!setup?.parent || !this.env.COMPUTER_CONTAINERS) throw new Error("This agent has no parent computer to restore from");
-        try { parent = await this.env.COMPUTER_CONTAINERS.getByName(setup.parent).snapshotHandle(request.name); }
-        catch { throw new Error(`The parent's computer has no snapshot named ${request.name}: the parent saves one with snapshot first`); }
-      }
-      return operate(this.provider(setup), request, AbortSignal.timeout(timeout), parent);
+      return operate(this.provider(setup), request, AbortSignal.timeout(timeout));
     });
+  }
+  // Forking (native-fork.ts). Errors a caller acts on cross RPC as values: an HttpError's code does not survive it.
+  /** The parent's side: the snapshot every child of `batch` starts from, taken (or reused) now. */
+  forkSnapshot(batch: string, setup?: OperateSetup): Promise<NativeForkAnswer> {
+    return this.serial(async () => {
+      try { return await this.provider(setup).forkSnapshot(batch, AbortSignal.timeout(180_000)); }
+      catch (error) {
+        if ((error as { code?: string }).code === "COMPUTER_STARTING") return { ok: false as const, code: "COMPUTER_STARTING" as const, message: (error as Error).message };
+        throw error;
+      }
+    });
+  }
+  adopt(batch: string, child: string): Promise<void> {
+    return this.serial(() => this.provider().adopt(batch, child));
+  }
+  unref(batch: string, child: string): Promise<void> {
+    return this.serial(() => this.provider().unref(batch, child));
+  }
+  /** The child's side: start from the parent's snapshot from now on, and tell the parent's computer. */
+  async seed(snapshot: ComputerSnapshot, origin: NativeForkOrigin, setup?: OperateSetup): Promise<void> {
+    await this.serial(() => this.provider(setup).seed(snapshot, origin));
+    await this.env.COMPUTER_CONTAINERS?.getByName(origin.parent).adopt(origin.batch, this.ctx.id.toString());
+  }
+  forkedFrom(): Promise<NativeForkedFrom | null> {
+    return this.serial(() => this.provider().forkedFrom());
+  }
+  /**
+   * A child's work ended. purge: its container and handles go (as on deletion), and its parent's computer is told.
+   * sleep: its disk is saved as its base, then the container stops: a later turn resumes it, and compute stops now.
+   */
+  async release(mode: "purge" | "sleep"): Promise<void> {
+    if (mode === "purge") { await this.purge(); return; }
+    await this.serial(async () => { await this.provider().sleep(true); });
   }
   /** Take a snapshot now and return its handle. */
   takeSnapshot(name: string, setup?: OperateSetup): Promise<ComputerSnapshot> {
@@ -118,20 +145,32 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
    * Stop the container and forget every snapshot handle (agent deletion). Its time is charged first; a charge that
    * cannot commit yet keeps only the meter's records, which the alarm retries.
    */
-  purge(): Promise<{ purged: true }> {
-    return this.serial(async () => {
-      // Stopping through the provider takes a last CPU reading for the meter.
-      if (this.ctx.container) await this.provider().sleep();
+  async purge(): Promise<{ purged: true }> {
+    const origin = await this.serial(async () => {
+      let origin: NativeForkedFrom | null = null;
+      if (this.ctx.container) {
+        const provider = this.provider();
+        origin = await provider.forkedFrom();
+        // Stopping through the provider takes a last CPU reading for the meter (no snapshot: the disk goes).
+        await provider.halt();
+      }
       const meter = this.meter();
       await meter.stopped();
       if (await meter.settled()) await this.ctx.storage.deleteAll();
       else for (const key of (await this.ctx.storage.list()).keys())
         if (!key.startsWith("meter:")) await this.ctx.storage.delete(key);
-      return { purged: true as const };
+      return origin;
     });
+    // A forked child: its parent's computer drops the batch's snapshot once no child of it is left. Best effort.
+    if (origin) await this.env.COMPUTER_CONTAINERS?.getByName(origin.parent).unref(origin.batch, this.ctx.id.toString())
+      .catch((error: unknown) => console.error(JSON.stringify({ type: "computer_unref_failed", error: error instanceof Error ? error.message.slice(0, 200) : "unknown" })));
+    return { purged: true as const };
   }
-  /** Settle a session that idled out, and retry charges that failed. */
+  /** Settle a session that idled out, retry charges that failed, and drop fork snapshots no child adopted. */
   async alarm() {
-    await this.serial(() => this.meter().alarm(!!this.ctx.container?.running));
+    await this.serial(async () => {
+      await this.meter().alarm(!!this.ctx.container?.running);
+      await this.provider().dropStale().catch(() => {});
+    });
   }
 }

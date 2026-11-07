@@ -107,7 +107,11 @@ test("native lifecycle picks image and size at start, blocks egress; snapshots s
     /capture failed/,
   );
   assert.deepEqual(f.data.get("snapshot:save"), saved);
-  await operate(p, { op: "sleep" });
+  // Sleep saves the disk first: a failed save keeps the container running; forced (a released child), it stops.
+  await assert.rejects(operate(p, { op: "sleep" }), /capture failed/);
+  assert.equal(f.container.running, true);
+  assert.deepEqual(await p.sleep(true), { saved: false });
+  assert.equal(f.container.running, false);
   await operate(new ContainerProvider(f.container, f.store), {
     op: "restore",
     name: "save",

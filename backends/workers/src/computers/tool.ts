@@ -53,13 +53,12 @@ export const computerParameters = union([
     provider,
     op: lit("restore"),
     name: str({ pattern: "^[a-zA-Z0-9_-]{1,80}$" }),
-    from: opt(lit("parent")),
   }),
   obj({ provider, op: lit("sleep") }),
 ]);
 /**
- * `setup` gives each operation the definition's computer settings, the agent's identity (for egress credentials) and
- * its parent's computer. `settings` words the description.
+ * `setup` gives each operation the definition's computer settings and the agent's identity (for egress credentials and
+ * metering). `settings` words the description.
  */
 export function computerTool(bindings: ComputerBindings, agentId: string, setup?: () => Promise<OperateSetup | undefined>, settings?: ComputerSettings) {
   return defineTool({
@@ -67,7 +66,7 @@ export function computerTool(bindings: ComputerBindings, agentId: string, setup?
     parameters: computerParameters,
     replay: "unsafe",
     description:
-      "Linux computer: exec a shell command (command, run with bash -lc) or an argv list (timeoutMs up to 600000), read/write relative /workspace paths, parse text/JSON/CSV/HTML, save/restore a named snapshot, or sleep. Parsing accepts 8 MiB, bounds extracted text and never executes document content; PDF is unsupported. Snapshots capture the whole filesystem. A sub-agent's computer can start as a copy of its parent's: restore with from: \"parent\" and the name of a snapshot the parent saved. Files are separate from agent volumes. Shell syntax requires an explicit shell. " +
+      "Linux computer: exec a shell command (command, run with bash -lc) or an argv list (timeoutMs up to 600000), read/write relative /workspace paths, parse text/JSON/CSV/HTML, save/restore a named snapshot, or sleep. Parsing accepts 8 MiB, bounds extracted text and never executes document content; PDF is unsupported. Snapshots capture the whole filesystem. The disk lasts while the computer runs: it stops after idling, and sleep saves the disk first so the next operation resumes it. To give a sub-agent its own copy of this disk, start it with computer: \"fork\" on delegate or spawn_agent. Files are separate from agent volumes. Shell syntax requires an explicit shell. " +
       egressDescription(settings),
     async execute({ provider, ...request }) {
       const namespace = bindings.COMPUTER_CONTAINERS;
