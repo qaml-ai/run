@@ -2,6 +2,7 @@ import { HttpError } from '../errors.ts';
 import { PROVIDERS, boundedCommand, output, type ComputerDriver, type Credentials, type Provider } from './policy.ts';
 import { boundedResponse, microvmDriver, testEndpoint, type Fetcher, type MicrovmBindings } from './microvm.ts';
 import type { ComputerBindings } from './tool.ts';
+import { payerSetup } from './meter.ts';
 
 export type RemoteBindings = ComputerBindings & MicrovmBindings & {
   TEST_COMPUTER_ENDPOINT?: string;
@@ -21,8 +22,8 @@ export function remoteDriver(env: RemoteBindings, tenant: string, agent: string,
     const namespace = env.COMPUTER_CONTAINERS;
     if (!namespace) throw new HttpError(503, 'Cloudflare Containers are not configured');
     return {
-      async create(id) { await namespace.getByName(id).operate({ op: 'exec', argv: ['true'] }); return { id }; },
-      call: (ref, _op, args) => namespace.getByName(ref.id).operate({ op: 'exec', argv: ['bash', '-lc', args.command], timeoutMs: Math.min(args.timeoutSeconds * 1000, 120_000) }),
+      async create(id) { await namespace.getByName(id).operate({ op: 'exec', argv: ['true'] }, payerSetup({ tenant, agent })); return { id }; },
+      call: (ref, _op, args) => namespace.getByName(ref.id).operate({ op: 'exec', argv: ['bash', '-lc', args.command], timeoutMs: Math.min(args.timeoutSeconds * 1000, 120_000) }, payerSetup({ tenant, agent })),
       async close(ref) { await namespace.getByName(ref.id).purge(); },
     };
   }

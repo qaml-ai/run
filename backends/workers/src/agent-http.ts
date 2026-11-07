@@ -261,10 +261,10 @@ export async function fetchRequestImpl(this: AgentRuntime,
             await this.serializeComputer(() =>
               new ComputerService(this.env, conf.tenantId).removeAgent(conf.id),
             );
-          // The native computer: its container and snapshot handles.
-          await this.env.COMPUTER_CONTAINERS?.getByName(this.ctx.id.toString()).purge();
           await this.delegation.destroy();
           await this.harness.session().abort();
+          // The native computer (container, snapshot handles, charged time), once no tool call can start it again.
+          await this.env.COMPUTER_CONTAINERS?.getByName(this.ctx.id.toString()).purge();
           await this.cancelHumanInputs();
           // Settling still reads configuration and writes durable charge receipts.
           // Keep it available until every accepted operation has drained.
@@ -359,11 +359,12 @@ export async function fetchRequestImpl(this: AgentRuntime,
         if (!namespace) return json({ error: "Optional computer is not configured" }, 501);
         const input = (await body(request)) as { name: string; into: string[]; path: string };
         const handle = await namespace.getByName(this.ctx.id.toString()).snapshotHandle(input.name);
+        const setup = await computerSetup(this.env, await this.config());
         const forks = await Promise.all(input.into.map(async (name) => {
           const computer = namespace.getByName(`${this.ctx.id.toString()}:fork:${name}`);
           try {
-            const restored = await computer.startFromSnapshot(handle);
-            const read = (await computer.operate({ op: "read", path: input.path })) as { content: string };
+            const restored = await computer.startFromSnapshot(handle, setup);
+            const read = (await computer.operate({ op: "read", path: input.path }, setup)) as { content: string };
             return { restored, content: read.content };
           } finally {
             await computer.purge();

@@ -63,6 +63,13 @@ the teardown). The earlier one-computer record,
 `measurements/platform-container-cloud.json` (2026-11-05, `lite`), took 7,090 ms
 through the first command.
 
+`measurements/computer-cpu-cloud.json` (same probe, three more runs) checks what
+container metering reads: the container's cgroup v2 `/sys/fs/cgroup/cpu.stat` is
+readable on Cloudflare, and a 1 s busy loop on `standard-1` added 1.06 to 1.12
+vCPU-seconds to `usage_usec`. The counter starts with the container's own boot
+work (0.8 to 7.7 s by the first reading), which is CPU Cloudflare bills too. The
+probe's resources were deleted and their absence checked as before.
+
 ### Native computer egress and parent forks (experimental, Workers only)
 
 A definition's `computer` configures its agents' native `container` computer:
