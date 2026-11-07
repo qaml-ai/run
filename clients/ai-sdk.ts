@@ -109,10 +109,13 @@ export class AgentRuntimeChatTransport {
     return this.options.thread !== undefined ? this.options.thread : chatId ?? null;
   }
 
-  /** A watcher of the user's agent, once it is following the live stream. */
-  private async watch(thread: string | null, onEvent: (event: AgentEvent) => void, onChange: (watcher: Watcher) => void): Promise<{ watcher: Watcher; read: Read }> {
+  /**
+   * A watcher of the user's agent, once it is following the live stream; `loaded` settles once it has also taken in
+   * the stream's snapshot (the running turn's messages so far), which it completes with a read of history first.
+   */
+  private async watch(thread: string | null, onEvent: (event: AgentEvent) => void, onChange: (watcher: Watcher) => void): Promise<{ watcher: Watcher; read: Read; loaded: Promise<void> }> {
     const minted = await this.call("token", thread);
-    const ready = Promise.withResolvers<void>();
+    const ready = Promise.withResolvers<void>(), loaded = Promise.withResolvers<void>();
     const reads = readsFrom(minted, this.options.endpoint, thread, this.doFetch, this.options.headers, this.options.credentials, !!this.options.fetch);
     const read: Read = async path => {
       const response = await reads.fetch!(`${reads.url.replace(/\/+$/, "")}/v1/agents/${encodeURIComponent(minted.agentId)}${path}`, { headers: { Authorization: `Bearer ${minted.token}` } });
@@ -125,11 +128,11 @@ export class AgentRuntimeChatTransport {
       agentId: minted.agentId, token: minted.token, expiresAt: minted.expiresAt,
       getToken: async () => { const renewed = await this.call("token", thread); return { token: renewed.token, expiresAt: renewed.expiresAt }; },
       onEvent,
-      onChange: state => { if (state.connected) ready.resolve(); if (watcher) onChange(watcher); },
+      onChange: state => { if (state.connected) ready.resolve(); if (state.loaded) loaded.resolve(); if (watcher) onChange(watcher); },
       onError: error => { if (!watcher?.state.connected) ready.reject(error); },
     });
     await ready.promise;
-    return { watcher, read };
+    return { watcher, read, loaded: loaded.promise };
   }
 
   async sendMessages(options: SendOptions): Promise<ReadableStream<AgentUIMessageChunk>> {
@@ -167,8 +170,9 @@ export class AgentRuntimeChatTransport {
     this.resuming.delete(thread);
     // Whether there is anything to follow is known once the watcher is connected.
     const following = Promise.withResolvers<boolean>();
-    const stream = await this.follow(thread, { abortSignal: undefined, headers: options.headers }, async (watcher, read) => {
-      const state = await read("/state") as { requests?: { id: string; method: string; state: string; startedAt?: number; outcome?: { error?: string } }[] };
+    const stream = await this.follow(thread, { abortSignal: undefined, headers: options.headers }, async (watcher, read, loaded) => {
+      // A join picks up what the run did so far from the watcher's state: once it has the stream's snapshot in it.
+      const [state] = await Promise.all([read("/state"), loaded]) as [{ requests?: { id: string; method: string; state: string; startedAt?: number; outcome?: { error?: string } }[] }, void];
       const record = resumed ? state.requests?.find(request => request.id === resumed)
         : state.requests?.find(request => request.state === "running" && ["prompt", "continue", "resume"].includes(request.method));
       // The run the answer resumed may have finished before this watcher connected: then its outcome
@@ -212,7 +216,7 @@ export class AgentRuntimeChatTransport {
    * nothing is streamed before the user message the run answers arrives (an earlier run may be finishing).
    */
   private async follow(thread: string | null, options: Pick<SendOptions, "abortSignal" | "headers">,
-    begin: (watcher: Watcher, read: Read) => Promise<{ requestId: string | undefined; gate: boolean; clientId?: string; join?: number; replay?: AgentUIMessageChunk[] } | null>,
+    begin: (watcher: Watcher, read: Read, loaded: Promise<void>) => Promise<{ requestId: string | undefined; gate: boolean; clientId?: string; join?: number; replay?: AgentUIMessageChunk[] } | null>,
     started: (following: boolean) => void = () => {}): Promise<ReadableStream<AgentUIMessageChunk>> {
     let controller!: ReadableStreamDefaultController<AgentUIMessageChunk>;
     let run: { requestId: string | undefined; gate: boolean; clientId?: string } | null = null;
@@ -286,7 +290,7 @@ export class AgentRuntimeChatTransport {
           };
           const watching = await this.watch(thread, handle, settled);
           watcher = watching.watcher;
-          const run0 = await begin(watcher, watching.read);
+          const run0 = await begin(watcher, watching.read, watching.loaded);
           started(!!run0);
           if (!run0) { end(); return; }
           if (run0.replay) {
@@ -297,7 +301,7 @@ export class AgentRuntimeChatTransport {
           }
           if (run0.join !== undefined) {
             // Joining a run under way: what it did so far comes from the watcher's state, which has taken in
-            // every event received until now (the snapshot's and those since). So those events, held while
+            // every event received until now (the snapshot's, awaited in begin, and those since). So those events, held while
             // the run was looked up, are not passed on too: each word shows once. Then the rest, live.
             open = true;
             push({ type: "start" });
