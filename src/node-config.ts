@@ -161,7 +161,7 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     github: { org: env.GITHUB_ORG ?? "qaml-ai", webUrl: env.AGENT_GITHUB_WEB_URL, apiUrl: env.AGENT_GITHUB_API_URL },
     googleIssuer: env.AGENT_GOOGLE_ISSUER || undefined,
     searchTimeoutMs,
-    managedComputers: managedComputers === "on", computerProvider: computerProvider as "lambda" | "boat", microvm, computerAtCost: env.AGENT_PRICE_COMPUTER_HOUR_USD === undefined,
+    managedComputers: managedComputers === "on", computerProvider: computerProvider as "lambda" | "boat", microvm, computerAtCost: env.AGENT_PRICE_COMPUTER_HOUR_USD === undefined, boatUrl: env.AGENT_BOAT_API_URL || undefined,
     firecrawlUrl: env.AGENT_FIRECRAWL_SCRAPE_URL,
     usageWebhookRetryMs: optional("AGENT_USAGE_WEBHOOK_RETRY_MS"),
     channelRetryMs: optional("AGENT_CHANNEL_RETRY_MS"),

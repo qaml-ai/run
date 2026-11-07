@@ -7,6 +7,7 @@ const replacements = {
     ['"./http.ts"', '"./errors.ts"'],
     ['"./sender.ts"', '"./sender-markers.ts"'],
     ['"./protocol.ts"', '"./policy-host.ts"'],
+    ['"./core/computer-fork.ts"', '"../../../src/core/computer-fork.ts"'],
   ],
   'decisions.ts': [
     ['"./client-sessions/state.ts"', '"./policy-host.ts"'],

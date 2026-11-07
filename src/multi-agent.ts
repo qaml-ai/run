@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { HttpError } from "./http.ts";
 import { AGENT_UPDATES, escapeMarkers } from "./sender.ts";
 import type { ToolDefinition } from "./protocol.ts";
+import { COMPUTER_ARGUMENT } from "./core/computer-fork.ts";
 
 /**
  * Sub-agents: the `delegate` built-in, answered by the runtime's sessions (client-sessions.ts) rather than a tool source,
@@ -145,6 +146,7 @@ const targetProperties = (settings: DelegateSettings, what: string) => {
     ...(settings.instructions ? { instructions: { type: "string", minLength: 1, maxLength: MULTI_AGENT_LIMITS.instructionsChars, description: `Who a new sub-agent is and how it should work${agents.length ? " (instead of naming an agent)" : ""}: it gets them, then its task, as its first message. Put the work itself (its data, rules and steps) in task` } } : {}),
     task: { type: "string", minLength: 1, maxLength: MULTI_AGENT_LIMITS.taskChars, description: `The task, with everything the sub-agent needs to know (its data, rules and steps): it sees none of this conversation${filesSeen(settings, agents.length > 0)}` },
     output: { type: "object", description: "A JSON Schema for an object, if you want the answer in that shape (type: \"object\")" },
+    computer: COMPUTER_ARGUMENT,
   };
 };
 
