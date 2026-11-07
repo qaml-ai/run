@@ -65,11 +65,13 @@ async function provider(t: { after(fn: () => Promise<void>): void }, options: { 
   t.after(async () => { gate.resolve(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
   /** Answer the summaries waiting, and let later ones wait again. */
   const release = () => { gate.resolve(); gate = Promise.withResolvers<void>(); };
+  /** Answer the summaries waiting, and every later one at once. */
+  const open = () => { options.gated = false; gate.resolve(); };
   const model = (contextWindow: number, id = "fixture") => ({
     id, name: "Fixture", api: "openai-completions", provider: "openai", baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
     reasoning: false, input: ["text"], cost: { input: 1, output: 10, cacheRead: 0, cacheWrite: 0 }, contextWindow, maxTokens: 1000,
   }) as Model<Api>;
-  return { requests, model, release, state, chat: () => requests.filter(body => !isSummarization(body)), summarizations: () => requests.filter(isSummarization) };
+  return { requests, model, release, open, state, chat: () => requests.filter(body => !isSummarization(body)), summarizations: () => requests.filter(isSummarization) };
 }
 
 async function fixture(t: { after(fn: () => Promise<void>): void }) {
@@ -432,7 +434,9 @@ async function nearLimit(t: { after(fn: () => Promise<void>): void }, fake: Awai
 }
 
 for (const hosting of ["inline", "process"] as const) test(`messages landing without a turn past the threshold compact in the background, billed as background work (${hosting})`, async t => {
-  const fake = await provider(t, { usage: true });
+  // Summaries are held until every message has landed: a summary that finishes while a later landing's request is open
+  // is that request's work, in its stream (and billed there), not background work.
+  const fake = await provider(t, { usage: true, gated: true });
   const root = await mkdtemp(join(tmpdir(), "landed-compaction-"));
   const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting });
   t.after(async () => { await supervisor.close(); await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); });
@@ -444,11 +448,15 @@ for (const hosting of ["inline", "process"] as const) test(`messages landing wit
     const landed = await supervisor.request("stopped", "prompt", { text: small(index), landOnly });
     assert.equal(landed.stopped, "spend_limit");
   }
+  await until(() => fake.state.inflight > 0, "the landed messages asked for a summary");
+  fake.open();
   await until(() => background.some(event => event.type === "compaction_end"), "the landed messages compacted");
   await until(() => fake.state.inflight === 0, "the summaries answered");
   assert.equal(fake.chat().length, 0, "no turn ran");
   assert.equal(fake.state.maxInflight, 1, "one summary at a time");
-  assert.ok(background.some(event => event.type === "compaction_usage" && event.usage), "its usage reaches the bridge, which bills it");
+  const billed = background.filter(event => event.type === "compaction_usage" && event.usage);
+  assert.ok(billed.length, "its usage reaches the bridge, which bills it");
+  assert.equal(billed.length, fake.summarizations().length, "every summary's usage reaches it");
   assert.ok(background.every(event => event.background === true));
   // The next turn starts on the summary.
   assert.equal((await supervisor.request("stopped", "prompt", { text: "AFTER" })).error, null);
