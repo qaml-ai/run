@@ -5141,7 +5141,8 @@
             "enum": [
               "bearer",
               "runtime",
-              "exchange"
+              "exchange",
+              "github-app"
             ]
           },
           "url": {
@@ -5151,6 +5152,33 @@
           "audience": {
             "type": "string",
             "description": "With type exchange: the aud of the token the endpoint is asked with, when not its url"
+          },
+          "app": {
+            "type": "string",
+            "description": "With type github-app: the name or id (gha_…) of one of the tenant's GitHub Apps (POST /v1/github-apps)"
+          },
+          "installation": {
+            "type": "integer",
+            "description": "With type github-app: the installation to mint for, when known; else found from repositories or owner, or the App's only installation"
+          },
+          "owner": {
+            "type": "string",
+            "description": "With type github-app: the user or organization whose installation to use"
+          },
+          "repositories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 500,
+            "description": "With type github-app: owner/name of each repository the token may reach (one owner); every repository of the installation when left out"
+          },
+          "permissions": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "With type github-app: the token's permissions, each \"read\", \"write\" or \"admin\", e.g. {\"contents\": \"write\", \"pull_requests\": \"write\"}; the installation's own when left out"
           }
         },
         "required": [
@@ -8923,7 +8951,7 @@
               "type": "string",
               "maxLength": 4096
             },
-            "description": "Telegram: { botToken }. Slack: { botToken, signingSecret }. GitHub: { appId, privateKey, webhookSecret }. Webhook: { secret, replyUrl? }. Email: none. Required for every other type; stored encrypted and never returned"
+            "description": "Telegram: { botToken }. Slack: { botToken, signingSecret }. GitHub: { appId, privateKey, webhookSecret }, or { app } naming one of your GitHub Apps (POST /v1/github-apps) that has a webhook secret. Webhook: { secret, replyUrl? }. Email: none. Required for every other type; stored encrypted and never returned"
           },
           "definition": {
             "type": "string",
@@ -9037,7 +9065,7 @@
               "type": "string",
               "maxLength": 4096
             },
-            "description": "Telegram: { botToken }. Slack: { botToken, signingSecret }. GitHub: { appId, privateKey, webhookSecret }. Webhook: { secret, replyUrl? }. Email: none. Required for every other type; stored encrypted and never returned"
+            "description": "Telegram: { botToken }. Slack: { botToken, signingSecret }. GitHub: { appId, privateKey, webhookSecret }, or { app } naming one of your GitHub Apps (POST /v1/github-apps) that has a webhook secret. Webhook: { secret, replyUrl? }. Email: none. Required for every other type; stored encrypted and never returned"
           },
           "definition": {
             "type": "string",
@@ -9308,6 +9336,134 @@
           "id",
           "deliveredAt"
         ]
+      },
+      "GitHubApp": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "gha_0123456789abcdef0123"
+          },
+          "name": {
+            "type": "string"
+          },
+          "appId": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string",
+            "description": "The App's slug on GitHub: its bot is <slug>[bot]"
+          },
+          "owner": {
+            "type": "string",
+            "description": "The account that owns the App"
+          },
+          "htmlUrl": {
+            "type": "string"
+          },
+          "masked": {
+            "type": "object",
+            "properties": {
+              "privateKey": {
+                "type": "string"
+              },
+              "webhookSecret": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "privateKey"
+            ],
+            "description": "The credentials, masked; they are never returned"
+          },
+          "keyRotatedAt": {
+            "type": "number"
+          },
+          "createdAt": {
+            "type": "number"
+          },
+          "updatedAt": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "appId",
+          "slug",
+          "masked",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
+      "GitHubAppInput": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "What definitions call it (auth.app): 1–100 letters, digits, '_', '.' or '-'; the App's slug by default"
+          },
+          "appId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "description": "The App ID, from the App's General settings"
+          },
+          "privateKey": {
+            "type": "string",
+            "description": "A private key generated for the App (PEM, PKCS#1 as GitHub gives it, or PKCS#8); stored encrypted and never returned"
+          },
+          "webhookSecret": {
+            "type": "string",
+            "description": "The App's webhook secret, for a GitHub channel that uses this App; stored encrypted and never returned"
+          }
+        },
+        "required": [
+          "appId",
+          "privateKey"
+        ],
+        "additionalProperties": false
+      },
+      "GitHubAppManifestInput": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "The one-use code GitHub adds to the manifest flow's redirect URL (valid for an hour)"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "additionalProperties": false
+      },
+      "GitHubAppUpdate": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "privateKey": {
+            "type": "string",
+            "description": "A new key for the App (rotation): checked with GitHub before it replaces the old one, which you can then delete in the App's settings"
+          },
+          "webhookSecret": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A new webhook secret; null removes it"
+          }
+        },
+        "additionalProperties": false
       },
       "Definition": {
         "type": "object",
@@ -10038,8 +10194,54 @@
             ],
             "additionalProperties": false,
             "description": "MCP servers only: a short-lived credential (a GitHub App installation token, an STS or OAuth access token) the runtime fetches from your endpoint, sends to the server as Authorization: Bearer, keeps in memory per agent and refreshes before it expires. Nothing is stored; see the tools guide"
+          },
+          {
+            "$ref": "#/components/schemas/GitHubAppAuth"
           }
         ]
+      },
+      "GitHubAppAuth": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "github-app"
+            ]
+          },
+          "app": {
+            "type": "string"
+          },
+          "installation": {
+            "type": "integer",
+            "description": "With type github-app: the installation to mint for, when known; else found from repositories or owner, or the App's only installation"
+          },
+          "owner": {
+            "type": "string",
+            "description": "With type github-app: the user or organization whose installation to use"
+          },
+          "repositories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 500,
+            "description": "With type github-app: owner/name of each repository the token may reach (one owner); every repository of the installation when left out"
+          },
+          "permissions": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "With type github-app: the token's permissions, each \"read\", \"write\" or \"admin\", e.g. {\"contents\": \"write\", \"pull_requests\": \"write\"}; the installation's own when left out"
+          }
+        },
+        "required": [
+          "type",
+          "app"
+        ],
+        "additionalProperties": {},
+        "description": "An installation token the runtime mints itself from one of the tenant's GitHub Apps, scoped to the repositories and permissions given, sent as Authorization: Bearer and kept in memory until five minutes before it expires. Nothing is stored; see the GitHub Apps guide"
       },
       "OpenApiInput": {
         "type": "object",
@@ -20231,6 +20433,259 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ChannelEventDelivered"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/github-apps": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "The tenant's GitHub Apps, their credentials masked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/GitHubApp"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GitHubAppInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The App, its key checked with GitHub (GET /app) and stored encrypted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubApp"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/github-apps/manifest": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GitHubAppManifestInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The App GitHub made from your manifest, with its key and webhook secret stored encrypted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubApp"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/github-apps/{app}": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The App's id (gha_…) or name"
+            },
+            "required": true,
+            "description": "The App's id (gha_…) or name",
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The App",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubApp"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The App's id (gha_…) or name"
+            },
+            "required": true,
+            "description": "The App's id (gha_…) or name",
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GitHubAppUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The App: renamed, its key rotated (tokens are minted with the new key from now on) or its webhook secret changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubApp"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The App's id (gha_…) or name"
+            },
+            "required": true,
+            "description": "The App's id (gha_…) or name",
+            "name": "app",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The App is deleted: no token is minted from it again, and the ones this node holds are revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "deleted"
+                  ]
                 }
               }
             }

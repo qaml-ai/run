@@ -26,13 +26,15 @@ import { COMPUTER_TOOLS } from "./computers/policy.ts";
 import { fileToolsFor } from "./file-tool-policy.ts";
 import { network } from "./account-network.ts";
 import { fetchWithoutRedirects } from "../../../src/core/no-redirect.ts";
+import { githubAppAuthInput, type GitHubAppAuth } from "../../../src/core/github-apps.ts";
+import { githubAppHeaders, GitHubAppTokenError, type GitHubAppsEnv } from "./github-apps.ts";
 
 type Env = { API_TOKEN: string; TEST_MODE?: string } & Partial<IdentityEnv>;
 type Approval = { default?: "never" | "always" | "destructive" | "judged"; tools?: Record<string, "never" | "always" | "judged">; methods?: string[] };
 type Sealed = { iv: string; ciphertext: string; tag: string };
 export type RemoteSource = {
   name: string; url?: string; baseUrl?: string; spec?: string; operations?: Operation[];
-  headerNames?: string[]; auth?: { type: "bearer" | "runtime" } | ExchangeAuth; sealed?: Sealed; audience?: string;
+  headerNames?: string[]; auth?: { type: "bearer" | "runtime" } | ExchangeAuth | GitHubAppAuth; sealed?: Sealed; audience?: string;
   allowTools?: string[]; denyTools?: string[]; timeoutMs?: number;
   exposure?: "direct" | "codemode" | "both"; approval?: Approval; fileArguments?: "on" | "off";
   discovery?: { tools?: ToolDefinition[]; error?: string };
@@ -41,6 +43,8 @@ const MAX_BYTES = 1024 * 1024;
 const NAME = /^[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)*$/;
 const forbiddenHeaders = new Set(["host", "content-length", "content-type", "accept", "connection", "transfer-encoding", "upgrade", "cookie", "mcp-session-id", "mcp-protocol-version"]);
 const bad = (message: string) => new HttpError(400, message);
+/** auth github-app as the shared check takes it, its refusal as this backend's 400. */
+const githubAuth = (value: unknown, label: string) => { try { return githubAppAuthInput(value, label); } catch (error) { throw bad((error as Error).message); } };
 
 /** Every redirect is checked before fetching, including local test fixtures. */
 function outbound(env: Pick<Env, "TEST_MODE" | "AGENT_OUTBOUND_ALLOW_HTTP" | "AGENT_OUTBOUND_ALLOW_CIDRS" | "AGENT_OUTBOUND_BLOCK_CIDRS">) {
@@ -151,7 +155,8 @@ export async function prepareSources(env: Env, tenant: string, definition: strin
       }
     }
     if (value.auth !== undefined) {
-      if (value.auth?.type !== "runtime" && value.auth?.type !== "exchange" && (value.auth?.type !== "bearer" || typeof value.auth.token !== "string" || !/^[\x21-\x7e]{1,8192}$/.test(value.auth.token))) throw bad("Source auth must be runtime, exchange, or a bearer credential in a definition");
+      if (value.auth?.type !== "runtime" && value.auth?.type !== "exchange" && value.auth?.type !== "github-app" && (value.auth?.type !== "bearer" || typeof value.auth.token !== "string" || !/^[\x21-\x7e]{1,8192}$/.test(value.auth.token))) throw bad("Source auth must be runtime, exchange, github-app, or a bearer credential in a definition");
+      if (value.auth?.type === "github-app") githubAuth(value.auth, "auth");
       if (value.auth?.type === "runtime" && Object.keys(value.auth).length !== 1) throw bad("Runtime auth takes no credentials");
       if (value.auth?.type === "exchange") {
         if (kind !== "mcpServers") throw bad('auth { type: "exchange" } is for MCP servers');
@@ -174,6 +179,7 @@ export async function prepareSources(env: Env, tenant: string, definition: strin
       ...(value.denyTools !== undefined ? { denyTools: names(value.denyTools, "denyTools") } : {}),
       ...(value.auth?.type === "runtime" ? { auth: { type: "runtime" as const } } : {}),
       ...(value.auth?.type === "exchange" ? { auth: { type: "exchange" as const, url: sourceUrl(value.auth.url, env).href, ...(value.auth.audience ? { audience: value.auth.audience } : {}) } } : {}),
+      ...(value.auth?.type === "github-app" ? { auth: githubAuth(value.auth, "auth") } : {}),
     };
     if (value.approval !== undefined) {
       const approval = value.approval;
@@ -227,6 +233,7 @@ export function sourceView(source: RemoteSource) {
   const { name, url, baseUrl, spec, headerNames, audience, allowTools, denyTools, timeoutMs, exposure, approval, operations } = source;
   const auth = source.auth?.type === "runtime" || source.auth?.type === "bearer" ? { type: source.auth.type }
     : source.auth?.type === "exchange" ? { type: "exchange", url: source.auth.url, ...(source.auth.audience ? { audience: source.auth.audience } : {}) }
+    : source.auth?.type === "github-app" ? githubAppAuthInput(source.auth, "auth")
     : undefined;
   return { name, ...(url ? { url } : {}), ...(baseUrl ? { baseUrl } : {}), ...(spec ? { spec } : {}),
     ...(headerNames ? { headerNames } : {}), ...(auth ? { auth } : {}), ...(audience ? { audience } : {}),
@@ -340,6 +347,8 @@ class RemoteMcp {
     }
     if ([404, 405].includes(result.response.status)) { this.legacy = true; return await legacy(); }
     if (!result.response.ok) {
+      if (this.refused && [401, 403].includes(result.response.status) && this.source.auth?.type === "github-app")
+        throw new GitHubAppTokenError(`MCP server ${this.source.name} refused the GitHub App ${this.source.auth.app}'s installation token (HTTP ${result.response.status}), and a second one minted after: check the App's installation, repositories and permissions`, false);
       if (this.refused && [401, 403].includes(result.response.status)) {
         const { origin, pathname } = new URL((this.source.auth as ExchangeAuth).url);
         throw new CredentialExchangeError("rejected", `MCP server ${this.source.name} refused the credential from its exchange (HTTP ${result.response.status}), and a second one fetched after: check what ${origin}${pathname} issues for it`, result.response.status);
@@ -397,13 +406,16 @@ export async function discoverSources(env: Env, tenant: string, definition: stri
   return Promise.all(sources.map(async source => {
     const identity = async () => ({ issuer: origin, claims: { tenant, agent: definition, definition, sub: definition } });
     const exchange = source.auth?.type === "exchange" ? credentialExchange(env as IdentityEnv, { name: source.name, url: source.url!, auth: source.auth }, identity, (url, init, max) => fetchSource(env, url, init, max)) : undefined;
-    const runtimeHeaders = async (): Promise<Record<string, string>> => exchange ? exchange.headers() : source.auth?.type === "runtime" ? { Authorization: `Bearer ${await signRuntimeIdentity(env as IdentityEnv, origin, source.audience ?? source.url!, (await identity()).claims)}` } : {};
+    const github = source.auth?.type === "github-app" ? githubAppHeaders(env as unknown as GitHubAppsEnv, tenant, source.auth, `MCP server ${source.name}`) : undefined;
+    const runtimeHeaders = async (): Promise<Record<string, string>> => exchange ? exchange.headers() : github ? github.headers() : source.auth?.type === "runtime" ? { Authorization: `Bearer ${await signRuntimeIdentity(env as IdentityEnv, origin, source.audience ?? source.url!, (await identity()).claims)}` } : {};
     const headers = await unseal(env, aad(tenant, definition, "mcpServers", source.name), source.sealed);
     try {
-      const client = new RemoteMcp(env, { ...source, timeoutMs: Math.min(source.timeoutMs ?? 20_000, 20_000) }, headers, runtimeHeaders, exchange?.refused);
+      const client = new RemoteMcp(env, { ...source, timeoutMs: Math.min(source.timeoutMs ?? 20_000, 20_000) }, headers, runtimeHeaders, exchange?.refused ?? github?.refused);
       return { ...source, discovery: { tools: await client.list() } };
     } catch (error) {
       const message = sourceError(error, headers, source.url);
+      // A token the App could not have (it is gone, not installed there, or GitHub refused) is a mistake in the definition: a 400 now.
+      if (error instanceof GitHubAppTokenError && !error.transient) throw bad(`${message}. Saving lists the server's tools, so it mints a token then`);
       if ([401, 403].includes((error as { status?: number }).status ?? 0) || error instanceof CredentialExchangeError && !["unreachable", "unavailable"].includes(error.reason)) throw bad(error instanceof CredentialExchangeError ? message + ". Saving lists the server's tools as the definition (its token's agent and sub are the definition's id, and the request's body names no agent)" : message);
       return { ...source, discovery: { error: message } };
     }
@@ -431,8 +443,10 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
   for (const kind of ["mcpServers", "openApi"] as const) for (const source of config[kind] ?? []) {
     const headers = await unseal(env, aad(tenant, definition ?? "", kind, source.name), source.sealed);
     const exchange = source.auth?.type === "exchange" && identity && env.HYPERDRIVE ? credentialExchange(env as IdentityEnv, { name: source.name, url: source.url!, auth: source.auth }, identity, (url, init, max) => fetchSource(env, url, init, max)) : undefined;
+    const github = source.auth?.type === "github-app" ? githubAppHeaders(env as unknown as GitHubAppsEnv, tenant, source.auth, `${kind === "mcpServers" ? "MCP server" : "OpenAPI source"} ${source.name}`) : undefined;
     const runtimeHeaders = async (api?: ToolExecutionApi, approval?: ToolInputReply["approval"]): Promise<Record<string, string>> => {
       if (exchange) return exchange.headers(api);
+      if (github) return github.headers();
       if (source.auth?.type === "exchange") throw new Error("Runtime identity is not configured for credential exchange");
       if (source.auth?.type !== "runtime") return {};
       if (!identity || !env.HYPERDRIVE) throw new Error("Runtime identity is not configured");
@@ -458,7 +472,7 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
       return { reply: {} };
     };
     if (kind === "mcpServers") {
-      const client = new RemoteMcp(env, source, headers, runtimeHeaders, exchange?.refused, identity);
+      const client = new RemoteMcp(env, source, headers, runtimeHeaders, exchange?.refused ?? github?.refused, identity);
       // An unavailable server cannot prevent loading or using the agent's other tools.
       let listed: ToolDefinition[];
       try { listed = await client.list(); } catch (error) { failures.push({ kind: "mcp", source: source.name, message: sourceError(error, headers, source.url) }); continue; }
@@ -524,6 +538,8 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
         }
         await outbound(env).reachable(url);
         const response = await fetchWithoutRedirects(network().fetch, url, { method: operation.method, headers: sent, body, signal: AbortSignal.any([AbortSignal.timeout(source.timeoutMs ?? 30_000), ...(context?.abortSignal ? [context.abortSignal] : [])]) });
+        // A token the API turned away is not used again: the next call mints another.
+        if (github && response.status === 401) github.refused();
         const contentType = response.headers.get('content-type')?.split(';')[0] ?? '';
         if (response.ok && contentType && !textual(contentType) && files) {
           const name = /filename\*?=(?:UTF-8''|"?)([^";]+)/i.exec(response.headers.get('content-disposition') ?? '')?.[1] ?? url.pathname.split('/').pop() ?? 'output';

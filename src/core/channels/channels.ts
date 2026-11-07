@@ -87,8 +87,11 @@ export interface Download { body: AsyncIterable<Uint8Array>; contentType?: strin
 export interface ChannelProvider {
   readonly label: string;
   readonly maxMessageLength: number;
-  /** Validate credentials and, where the service allows it, point its webhook at `webhook.url`. */
-  setup(credentials: Credentials, webhook: { url: string; secret: string }): Promise<{ account: Record<string, string>; masked: Record<string, string> }>;
+  /**
+   * Validate credentials and, where the service allows it, point its webhook at `webhook.url`. `credentials` in the
+   * answer is what to store instead of what was given (a reference to the tenant's stored GitHub App, by its id).
+   */
+  setup(credentials: Credentials, webhook: { url: string; secret: string }, context?: { tenant: string }): Promise<{ account: Record<string, string>; masked: Record<string, string>; credentials?: Credentials }>;
   teardown(credentials: Credentials): Promise<void>;
   /** Whether a webhook delivery is genuine, proven with the channel's random secret or a credential the service signs with. */
   verify?(headers: Headers, body: string, secret: string, credentials: Credentials, settings: ChannelSettings): boolean | Promise<boolean>;
@@ -402,14 +405,14 @@ export class Channels {
     const webhookUrl = `${this.host.publicUrl}/channels/${type}/${id}`;
     const settings = this.settings(provider, input, id);
     const filter = await this.filterInput(tenant, input.filter);
-    const { account, masked } = await provider.setup(credentials, { url: webhookUrl, secret });
+    const { account, masked, credentials: stored } = await provider.setup(credentials, { url: webhookUrl, secret }, { tenant });
     const now = Date.now();
     const name = input.name ?? `${provider.label} ${account.username ? `@${account.username}` : id}`;
     const channel: Channel = {
       id, tenant, type, name, ...(provider.verify ? { webhookUrl } : {}),
       definition: await this.definition(tenant, id, name, input), access: { public: false, allow: [], ...provider.defaults?.access, ...settings.access }, limits: { ...DEFAULT_LIMITS, ...provider.defaults?.limits, ...settings.limits },
       ...(settings.greeting ? { greeting: settings.greeting } : {}), ...(settings.settings ? { settings: settings.settings } : {}), ...(filter ? { filter } : {}), account, masked,
-      sealed: this.host.keys.seal(`channel:${id}`, JSON.stringify({ credentials, secret })), createdAt: now, updatedAt: now,
+      sealed: this.host.keys.seal(`channel:${id}`, JSON.stringify({ credentials: stored ?? credentials, secret })), createdAt: now, updatedAt: now,
     };
     await this.host.sql.query("insert into channels (id, tenant, channel, created_at) values ($1, $2, $3, $4)", [id, tenant, JSON.stringify(channel), now]).catch(taken);
     return this.view(channel);
@@ -432,8 +435,9 @@ export class Channels {
       const provider = this.provider(channel.type);
       const old = this.secrets(channel).credentials;
       const secret = randomHex(32);
-      Object.assign(next, await provider.setup(input.credentials, { url: `${this.host.publicUrl}/channels/${channel.type}/${id}`, secret }));
-      next.sealed = this.host.keys.seal(`channel:${id}`, JSON.stringify({ credentials: input.credentials, secret }));
+      const { account, masked, credentials: stored } = await provider.setup(input.credentials, { url: `${this.host.publicUrl}/channels/${channel.type}/${id}`, secret }, { tenant });
+      Object.assign(next, { account, masked });
+      next.sealed = this.host.keys.seal(`channel:${id}`, JSON.stringify({ credentials: stored ?? input.credentials, secret }));
       // A different bot keeps its webhook pointed here otherwise.
       if (next.account.id !== channel.account.id) await provider.teardown(old).catch(() => {});
     }

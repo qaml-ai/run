@@ -455,6 +455,16 @@ export const PromptInput = z.object({
   ])).optional().openapi({ description: "Attached files (at most 20): saved in the agent's workspace under uploads/<requestId>/, named in the message, and shown natively (images, PDFs) to models that take them. Audio is transcribed before the request is accepted, and the model reads the transcript" }),
 }, { error: SEND_TEXT }).refine(prompt => !!prompt.text?.trim() || !!prompt.files?.length, SEND_TEXT).openapi("PromptInput");
 
+const githubAppAuthFields = {
+  app: z.string().optional().openapi({ description: "With type github-app: the name or id (gha_…) of one of the tenant's GitHub Apps (POST /v1/github-apps)" }),
+  installation: z.number().int().optional().openapi({ description: "With type github-app: the installation to mint for, when known; else found from repositories or owner, or the App's only installation" }),
+  owner: z.string().optional().openapi({ description: "With type github-app: the user or organization whose installation to use" }),
+  repositories: z.array(z.string()).max(500).optional().openapi({ description: "With type github-app: owner/name of each repository the token may reach (one owner); every repository of the installation when left out" }),
+  permissions: z.record(z.string(), z.string()).optional().openapi({ description: "With type github-app: the token's permissions, each \"read\", \"write\" or \"admin\", e.g. {\"contents\": \"write\", \"pull_requests\": \"write\"}; the installation's own when left out" }),
+};
+// Loose: the runtime checks the rest itself (core/github-apps.ts), with the same messages on every backend.
+const GitHubAppAuth = z.looseObject({ type: z.literal("github-app"), ...githubAppAuthFields, app: z.string() })
+  .openapi("GitHubAppAuth", { description: "An installation token the runtime mints itself from one of the tenant's GitHub Apps, scoped to the repositories and permissions given, sent as Authorization: Bearer and kept in memory until five minutes before it expires. Nothing is stored; see the GitHub Apps guide" });
 const SourceAuthInput = z.union([
   z.object({ type: z.literal("bearer"), token: z.string() }).openapi({ description: "A bearer token; stored encrypted and never returned" }),
   z.object({ type: z.literal("runtime") }).openapi({ description: "Each request carries a JWT the runtime signs (EdDSA, two minutes, audience the server's URL) naming the tenant, agent, subject, context and actor; verify it against /.well-known/jwks.json" }),
@@ -463,11 +473,13 @@ const SourceAuthInput = z.union([
     url: z.string().openapi({ description: "An https endpoint of yours. The runtime POSTs {server: {name, url}, tenant, definition, agent?} to it with Authorization: Bearer <a JWT it signs, as auth \"runtime\"'s, with an exchange claim naming the server>, and it answers {token, expiresAt (RFC 3339) | expiresIn (seconds)}" }),
     audience: z.string().optional().openapi({ description: "The aud of the JWT the endpoint is asked with, when not its url: a URL on its origin, or urn:camelrun:<tenant>:<name>" }),
   }).openapi({ description: "MCP servers only: a short-lived credential (a GitHub App installation token, an STS or OAuth access token) the runtime fetches from your endpoint, sends to the server as Authorization: Bearer, keeps in memory per agent and refreshes before it expires. Nothing is stored; see the tools guide" }),
-], { error: "auth is { type: \"bearer\", token }, { type: \"runtime\" } or (an MCP server's) { type: \"exchange\", url, audience? }" }).openapi("SourceAuthInput");
+  GitHubAppAuth,
+], { error: "auth is { type: \"bearer\", token }, { type: \"runtime\" }, { type: \"github-app\", app, ... } or (an MCP server's) { type: \"exchange\", url, audience? }" }).openapi("SourceAuthInput");
 const SourceAuth = z.object({
-  type: z.enum(["bearer", "runtime", "exchange"]),
+  type: z.enum(["bearer", "runtime", "exchange", "github-app"]),
   url: z.string().optional().openapi({ description: "With type exchange: the endpoint the runtime fetches the server's credential from" }),
   audience: z.string().optional().openapi({ description: "With type exchange: the aud of the token the endpoint is asked with, when not its url" }),
+  ...githubAppAuthFields,
 }).openapi("SourceAuth");
 const approvalMode = z.enum(["never", "always", "judged"]);
 const approvalFields = {
@@ -1106,7 +1118,7 @@ const ChannelFilter = z.object({
 }).strict().openapi("ChannelFilter", { description: "A yes/no question about each message, answered by the decision model before it starts a turn, and billed as a decision" });
 const channelFields = {
   name: z.string().trim().min(1).max(120).optional(),
-  credentials: z.record(z.string(), z.string().max(4096)).optional().openapi({ description: "Telegram: { botToken }. Slack: { botToken, signingSecret }. GitHub: { appId, privateKey, webhookSecret }. Webhook: { secret, replyUrl? }. Email: none. Required for every other type; stored encrypted and never returned" }),
+  credentials: z.record(z.string(), z.string().max(4096)).optional().openapi({ description: "Telegram: { botToken }. Slack: { botToken, signingSecret }. GitHub: { appId, privateKey, webhookSecret }, or { app } naming one of your GitHub Apps (POST /v1/github-apps) that has a webhook secret. Webhook: { secret, replyUrl? }. Email: none. Required for every other type; stored encrypted and never returned" }),
   definition: z.string().optional().openapi({ description: "The definition each conversation's agent is made from (GET /v1/definitions); a channel created without one gets an empty definition of its own" }),
   access: ChannelAccess.optional(),
   limits: ChannelLimits.optional(),
@@ -1732,3 +1744,31 @@ export const VoiceRecordingDeleted = z.object({ id: z.string(), deleted: z.liter
 export const VoiceSessionList = z.object({
   sessions: z.array(VoiceSession), next: z.string().nullable().openapi({ description: "Pass as after for the next page; null at the end" }),
 }).openapi("VoiceSessionList");
+
+export const GitHubAppInput = z.strictObject({
+  name: z.string().optional().openapi({ description: "What definitions call it (auth.app): 1–100 letters, digits, '_', '.' or '-'; the App's slug by default" }),
+  appId: z.union([z.string(), z.number()]).openapi({ description: "The App ID, from the App's General settings" }),
+  privateKey: z.string().openapi({ description: "A private key generated for the App (PEM, PKCS#1 as GitHub gives it, or PKCS#8); stored encrypted and never returned" }),
+  webhookSecret: z.string().optional().openapi({ description: "The App's webhook secret, for a GitHub channel that uses this App; stored encrypted and never returned" }),
+}).openapi("GitHubAppInput");
+export const GitHubAppUpdate = z.strictObject({
+  name: z.string().optional(),
+  privateKey: z.string().optional().openapi({ description: "A new key for the App (rotation): checked with GitHub before it replaces the old one, which you can then delete in the App's settings" }),
+  webhookSecret: z.string().nullable().optional().openapi({ description: "A new webhook secret; null removes it" }),
+}).openapi("GitHubAppUpdate");
+export const GitHubAppManifestInput = z.strictObject({
+  code: z.string().openapi({ description: "The one-use code GitHub adds to the manifest flow's redirect URL (valid for an hour)" }),
+  name: z.string().optional(),
+}).openapi("GitHubAppManifestInput");
+export const GitHubApp = z.object({
+  id: z.string().openapi({ example: "gha_0123456789abcdef0123" }),
+  name: z.string(),
+  appId: z.string(),
+  slug: z.string().openapi({ description: "The App's slug on GitHub: its bot is <slug>[bot]" }),
+  owner: z.string().optional().openapi({ description: "The account that owns the App" }),
+  htmlUrl: z.string().optional(),
+  masked: z.object({ privateKey: z.string(), webhookSecret: z.string().optional() }).openapi({ description: "The credentials, masked; they are never returned" }),
+  keyRotatedAt: z.number().optional(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+}).openapi("GitHubApp");

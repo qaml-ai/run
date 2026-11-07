@@ -631,8 +631,9 @@ refused a credential), the server's name and the endpoint's host.
 
 It is for a definition's MCP servers. OpenAPI sources and an agent's own MCP
 servers do not take it yet, and the endpoint's answer carries a token only,
-not extra headers. A built-in `github-app` auth type, where camelRun holds the
-App's key and mints the token itself, may follow.
+not extra headers. For a GitHub App you need no endpoint at all: store the App
+in camelRun and give the source `auth: {"type": "github-app", "app": "<name>"}`
+([GitHub Apps](github-apps.md)).
 
 ### OpenAPI specs
 

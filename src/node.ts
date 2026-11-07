@@ -63,6 +63,7 @@ import { applicationTools } from "./mcp-results.ts";
 import { telegram } from "./channels-telegram.ts";
 import { slack } from "./channels-slack.ts";
 import { github as githubChannel } from "./channels-github.ts";
+import { nodeGitHubApps } from "./github-apps.ts";
 import { webhook } from "./channels-webhook.ts";
 import { email, emailReceiver, type EmailOptions } from "./channels-email.ts";
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
@@ -480,7 +481,9 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     void computers.sweep().catch(() => console.error(JSON.stringify({ type: "computer_sweep_failed" }))).finally(() => { sweepingComputers = false; });
   }, 30000);
   computerTimer.unref();
-  const toolSources = new ToolSources({ computers, accounts, mcp, outbound, signer, search, render, xSearch, get scheduler() { return scheduler; }, get volumes() { return volumes; }, fileUrls, get links() { return links; } });
+  // Tenants' GitHub Apps: egress grants and tool sources with auth "github-app" get installation tokens minted from them.
+  const githubApps = nodeGitHubApps({ db, accounts, apiUrl: config.channelApis.github });
+  const toolSources = new ToolSources({ computers, accounts, mcp, outbound, signer, search, render, xSearch, get scheduler() { return scheduler; }, get volumes() { return volumes; }, fileUrls, get links() { return links; }, githubApps });
   // Tenants' own OpenAI-compatible model providers.
   const modelProviders = new ModelProviders({ db, accounts, outbound });
   // A tenant of the tenants file may have its entry's maxDefinitions, else AGENT_MAX_DEFINITIONS_PER_TENANT; a self-serve one MAX_DEFINITIONS.
@@ -1043,7 +1046,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     providers: {
       telegram: telegram({ apiUrl: config.channelApis.telegram }),
       slack: slack({ apiUrl: config.channelApis.slack, maxFileBytes: config.channelApis.slackMaxFileBytes }),
-      github: githubChannel({ apiUrl: config.channelApis.github }),
+      github: githubChannel({ apiUrl: config.channelApis.github, apps: (tenant, ref) => githubApps.credentials(tenant, ref) }),
       webhook: webhook({ outbound }),
       ...(emailOptions ? { email: email(emailOptions) } : {}),
     },
@@ -1291,7 +1294,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
     await rateLimits.run(tenant);
   };
-  app.route("/", api({ computers, accounts, endUsers, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return modelReference(chosen); }, keyScopes, webhooks, scheduler, accountDeletions, ...(config.idempotencyLockMs !== undefined ? { idempotencyLockMs: config.idempotencyLockMs } : {}), channels, volumes, definitions, links, fileUrls, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: config.verifyKeys,
+  app.route("/", api({ computers, accounts, endUsers, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return modelReference(chosen); }, keyScopes, webhooks, scheduler, accountDeletions, githubApps, ...(config.idempotencyLockMs !== undefined ? { idempotencyLockMs: config.idempotencyLockMs } : {}), channels, volumes, definitions, links, fileUrls, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: config.verifyKeys,
     rateLimits, clientAddress: c => requestClient(c).address, runRetentionSeconds, requestAnywhere, ...(voice ? { voice } : {}),
     transcriptions: {
       transcriber, outbound: outbound.withoutOrigins(),
