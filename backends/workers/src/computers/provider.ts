@@ -220,6 +220,12 @@ export class ContainerProvider implements ComputerProvider {
   protected meter?: ProviderMeter;
   /** How long one start may take before it is tried again (FORK_LIMITS.startWaitMs; tests shorten it). */
   startWaitMs: number = FORK_LIMITS.startWaitMs;
+  /**
+   * A boot from the image (no disk to load) gets the readiness wait it had before bounded restores: an image's first
+   * start on a host pulls it (7 s on Cloudflare, longer on a local Docker), which a retry elsewhere would not shorten.
+   */
+  imageWaitMs = 30_000;
+  private waitFor(plan: StartPlan) { return "image" in plan.from ? Math.max(this.imageWaitMs, this.startWaitMs) : this.startWaitMs; }
   /** What the operation that started the container should tell the model about its disk (restored, or not). */
   private notice?: Record<string, unknown>;
   constructor(
@@ -274,7 +280,7 @@ export class ContainerProvider implements ComputerProvider {
       await boundedStart(async (signal) => {
         await this.boot(plan.from);
         await this.awaitReady(plan.init, signal);
-      }, { waitMs: this.startWaitMs, onTimeout: () => this.halt(false) });
+      }, { waitMs: this.waitFor(plan), onTimeout: () => this.halt(false) });
       await this.trust();
     } catch (error) {
       if ((error as { code?: string }).code === "COMPUTER_STARTING" && this.container.running) {
@@ -392,7 +398,7 @@ export class ContainerProvider implements ComputerProvider {
   /** Wait (bounded, once) for a start an earlier call left coming up. */
   private async awaitStarting(plan: StartPlan) {
     try {
-      await boundedStart((signal) => this.awaitReady(plan.init, signal), { waitMs: this.startWaitMs, attempts: 1 });
+      await boundedStart((signal) => this.awaitReady(plan.init, signal), { waitMs: this.waitFor(plan), attempts: 1 });
       await this.trust();
     } catch (error) {
       if ((error as { code?: string }).code !== "COMPUTER_STARTING") {

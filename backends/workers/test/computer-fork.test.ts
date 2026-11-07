@@ -32,7 +32,7 @@ function machine(image = "img") {
       return { stdin: new WritableStream(), stdout: pipe(), stderr: null, pid: 1, isPty: false, exitCode: Promise.resolve(0), output: async () => { throw new Error("unused"); }, kill() {}, resize() {} };
     },
   };
-  const provider = (now = Date.now) => { const p = new ContainerProvider(container as never, store, undefined, now); p.startWaitMs = 50; return p; };
+  const provider = (now = Date.now) => { const p = new ContainerProvider(container as never, store, undefined, now); p.startWaitMs = 50; p.imageWaitMs = 50; return p; };
   return { container, store, data, starts, snapshots, provider, hang: (n: number) => { hang = n; }, refuse: (why?: string) => { refuse = why; } };
 }
 const origin = (batch: string) => ({ parent: "parent-computer", agent: "agt_parent", batch, at: 1 });
