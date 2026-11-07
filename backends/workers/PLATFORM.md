@@ -81,12 +81,12 @@ A definition's `computer` configures its agents' native `container` computer:
   {"host": "registry.npmjs.org"}]}}
 ```
 
-- The Container still starts with `enableInternet: false`. Each `egress` host's
-  HTTPS is intercepted (`interceptOutboundHttps`) into `ComputerEgress`, a
-  loopback entrypoint that makes the request itself, under the runtime's
-  outbound rules. Every other host is unreachable, so the list is an allowlist
-  (at most 32 public DNS names). The machine trusts the interception CA at
-  every start, snapshot restores included.
+- The Container starts with `enableInternet: true`: hosts without a grant are
+  reached directly. Each `egress` host's HTTPS is intercepted
+  (`interceptOutboundHttps`) into `ComputerEgress`, a loopback entrypoint that
+  makes the request itself, under the runtime's outbound rules (at most 32
+  public DNS names). A grant without `auth` changes nothing but the route. The
+  machine trusts the interception CA at every start, snapshot restores included.
 - A grant with `auth` gets its credential the way an MCP server's `exchange` does.
   The runtime posts a signed identity token for this agent to `auth.url`, with
   `exchange.server` set to `computer:<host>`. The token is cached in memory and
@@ -125,7 +125,7 @@ A definition's `computer` configures its agents' native `container` computer:
 `test/computers.integration.ts` (its second test) covers clone and push through a local
 `git http-backend` (`TEST_EGRESS_UPSTREAM` maps every granted host to a loopback
 origin, in TEST_MODE only), the exchange claims, that no credential is on the
-machine, that other hosts are blocked, and a child's fork. In local Docker the
+machine, that hosts without a grant are reached directly, and a child's fork. In local Docker the
 first exec with a clone took about 11 s (image start, CA trust, clone), and a
 child's fork restore about 7.5 s.
 

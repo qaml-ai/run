@@ -96,7 +96,7 @@ test("native lifecycle picks image and size at start, blocks egress; snapshots s
   assert.deepEqual(f.starts[0], {
     image: "test-image",
     instance: "standard-1",
-    enableInternet: false,
+    enableInternet: true,
   });
   assert.ok(f.signal());
   await operate(p, { op: "snapshot", name: "save" });
@@ -119,7 +119,7 @@ test("native lifecycle picks image and size at start, blocks egress; snapshots s
   assert.deepEqual(f.starts.at(-1), {
     containerSnapshot: { id: "snapshot-1" },
     instance: "lite",
-    enableInternet: false,
+    enableInternet: true,
   });
 });
 

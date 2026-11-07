@@ -285,11 +285,11 @@ test(
             argv: [
               "node",
               "-e",
-              "fetch('https://example.com',{signal:AbortSignal.timeout(1000)}).then(()=>process.exit(3)).catch(()=>console.log('blocked'))",
+              "fetch('https://example.com',{signal:AbortSignal.timeout(10000)}).then(()=>console.log('reachable')).catch(()=>process.exit(3))",
             ],
           });
           assert.equal(network.exitCode, 0);
-          assert.match(network.stdout, /blocked/);
+          assert.match(network.stdout, /reachable/);
           await call(provider, { op: "snapshot", name: "saved" });
           await call(provider, {
             op: "write",
@@ -525,11 +525,11 @@ test("computer egress: git clone and push through the runtime's credential gatew
   assert.deepEqual(exchanges[0].claims.exchange, { server: "computer:github.com", url: "https://github.com" });
   assert.equal(exchanges[0].claims.aud, `${exchange.origin}/token`);
 
-  // The machine never holds the credential, and no other host is reachable.
+  // The machine never holds the credential, and hosts without a grant are reached directly.
   const hygiene = await sh(lead.id, `env; cat /workspace/app/.git/config; cat ~/.git-credentials 2>/dev/null; grep -rIl ${TOKEN} /workspace /root /tmp /etc 2>/dev/null; true`);
   assert.equal(hygiene.stdout.includes(TOKEN) || hygiene.stdout.includes(BASIC.slice(6)), false);
-  const blocked = await sh(lead.id, "curl -sS -m 5 https://example.com/ >/dev/null && echo reachable || echo blocked");
-  assert.match(blocked.stdout, /blocked/);
+  const direct = await sh(lead.id, "curl -sS -m 10 https://example.com/ >/dev/null && echo reachable || echo blocked");
+  assert.match(direct.stdout, /reachable/);
 
   // The project machine: snapshot it for children to fork.
   const backup = performance.now();

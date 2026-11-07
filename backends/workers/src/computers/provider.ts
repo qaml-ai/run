@@ -1,5 +1,5 @@
 import { workspacePath } from "../validation.ts";
-import { COMPUTER_LIMITS, EGRESS_ENV, RESOLVER_COMMAND, TRUST_COMMAND, type EgressGrant } from "./egress.ts";
+import { COMPUTER_LIMITS, EGRESS_ENV, TRUST_COMMAND, type EgressGrant } from "./egress.ts";
 import { boundedStart, FORK_LIMITS } from "../../../../src/core/computer-fork.ts";
 import type { NativeForkAnswer, NativeForkOrigin, NativeForkedFrom } from "./native-fork.ts";
 
@@ -278,7 +278,7 @@ export class ContainerProvider implements ComputerProvider {
     await this.store.put(IDLE_KEY, { at });
     await this.wake?.(at);
   }
-  /** Starts the container with the Internet off, each granted host intercepted into its gateway. */
+  /** Starts the container with the Internet on, each granted host intercepted into its gateway. */
   protected async boot(from: { image: string } | { containerSnapshot: { id: string } }) {
     const egress = this.network.egress;
     // Metered from before start(): a DO that dies in between leaves a session, not an unmetered container.
@@ -286,7 +286,7 @@ export class ContainerProvider implements ComputerProvider {
     this.container.start({
       ...from,
       instance: this.spec.instance,
-      enableInternet: false,
+      enableInternet: true,
       ...(egress.length ? { env: EGRESS_ENV } : {}),
     } as ContainerStartupOptions);
     await this.container.setInactivityTimeout(this.containerTimeout);
@@ -369,9 +369,8 @@ export class ContainerProvider implements ComputerProvider {
    * Unread output pipes would hold the process open (update-ca-certificates warns on stderr), so they are ignored.
    */
   protected async trust() {
-    // Every start: lookups of unreachable names fail fast (RESOLVER_COMMAND), and with grants, the CA is trusted.
-    const command = this.network.egress.length ? `${RESOLVER_COMMAND}; ${TRUST_COMMAND}` : RESOLVER_COMMAND;
-    const trust = await this.container.exec(["sh", "-c", command], { signal: AbortSignal.timeout(30_000), stdout: "ignore", stderr: "ignore" });
+    if (!this.network.egress.length) return;
+    const trust = await this.container.exec(["sh", "-c", TRUST_COMMAND], { signal: AbortSignal.timeout(30_000), stdout: "ignore", stderr: "ignore" });
     if (await trust.exitCode) throw new Error("Computer could not trust the egress certificate authority");
   }
   /** This deployment's digest-pinned reference for the spec's image. */

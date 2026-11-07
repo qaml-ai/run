@@ -5,7 +5,6 @@ import {
   egressDescription,
   forwardEgress,
   CONTAINER_CA,
-  RESOLVER_COMMAND,
   type EgressGrant,
 } from "../src/computers/egress.ts";
 import { ContainerProvider, operate, type ComputerNetwork } from "../src/computers/provider.ts";
@@ -79,11 +78,11 @@ test("a github-app grant's token is dropped only when GitHub answers 401: a 403 
   assert.match((await failed.json() as { error: string }).error, /camelRun egress credential for github\.com: GitHub App code is not one of this tenant's/);
 });
 
-test("the tool tells the model which hosts it reaches and that the runtime authenticates them", () => {
-  assert.equal(egressDescription(undefined), "No Internet access.");
+test("the tool tells the model it has the Internet and which hosts the runtime authenticates", () => {
+  assert.equal(egressDescription(undefined), "Internet access.");
   const text = egressDescription({ egress: [{ host: "github.com", auth: exchange, scheme: "basic" }, { host: "registry.npmjs.org" }] });
-  assert.match(text, /HTTPS access only to github\.com, registry\.npmjs\.org/);
-  assert.match(text, /Requests to github\.com are authenticated by the runtime/);
+  assert.match(text, /^Internet access\. Requests to github\.com are authenticated by the runtime/);
+  assert.doesNotMatch(text, /registry\.npmjs\.org/);
 });
 
 function upstream(statuses: number[] = [200]) {
@@ -185,18 +184,16 @@ function container() {
   };
 }
 
-test("a computer with grants starts offline, intercepts each granted host and trusts the interception CA", async () => {
+test("a computer with grants starts online, intercepts each granted host and trusts the interception CA", async () => {
   const { calls, box, store } = container();
   const gateway = {} as Fetcher;
   const network: ComputerNetwork = { key: "k1", egress: [{ grant: { host: "github.com" }, gateway }, { grant: { host: "registry.npmjs.org" }, gateway }], idleMs: 900_000 };
   await operate(new ContainerProvider(box as never, store, undefined, Date.now, network), { op: "exec", argv: ["true"] });
   const start = calls.find(call => call[0] === "start")![1] as { enableInternet: boolean; env: Record<string, string> };
-  assert.equal(start.enableInternet, false);
+  assert.equal(start.enableInternet, true);
   assert.equal(start.env.NODE_EXTRA_CA_CERTS, CONTAINER_CA);
   assert.deepEqual(calls.filter(call => call[0] === "intercept").map(call => call[1]), ["github.com", "registry.npmjs.org"]);
   assert.ok(calls.some(call => call[0] === "exec" && (call[1] as string[]).join(" ").includes("update-ca-certificates")));
-  // Names nothing answers fail in seconds, not the resolver's default 28 s.
-  assert.ok(calls.some(call => call[0] === "exec" && (call[1] as string[]).join(" ").includes(RESOLVER_COMMAND)));
   assert.deepEqual(calls.find(call => call[0] === "idle"), ["idle", 900_000]);
   // exec does not inherit start()'s env: the model's command gets the CA trust (npm failed SELF_SIGNED_CERT_IN_CHAIN).
   const command = calls.filter(call => call[0] === "exec").at(-1)!;
@@ -212,14 +209,14 @@ test("a computer with grants starts offline, intercepts each granted host and tr
   assert.deepEqual(calls.filter(call => ["destroy", "start", "intercept"].includes(call[0] as string)).map(call => call[0] === "intercept" ? call[1] : call[0]), ["destroy", "start", "github.com"]);
 });
 
-test("a computer without grants keeps the original offline start", async () => {
+test("a computer without grants starts online and trusts no CA", async () => {
   const { calls, box, store } = container();
   await operate(new ContainerProvider(box as never, store), { op: "exec", argv: ["true"] });
   const start = calls.find(call => call[0] === "start")![1] as Record<string, unknown>;
-  assert.deepEqual(start, { image: "img", instance: "lite", enableInternet: false });
+  assert.deepEqual(start, { image: "img", instance: "lite", enableInternet: true });
   assert.deepEqual(calls.find(call => call[0] === "exec")![1], ["mkdir", "-p", "/workspace"]);
-  // Without grants every lookup is unanswered: it fails fast, and no CA is trusted.
-  assert.deepEqual(calls.filter(call => call[0] === "exec")[1][1], ["sh", "-c", RESOLVER_COMMAND]);
+  // Without grants nothing is intercepted, so no CA is trusted.
+  assert.equal(calls.some(call => call[0] === "exec" && (call[1] as string[]).join(" ").includes("update-ca-certificates")), false);
   assert.deepEqual(calls.find(call => call[0] === "idle"), ["idle", 60_000]);
   assert.equal(calls.filter(call => call[0] === "exec").at(-1)![2], undefined, "no grants, no CA environment");
 });
@@ -234,7 +231,7 @@ test("a forked child boots from the parent's snapshot (its seed), with this comp
   assert.equal(result.computer.restoredFrom, "fork");
   const start = calls.find(call => call[0] === "start")![1] as Record<string, unknown>;
   assert.deepEqual(start.containerSnapshot, { id: "parent-snap" });
-  assert.equal(start.enableInternet, false);
+  assert.equal(start.enableInternet, true);
   assert.deepEqual(calls.filter(call => call[0] === "intercept").map(call => call[1]), ["github.com"]);
   // The snapshot's machine trusted its own CA; this machine's is trusted again.
   assert.ok(calls.some(call => call[0] === "exec" && (call[1] as string[]).join(" ").includes("update-ca-certificates")));
