@@ -571,6 +571,8 @@ export class ContainerProvider implements ComputerProvider {
   async forkSnapshot(batch: string, signal: AbortSignal): Promise<NativeForkAnswer> {
     const key = `${FORK_PREFIX}${batch}`, existing = await this.store.get<ForkEntry | null>(key);
     if (existing) return { ok: true, snapshot: existing.snapshot };
+    // A start or restore still coming up: its disk is not all there yet.
+    if (await this.store.get<StartPlan | null>(STARTING_KEY)) return { ok: false, code: "COMPUTER_STARTING", message: "This agent's computer is still starting; fork again in a few seconds." };
     await this.dropStale();
     let snapshot: ComputerSnapshot | undefined;
     if (this.container.running) snapshot = await this.snapshot(`fork-${await hex(batch)}`, signal);
@@ -596,14 +598,15 @@ export class ContainerProvider implements ComputerProvider {
     const key = `${FORK_PREFIX}${batch}`, entry = await this.store.get<ForkEntry | null>(key);
     if (!entry) return;
     const children = entry.children.filter((each) => each !== child);
-    if (entry.adopted && !children.length) await this.drop(batch, entry);
+    // Within the grace a sibling of the same call may still be seeding from it: dropStale drops it later.
+    if (entry.adopted && !children.length && entry.at + FORK_LIMITS.dropGraceMs <= this.now()) await this.drop(batch, entry);
     else await this.store.put<ForkEntry>(key, { ...entry, children });
   }
   /** Batches whose snapshot no child adopted within the grace (a child that was never made). */
   async dropStale() {
     if (!this.store.list) return;
     for (const [key, entry] of await this.store.list<ForkEntry | null>({ prefix: FORK_PREFIX }))
-      if (entry && !entry.adopted && entry.at + FORK_LIMITS.dropGraceMs <= this.now()) await this.drop(key.slice(FORK_PREFIX.length), entry);
+      if (entry && !entry.children.length && entry.at + FORK_LIMITS.dropGraceMs <= this.now()) await this.drop(key.slice(FORK_PREFIX.length), entry);
   }
   /**
    * Forget a batch's snapshot. Cloudflare has no Worker API to delete a snapshot (it expires 30 days after its last
@@ -632,6 +635,10 @@ export class ContainerProvider implements ComputerProvider {
     await this.store.put(STARTING_KEY, null);
     await this.store.put(BASE_KEY, { ...snapshot, kind: "fork", restores: 0 } satisfies ComputerBase);
     await this.store.put<NativeForkedFrom>(FORKED_FROM_KEY, { ...origin, snapshot: snapshot.id });
+  }
+  /** Whether this computer has a disk of its own: running, or saved as its base. A fork route never overwrites one. */
+  async hasDisk() {
+    return this.container.running || !!(await this.store.get<ComputerBase | null>(BASE_KEY));
   }
   async forkedFrom() {
     return (await this.store.get<NativeForkedFrom | null>(FORKED_FROM_KEY)) ?? null;

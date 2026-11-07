@@ -9,7 +9,7 @@ export type Credentials = Record<string, string>;
 export type Reference = { id: string; [key: string]: unknown };
 /** What a driver does on its provider's machines. With `snapshot`, they can be forked: `create` then takes `{ from }`, a snapshot it took. */
 export interface ComputerDriver extends ForkDriver<Reference> {
-  create(id: string, seconds: number, allocated?: (ref: Reference) => Promise<void>, options?: { from?: SnapshotRef }): Promise<Reference>;
+  create(id: string, seconds: number, allocated?: (ref: Reference) => Promise<void>, options?: { from?: SnapshotRef; forkable?: boolean }): Promise<Reference>;
   call(ref: Reference, operation: string, args: Record<string, any>): Promise<unknown>;
   close(ref: Reference): Promise<void>;
   dispose?(): void | Promise<void>;

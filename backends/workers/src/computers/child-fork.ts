@@ -1,5 +1,5 @@
 import { HttpError } from "../errors.ts";
-import { noSession } from "../../../../src/core/computer-fork.ts";
+import { computerStarting, FORK_LIMITS, noSession } from "../../../../src/core/computer-fork.ts";
 import type { ChildComputerFork } from "../delegation.ts";
 import type { OperateSetup } from "./objects.ts";
 import { ComputerService, inheritComputer, type ComputerEnv } from "./service.ts";
@@ -24,7 +24,7 @@ export async function forkChildComputers(env: Env, tenant: string, parent: strin
     const name = nativeComputer(env, parent);
     const answer = await env.COMPUTER_CONTAINERS.getByName(name).forkSnapshot(batch, await setup());
     if (answer.ok) native = { snapshot: answer.snapshot, origin: { parent: name, agent: parent, batch, at: Date.now() } };
-    else if (answer.code === "COMPUTER_STARTING") throw new HttpError(503, answer.message, "COMPUTER_STARTING");
+    else if (answer.code === "COMPUTER_STARTING") throw computerStarting(Math.round(FORK_LIMITS.startWaitMs * FORK_LIMITS.startAttempts / 1000));
   }
   if (!connection && !native) throw missing ?? noSession();
   return { ...connection ? { connection } : {}, ...native ? { native } : {} };
@@ -38,6 +38,9 @@ export async function forkComputerInto(env: Env & { AGENTS: { getByName(name: st
   const service = new ComputerService(env, tenant);
   if (options.connectionOnly && !(await service.hasConnection(source))) throw new HttpError(404, "Unknown computer connection");
   await service.forkTargets(source, agents);
+  // A target's own native disk is never overwritten: a fork goes only to computers that have none yet.
+  if (!options.connectionOnly && env.COMPUTER_CONTAINERS) for (const agent of agents)
+    if (await env.COMPUTER_CONTAINERS.getByName(nativeComputer(env, agent)).hasDisk()) throw new HttpError(409, `Agent ${agent} already has files on its computer; fork into an agent whose computer has not been used`);
   let fork: ChildComputerFork;
   if (options.connectionOnly) {
     const taken = await options.serialize(() => service.forkSnapshot(source, `api:${crypto.randomUUID()}`));
@@ -46,7 +49,7 @@ export async function forkComputerInto(env: Env & { AGENTS: { getByName(name: st
   } else fork = await forkChildComputers(env, tenant, source, `api:${crypto.randomUUID()}`, options.setup, options.serialize);
   const forks = fork.connection ? await service.forkInto(source, { id: fork.connection.seed, connection: fork.connection.connection!, provider: fork.connection.provider!, at: fork.connection.at! }, agents) : [];
   for (const agent of agents) {
-    if (fork.native && env.COMPUTER_CONTAINERS) await env.COMPUTER_CONTAINERS.getByName(nativeComputer(env, agent)).seed(fork.native.snapshot, fork.native.origin);
+    if (fork.native && env.COMPUTER_CONTAINERS) await seedNative(env, agent, fork.native);
     // An agent that has run already gets its new computer tools at its next turn.
     if (fork.connection) await env.AGENTS.getByName(agent).fetch(new Request("https://computer.internal/__computer", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tenant, operation: "refresh" }) })).then(response => response.body?.cancel());
   }
@@ -56,11 +59,17 @@ export async function forkComputerInto(env: Env & { AGENTS: { getByName(name: st
   return { snapshot, forks, ...fork.native ? { native: { snapshot: fork.native.snapshot.id, agents } } : {} };
 }
 
+/** Seed an agent's native computer from a fork; a snapshot it refuses (expired, another image) is a 409 to fork again. */
+async function seedNative(env: Env, agent: string, native: NonNullable<ChildComputerFork["native"]>) {
+  try { await env.COMPUTER_CONTAINERS!.getByName(nativeComputer(env, agent)).seed(native.snapshot, native.origin); }
+  catch (error) { throw new HttpError(409, `The fork could not start this computer: ${error instanceof Error ? error.message.slice(0, 200) : "its snapshot was refused"}`); }
+}
+
 /** Give a child just made the computers its call chose: a fork's seeds, none, or (undefined) a fresh copy of the parent's connection. */
 export async function attachChildComputers(env: Env, tenant: string, parent: string, child: string, computer?: "none" | ChildComputerFork) {
   if (computer === "none") return;
   await inheritComputer(env, tenant, parent, child, undefined, computer?.connection);
-  if (computer?.native && env.COMPUTER_CONTAINERS) await env.COMPUTER_CONTAINERS.getByName(nativeComputer(env, child)).seed(computer.native.snapshot, computer.native.origin);
+  if (computer?.native && env.COMPUTER_CONTAINERS) await seedNative(env, child, computer.native);
 }
 
 /**

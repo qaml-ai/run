@@ -74,8 +74,6 @@ export async function delegate(ctx: DelegationContext, session: Session, setting
     let agent = made ? ctx.agentId(tenant, key) : await agentByKey(ctx, tenant, target!.agent!);
     if (!agent) throw new Error(`The agent ${target!.name} does not exist`);
     if (chain.includes(agent)) throw new Error(`${target!.name} is already working on this task's chain: delegating to it would wait on itself`);
-    // Before the child's row: a fork that cannot be taken fails the call with nothing made.
-    const computer = await childComputer(ctx, session, run, call, made);
     // The child's row first, kept when the call is made again: an abort that reads the rows after this finds the child.
     const now = Date.now();
     await underClaim(ctx.db, session.claim, sql => sql.query(`insert into agent_children (id, tenant, parent, child, request_id, name, depth, root, parent_run, tool_call_id, kind, made, checked_at, created_at, updated_at)
@@ -85,7 +83,14 @@ export async function delegate(ctx: DelegationContext, session: Session, setting
     if (session.aborted?.has(run.id)) throw new Error("The run was aborted");
     // Made again (a resumed turn): the same child and request, with the answer it has or will have.
     let record = await requestOf(ctx, agent, tenant, requestId, 0, call.signal).catch(error => { if ((error as HttpError).status === 404) return undefined; throw error; });
-    if (!record && made) agent = await makeChild(ctx, session, run, target, key, toolCallId, depth, computer);
+    if (!record && made) {
+      // Only when the child is made: a replay whose child exists takes no new snapshot. A fork that cannot be taken fails
+      // the call, and its row, with nothing made.
+      let computer: Awaited<ReturnType<typeof childComputer>>;
+      try { computer = await childComputer(ctx, session, run, call, made); }
+      catch (error) { await landDelegate(ctx, requestId, "failed", "call").catch(() => {}); throw error; }
+      agent = await makeChild(ctx, session, run, target, key, toolCallId, depth, computer);
+    }
     child = { agent, requestId, made };
     (session.children ??= new Map()).set(call.innerCallId ? `${toolCallId}/${call.innerCallId}` : toolCallId, child);
     const at = { toolCallId, agentId: agent, requestId };
@@ -120,8 +125,6 @@ export async function delegate(ctx: DelegationContext, session: Session, setting
     // its ending first (`stopDelegates`). A call made again on a new node charges again, as the first node's count was lost with it.
     const landed = await landDelegate(ctx, requestId, finished.status ?? "failed", "call").catch(() => ({ won: true, by: "call" }));
     if (landed.won || landed.by === "call") chargeDelegate(ctx, session, run.id, finished);
-    // The child answered: its computer (keyed by the child) stops, so it bills nothing more.
-    if (made) void ctx.options.computers?.release(tenant, agent);
     const result = (finished.outcome?.result ?? {}) as { reply?: string; output?: unknown };
     const status = finished.status ?? "failed";
     end(status, finished.error);
@@ -131,6 +134,8 @@ export async function delegate(ctx: DelegationContext, session: Session, setting
     };
     return { ...jsonResult(value), ...(status === "completed" ? {} : { isError: true }) };
   } finally {
+    // The child ended (answered, or refused before it ran): its computer, keyed by the child, stops, so it bills nothing more.
+    if (child?.made && child.done) void ctx.options.computers?.release(tenant, child.agent);
     untap?.();
     // A lost owner leaves the child for replay. A script ending stops only this nested call's child, and so does its
     // agent's process dying: that turn ends there (no replay goes on with the script), so a child left would run unread.

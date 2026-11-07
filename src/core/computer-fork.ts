@@ -58,6 +58,19 @@ export const canFork = (driver: { snapshot?: unknown }) => typeof driver.snapsho
 /** 409: this provider cannot copy a machine's disk. The caller can ask for a fresh computer instead. */
 export const forkUnsupported = (provider: string) =>
   new HttpError(409, `This agent's ${provider} computer cannot be forked. Nothing was created. Use computer: "fresh" for a new, empty computer, or "none".`, "FORK_UNSUPPORTED", { provider });
+/** Providers whose own-key connections can fork (their drivers snapshot); managed computers fork where their provider does. */
+export const FORKABLE_PROVIDERS = Object.freeze(["boat", "container"]);
+export const forkableProvider = (provider: string) => FORKABLE_PROVIDERS.includes(provider);
+/** Whether a connection's machines are made so they can be snapshotted: managed by default, own-key when it opts in. */
+export const connectionForkable = (row: { forkable?: boolean | null; managed?: boolean }) => row.forkable ?? !!row.managed;
+/** 409: a connection made without `forkable` (a provider account's own Boat machines take no snapshots unless asked). */
+export const notForkable = (provider: string) =>
+  new HttpError(409, `This agent's ${provider} computer was connected without forkable, so its machines cannot be snapshotted. Nothing was created. Its owner can reconnect it with "forkable": true, or use computer: "fresh".`, "FORK_UNSUPPORTED", { provider, reason: "not_forkable" });
+/** A provider's refusal or failure to snapshot: a machine made before its connection was forkable can't be, the rest is a 502. */
+export const snapshotFailed = (provider: string, error: unknown) => (error as { status?: unknown })?.status === 409
+  ? new HttpError(409, `This ${provider} machine was started before its connection could fork. Stop it (computer_stop) and start it again, then fork.`, "FORK_UNSUPPORTED", { provider, reason: "machine_not_forkable" })
+  : error instanceof HttpError ? error : new HttpError(502, "The computer's disk could not be snapshotted, so nothing was forked. Try again; if it keeps failing, use a fresh computer.");
+
 /** 409: there is no machine to copy: the parent's computer has not started, or its session ended. */
 export const noSession = () =>
   new HttpError(409, 'This agent\'s computer has no running session to fork: start it first (computer_start, or any computer operation), or use computer: "fresh".', "NO_SESSION");
@@ -118,39 +131,86 @@ export async function boundedStart<T>(attempt: (signal: AbortSignal, index: numb
 }
 
 /** A fork snapshot's row (`computer_snapshots`): what both backends keep so N children share one and the last one drops it. */
-export type SnapshotRow = { id: string; tenant: string; connection: string; agent: string; batch: string; provider: string; reference: string; created_at: string | number; dropped_at: string | number | null };
+export type SnapshotRow = { id: string; tenant: string; connection: string; agent: string; batch: string; provider: string; reference: string; state: "taking" | "ready"; created_at: string | number; dropped_at: string | number | null; attempts: number };
+
+/** How long a 'taking' row may wait for its snapshot before it counts as abandoned (its taker died), and drop retries. */
+export const SNAPSHOT_ROWS = Object.freeze({ takingMs: 10 * 60_000, pollMs: 500, dropAttempts: 10, backoffMs: (attempts: number) => Math.min(6 * 3_600_000, 60_000 * 2 ** attempts) });
 
 /**
  * The fork bookkeeping both backends share. `reference` is sealed by the host (it holds the snapshot and the
- * credentials to drop it), so these rows never hold a provider secret in the clear.
+ * credentials to drop it), so these rows never hold a provider secret in the clear. One call per batch wins the row
+ * (`claim`) and takes the snapshot with no database connection held; the others wait for it (`waitReady`).
  */
 export const forkRows = {
-  /** The open snapshot a call already took of this connection. */
+  /** The open snapshot a call already took (or is taking) of this connection. */
   async batch(sql: Sql, connection: string, batch: string): Promise<SnapshotRow | undefined> {
     return (await sql.query("select * from computer_snapshots where connection=$1 and batch=$2 and dropped_at is null", [connection, batch])).rows[0];
   },
-  async insert(sql: Sql, row: Omit<SnapshotRow, "dropped_at">) {
-    await sql.query("insert into computer_snapshots(id,tenant,connection,agent,batch,provider,reference,created_at) values($1,$2,$3,$4,$5,$6,$7,$8)",
-      [row.id, row.tenant, row.connection, row.agent, row.batch, row.provider, row.reference, row.created_at]);
+  /** Win the batch's row (state 'taking'), or answer the row another call won: `{ row, won }`. */
+  async claim(sql: Sql, row: { id: string; tenant: string; connection: string; agent: string; batch: string; provider: string; created_at: number }): Promise<{ row: SnapshotRow; won: boolean }> {
+    const won = (await sql.query(`insert into computer_snapshots(id,tenant,connection,agent,batch,provider,reference,state,created_at) values($1,$2,$3,$4,$5,$6,'{}','taking',$7)
+      on conflict (connection, batch) where dropped_at is null do nothing returning *`, [row.id, row.tenant, row.connection, row.agent, row.batch, row.provider, row.created_at])).rows[0];
+    if (won) return { row: won, won: true };
+    const existing = await forkRows.batch(sql, row.connection, row.batch);
+    if (!existing) throw new Error("Computer snapshot row vanished");
+    return { row: existing, won: false };
+  },
+  async ready(sql: Sql, id: string, reference: string) {
+    await sql.query("update computer_snapshots set state='ready',reference=$2 where id=$1 and state='taking'", [id, reference]);
+  },
+  /** The winner could not take the snapshot: its row goes, so the call can be made again. */
+  async abandon(sql: Sql, id: string) {
+    await sql.query("delete from computer_snapshots where id=$1 and state='taking'", [id]);
+  },
+  /** Wait for another call's snapshot of the batch, polling with no connection held between polls. */
+  async waitReady(query: (work: (sql: Sql) => Promise<SnapshotRow | undefined>) => Promise<SnapshotRow | undefined>, id: string, now: () => number, sleep: (ms: number) => Promise<void>): Promise<SnapshotRow | undefined> {
+    for (;;) {
+      const row = await query(sql => forkRows.get(sql, id));
+      if (!row || row.dropped_at !== null) return undefined;
+      if (row.state === "ready") return row;
+      if (Number(row.created_at) + SNAPSHOT_ROWS.takingMs <= now()) return undefined;
+      await sleep(SNAPSHOT_ROWS.pollMs);
+    }
   },
   async get(sql: Sql, id: string): Promise<SnapshotRow | undefined> {
     return (await sql.query("select * from computer_snapshots where id=$1", [id])).rows[0];
   },
-  /** Open snapshots no connection still starts from, taken before `before`: the ones to drop. */
-  async unused(sql: Sql, before: number, limit = 50): Promise<SnapshotRow[]> {
-    return (await sql.query(`select s.* from computer_snapshots s where s.dropped_at is null and s.created_at <= $1
-      and not exists (select 1 from computer_connections c where c.seed = s.id and c.agent not like 'removed:%') order by s.created_at limit $2`, [before, limit])).rows;
+  /** The seed a child attaches to, locked against a drop until its transaction ends; undefined when it is gone. */
+  async attachable(sql: Sql, id: string, tenant: string): Promise<SnapshotRow | undefined> {
+    const row = (await sql.query("select * from computer_snapshots where id=$1 for share", [id])).rows[0];
+    return row && row.dropped_at === null && row.state === "ready" && row.tenant === tenant ? row : undefined;
   },
-  /** The snapshot a removed connection started from, if no other connection still does. */
-  async orphaned(sql: Sql, seed: string): Promise<SnapshotRow | undefined> {
-    return (await sql.query(`select s.* from computer_snapshots s where s.id=$1 and s.dropped_at is null
-      and not exists (select 1 from computer_connections c where c.seed = s.id and c.agent not like 'removed:%')`, [seed])).rows[0];
+  /** Open snapshots no connection still starts from, taken before `before` and due: the ones to drop. 'taking' rows past their wait are cleared. */
+  async unused(sql: Sql, before: number, now: number, limit = 50): Promise<SnapshotRow[]> {
+    await sql.query("delete from computer_snapshots where state='taking' and created_at <= $1", [now - SNAPSHOT_ROWS.takingMs]);
+    return (await sql.query(`select s.* from computer_snapshots s where s.dropped_at is null and s.state='ready' and s.created_at <= $1 and s.next_attempt_at <= $2
+      and not exists (select 1 from computer_connections c where c.seed = s.id and c.agent not like 'removed:%') order by s.next_attempt_at, s.created_at limit $3`, [before, now, limit])).rows;
+  },
+  /** Every open snapshot of a tenant, for its deletion: dropped whatever their children or grace. */
+  async ofTenant(sql: Sql, tenant: string): Promise<SnapshotRow[]> {
+    return (await sql.query("select * from computer_snapshots where tenant=$1 and dropped_at is null and state='ready'", [tenant])).rows;
+  },
+  /** The snapshot a removed connection started from, if no other connection still does and its call's siblings had time to attach. */
+  async orphaned(sql: Sql, seed: string, before: number): Promise<SnapshotRow | undefined> {
+    return (await sql.query(`select s.* from computer_snapshots s where s.id=$1 and s.dropped_at is null and s.state='ready' and s.created_at <= $2
+      and not exists (select 1 from computer_connections c where c.seed = s.id and c.agent not like 'removed:%')`, [seed, before])).rows[0];
+  },
+  /** Lock a snapshot for its drop and check, under the lock, that nothing started from it meanwhile (`force`: account deletion). */
+  async lockForDrop(sql: Sql, id: string, force = false): Promise<SnapshotRow | undefined> {
+    const row = (await sql.query("select * from computer_snapshots where id=$1 and dropped_at is null for update", [id])).rows[0];
+    if (!row || force) return row;
+    return (await sql.query("select 1 from computer_connections where seed=$1 and agent not like 'removed:%' limit 1", [id])).rowCount ? undefined : row;
   },
   async dropped(sql: Sql, id: string, at: number, error?: string) {
     await sql.query("update computer_snapshots set dropped_at=$2,reference=$3,error=$4 where id=$1 and dropped_at is null", [id, at, "{}", error ?? null]);
   },
-  async failed(sql: Sql, id: string, error: string) {
-    await sql.query("update computer_snapshots set error=$2 where id=$1", [id, error.slice(0, 500)]);
+  /** A drop failed: try again later, backing off; past the last attempt the row is given up (the caller logs it). Answers whether it gave up. */
+  async failed(sql: Sql, id: string, error: string, now: number): Promise<boolean> {
+    const row = (await sql.query("update computer_snapshots set attempts=attempts+1,error=$2 where id=$1 and dropped_at is null returning attempts", [id, error.slice(0, 500)])).rows[0];
+    if (!row) return false;
+    if (row.attempts >= SNAPSHOT_ROWS.dropAttempts) { await forkRows.dropped(sql, id, now, `gave up: ${error.slice(0, 480)}`); return true; }
+    await sql.query("update computer_snapshots set next_attempt_at=$2 where id=$1", [id, now + SNAPSHOT_ROWS.backoffMs(row.attempts)]);
+    return false;
   },
 };
 

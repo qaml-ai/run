@@ -6,7 +6,7 @@ import { makeChild, type DelegationContext } from "../src/client-sessions/delega
 import { HttpError } from "../src/http.ts";
 import { Outbound } from "../src/outbound.ts";
 import { boundedStart, computerChoice, forkBatch, forkTargets, FORK_LIMITS } from "../src/core/computer-fork.ts";
-import { family, fixture } from "./computers-fixture.ts";
+import { family, fixture, HOUR } from "./computers-fixture.ts";
 import { fakeBoatServer } from "./fake-boat.ts";
 
 const exec = (service: Computers, agent: string, command: string, key = `${agent}-${command}`) => service.call("payg", agent, "computer_exec", { command }, key) as Promise<{ exitCode: number; stdout: string }>;
@@ -35,9 +35,9 @@ test("a managed Boat fork copies the parent's disk; each fork's writes stay its 
   assert.equal((await exec(f.service, "a", "get mine", "a-mine")).exitCode, 1);
   // Each fork is its own managed session, billed as any.
   assert.equal((await f.db.query("select count(*)::int as n from managed_computers where agent in ('c1','c2') and machine is not null")).rows[0].n, 2);
-  // The snapshot goes with the last connection that starts from it.
+  // The snapshot goes with the last connection that starts from it, once siblings of its call had time to attach.
   await f.service.removeAgent("payg", "c1");
-  assert.deepEqual(f.state.dropped, []);
+  f.advance(FORK_LIMITS.dropGraceMs + 1);
   await f.service.removeAgent("payg", "c2");
   assert.deepEqual(f.state.dropped, [f.state.taken[0]]);
   assert.ok((await f.db.query("select dropped_at from computer_snapshots where id=$1", [forked.snapshot.id])).rows[0].dropped_at);
@@ -51,14 +51,28 @@ test("one call's children share its snapshot, a new call takes a new one, and a 
   const first = await f.service.forkSnapshot("payg", "a", forkBatch("run", 3, "call_1"));
   const again = await f.service.forkSnapshot("payg", "a", forkBatch("run", 3, "call_2"));
   assert.equal(again.id, first.id, "calls of one response share it");
+  // Siblings of one response made at once: one wins the batch's row and takes the snapshot, the others wait for it.
+  const together = await Promise.all([1, 2, 3, 4].map(n => f.service.forkSnapshot("payg", "a", forkBatch("run", 4, `call_${n}`))));
+  assert.equal(new Set(together.map(snapshot => snapshot.id)).size, 1);
   const later = await f.service.forkSnapshot("payg", "a", forkBatch("run", 5, "call_3"));
   assert.notEqual(later.id, first.id);
-  assert.equal(f.state.taken.length, 2);
+  assert.equal(f.state.taken.length, 3);
   await f.service.sweep();
   assert.deepEqual(f.state.dropped, [], "kept through the grace, while siblings may still attach");
   f.advance(FORK_LIMITS.dropGraceMs + 1);
   await f.service.sweep();
-  assert.equal(f.state.dropped.length, 2);
+  assert.equal(f.state.dropped.length, 3);
+  // A drop that keeps failing backs off and is given up after its last attempt, so it never blocks newer ones.
+  const stuck = await f.service.forkSnapshot("payg", "a", forkBatch("run", 6, "call_4"));
+  f.advance(FORK_LIMITS.dropGraceMs + 1);
+  const drop = f.service.managed.dropSnapshot;
+  f.service.managed.dropSnapshot = async () => { throw new Error("provider down"); };
+  for (let attempt = 0; attempt < 10; attempt++) { await f.service.sweep(); f.advance(6 * HOUR + 1); }
+  f.service.managed.dropSnapshot = drop;
+  const row = (await f.db.query("select dropped_at, attempts, error from computer_snapshots where id=$1", [stuck.id])).rows[0];
+  assert.ok(row.dropped_at);
+  assert.equal(row.attempts, 10);
+  assert.match(row.error, /^gave up/);
   f.done();
 });
 
@@ -106,7 +120,8 @@ test("bring-your-own Boat forks through saved snapshots on the provider account"
   const f = await fixture();
   const outbound = new Outbound({ allowHttp: true, allow: ["127.0.0.1/32"] });
   const service = new Computers({ db: f.db, accounts: f.accounts, outbound, enabled: true, runtime: "https://run.test", boatUrl: boat.url });
-  await service.create("payg", { agent: "a", provider: "boat", credentials: { apiKey: "byo-key" }, leaseSeconds: 600, dailySeconds: 3600 });
+  // Its own Boat account takes snapshots only when the connection asks to be forkable.
+  await service.create("payg", { agent: "a", provider: "boat", credentials: { apiKey: "byo-key" }, leaseSeconds: 600, dailySeconds: 3600, forkable: true });
   await service.call("payg", "a", "computer_start", {}, "start-a");
   assert.equal((await exec(service, "a", "echo parent > notes.txt && mkdir -p src && echo built > src/out")).exitCode, 0);
   const forked = await service.forkInto("payg", { agent: "a" }, ["b"]);
@@ -118,9 +133,15 @@ test("bring-your-own Boat forks through saved snapshots on the provider account"
   assert.equal((await exec(service, "a", "cat notes.txt", "a-read")).stdout, "parent\n");
   assert.deepEqual([...boat.state.keys], ["byo-key"], "the provider account's key, and only it");
   await service.removeAgent("payg", "b");
-  assert.deepEqual(boat.state.dropped, [`camelrun-${forked.snapshot.id}`]);
-  await service.removeAgent("payg", "a");
+  assert.deepEqual(boat.state.dropped, [], "kept through the grace");
+  await service.removeTenant("payg");
+  assert.deepEqual(boat.state.dropped, [`camelrun-${forked.snapshot.id}`], "an account deletion drops it whatever the grace");
   assert.equal(boat.state.sandboxes.size, 0);
+  // Without forkable, an own Boat account's machines take no snapshots, and a fork says how to turn it on.
+  await service.create("payg", { agent: "a", provider: "boat", credentials: { apiKey: "byo-key" }, leaseSeconds: 600, dailySeconds: 3600 });
+  await service.call("payg", "a", "computer_start", {}, "start-plain");
+  await assert.rejects(service.forkSnapshot("payg", "a", "plain"), (error: HttpError) => error.code === "FORK_UNSUPPORTED" && error.details?.reason === "not_forkable");
+  await service.removeTenant("payg");
   f.done();
 });
 

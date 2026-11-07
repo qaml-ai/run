@@ -15,7 +15,7 @@ import type { ToolContext } from "../volume-tools.ts";
 import { Workspaces } from "../workspaces.ts";
 import { machineSetup, signatures } from "./abuse.ts";
 import { BOAT_API, boatSnapshots, bounded, output, quote } from "./providers.ts";
-import { forkUnsupported, noSession, type ForkDriver, type SnapshotRef } from "../core/computer-fork.ts";
+import { connectionForkable, forkUnsupported, noSession, snapshotFailed, type ForkDriver, type SnapshotRef } from "../core/computer-fork.ts";
 
 /** Managed computers share durable ownership, holds, metering and operator controls.
  * Boat reports cumulative cost; Lambda records observed state intervals in the same row.
@@ -53,7 +53,7 @@ export class BoatRefused extends Error {
 }
 /** A provider's managed machines. With `snapshot`, they can be forked: `create` then takes `{ from }`, a snapshot it took. */
 export interface ManagedMachines extends ForkDriver<string> {
-  create(computer: string, tenant: string, ttlSeconds: number, options?: { from?: SnapshotRef }): Promise<{ id: string }>;
+  create(computer: string, tenant: string, ttlSeconds: number, options?: { from?: SnapshotRef; forkable?: boolean }): Promise<{ id: string }>;
   extend(machine: string, ttlSeconds: number): Promise<void>;
   remove(machine: string): Promise<void>;
   /** The machines of this runtime on this account, what they cost as of now; `computer` narrows it to one row's. */
@@ -87,7 +87,7 @@ export function boatMachines(apiKey: string, outbound: Outbound, runtime: string
     const value = await response.json().catch(() => ({})) as any, code = value.code ?? value.error?.code;
     const next = Date.parse(value.error?.details?.nextStartAt ?? value.nextStartAt);
     if (UNAVAILABLE.has(code) || response.status === 401 || response.status === 403) throw new BoatRefused({ code: code ?? `http_${response.status}`, ...Number.isFinite(next) ? { retryAfterMs: Math.max(0, next - Date.now()) } : {} });
-    throw new Error(`Computer provider HTTP ${response.status}`);
+    throw Object.assign(new Error(`Computer provider HTTP ${response.status}`), { status: response.status });
   };
   const label = (name: string, value: string) => `label=${encodeURIComponent(`${name}=${value}`)}`;
   const saved = boatSnapshots((path, body, method = "POST", allowMissing = false) => request(path, { body, method, missingOk: allowMissing }));
@@ -95,7 +95,7 @@ export function boatMachines(apiKey: string, outbound: Outbound, runtime: string
     async create(computer, tenant, ttlSeconds, options) {
       const created = await request("/sandboxes", {
         headers: { "Idempotency-Key": computer }, waitSeconds: 45,
-        body: { type: "small", ttlSeconds, noEnv: true, snapshots: true, monitoring: false, labels: { [RUNTIME_LABEL]: runtime, computer, tenant }, ...options?.from ? { from: options.from.id } : {} },
+        body: { type: "small", ttlSeconds, noEnv: true, snapshots: options?.forkable ?? true, monitoring: false, labels: { [RUNTIME_LABEL]: runtime, computer, tenant }, ...options?.from ? { from: options.from.id } : {} },
       });
       const id = created.sandbox.id as string;
       if (setup && (await machines.run(id, setup, 60)).exitCode !== 0) throw new Error("Computer setup failed");
@@ -225,9 +225,8 @@ export class ManagedComputers {
     if (!machines.snapshot) throw forkUnsupported(provider);
     try { return { ref: await machines.snapshot(row.machine, name), platform: !!row.platform, provider }; }
     catch (error) {
-      if (error instanceof HttpError) throw error;
-      this.log("computer_snapshot_failed", { tenant: row.tenant, computer: row.id });
-      throw new HttpError(502, "The computer's disk could not be snapshotted, so nothing was forked. Try again; if it keeps failing, use a fresh computer.");
+      if (!(error instanceof HttpError)) this.log("computer_snapshot_failed", { tenant: row.tenant, computer: row.id });
+      throw snapshotFailed(provider, error);
     }
   }
   /** Delete a fork snapshot nothing starts from any more, on the key it was taken with. */
@@ -270,7 +269,7 @@ export class ManagedComputers {
     const machines = this.machines(await this.keyFor(row), row.provider), started = Date.now();
     for (let attempt = 0; ; attempt++) {
       try {
-        const { id: machine } = await machines.create(row.id, tenant, Math.min(connection.lease_seconds, row.provider === "lambda" ? MICROVM_MAX_SECONDS : MANAGED.maxSeconds), from ? { from } : undefined);
+        const { id: machine } = await machines.create(row.id, tenant, Math.min(connection.lease_seconds, row.provider === "lambda" ? MICROVM_MAX_SECONDS : MANAGED.maxSeconds), { ...from ? { from } : {}, forkable: connectionForkable(connection) });
         await this.db.query("update managed_computers set machine=$2 where id=$1", [row.id, machine]);
         // Detach or agent deletion may have finished while the provider was creating the machine.
         const live = await this.db.query(`select 1 from managed_computers m join computer_connections c on c.id=m.connection and c.agent=m.agent

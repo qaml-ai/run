@@ -13,7 +13,7 @@ const firstUser = (body: any) => text(body.messages.find((m: any) => m.role === 
 const turnResults = (body: any) => toolResults({ messages: body.messages.slice(body.messages.map((m: any) => m.role).lastIndexOf("user") + 1) });
 const toolCalls = (...calls: [string, unknown, string][]) => ({ role: "assistant", tool_calls: calls.map(([name, args, id], index) => ({ index, id, type: "function", function: { name, arguments: JSON.stringify(args) } })) });
 const boatEnv = (url: string) => ({ AGENT_BOAT_API_URL: url, AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" });
-const connect = (r: any, agent: string, provider = "boat") => r.call("/v1/computers", { body: { agent, provider, credentials: { apiKey: "byo-fixture-key" }, leaseSeconds: 600, dailySeconds: 3600 } });
+const connect = (r: any, agent: string, provider = "boat", forkable = provider === "boat") => r.call("/v1/computers", { body: { agent, provider, credentials: { apiKey: "byo-fixture-key" }, leaseSeconds: 600, dailySeconds: 3600, ...forkable ? { forkable: true } : {} } });
 
 contractTest("computers", SOURCE, "delegate with computer fork: each child starts from the parent's files, writes stay apart, and one snapshot serves the call", async t => {
   const boat = await fakeBoatServer();
@@ -65,10 +65,7 @@ contractTest("computers", SOURCE, "delegate with computer fork: each child start
   assert.equal(boat.state.sandboxes.size >= 1, true);
   // A delegate child that answered has its session stopped.
   for (const call of calls) await until(async () => (await r.call(`/v1/agents/${call.agentId}/computer`)).json.session?.state === "closed", "child session released");
-  // Deleting the children takes the snapshot with the last of them.
   for (const call of calls) assert.equal((await r.call(`/v1/agents/${call.agentId}`, { method: "DELETE" })).status, 200);
-  await until(() => boat.state.dropped.length === 1, "snapshot dropped");
-  assert.deepEqual(boat.state.dropped, boat.state.snapshots);
 });
 
 contractTest("computers", SOURCE, "POST /v1/computers/{id}/fork copies a running computer into other agents with one snapshot", async t => {
@@ -109,7 +106,6 @@ contractTest("computers", SOURCE, "POST /v1/computers/{id}/fork copies a running
   });
   assert.match((await r.prompt(first, "Read the notes")).outcome.result.reply, /from-source/);
   for (const id of [first, second]) assert.equal((await r.call(`/v1/agents/${id}`, { method: "DELETE" })).status, 200);
-  await until(() => boat.state.dropped.length === 1, "snapshot dropped");
 });
 
 // The source agent writes a file on its computer in one run: start, then exec.
@@ -138,6 +134,13 @@ contractTest("computers", SOURCE, "computer fork is refused where the provider c
   const refused = await r.call(`/v1/computers/${e2b.json.id}/fork`, { body: { agents: [other] } });
   assert.equal(refused.status, 409);
   assert.equal(refused.json.code, "FORK_UNSUPPORTED");
+  // An own-key Boat connection forks only when made forkable: its machines then take Boat's snapshots.
+  const plain = (await r.call("/v1/agents", { body: { name: "plain" } })).json.id;
+  const unforkable = await connect(r, plain, "boat", false);
+  assert.equal(unforkable.json.forkable, false);
+  const notForkable = await r.call(`/v1/computers/${unforkable.json.id}/fork`, { body: { agents: [other] } });
+  assert.equal(notForkable.status, 409);
+  assert.equal(notForkable.json.code, "FORK_UNSUPPORTED");
   const run = await r.prompt(parent, "Fork for a task");
   assert.match(run.outcome.result.reply ?? JSON.stringify(run.outcome), /cannot be forked/);
   assert.ok(!run.outcome.result.toolCalls.some((call: any) => call.agentId), "nothing was made");

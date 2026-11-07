@@ -104,11 +104,9 @@ async function spawnAgent(ctx: ChildrenContext, session: Session, settings: Dele
   const made = target?.agent === undefined;
   const agent = made ? ctx.agentId(tenant, key) : await delegation.agentByKey(ctx, tenant, target!.agent!);
   if (!agent) throw new Error(`The agent ${target!.name} does not exist`);
-  // Before the child's row: a fork that cannot be taken fails the call with nothing made.
-  const computer = await delegation.childComputer(ctx, session, run, call, made);
   return startChild(ctx, session, run, call, settings, {
     agent, made, ...(asked !== undefined ? { name: asked as string } : {}), base: target?.name ?? "subagent", task, ...(output ? { output } : {}),
-    ...(made ? { make: (depth: number) => delegation.makeChild(ctx, session, run, target, key, call.toolCallId!, depth, computer) } : {}),
+    ...(made ? { make: async (depth: number) => delegation.makeChild(ctx, session, run, target, key, call.toolCallId!, depth, await delegation.childComputer(ctx, session, run, call, made)) } : {}),
   });
 }
 

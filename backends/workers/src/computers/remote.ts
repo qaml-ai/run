@@ -17,12 +17,18 @@ export function boatSnapshots(request: (path: string, body?: unknown, method?: s
   return {
     async snapshot(sandbox: string, name: string): Promise<SnapshotRef> {
       await request('/saved-snapshots', { sandboxId: sandbox, name });
-      for (const until = Date.now() + SAVED_SNAPSHOT_MS; ; await new Promise(resolve => setTimeout(resolve, 1000))) {
-        const value = await request(`/saved-snapshots/${encodeURIComponent(name)}`, undefined, 'GET', true);
-        const saved = value?.savedSnapshot ?? value?.snapshot ?? value;
-        if (saved?.status === 'ready') return { provider: 'boat', id: name, createdAt: Date.now(), ...Number.isSafeInteger(saved.sizeBytes) ? { sizeBytes: saved.sizeBytes } : {} };
-        if (saved?.status === 'failed' || saved?.status === 'error') throw new Error('Computer snapshot failed');
-        if (Date.now() > until) throw new Error('Computer snapshot did not finish in time');
+      try {
+        for (const until = Date.now() + SAVED_SNAPSHOT_MS; ; await new Promise(resolve => setTimeout(resolve, 1000))) {
+          const value = await request(`/saved-snapshots/${encodeURIComponent(name)}`, undefined, 'GET', true);
+          const saved = value?.savedSnapshot ?? value?.snapshot ?? value;
+          if (saved?.status === 'ready') return { provider: 'boat', id: name, createdAt: Date.now(), ...Number.isSafeInteger(saved.sizeBytes) ? { sizeBytes: saved.sizeBytes } : {} };
+          if (saved?.status === 'failed' || saved?.status === 'error') throw new Error('Computer snapshot failed');
+          if (Date.now() > until) throw new Error('Computer snapshot did not finish in time');
+        }
+      } catch (error) {
+        // A snapshot that fails or never finishes has no row to sweep it: it is deleted here, best effort.
+        await request(`/saved-snapshots/${encodeURIComponent(name)}`, undefined, 'DELETE', true).catch(() => {});
+        throw error;
       }
     },
     async drop(snapshot: SnapshotRef) { await request(`/saved-snapshots/${encodeURIComponent(snapshot.id)}`, undefined, 'DELETE', true); },
@@ -163,7 +169,7 @@ export function remoteDriver(env: RemoteBindings, tenant: string, agent: string,
     const saved = boatSnapshots(boat);
     return { ...common,
       async create(_id, seconds, allocated, options) {
-        const value = await boat('/sandboxes', { type: 'small', ttlSeconds: seconds, noEnv: true, snapshots: true, monitoring: false, ...options?.from ? { from: options.from.id } : {} });
+        const value = await boat('/sandboxes', { type: 'small', ttlSeconds: seconds, noEnv: true, snapshots: !!options?.forkable, monitoring: false, ...options?.from ? { from: options.from.id } : {} });
         const ref = { id: value.sandbox.id as string };
         await allocated?.(ref);
         for (const until = Date.now() + 60_000; Date.now() < until; await new Promise(resolve => setTimeout(resolve, 1000))) {

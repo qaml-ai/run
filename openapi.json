@@ -21624,6 +21624,10 @@
                           "closedAt"
                         ]
                       },
+                      "forkable": {
+                        "type": "boolean",
+                        "description": "Whether its machines can be forked"
+                      },
                       "forkedFrom": {
                         "type": "object",
                         "properties": {
@@ -21662,7 +21666,8 @@
                       "dailySeconds",
                       "createdAt",
                       "billing",
-                      "session"
+                      "session",
+                      "forkable"
                     ]
                   }
                 }
@@ -21722,6 +21727,10 @@
                   "subagents": {
                     "type": "boolean",
                     "description": "Give newly created sub-agents their own connection with the same settings. Default true; inherited by their children too"
+                  },
+                  "forkable": {
+                    "type": "boolean",
+                    "description": "Make this connection's machines so they can be forked into sub-agents (computer: \"fork\"). Default true for managed computers; false with credentials, because a Boat account's machines then take Boat's background snapshots. Inherited by forks and sub-agents"
                   },
                   "credentials": {
                     "type": "object",
@@ -21871,6 +21880,10 @@
                         "closedAt"
                       ]
                     },
+                    "forkable": {
+                      "type": "boolean",
+                      "description": "Whether its machines can be forked"
+                    },
                     "forkedFrom": {
                       "type": "object",
                       "properties": {
@@ -21909,7 +21922,8 @@
                     "dailySeconds",
                     "createdAt",
                     "billing",
-                    "session"
+                    "session",
+                    "forkable"
                   ]
                 }
               }
@@ -22119,6 +22133,10 @@
                               "closedAt"
                             ]
                           },
+                          "forkable": {
+                            "type": "boolean",
+                            "description": "Whether its machines can be forked"
+                          },
                           "forkedFrom": {
                             "type": "object",
                             "properties": {
@@ -22157,7 +22175,8 @@
                           "dailySeconds",
                           "createdAt",
                           "billing",
-                          "session"
+                          "session",
+                          "forkable"
                         ]
                       }
                     }
@@ -22374,6 +22393,10 @@
                               "closedAt"
                             ]
                           },
+                          "forkable": {
+                            "type": "boolean",
+                            "description": "Whether its machines can be forked"
+                          },
                           "forkedFrom": {
                             "type": "object",
                             "properties": {
@@ -22412,7 +22435,8 @@
                           "dailySeconds",
                           "createdAt",
                           "billing",
-                          "session"
+                          "session",
+                          "forkable"
                         ]
                       }
                     }
@@ -22691,6 +22715,10 @@
                             "closedAt"
                           ]
                         },
+                        "forkable": {
+                          "type": "boolean",
+                          "description": "Whether its machines can be forked"
+                        },
                         "forkedFrom": {
                           "type": "object",
                           "properties": {
@@ -22729,7 +22757,8 @@
                         "dailySeconds",
                         "createdAt",
                         "billing",
-                        "session"
+                        "session",
+                        "forkable"
                       ]
                     },
                     "session": {

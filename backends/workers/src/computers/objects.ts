@@ -110,6 +110,10 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
     return this.serial(() => this.provider().unref(batch, child));
   }
   /** The child's side: start from the parent's snapshot from now on, and tell the parent's computer. */
+  /** Whether this computer has a disk of its own (running, or a saved base): the fork route refuses to overwrite it. */
+  hasDisk(): Promise<boolean> {
+    return this.serial(() => this.provider().hasDisk());
+  }
   async seed(snapshot: ComputerSnapshot, origin: NativeForkOrigin, setup?: OperateSetup): Promise<void> {
     await this.serial(() => this.provider(setup).seed(snapshot, origin));
     await this.env.COMPUTER_CONTAINERS?.getByName(origin.parent).adopt(origin.batch, this.ctx.id.toString());

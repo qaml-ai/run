@@ -8,7 +8,7 @@ export type Credentials = Record<string, string>;
 export type Reference = { id: string; [key: string]: unknown };
 /** What a driver does on its provider's machines. With `snapshot`, they can be forked: `create` then takes `{ from }`, a snapshot it took. */
 export interface ComputerDriver extends ForkDriver<Reference> {
-  create(id: string, seconds: number, allocated?: (ref: Reference) => Promise<void>, options?: { from?: SnapshotRef }): Promise<Reference>;
+  create(id: string, seconds: number, allocated?: (ref: Reference) => Promise<void>, options?: { from?: SnapshotRef; forkable?: boolean }): Promise<Reference>;
   call(ref: Reference, operation: string, args: Record<string, any>): Promise<unknown>;
   close(ref: Reference): Promise<void>;
   dispose?(): void | Promise<void>;
@@ -70,12 +70,18 @@ export function boatSnapshots(request: BoatRequest, sleep = (ms: number) => new 
   return {
     async snapshot(sandbox: string, name: string): Promise<SnapshotRef> {
       await request("/saved-snapshots", { sandboxId: sandbox, name });
-      for (const until = Date.now() + SAVED_SNAPSHOT_MS; ; await sleep(1000)) {
-        const value = await request(`/saved-snapshots/${encodeURIComponent(name)}`, undefined, "GET", true);
-        const saved = value?.savedSnapshot ?? value?.snapshot ?? value;
-        if (saved?.status === "ready") return { provider: "boat", id: name, createdAt: Date.now(), ...Number.isSafeInteger(saved.sizeBytes) ? { sizeBytes: saved.sizeBytes } : {} };
-        if (saved?.status === "failed" || saved?.status === "error") throw new Error("Computer snapshot failed");
-        if (Date.now() > until) throw new Error("Computer snapshot did not finish in time");
+      try {
+        for (const until = Date.now() + SAVED_SNAPSHOT_MS; ; await sleep(1000)) {
+          const value = await request(`/saved-snapshots/${encodeURIComponent(name)}`, undefined, "GET", true);
+          const saved = value?.savedSnapshot ?? value?.snapshot ?? value;
+          if (saved?.status === "ready") return { provider: "boat", id: name, createdAt: Date.now(), ...Number.isSafeInteger(saved.sizeBytes) ? { sizeBytes: saved.sizeBytes } : {} };
+          if (saved?.status === "failed" || saved?.status === "error") throw new Error("Computer snapshot failed");
+          if (Date.now() > until) throw new Error("Computer snapshot did not finish in time");
+        }
+      } catch (error) {
+        // A snapshot that fails or never finishes has no row to sweep it: it is deleted here, best effort.
+        await request(`/saved-snapshots/${encodeURIComponent(name)}`, undefined, "DELETE", true).catch(() => {});
+        throw error;
       }
     },
     async drop(snapshot: SnapshotRef) { await request(`/saved-snapshots/${encodeURIComponent(snapshot.id)}`, undefined, "DELETE", true); },
@@ -241,8 +247,9 @@ export async function driver(provider: Provider, credentials: Credentials, outbo
   } : {
     refused: httpRefused,
     async create(_id, seconds, allocated, created) {
-      // Snapshots on: Boat refuses a saved snapshot (a fork) of a sandbox made without them, and they cannot be turned on later.
-      const r = await request("/sandboxes", { type: "small", ttlSeconds: seconds, noEnv: true, snapshots: true, monitoring: false, ...created?.from ? { from: created.from.id } : {} });
+      // A forkable connection's sandboxes take snapshots: Boat refuses a saved snapshot (a fork) of one made without them,
+      // and they cannot be turned on later. Off otherwise, so a provider account pays for no snapshots it did not ask for.
+      const r = await request("/sandboxes", { type: "small", ttlSeconds: seconds, noEnv: true, snapshots: !!created?.forkable, monitoring: false, ...created?.from ? { from: created.from.id } : {} });
       const ref = { id: r.sandbox.id };
       await allocated?.(ref);
       for (const until = Date.now() + 60000; Date.now() < until;) {

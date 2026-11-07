@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Accounts } from "../accounts.ts";
-import type { Db, DbClient, Sql } from "../db.ts";
+import { transaction, type Db, type DbClient, type Sql } from "../db.ts";
 import { HttpError } from "../http.ts";
 import type { Outbound } from "../outbound.ts";
 import type { ToolDefinition } from "../protocol.ts";
@@ -10,7 +10,7 @@ import type { ComputerMount } from "../computer-env.ts";
 import type { ComputerTransfers } from "./transfers.ts";
 import { fileCommand, MANAGED, ManagedComputers, managedTools, storable } from "./managed.ts";
 import { fileReceipts, driver, isBrowserProvider, PROVIDERS, type Credentials, type DriverFactory, type ComputerDriver, type Provider, type Reference } from "./providers.ts";
-import { FORK_LIMITS, forkedFrom, forkRows, forkUnsupported, noSession, snapshotRef, type ForkedFrom, type SnapshotRef } from "../core/computer-fork.ts";
+import { connectionForkable, FORK_LIMITS, forkableProvider, forkedFrom, forkRows, forkUnsupported, noSession, notForkable, snapshotFailed, snapshotRef, type ForkedFrom, type SnapshotRef } from "../core/computer-fork.ts";
 
 const id = () => `cmp_${randomUUID().replaceAll("-", "")}`;
 /** A fork snapshot's sealed reference: the snapshot, and what drops it (the provider account's credentials, or the managed key). */
@@ -22,7 +22,7 @@ const COMMON = [tool("computer_start", "Start your attached computer or return i
 const SHELL = [tool("computer_exec", "Call computer_start first. Run a shell command in your attached remote Linux computer, never on the camelRun host. Inspect exitCode. Redirect output for background processes. Files survive between calls until expiry.", { command: text, timeoutSeconds: { type: "integer", minimum: 1, maximum: 120 } }, ["command"]), tool("computer_write_file", "Write a UTF-8 file in your remote computer. This is separate from camelRun workspace files.", { path: text, content: { type: "string", maxLength: 16000 } }, ["path", "content"]), tool("computer_read_file", "Read up to 24000 characters from a UTF-8 file in your remote computer.", { path: text }, ["path"])];
 const BROWSER = [tool("browser_navigate", "Navigate your attached remote browser to an HTTP(S) URL.", { url: text }, ["url"]), tool("browser_read", "Read the current remote page's title, URL and visible text."), tool("browser_click", "Click a CSS selector in the remote page.", { selector: text }, ["selector"]), tool("browser_fill", "Fill a CSS-selected input in the remote page.", { selector: text, text: { type: "string", maxLength: 16000 } }, ["selector", "text"]), tool("browser_evaluate", "Run JavaScript in the remote web page and return a JSON result. No host shell or filesystem access.", { expression: text }, ["expression"])];
 export const COMPUTER_TOOLS = new Set([...COMMON, ...SHELL, ...BROWSER].map(t => t.name));
-const publicConnection = (r: any) => ({ id: r.id, agent: r.agent, provider: r.provider, managed: !!r.managed, subagents: r.subagents, leaseSeconds: r.lease_seconds, dailySeconds: r.daily_seconds, createdAt: r.created_at, billing: r.managed ? "credits" : "provider_account", session: publicLease(r.lease), ...forkedFrom(r) ? { forkedFrom: forkedFrom(r) } : {} });
+const publicConnection = (r: any) => ({ id: r.id, agent: r.agent, provider: r.provider, managed: !!r.managed, subagents: r.subagents, leaseSeconds: r.lease_seconds, dailySeconds: r.daily_seconds, createdAt: r.created_at, billing: r.managed ? "credits" : "provider_account", session: publicLease(r.lease), forkable: connectionForkable(r), ...forkedFrom(r) ? { forkedFrom: forkedFrom(r) } : {} });
 const publicLease = (r: any) => r ? ({ id: r.id, provider: r.provider, workspaceId: r.workspace, state: r.state, recoveryRequired: r.state === "uncertain" || r.state === "closing" && !!r.error, createdAt: r.created_at, expiresAt: r.expires_at, closedAt: r.closed_at, ...(r.error ? { error: r.error } : {}) }) : null;
 
 export class Computers {
@@ -47,14 +47,24 @@ export class Computers {
     const mount = await this.filesystem(tenant, agent);
     return `${(await this.options.db.query("select id from computer_connections where tenant=$1 and agent=$2", [tenant, agent])).rows[0]?.id ?? ""}:${mount?.id ?? ""}`;
   }
-  async removeTenant(tenant: string) { for (const c of await this.list(tenant)) await this.remove(tenant, c.id); }
+  /**
+   * An account deletion: every connection, then every fork snapshot of the account, whatever starts from it. A snapshot
+   * not deleted yet fails the step so the deletion tries again (a drop that keeps failing is given up and logged).
+   */
+  async removeTenant(tenant: string) {
+    for (const c of await this.list(tenant)) await this.remove(tenant, c.id);
+    let left = 0;
+    for (const row of await forkRows.ofTenant(this.options.db, tenant)) if (!(await this.drop(row, true))) left++;
+    if (left) throw new Error(`${left} computer snapshots are not deleted yet`);
+  }
   async list(tenant: string) {
     const { rows } = await this.options.db.query("select c.*, row_to_json(l) as lease from computer_connections c left join lateral (select * from computer_leases where connection=c.id order by sequence desc limit 1) l on true where c.tenant = $1 and c.agent not like 'removed:%' order by c.created_at", [tenant]);
     return Promise.all(rows.map(async r => r.managed ? { ...publicConnection(r), session: await this.managed.session(r.id) } : publicConnection(r)));
   }
   /** Connect an agent to a provider with its credentials, or, with none, to a managed computer. */
-  async create(tenant: string, input: { agent: string; provider: Provider; credentials?: Credentials; leaseSeconds?: number; dailySeconds?: number; subagents?: boolean }) {
+  async create(tenant: string, input: { agent: string; provider: Provider; credentials?: Credentials; leaseSeconds?: number; dailySeconds?: number; subagents?: boolean; forkable?: boolean }) {
     if (input.subagents !== undefined && typeof input.subagents !== "boolean") throw new HttpError(400, "subagents must be true or false");
+    if (input.forkable !== undefined && typeof input.forkable !== "boolean") throw new HttpError(400, "forkable must be true or false");
     if (!PROVIDERS.includes(input.provider)) throw new HttpError(400, "Unknown computer provider");
     if (input.credentials === undefined && (input.provider === "boat" || input.provider === "lambda")) {
       if (!this.options.enabled) throw new HttpError(403, "Managed computers are not available on this runtime");
@@ -64,7 +74,7 @@ export class Computers {
     }
     return this.createWithCredentials(tenant, { leaseSeconds: 900, dailySeconds: 3600, ...input, credentials: input.credentials as Credentials });
   }
-  private async createWithCredentials(tenant: string, input: { agent: string; provider: Provider; credentials: Credentials; leaseSeconds: number; dailySeconds: number; subagents?: boolean }) {
+  private async createWithCredentials(tenant: string, input: { agent: string; provider: Provider; credentials: Credentials; leaseSeconds: number; dailySeconds: number; subagents?: boolean; forkable?: boolean }) {
     if (input.provider === "lambda") throw new HttpError(400, "Lambda computers use the runtime AWS credentials");
     const expected = input.provider === "modal" ? ["tokenId", "tokenSecret"] : input.provider === "tunnel" ? ["apiKey", "url"] : ["apiKey"];
     if (!input.credentials || expected.some(k => typeof input.credentials[k] !== "string" || !input.credentials[k].trim()) || Object.keys(input.credentials).some(k => ![...expected, ...(input.provider === "browserbase" ? ["projectId"] : [])].includes(k)) || Object.values(input.credentials).some(v => typeof v !== "string" || v.length > 16000)) throw new HttpError(400, `Credentials require ${expected.join(", ")}`);
@@ -77,12 +87,12 @@ export class Computers {
     if (!Number.isInteger(input.leaseSeconds) || input.leaseSeconds < 60 || input.leaseSeconds > 900 || !Number.isInteger(input.dailySeconds) || input.dailySeconds < input.leaseSeconds || input.dailySeconds > 86400) throw new HttpError(400, "Invalid computer time limits");
     return this.insertConnection(tenant, { ...input, managed: false });
   }
-  private async insertConnection(tenant: string, input: { agent: string; provider: Provider; credentials: Credentials; leaseSeconds: number; dailySeconds: number; managed: boolean; subagents?: boolean }) {
+  private async insertConnection(tenant: string, input: { agent: string; provider: Provider; credentials: Credentials; leaseSeconds: number; dailySeconds: number; managed: boolean; subagents?: boolean; forkable?: boolean }) {
     return this.lock(tenant, input.agent, async sql => {
       if (!(await sql.query("select 1 from agents where tenant=$1 and id=$2 and not revoked and purged_at is null and (expires_at is null or expires_at>$3)", [tenant, input.agent, this.now()])).rowCount) throw new HttpError(404, "Unknown agent");
       if ((await sql.query("select 1 from computer_connections where tenant=$1 and agent=$2", [tenant, input.agent])).rowCount) throw new HttpError(409, "This agent already has a computer connection");
       const connection = id();
-      const row = (await sql.query("insert into computer_connections(id,tenant,agent,provider,credentials,lease_seconds,daily_seconds,created_at,managed,subagents) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning *", [connection, tenant, input.agent, input.provider, this.options.accounts.seal(`computer:${connection}`, JSON.stringify(input.credentials)), input.leaseSeconds, input.dailySeconds, this.now(), input.managed, input.subagents ?? true])).rows[0];
+      const row = (await sql.query("insert into computer_connections(id,tenant,agent,provider,credentials,lease_seconds,daily_seconds,created_at,managed,subagents,forkable) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) returning *", [connection, tenant, input.agent, input.provider, this.options.accounts.seal(`computer:${connection}`, JSON.stringify(input.credentials)), input.leaseSeconds, input.dailySeconds, this.now(), input.managed, input.subagents ?? true, input.forkable ?? null])).rows[0];
       return publicConnection(row);
     });
   }
@@ -90,12 +100,13 @@ export class Computers {
    * Copy the parent's attachment in the transaction that creates its child: a new machine, never the parent's session.
    * `computer` is the delegate or spawn_agent call's choice: "none" attaches nothing; `{ seed }` (a fork snapshot this call
    * took, `forkSnapshot`) attaches a connection whose sessions start from that snapshot, whatever the parent's `subagents`.
+   * The seed is locked (FOR SHARE) until the child's transaction ends, so a drop cannot take it meanwhile.
    */
   async inherit(tenant: string, parent: string, child: string, sql: Sql, computer?: "none" | { seed: string }) {
     if (computer === "none") return;
-    const seed = computer?.seed ? await forkRows.get(sql, computer.seed) : undefined;
-    if (computer?.seed && (!seed || seed.dropped_at !== null || seed.tenant !== tenant)) throw new HttpError(409, "The fork's snapshot is gone; fork again");
-    const c = (await sql.query(seed ? "select * from computer_connections where tenant=$1 and id=$2 for share" : "select * from computer_connections where tenant=$1 and agent=$2 and subagents for share", [tenant, seed ? seed.connection : parent])).rows[0];
+    const seed = computer?.seed ? await forkRows.attachable(sql, computer.seed, tenant) : undefined;
+    if (computer?.seed && !seed) throw new HttpError(409, "The fork's snapshot is gone; fork again");
+    const c = (await sql.query(seed ? "select * from computer_connections where tenant=$1 and id=$2 and agent not like 'removed:%' for share" : "select * from computer_connections where tenant=$1 and agent=$2 and subagents for share", [tenant, seed ? seed.connection : parent])).rows[0];
     if (!c) { if (seed) throw new HttpError(409, "The parent's computer connection was removed; nothing to fork"); return; }
     await this.attach(sql, tenant, child, c, seed);
   }
@@ -105,69 +116,82 @@ export class Computers {
     // Credentials are sealed for each connection; the provider account is the same, the machine is new.
     const credentials = this.options.accounts.unseal(`computer:${c.id}`, c.credentials);
     const from: ForkedFrom | null = seed ? { agent: seed.agent, connection: c.id, snapshot: seed.id, provider: seed.provider, at: Number(seed.created_at) } : null;
-    return (await sql.query("insert into computer_connections(id,tenant,agent,provider,credentials,lease_seconds,daily_seconds,created_at,managed,subagents,seed,forked_from) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) returning *",
-      [connection, tenant, agent, c.provider, this.options.accounts.seal(`computer:${connection}`, credentials), c.lease_seconds, c.daily_seconds, this.now(), c.managed, c.subagents, seed?.id ?? null, from && JSON.stringify(from)])).rows[0];
+    return (await sql.query("insert into computer_connections(id,tenant,agent,provider,credentials,lease_seconds,daily_seconds,created_at,managed,subagents,seed,forked_from,forkable) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) returning *",
+      [connection, tenant, agent, c.provider, this.options.accounts.seal(`computer:${connection}`, credentials), c.lease_seconds, c.daily_seconds, this.now(), c.managed, c.subagents, seed?.id ?? null, from && JSON.stringify(from), c.forkable ?? null])).rows[0];
   }
   /**
    * A fork snapshot of `parent`'s running computer for one call (`batch`): taken once, and the same for every child of
    * that call. Exact: the files as they are now. Answers the snapshot's id, for `inherit`. A provider that cannot snapshot
-   * answers forkUnsupported (before anything else), a computer with no running session noSession.
+   * answers forkUnsupported (before anything else), a computer with no running session noSession. The call that wins
+   * the batch's row takes the snapshot with no database connection held; its siblings wait for that row.
    */
   async forkSnapshot(tenant: string, parent: string, batch: string): Promise<{ id: string; connection: string; provider: string; at: number }> {
-    return this.lock(tenant, parent, async sql => {
-      let c;
-      try { c = await this.connection(tenant, parent, sql); }
-      catch (error) { if ((error as HttpError).status === 404) throw new HttpError(409, 'This agent has no computer to fork. Use computer: "fresh" or "none".', "NO_SESSION"); throw error; }
-      const existing = await forkRows.batch(sql, c.id, batch);
-      if (existing) return { id: existing.id, connection: c.id, provider: existing.provider, at: Number(existing.created_at) };
-      if (isBrowserProvider(c.provider)) throw forkUnsupported(c.provider);
-      const snapshot = `cms_${randomUUID().replaceAll("-", "")}`, name = `camelrun-${snapshot}`;
+    let c;
+    try { c = await this.connection(tenant, parent); }
+    catch (error) { if ((error as HttpError).status === 404) throw new HttpError(409, 'This agent has no computer to fork. Use computer: "fresh" or "none".', "NO_SESSION"); throw error; }
+    const answer = (row: { id: string; provider: string; created_at: string | number }) => ({ id: row.id, connection: c.id, provider: row.provider, at: Number(row.created_at) });
+    if (isBrowserProvider(c.provider) || (!c.managed && !forkableProvider(c.provider))) throw forkUnsupported(c.provider);
+    if (!connectionForkable(c)) throw notForkable(c.provider);
+    const snapshot = `cms_${randomUUID().replaceAll("-", "")}`, name = `camelrun-${snapshot}`;
+    const claimed = await forkRows.claim(this.options.db, { id: snapshot, tenant, connection: c.id, agent: parent, batch, provider: c.managed ? this.managed.provider : c.provider, created_at: this.now() });
+    if (!claimed.won) {
+      if (claimed.row.state === "ready") return answer(claimed.row);
+      const ready = await forkRows.waitReady(work => work(this.options.db), claimed.row.id, () => this.now(), ms => new Promise(resolve => setTimeout(resolve, ms)));
+      if (!ready) throw new HttpError(502, "The computer's disk could not be snapshotted, so nothing was forked. Try again; if it keeps failing, use a fresh computer.");
+      return answer(ready);
+    }
+    try {
       let secret: SnapshotSecret;
       if (c.managed) {
         const taken = await this.managed.snapshot(c, name);
         secret = { ref: taken.ref, managed: true, platform: taken.platform, provider: taken.provider };
       } else {
         const credentials = JSON.parse(this.options.accounts.unseal(`computer:${c.id}`, c.credentials)) as Credentials;
+        const lease = await this.latest(c.id);
+        if (!lease || lease.state !== "active" || !lease.reference || Number(lease.expires_at) <= this.now()) throw noSession();
         const ref = await this.useProvider(c, async p => {
           if (!p.snapshot) throw forkUnsupported(c.provider);
-          const lease = await this.latest(c.id, sql);
-          if (!lease || lease.state !== "active" || !lease.reference || Number(lease.expires_at) <= this.now()) throw noSession();
           try { return await p.snapshot(JSON.parse(this.options.accounts.unseal(`computer-lease:${lease.id}`, lease.reference)), name); }
-          catch { throw new HttpError(502, "The computer's disk could not be snapshotted, so nothing was forked. Try again; if it keeps failing, use a fresh computer."); }
+          catch (error) { throw snapshotFailed(c.provider, error); }
         });
         secret = { ref, managed: false, provider: c.provider, credentials };
       }
-      const at = this.now();
-      await forkRows.insert(sql, { id: snapshot, tenant, connection: c.id, agent: parent, batch, provider: secret.provider, reference: JSON.stringify(this.options.accounts.seal(`computer-snapshot:${snapshot}`, JSON.stringify(secret))), created_at: at });
+      await forkRows.ready(this.options.db, snapshot, JSON.stringify(this.options.accounts.seal(`computer-snapshot:${snapshot}`, JSON.stringify(secret))));
       console.error(JSON.stringify({ type: "computer_snapshot", tenant, agent: parent, snapshot, provider: secret.provider, ...secret.ref.sizeBytes !== undefined ? { bytes: secret.ref.sizeBytes } : {} }));
-      return { id: snapshot, connection: c.id, provider: secret.provider, at };
-    });
+      return answer({ id: snapshot, provider: secret.provider, created_at: claimed.row.created_at });
+    } catch (error) {
+      await forkRows.abandon(this.options.db, snapshot).catch(() => {});
+      throw error;
+    }
   }
   /**
    * Fork `source`'s computer (an agent, or a connection id) into other agents of the tenant: one snapshot, and for each
-   * agent a connection that starts from it. Each must have no computer connection of its own yet.
+   * agent a connection that starts from it, all in one transaction. Each must have no computer connection of its own yet.
    */
   async forkInto(tenant: string, source: { agent?: string; connection?: string }, agents: string[]) {
     const from = source.connection
       ? (await this.options.db.query("select agent from computer_connections where tenant=$1 and id=$2 and agent not like 'removed:%'", [tenant, source.connection])).rows[0]?.agent as string | undefined
       : source.agent;
     if (!from) throw new HttpError(404, "Unknown computer connection");
-    for (const agent of agents) {
+    if (!(await this.options.db.query("select 1 from agents where tenant=$1 and id=$2 and not revoked and purged_at is null and (expires_at is null or expires_at>$3)", [tenant, from, this.now()])).rowCount) throw new HttpError(404, "Unknown agent");
+    const check = async (sql: Sql, agent: string) => {
       if (agent === from) throw new HttpError(400, "An agent cannot fork its computer into itself");
-      if (!(await this.options.db.query("select 1 from agents where tenant=$1 and id=$2 and not revoked and purged_at is null and (expires_at is null or expires_at>$3)", [tenant, agent, this.now()])).rowCount) throw new HttpError(404, `Unknown agent ${agent}`);
-      if ((await this.options.db.query("select 1 from computer_connections where tenant=$1 and agent=$2", [tenant, agent])).rowCount) throw new HttpError(409, `Agent ${agent} already has a computer connection; remove it first`);
-    }
-    const snapshot = await this.forkSnapshot(tenant, from, `api:${randomUUID()}`);
-    const forks = [];
-    for (const agent of agents) forks.push(await this.lock(tenant, agent, async sql => {
+      if (!(await sql.query("select 1 from agents where tenant=$1 and id=$2 and not revoked and purged_at is null and (expires_at is null or expires_at>$3)", [tenant, agent, this.now()])).rowCount) throw new HttpError(404, `Unknown agent ${agent}`);
       if ((await sql.query("select 1 from computer_connections where tenant=$1 and agent=$2", [tenant, agent])).rowCount) throw new HttpError(409, `Agent ${agent} already has a computer connection; remove it first`);
-      const c = (await sql.query("select * from computer_connections where tenant=$1 and id=$2", [tenant, snapshot.connection])).rows[0];
-      if (!c) throw new HttpError(409, "The source's computer connection was removed; nothing to fork");
-      return publicConnection(await this.attach(sql, tenant, agent, c, { id: snapshot.id, agent: from, provider: snapshot.provider, created_at: snapshot.at }));
-    }));
+    };
+    for (const agent of agents) await check(this.options.db, agent);
+    const snapshot = await this.forkSnapshot(tenant, from, `api:${randomUUID()}`);
+    const forks = await transaction(this.options.db, async sql => {
+      const seed = await forkRows.attachable(sql, snapshot.id, tenant);
+      const c = (await sql.query("select * from computer_connections where tenant=$1 and id=$2 and agent not like 'removed:%' for share", [tenant, snapshot.connection])).rows[0];
+      if (!seed || !c) throw new HttpError(409, "The source's computer connection was removed; nothing to fork");
+      const made = [];
+      for (const agent of agents) { await check(sql, agent); made.push(publicConnection(await this.attach(sql, tenant, agent, c, seed))); }
+      return made;
+    }, { rerun: false }).catch(async error => { await this.dropIfUnused(snapshot.id); throw error; });
     return { snapshot: { id: snapshot.id, provider: snapshot.provider, createdAt: snapshot.at }, forks };
   }
-  /** A child's computer when its work is done (a delegate call answered): its session stops, its connection stays. */
+  /** A child's computer when its work is done (a delegate call answered, failed or was stopped): its session stops, its connection stays. */
   async release(tenant: string, agent: string) {
     const c = (await this.options.db.query("select id from computer_connections where tenant=$1 and agent=$2", [tenant, agent])).rows[0];
     if (!c) return;
@@ -178,22 +202,37 @@ export class Computers {
   private async seedOf(c: any): Promise<SnapshotRef | undefined> {
     if (!c.seed) return undefined;
     const row = await forkRows.get(this.options.db, c.seed);
-    if (!row || row.dropped_at !== null) throw new HttpError(409, "This computer was forked from a snapshot that is gone. Its owner can remove the connection and connect it again.");
+    if (!row || row.dropped_at !== null || row.state !== "ready") throw new HttpError(409, "This computer was forked from a snapshot that is gone. Its owner can remove the connection and connect it again.");
     return snapshotRef((JSON.parse(this.options.accounts.unseal(`computer-snapshot:${row.id}`, JSON.parse(row.reference))) as SnapshotSecret).ref);
   }
-  /** Delete a fork snapshot no connection starts from any more. Best effort: a failure is kept, and the sweep tries again. */
-  private async drop(row: { id: string; tenant: string; reference: string }) {
+  /** Drop a snapshot nothing attached to (a fork route whose attach failed). */
+  private async dropIfUnused(id: string) {
+    const row = await forkRows.get(this.options.db, id);
+    if (row && row.dropped_at === null && row.state === "ready") await this.drop(row);
+  }
+  /**
+   * Delete a fork snapshot no connection starts from any more (`force`: whatever starts from it, for account deletion).
+   * The row is locked while the provider deletes it, and checked again under the lock. A failure backs off and is
+   * tried again by the sweep; past the last attempt it is given up and logged. Answers whether it is gone.
+   */
+  private async drop(row: { id: string; tenant: string }, force = false) {
     try {
-      const secret = JSON.parse(this.options.accounts.unseal(`computer-snapshot:${row.id}`, JSON.parse(row.reference))) as SnapshotSecret, ref = snapshotRef(secret.ref);
-      if (secret.managed) await this.managed.dropSnapshot(row.tenant, { platform: !!secret.platform, provider: secret.provider }, ref);
-      else {
-        const p = await (this.options.driver ?? driver)(secret.provider as Provider, secret.credentials ?? {}, this.options.outbound, { boatUrl: this.options.boatUrl });
-        try { await p.dropSnapshot?.(ref); } finally { await p.dispose?.(); }
-      }
-      await forkRows.dropped(this.options.db, row.id, this.now());
+      return await transaction(this.options.db, async sql => {
+        const current = await forkRows.lockForDrop(sql, row.id, force);
+        if (!current) return false;
+        const secret = JSON.parse(this.options.accounts.unseal(`computer-snapshot:${current.id}`, JSON.parse(current.reference))) as SnapshotSecret, ref = snapshotRef(secret.ref);
+        if (secret.managed) await this.managed.dropSnapshot(current.tenant, { platform: !!secret.platform, provider: secret.provider }, ref);
+        else {
+          const p = await (this.options.driver ?? driver)(secret.provider as Provider, secret.credentials ?? {}, this.options.outbound, { boatUrl: this.options.boatUrl });
+          try { await p.dropSnapshot?.(ref); } finally { await p.dispose?.(); }
+        }
+        await forkRows.dropped(sql, current.id, this.now());
+        return true;
+      }, { rerun: false });
     } catch (error) {
-      await forkRows.failed(this.options.db, row.id, (error as Error).message ?? "drop failed").catch(() => {});
-      console.error(JSON.stringify({ type: "computer_snapshot_drop_failed", tenant: row.tenant, snapshot: row.id }));
+      const gaveUp = await forkRows.failed(this.options.db, row.id, (error as Error).message ?? "drop failed", this.now()).catch(() => false);
+      console.error(JSON.stringify({ type: gaveUp ? "computer_snapshot_abandoned" : "computer_snapshot_drop_failed", tenant: row.tenant, snapshot: row.id }));
+      return false;
     }
   }
   /** Detach on deletion or expiry, keeping the ordinary metering history and cleanup retries. */
@@ -242,8 +281,8 @@ export class Computers {
       await sql.query("update computer_connections set agent=$2,credentials=$3 where id=$1", [c.id, `removed:${c.id}`, this.options.accounts.seal(`computer:${c.id}`, "{}")]);
       return { removed: true };
     });
-    // The last connection started from a fork snapshot takes it with it.
-    const orphan = c.seed ? await forkRows.orphaned(this.options.db, c.seed) : undefined;
+    // The last connection started from a fork snapshot takes it with it, once its call's siblings had time to attach (else the sweep does).
+    const orphan = c.seed ? await forkRows.orphaned(this.options.db, c.seed, this.now() - FORK_LIMITS.dropGraceMs) : undefined;
     if (orphan) await this.drop(orphan);
     return removed;
   }
@@ -290,7 +329,7 @@ export class Computers {
         lease = (await sql.query("insert into computer_leases(id,tenant,agent,connection,workspace,provider,state,created_at,expires_at) values($1,$2,$3,$4,$5,$6,'starting',$7,$8) returning *", [session, tenant, agent, c.id, workspace?.workspace ?? null, c.provider, now, now+c.lease_seconds*1000])).rows[0];
         let creator: ComputerDriver | undefined, allocated = false;
         try {
-          const ref = await this.useProvider(c, p => { creator = p; return p.create(session, c.lease_seconds, async ref => { allocated = true; await sql.query("update computer_leases set reference=$2 where id=$1", [session, this.options.accounts.seal(`computer-lease:${session}`, JSON.stringify(ref))]); }, from ? { from } : undefined); });
+          const ref = await this.useProvider(c, p => { creator = p; return p.create(session, c.lease_seconds, async ref => { allocated = true; await sql.query("update computer_leases set reference=$2 where id=$1", [session, this.options.accounts.seal(`computer-lease:${session}`, JSON.stringify(ref))]); }, { ...from ? { from } : {}, forkable: connectionForkable(c) }); });
           await sql.query("update computer_leases set state='active',reference=$2 where id=$1", [session, this.options.accounts.seal(`computer-lease:${session}`, JSON.stringify(ref))]);
         } catch (error) {
           // A provider that refused the credentials made nothing: no machine to reconcile, and a fixed key can start again.
@@ -365,7 +404,7 @@ export class Computers {
     }
     await this.managed.pass().catch(() => console.error(JSON.stringify({ type: "computer_pass_failed" })));
     // Fork snapshots no connection starts from any more (a failed drop, or a fork whose children never attached).
-    for (const row of await forkRows.unused(this.options.db, this.now() - FORK_LIMITS.dropGraceMs).catch(() => [])) await this.drop(row);
+    for (const row of await forkRows.unused(this.options.db, this.now() - FORK_LIMITS.dropGraceMs, this.now()).catch(() => [])) await this.drop(row);
     const rows = (await this.options.db.query("select l.*, c.credentials, c.id as connection_id from computer_leases l join computer_connections c on c.id=l.connection left join agents a on a.id=l.agent and a.tenant=l.tenant where (l.state='closing' or (l.state='uncertain' and l.reference is not null) or (l.state='starting' and l.created_at<=$1::bigint-180000) or (l.state='active' and (l.expires_at<=$1 or a.id is null or a.revoked or a.purged_at is not null or a.expires_at<=$1))) order by l.cleanup_at, l.expires_at limit 100", [this.now()])).rows;
     for (const row of rows) {
       try { await this.lock(row.tenant, row.agent, async sql => { const current = (await sql.query("select * from computer_leases where id=$1", [row.id])).rows[0]; if (current.state === "closed" || (current.state === "active" && current.expires_at > this.now() && row.state !== "active")) return; await this.stop({ ...row, id: row.connection_id }, current, sql); }); } catch { /* Durable closing state retries next sweep. No credentials in logs. */ }

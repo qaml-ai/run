@@ -67,13 +67,26 @@ installed packages and build caches, as they are at the call. Give `delegate` or
   Sprites, E2B, Daytona, Modal, tunnels, browsers) answer `409
   FORK_UNSUPPORTED`, and nothing is made: ask for `"fresh"` instead. A computer
   with no running session answers `409 NO_SESSION`.
+- **Forkable connections.** Boat machines can be snapshotted only when they
+  were made with Boat's background snapshots on. A connection's `forkable`
+  says whether its machines are: managed computers are forkable by default;
+  your own Boat key is not, so your account pays for no snapshots it did not ask
+  for. Connect it with `"forkable": true` to fork it (`POST /v1/computers`).
+  A fork of a connection that is not forkable answers `409 FORK_UNSUPPORTED`
+  with `reason: "not_forkable"`; a machine started before the connection was
+  forkable answers `reason: "machine_not_forkable"`: stop it and start it again.
+  Children and forks keep their parent's `forkable`.
 - **Sessions.** Each new session of a forked connection starts from the fork's
   snapshot. The connection shows where it came from in `forkedFrom`
   (`{ agent, connection, snapshot, provider, at }`).
 - **Billing.** Each fork is billed as its own computer session, on the same
   provider account or credit as any. Boat saved snapshots are on the provider
-  account. The runtime deletes the snapshot when the last connection made from
-  it is removed (a sweep retries failed deletes).
+  account (managed ones on the platform's, not charged separately). The runtime
+  deletes the snapshot when the last connection made from it is removed, after
+  10 minutes so siblings of one call can still attach, and when the account is
+  deleted. A sweep retries failed deletes, backing off, and gives up after 10
+  attempts. A snapshot keeps a sealed copy of the provider credentials that
+  delete it until it is deleted.
 - A fork is for a sub-agent the call makes. Delegating to an existing agent
   with `"fork"` is refused.
 
@@ -89,7 +102,8 @@ POST /v1/computers/cmp_.../fork
 ```
 
 Each agent (at most 16) must be the account's and have no computer connection
-yet. One snapshot serves all of them.
+yet. One snapshot serves all of them, and either every agent gets its fork or
+none does.
 
 The parent has no mount of a child's computer. Inline children share the
 parent's volume mounts at the same paths, including its workspace when mounted;

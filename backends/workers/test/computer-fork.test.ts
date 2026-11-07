@@ -146,6 +146,9 @@ test("the registry drops a batch's snapshot when its last child goes, or when no
     await p.unref("run:m1", "child-a");
     assert.ok(m.data.has("fork:run:m1"), "a child still uses it");
     await p.unref("run:m1", "child-b");
+    assert.ok(m.data.has("fork:run:m1"), "within the grace a sibling of the call may still be seeding from it");
+    now += FORK_LIMITS.dropGraceMs;
+    await p.dropStale();
     assert.equal(m.data.has("fork:run:m1"), false);
     assert.deepEqual(logged.filter(line => line.type === "computer_snapshot_unused").map(line => line.id), [taken.snapshot.id]);
     assert.ok(m.data.get(`dropped:${taken.snapshot.id}`), "kept for cleanup: Cloudflare cannot delete it from a Worker");
@@ -166,4 +169,16 @@ test("the registry drops a batch's snapshot when its last child goes, or when no
     await p.unref("run:m3", "child-c");
     assert.equal(logged.length, before);
   } finally { console.error = error; }
+});
+
+test("a computer that was used has a disk the fork route never overwrites; one still starting is not forked", async () => {
+  const m = machine(), p = m.provider(() => 10_000);
+  assert.equal(await p.hasDisk(), false, "never used");
+  await operate(p, { op: "exec", argv: ["true"] });
+  assert.equal(await p.hasDisk(), true);
+  await operate(p, { op: "sleep" });
+  assert.equal(await p.hasDisk(), true, "its saved base");
+  m.data.set("computer:starting", { from: "image", at: 10_000 });
+  const starting = await p.forkSnapshot("run:m9", AbortSignal.timeout(1000));
+  assert.equal(starting.ok ? undefined : starting.code, "COMPUTER_STARTING");
 });
