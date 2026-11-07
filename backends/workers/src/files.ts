@@ -17,6 +17,7 @@ import { signVolumeLink, verifyVolumeLink } from "./file-links.ts";
 import { ARCHIVE_LIMITS, READ_ALL_LIMITS } from "./volume-policy.ts";
 import { defineTool } from "@earendil-works/pi-durable";
 import { obj, opt, str, arr, bool, int } from "@earendil-works/pi-schema";
+import { editArguments } from "./edit-arguments.ts";
 import { withSql } from "./postgres.ts";
 import { withMoneyIdempotency } from "./money-idempotency.ts";
 import { digest, FileError, normalizePath, type Volume, type FileEntry } from "./volume.ts";
@@ -978,6 +979,8 @@ export function volumeTools(
         path: str(),
         edits: arr(obj({ oldText: str(), newText: str() })),
       }),
+      // A top-level oldText/newText pair and other common shapes are repaired before validation, as Pi's edit does.
+      prepareArguments: editArguments as never,
       async execute({ path, edits }) {
         const t = await target(path, true),
           { file, bytes } = await t.v.read(t.path, undefined, 1024 * 1024);
