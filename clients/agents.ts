@@ -11,7 +11,7 @@
  */
 import {
   AgentClient, AgentError, AgentRuntime, RunError, toolServer,
-  type AgentFiles, type Builtin, type DelegateSettings, type InlineMcpServer, type RecordedMessage, type AgentInput, type AgentOptions, type Attachment, type CreateAgentOptions, type HistoryPage, type InputAnswer,
+  type AgentFiles, type Builtin, type DelegateSettings, type InlineMcpServer, type RecordedMessage, type AgentInput, type ChildAgent, type AgentOptions, type Attachment, type CreateAgentOptions, type HistoryPage, type InputAnswer,
   type ContextReset, type ForkedFrom, type ForkOptions, type MountInput, type RunResult, type RunUsage, type RuntimeOptions, type Sender, type SessionCredentials, type ToolError, type RunToolCall, type ToolServer, type Tools, type AgentFile, type SteerReceipt,
   type RunFrame, type RunInputPart, type RunRequest, type StatelessRun, type CreditReason,
 } from "./typescript.ts";
@@ -694,6 +694,12 @@ export class Agent {
 
   /** Inputs waiting on people, across the agent's runs. */
   async pendingInputs(): Promise<RunInput[]> { return (await this.client.inputs("pending")).map(input => this.input(input)); }
+  /**
+   * Its sub-agents (delegate and spawn_agent children), newest first, each as its latest run says: `status`, `delivered`
+   * (its answer reached this agent yet) and a running one's `progress`. This agent idle and every child ended and
+   * delivered: the whole tree is settled.
+   */
+  children(): Promise<ChildAgent[]> { return this.client.children(); }
   /** The agent's whole history (`historyPage` reads a page at a time). */
   /** Its whole history: every message, oldest first (`historyPage` reads a page at a time). */
   async history(): Promise<RecordedMessage[]> { return (await this.client.history()).messages; }

@@ -542,6 +542,11 @@ class Agent:
         """Inputs waiting on people, across the agent's runs."""
         return [RunInput(self, input) for input in self.client.inputs(state="pending")]
 
+    def children(self):
+        """Its sub-agents (delegate and spawn_agent children), newest first, as dicts: status, delivered (its answer
+        reached this agent yet) and a running one's progress."""
+        return self.client.children()["children"]
+
     def history(self):
         """Its whole history: every message, oldest first (history_page reads a page at a time)."""
         return self.client.history()["messages"]

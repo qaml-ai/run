@@ -6556,6 +6556,41 @@ A browser token minted with the `children` scope (with the others it needs:
 too, by their ids, as it reads the agent: a chat can reload a sub-agent's
 transcript with its parent's token.
 
+### Listing an agent's children
+
+`GET /v1/agents/{id}/children` (`agent.children()` in the SDKs) lists the
+sub-agents the agent's `delegate` and `spawn_agent` calls started, and those
+its tools' spawn directives started. The newest come first, at most 200. Each
+one is shown as its latest run says (a message or a resume starts it again):
+
+```json
+{ "children": [
+  { "agentId": "client_…", "name": "readme-badge", "background": true, "status": "completed",
+    "requestId": "spawn_…", "toolCallId": "call_…", "startedAt": 1762400000000, "endedAt": 1762400064000,
+    "delivered": true },
+  { "agentId": "client_…", "name": "bump-sdk", "background": true, "status": "running",
+    "requestId": "spawn_…", "toolCallId": "call_…", "startedAt": 1762400100000,
+    "progress": "tests pass; pushing", "progressAt": 1762400160000 }
+] }
+```
+
+| Field | |
+| --- | --- |
+| `background` | `true` for a `spawn_agent` child, whose answer is a notification. `false` for a `delegate` child, whose answer is the call's result |
+| `status` | `running`, `completed`, `failed`, `aborted` or `input_required`, as `list_agents` says |
+| `requestId` | its latest run, on the child: `GET /v1/agents/{agentId}/requests/{requestId}`, or its events with `?request=` |
+| `toolCallId` | the parent's call that started that run (`spawn_agent`, `delegate` or `send_message`) |
+| `delivered` | for a child that ended or waits on a person: whether its answer has reached the parent yet. That is, its notification landed, or a `wait_agent` or the `delegate` call took it. `false` means a notification is still on its way, and it will start or join a turn of the parent's |
+| `progress`, `progressAt` | a running child's latest [progress report](https://run.camelai.com/docs/guides/multi-agent.md#progress) |
+| `error` | why a background child's run failed or was aborted |
+
+Use it to tell when the whole tree has settled, without reading history: the
+agent's `GET …/state` has nothing running or queued, and every child has ended
+with `delivered: true`. Ask the children's own `children` for grandchildren.
+
+The agent's own token reads it at `/clients/{id}/children`. A browser token
+needs the `children` scope.
+
 ### Workers your tools prepare
 
 A tool can start a sub-agent for the model, so the model never names an agent:
@@ -7894,6 +7929,7 @@ what changed without keeping a manifest. It is opaque: compare it, never parse i
 | `agent.run(text, options)` | `await agent.run(text, …)` | send a message, wait for the run: a `Run` |
 | `agent.stream(text, options)` | `agent.stream(text, …)` | the run as it happens: `for await` / `async for` over parts |
 | `agent.pendingInputs()` | `pending_inputs()` | inputs waiting on people, each with `answer()` |
+| `agent.children()` | `children()` | its sub-agents (`delegate` and `spawn_agent` children), newest first: status, `delivered`, progress. See [Listing an agent's children](https://run.camelai.com/docs/guides/multi-agent.md#listing-an-agents-children) |
 | `agent.history()`, `historyPage({ before, after, limit, maxBytes })` | `history()`, `history_page(before=, after=, limit=, max_bytes=)` | the whole history (a list of messages, oldest first), or a page of whole turns: `before` pages back from the newest, `after` pages forward (see [History in pages](https://run.camelai.com/docs/reference/sdk.md#history-in-pages)) |
 | `agent.send(text, options)`, `agent.wait(id)` | `await send(text, …)`, `await wait(id)` | send a message without waiting: resolves once the runtime has taken it, with `{id, state}` (`POST …/prompt`'s 202); `wait(id)` is its `Run` later, from this process or another. For work queues and webhooks that should not hold a connection for the whole run |
 | `agent.steer(text, options)` | `steer(text, …)` | hand the running turn a message (else start one), answered as soon as the runtime has it: `{id, status: "accepted" \| "taken" \| "queued", steeredInto?}`. `wait: true` (`wait=True`) resolves with the run that took it instead, as `run(text, { whileRunning: "steer" })` |

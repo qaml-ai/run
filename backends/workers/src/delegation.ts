@@ -30,6 +30,33 @@ export function childUsageCost(usage?: ChildUsage) {
 export type ShownProgress = { key: string; name: string; text: string; at: number; sequence: number };
 export type ChildProgressReport = { agentId: string; requestId: string; text: string; callId: string };
 export type DelegatedChild = { id: string; key: string; requestId: string; parentRequestId: string; toolCallId: string; callId?: string; task: string; name: string; depth: number; maxDepth?: number; chain?: string[]; root?: string; background?: boolean; folded?: boolean; createdAt: number; endedAt?: number; status: string; made: boolean; held?: number; spent?: number; charged?: boolean; outcome?: ChildRun['outcome']; error?: string; notified?: boolean; landedBy?: 'wait' | 'notice'; accepted?: boolean; cancelRequested?: boolean; progress?: { text: string; at: number; sequence: number }; progressShown?: number; progressCalls?: string[] };
+/** How many children `GET /v1/agents/{id}/children` lists, newest first (as Node's CHILDREN_LISTED). */
+export const CHILDREN_LISTED = 200;
+/**
+ * `GET /v1/agents/{id}/children`: every child the agent's delegate and spawn_agent calls (and tools' spawn directives)
+ * started, newest first, each as its latest record says (a message that started a turn, or a resume, is a record of its
+ * own; one its running turn took, folded, is not). `delivered`: an ended child's answer reached the parent (its
+ * notification landed, or a wait_agent took it; a delegate call's answer is its result).
+ */
+export function childrenView(children: DelegatedChild[]) {
+  const started = new Map<string, number>(), latest = new Map<string, DelegatedChild>();
+  for (const child of children) {
+    if (!child.id || child.folded) continue;
+    started.set(child.id, Math.min(started.get(child.id) ?? child.createdAt, child.createdAt));
+    latest.delete(child.id);
+    latest.set(child.id, child);
+  }
+  return [...latest.values()].reverse().slice(0, CHILDREN_LISTED).map(child => {
+    const running = child.status === 'running', background = !!child.background;
+    return {
+      agentId: child.id, name: child.name, background, status: child.status, requestId: child.requestId, toolCallId: child.toolCallId,
+      startedAt: started.get(child.id)!, ...(!running && child.endedAt !== undefined ? { endedAt: child.endedAt } : {}),
+      ...(!running ? { delivered: background ? !!child.landedBy : true } : {}),
+      ...(running && child.progress ? { progress: child.progress.text, progressAt: child.progress.at } : {}),
+      ...(!running && background && child.error ? { error: child.error } : {}),
+    };
+  });
+}
 export interface DelegationHost {
   storage: DurableObjectStorage;
   secret: string;

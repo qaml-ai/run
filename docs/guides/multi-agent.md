@@ -429,6 +429,41 @@ A browser token minted with the `children` scope (with the others it needs:
 too, by their ids, as it reads the agent: a chat can reload a sub-agent's
 transcript with its parent's token.
 
+### Listing an agent's children
+
+`GET /v1/agents/{id}/children` (`agent.children()` in the SDKs) lists the
+sub-agents the agent's `delegate` and `spawn_agent` calls started, and those
+its tools' spawn directives started. The newest come first, at most 200. Each
+one is shown as its latest run says (a message or a resume starts it again):
+
+```json
+{ "children": [
+  { "agentId": "client_…", "name": "readme-badge", "background": true, "status": "completed",
+    "requestId": "spawn_…", "toolCallId": "call_…", "startedAt": 1762400000000, "endedAt": 1762400064000,
+    "delivered": true },
+  { "agentId": "client_…", "name": "bump-sdk", "background": true, "status": "running",
+    "requestId": "spawn_…", "toolCallId": "call_…", "startedAt": 1762400100000,
+    "progress": "tests pass; pushing", "progressAt": 1762400160000 }
+] }
+```
+
+| Field | |
+| --- | --- |
+| `background` | `true` for a `spawn_agent` child, whose answer is a notification. `false` for a `delegate` child, whose answer is the call's result |
+| `status` | `running`, `completed`, `failed`, `aborted` or `input_required`, as `list_agents` says |
+| `requestId` | its latest run, on the child: `GET /v1/agents/{agentId}/requests/{requestId}`, or its events with `?request=` |
+| `toolCallId` | the parent's call that started that run (`spawn_agent`, `delegate` or `send_message`) |
+| `delivered` | for a child that ended or waits on a person: whether its answer has reached the parent yet. That is, its notification landed, or a `wait_agent` or the `delegate` call took it. `false` means a notification is still on its way, and it will start or join a turn of the parent's |
+| `progress`, `progressAt` | a running child's latest [progress report](#progress) |
+| `error` | why a background child's run failed or was aborted |
+
+Use it to tell when the whole tree has settled, without reading history: the
+agent's `GET …/state` has nothing running or queued, and every child has ended
+with `delivered: true`. Ask the children's own `children` for grandchildren.
+
+The agent's own token reads it at `/clients/{id}/children`. A browser token
+needs the `children` scope.
+
 ### Workers your tools prepare
 
 A tool can start a sub-agent for the model, so the model never names an agent:

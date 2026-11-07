@@ -254,6 +254,43 @@ async function childrenOf(ctx: ChildrenContext, parent: string) {
 }
 
 /**
+ * `GET /v1/agents/{id}/children`: every child the agent's delegate and spawn_agent calls (and tools' spawn directives)
+ * started, newest first, at most CHILDREN_LISTED, each as its latest run says: a message or a resume starts it again (a
+ * message its running turn took has no run of its own). `delivered`: an ended child's answer reached the parent (its
+ * notification landed, a wait_agent or the delegate call took it); for one waiting on a person, whether that notice did.
+ * So a client tells the whole tree is settled without reading history: the agent idle, and every child ended and delivered.
+ */
+export async function childrenView(ctx: ChildrenContext, parent: string): Promise<ChildView[]> {
+  const { rows } = await ctx.db.query(`select latest.*, (select paused.landed_at from agent_children paused where paused.parent = latest.parent and paused.child = latest.child
+      and paused.status = 'input_required' order by paused.created_at desc limit 1) as paused_landed_at
+    from (select distinct on (child) *, min(created_at) over (partition by child) as started from agent_children
+      where parent = $1 and landed_by is distinct from 'steer' and landed_by is distinct from 'superseded'
+      order by child, created_at desc, id desc) latest order by latest.created_at desc, latest.id desc limit ${CHILDREN_LISTED}`, [parent]);
+  return rows.map(row => {
+    const running = row.ended_at === null, paused = running && row.kind === "resume";
+    const notice = typeof row.notice === "string" ? JSON.parse(row.notice) : row.notice;
+    const error = notice?.notice?.metadata?.error;
+    return {
+      agentId: row.child as string, name: row.name as string, background: row.kind !== "delegate",
+      status: paused ? "input_required" : running ? "running" : row.status as string,
+      requestId: row.request_id as string, toolCallId: row.tool_call_id as string,
+      startedAt: Number(row.started), ...!running ? { endedAt: Number(row.ended_at) } : {},
+      ...paused ? { delivered: row.paused_landed_at !== null } : !running ? { delivered: row.landed_at !== null } : {},
+      ...running && !paused && Number(row.progress_seq) > 0 ? { progress: row.progress as string, progressAt: Number(row.progress_at) } : {},
+      ...!running && typeof error === "string" ? { error } : {},
+    };
+  });
+}
+
+/** How many children `GET /v1/agents/{id}/children` lists, newest first. */
+export const CHILDREN_LISTED = 200;
+
+export type ChildView = {
+  agentId: string; name: string; background: boolean; status: string; requestId: string; toolCallId: string;
+  startedAt: number; endedAt?: number; delivered?: boolean; progress?: string; progressAt?: number; error?: string;
+};
+
+/**
  * The latest progress report of each of the agent's running background children, by child: of the row whose run it is
  * working on (its spawn's, or a message's that started a turn; a message its running turn took has no run of its own).
  */

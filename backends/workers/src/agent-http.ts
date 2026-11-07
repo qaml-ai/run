@@ -18,6 +18,7 @@ import { scheduleDeliveries, type StoredSchedule as Schedule } from "./schedules
 import { keyServices } from "./security-services.ts";
 import { admissionHeaders, admissionError, errorFields, errorHeaders } from "./admission.ts";
 import { requestView } from "./request-view.ts";
+import { childrenView } from "./delegation.ts";
 import { waitForRequest } from "./request-wait.ts";
 import { wordedFileTools } from "./file-tool-selection.ts";
 import type { DefinitionTarget } from "./definitions.ts";
@@ -31,7 +32,7 @@ import { agentBuiltins } from "./agent-builtins.ts";
 import { resetContext } from "./context-reset.ts";
 import { setAgentSpendLimit } from "./agent-spend.ts";
 import { releasePresentedFiles } from "./file-output.ts";
-import { Config, RequestRecord, Env, json, canonical, Child, reqKey } from "./agent-types.ts";
+import { Config, RequestRecord, Env, json, canonical, reqKey } from "./agent-types.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
 
 export function replayedRequestImpl(this: AgentRuntime,
@@ -431,12 +432,10 @@ export async function fetchRequestImpl(this: AgentRuntime,
         await this.arm();
         return json({ deleted });
       }
+      // The public list (GET /v1/agents/{id}/children, as on Node). It replaces the prototype's list of `child:` records,
+      // which nothing read; the prototype's POST below still makes one.
       if (path === "/children" && request.method === "GET")
-        return json([
-          ...(await this.ctx.storage
-            .list<Child>({ prefix: "child:" })
-            .then((x) => x.values())),
-        ]);
+        return json({ children: childrenView(await this.delegation.children()) });
       if (path === "/children" && request.method === "POST") {
         const input = object(await body(request), ["task", "key", "agent"]);
         return json(

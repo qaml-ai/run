@@ -172,7 +172,7 @@ const withoutToken = <T extends object>(c: Context<Env>, made: T): T => {
 /** Who a caller is, as a webhook or trace export records who last set it (Webhooks.setBy). */
 const setter = (principal: Caller) => principal.tokenId ? `token:${principal.tokenId}` : principal.via === "oauth" ? `oauth:${(principal as { grantId?: string }).grantId}` : principal.via;
 /** The routes a browser token reads, by scope: GET /v1/agents/<its agent>/<scope>. */
-const BROWSER_ROUTE = /^\/v1\/agents\/([^/]+)\/(events|state|history|inputs)$/;
+const BROWSER_ROUTE = /^\/v1\/agents\/([^/]+)\/(events|state|history|inputs|children)$/;
 
 const DOCUMENT = {
   openapi: "3.1.0",
@@ -776,6 +776,10 @@ export function api(context: ApiContext) {
     responses: { 200: reply("The request and, once settled, its outcome", schema.RequestRecord) },
   }), c => clients.requestFor(c, c.req.param("id")!, c.var.principal.tenant, c.req.param("requestId")!));
 
+  route(createRoute({
+    method: "get", path: "/v1/agents/{id}/children", request: { params: agentId }, security: readers,
+    responses: { 200: reply("The children its delegate and spawn_agent calls (and tools' spawn directives) started, newest first, each as its latest run says: whether it runs, how it ended, whether its answer reached the agent yet, and a running one's latest progress. The agent idle (state) and every child ended and delivered: the whole tree is settled", schema.ChildAgents) },
+  }), async c => json(c, 200, { children: await clients.childrenFor(c.req.param("id")!) }));
   const inputState = z.object({ state: z.enum(["pending", "answered", "declined", "cancelled", "expired", "superseded"]).optional() });
   route(createRoute({ method: "get", path: "/v1/agents/{id}/inputs", request: { params: agentId, query: inputState }, security: readers, responses: { 200: reply("The agent's human inputs, newest first", z.array(schema.Input)) } }),
     async c => {
