@@ -229,248 +229,251 @@ export function createHarness(this: AgentRuntime): PiHarness {
       // Pi's open runs inside the SDK's startup (blockConcurrencyWhile, reset after 30 s): its slow parts are logged
       // (agent_start_slow), as restorePending's are; on the pilot, resets came before onStart ran.
       let lapAt = Date.now(), stuck = startStuck(this, "harness model (config, custom providers, key services)");
-      const lap = (step: string, next?: string) => {
-        const now = Date.now(); clearTimeout(stuck);
-        if (now - lapAt > 2_000) console.warn(JSON.stringify({ type: "agent_start_slow", step, ms: now - lapAt, sinceConstructedMs: now - this.constructedAt }));
-        lapAt = now; if (next) stuck = startStuck(this, next);
-      };
-      const registry = this.registry;
-      const conf = await this.config();
-      // A recreated object must register the stored custom model before Pi resumes tasks.
-      const model = this.models.resolve(
-        conf.config.model,
-        conf.config.runLimits?.contextTokens,
-        await resolveCustomProviders(
-          this.env,
-          conf.tenantId,
-          conf.config.keyScope,
-        ),
-        (await keyServices(this.env)).tenants.modelEndpoints(conf.tenantId),
-        conf.resolvedModel,
-      );
-      lap("harness model (config, custom providers, key services)", "harness tools");
-      this.modelCompaction = fixed => modelCompactionSettings(model, conf.config.maxOutputTokens, fixed);
-      registry.install(
-        runtimePromptSections(
-          async () => {
-            const config = (await this.config()).config;
-            const run = await this.currentRun();
-            return { ...config, output: "params" in run ? run.params?.output : undefined } as never;
-          },
-        ),
-      );
-      registry.install(senderExtension());
-      registry.install(humanInputExtension());
-      registry.install(toolOutputExtension(this.env, async (api, callId) => {
-        const conf = await this.config(), pi = await this.harness.pi();
-        const site = await toolCallSite({ taskId: api.taskId, callId, getTask: pi.getTask.bind(pi) } as ToolExecutionApi);
-        if (site.assistant !== undefined) {
-          await this.historyIndex.sync(await pi.root(BACKGROUND_CONTEXT));
-          site.messageIndex = this.historyIndex.messageIndex(site.assistant);
-        }
-        return { tenant: conf.tenantId, agent: conf.id, mounts: (conf.config.mounts ?? []) as Mount[], fileTools: conf.config.fileTools, codeMode: conf.config.codeMode, fileArguments: Object.fromEntries([...(conf.config.mcpServers ?? []), ...(conf.config.openApi ?? [])].map(source => [source.name, takesFiles(source)])), call: site };
-      }));
-      // After the result is capped (tool-output.ts keeps the <agent_updates> part whole): children's progress rides on it.
-      registry.install(agentUpdatesExtension(() => this.delegation, async (api, callId) => {
-        const pi = await this.harness.pi();
-        const site = await toolCallSite({ taskId: api.taskId, callId, getTask: pi.getTask.bind(pi) } as ToolExecutionApi);
-        return site.assistant === undefined ? [] : (await api.entry(site.assistant as never, BACKGROUND_CONTEXT))?.model ?? [];
-      }));
-      registry.install(this.limits.extension());
-      registry.install(contextRangeExtension(
-        contextRangeLimit((this.env as Env & { AGENT_CONTEXT_RANGE_MAX_BYTES?: string }).AGENT_CONTEXT_RANGE_MAX_BYTES),
-        async () => (await this.harness.pi()).root(BACKGROUND_CONTEXT),
-        async failure => { await this.ctx.storage.put(`run-limit:${(await this.currentRun()).id}`, failure); },
-      ));
-      // User files live in the volume DO/R2; code runs in the separate sandbox.
-      const templates = volumeTools(
-        this.env,
-        "_uninitialized",
-        "_uninitialized",
-      );
-      const tools: ToolRegistration[] = compatibleFileTools(
-        templates.map((tool, index) => ({
-          ...tool,
-          execute: async (args, api, context) => {
-            const config = await this.config();
-            const impl = volumeTools(
-              this.env,
-              config.tenantId,
-              config.id,
-              async () => (config.config.mounts as never) ?? [],
-              async (file, volumePath) => {
-                await presentedFile(
-                  this.ctx.storage,
-                  this.env,
-                  {
-                    requestId: await this.fileRequestId(api.conversationId),
-                    callId: api.callId,
-                    tenant: config.tenantId,
-                    origin: await this.ctx.storage.get<string>("file-origin"),
-                  },
-                  file,
-                  volumePath,
-                  (event) => this.emit(event),
-                );
-              },
-              async (file) =>
-                writtenFile(
-                  this.ctx.storage,
-                  await this.fileRequestId(api.conversationId),
-                  file,
-                ),
-              this.fileVersions,
-            )[index];
-            return impl.execute(args as never, api, context);
-          },
-        })),
-      );
-      this.workspaceToolNames = tools.map((tool) => tool.name);
-      this.workspaceFileTools = tools;
-      registry.install({
-        name: "camel.files",
-        tools: wordedFileTools(tools, conf.config),
-        sections: [],
-      });
-      registry.install({ name: "camel.human", tools: [askHuman, askUser] });
-      // A channel's agents send updates and files to their conversation before the final reply. One that also messages
-      // agents (its sub-agents) gets one send_message for both, dispatched on `to` (installed with camel.delegation).
-      const messaging = this.channels.messaging(async () => this.config(), async api => { const run = await this.currentRun(api as never); return run.id === "background" ? undefined : run.id; },
-        conf.config.type === "channel", await this.delegation.toolsFor(conf.config.delegate ?? {}, conf.config.builtins ?? [], conf.config.type === "subagent"));
-      registry.install({ name: "camel.channels", tools: messaging.channels });
-      registry.install({
-        name: "camel.images",
-        tools: await this.imageTools(),
-      });
-      registry.install({
-        name: "camel.computers",
-        tools: attachedComputerTools(
-          this.env,
-          () => this.config(),
-          (run) =>
-            this.serializeComputer(async () => {
-              try {
-                return await run();
-              } finally {
-                await this.arm();
-              }
-            }),
-        ),
-      });
-      registry.install({
-        name: "camel.application",
-        tools: this.attached.tools(conf.config.mcp?.tools ?? [], (api) =>
-          this.sourceIdentity(api),
-        ),
-      });
-      registry.install({
-        name: "camel.sources",
-        tools: await sourceTools(
-          this.env,
-          conf.tenantId,
-          conf.config.definition,
-          conf.config as never,
-          undefined,
-          (api) => this.sourceIdentity(api),
-          (failures) => { this.sourceFailures = failures; },
-          (input, api, context) => this.decisions.judge(input, context.abortSignal ?? new AbortController().signal, api),
-        ),
-      });
-      registry.install({
-        name: "camel.web",
-        tools: await agentBuiltins(this.env, async (api) => {
-          const conf = await this.config();
-          const run = await this.currentRun(api);
-          const params = "params" in run ? run.params : undefined;
-          return {
-            tenant: conf.tenantId,
-            agent: conf.id,
-            requestId: run.id === "background" ? undefined : run.id,
-            spendLimit: (params?.spendLimit as { usd?: number } | undefined)
-              ?.usd,
-            builtins: conf.config.builtins,
-            webSearch: conf.config.webSearch,
-            keyScope: conf.config.keyScope,
-            identity: { subject: conf.config.subject, context: conf.config.context },
-            actor: ("actor" in run ? run.actor : undefined) ?? params?.actor as string | undefined,
-            bucket: (params?.bucket as string | undefined) ?? conf.config.bucket ?? await this.ctx.storage.get<string>("run-bucket") ?? "default",
-            files: (await this.sourceIdentity(api)).toolFiles('web_fetch'),
-          };
-        }, { schedules: this.scheduleTools() }),
-      });
-      registry.install({
-        name: "camel.decisions",
-        tools:
-          offersDecisions(conf.config) && (await this.decisions.available())
-            ? [this.decisions.tool()]
-            : [],
-      });
-      registry.install({
-        name: "camel.output",
-        tools: [
-          {
-            name: "final_output",
-            description: "End the run with the requested structured output.",
-            parameters: { type: "object", additionalProperties: true },
-            callers: ["model"],
-            replay: "safe",
-            execute: async (args, api) => {
-              const run = await this.currentRun(api);
-              const schema = (
-                "params" in run ? run.params?.output : undefined
-              ) as { schema?: object } | undefined;
-              if (!schema?.schema)
-                throw new Error("This run has no output schema");
-              if (!schemaAccepts(schema.schema, args)) {
-                throw new Error('Validation failed for tool "final_output": arguments do not match the requested schema');
-              }
-              await this.ctx.storage.put(`output:${run.id}`, args);
-              return {
-                output: [{ type: "text", text: "Accepted." }],
-                details: { output: args as JsonValue },
-                control: { terminate: true },
-              };
+      // A step that throws clears its timer too, or the step would be logged stuck (agent_start_stuck) after it failed.
+      try {
+        const lap = (step: string, next?: string) => {
+          const now = Date.now(); clearTimeout(stuck);
+          if (now - lapAt > 2_000) console.warn(JSON.stringify({ type: "agent_start_slow", step, ms: now - lapAt, sinceConstructedMs: now - this.constructedAt }));
+          lapAt = now; if (next) stuck = startStuck(this, next);
+        };
+        const registry = this.registry;
+        const conf = await this.config();
+        // A recreated object must register the stored custom model before Pi resumes tasks.
+        const model = this.models.resolve(
+          conf.config.model,
+          conf.config.runLimits?.contextTokens,
+          await resolveCustomProviders(
+            this.env,
+            conf.tenantId,
+            conf.config.keyScope,
+          ),
+          (await keyServices(this.env)).tenants.modelEndpoints(conf.tenantId),
+          conf.resolvedModel,
+        );
+        lap("harness model (config, custom providers, key services)", "harness tools");
+        this.modelCompaction = fixed => modelCompactionSettings(model, conf.config.maxOutputTokens, fixed);
+        registry.install(
+          runtimePromptSections(
+            async () => {
+              const config = (await this.config()).config;
+              const run = await this.currentRun();
+              return { ...config, output: "params" in run ? run.params?.output : undefined } as never;
             },
+          ),
+        );
+        registry.install(senderExtension());
+        registry.install(humanInputExtension());
+        registry.install(toolOutputExtension(this.env, async (api, callId) => {
+          const conf = await this.config(), pi = await this.harness.pi();
+          const site = await toolCallSite({ taskId: api.taskId, callId, getTask: pi.getTask.bind(pi) } as ToolExecutionApi);
+          if (site.assistant !== undefined) {
+            await this.historyIndex.sync(await pi.root(BACKGROUND_CONTEXT));
+            site.messageIndex = this.historyIndex.messageIndex(site.assistant);
+          }
+          return { tenant: conf.tenantId, agent: conf.id, mounts: (conf.config.mounts ?? []) as Mount[], fileTools: conf.config.fileTools, codeMode: conf.config.codeMode, fileArguments: Object.fromEntries([...(conf.config.mcpServers ?? []), ...(conf.config.openApi ?? [])].map(source => [source.name, takesFiles(source)])), call: site };
+        }));
+        // After the result is capped (tool-output.ts keeps the <agent_updates> part whole): children's progress rides on it.
+        registry.install(agentUpdatesExtension(() => this.delegation, async (api, callId) => {
+          const pi = await this.harness.pi();
+          const site = await toolCallSite({ taskId: api.taskId, callId, getTask: pi.getTask.bind(pi) } as ToolExecutionApi);
+          return site.assistant === undefined ? [] : (await api.entry(site.assistant as never, BACKGROUND_CONTEXT))?.model ?? [];
+        }));
+        registry.install(this.limits.extension());
+        registry.install(contextRangeExtension(
+          contextRangeLimit((this.env as Env & { AGENT_CONTEXT_RANGE_MAX_BYTES?: string }).AGENT_CONTEXT_RANGE_MAX_BYTES),
+          async () => (await this.harness.pi()).root(BACKGROUND_CONTEXT),
+          async failure => { await this.ctx.storage.put(`run-limit:${(await this.currentRun()).id}`, failure); },
+        ));
+        // User files live in the volume DO/R2; code runs in the separate sandbox.
+        const templates = volumeTools(
+          this.env,
+          "_uninitialized",
+          "_uninitialized",
+        );
+        const tools: ToolRegistration[] = compatibleFileTools(
+          templates.map((tool, index) => ({
+            ...tool,
+            execute: async (args, api, context) => {
+              const config = await this.config();
+              const impl = volumeTools(
+                this.env,
+                config.tenantId,
+                config.id,
+                async () => (config.config.mounts as never) ?? [],
+                async (file, volumePath) => {
+                  await presentedFile(
+                    this.ctx.storage,
+                    this.env,
+                    {
+                      requestId: await this.fileRequestId(api.conversationId),
+                      callId: api.callId,
+                      tenant: config.tenantId,
+                      origin: await this.ctx.storage.get<string>("file-origin"),
+                    },
+                    file,
+                    volumePath,
+                    (event) => this.emit(event),
+                  );
+                },
+                async (file) =>
+                  writtenFile(
+                    this.ctx.storage,
+                    await this.fileRequestId(api.conversationId),
+                    file,
+                  ),
+                this.fileVersions,
+              )[index];
+              return impl.execute(args as never, api, context);
+            },
+          })),
+        );
+        this.workspaceToolNames = tools.map((tool) => tool.name);
+        this.workspaceFileTools = tools;
+        registry.install({
+          name: "camel.files",
+          tools: wordedFileTools(tools, conf.config),
+          sections: [],
+        });
+        registry.install({ name: "camel.human", tools: [askHuman, askUser] });
+        // A channel's agents send updates and files to their conversation before the final reply. One that also messages
+        // agents (its sub-agents) gets one send_message for both, dispatched on `to` (installed with camel.delegation).
+        const messaging = this.channels.messaging(async () => this.config(), async api => { const run = await this.currentRun(api as never); return run.id === "background" ? undefined : run.id; },
+          conf.config.type === "channel", await this.delegation.toolsFor(conf.config.delegate ?? {}, conf.config.builtins ?? [], conf.config.type === "subagent"));
+        registry.install({ name: "camel.channels", tools: messaging.channels });
+        registry.install({
+          name: "camel.images",
+          tools: await this.imageTools(),
+        });
+        registry.install({
+          name: "camel.computers",
+          tools: attachedComputerTools(
+            this.env,
+            () => this.config(),
+            (run) =>
+              this.serializeComputer(async () => {
+                try {
+                  return await run();
+                } finally {
+                  await this.arm();
+                }
+              }),
+          ),
+        });
+        registry.install({
+          name: "camel.application",
+          tools: this.attached.tools(conf.config.mcp?.tools ?? [], (api) =>
+            this.sourceIdentity(api),
+          ),
+        });
+        registry.install({
+          name: "camel.sources",
+          tools: await sourceTools(
+            this.env,
+            conf.tenantId,
+            conf.config.definition,
+            conf.config as never,
+            undefined,
+            (api) => this.sourceIdentity(api),
+            (failures) => { this.sourceFailures = failures; },
+            (input, api, context) => this.decisions.judge(input, context.abortSignal ?? new AbortController().signal, api),
+          ),
+        });
+        registry.install({
+          name: "camel.web",
+          tools: await agentBuiltins(this.env, async (api) => {
+            const conf = await this.config();
+            const run = await this.currentRun(api);
+            const params = "params" in run ? run.params : undefined;
+            return {
+              tenant: conf.tenantId,
+              agent: conf.id,
+              requestId: run.id === "background" ? undefined : run.id,
+              spendLimit: (params?.spendLimit as { usd?: number } | undefined)
+                ?.usd,
+              builtins: conf.config.builtins,
+              webSearch: conf.config.webSearch,
+              keyScope: conf.config.keyScope,
+              identity: { subject: conf.config.subject, context: conf.config.context },
+              actor: ("actor" in run ? run.actor : undefined) ?? params?.actor as string | undefined,
+              bucket: (params?.bucket as string | undefined) ?? conf.config.bucket ?? await this.ctx.storage.get<string>("run-bucket") ?? "default",
+              files: (await this.sourceIdentity(api)).toolFiles('web_fetch'),
+            };
+          }, { schedules: this.scheduleTools() }),
+        });
+        registry.install({
+          name: "camel.decisions",
+          tools:
+            offersDecisions(conf.config) && (await this.decisions.available())
+              ? [this.decisions.tool()]
+              : [],
+        });
+        registry.install({
+          name: "camel.output",
+          tools: [
+            {
+              name: "final_output",
+              description: "End the run with the requested structured output.",
+              parameters: { type: "object", additionalProperties: true },
+              callers: ["model"],
+              replay: "safe",
+              execute: async (args, api) => {
+                const run = await this.currentRun(api);
+                const schema = (
+                  "params" in run ? run.params?.output : undefined
+                ) as { schema?: object } | undefined;
+                if (!schema?.schema)
+                  throw new Error("This run has no output schema");
+                if (!schemaAccepts(schema.schema, args)) {
+                  throw new Error('Validation failed for tool "final_output": arguments do not match the requested schema');
+                }
+                await this.ctx.storage.put(`output:${run.id}`, args);
+                return {
+                  output: [{ type: "text", text: "Accepted." }],
+                  details: { output: args as JsonValue },
+                  control: { terminate: true },
+                };
+              },
+            },
+          ],
+        });
+        registry.install({
+          name: "camel.delegation",
+          tools: messaging.delegation,
+        });
+        registry.install({
+          name: "camel.linux",
+          tools: [computerTool(this.env, this.ctx.id.toString(), async () => computerSetup(this.env, await this.config()), conf.config.computer)],
+        });
+        const sandbox = new SessionCodemodeSandbox({ remote: this.sandboxRemote });
+        registry.install({
+          name: "camel.host-execute",
+          tools: [hostExecutionTool(sandbox)],
+        });
+        this.codeExtension = createCodemodeExtension({
+          sandbox,
+          // Keep provider calls outside the script's capability set.
+          models: false,
+        });
+        registry.install(this.codeExtension);
+        this.availableTools = prioritizedTools(registry.snapshot().tools());
+        lap("harness tools", "Harness.open");
+        const opened = await Harness.open(
+          storage,
+          {
+            models: this.models.models,
+            registry: withCompactionPrompt(registry, fixed => this.modelCompaction?.(fixed)),
+            onWake,
+            settings: () => ({
+              afterFailedRun: "withdraw",
+              compaction: this.modelCompaction?.(0),
+              retry: { enabled: this.retryModelFailure, maxRetries: 2, baseDelayMs: 500 },
+            }),
           },
-        ],
-      });
-      registry.install({
-        name: "camel.delegation",
-        tools: messaging.delegation,
-      });
-      registry.install({
-        name: "camel.linux",
-        tools: [computerTool(this.env, this.ctx.id.toString(), async () => computerSetup(this.env, await this.config()), conf.config.computer)],
-      });
-      const sandbox = new SessionCodemodeSandbox({ remote: this.sandboxRemote });
-      registry.install({
-        name: "camel.host-execute",
-        tools: [hostExecutionTool(sandbox)],
-      });
-      this.codeExtension = createCodemodeExtension({
-        sandbox,
-        // Keep provider calls outside the script's capability set.
-        models: false,
-      });
-      registry.install(this.codeExtension);
-      this.availableTools = prioritizedTools(registry.snapshot().tools());
-      lap("harness tools", "Harness.open");
-      const opened = await Harness.open(
-        storage,
-        {
-          models: this.models.models,
-          registry: withCompactionPrompt(registry, fixed => this.modelCompaction?.(fixed)),
-          onWake,
-          settings: () => ({
-            afterFailedRun: "withdraw",
-            compaction: this.modelCompaction?.(0),
-            retry: { enabled: this.retryModelFailure, maxRetries: 2, baseDelayMs: 500 },
-          }),
-        },
-        context,
-      );
-      lap("Harness.open");
-      return opened;
+          context,
+        );
+        lap("Harness.open");
+        return opened;
+      } finally { clearTimeout(stuck); }
     },
   });
 }
