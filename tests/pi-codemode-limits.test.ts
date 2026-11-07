@@ -193,7 +193,8 @@ test("a script's error goes into its line as its name and shape: the first line,
     [undefined, "bad", "guest_error"],
   ]);
   assert.ok(lines[2].errorShape.startsWith(`Cannot read properties of undefined (reading "...") at step 0 xxx`) && lines[2].errorShape.length === 160 && lines[2].errorShape.endsWith("…"));
-  assert.doesNotMatch(JSON.stringify(lines), /hunter|secret|mochi|42/);
+  // Every field but the metric envelope, whose timestamp may hold a 42 of its own.
+  assert.doesNotMatch(JSON.stringify(lines.map(({ _aws, ...line }) => line)), /hunter|secret|mochi|42/);
 });
 
 test("an admin tenant's executions waiting on slow tools are not held to the node's memory-sized capacity", { timeout: 30_000 }, async t => {
