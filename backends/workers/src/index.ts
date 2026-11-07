@@ -1,3 +1,4 @@
+import { HttpError as CoreHttpError } from "../../../src/core/http-error.ts";
 import { serveToolFile } from './tool-files.ts';
 import { withMoneyMetrics } from "./money-metrics.ts";
 import { profileHttp } from "./db-profile.ts";
@@ -162,8 +163,9 @@ function scopedConfiguration(input: unknown) {
 function httpFailure(error: unknown, env: Env): Response {
   const limited = admissionError(error);
   if (limited) return limited;
-  if (error instanceof ApiError || error instanceof HttpError)
-    return Response.json({ error: error.message, code: error.code, ...errorFields(error), ...("details" in error ? error.details : {}) }, { status: error.status, headers: { 'cache-control': 'no-store', ...errorHeaders(error) } });
+  // The shared core's errors (src/core/http-error.ts: decision questions, channels) answer as this backend's own do.
+  if (error instanceof ApiError || error instanceof HttpError || error instanceof CoreHttpError)
+    return Response.json({ error: error.message, code: error.code ?? errorCode(error, error.status), ...errorFields(error), ...("details" in error ? error.details : {}) }, { status: error.status, headers: { 'cache-control': 'no-store', ...errorHeaders(error) } });
   if (error instanceof BadRequest || error instanceof URIError)
     return json({ error: error.message, code: "INVALID_REQUEST" }, 400);
   failure(env, "http_failed", error);
