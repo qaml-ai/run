@@ -359,10 +359,12 @@ export class Directory {
         [entry.id, this.tenantId, JSON.stringify(entry)],
       ),
     );
+    // The agent is revoked from here on: a shutdown that threw (an object reset while starting) is cleanup still
+    // pending, as one that answered an error is, not a failed deletion. Another DELETE finishes it.
     const response = await this.env.AGENTS.getByName(entry.id).fetch(
       new Request("https://agent/", { method: "DELETE" }),
-    );
-    if (!response.ok)
+    ).catch(() => undefined);
+    if (!response?.ok)
       return {
         failed: true,
         status: 503,

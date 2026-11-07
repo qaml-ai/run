@@ -3,7 +3,8 @@ import { forkComputerInto } from "./computers/child-fork.ts";
 import { modelCompactionSettings } from "./model-context.ts";
 import { forkSnapshot } from "./fork-snapshot.ts";
 import { seedHistory, writeModelContext } from "./history-seed.ts";
-import { errorCode } from "./errors.ts";
+import { errorCode, errorStatus } from "./errors.ts";
+import { failure } from "./observability.ts";
 import { withMoneyMetrics } from "./money-metrics.ts";
 import { type Message } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -286,7 +287,8 @@ export async function fetchRequestImpl(this: AgentRuntime,
           return json({ deleted: true });
         });
         this.admission = deletion.catch(() => {});
-        return deletion;
+        // Awaited, so a failed shutdown answers here (a retry finishes it) rather than rejecting the stub's fetch.
+        return await deletion;
       }
       if (path === "/__computer" && request.method === "POST") {
         const input = (await body(request)) as any;
@@ -699,11 +701,15 @@ export async function fetchRequestImpl(this: AgentRuntime,
     } catch (error) {
       const limited = admissionError(error);
       if (limited) return limited;
+      // A database that is unreachable or slower than its query timeout (PostgreSQL waits on a lock: a prompt's
+      // flushBilling waits on its tenant's turn settlements) answers 503, retryable, as the Worker's own routes do.
       const status =
         error instanceof BadRequest
           ? 400
           : ((error as { status?: number }).status ??
-            ((error as { code?: string }).code === "ENOENT" ? 404 : 500));
+            ((error as { code?: string }).code === "ENOENT" ? 404 : errorStatus(error, 500)));
+      // The Worker logs only errors thrown to it (http_failed); this answer it passes on was logged nowhere.
+      if (status >= 500) failure(this.env, "agent_http_failed", error);
       return json(
         {
           ...errorFields(error),
