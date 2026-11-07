@@ -682,3 +682,41 @@ test("computer egress with a GitHub App: a git push gets a token the runtime min
   assert.match(after.stdout, /exit=128/);
   assert.equal(github.minted().length, 1, "nothing minted after the App is deleted");
 });
+
+test('computer.idle "sleep": a machine that idles out saves its disk, and the next operation resumes it', {
+  timeout: 300_000, skip: requireDocker ? false : unavailable,
+}, async (t) => {
+  assert.equal(unavailable, undefined, unavailable);
+  const egressImage = await egressImageWithoutSocketMatch(t);
+  if (egressImage) {
+    process.env.MINIFLARE_CONTAINER_EGRESS_IMAGE = egressImage;
+    t.after(() => { delete process.env.MINIFLARE_CONTAINER_EGRESS_IMAGE; });
+  }
+  const fixture = await startFixture({ config: "wrangler.computers.test.jsonc" });
+  t.after(async () => {
+    const names = new Set([...fixture.worker.logs().matchAll(/containerName = (workerd-camelrun-proto-workers-computers-local-ContainerComputer-[a-f0-9]{64})/g)].map(match => match[1]));
+    await fixture.stop();
+    for (const name of names) for (const target of [name, `${name}-proxy`]) await run("docker", ["rm", "-f", target]).catch(() => {});
+  });
+  const api = async (path: string, body?: unknown) => {
+    const response = await fetch(fixture.url + path, {
+      method: body === undefined ? "GET" : "POST",
+      headers: { authorization: `Bearer ${fixture.token}`, "content-type": "application/json" },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      signal: AbortSignal.timeout(120_000),
+    });
+    const value = await response.json() as any;
+    assert.ok(response.ok, `${path}: ${response.status} ${JSON.stringify(value)}\n${fixture.worker.logs().slice(-4000)}`);
+    return value;
+  };
+  const definition = await api("/v1/definitions", { name: "Sleeper", computer: { idleSeconds: 10, idle: "sleep" } });
+  assert.equal(definition.computer.idle, "sleep");
+  const agent = await api("/v1/agents", { definition: definition.id });
+  const computer = (request: object) => api(`/experimental/agents/${agent.id}/computer`, { provider: "container", ...request });
+  await computer({ op: "write", path: "kept.txt", content: "still here" });
+  // The DO's alarm puts it to sleep at the idle point; wait past it.
+  await new Promise(resolve => setTimeout(resolve, 25_000));
+  const resumed = await computer({ op: "read", path: "kept.txt" });
+  assert.equal(resumed.content, "still here");
+  assert.equal(resumed.computer?.restoredFrom, "sleep", JSON.stringify(resumed));
+});

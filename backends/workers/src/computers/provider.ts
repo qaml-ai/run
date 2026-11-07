@@ -17,7 +17,11 @@ export type ComputerRequest =
  * host is intercepted into), and the idle time before it stops. `key` names the grants; a running container started
  * with other grants is replaced, so a definition change takes effect on the next operation.
  */
-export type ComputerNetwork = { key: string; egress: { grant: EgressGrant; gateway: Fetcher }[]; idleMs: number };
+export type ComputerNetwork = {
+  key: string; egress: { grant: EgressGrant; gateway: Fetcher }[]; idleMs: number;
+  /** What idling out does (a definition's `computer.idle`): "stop" (the default) loses the disk; "sleep" saves it first. */
+  idle?: "stop" | "sleep";
+};
 export interface ComputerProvider {
   exec(
     argv: string[],
@@ -151,6 +155,13 @@ const STARTING_KEY = "computer:starting";
 type StartPlan = { from: { image: string } | { containerSnapshot: { id: string } }; init: string[]; image: string; base?: ComputerBase["kind"] };
 /** Where a seeded computer came from (the parent's computer, its batch, the snapshot). */
 const FORKED_FROM_KEY = "computer:forked-from";
+/**
+ * A computer that sleeps when idle (`idle: "sleep"`): when its idle time is up, `{ at }`. The DO's alarm then saves the
+ * disk as the base and stops the container (sleepIfIdle); the container's own inactivity timeout is a backstop
+ * IDLE_SLEEP_BACKSTOP_MS later, for an alarm that never ran (that stop loses the disk, as idling out always did).
+ */
+const IDLE_KEY = "computer:idle";
+export const IDLE_SLEEP_BACKSTOP_MS = 10 * 60_000;
 /** The parent's registry: one entry per batch, `fork:<batch>`, with the children that adopted its snapshot. */
 const FORK_PREFIX = "fork:";
 export type ForkEntry = { snapshot: ComputerSnapshot; children: string[]; adopted: boolean; at: number };
@@ -235,6 +246,8 @@ export class ContainerProvider implements ComputerProvider {
     now: () => number = Date.now,
     network?: ComputerNetwork,
     meter?: ProviderMeter,
+    /** Asks for the DO's alarm at `at` (or earlier): a computer that sleeps when idle is put to sleep then. */
+    wake?: (at: number) => Promise<void>,
   ) {
     this.container = container;
     this.store = store;
@@ -242,7 +255,9 @@ export class ContainerProvider implements ComputerProvider {
     this.now = now;
     this.network = network ?? { key: "", egress: [], idleMs: COMPUTER_LIMITS.idleSeconds.default * 1000 };
     this.meter = meter;
+    this.wake = wake;
   }
+  private wake?: (at: number) => Promise<void>;
   /** The notice of the start this operation made, once. */
   takeNotice() {
     const notice = this.notice;
@@ -251,6 +266,17 @@ export class ContainerProvider implements ComputerProvider {
   }
   get sleepAfter() {
     return this.network.idleMs;
+  }
+  /** The container's own inactivity timeout: the idle time, or for one that sleeps when idle, a backstop past it. */
+  private get containerTimeout() {
+    return this.network.idle === "sleep" ? this.network.idleMs + IDLE_SLEEP_BACKSTOP_MS : this.network.idleMs;
+  }
+  /** The container was just used: a computer that sleeps when idle is due to sleep idleMs from now. */
+  private async touched() {
+    if (this.network.idle !== "sleep") { if (await this.store.get(IDLE_KEY)) await this.store.put(IDLE_KEY, null); return; }
+    const at = this.now() + this.network.idleMs;
+    await this.store.put(IDLE_KEY, { at });
+    await this.wake?.(at);
   }
   /** Starts the container with the Internet off, each granted host intercepted into its gateway. */
   protected async boot(from: { image: string } | { containerSnapshot: { id: string } }) {
@@ -263,7 +289,7 @@ export class ContainerProvider implements ComputerProvider {
       enableInternet: false,
       ...(egress.length ? { env: { NODE_EXTRA_CA_CERTS: CONTAINER_CA, GIT_TERMINAL_PROMPT: "0" } } : {}),
     } as ContainerStartupOptions);
-    await this.container.setInactivityTimeout(this.sleepAfter);
+    await this.container.setInactivityTimeout(this.containerTimeout);
     for (const { grant, gateway } of egress)
       await this.container.interceptOutboundHttps(grant.host, gateway);
     await this.store.put("network", this.network.key);
@@ -368,8 +394,9 @@ export class ContainerProvider implements ComputerProvider {
       await this.bootReady(plan);
       await this.started(plan);
     }
-    await this.container.setInactivityTimeout(this.sleepAfter);
+    await this.container.setInactivityTimeout(this.containerTimeout);
     await this.meter?.used();
+    await this.touched();
   }
   /** What a start boots: this computer's base when it has a usable one, else the image. */
   private async plan(): Promise<StartPlan> {
@@ -393,7 +420,7 @@ export class ContainerProvider implements ComputerProvider {
     await this.store.put(BASE_KEY, { ...base, expiresAt: this.now() + SNAPSHOT_TTL_MS, restores: base.restores + 1 });
     this.notice = {
       restoredFrom: plan.base,
-      ...(base.restores > 0 || plan.base === "sleep" ? { note: `This computer stopped and started again from its ${plan.base === "fork" ? "fork snapshot (the parent's disk at the fork)" : plan.base === "sleep" ? "last sleep's snapshot" : "last restored snapshot"}: changes made after that snapshot were lost. Use sleep to keep work across stops.` } : {}),
+      ...(base.restores > 0 ? { note: `This computer stopped and started again from its ${plan.base === "fork" ? "fork snapshot (the parent's disk at the fork)" : plan.base === "sleep" ? "last sleep's snapshot" : "last restored snapshot"}: changes made after that snapshot were lost. Use sleep to keep work across stops.` } : {}),
     };
   }
   /** Wait (bounded, once) for a start an earlier call left coming up. */
@@ -452,6 +479,8 @@ export class ContainerProvider implements ComputerProvider {
       await this.cpuUsec().then((cpu) => this.meter?.used(cpu)).catch((error) =>
         console.error(JSON.stringify({ type: "computer_meter_failed", error: error instanceof Error ? error.message.slice(0, 200) : "unknown" })),
       );
+      // A long command counts as use until it ends: the idle time starts over now.
+      await this.touched().catch(() => {});
     }
   }
   exec(argv: string[], signal: AbortSignal) {
@@ -504,6 +533,10 @@ export class ContainerProvider implements ComputerProvider {
   async snapshot(name: string, signal: AbortSignal) {
     await this.ready();
     signal.throwIfAborted();
+    return this.capture(name);
+  }
+  /** Snapshot the running container, without starting or using it (the idle sleep takes one this way). */
+  private async capture(name: string) {
     const image = (await this.store.get<string>(IMAGE_KEY)) ?? this.image();
     const taken = await this.container.snapshotContainer({ name });
     const createdAt = this.now();
@@ -550,6 +583,7 @@ export class ContainerProvider implements ComputerProvider {
     await this.store.put(`snapshot:${snapshot.name}`, restored);
     // The restored disk is what a later start (after an idle stop) comes back to.
     await this.store.put(BASE_KEY, { ...restored, kind: "restore", restores: 1 } satisfies ComputerBase);
+    await this.touched();
     return restored;
   }
   /**
@@ -559,15 +593,34 @@ export class ContainerProvider implements ComputerProvider {
    */
   async sleep(force = false) {
     if (!this.container.running) return { saved: false };
+    return this.saveAndStop(() => this.snapshot("camelrun-sleep", AbortSignal.timeout(180_000)), force);
+  }
+  private async saveAndStop(save: () => Promise<ComputerSnapshot>, force: boolean) {
     let saved: ComputerSnapshot | undefined;
-    try { saved = await this.snapshot("camelrun-sleep", AbortSignal.timeout(180_000)); }
+    try { saved = await save(); }
     catch (error) {
       if (!force) throw error;
       console.error(JSON.stringify({ type: "computer_sleep_save_failed", error: message(error) }));
     }
     if (saved) await this.store.put(BASE_KEY, { ...saved, kind: "sleep", restores: 0 } satisfies ComputerBase);
+    await this.store.put(IDLE_KEY, null);
     await this.stop();
     return { saved: !!saved };
+  }
+  /**
+   * The DO's alarm, for a computer that sleeps when idle: once its idle time is up, save its disk as the base (the next
+   * start, or a fork, resumes it) and stop. Answers when to look again: when it is due, or undefined (nothing to do).
+   */
+  async sleepIfIdle(): Promise<number | undefined> {
+    const due = await this.store.get<{ at: number } | null>(IDLE_KEY);
+    if (!due) return undefined;
+    if (!this.container.running) { await this.store.put(IDLE_KEY, null); return undefined; }
+    // A start still coming up is not saved half-loaded; look again later.
+    if (await this.store.get<StartPlan | null>(STARTING_KEY)) return this.now() + this.network.idleMs;
+    if (this.now() < due.at) return due.at;
+    // Forced: a save that fails still stops it (the backstop would anyway, without saving), and is logged.
+    await this.saveAndStop(() => this.capture("camelrun-sleep"), true);
+    return undefined;
   }
 
   // Forking (native-fork.ts): the parent's side.
