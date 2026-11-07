@@ -20,5 +20,5 @@ computer with no running session answers `409 NO_SESSION`.
 A snapshot is deleted when the last connection made from it is removed (after a 10-minute grace for siblings) and
 when its account is deleted; the computer sweep retries failed deletes with backoff and gives up after 10 attempts.
 Fork compute is billed as any computer session; managed Boat saved-snapshot storage is not charged separately.
-Migration `114_computer_forks.sql` adds `computer_snapshots` and the connections' `seed`, `forked_from` and
+Migration `115_computer_forks.sql` adds `computer_snapshots` and the connections' `seed`, `forked_from` and
 `forkable`. `AGENT_BOAT_API_URL` overrides Boat's API base (tests).
