@@ -110,6 +110,7 @@
 | `AGENT_PRICE_WEB_SEARCH_EXA_USD`, `AGENT_PRICE_WEB_SEARCH_BRAVE_USD`, `AGENT_PRICE_WEB_SEARCH_PARALLEL_USD`, `AGENT_PRICE_WEB_RENDER_USD` | per platform-key `web_search` by the provider that answered, and per page `web_fetch` has Firecrawl render (defaults 0.007, 0.005, 0.001, 0.00083); `AGENT_PRICE_WEB_SEARCH_USD` sets all three search prices at once |
 | `AGENT_PRICE_COMPUTER_HOUR_USD` | hourly price override for managed computers; default is provider cost. Lambda snapshot charges scale by the same ratio |
 | `AGENT_COMPUTER_PROVIDER` | `lambda` (default) or `boat`; existing sessions retain their provider |
+| `AGENT_BOAT_API_URL` | Boat's API base for managed and bring-your-own Boat computers (default `https://boat.dev/api/v1`); tests point it at a fake |
 | `AGENT_MICROVM_IMAGE`, `AGENT_MICROVM_IMAGE_VERSION` | image ARN and optional pinned version for Lambda managed computers |
 | `AGENT_MICROVM_REGION`, `AGENT_MICROVM_IDLE_SECONDS` | runtime AWS region and idle suspend delay (default 300, minimum 60); see [Lambda managed computers](microvm-computers.md) |
 | `AGENT_MANAGED_COMPUTERS` | `on` enables managed computers, billed to credit (default `off`) |

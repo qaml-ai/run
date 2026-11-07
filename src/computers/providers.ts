@@ -1,12 +1,14 @@
 import type { Outbound } from "../outbound.ts";
+import type { ForkDriver, SnapshotRef } from "../core/computer-fork.ts";
 
 export const PROVIDERS = ["lambda", "modal", "daytona", "boat", "e2b", "sprites", "browserbase", "browser-use", "tunnel"] as const;
 export type Provider = typeof PROVIDERS[number];
 export const isBrowserProvider = (provider: string) => provider === "browserbase" || provider === "browser-use";
 export type Credentials = Record<string, string>;
 export type Reference = { id: string; [key: string]: unknown };
-export interface ComputerDriver {
-  create(id: string, seconds: number, allocated?: (ref: Reference) => Promise<void>): Promise<Reference>;
+/** What a driver does on its provider's machines. With `snapshot`, they can be forked: `create` then takes `{ from }`, a snapshot it took. */
+export interface ComputerDriver extends ForkDriver<Reference> {
+  create(id: string, seconds: number, allocated?: (ref: Reference) => Promise<void>, options?: { from?: SnapshotRef; forkable?: boolean }): Promise<Reference>;
   call(ref: Reference, operation: string, args: Record<string, any>): Promise<unknown>;
   close(ref: Reference): Promise<void>;
   dispose?(): void | Promise<void>;
@@ -51,9 +53,42 @@ async function browserCall(ref: Reference, operation: string, args: Record<strin
   } finally { await browser.close(); }
 }
 
-export type DriverFactory = (provider: Provider, credentials: Credentials, outbound: Outbound) => ComputerDriver | Promise<ComputerDriver>;
+/** Where the drivers reach their providers, where an operator points one elsewhere (AGENT_BOAT_API_URL). */
+export type DriverOptions = { boatUrl?: string };
+export type DriverFactory = (provider: Provider, credentials: Credentials, outbound: Outbound, options?: DriverOptions) => ComputerDriver | Promise<ComputerDriver>;
+export const BOAT_API = "https://boat.dev/api/v1";
+/** How long a Boat saved snapshot may take to be ready (9.6 s measured for a 1.7 GB workspace). */
+const SAVED_SNAPSHOT_MS = 180_000;
+type BoatRequest = (path: string, body?: unknown, method?: string, allowMissing?: boolean) => Promise<any>;
 
-export async function driver(provider: Provider, credentials: Credentials, outbound: Outbound): Promise<ComputerDriver> {
+/**
+ * Boat's saved snapshots, for an exact fork: a snapshot of the running machine (it keeps running), ready in seconds,
+ * which new machines are made from (`POST /sandboxes { from }`). Boat's own `/fork` copies its latest background
+ * snapshot, up to a minute stale, and the documented exact alternative stops the source.
+ */
+export function boatSnapshots(request: BoatRequest, sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))) {
+  return {
+    async snapshot(sandbox: string, name: string): Promise<SnapshotRef> {
+      await request("/saved-snapshots", { sandboxId: sandbox, name });
+      try {
+        for (const until = Date.now() + SAVED_SNAPSHOT_MS; ; await sleep(1000)) {
+          const value = await request(`/saved-snapshots/${encodeURIComponent(name)}`, undefined, "GET", true);
+          const saved = value?.savedSnapshot ?? value?.snapshot ?? value;
+          if (saved?.status === "ready") return { provider: "boat", id: name, createdAt: Date.now(), ...Number.isSafeInteger(saved.sizeBytes) ? { sizeBytes: saved.sizeBytes } : {} };
+          if (saved?.status === "failed" || saved?.status === "error") throw new Error("Computer snapshot failed");
+          if (Date.now() > until) throw new Error("Computer snapshot did not finish in time");
+        }
+      } catch (error) {
+        // A snapshot that fails or never finishes has no row to sweep it: it is deleted here, best effort.
+        await request(`/saved-snapshots/${encodeURIComponent(name)}`, undefined, "DELETE", true).catch(() => {});
+        throw error;
+      }
+    },
+    async drop(snapshot: SnapshotRef) { await request(`/saved-snapshots/${encodeURIComponent(snapshot.id)}`, undefined, "DELETE", true); },
+  };
+}
+
+export async function driver(provider: Provider, credentials: Credentials, outbound: Outbound, options: DriverOptions = {}): Promise<ComputerDriver> {
   if (provider === "modal") {
     const { ModalClient, NotFoundError: ModalNotFoundError } = await import("modal");
     const client = new ModalClient({ tokenId: credentials.tokenId, tokenSecret: credentials.tokenSecret, maxRetries: 0, timeoutMs: 120000 });
@@ -199,8 +234,8 @@ export async function driver(provider: Provider, credentials: Credentials, outbo
     };
   }
   const request = async (path: string, body?: unknown, method = "POST", allowMissing = false) => {
-    const base = provider === "boat" ? "https://boat.dev/api/v1" : credentials.url;
-    const response = await outbound.fetch(base.replace(/\/$/, "") + path, { method, secrets: { Authorization: `Bearer ${credentials.apiKey}` }, headers: { "Content-Type": "application/json", ...(method === "DELETE" ? { "X-ASCII-Confirm-Delete": path.split("/").at(-1)! } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), timeoutMs: path.endsWith("/commands") || path === "/exec" ? 135000 : 30000, maxBytes: 2 * 1024 * 1024, maxRedirects: 0 });
+    const base = provider === "boat" ? options.boatUrl ?? BOAT_API : credentials.url;
+    const response = await outbound.fetch(base.replace(/\/$/, "") + path, { method, secrets: { Authorization: `Bearer ${credentials.apiKey}` }, headers: { "Content-Type": "application/json", ...(method === "DELETE" && path.startsWith("/sandboxes/") ? { "X-ASCII-Confirm-Delete": path.split("/").at(-1)! } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), timeoutMs: path.endsWith("/commands") || path === "/exec" ? 135000 : 30000, maxBytes: 2 * 1024 * 1024, maxRedirects: 0 });
     if (!response.ok) { await response.body?.cancel(); if ((method === "DELETE" || allowMissing) && response.status === 404) return null; throw new ProviderHttpError(response.status); }
     return response.status === 204 ? {} : await response.json() as any;
   };
@@ -211,8 +246,10 @@ export async function driver(provider: Provider, credentials: Credentials, outbo
     async close(ref) { await request("/close", { claim: ref.claim }); },
   } : {
     refused: httpRefused,
-    async create(_id, seconds, allocated) {
-      const r = await request("/sandboxes", { type: "small", ttlSeconds: seconds, noEnv: true, snapshots: false, monitoring: false });
+    async create(_id, seconds, allocated, created) {
+      // A forkable connection's sandboxes take snapshots: Boat refuses a saved snapshot (a fork) of one made without them,
+      // and they cannot be turned on later. Off otherwise, so a provider account pays for no snapshots it did not ask for.
+      const r = await request("/sandboxes", { type: "small", ttlSeconds: seconds, noEnv: true, snapshots: !!created?.forkable, monitoring: false, ...created?.from ? { from: created.from.id } : {} });
       const ref = { id: r.sandbox.id };
       await allocated?.(ref);
       for (const until = Date.now() + 60000; Date.now() < until;) {
@@ -224,6 +261,8 @@ export async function driver(provider: Provider, credentials: Credentials, outbo
       throw new Error("Computer startup timed out");
     },
     async call(ref, _op, args) { const [command, timeout] = shell(args); const r = await request(`/sandboxes/${ref.id}/commands`, { command, timeoutSeconds: timeout }); return output(r.exitCode, r.stdout ?? "", r.stderr ?? ""); },
+    snapshot: (ref, label) => boatSnapshots(request).snapshot(ref.id, label),
+    dropSnapshot: snapshot => boatSnapshots(request).drop(snapshot),
     async close(ref) {
       await request(`/sandboxes/${ref.id}`, undefined, "DELETE");
       for (const until = Date.now() + 30000; Date.now() < until;) { if (await request(`/sandboxes/${ref.id}`, undefined, "GET", true) === null) return; await new Promise(r => setTimeout(r, 1000)); }

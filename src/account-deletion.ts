@@ -46,7 +46,7 @@ export interface AccountDeletionOptions {
 
 /** Tables whose rows go with the tenant, by their `tenant` column (payment, ledger and anti-abuse records are not here). */
 const TENANT_TABLES = [
-  "computer_operations", "computer_commands", "computer_leases", "managed_computers", "computer_connections", "computer_blocks",
+  "computer_operations", "computer_commands", "computer_leases", "managed_computers", "computer_snapshots", "computer_connections", "computer_blocks",
   "schedule_deliveries", "workspace_usage", "workspace_assignments", "workspaces",
   "discord_setup_attempts", "discord_server_bindings",
   "console_sessions", "tenant_passwords", "account_email_links", "api_tokens", "oauth_grants", "provider_keys", "github_apps", "key_scope_providers", "model_providers", "definitions",

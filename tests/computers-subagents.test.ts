@@ -23,7 +23,7 @@ test("only this runtime's machines are listed, created with the key and labels t
   assert.deepEqual(await boat.create("cmp_1", "payg", 7200), { id: "bx_1" });
   assert.deepEqual(requests[0].body.labels, { "camelrun-runtime": "https://run.test", computer: "cmp_1", tenant: "payg" });
   assert.equal(requests[0].headers["Idempotency-Key"], "cmp_1");
-  assert.deepEqual([requests[0].body.type, requests[0].body.ttlSeconds, requests[0].body.snapshots, requests[0].body.noEnv], ["small", 7200, false, true]);
+  assert.deepEqual([requests[0].body.type, requests[0].body.ttlSeconds, requests[0].body.snapshots, requests[0].body.noEnv], ["small", 7200, true, true]);
   assert.match(requests[1].body.command, /apply-rules/, "set up before anyone uses it");
 
   requests.length = 0;

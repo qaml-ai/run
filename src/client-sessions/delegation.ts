@@ -10,6 +10,7 @@ import { jsonResult, type ToolCall } from "../tool-servers.ts";
 import { safeError } from "../metrics.ts";
 import type { Mount } from "../volumes.ts";
 import { definitionId, MULTI_AGENT_LIMITS, PARENT_KEYS, roleAndTask, SUBAGENT_PROMPT, type AgentTarget, type DelegateSettings } from "../multi-agent.ts";
+import { computerChoice, forkBatch } from "../core/computer-fork.ts";
 import * as events from "./events.ts";
 import * as spend from "./spend.ts";
 import { type Child, type Session, type ClientSessionOptions, runningRun } from "./state.ts";
@@ -82,7 +83,14 @@ export async function delegate(ctx: DelegationContext, session: Session, setting
     if (session.aborted?.has(run.id)) throw new Error("The run was aborted");
     // Made again (a resumed turn): the same child and request, with the answer it has or will have.
     let record = await requestOf(ctx, agent, tenant, requestId, 0, call.signal).catch(error => { if ((error as HttpError).status === 404) return undefined; throw error; });
-    if (!record && made) agent = await makeChild(ctx, session, run, target, key, toolCallId, depth);
+    if (!record && made) {
+      // Only when the child is made: a replay whose child exists takes no new snapshot. A fork that cannot be taken fails
+      // the call, and its row, with nothing made.
+      let computer: Awaited<ReturnType<typeof childComputer>>;
+      try { computer = await childComputer(ctx, session, run, call, made); }
+      catch (error) { await landDelegate(ctx, requestId, "failed", "call").catch(() => {}); throw error; }
+      agent = await makeChild(ctx, session, run, target, key, toolCallId, depth, computer);
+    }
     child = { agent, requestId, made };
     (session.children ??= new Map()).set(call.innerCallId ? `${toolCallId}/${call.innerCallId}` : toolCallId, child);
     const at = { toolCallId, agentId: agent, requestId };
@@ -126,6 +134,8 @@ export async function delegate(ctx: DelegationContext, session: Session, setting
     };
     return { ...jsonResult(value), ...(status === "completed" ? {} : { isError: true }) };
   } finally {
+    // The child ended (answered, or refused before it ran): its computer, keyed by the child, stops, so it bills nothing more.
+    if (child?.made && child.done) void ctx.options.computers?.release(tenant, child.agent);
     untap?.();
     // A lost owner leaves the child for replay. A script ending stops only this nested call's child, and so does its
     // agent's process dying: that turn ends there (no replay goes on with the script), so a child left would run unread.
@@ -190,7 +200,22 @@ export function childPlace(ctx: DelegationContext, session: Session, run: Reques
  * Make the child agent a call starts, keyed by `key` (made again, the same agent): from its definition target, or with
  * SUBAGENT_PROMPT on the parent's model (the model's instructions come with its task). It acts for whom its parent acts, with the same keys.
  */
-export async function makeChild(ctx: DelegationContext, session: Session, run: RequestRecord, target: AgentTarget | undefined, key: string, toolCallId: string, depth: number) {
+/**
+ * The computer a delegate or spawn_agent call gives the child it makes (its `computer` argument): undefined for fresh
+ * (the parent's connection settings, as before), "none", or `{ seed }`, a fork snapshot of the parent's computer taken
+ * now and shared by every child of this call (one model response or script). A fork is for a new sub-agent only.
+ */
+export async function childComputer(ctx: DelegationContext, session: Session, run: RequestRecord, call: ToolCall, made: boolean): Promise<"none" | { seed: string } | undefined> {
+  const choice = computerChoice(call.args.computer);
+  if (choice === "none") return "none";
+  if (choice === "fresh") return undefined;
+  if (!made) throw new HttpError(400, 'computer: "fork" makes a new sub-agent with a copy of your computer: give instructions or a definition target, not an existing agent');
+  const computers = ctx.options.computers;
+  if (!computers) throw new HttpError(409, 'Computers are not available on this runtime. Use computer: "fresh" or "none".', "FORK_UNSUPPORTED");
+  return { seed: (await computers.forkSnapshot(session.header.tenant, session.header.id, forkBatch(run.id, call.messageIndex, call.toolCallId!))).id };
+}
+
+export async function makeChild(ctx: DelegationContext, session: Session, run: RequestRecord, target: AgentTarget | undefined, key: string, toolCallId: string, depth: number, computer?: "none" | { seed: string }) {
   const { header } = session, tenant = header.tenant;
   const web = (header.sources?.builtins ?? []).filter(builtin => builtin === "web_search" || builtin === "web_fetch");
   // An inline child has its parent's model: as it is (its endpoint too), or by name on the tenant's own providers, which take only names.
@@ -206,7 +231,7 @@ export async function makeChild(ctx: DelegationContext, session: Session, run: R
     ...header.keyScope ? { keyScope: header.keyScope } : {},
     // Its parent's end user pays for it, from the bucket the parent's run spends.
     bucket: spend.bucketOf(ctx.spendContext, session, run),
-  }, key, { agentId: header.id, runId: run.id, toolCallId, depth })).id;
+  }, key, { agentId: header.id, runId: run.id, toolCallId, depth, ...computer ? { computer } : {} })).id;
 }
 
 /**

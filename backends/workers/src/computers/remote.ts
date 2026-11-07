@@ -3,6 +3,39 @@ import { PROVIDERS, boundedCommand, output, type ComputerDriver, type Credential
 import { boundedResponse, microvmDriver, testEndpoint, type Fetcher, type MicrovmBindings } from './microvm.ts';
 import type { ComputerBindings } from './tool.ts';
 import { payerSetup } from './meter.ts';
+import { snapshotHandle, type ComputerSnapshot } from './provider.ts';
+import type { SnapshotRef } from '../../../../src/core/computer-fork.ts';
+
+export const BOAT_API = 'https://boat.dev/api/v1';
+/** How long a Boat saved snapshot may take to be ready (9.6 s measured for a 1.7 GB workspace). */
+const SAVED_SNAPSHOT_MS = 180_000;
+/**
+ * Boat's saved snapshots, as src/computers/providers.ts' `boatSnapshots`: an exact snapshot of a running machine (it
+ * keeps running), which new machines are made from. Boat's `/fork` copies a background snapshot up to a minute stale.
+ */
+export function boatSnapshots(request: (path: string, body?: unknown, method?: string, allowMissing?: boolean) => Promise<any>) {
+  return {
+    async snapshot(sandbox: string, name: string): Promise<SnapshotRef> {
+      await request('/saved-snapshots', { sandboxId: sandbox, name });
+      try {
+        for (const until = Date.now() + SAVED_SNAPSHOT_MS; ; await new Promise(resolve => setTimeout(resolve, 1000))) {
+          const value = await request(`/saved-snapshots/${encodeURIComponent(name)}`, undefined, 'GET', true);
+          const saved = value?.savedSnapshot ?? value?.snapshot ?? value;
+          if (saved?.status === 'ready') return { provider: 'boat', id: name, createdAt: Date.now(), ...Number.isSafeInteger(saved.sizeBytes) ? { sizeBytes: saved.sizeBytes } : {} };
+          if (saved?.status === 'failed' || saved?.status === 'error') throw new Error('Computer snapshot failed');
+          if (Date.now() > until) throw new Error('Computer snapshot did not finish in time');
+        }
+      } catch (error) {
+        // A snapshot that fails or never finishes has no row to sweep it: it is deleted here, best effort.
+        await request(`/saved-snapshots/${encodeURIComponent(name)}`, undefined, 'DELETE', true).catch(() => {});
+        throw error;
+      }
+    },
+    async drop(snapshot: SnapshotRef) { await request(`/saved-snapshots/${encodeURIComponent(snapshot.id)}`, undefined, 'DELETE', true); },
+  };
+}
+/** A container snapshot as a computer DO starts from it. */
+const containerHandle = (ref: SnapshotRef): ComputerSnapshot => snapshotHandle({ id: ref.id, name: 'fork', size: ref.sizeBytes ?? 0, image: ref.image, createdAt: ref.createdAt, expiresAt: ref.expiresAt ?? ref.createdAt + 30 * 86_400_000 });
 
 export type RemoteBindings = ComputerBindings & MicrovmBindings & {
   TEST_COMPUTER_ENDPOINT?: string;
@@ -22,8 +55,20 @@ export function remoteDriver(env: RemoteBindings, tenant: string, agent: string,
     const namespace = env.COMPUTER_CONTAINERS;
     if (!namespace) throw new HttpError(503, 'Cloudflare Containers are not configured');
     return {
-      async create(id) { await namespace.getByName(id).operate({ op: 'exec', argv: ['true'] }, payerSetup({ tenant, agent })); return { id }; },
+      async create(id, _seconds, _allocated, options) {
+        const computer = namespace.getByName(id), setup = payerSetup({ tenant, agent });
+        // A fork's session starts from the snapshot: the handle is plain data any computer DO can start from.
+        if (options?.from) await computer.startFromSnapshot(containerHandle(options.from), setup);
+        else await computer.operate({ op: 'exec', argv: ['true'] }, setup);
+        return { id };
+      },
       call: (ref, _op, args) => namespace.getByName(ref.id).operate({ op: 'exec', argv: ['bash', '-lc', args.command], timeoutMs: Math.min(args.timeoutSeconds * 1000, 120_000) }, payerSetup({ tenant, agent })),
+      async snapshot(ref, label) {
+        const taken = await namespace.getByName(ref.id).takeSnapshot(label.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 80), payerSetup({ tenant, agent }));
+        return { provider: 'container', id: taken.id, image: taken.image, sizeBytes: taken.size, createdAt: taken.createdAt, expiresAt: taken.expiresAt };
+      },
+      // Cloudflare has no Worker API to delete a snapshot; it expires 30 days after its latest restore.
+      async dropSnapshot() {},
       async close(ref) { await namespace.getByName(ref.id).purge(); },
     };
   }
@@ -117,6 +162,37 @@ export function remoteDriver(env: RemoteBindings, tenant: string, agent: string,
       throw new Error('Computer cleanup not confirmed');
     },
   };
+  if (provider === 'boat') {
+    // Boat's API (src/computers/providers.ts' driver, the same calls): saved snapshots make exact forks.
+    const boat = async (path: string, body?: unknown, method = 'POST', allowMissing = false) =>
+      request(`${BOAT_API}${path}`, method, body, false, method === 'DELETE' && path.startsWith('/sandboxes/') ? { 'X-ASCII-Confirm-Delete': path.split('/').at(-1)! } : {}, allowMissing);
+    const saved = boatSnapshots(boat);
+    return { ...common,
+      async create(_id, seconds, allocated, options) {
+        const value = await boat('/sandboxes', { type: 'small', ttlSeconds: seconds, noEnv: true, snapshots: !!options?.forkable, monitoring: false, ...options?.from ? { from: options.from.id } : {} });
+        const ref = { id: value.sandbox.id as string };
+        await allocated?.(ref);
+        for (const until = Date.now() + 60_000; Date.now() < until; await new Promise(resolve => setTimeout(resolve, 1000))) {
+          const info = await boat(`/sandboxes/${ref.id}`, undefined, 'GET');
+          if (['ready', 'idle', 'running'].includes(info.sandbox?.state)) return ref;
+        }
+        await boat(`/sandboxes/${ref.id}`, undefined, 'DELETE');
+        throw new Error('Computer startup timed out');
+      },
+      async call(ref, _op, args) {
+        const value = await boat(`/sandboxes/${ref.id}/commands`, { command: boundedCommand(String(args.command)), timeoutSeconds: Number(args.timeoutSeconds ?? 60) });
+        return output(value.exitCode, value.stdout ?? '', value.stderr ?? '');
+      },
+      snapshot: (ref, label) => saved.snapshot(ref.id, label),
+      dropSnapshot: snapshot => saved.drop(snapshot),
+      async close(ref) {
+        await boat(`/sandboxes/${ref.id}`, undefined, 'DELETE');
+        for (const until = Date.now() + 30_000; Date.now() < until; await new Promise(resolve => setTimeout(resolve, 1000)))
+          if (await boat(`/sandboxes/${ref.id}`, undefined, 'GET', true) === null) return;
+        throw new Error('Computer cleanup not confirmed');
+      },
+    };
+  }
   // A service binding keeps optional provider SDKs out of the agent isolate; no public URL can
   // turn the gateway into an arbitrary credential-forwarding proxy.
   const gateway = env.COMPUTER_PROVIDER_GATEWAY;

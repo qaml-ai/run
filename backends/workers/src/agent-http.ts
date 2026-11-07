@@ -1,4 +1,5 @@
 import { computerSetup } from "./computers/agent-setup.ts";
+import { forkComputerInto } from "./computers/child-fork.ts";
 import { modelCompactionSettings } from "./model-context.ts";
 import { forkSnapshot } from "./fork-snapshot.ts";
 import { seedHistory, writeModelContext } from "./history-seed.ts";
@@ -295,6 +296,11 @@ export async function fetchRequestImpl(this: AgentRuntime,
         if (!conf) return json({ error: "Agent not found" }, 404);
         if (input.tenant !== conf.tenantId)
           return json({ error: "Forbidden" }, 403);
+        // The fork route: its snapshot takes the serial queue itself (forkChildComputers), so it runs outside it.
+        if (input.operation === "fork")
+          return json(await forkComputerInto(this.env, conf.tenantId, conf.id, input.args.agents, {
+            connectionOnly: !!input.args.connectionOnly, setup: async () => computerSetup(this.env, conf),
+            serialize: run => this.serializeComputer(run) }), 201);
         return await this.serializeComputer(async () => {
           const service = new ComputerService(this.env, conf.tenantId);
           if (input.operation === "sweep") {
@@ -313,6 +319,11 @@ export async function fetchRequestImpl(this: AgentRuntime,
           }
           if (input.operation === "confirm-cleanup")
             return json(await service.confirmCleanup(conf.id));
+          if (input.operation === "release") {
+            await service.release(conf.id);
+            await this.arm();
+            return json({ released: true });
+          }
           try {
             return json(
               await service.call(
@@ -349,24 +360,18 @@ export async function fetchRequestImpl(this: AgentRuntime,
         this.env.TEST_HOOKS === "1" &&
         request.method === "POST"
       ) {
-        // Fork this agent's computer from a named snapshot into other computer
-        // DOs, as the fork primitive will, and read a file back from each.
+        // Fork this agent's native computer into other agents' computers with the fork RPCs (native-fork.ts), as
+        // delegation does: one snapshot for the batch, each child seeded from it.
         const namespace = this.env.COMPUTER_CONTAINERS;
         if (!namespace) return json({ error: "Optional computer is not configured" }, 501);
-        const input = (await body(request)) as { name: string; into: string[]; path: string };
-        const handle = await namespace.getByName(this.ctx.id.toString()).snapshotHandle(input.name);
-        const setup = await computerSetup(this.env, await this.config());
-        const forks = await Promise.all(input.into.map(async (name) => {
-          const computer = namespace.getByName(`${this.ctx.id.toString()}:fork:${name}`);
-          try {
-            const restored = await computer.startFromSnapshot(handle, setup);
-            const read = (await computer.operate({ op: "read", path: input.path }, setup)) as { content: string };
-            return { restored, content: read.content };
-          } finally {
-            await computer.purge();
-          }
-        }));
-        return json({ handle, forks });
+        const input = (await body(request)) as { batch: string; into: string[] };
+        const conf = await this.config(), parent = this.ctx.id.toString();
+        const answer = await namespace.getByName(parent).forkSnapshot(input.batch, await computerSetup(this.env, conf));
+        if (!answer.ok) return json(answer, 409);
+        const at = Date.now();
+        await Promise.all(input.into.map((agent) =>
+          namespace.getByName(this.env.AGENTS.idFromName(agent).toString()).seed(answer.snapshot, { parent, agent: conf.id, batch: input.batch, at })));
+        return json({ snapshot: answer.snapshot, children: input.into });
       }
       if (
         path === "/__test/settlement-state" &&

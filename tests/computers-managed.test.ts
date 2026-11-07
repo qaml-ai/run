@@ -112,7 +112,7 @@ test("a listing that fails changes nothing, and a machine with no row is only sa
   assert.equal((await f.row()).ended_at, null);
   assert.ok(f.logged.some(line => line.type === "computer_pass_failed"));
   f.state.listFails = false;
-  f.machines.set("cmp_other", { id: "bx_other", tenant: "payg", createdAt: f.now() - 20 * 60_000, since: "2026-10-01T00:00:00.000Z", ttlUntil: f.now() + HOUR });
+  f.machines.set("cmp_other", { id: "bx_other", tenant: "payg", createdAt: f.now() - 20 * 60_000, since: "2026-10-01T00:00:00.000Z", ttlUntil: f.now() + HOUR, files: new Map() });
   await pass(f);
   assert.deepEqual(f.logged.filter(line => line.type === "computer_leak").map(line => [line.computer, line.machine]), [["cmp_other", "bx_other"]]);
   assert.deepEqual(f.state.removed, []);

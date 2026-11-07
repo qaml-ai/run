@@ -4,6 +4,8 @@ import { BadRequest, body } from "./validation.ts";
 import { HumanInputs } from "./human.ts";
 import { Directory } from "./control.ts";
 import { inheritComputer } from "./computers/service.ts";
+import { attachChildComputers, forkChildComputers, releaseChildComputers } from "./computers/child-fork.ts";
+import { computerSetup } from "./computers/agent-setup.ts";
 import { Delegation } from "./delegation.ts";
 import { resolveDefinition, provisionDefinition } from "./definitions.ts";
 import { DelegationNotifications, type RuntimeNotice, type NoticeRequest, type WakeDecision } from "./delegation-notifications.ts";
@@ -141,9 +143,17 @@ export function createDelegation(this: AgentRuntime): Delegation {
     fetch: (id, request) => this.env.AGENTS.getByName(id).fetch(request),
     cancelRequest: (id, requestId) =>
       this.env.AGENTS.getByName(id).cancelRequest(requestId),
-    inheritComputer: async (parent, child) => {
+    inheritComputer: async (parent, child, computer) => {
       const conf = await this.config();
-      await inheritComputer(this.env, conf.tenantId, parent, child);
+      await attachChildComputers(this.env, conf.tenantId, parent, child, computer);
+    },
+    forkComputer: async (batch) => {
+      const conf = await this.config();
+      return forkChildComputers(this.env, conf.tenantId, conf.id, batch, async () => computerSetup(this.env, conf), run => this.serializeComputer(run));
+    },
+    releaseComputer: async (child) => {
+      const conf = await this.config();
+      await releaseChildComputers(this.env, conf.tenantId, child);
     },
     emit: (event) => this.emit(event),
     waitUntil: (promise) => this.ctx.waitUntil(promise),

@@ -306,23 +306,58 @@ test(
           t.diagnostic(
             `restore_and_read_ms=${Math.round(performance.now() - resume)}`,
           );
-          // Fork: three other computer DOs start from the snapshot handle at once.
-          const forkStart = performance.now();
-          const forked = await fetch(`${server.url}/experimental/agents/${id}/__test/computer-fork`, {
-            method: "POST",
-            headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-            body: JSON.stringify({ name: "saved", into: ["a", "b", "c"], path: "test.txt" }),
-            signal: AbortSignal.timeout(120000),
-          });
-          assert.equal(forked.status, 200, `${await forked.clone().text()}\n${server.logs()}`);
-          const fork = (await forked.json()) as { handle: { id: string; image: string }; forks: { content: string; restored: { id: string } }[] };
-          assert.ok(fork.handle.image, "the handle records its image");
-          assert.equal(fork.forks.length, 3);
-          for (const each of fork.forks) {
-            assert.equal(each.content, "persistent snapshot content");
-            assert.equal(each.restored.id, fork.handle.id);
+          // Fork: two other agents' computers start from one snapshot of this running computer (the fork RPCs).
+          const children: string[] = [];
+          for (const name of ["fork-a", "fork-b"]) {
+            const made = await fetch(`${server.url}/v1/agents`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ model: "test/echo", name }) });
+            assert.equal(made.status, 201, await made.clone().text());
+            children.push(((await made.json()) as { id: string }).id);
           }
-          t.diagnostic(`fork_into_3_ms=${Math.round(performance.now() - forkStart)}`);
+          const fork = async (batch: string, expected = 200) => {
+            const response = await fetch(`${server.url}/experimental/agents/${id}/__test/computer-fork`, {
+              method: "POST",
+              headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+              body: JSON.stringify({ batch, into: children }),
+              signal: AbortSignal.timeout(120000),
+            });
+            assert.equal(response.status, expected, `${await response.clone().text()}\n${server.logs()}`);
+            return (await response.json()) as { snapshot: { id: string; image: string } };
+          };
+          const forkStart = performance.now();
+          const first = await fork("integration:m1");
+          t.diagnostic(`fork_snapshot_ms=${Math.round(performance.now() - forkStart)}`);
+          assert.ok(first.snapshot.image, "the handle records its image");
+          assert.equal((await fork("integration:m1")).snapshot.id, first.snapshot.id, "one snapshot serves every child of a call");
+          const childCall = async (child: string, request: object) => {
+            const response = await fetch(`${server.url}/experimental/agents/${child}/computer`, {
+              method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+              body: JSON.stringify({ provider, ...request }), signal: AbortSignal.timeout(60000),
+            });
+            assert.equal(response.status, 200, `${await response.clone().text()}\n${server.logs()}`);
+            return (await response.json()) as Record<string, any>;
+          };
+          const restoreStart = performance.now();
+          const reads = await Promise.all(children.map((child) => childCall(child, { op: "read", path: "test.txt" })));
+          t.diagnostic(`fork_restore_and_read_2_ms=${Math.round(performance.now() - restoreStart)}`);
+          for (const read of reads) {
+            assert.equal(read.content, "persistent snapshot content");
+            assert.deepEqual(read.computer, { restoredFrom: "fork" });
+          }
+          // Each fork is its own machine: a child's writes reach neither its sibling nor the parent.
+          await childCall(children[0], { op: "write", path: "test.txt", content: "child a" });
+          assert.equal((await childCall(children[1], { op: "read", path: "test.txt" })).content, "persistent snapshot content");
+          assert.equal((await call(provider, { op: "read", path: "test.txt" })).content, "persistent snapshot content");
+          await call(provider, { op: "write", path: "test.txt", content: "parent later" });
+          assert.equal((await childCall(children[0], { op: "read", path: "test.txt" })).content, "child a");
+          for (const child of children) {
+            const removed = await fetch(`${server.url}/v1/agents/${child}`, { method: "DELETE", headers: { authorization: `Bearer ${token}` } });
+            assert.equal(removed.status, 200, await removed.clone().text());
+          }
+          // Sleep saves the disk: the next operation resumes it.
+          assert.deepEqual(await call(provider, { op: "sleep" }), { sleeping: true, saved: true });
+          const resumed = await call(provider, { op: "read", path: "test.txt" });
+          assert.equal(resumed.content, "parent later");
+          assert.equal(resumed.computer.restoredFrom, "sleep");
           await call(provider, { op: "sleep" });
         });
       // Deleting the agent purges its computer: container and snapshot handles.
@@ -508,18 +543,23 @@ test("computer egress: git clone and push through the runtime's credential gatew
     child = (await fixture.db.query("select id from agents where header->>'parentAgentId'=$1", [lead.id])).rows[0]?.id;
   assert.ok(child, `no child of ${lead.id} (request ${started.id})`);
   const fork = performance.now();
-  assert.deepEqual(await computer(child!, { op: "restore", name: "base", from: "parent" }), { restore: "base", from: "parent" });
-  t.diagnostic(`fork_restore_ms=${Math.round(performance.now() - fork)}`);
+  const seeded = await api(`/experimental/agents/${lead.id}/__test/computer-fork`, { body: { batch: "egress:m1", into: [child!] } });
+  assert.ok(seeded.snapshot.id);
+  t.diagnostic(`fork_snapshot_ms=${Math.round(performance.now() - fork)}`);
   const forked = await sh(child!, "git -C /workspace/app log --format=%s -1 && git -C /workspace/app fetch -q origin && git -C /workspace/app branch -r");
+  t.diagnostic(`fork_restore_first_exec_ms=${forked.ms}`);
   assert.equal(forked.exitCode, 0, JSON.stringify(forked));
+  assert.equal(forked.computer?.restoredFrom, "fork");
   assert.match(forked.stdout, /^badge\n/);
   assert.match(forked.stdout, /origin\/main/);
   assert.ok(exchanges.some(entry => entry.claims.agent === child), "the child's egress credential is its own");
 
-  // A child's fork never changes its parent's machine; an agent without a parent has nothing to fork.
+  // A child's fork never changes its parent's machine; a computer that never ran has nothing to fork.
   await sh(child!, "touch /workspace/child-only");
   assert.match((await sh(lead.id, "test -e /workspace/child-only && echo shared || echo separate")).stdout, /separate/);
-  await computer(lead.id, { op: "restore", name: "base", from: "parent" }, [500]);
+  const idle = await api("/v1/agents", { body: { definition: definition.id } });
+  const nothing = await api(`/experimental/agents/${idle.id}/__test/computer-fork`, { body: { batch: "egress:m2", into: [child!] } }, [409]);
+  assert.equal(nothing.code, "NO_SESSION");
 });
 
 /** Git's smart HTTP for the GitHub App case: it serves a repository only to a token the fake GitHub minted for it, and a push only with contents: write. */

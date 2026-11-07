@@ -124,7 +124,8 @@ test("the provider asks the meter before every start and reports use and stops",
   assert.deepEqual(events, ["admit", "started:standard-2", "used", "used"]);
   events.length = 0;
   await operate(provider, { op: "sleep" });
-  assert.deepEqual(events, ["stopped"]);
+  // Sleep saves the disk first: a paid operation on the running container, then the stop.
+  assert.deepEqual(events, ["admit", "used", "stopped"]);
   refuse = true;
   events.length = 0;
   await assert.rejects(operate(provider, { op: "exec", argv: ["true"] }), /credit spent/);

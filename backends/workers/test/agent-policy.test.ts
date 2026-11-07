@@ -125,7 +125,8 @@ test('a structured child request wraps its schema and records its runtime parent
 });
 test('new child inherits the parent computer before submission, once across replay', async () => {
   const f = fixture(), inherited: string[][] = [], fetch = f.host.fetch;
-  f.host.inheritComputer = async (...ids) => { inherited.push(ids); };
+  // A fresh child (no computer argument): the parent's connection is copied, with no fork.
+  f.host.inheritComputer = async (parent, child, computer) => { assert.equal(computer, undefined); inherited.push([parent, child]); };
   f.host.fetch = async (id, request) => {
     if (request.method === 'POST') assert.deepEqual(inherited, [['parent', id]]);
     return fetch(id, request);
