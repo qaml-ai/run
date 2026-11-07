@@ -180,3 +180,51 @@ channelTest("tests/channels-slack.test.ts:238", "a Slack send to a channel that 
   await sleep(500);
   assert.equal(r.api.calls.filter(call => call.method === "chat.postMessage").length, 1);
 });
+
+channelTest("tests/channels-slack.test.ts:246", "conversation: channel makes a Slack channel one agent: each thread is part of it, and each reply goes to its own thread", async (_t, r) => {
+  // A mention asks for work and is answered; another has the agent post a message of its own first.
+  r.setModel(body => {
+    const { text, from } = asked(body);
+    if (body.messages.at(-1).role === "tool") return { role: "assistant", content: "on it" };
+    if (text.includes("post a check-in")) return toolCall("send_message", { text: "Daily check-in", thread: "new" });
+    return { role: "assistant", content: `re: ${text} in ${from?.thread}` };
+  });
+  const bad = await r.call("/v1/channels", { body: { type: "slack", credentials: { botToken: SLACK_BOT_TOKEN, signingSecret: SLACK_SIGNING_SECRET }, settings: { conversation: "workspace" } } });
+  assert.equal(bad.status, 400);
+  const channel = await r.createChannel({ settings: { conversation: "channel" }, access: { allow: ["U_ADA", "U_BOB"] } });
+  assert.deepEqual(channel.settings, { conversation: "channel" });
+  await r.event(channel, { type: "app_mention", channel: "C1", ts: "100.0001", text: "<@UBOT> add a badge" });
+  await until(() => r.api.posts().length === 1, "the first thread's reply");
+  await r.event(channel, { type: "app_mention", channel: "C1", ts: "200.0002", text: "<@UBOT> post a check-in", user: "U_BOB" });
+  await until(() => r.api.posts().length === 3, "the check-in and the reply");
+  // A reply in a thread it was brought into reaches it without a mention; threads it never was in do not.
+  await r.event(channel, { type: "message", channel_type: "channel", channel: "C1", ts: "100.0005", thread_ts: "100.0001", text: "also the docs" });
+  await r.event(channel, { type: "message", channel_type: "channel", channel: "C1", ts: "300.0002", thread_ts: "300.0001", text: "unrelated" });
+  await until(() => r.api.posts().length === 4, "the follow-up's reply");
+  await sleep(300);
+  assert.equal(r.api.posts().length, 4);
+  assert.equal(Number((await r.channelQuery("select count(distinct agent) as count from channel_conversations")).rows[0].count), 1, "one agent for the channel");
+  const at = (text: string) => r.api.posts().filter(post => post.text === text).map(post => post.thread_ts);
+  assert.deepEqual(at("re: add a badge in 100.0001"), ["100.0001"]);
+  assert.deepEqual(at("Daily check-in"), [undefined], "thread: new is a message of its own");
+  assert.deepEqual(at("on it"), ["200.0002"]);
+  assert.deepEqual(at("re: also the docs in 100.0001"), ["100.0001"]);
+});
+
+channelTest("tests/channels-slack.test.ts:246", "in a channel conversation, a sub-agent's notice is answered in the thread whose message started it", async (_t, r) => {
+  r.setModel(body => {
+    const { text, from } = asked(body);
+    if (text.includes("BADGE_WORKER")) return { role: "assistant", content: "badge done" };
+    if (body.messages.at(-1).role === "tool") return { role: "assistant", content: `started for ${from?.thread}` };
+    if (text.includes("<agent_notification")) return { role: "assistant", content: "The badge PR is open." };
+    return toolCall("spawn_agent", { instructions: "BADGE_WORKER", task: "Add the badge", name: "badge" });
+  });
+  const definition = await r.call("/v1/definitions", { body: { name: "Lead", builtins: ["agents"], delegate: { instructions: true }, codeMode: false, fileTools: false } });
+  assert.equal(definition.status, 201, definition.text);
+  const channel = await r.createChannel({ definition: definition.json.id, settings: { conversation: "channel" } });
+  await r.event(channel, { type: "app_mention", channel: "C1", ts: "100.0001", text: "<@UBOT> add a badge" });
+  await until(() => r.api.posts().some(post => post.text === "The badge PR is open."), "the notice's reply", 60_000);
+  const at = (text: string) => r.api.posts().filter(post => post.text === text).map(post => post.thread_ts);
+  assert.deepEqual(at("started for 100.0001"), ["100.0001"]);
+  assert.deepEqual(at("The badge PR is open."), ["100.0001"]);
+});

@@ -280,6 +280,12 @@ export async function workerChannels(env: Env, background?: (work: Promise<unkno
     ...(channelEnv.AGENT_CHANNEL_RETRY_MS ? { retryBaseMs: Number(channelEnv.AGENT_CHANNEL_RETRY_MS) } : {}),
     ...(channelEnv.AGENT_CHANNEL_RECHECK_MS ? { recheckMs: Number(channelEnv.AGENT_CHANNEL_RECHECK_MS) } : {}),
     safeError,
+    // A sub-agent's notice names the sub-agent (metadata.agentId); the run that started it is in its directory entry.
+    parentRun: async (agent, run) => {
+      const child = typeof run.metadata?.agentId === "string" ? run.metadata.agentId : undefined;
+      const entry = child ? await new Directory(env, agent.tenant).get(child) : null;
+      return entry?.parentAgentId === agent.id ? entry.parentRunId : undefined;
+    },
   };
   return new Channels(host);
 }

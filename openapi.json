@@ -4431,6 +4431,10 @@
               "username": {
                 "type": "string",
                 "description": "Handle, chosen by the sender"
+              },
+              "thread": {
+                "type": "string",
+                "description": "The thread of a shared conversation the message was written in (a channel sets it: a Slack thread's ts in a channel answered by one agent). The model sees it with the sender, and its reply goes there"
               }
             },
             "required": [
@@ -6036,6 +6040,9 @@
                 "type": "string"
               },
               "username": {
+                "type": "string"
+              },
+              "thread": {
                 "type": "string"
               }
             },
@@ -10905,6 +10912,10 @@
               "username": {
                 "type": "string",
                 "description": "Handle, chosen by the sender"
+              },
+              "thread": {
+                "type": "string",
+                "description": "The thread of a shared conversation the message was written in (a channel sets it: a Slack thread's ts in a channel answered by one agent). The model sees it with the sender, and its reply goes there"
               }
             },
             "required": [

@@ -6625,6 +6625,24 @@ random webhook secret are stored encrypted; the API returns only masked values.
   there; later messages in that thread reach its agent without a mention. The
   same message sent as both `app_mention` and `message` is handled once. Slack has
   no typing indicator for bots.
+
+  With `"settings": {"conversation": "channel"}` a Slack channel is **one
+  conversation**, and so one agent, which every thread in it reaches. This suits
+  a team's always-on agent for a project.
+  - A mention, in any thread or at the top level, brings the agent in.
+  - Later replies in that thread reach it without a mention, for 7 days after
+    the thread's latest message.
+  - Each message carries its thread in the sender block (`from.thread`, a
+    thread's `ts`). Its turn's reply goes to that thread.
+  - A sub-agent's notice is answered in the thread whose message started the
+    sub-agent.
+  - `send_message` takes `thread`: a thread the agent saw, or `"new"` for a
+    message of its own at the top level, such as a daily summary. Left out, it
+    writes in the thread being answered.
+  - DMs stay conversations of their own.
+
+  A turn not started by a message or a sub-agent (a schedule) replies at the
+  channel's top level.
 - **GitHub.** Create a GitHub App with the repository permissions Pull requests
   (read and write), Issues (read and write), Contents (read) and Metadata (read),
   subscribe it to Pull request, Issue comment, Pull request review comment (and

@@ -100,6 +100,9 @@ export class Channels extends CoreChannels {
       ...(options.retryBaseMs !== undefined ? { retryBaseMs: options.retryBaseMs } : {}),
       ...(options.recheckMs !== undefined ? { recheckMs: options.recheckMs } : {}),
       safeError: safeErrorOf,
+      // A sub-agent's notice (request child_<its request>): the run of the parent that started it.
+      parentRun: async (agent, run) => (await options.db.query("select parent_run from agent_children where tenant = $1 and parent = $2 and request_id = $3",
+        [agent.tenant, agent.id, run.id.slice("child_".length)])).rows[0]?.parent_run as string | undefined,
     });
     this.db = options.db;
   }
@@ -144,7 +147,7 @@ export class Channels extends CoreChannels {
     // A channel's agents get send_message, for updates before the final reply.
     server: async agent => {
       const binding = await this.binding(agent.id);
-      return binding && valueServer([SEND_MESSAGE], async ({ args }) => this.sendMessage(agent, args));
+      return binding && valueServer([SEND_MESSAGE], async ({ args, run }) => this.sendMessage(agent, args, run));
     },
     origin: (agent: AgentRef, requestId?: string) => this.origin(agent, requestId),
   };
