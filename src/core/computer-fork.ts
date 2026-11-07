@@ -155,8 +155,9 @@ export const forkRows = {
     if (!existing) throw new Error("Computer snapshot row vanished");
     return { row: existing, won: false };
   },
-  async ready(sql: Sql, id: string, reference: string) {
-    await sql.query("update computer_snapshots set state='ready',reference=$2 where id=$1 and state='taking'", [id, reference]);
+  /** The winner's snapshot is taken. False when its row is gone (cleared as abandoned): the caller drops the snapshot. */
+  async ready(sql: Sql, id: string, reference: string): Promise<boolean> {
+    return !!(await sql.query("update computer_snapshots set state='ready',reference=$2 where id=$1 and state='taking'", [id, reference])).rowCount;
   },
   /** The winner could not take the snapshot: its row goes, so the call can be made again. */
   async abandon(sql: Sql, id: string) {
@@ -189,6 +190,10 @@ export const forkRows = {
   /** Every open snapshot of a tenant, for its deletion: dropped whatever their children or grace. */
   async ofTenant(sql: Sql, tenant: string): Promise<SnapshotRow[]> {
     return (await sql.query("select * from computer_snapshots where tenant=$1 and dropped_at is null and state='ready'", [tenant])).rows;
+  },
+  /** Snapshots of a tenant still being taken (a deletion waits for them, so none outlives its row). */
+  async takingOf(sql: Sql, tenant: string): Promise<number> {
+    return Number((await sql.query("select count(*)::int as n from computer_snapshots where tenant=$1 and dropped_at is null and state='taking'", [tenant])).rows[0].n);
   },
   /** The snapshot a removed connection started from, if no other connection still does and its call's siblings had time to attach. */
   async orphaned(sql: Sql, seed: string, before: number): Promise<SnapshotRow | undefined> {

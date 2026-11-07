@@ -47,9 +47,16 @@ export async function forkComputerInto(env: Env & { AGENTS: { getByName(name: st
     if (!taken) throw new HttpError(404, "Unknown computer connection");
     fork = { connection: { seed: taken.id, connection: taken.connection, provider: taken.provider, at: taken.at } };
   } else fork = await forkChildComputers(env, tenant, source, `api:${crypto.randomUUID()}`, options.setup, options.serialize);
-  const forks = fork.connection ? await service.forkInto(source, { id: fork.connection.seed, connection: fork.connection.connection!, provider: fork.connection.provider!, at: fork.connection.at! }, agents) : [];
+  // All or none: native computers are seeded first (they had no disk, so undoing one is a purge), then the connections
+  // in one transaction; a failure in either undoes the seeds.
+  const seeded: string[] = [];
+  const undo = () => Promise.all(seeded.map(agent => env.COMPUTER_CONTAINERS!.getByName(nativeComputer(env, agent)).purge().catch(() => {})));
+  let forks: Awaited<ReturnType<ComputerService["forkInto"]>> = [];
+  try {
+    if (fork.native && env.COMPUTER_CONTAINERS) for (const agent of agents) { await seedNative(env, agent, fork.native); seeded.push(agent); }
+    if (fork.connection) forks = await service.forkInto(source, { id: fork.connection.seed, connection: fork.connection.connection!, provider: fork.connection.provider!, at: fork.connection.at! }, agents);
+  } catch (error) { await undo(); throw error; }
   for (const agent of agents) {
-    if (fork.native && env.COMPUTER_CONTAINERS) await seedNative(env, agent, fork.native);
     // An agent that has run already gets its new computer tools at its next turn.
     if (fork.connection) await env.AGENTS.getByName(agent).fetch(new Request("https://computer.internal/__computer", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tenant, operation: "refresh" }) })).then(response => response.body?.cancel());
   }
@@ -69,7 +76,8 @@ async function seedNative(env: Env, agent: string, native: NonNullable<ChildComp
 export async function attachChildComputers(env: Env, tenant: string, parent: string, child: string, computer?: "none" | ChildComputerFork) {
   if (computer === "none") return;
   await inheritComputer(env, tenant, parent, child, undefined, computer?.connection);
-  if (computer?.native && env.COMPUTER_CONTAINERS) await seedNative(env, child, computer.native);
+  // A replay never replaces a child's disk: one already seeded keeps it.
+  if (computer?.native && env.COMPUTER_CONTAINERS && !(await env.COMPUTER_CONTAINERS.getByName(nativeComputer(env, child)).forkedFrom())) await seedNative(env, child, computer.native);
 }
 
 /**

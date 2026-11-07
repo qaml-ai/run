@@ -571,8 +571,11 @@ export class ContainerProvider implements ComputerProvider {
   async forkSnapshot(batch: string, signal: AbortSignal): Promise<NativeForkAnswer> {
     const key = `${FORK_PREFIX}${batch}`, existing = await this.store.get<ForkEntry | null>(key);
     if (existing) return { ok: true, snapshot: existing.snapshot };
-    // A start or restore still coming up: its disk is not all there yet.
-    if (await this.store.get<StartPlan | null>(STARTING_KEY)) return { ok: false, code: "COMPUTER_STARTING", message: "This agent's computer is still starting; fork again in a few seconds." };
+    // A start or restore still coming up: its disk is not all there yet. A marker whose container is gone is stale.
+    if (await this.store.get<StartPlan | null>(STARTING_KEY)) {
+      if (this.container.running) return { ok: false, code: "COMPUTER_STARTING", message: "This agent's computer is still starting; fork again in a few seconds." };
+      await this.store.put(STARTING_KEY, null);
+    }
     await this.dropStale();
     let snapshot: ComputerSnapshot | undefined;
     if (this.container.running) snapshot = await this.snapshot(`fork-${await hex(batch)}`, signal);

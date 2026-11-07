@@ -820,8 +820,10 @@ provider account. There is no new shared computer budget or cap.
 A child's connection is detached and its session stopped when the child is
 deleted or expires, through the same cleanup as any detach. Cleanup failures
 are retried, and metering history stays. Sub-agents live for a day unless deleted
-earlier. A `delegate` child's session stops when its call answers, so it bills
-nothing more; its connection stays. A `spawn_agent` child keeps its session
+earlier. A `delegate` child's session stops when its call answers or is refused,
+so it bills nothing more; its connection stays. A call that is stopped, or whose
+parent moves to another node, leaves the child's session to end at its lease or
+when the child is deleted, since a replay may still use it. A `spawn_agent` child keeps its session
 until it calls `computer_stop`, its session expires, or it is deleted.
 
 ### Forking a computer

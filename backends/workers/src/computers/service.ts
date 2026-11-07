@@ -306,6 +306,7 @@ export async function sweepSnapshots(env: ComputerEnv) {
 export async function dropTenantSnapshots(env: ComputerEnv, tenant: string) {
   let left = 0;
   for (const row of await withSql(env, sql => forkRows.ofTenant(sql, tenant))) if (!(await dropSnapshot(env, row, true))) left++;
+  left += await withSql(env, sql => forkRows.takingOf(sql, tenant));
   if (left) throw new Error(`${left} computer snapshots are not deleted yet`);
 }
 

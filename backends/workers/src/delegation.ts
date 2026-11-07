@@ -170,8 +170,11 @@ export class Delegation {
     const choice = computerChoice(args.computer);
     if (choice === 'fork' && target?.agent !== undefined) throw new HttpError(400, 'computer: "fork" makes a new sub-agent with a copy of your computer: give instructions or a definition target, not an existing agent');
     if (choice === 'fork' && !this.host.forkComputer) throw new HttpError(409, 'Computers cannot be forked on this runtime. Use computer: "fresh" or "none".', 'FORK_UNSUPPORTED');
-    // A replay whose child exists already has its computers: no new snapshot.
-    const fork = choice === 'fork' && !resumed?.id ? await this.host.forkComputer!(forkBatch(run.id, site?.assistant, toolCallId)) : undefined;
+    // A replay finds the batch's snapshot again (its row or registry entry). If the parent's computer is gone by then, the
+    // replayed child keeps whatever it was already given (attaching never replaces a child's computers).
+    const fork = choice === 'fork'
+      ? await this.host.forkComputer!(forkBatch(run.id, site?.assistant, toolCallId)).catch(error => { if (resumed?.id) return undefined; throw error; })
+      : undefined;
     const maxParallel = settings.maxParallel ?? MULTI_AGENT_LIMITS.maxParallel;
     let group: { messageIndex: number; delegates: number } | undefined;
     if (!resumed && !background && !override && site && !site.innerCallId && api?.commit) {
