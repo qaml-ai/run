@@ -44,6 +44,12 @@ jobs:
     # Includes protected-turn retirement and deployment-alarm bake time.
     timeout-minutes: 60
     environment: production
+    # The AWS CLI's default (2 retries, legacy mode) gave up on every deploy during a us-west-2 ECS API incident
+    # (2026-11-06: 503s and dropped connections on DescribeServices/RegisterTaskDefinition). Adaptive mode backs off
+    # and rate-limits itself across up to 10 attempts per call.
+    env:
+      AWS_RETRY_MODE: adaptive
+      AWS_MAX_ATTEMPTS: "10"
     steps:
       # The deploy tooling comes from this run's commit (main), whatever commit it deploys; the full history orders
       # commits.
