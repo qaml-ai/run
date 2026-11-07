@@ -231,10 +231,14 @@ function relayChild(ctx: ChildrenContext, session: Session, runId: string, at: {
  * An agent's background children, by when each started: what list_agents answers. Each as its latest run says (a
  * message or a resume starts it again); one whose resume waits on a person is input_required.
  */
+/** How many children list_agents shows: the most recently started (rows outlive their children, as the parent does). */
+const LISTED_CHILDREN = 200;
 async function childrenOf(ctx: ChildrenContext, parent: string) {
   const { rows } = await ctx.db.query(`select * from (select distinct on (child) child, name, status, kind, ended_at, landed_by, created_at,
     min(created_at) over (partition by child) as started from agent_children where parent = $1 and kind <> 'delegate' and landed_by is distinct from 'steer' and landed_by is distinct from 'superseded'
-    order by child, created_at desc, id desc) latest order by started, child limit 200`, [parent]);
+    order by child, created_at desc, id desc) latest order by started desc, child desc limit ${LISTED_CHILDREN}`, [parent]);
+  // The newest LISTED_CHILDREN, oldest first: a long-lived lead's list goes on showing the children it starts now.
+  rows.reverse();
   const progress = await progressOf(ctx, parent);
   return rows.map(row => {
     const report = row.ended_at === null ? progress.get(row.child) : undefined;

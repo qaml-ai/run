@@ -128,8 +128,8 @@ contractTest("delegation", "tests/agent-messaging.test.ts:97", "interrupt_agent 
   const [notice] = await ended(r, parent, "child_");
   assert.match(notice.outcome.result.reply, /status="aborted"/);
 
-  // The parent's abort cascades; with children: "keep" it does not.
-  for (const children of [undefined, "keep"]) {
+  // The parent's abort cascades (by default, and with children: "abort"); with children: "keep" it does not.
+  for (const children of [undefined, "abort", "keep"]) {
     const other = await lead(r);
     await r.prompt(other, "spawn 2");
     const kid = (await childOf(other, "slow-2")).id;
@@ -137,7 +137,7 @@ contractTest("delegation", "tests/agent-messaging.test.ts:97", "interrupt_agent 
     assert.equal((await r.call(`/v1/agents/${other}/abort`, { body: children ? { children } : {} })).status, 200);
     await sleep(1_500);
     const run = await childRun(kid);
-    if (children) assert.equal(run.state, "running", "kept running");
+    if (children === "keep") assert.equal(run.state, "running", "kept running");
     else assert.equal((await until(async () => { const found = await childRun(kid); return found.state === "completed" && found; }, "the child's abort")).outcome.result.code, "aborted");
     // Deleting the parent deletes the child it made.
     assert.equal((await r.call(`/v1/agents/${other}`, { method: "DELETE" })).status, 200);
