@@ -420,7 +420,7 @@ export class ContainerProvider implements ComputerProvider {
     await this.store.put(BASE_KEY, { ...base, expiresAt: this.now() + SNAPSHOT_TTL_MS, restores: base.restores + 1 });
     this.notice = {
       restoredFrom: plan.base,
-      ...(base.restores > 0 || plan.base === "sleep" ? { note: `This computer stopped and started again from its ${plan.base === "fork" ? "fork snapshot (the parent's disk at the fork)" : plan.base === "sleep" ? "last sleep's snapshot" : "last restored snapshot"}: changes made after that snapshot were lost. Use sleep to keep work across stops.` } : {}),
+      ...(base.restores > 0 ? { note: `This computer stopped and started again from its ${plan.base === "fork" ? "fork snapshot (the parent's disk at the fork)" : plan.base === "sleep" ? "last sleep's snapshot" : "last restored snapshot"}: changes made after that snapshot were lost. Use sleep to keep work across stops.` } : {}),
     };
   }
   /** Wait (bounded, once) for a start an earlier call left coming up. */

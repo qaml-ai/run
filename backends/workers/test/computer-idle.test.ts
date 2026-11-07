@@ -60,6 +60,11 @@ test('idle: "sleep" saves the disk when the idle time is up, and the next start 
   const resumed = await operate(p, { op: "exec", argv: ["true"] }) as Record<string, any>;
   assert.deepEqual(m.starts.at(-1)!.containerSnapshot, { id: "snap-1" });
   assert.equal(resumed.computer.restoredFrom, "sleep");
+  assert.equal(resumed.computer.note, undefined, "a sleep saved everything: nothing to warn about");
+  // Stopped again without a save (a crash): the restart says what was lost.
+  m.container.running = false;
+  const again = await operate(p, { op: "exec", argv: ["true"] }) as Record<string, any>;
+  assert.match(again.computer.note, /changes made after that snapshot were lost/);
 });
 
 test("a long command counts as use until it ends", async () => {
