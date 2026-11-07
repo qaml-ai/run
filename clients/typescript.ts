@@ -344,6 +344,28 @@ export interface AgentOptions {
   connection?: "eager" | "lazy";
 }
 /**
+ * One of an agent's children (`GET /v1/agents/{id}/children`): a sub-agent its delegate or spawn_agent call (or a tool's
+ * spawn directive) started, as its latest run says. `delivered`: an ended child's answer reached the parent (a
+ * notification landed, or a wait_agent or the delegate call took it); false means a notification is still on its way.
+ */
+export interface ChildAgent {
+  agentId: string;
+  name: string;
+  /** true: spawn_agent's (its answer a notification); false: a delegate call's (its answer the call's result). */
+  background: boolean;
+  status: "running" | "completed" | "failed" | "aborted" | "input_required";
+  /** Its latest run's request id, on the child. */
+  requestId: string;
+  /** The parent's tool call that started that run. */
+  toolCallId: string;
+  startedAt: number;
+  endedAt?: number;
+  delivered?: boolean;
+  progress?: string;
+  progressAt?: number;
+  error?: string;
+}
+/**
  * Human input a suspended turn waits on (its run ends with `stopped: "input_required"` and these in
  * `inputs`): the model's questions (ask_user), approvals, and a tool's form or URL step.
  */
@@ -2639,6 +2661,11 @@ export class AgentClient {
   /** The agent's inputs, newest first: `pending` ones, say. */
   inputs(state?: AgentInput["state"]): Promise<AgentInput[]> { return this.http(`/inputs${state ? `?state=${state}` : ""}`); }
   outcomes(): Promise<SessionState> { return this.http("/state"); }
+  /**
+   * The children its delegate and spawn_agent calls started, newest first (at most 200), each as its latest run says.
+   * The agent idle and every child ended with `delivered` true: the whole tree is settled.
+   */
+  async children(): Promise<ChildAgent[]> { return (await this.http("/children") as { children: ChildAgent[] }).children; }
 
   toJSON() { return { id: this.id }; }
   [INSPECT]() { return `AgentClient { id: '${this.id}' }`; }

@@ -18,6 +18,7 @@ import { scheduleDeliveries, type StoredSchedule as Schedule } from "./schedules
 import { keyServices } from "./security-services.ts";
 import { admissionHeaders, admissionError, errorFields, errorHeaders } from "./admission.ts";
 import { requestView } from "./request-view.ts";
+import { childrenView } from "./delegation.ts";
 import { waitForRequest } from "./request-wait.ts";
 import { wordedFileTools } from "./file-tool-selection.ts";
 import type { DefinitionTarget } from "./definitions.ts";
@@ -518,6 +519,8 @@ export async function fetchRequestImpl(this: AgentRuntime,
       }
       if (path === "/state" && request.method === "GET")
         return json(await this.state());
+      if (path === "/children" && request.method === "GET")
+        return json({ children: childrenView(await this.delegation.children()) });
       if (path === "/requests" && request.method === "POST")
         return this.requestResponse(await this.submit(await body(request, 6 * 1024 * 1024)));
       if (path.startsWith("/requests/") && request.method === "GET") {

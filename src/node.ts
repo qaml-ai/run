@@ -1147,7 +1147,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   // Any node answers the preflight, and the node that serves the read marks it readable (errors too, so the browser
   // sees a 401 and mints a new token). No credentials are allowed, every other route gets no CORS headers, and
   // neither does any request made with the tenant's own tokens.
-  const BROWSER_READS = /^\/v1\/agents\/client_[a-f0-9]{40}\/(?:events|state|history|inputs)$/;
+  const BROWSER_READS = /^\/v1\/agents\/client_[a-f0-9]{40}\/(?:events|state|history|inputs|children)$/;
   app.use(async (c, next) => {
     if (!c.req.header("origin") || !BROWSER_READS.test(c.req.path)) return next();
     if (c.req.method === "OPTIONS") {

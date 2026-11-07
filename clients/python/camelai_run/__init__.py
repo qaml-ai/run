@@ -1694,6 +1694,13 @@ class _AgentCalls:
         """The agent's inputs, newest first: state="pending", say."""
         return self._http("/inputs" + (f"?state={state}" if state else ""))
 
+    def children(self):
+        """The children its delegate and spawn_agent calls started, newest first (at most 200), each as its latest run
+        says: {"children": [{agentId, name, background, status, requestId, toolCallId, startedAt, endedAt, delivered
+        (an ended child's answer reached the agent yet), progress, error}]}. The agent idle and every child ended and
+        delivered: the whole tree is settled."""
+        return self._http("/children")
+
     def request_status(self, request_id, *, wait=None):
         """A request's record. wait (seconds, at most 25): while it runs, answer once it settles, or when the wait
         ends with it still running: one call that waits, with no stream connected."""
@@ -2694,6 +2701,12 @@ class Agent:
     async def pending_inputs(self):
         """Inputs waiting on people, across the agent's runs."""
         return [RunInput(self, input) for input in await self.client.inputs(state="pending")]
+
+    async def children(self):
+        """Its sub-agents (delegate and spawn_agent children), newest first, as dicts: status, delivered (its answer
+        reached this agent yet) and a running one's progress. This agent idle and every child ended and delivered: the
+        whole tree is settled."""
+        return (await self.client.children())["children"]
 
     async def history(self):
         """Its whole history: every message, oldest first (history_page reads a page at a time)."""

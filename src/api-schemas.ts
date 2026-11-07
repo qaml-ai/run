@@ -795,6 +795,23 @@ export const SessionState = z.object({
   ...Activity.shape,
   resume: z.object({ failures: z.number(), after: z.number() }).optional().openapi({ description: "For an agent no node holds, whose unfinished work's loads are put off: how many times, and until when" }),
 }).openapi("SessionState");
+export const ChildAgent = z.object({
+  agentId: z.string(),
+  name: z.string().openapi({ description: "The parent's name for it: spawn_agent's name (the model's handle), or the delegate target's" }),
+  background: z.boolean().openapi({ description: "true: started by spawn_agent (or a tool's spawn directive), its answer a notification; false: a delegate call's, its answer the call's result" }),
+  status: z.enum(["running", "completed", "failed", "aborted", "input_required"]).openapi({ description: "As its latest run says: a message or a resume starts it again" }),
+  requestId: z.string().openapi({ description: "Its latest run's request, on the child: GET /v1/agents/{agentId}/requests/{requestId}, or its events with ?request=" }),
+  toolCallId: z.string().openapi({ description: "The parent's tool call that started that run (spawn_agent, delegate, or send_message)" }),
+  startedAt: z.number().openapi({ description: "When the parent first started it (ms since the epoch)" }),
+  endedAt: z.number().optional().openapi({ description: "When its latest run ended (ms since the epoch)" }),
+  delivered: z.boolean().optional().openapi({ description: "An ended child (or one waiting on a person): whether its answer reached the parent yet (its notification landed, or a wait_agent or the delegate call took it). false: a notification is still on its way, and will start or join a turn of the parent's" }),
+  progress: z.string().optional().openapi({ description: "A running child's latest report_progress" }),
+  progressAt: z.number().optional(),
+  error: z.string().optional().openapi({ description: "Why a background child's run failed or was aborted" }),
+}).openapi("ChildAgent");
+export const ChildAgents = z.object({
+  children: z.array(ChildAgent).openapi({ description: "Newest first, at most 200" }),
+}).openapi("ChildAgents");
 export const EventPoll = z.object({
   cursor: z.number().openapi({ description: "Send as Last-Event-ID on the next poll" }),
   events: z.array(z.object({ id: z.number(), data: z.unknown() })),
@@ -802,7 +819,7 @@ export const EventPoll = z.object({
 
 export const BrowserTokenInput = z.object({
   ttlSeconds: z.number().int().min(5).max(3600).optional().openapi({ description: "How long it lives: 5 to 3600 seconds, default 900. Nothing revokes it sooner" }),
-  scopes: z.array(z.enum(["events", "state", "history", "inputs", "children"])).optional().openapi({ description: "What it reads of the agent: GET /v1/agents/{id}/<scope>. Default events, state, history and inputs. children: it reads the same of the agent's background sub-agents (spawn_agent's), by their ids" }),
+  scopes: z.array(z.enum(["events", "state", "history", "inputs", "children"])).optional().openapi({ description: "What it reads of the agent: GET /v1/agents/{id}/<scope>. Default events, state, history and inputs. children: it lists the agent's children (GET /v1/agents/{id}/children), and reads the same of its background sub-agents (spawn_agent's), by their ids" }),
   events: z.array(z.string()).max(64).optional().openapi({ description: "Only these event types (message_update, tool_execution_end, ...) reach it; default every one but the runtime's own (compaction_usage, spend_limit_reached, turn_limit_reached). Outcomes (response) and snapshots always do, an outcome only as whether and why its run stopped" }),
   redact: z.array(z.enum(["usage.cost"])).optional().openapi({ description: "Fields it does not see: usage.cost, a response's provider cost, in messages, snapshots and history" }),
   subject: z.string().max(200).optional().openapi({ description: "Whom it is for, in your app (a user id)" }),

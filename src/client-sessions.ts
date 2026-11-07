@@ -931,6 +931,9 @@ export class ClientSessions {
   /** Whether `child` is one of `parent`'s background sub-agents (a browser token's `children` scope). */
   async isChildOf(child: string, parent: string) { return childSessions.isChildOf(this.childrenContext, child, parent); }
 
+  /** The children the agent's delegate and spawn_agent calls started, newest first (`GET /v1/agents/{id}/children`). */
+  async childrenFor(id: string) { return childSessions.childrenView(this.childrenContext, id); }
+
   /** Mark the run that has begun as aborted, so it does not start if the agent does not have it yet (see `execute`). */
   private markAborted(session: Session) {
     const run = runningRun(session);
@@ -1618,6 +1621,7 @@ export class ClientSessions {
       return json(c, 202, { accepted: true });
     });
     app.get(`${agent}/inputs`, async c => json(c, 200, await this.inputsFor(c.var.session.header.id, c.var.session.header.tenant, c.req.query("state"))));
+    app.get(`${agent}/children`, async c => json(c, 200, { children: await this.childrenFor(c.var.session.header.id) }));
     app.post(`${agent}/inputs/:input`, async c => {
       const session = c.var.session;
       const { status, inputs, requests } = await this.answer(session.header.id, session.header.tenant, [{ id: c.req.param("input"), body: await readJson(body(c), 256 * 1024) }], "agent");
