@@ -427,7 +427,7 @@ export async function admitImpl(this: AgentRuntime,
     params.bucket = effectiveBucket;
     if (!old) await refreshIdleLifetime(this.env, this.ctx.storage, conf);
     if (conf.config.spendLimit) await this.flushBilling(true);
-    if (notice) await this.delegation.landNotice(id, notice.costUsd);
+    if (notice) await this.delegation.landNotice(id, notice.costUsd, Array.isArray(notice.metadata.batch) ? notice.metadata.batch as { requestId: string; costUsd: number }[] : []);
     const spend = await this.agentSpend(conf);
     const refusal = agentSpendRefusal(conf.id, spend);
     if (refusal && !notice)

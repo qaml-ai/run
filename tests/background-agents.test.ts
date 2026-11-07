@@ -244,3 +244,51 @@ test("children started together share what the parent may spend, and limits alon
   assert.deepEqual([saved.builtins ?? [], saved.delegate], [[], { maxParallel: 3, maxDepth: 1 }]);
   assert.deepEqual((await sdk.createDefinition({ name: "Targets", delegate: { instructions: true } })).builtins, ["delegate"]);
 });
+
+test("endings that wait behind a busy parent ride in one notification's turn, a block each; a person's message keeps its own turn", async t => {
+  let open!: () => void;
+  const gate = new Promise<void>(resolve => { open = resolve; });
+  const r = await runtime(t, body => {
+    if (roleText(body).includes("WORKER")) return { role: "assistant", content: `done ${/task (\w+)/.exec(lastUser(body))?.[1] ?? "?"}` };
+    if (last(body).role === "user" && lastUser(body).includes("<agent_notification")) return { role: "assistant", content: `heard ${lastUser(body).split("<agent_notification ").length - 1}` };
+    if (last(body).role === "user" && lastUser(body).includes("PERSON")) return { role: "assistant", content: "answered the person" };
+    // The parent's turn stays open while its three children end.
+    if (last(body).role === "tool") return { role: "assistant", content: "started", wait: gate };
+    return { role: "assistant", tool_calls: ["a", "b", "c"].map((task, index) => ({ index, id: `call_${task}`, type: "function", function: { name: "spawn_agent", arguments: JSON.stringify({ instructions: "You are a WORKER.", task: `task ${task}` }) } })) };
+  });
+  const parent = (await r.call("/v1/agents", { body: { builtins: ["agents"], delegate: { instructions: true } } })).json.id;
+  const first = r.prompt(parent, "start three workers");
+  await until(async () => {
+    const children = (await r.call(`/v1/agents/${parent}/children`)).json.children as any[] | undefined;
+    return children?.length === 3 && children.every(child => child.status === "completed");
+  }, "the three children to end");
+  // A person writes while the parent is still busy: their message keeps a turn of its own.
+  const person = (await r.call(`/v1/agents/${parent}/prompt`, { body: { text: "PERSON: also this, please" } })).json.id as string;
+  open();
+  assert.equal((await first).outcome.result.reply, "started");
+  const notices = await notified(r, parent, 3);
+  // One notification's turn heard all three endings; the other two requests landed nothing of their own.
+  const landed = notices.filter((notice: any) => notice.outcome.result.reply !== undefined && !notice.outcome.result.skipped);
+  assert.equal(landed.length, 1, JSON.stringify(notices.map((notice: any) => notice.outcome.result)));
+  assert.equal(landed[0].outcome.result.reply, "heard 3");
+  const carried = notices.filter((notice: any) => notice.outcome.result.skipped);
+  assert.equal(carried.length, 2);
+  for (const notice of carried) assert.match(notice.outcome.result.skipped, /with another one's notification/);
+  const answer = await until(async () => {
+    const record = (await r.call(`/v1/agents/${parent}/requests/${person}?wait=5`)).json;
+    return record.state === "completed" && record;
+  }, "the person's turn");
+  assert.equal(answer.outcome.result.reply, "answered the person");
+  // In history: one notification message, the other two endings in its metadata.batch, each once.
+  const history = (await r.call(`/v1/agents/${parent}/history`)).json.messages;
+  const notes = history.filter((entry: any) => entry.role === "user" && entry.source);
+  assert.equal(notes.length, 1);
+  assert.equal(notes[0].requestId, landed[0].id);
+  assert.deepEqual([notes[0].metadata.name, ...notes[0].metadata.batch.map((ending: any) => ending.name)].sort(), ["subagent-1", "subagent-2", "subagent-3"]);
+  assert.deepEqual(notes[0].metadata.batch.map((ending: any) => ending.requestId).sort(), carried.map((notice: any) => notice.id).sort());
+  const people = history.filter((entry: any) => entry.role === "user" && !entry.source && text(entry).includes("PERSON"));
+  assert.equal(people.length, 1);
+  // Every child's ending reached the parent, and none waits to be delivered.
+  const children = (await r.call(`/v1/agents/${parent}/children`)).json.children as any[];
+  assert.deepEqual(children.map(child => child.delivered), [true, true, true]);
+});

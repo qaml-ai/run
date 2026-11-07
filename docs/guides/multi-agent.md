@@ -302,6 +302,28 @@ UIs should render a message with `source` as a notification, not as the user.
 
 A sub-agent whose ending a `wait_agent` call answered adds no notification:
 one already on its way ends without its message (`result.skipped`).
+
+Endings that wait together ride in one turn. When a notification lands, every
+other sub-agent that has ended but whose ending has not reached the parent yet
+comes with it, as a block of its own after the first, in the same message:
+
+```text
+<agent_notification name="mul" status="completed" took="21s" …>
+PR 1
+</agent_notification>
+<agent_notification name="cap" status="completed" took="20s" …>
+PR 2
+</agent_notification>
+```
+
+That message's `metadata.batch` lists the endings it carried, each with its
+notice's metadata, its `text`, its `costUsd` (charged to that turn) and its
+`requestId`. Each carried ending's own request then lands nothing of its own:
+it ends with `result.skipped`. Every ending reaches the parent exactly once, as
+a notification or in one's batch, and a parent lost as it lands one lands the
+same batch on its next owner. A person's message, and an agent's message, are
+never carried: each keeps a turn of its own.
+
 A parent waiting on a person (an approval, `ask_user`) gets its notifications
 once they answer: a new message would supersede what it asked.
 
