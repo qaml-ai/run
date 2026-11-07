@@ -490,13 +490,16 @@ function chargeNotice(ctx: ChildrenContext, session: Session, runId: string, usd
  * message its running turn took (`steeredInto`) is folded into that turn, whose own row answers: it lands nothing. One
  * that waits on a person gets the row of the turn it resumes once they answer, which notifies again.
  */
-async function recordEnding(ctx: ChildrenContext, row: { id: string; tenant?: string; parent?: string; child: string; name: string; root: string; request_id?: string }, record: Pick<RequestRecord, "status" | "error" | "outcome" | "steeredInto">) {
+async function recordEnding(ctx: ChildrenContext, row: { id: string; tenant?: string; parent?: string; child: string; name: string; root: string; request_id?: string; created_at?: number | string }, record: Pick<RequestRecord, "status" | "error" | "outcome" | "steeredInto"> & Partial<Pick<RequestRecord, "began" | "startedAt" | "endedAt">>) {
   const now = Date.now();
   if (record.steeredInto) {
     const { rows } = await ctx.db.query("update agent_children set ended_at = $2, state = 'notified', landed_at = $2, landed_by = 'steer', updated_at = $2 where id = $1 and ended_at is null returning *", [row.id, now]);
     return rows[0] ?? (await ctx.db.query("select * from agent_children where id = $1", [row.id])).rows[0];
   }
-  const notice = childNotice({ agentId: row.child, name: row.name, root: row.root }, record);
+  // From the call that started it to its ending, as Workers counts it (the row is made when the call admits it); a
+  // sweep may record the ending later than it happened, so its record's end comes first.
+  const startedAt = row.created_at !== undefined ? Number(row.created_at) : record.began ?? record.startedAt;
+  const notice = childNotice({ agentId: row.child, name: row.name, root: row.root }, record, { startedAt, endedAt: record.endedAt ?? now });
   const status = notice.notice.metadata.status;
   const ended = await transaction(ctx.db, async sql => {
     const { rows } = await sql.query("update agent_children set ended_at = $2, status = $3, notice = $4, updated_at = $2 where id = $1 and ended_at is null returning *", [row.id, now, status, JSON.stringify(notice)]);

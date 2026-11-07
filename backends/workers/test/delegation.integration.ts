@@ -63,7 +63,7 @@ test('workerd resumes background child after eviction and delivers one trusted n
     return history.messages.some((message: any) => message.role === 'assistant' && JSON.stringify(message.content).includes('observed child-answer')) && history;
   }, 'recovered child notification reached parent', 30_000);
   assert.equal(history.messages.filter((message: any) => message.source?.kind === 'agent').length, 1);
-  assert.ok(model.bodies.some(body => lastUser(body).includes('<agent_notification name="helper" status="completed">')));
+  assert.ok(model.bodies.some(body => lastUser(body).includes('<agent_notification name="helper" status="completed"')));
 });
 
 test('workerd cancels a delegated child when its parent run is aborted', { timeout: 90_000 }, async t => {

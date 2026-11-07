@@ -80,7 +80,25 @@ const attribute = (value: unknown) => String(value ?? "").replace(/[^A-Za-z0-9_-
 function noticeBlock(source: MessageSource, metadata: Record<string, unknown> | undefined, parts: Part[]): Part[] {
   const text = escapeParts(parts).flatMap(part => part.type === "text" && part.text !== undefined ? [part.text] : []).join("\n");
   if (metadata?.kind === "message") return [{ type: "text", text: `<agent_message name="${attribute(source.name)}">\n${text}\n</agent_message>` }];
-  return [{ type: "text", text: `<agent_notification name="${attribute(source.name)}" status="${attribute(metadata?.status)}">\n${text}\n</agent_notification>` }];
+  return [{ type: "text", text: `<agent_notification name="${attribute(source.name)}" status="${attribute(metadata?.status)}"${runAttributes(metadata)}>\n${text}\n</agent_notification>` }];
+}
+
+/**
+ * What a child's run took, as a few attributes: its time, model responses, tool calls, tokens (input, output and
+ * cache together) and cost (its sub-agents' and images' included). Only a notice that records its time has them
+ * (childNotice since they were added), so an earlier one renders as it always did and a history stays cached.
+ */
+function runAttributes(metadata: Record<string, unknown> | undefined) {
+  if (typeof metadata?.durationMs !== "number" || !(metadata.durationMs >= 0)) return "";
+  const usage = (metadata.usage ?? {}) as Record<string, unknown>;
+  const count = (key: string) => typeof usage[key] === "number" && Number.isFinite(usage[key]) ? usage[key] as number : 0;
+  const seconds = Math.round(metadata.durationMs / 1000);
+  const took = seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, "0")}s`;
+  const tokens = count("input") + count("output") + count("cacheRead") + count("cacheWrite");
+  const compact = tokens < 1000 ? String(tokens) : tokens < 10_000 ? `${(tokens / 1000).toFixed(1)}k` : `${Math.round(tokens / 1000)}k`;
+  const cost = count("costUsd") + count("subagentCostUsd") + count("imageCostUsd");
+  const calls = typeof metadata.toolCalls === "number" ? metadata.toolCalls : 0;
+  return ` took="${took}" model_calls="${count("responses")}" tool_calls="${calls >= 100 ? "100+" : calls}" tokens="${compact}" cost_usd="${cost.toFixed(cost < 0.01 ? 4 : 3)}"`;
 }
 
 /**

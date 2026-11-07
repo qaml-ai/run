@@ -186,6 +186,6 @@ contractTest("delegation", "tests/agent-messaging.test.ts:156", "a child that wa
   const [input] = (await r.call(`/v1/agents/${child}/inputs?state=pending`)).json;
   assert.equal((await r.call(`/v1/agents/${child}/inputs/${input.id}`, { body: { action: "accept", content: { answers: { "Which region?": "EU" } } } })).status, 202);
   const notices = await ended(r, parent, "child_", 2);
-  assert.match(notices[1].outcome.result.reply, /status="completed">\nregion EU/);
+  assert.match(notices[1].outcome.result.reply, /status="completed"[^>]*>\nregion EU/);
 
 });

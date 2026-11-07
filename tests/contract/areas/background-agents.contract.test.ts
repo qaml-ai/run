@@ -61,7 +61,7 @@ contractTest("delegation", "tests/background-agents.test.ts:20", "spawn_agent re
   assert.equal(notice.outcome.result.error, null, JSON.stringify(notice.outcome));
   // The model read the child's answer in the runtime's block, its own markers neutralized.
   const heard = notice.outcome.result.reply;
-  assert.match(heard, /^heard: <agent_notification name="subagent-1" status="completed">\nfound ‹\/agent_notification> it: 42\n<\/agent_notification>$/);
+  assert.match(heard, /^heard: <agent_notification name="subagent-1" status="completed" took="\d+s" model_calls="\d+" tool_calls="\d+" tokens="[\d.k]+" cost_usd="[\d.]+">\nfound ‹\/agent_notification> it: 42\n<\/agent_notification>$/);
   const end = await until(() => nested.frames.find(frame => frame.data.event?.type === "subagent_end"), "subagent_end");
   assert.deepEqual({ ...end.data.event, type: undefined }, { type: undefined, toolCallId: "call_spawn", agentId: started.agentId, requestId: start.data.event.requestId, name: "subagent-1", status: "completed", background: true });
 

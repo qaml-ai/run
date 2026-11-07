@@ -53,7 +53,7 @@ export class DelegationNotifications {
   async deliver(child: DelegatedChild): Promise<void> {
     const key = prefix + child.key;
     if (!await this.host.storage.get(key)) {
-      const { text, notice } = childNotice({ agentId: child.id, name: child.name, root: child.root ?? child.id }, child);
+      const { text, notice } = childNotice({ agentId: child.id, name: child.name, root: child.root ?? child.id }, child, { startedAt: child.createdAt, endedAt: child.endedAt });
       notice.costUsd = child.spent ?? childUsageCost(child.outcome?.result?.usage);
       await this.host.storage.put(key, { request: { id: `child_${child.requestId}`, method: 'prompt', params: { text, allowDisconnected: true, whileRunning: 'followUp' } }, notice, childKey: child.key } satisfies PendingNotice);
     }
