@@ -31,7 +31,8 @@ contractTest("delegation", SOURCE, "an agent's children: running with progress, 
     if (last(body).role === "tool") return { role: "assistant", content: "started", wait: parentHold.promise };
     return toolCall("spawn_agent", { instructions: "You are a WORKER.", task: "work", name: "w" }, "call_spawn");
   });
-  const created = await r.call("/v1/agents", { body: { systemPrompt: "You are LEAD.", builtins: ["agents", "delegate"], delegate: { instructions: true } } });
+  // Made with a key, so the SDK below can get it (and its token) by that key.
+  const created = await r.call("/v1/agents", { headers: { "Idempotency-Key": "children-lead" }, body: { systemPrompt: "You are LEAD.", builtins: ["agents", "delegate"], delegate: { instructions: true } } });
   assert.equal(created.status, 201, created.text);
   const parent = created.json.id as string;
   assert.deepEqual(await children(r, parent), [], "none before any call");
@@ -72,7 +73,8 @@ contractTest("delegation", SOURCE, "an agent's children: running with progress, 
 
   // The SDKs read it with the agent's own token.
   const agents = new Agents({ url: r.base, apiKey: OPERATOR });
-  const handle = await agents.get(parent);
+  const handle = await agents.get("children-lead");
+  assert.equal(handle.id, parent);
   const listed = await handle.children();
   assert.deepEqual(listed.map(child => child.agentId), [helper.agentId, worker.agentId]);
   await agents.close();
