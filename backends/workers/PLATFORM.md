@@ -160,8 +160,8 @@ No temporary cloud resources remain.
 ## Remaining parity and integration gates
 
 - Files: prompt attachment hydration depends on the agent/image track. Mount
-  notifications, the `/computer` filesystem bridge, storage quotas and isolated
-  regular-expression grep remain absent. Regex grep returns an explicit 501.
+  notifications, the `/computer` filesystem bridge and storage quotas remain
+  absent. Regex grep uses RE2 syntax (linear time; no lookarounds or backreferences).
   Snapshot metadata is bounded at 16 MiB; forks copy independently owned bytes.
 - Computers: managed Lambda creation is test-only until metering, holds and
   settlement join the money track. Modal has been dropped from Workers by CTO
