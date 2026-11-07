@@ -547,3 +547,42 @@ test("a parent lost after its notification claims its own ending, before any bat
   sim.crash("a");
   await bothHeardOnce(sim, "b", parent);
 });
+
+/** A parent set to hear endings at once (delegate.notify "asap") that keeps working, a step at a time, until one reaches it. */
+const asapWorld = (seed: number) => Sim.create({
+  seed, env: { AGENT_LEASE_TTL_MS: "3000", AGENT_ORPHAN_SWEEP_MS: "2000", AGENT_CHILD_SWEEP_MS: "2000", AGENT_IDLE_MS: "600000" },
+  respond: body => {
+    const system = JSON.stringify(body.messages.filter((message: any) => message.role === "system"));
+    const last = body.messages.at(-1);
+    if (system.includes("WORKER")) return { content: "worked", delayMs: 1_000 };
+    if (body.messages.some((message: any) => message.role === "user" && JSON.stringify(message.content).includes("<agent_notification"))) return { content: "heard" };
+    const steps = body.messages.filter((message: any) => message.role === "tool").length;
+    if (last.role === "tool" && steps < 120) return { tool_calls: [{ index: 0, id: `call_list_${steps}`, type: "function", function: { name: "list_agents", arguments: "{}" } }], delayMs: 250 };
+    if (last.role === "tool") return { content: "never heard" };
+    return { tool_calls: [{ index: 0, id: "call_spawn", type: "function", function: { name: "spawn_agent", arguments: JSON.stringify({ agent: "w1", task: "work" }) } }] };
+  },
+});
+
+test("asap: a parent lost as its running turn's notification is claimed still hears the ending exactly once", async t => {
+  const sim = await asapWorld(64);
+  t.after(() => sim.close());
+  for (const node of ["a", "b", "c"]) await sim.start(node);
+  const worker = (await sim.call("b", "/v1/agents", { body: { systemPrompt: "You are a WORKER." }, headers: { "Idempotency-Key": "w1" } })).json.id;
+  await outcome(sim, "b", worker, await prompt(sim, "b", worker, "warm up"));
+  const parent = (await sim.call("a", "/v1/agents", { body: { builtins: ["agents"], delegate: { agents: [{ agent: "w1" }], notify: "asap" } } })).json.id;
+  await prompt(sim, "a", parent, "start the worker and keep working");
+  // a claims the ending for its running turn (the landing's statement commits) and is lost before it offers it.
+  sim.pauseAtDbAnswer("a", 10_000, "set landed_at = $3, landed_by = 'notice', state = 'notified', updated_at = $3 where child");
+  await sim.until(() => sim.pauses.some(pause => pause.node === "a"), "a to stop as it claims the ending", 120_000);
+  sim.crash("a");
+  await sim.until(async () => (await sim.db.query("select state from agent_children where parent = $1", [parent])).rows[0]?.state === "notified", "the ending to land", 120_000);
+  await sim.until(async () => {
+    const requests = (await sim.call("b", `/v1/agents/${parent}`)).json?.requests;
+    return Array.isArray(requests) && requests.length > 0 && !requests.some((request: any) => request.state !== "completed");
+  }, "the parent's runs to end", 180_000);
+  const messages = ((await sim.call("b", `/v1/agents/${parent}/history`)).json.messages as any[]).filter((message: any) => message.source?.kind === "agent");
+  assert.equal(messages.length, 1, "one notification in history");
+  const heard = sim.model.served.filter(served => JSON.stringify(served.body.messages.at(-1).content).includes("<agent_notification")).length;
+  assert.equal(heard, 1, "the model heard it once");
+  assert.deepEqual(sim.hooks.violations, []);
+});

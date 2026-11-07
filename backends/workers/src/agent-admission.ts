@@ -349,8 +349,9 @@ export async function admitImpl(this: AgentRuntime,
           ? ""
         : boundedText(params.text, "text", 6 * 1024 * 1024);
     if (notice) {
+      // An agent's message, and a child's ending sent at once (delegate.notify "asap"), join the running turn.
       params.whileRunning =
-        notice.metadata.kind === "message" ? "steer" : "queue";
+        notice.metadata.kind === "message" || (delivery?.run && delivery.steer) ? "steer" : "queue";
     } else {
       if (params.metadata !== undefined)
         params.metadata = metadataInput(params.metadata);

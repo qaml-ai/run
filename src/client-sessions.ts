@@ -1845,10 +1845,19 @@ export class ClientSessions {
       finally { session.accepting.delete(record.id); }
       if (queued) this.enqueue(session, record, params);
       else void this.run(session, record, params);
+      // A child's ending to an agent set to hear it at once (delegate.notify "asap"), while a turn runs: landed now (its
+      // row claimed with the endings it carries, charged; or found taken by a wait, then nothing is offered), and offered
+      // to the running turn as a steer. One the turn does not take runs as a turn of its own, whose landing finds it landed
+      // already and carries the same endings. Not while a wait_agent is in flight: the wait takes the ending into its result.
+      let offer: Record<string, any> | undefined = params.whileRunning === "steer" ? params : undefined;
+      if (!offer && notice && params.notice.metadata?.kind !== "message" && session.header.sources?.delegate?.notify === "asap" && session.turn && !session.messageWaiters?.size) {
+        const landed = await childSessions.landing(this.childrenContext, session, record, params);
+        if (landed && "params" in landed && !landed.params.landOnly) offer = { ...landed.params, whileRunning: "steer" };
+      }
       // A steer is answered at once: the running turn has it (accepted), or it runs as a turn of its own (queued).
-      if (params.whileRunning === "steer") {
-        const steer = await this.steerTurn(session, record.id, params) ? "accepted" : "queued";
-        if (steer === "accepted") childSessions.messageAccepted(session, record.id, params);
+      if (offer) {
+        const steer = await this.steerTurn(session, record.id, offer) ? "accepted" : "queued";
+        if (steer === "accepted") childSessions.messageAccepted(session, record.id, offer);
         const current = session.requests.get(record.id);
         if (current?.state === "running") return { status: 202, record: visible(this.upsertRequest(session, { ...current, steer })), ...(rate ? { rate } : {}) };
         // Taken already, before the answer came back.

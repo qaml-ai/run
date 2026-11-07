@@ -5,7 +5,8 @@ import type { MessageSource } from './sender.ts';
 export type RuntimeNotice = { source: MessageSource; root: string; costUsd: number; metadata: Record<string, unknown> };
 export type NoticeRequest = { id: string; method: 'prompt'; params: { text: string; allowDisconnected: true; whileRunning: 'followUp'; metadata?: Record<string, string> } };
 export type WakeDecision = { allowed: boolean; hour: number };
-export type NoticeDelivery = { run: true } | { run: false; stopped: 'agent_loop_limit' | 'aborted'; message: string };
+/** `steer`: offered to the parent's running turn at its next step (delegate.notify "asap"), not queued behind it. */
+export type NoticeDelivery = { run: true; steer?: true } | { run: false; stopped: 'agent_loop_limit' | 'aborted'; message: string };
 /**
  * A notice in the outbox. `batch`: the other children's endings it carries, chosen once as it is claimed and stored with
  * it, so a send tried again sends the same request. `batchedInto`: the notice whose turn carried this one (it is then
@@ -13,7 +14,9 @@ export type NoticeDelivery = { run: true } | { run: false; stopped: 'agent_loop_
  */
 type PendingNotice = { request: NoticeRequest; notice: RuntimeNotice; childKey?: string; delivered?: true; wake?: WakeDecision; receipt?: unknown; delivery?: NoticeDelivery; batch?: BatchedEnding[]; batchedInto?: string;
   /** A carried notice whose staged copy (if any) was discarded; on the landing entry, that all it carries were. */
-  discarded?: true; carriedDiscarded?: true };
+  discarded?: true; carriedDiscarded?: true;
+  /** How a child's notice reaches a busy parent, decided once: `staged` (as a queued request, after its turn) or `steer`. */
+  staged?: true; steer?: true };
 const prefix = 'delegation-notice:';
 /** What a carried notice's own request answers (as Node's landNotice says it). */
 const CARRIED = "this sub-agent's ending reached the agent already, with another one's notification";
@@ -45,6 +48,8 @@ export interface NotificationHost {
   humanPending?(): Promise<boolean>;
   /** Completion notices land between turns; a running wait may take the ending first. */
   canLand?(): Promise<boolean>;
+  /** Whether a child's notice may join the parent's running turn now: delegate.notify "asap", and no wait_agent in flight. */
+  asap?(): Promise<boolean>;
   /** Expose a queued notice as a pending request while a wait may still take it. */
   stage?(request: NoticeRequest, notice: RuntimeNotice): Promise<void>;
   /** A wait consumed a staged ending before it reached the model, or another notice's turn carried it (`skipped` says which). */
@@ -92,10 +97,17 @@ export class DelegationNotifications {
     }
     try {
       if (!pending.delivery && await this.host.humanPending?.()) { await this.host.retry(Date.now() + MULTI_AGENT_LIMITS.sweepMs); return; }
-      if (!pending.delivery && pending.childKey && this.host.canLand && !await this.host.canLand()) {
-        await this.stageUnlessCarried(key, pending);
-        await this.host.retry(Date.now() + 1000);
-        return;
+      let steer = !!pending.steer;
+      if (!pending.delivery && pending.childKey && !steer && this.host.canLand && !await this.host.canLand()) {
+        // An agent set to hear endings at once (delegate.notify "asap"), with no wait_agent in flight, gets this one at its
+        // running turn's next step. Decided once per notice: one staged already stays staged (its request's input is the
+        // queued one), and one steered is always sent steered.
+        if (pending.staged || !await this.host.asap?.()) {
+          await this.stageUnlessCarried(key, pending);
+          await this.host.retry(Date.now() + 1000);
+          return;
+        }
+        steer = true;
       }
       // Compete with wait_agent in the same transaction, before either can
       // expose the answer. A durable outbox owns a notice claim through retry.
@@ -110,7 +122,11 @@ export class DelegationNotifications {
         // once, in this transaction: each carried one is claimed for it (landedBy, as a wait_agent's take) and marked
         // delivered here, and the batch is stored with this notice, so a send tried again after a crash sends exactly
         // this. Agents' messages, and notices bound to land without a turn (`delivery`), keep their own.
-        if (!current.childKey || current.delivery || current.batch !== undefined) return { state: 'claimed' as const, pending: current, carried: [] as NoticeRequest[] };
+        if (!current.childKey || current.delivery || current.batch !== undefined) {
+          const kept: PendingNotice = steer && !current.steer && current.childKey && !current.delivery ? { ...current, steer: true } : current;
+          if (kept !== current) await tx.put(key, kept);
+          return { state: 'claimed' as const, pending: kept, carried: [] as NoticeRequest[] };
+        }
         // Siblings are found by their records, not only their outbox entries: a child that has just ended may not have
         // one yet (its notice is written once its events drain), and then gets it here, already carried.
         const batch: BatchedEnding[] = [], carried: NoticeRequest[] = [];
@@ -128,7 +144,7 @@ export class DelegationNotifications {
           batch.push(batchedEnding({ text: other.request.params.text, notice: other.notice }, other.request.id));
           carried.push(other.request);
         }
-        const next = { ...current, batch };
+        const next: PendingNotice = { ...current, batch, ...(steer ? { steer: true as const } : {}) };
         await tx.put(key, next);
         return { state: 'claimed' as const, pending: next, carried };
       });
@@ -155,7 +171,7 @@ export class DelegationNotifications {
           : await this.host.admitWake(pending.notice.root, pending.request.id);
         await this.host.storage.put(key, pending);
       }
-      const delivery: NoticeDelivery = pending.delivery ?? (pending.wake!.allowed ? { run: true } : { run: false, stopped: 'agent_loop_limit', message: `This agent's chain has had ${this.host.wakeLimit ?? MULTI_AGENT_LIMITS.wakesPerHour} turns started by sub-agent notifications and messages this hour, its limit: the message is in its history, but no turn ran. Send a message to go on` });
+      const delivery: NoticeDelivery = pending.delivery ?? (pending.wake!.allowed ? { run: true, ...(pending.steer ? { steer: true as const } : {}) } : { run: false, stopped: 'agent_loop_limit', message: `This agent's chain has had ${this.host.wakeLimit ?? MULTI_AGENT_LIMITS.wakesPerHour} turns started by sub-agent notifications and messages this hour, its limit: the message is in its history, but no turn ran. Send a message to go on` });
       const receipt = await this.host.submit(pending.request, withBatch(pending.notice, pending.batch ?? []), delivery);
       await this.host.storage.put(key, { ...pending, delivered: true, receipt });
       return receipt;
@@ -189,7 +205,12 @@ export class DelegationNotifications {
    * notice's turn carried meanwhile is not staged, and one carried while it was being staged has its copy discarded.
    */
   private async stageUnlessCarried(key: string, pending: PendingNotice) {
-    const before = await this.host.storage.get<PendingNotice>(key);
+    // Marked staged on a fresh read, in a transaction: a write of an older copy could undo a batch's claim of it.
+    const before = await this.host.storage.transaction(async tx => {
+      const current = await tx.get<PendingNotice>(key);
+      if (current && !current.delivered && !current.staged) await tx.put(key, { ...current, staged: true });
+      return current;
+    });
     if (!before || before.delivered) { if (before?.batchedInto) await this.discardCarried(key, before); return; }
     await this.host.stage?.(pending.request, pending.notice);
     const after = await this.host.storage.get<PendingNotice>(key);

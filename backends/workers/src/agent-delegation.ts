@@ -42,6 +42,7 @@ export function createNotifications(this: AgentRuntime): DelegationNotifications
   return new DelegationNotifications({
     storage: this.ctx.storage,
     canLand: async () => !(await this.activity()).busy,
+    asap: async () => (await this.config()).config.delegate?.notify === 'asap' && !this.delegation.waiting,
     stage: async (request, notice) => {
       if (await this.ctx.storage.get(reqKey(request.id))) return;
       const params = { ...request.params, whileRunning: 'queue' };

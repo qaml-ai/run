@@ -405,6 +405,7 @@ export const DelegateSettings = z.strictObject({
   instructions: z.boolean().optional().openapi({ description: "Let the model start a child with instructions of its own instead, on its own model" }),
   maxDepth: z.number().int().min(1).max(5).optional().openapi({ description: "How deep delegation may go: a child is depth 1, its child depth 2. Default 2" }),
   maxParallel: z.number().int().min(1).max(16).optional().openapi({ description: "delegate calls of one run in flight at once (more wait their turn), and the agent's background sub-agents running at once (spawn_agent past it is refused). Default 4" }),
+  notify: z.enum(["turn", "asap"]).optional().openapi({ description: "When a background sub-agent's ending reaches the agent while its turn runs: turn (default) as a turn of its own once that turn ends; asap at the turn's next step, after the tool results it waits for (a wait_agent in flight still takes it into its result)" }),
 }).openapi("DelegateSettings", { description: "With the delegate or agents builtin: who the model may hand tasks to, and how deep and wide. See the multi-agent guide" });
 export const AbortInput = z.strictObject({
   queued: z.enum(["cancel", "keep"]).optional().openapi({ description: "cancel (default): the runs queued behind the running one (prompts, steered messages not yet read, continues, executions) are cancelled too, each ending with code cancelled, so nothing runs after the stop. keep: only the running turn is stopped, and the next queued run starts" }),
