@@ -73,8 +73,12 @@ export interface SessionHeader {
   toolsHash?: string;
   /** The agent it was forked from, and the index of the last message of that agent's history it began with (null: none). */
   forkedFrom?: ForkedFrom;
-  /** A child its parent's delegate call made (multi-agent.ts): the parent agent, its run and call, and how deep in the chain it is. */
-  parent?: { agentId: string; runId: string; toolCallId: string; depth: number };
+  /**
+   * A child its parent's delegate call made (multi-agent.ts): the parent agent, its run and call, and how deep in the chain
+   * it is. `computer`: the call's choice for the child's computer: "none", or `{ seed }`, a fork snapshot it starts from
+   * (Computers.inherit); left out, a fresh one where the parent's connection allows.
+   */
+  parent?: { agentId: string; runId: string; toolCallId: string; depth: number; computer?: "none" | { seed: string } };
   /**
    * A stateless run's single-use session (POST /v1/runs): hidden from the agents list, its one prompt's request is the run.
    * Once the run ends its data is kept `retentionMs`, then purged as an expired agent's is. `fingerprint`: the request

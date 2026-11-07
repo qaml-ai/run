@@ -473,7 +473,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   // Files sent to tools as URLs bound to their call, signed with the identity tokens' key (file-arguments.ts).
   const fileUrls = new FileUrls({ signer, get volumes() { return volumes; }, publicUrl: () => links.publicUrl });
   const creditHolds = new CreditHolds(db, accounts.billing);
-  const computers = new Computers({ db, accounts, outbound: outbound.withoutOrigins(), get transfers() { return transfers; }, enabled: config.managedComputers, provider: config.computerProvider, microvm: config.microvm, priceAtCost: config.computerAtCost, runtime: publicUrl, endUsers: () => endUsers, credit: () => creditHolds, payer: agent => clients.payerOf(agent) });
+  const computers = new Computers({ db, accounts, outbound: outbound.withoutOrigins(), get transfers() { return transfers; }, enabled: config.managedComputers, provider: config.computerProvider, microvm: config.microvm, priceAtCost: config.computerAtCost, boatUrl: config.boatUrl, runtime: publicUrl, endUsers: () => endUsers, credit: () => creditHolds, payer: agent => clients.payerOf(agent) });
   let sweepingComputers = false;
   const computerTimer = setInterval(() => {
     if (sweepingComputers) return;
@@ -524,7 +524,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
    */
   const workspaces = new Workspaces(db);
 
-  async function createAgent(tenant: string, params: any, key?: string, parent?: { agentId: string; runId: string; toolCallId: string; depth: number }, admit?: (unchanged: boolean) => Promise<unknown>, run?: RunSettings & { ttlMs: number }) {
+  async function createAgent(tenant: string, params: any, key?: string, parent?: { agentId: string; runId: string; toolCallId: string; depth: number; computer?: "none" | { seed: string } }, admit?: (unchanged: boolean) => Promise<unknown>, run?: RunSettings & { ttlMs: number }) {
     const steps = new Steps();
     const made: { agent?: string; upsert: boolean } = { upsert: false };
     try {
@@ -557,7 +557,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
 
   /** `admit` counts the create against the tenant's rate limit once the key's agent is known: told whether it changes nothing.
    * `run`: a stateless run's session (POST /v1/runs), which lives `ttlMs` at most and is never reconfigured. */
-  async function provisionAgent(tenant: string, params: any, key: string | undefined, steps: Steps, outcome: { agent?: string; upsert: boolean }, parent?: { agentId: string; runId: string; toolCallId: string; depth: number }, admit?: (unchanged: boolean) => Promise<unknown>, run?: RunSettings & { ttlMs: number }) {
+  async function provisionAgent(tenant: string, params: any, key: string | undefined, steps: Steps, outcome: { agent?: string; upsert: boolean }, parent?: { agentId: string; runId: string; toolCallId: string; depth: number; computer?: "none" | { seed: string } }, admit?: (unchanged: boolean) => Promise<unknown>, run?: RunSettings & { ttlMs: number }) {
     rejectWorkflow(params ?? {});
     // The application's tools are its attached MCP server's: the tools/list it declares.
     const { mcp: _mcp, subject: _subject, context: _context, keyScope, spendLimit: limit, bucket: givenBucket, modelHeaders: headers, builtins: asked, delegate: delegating, mcpServers: servers, decide: deciding, remount, ...rest } = params ?? {};

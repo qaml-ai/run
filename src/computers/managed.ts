@@ -14,7 +14,8 @@ import { TOOL_DEADLINES } from "../tool-servers.ts";
 import type { ToolContext } from "../volume-tools.ts";
 import { Workspaces } from "../workspaces.ts";
 import { machineSetup, signatures } from "./abuse.ts";
-import { bounded, output, quote } from "./providers.ts";
+import { BOAT_API, boatSnapshots, bounded, output, quote } from "./providers.ts";
+import { forkUnsupported, noSession, type ForkDriver, type SnapshotRef } from "../core/computer-fork.ts";
 
 /** Managed computers share durable ownership, holds, metering and operator controls.
  * Boat reports cumulative cost; Lambda records observed state intervals in the same row.
@@ -50,8 +51,9 @@ export class BoatRefused extends Error {
   readonly refused: Refused;
   constructor(refused: Refused) { super(refused.code); this.refused = refused; }
 }
-export interface ManagedMachines {
-  create(computer: string, tenant: string, ttlSeconds: number): Promise<{ id: string }>;
+/** A provider's managed machines. With `snapshot`, they can be forked: `create` then takes `{ from }`, a snapshot it took. */
+export interface ManagedMachines extends ForkDriver<string> {
+  create(computer: string, tenant: string, ttlSeconds: number, options?: { from?: SnapshotRef }): Promise<{ id: string }>;
   extend(machine: string, ttlSeconds: number): Promise<void>;
   remove(machine: string): Promise<void>;
   /** The machines of this runtime on this account, what they cost as of now; `computer` narrows it to one row's. */
@@ -73,10 +75,10 @@ export function unitCommand(seconds: number) {
 const answered = (exitCode: number, stdout: string, stderr: string) => output(exitCode, stdout.replace(/\x1b\[3J$/, ""), stderr.replace(/^TERM environment variable not set\.\n/, ""));
 
 /** Boat's API for this runtime's machines (`runtime` names it in their labels). `setup` runs before anyone uses a machine. */
-export function boatMachines(apiKey: string, outbound: Outbound, runtime: string, setup?: string): ManagedMachines {
+export function boatMachines(apiKey: string, outbound: Outbound, runtime: string, setup?: string, base = BOAT_API): ManagedMachines {
   const request = async (path: string, init: { body?: unknown; method?: string; headers?: Record<string, string>; waitSeconds?: number; missingOk?: boolean } = {}) => {
     const { body, method = "POST", headers = {}, waitSeconds = 20, missingOk = false } = init;
-    const response = await outbound.fetch(`https://boat.dev/api/v1${path}`, {
+    const response = await outbound.fetch(`${base.replace(/\/$/, "")}${path}`, {
       method, secrets: { Authorization: `Bearer ${apiKey}` }, headers: { "Content-Type": "application/json", ...headers }, ...body === undefined ? {} : { body: JSON.stringify(body) },
       timeoutMs: (waitSeconds + 10) * 1000, maxBytes: 8 * 1024 * 1024, maxRedirects: 0,
     });
@@ -88,16 +90,19 @@ export function boatMachines(apiKey: string, outbound: Outbound, runtime: string
     throw new Error(`Computer provider HTTP ${response.status}`);
   };
   const label = (name: string, value: string) => `label=${encodeURIComponent(`${name}=${value}`)}`;
+  const saved = boatSnapshots((path, body, method = "POST", allowMissing = false) => request(path, { body, method, missingOk: allowMissing }));
   const machines: ManagedMachines = {
-    async create(computer, tenant, ttlSeconds) {
+    async create(computer, tenant, ttlSeconds, options) {
       const created = await request("/sandboxes", {
         headers: { "Idempotency-Key": computer }, waitSeconds: 45,
-        body: { type: "small", ttlSeconds, noEnv: true, snapshots: false, monitoring: false, labels: { [RUNTIME_LABEL]: runtime, computer, tenant } },
+        body: { type: "small", ttlSeconds, noEnv: true, snapshots: false, monitoring: false, labels: { [RUNTIME_LABEL]: runtime, computer, tenant }, ...options?.from ? { from: options.from.id } : {} },
       });
       const id = created.sandbox.id as string;
       if (setup && (await machines.run(id, setup, 60)).exitCode !== 0) throw new Error("Computer setup failed");
       return { id };
     },
+    snapshot: (machine, name) => saved.snapshot(machine, name),
+    dropSnapshot: snapshot => saved.drop(snapshot),
     async extend(machine, ttlSeconds) { await request(`/sandboxes/${machine}`, { method: "PATCH", body: { ttlSeconds } }); },
     async remove(machine) { await request(`/sandboxes/${machine}`, { method: "DELETE", headers: { "X-ASCII-Confirm-Delete": machine }, missingOk: true }); },
     async list(computer) {
@@ -173,6 +178,8 @@ export class ManagedComputers {
     priceAtCost?: boolean;
     microvm?: MicrovmSettings;
     machines?(apiKey: string, provider?: "lambda" | "boat"): ManagedMachines;
+    /** Boat's API, where the operator points it elsewhere (AGENT_BOAT_API_URL). */
+    boatUrl?: string;
     now(): number;
     sleep?(ms: number): Promise<void>;
   };
@@ -182,7 +189,7 @@ export class ManagedComputers {
   private lambda?: ManagedMachines;
   private machines(apiKey: string, provider: string = this.provider) {
     if (this.options.machines) return this.options.machines(apiKey, provider as "lambda" | "boat");
-    if (provider === "boat") return boatMachines(apiKey, this.options.outbound, this.options.runtime, machineSetup());
+    if (provider === "boat") return boatMachines(apiKey, this.options.outbound, this.options.runtime, machineSetup(), this.options.boatUrl);
     if (!this.options.microvm?.image) throw new Error("AGENT_MICROVM_IMAGE is required for managed computers");
     return this.lambda ??= microvmMachines({ db: this.db, outbound: this.options.outbound, runtime: this.options.runtime, settings: this.options.microvm, now: this.options.now });
   }
@@ -205,7 +212,31 @@ export class ManagedComputers {
   }
 
   /** A tool call on a managed connection. A call's key is recorded before it runs, so a retry answers from it, or says its outcome is unknown. */
-  async call(connection: any, tenant: string, agent: string, name: string, args: Record<string, any>, requestKey: string, hash: string, files?: Pick<ToolContext, "mounts" | "onWrite">, receiptsOnly = false) {
+  /**
+   * An exact snapshot of a connection's running machine, for forks (`name` is unique per snapshot). Lambda MicroVMs have
+   * no snapshot to start another machine from: they answer forkUnsupported. Answers the snapshot and who may drop it.
+   */
+  async snapshot(connection: any, name: string): Promise<{ ref: SnapshotRef; platform: boolean; provider: string }> {
+    const row = await this.open(connection.id), provider = row?.provider ?? this.provider;
+    // Lambda's driver has no snapshot (a test's machines may): unsupported whether or not a session runs.
+    if (provider === "lambda" && !this.options.machines?.("aws", "lambda").snapshot) throw forkUnsupported("lambda");
+    if (!row?.machine || Number(row.deadline) <= this.options.now()) throw noSession();
+    const machines = this.machines(await this.keyFor(row), provider);
+    if (!machines.snapshot) throw forkUnsupported(provider);
+    try { return { ref: await machines.snapshot(row.machine, name), platform: !!row.platform, provider }; }
+    catch (error) {
+      if (error instanceof HttpError) throw error;
+      this.log("computer_snapshot_failed", { tenant: row.tenant, computer: row.id });
+      throw new HttpError(502, "The computer's disk could not be snapshotted, so nothing was forked. Try again; if it keeps failing, use a fresh computer.");
+    }
+  }
+  /** Delete a fork snapshot nothing starts from any more, on the key it was taken with. */
+  async dropSnapshot(tenant: string, owner: { platform: boolean; provider: string }, ref: SnapshotRef) {
+    const machines = this.machines(await this.keyFor({ tenant, platform: owner.platform, provider: owner.provider }), owner.provider);
+    await machines.dropSnapshot?.(ref);
+  }
+
+  async call(connection: any, tenant: string, agent: string, name: string, args: Record<string, any>, requestKey: string, hash: string, files?: Pick<ToolContext, "mounts" | "onWrite">, receiptsOnly = false, from?: SnapshotRef) {
     const { db } = this;
     if (name === "computer_status") return publicSession(await this.open(connection.id));
     const inserted = (await db.query("insert into computer_operations(connection,key,input_hash,state,tenant) values($1,$2,$3,'pending',$4) on conflict do nothing", [connection.id, requestKey, hash, tenant])).rowCount;
@@ -216,7 +247,7 @@ export class ManagedComputers {
       return old.result;
     }
     try {
-      const value = name === "computer_start" ? await this.start(connection, tenant, agent)
+      const value = name === "computer_start" ? await this.start(connection, tenant, agent, from)
         : name === "computer_stop" ? await this.stopOpen(connection.id)
         : await this.command(connection, tenant, agent, name, args, requestKey, files);
       const result = receiptsOnly ? fileReceipts(value) : value;
@@ -228,7 +259,8 @@ export class ManagedComputers {
     }
   }
 
-  private async start(connection: any, tenant: string, agent: string) {
+  /** Start a connection's machine, from `from` when it is a fork: each new session of a forked connection starts from its seed. */
+  private async start(connection: any, tenant: string, agent: string, from?: SnapshotRef) {
     const now = this.options.now();
     let row = await this.open(connection.id);
     if (row?.machine && (row.provider !== "lambda" || row.microvm?.ready || !row.microvm) && Number(row.deadline) > now) return publicSession(row);
@@ -238,7 +270,7 @@ export class ManagedComputers {
     const machines = this.machines(await this.keyFor(row), row.provider), started = Date.now();
     for (let attempt = 0; ; attempt++) {
       try {
-        const { id: machine } = await machines.create(row.id, tenant, Math.min(connection.lease_seconds, row.provider === "lambda" ? MICROVM_MAX_SECONDS : MANAGED.maxSeconds));
+        const { id: machine } = await machines.create(row.id, tenant, Math.min(connection.lease_seconds, row.provider === "lambda" ? MICROVM_MAX_SECONDS : MANAGED.maxSeconds), from ? { from } : undefined);
         await this.db.query("update managed_computers set machine=$2 where id=$1", [row.id, machine]);
         // Detach or agent deletion may have finished while the provider was creating the machine.
         const live = await this.db.query(`select 1 from managed_computers m join computer_connections c on c.id=m.connection and c.agent=m.agent

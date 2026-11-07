@@ -286,7 +286,7 @@ export class ClientSessions {
             const result = await sql.query(`
               insert into agents (id, tenant, header, name, type, model, expires_at, revoked, revision, reserved_cursor) values ($1, $2, $3, $4, $5, $6, $7, $8, 1, $9)
               on conflict (id) do nothing returning revision`, [...columns, session.reserved]);
-            if (result.rows.length && header.parent) await this.options.computers?.inherit(header.tenant, header.parent.agentId, header.id, sql);
+            if (result.rows.length && header.parent) await this.options.computers?.inherit(header.tenant, header.parent.agentId, header.id, sql, header.parent.computer);
             return result;
           })
         // The ownership row is locked (FOR SHARE) as in a journal append, so a takeover waits for this write instead of racing it.
