@@ -194,16 +194,19 @@ export class Delegation {
     // so the replay sends what the first try may have sent already, its spend limit included, never a recomputed one.
     const resumed = stored;
     const place = await this.place(id, run, settings);
-    // The child's computer: a fork's snapshot is taken now (once per call: its siblings share it), before anything is
-    // admitted, so a fork that cannot be taken fails the call with nothing made.
+    // The child's computer: a fork's snapshot (once per call: its siblings share it) is taken while the child is admitted
+    // and made, and awaited before the child is recorded: a fork that cannot be taken fails the call with nothing kept
+    // (a child made meanwhile is deleted).
     const choice = computerChoice(args.computer);
     if (choice === 'fork' && target?.agent !== undefined) throw new HttpError(400, 'computer: "fork" makes a new sub-agent with a copy of your computer: give instructions or a definition target, not an existing agent');
     if (choice === 'fork' && !this.host.forkComputer) throw new HttpError(409, 'Computers cannot be forked on this runtime. Use computer: "fresh" or "none".', 'FORK_UNSUPPORTED');
     // A replay finds the batch's snapshot again (its row or registry entry). If the parent's computer is gone by then, the
     // replayed child keeps whatever it was already given (attaching never replaces a child's computers).
-    const fork = choice === 'fork'
-      ? await this.host.forkComputer!(forkBatch(run.id, site?.assistant, toolCallId)).catch(error => { if (resumed?.id) return undefined; throw error; })
+    const forking = choice === 'fork'
+      ? this.host.forkComputer!(forkBatch(run.id, site?.assistant, toolCallId)).catch(error => { if (resumed?.id) return undefined; throw error; })
       : undefined;
+    // Awaited below; a call refused before then leaves it unawaited, which must not be an unhandled rejection.
+    forking?.catch(() => {});
     const maxParallel = settings.maxParallel ?? MULTI_AGENT_LIMITS.maxParallel;
     let group: { messageIndex: number; delegates: number } | undefined;
     if (!resumed && !background && !override && site && !site.innerCallId && api?.commit) {
@@ -263,6 +266,13 @@ export class Delegation {
           // No computer: no native computer settings either (egress grants and their credentials stay the parent's).
           if (choice === 'none') delete childConf.computer;
           const made = resolved?.id ? resolved : await this.host.create({ ...childConf, name: admitted.name, type: 'subagent', ttlSeconds: MULTI_AGENT_LIMITS.childTtlSeconds }, key, { agent: id, run: run.id });
+          let fork: ChildComputerFork | undefined;
+          try { fork = await forking; }
+          catch (error) {
+            // Nothing is kept for a fork that could not be taken (a replay's child, made earlier, stays).
+            if (!resumed?.id && !resolved?.id && made.id) await this.host.remove?.(made.id).catch(() => {});
+            throw error;
+          }
           Object.assign(admitted, await this.update(admitted, { id: made.id! }));
           if (!resolved?.id) await this.host.inheritComputer?.(id, admitted.id, choice === 'none' ? 'none' : fork);
           await this.checkCancellation(admitted, signal);
