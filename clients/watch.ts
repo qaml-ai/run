@@ -256,13 +256,14 @@ export function watchAgent(options: WatchOptions): Watcher {
   }
 
   /** Take in a page of history: its messages by index, and (for the first, or an older one) where the next older page ends. */
-  function page(value: { entries: { index: number; message: Message }[]; next: number | null }, older = false) {
-    for (const { index, message } of value.entries) messages.set(index, message);
+  function page(value: { entries: { index: number; message: Message }[]; next: number | null }, older = false, until = Infinity) {
+    for (const { index, message } of value.entries) if (index < until) messages.set(index, message);
     if (older || before === undefined) before = value.next;
   }
-  async function newest() {
+  /** The newest page of history; messages from `until` on are left to the stream, which delivers them after its snapshot. */
+  async function newest(until?: number) {
     const value = await historyRead(`/history?limit=${pageSize}`);
-    if (value) page(value);
+    if (value) page(value, false, until);
   }
 
   /** Take in one frame of the stream. */
@@ -284,7 +285,9 @@ export function watchAgent(options: WatchOptions): Watcher {
       type Known = { requests?: { method: string; state: string; began?: number }[] } | undefined;
       const read = () => json200("/state").catch(() => undefined) as Promise<Known>;
       const runs = (known: Known) => !!known?.requests?.some(request => request.state === "running" && request.began && ["prompt", "continue", "resume"].includes(request.method));
-      const [, known] = await Promise.all([newest(), turn ? undefined : read()]);
+      // With a turn, the history read (made after the snapshot) may already hold messages the turn finished since: the
+      // stream's events after the snapshot bring those, so the state stays the snapshot plus the events taken in.
+      const [, known] = await Promise.all([newest(turn ? next : undefined), turn ? undefined : read()]);
       if (!turn) {
         state.running = runs(known);
         // A run that began between the two reads: history has its message, the state read before it did not. Read the
