@@ -78,6 +78,8 @@ export class AgentRuntime extends AgentContext {
   }
 
   instanceId = crypto.randomUUID();
+  /** When this instance was made: startup (the SDK's onStart, inside blockConcurrencyWhile) is timed from it. */
+  readonly constructedAt = Date.now();
 
   testStorage = new TestStorage(this.env.TEST_HOOKS === "1", this.ctx.storage);
 

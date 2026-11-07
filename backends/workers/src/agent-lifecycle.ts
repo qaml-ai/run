@@ -142,17 +142,36 @@ export async function armImpl(this: AgentRuntime,
   }
 
 export async function onStartImpl(this: AgentRuntime) {
-    return withMoneyMetrics(this.env, () => this.restorePending());
+    const began = Date.now();
+    try { return await withMoneyMetrics(this.env, () => this.restorePending()); }
+    finally { slowStart(this, "onStart", began); }
   }
 
+/**
+ * Startup runs inside the SDK's blockConcurrencyWhile, which resets the object after 30 s (on the pilot, a child woken by
+ * a parent's send_message was reset so, 2026-11-07, and nothing said which step waited): a step over 2 s is logged,
+ * with the time since the instance was made (the SDK's own start, Pi's harness, comes before onStart).
+ */
+const SLOW_START_STEP_MS = 2_000;
+function slowStart(runtime: AgentRuntime, step: string, began: number) {
+  const ms = Date.now() - began;
+  if (ms > SLOW_START_STEP_MS) console.warn(JSON.stringify({ type: "agent_start_slow", step, ms, sinceConstructedMs: Date.now() - runtime.constructedAt }));
+}
+async function timed<T>(runtime: AgentRuntime, step: string, run: () => Promise<T>): Promise<T> {
+  const began = Date.now();
+  try { return await run(); } finally { slowStart(runtime, step, began); }
+}
+
 export async function restorePendingImpl(this: AgentRuntime) {
+    const sinceConstructed = Date.now() - this.constructedAt;
+    if (sinceConstructed > SLOW_START_STEP_MS) console.warn(JSON.stringify({ type: "agent_start_slow", step: "before onStart", ms: sinceConstructed, sinceConstructedMs: sinceConstructed }));
     this.configurationQueue.kick();
-    await this.promptPreparations.sweep(Date.now(), true);
-    await this.resumeKeptQueue();
-    await this.restoreCancellations();
-    await this.restoreHostAdmissions();
-    await this.delegation.recover();
-    await this.notifications.drain();
+    await timed(this, "promptPreparations.sweep", () => this.promptPreparations.sweep(Date.now(), true));
+    await timed(this, "resumeKeptQueue", () => this.resumeKeptQueue());
+    await timed(this, "restoreCancellations", () => this.restoreCancellations());
+    await timed(this, "restoreHostAdmissions", () => this.restoreHostAdmissions());
+    await timed(this, "delegation.recover", () => this.delegation.recover());
+    await timed(this, "notifications.drain", () => this.notifications.drain());
     // Pi restores its own work on startup. Restore the adapter's result/receipt
     // waiters too, so completion is billed without requiring a client poll.
     for (const record of await this.records())
@@ -168,7 +187,7 @@ export async function restorePendingImpl(this: AgentRuntime) {
     )
       this.ctx.waitUntil(this.flushBilling());
     this.ctx.waitUntil(this.flushTerminalEvents());
-    await this.arm();
+    await timed(this, "arm", () => this.arm());
     // A cold-start watchdog still performs the complete recovery pass. Its
     // waiters and maintenance schedule have only just been restored.
     this.invalidateMaintenance();
