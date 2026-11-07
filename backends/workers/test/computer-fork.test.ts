@@ -178,6 +178,12 @@ test("a computer that was used has a disk the fork route never overwrites; one s
   assert.equal(await p.hasDisk(), true);
   await operate(p, { op: "sleep" });
   assert.equal(await p.hasDisk(), true, "its saved base");
+  // A marker whose container is gone (the start died or idled out) is stale: forks go on from the saved base.
+  m.data.set("computer:starting", { from: "image", at: 10_000 });
+  assert.ok((await p.forkSnapshot("run:m8", AbortSignal.timeout(1000))).ok);
+  assert.equal(m.data.get("computer:starting") ?? null, null);
+  // A container still coming up is not forked.
+  await operate(p, { op: "exec", argv: ["true"] });
   m.data.set("computer:starting", { from: "image", at: 10_000 });
   const starting = await p.forkSnapshot("run:m9", AbortSignal.timeout(1000));
   assert.equal(starting.ok ? undefined : starting.code, "COMPUTER_STARTING");
