@@ -4203,6 +4203,14 @@
             "minimum": 1,
             "maximum": 16,
             "description": "delegate calls of one run in flight at once (more wait their turn), and the agent's background sub-agents running at once (spawn_agent past it is refused). Default 4"
+          },
+          "notify": {
+            "type": "string",
+            "enum": [
+              "turn",
+              "asap"
+            ],
+            "description": "When a background sub-agent's ending reaches the agent while its turn runs: turn (default) as a turn of its own once that turn ends; asap at the turn's next step, after the tool results it waits for (a wait_agent in flight still takes it into its result)"
           }
         },
         "additionalProperties": false,
@@ -5889,6 +5897,14 @@
                 "minimum": 1,
                 "maximum": 16,
                 "description": "delegate calls of one run in flight at once (more wait their turn), and the agent's background sub-agents running at once (spawn_agent past it is refused). Default 4"
+              },
+              "notify": {
+                "type": "string",
+                "enum": [
+                  "turn",
+                  "asap"
+                ],
+                "description": "When a background sub-agent's ending reaches the agent while its turn runs: turn (default) as a turn of its own once that turn ends; asap at the turn's next step, after the tool results it waits for (a wait_agent in flight still takes it into its result)"
               }
             },
             "additionalProperties": false,

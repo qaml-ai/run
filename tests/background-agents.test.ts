@@ -292,3 +292,59 @@ test("endings that wait behind a busy parent ride in one notification's turn, a 
   const children = (await r.call(`/v1/agents/${parent}/children`)).json.children as any[];
   assert.deepEqual(children.map(child => child.delivered), [true, true, true]);
 });
+
+test("with delegate.notify asap, a child's ending reaches the parent's running turn at its next step, and no turn of its own runs", async t => {
+  let steps = 0;
+  const r = await runtime(t, body => {
+    if (roleText(body).includes("WORKER")) return { role: "assistant", content: "done early" };
+    if (body.messages.some((message: any) => message.role === "user" && text(message).includes("<agent_notification"))) return { role: "assistant", content: "heard it mid-turn" };
+    // The parent keeps working, a step at a time, until the ending reaches it.
+    if (last(body).role === "tool" && steps++ < 150) return { ...toolCall("list_agents", {}, `call_list_${steps}`), wait: new Promise(resolve => setTimeout(resolve, 200)) };
+    if (last(body).role === "tool") return { role: "assistant", content: "never heard" };
+    return toolCall("spawn_agent", { instructions: "You are a WORKER.", task: "finish fast" }, "call_spawn");
+  });
+  const created = await r.call("/v1/agents", { body: { builtins: ["agents"], delegate: { instructions: true, notify: "asap" } } });
+  assert.equal(created.status, 201, created.text);
+  const parent = created.json.id;
+  assert.equal((await r.call("/v1/agents", { body: { builtins: ["agents"], delegate: { instructions: true, notify: "soon" } } })).status, 400);
+  const record = await r.prompt(parent, "start a worker and keep working");
+  assert.equal(record.outcome.result.reply, "heard it mid-turn", JSON.stringify(record.outcome));
+  // The notification joined that turn: its request names the turn, and no turn of its own ran.
+  const notices = await until(async () => {
+    const found = (await parentRequests(r, parent)).filter(request => request.id.startsWith("child_"));
+    return found.length && found.every(request => request.state === "completed") && found;
+  }, "the notification's request to end");
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].outcome.result.steeredInto, record.id, JSON.stringify(notices[0]));
+  const history = (await r.call(`/v1/agents/${parent}/history`)).json.messages;
+  assert.equal(history.filter((entry: any) => entry.role === "user" && entry.source).length, 1, "heard once");
+  assert.equal(history.filter((entry: any) => entry.role === "assistant" && text(entry) === "heard it mid-turn").length, 1);
+  const children = (await r.call(`/v1/agents/${parent}/children`)).json.children as any[];
+  assert.deepEqual(children.map(child => child.delivered), [true]);
+});
+
+test("with delegate.notify asap, a wait_agent in flight still takes the child's ending into its result: no notification follows", async t => {
+  let release!: () => void;
+  const finish = new Promise<void>(resolve => { release = resolve; });
+  const r = await runtime(t, body => {
+    if (roleText(body).includes("WORKER")) return { role: "assistant", content: "the answer is 42", wait: finish };
+    if (body.messages.some((message: any) => message.role === "user" && text(message).includes("<agent_notification"))) return { role: "assistant", content: "heard a notification" };
+    const results = toolResults(body);
+    if (results.length === 1) return toolCall("wait_agent", { timeoutMs: 60_000 }, "call_wait");
+    if (results.length === 2) return { role: "assistant", content: `waited: ${results[1]}` };
+    return toolCall("spawn_agent", { instructions: "You are a WORKER.", task: "find the answer" }, "call_spawn");
+  });
+  const parent = (await r.call("/v1/agents", { body: { builtins: ["agents"], delegate: { instructions: true, notify: "asap" } } })).json.id;
+  const turn = r.prompt(parent, "start a worker and wait for it");
+  await until(async () => (await parentRequests(r, parent)).length && true, "the turn to start");
+  await sleep(500);
+  release();
+  const record = await turn;
+  assert.match(record.outcome.result.reply, /^waited: .*the answer is 42/, JSON.stringify(record.outcome));
+  // Its notification, if one was sent, lands nothing: the wait had it.
+  await sleep(1_000);
+  const notices = (await parentRequests(r, parent)).filter(request => request.id.startsWith("child_"));
+  for (const notice of notices) assert.ok(notice.state === "completed" && notice.outcome.result.skipped, JSON.stringify(notice));
+  const history = (await r.call(`/v1/agents/${parent}/history`)).json.messages;
+  assert.equal(history.filter((entry: any) => entry.role === "user" && entry.source).length, 0, "no notification in history");
+});

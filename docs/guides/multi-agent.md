@@ -332,6 +332,26 @@ A sub-agent that waits on a person notifies with status `input_required`, and
 (`POST /v1/agents/{child}/inputs/{id}`, or a browser token with the `children`
 scope reads them); it resumes, and its next ending notifies again.
 
+### Hearing endings mid-turn
+
+By default (`delegate.notify: "turn"`), an ending that reaches a parent whose
+turn is running waits for that turn to end, then starts one of its own. With
+`delegate.notify: "asap"`, it joins the running turn at its next step, after
+the tool results the turn is waiting for, as a child's message to its parent
+does. The model reads the same `<agent_notification>` block (with any endings
+it carries), mid-turn, and can act on it without ending the turn. Its request
+ends with `result.steeredInto` naming the turn. An ending that arrives as the
+turn ends runs as a turn of its own, as with "turn".
+
+```json
+{ "builtins": ["agents"], "delegate": { "agents": [{ "name": "worker", "definition": "worker" }], "notify": "asap" } }
+```
+
+A `wait_agent` in flight still takes an ending into its own result. While a
+wait runs, endings are left for it, as with "turn". Each ending still reaches
+the parent exactly once. `spawn_agent`'s description tells the model when its
+answers arrive.
+
 ### Progress
 
 A sub-agent the runtime made (a `spawn_agent` or `delegate` child) has

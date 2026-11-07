@@ -111,6 +111,8 @@ async function signature(secret: string, agent: string, run: string, depth: stri
 /** Durable child lifecycle; Pi owns invocation replay, and the child request is idempotent. */
 export class Delegation {
   private readonly following = new Set<string>();
+  /** wait_agent calls in flight: while one is, a child's ending is left for it, not sent to the running turn (notify "asap"). */
+  waiting = 0;
   private readonly starting = new Set<Promise<DelegatedChild>>();
   private readonly host: DelegationHost;
   constructor(host: DelegationHost) { this.host = host; }
@@ -648,6 +650,7 @@ export class Delegation {
         const deadline = Date.now() + Number(args.timeoutMs ?? MULTI_AGENT_LIMITS.waitMs), earliestProgress = Date.now() + MULTI_AGENT_LIMITS.progressWaitMs;
         const watches = selected.filter(child => child.status === 'running').map(child => this.wait(child, wait).catch(() => {}));
         const messaged = new Set<string>(), updated = new Set<string>();
+        this.waiting++;
         try {
           while (Date.now() < deadline) {
             signal.throwIfAborted();
@@ -665,7 +668,7 @@ export class Delegation {
             if (updated.size) break;
             await sleep(Math.min(25, Math.max(1, deadline - Date.now())), signal);
           }
-        } finally { stop.abort(); await Promise.all(watches); }
+        } finally { this.waiting--; stop.abort(); await Promise.all(watches); }
         const { run } = await this.host.context(api);
         const answers = await this.host.storage.transaction(async tx => {
           const answers: (ReturnType<Delegation['answer']> | { agentId: string; name: string; status: string; note: string })[] = [];

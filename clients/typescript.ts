@@ -484,7 +484,11 @@ export type Builtin = "file_link" | "file_import" | "web_fetch" | "web_search" |
  */
 export type AgentTarget = string | { name?: string; definition: string; description?: string } | { name?: string; agent: string; description?: string };
 /** Sub-agents: who the model may delegate to, whether it may write a child's instructions itself, and how deep (default 2) and wide (default 4 at once). */
-export interface DelegateSettings { agents?: AgentTarget[]; instructions?: boolean; maxDepth?: number; maxParallel?: number }
+export interface DelegateSettings {
+  agents?: AgentTarget[]; instructions?: boolean; maxDepth?: number; maxParallel?: number;
+  /** When a background sub-agent's ending reaches a busy agent: "turn" (default) after its turn, "asap" at its turn's next step. */
+  notify?: "turn" | "asap";
+}
 /** A volume the agent's file tools see at `path`; `notify` prompts the agent when others change files there. */
 /**
  * How a tool source is authenticated: a stored bearer token, identity tokens the runtime signs for each request, or

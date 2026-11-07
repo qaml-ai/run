@@ -242,3 +242,51 @@ test('review #725: a background child whose start failed (never accepted, no out
   await new DelegationNotifications(host).deliver(reviewEnded('a') as any);
   assert.deepEqual(submissions[0].metadata.batch ?? [], [], 'failed start (its error was the spawn tool result) carried');
 });
+
+// delegate.notify "asap": a busy parent's child ending joins its running turn (a steer) unless a wait_agent is in flight.
+function asapFixture(asap: () => boolean) {
+  const f = fixture();
+  const deliveries: unknown[] = [];
+  const submit = f.host.submit;
+  f.host.submit = async (request, notice, delivery) => { deliveries.push(structuredClone(delivery)); return submit(request, notice, delivery); };
+  f.host.asap = async () => asap();
+  return { ...f, deliveries };
+}
+
+test('asap: an ending reaching a busy parent is sent at once as a steer, with the endings it carries; a crash resends it identically', async () => {
+  const f = asapFixture(() => true);
+  const b = await f.child(ended('b', 'cap', 'PR 2', 0.03)), a = await f.child(ended('a', 'mul', 'PR 1', 0.02));
+  f.store.failures.push((key, value) => key === 'delegation-notice:a' && value?.delivered === true);
+  await assert.rejects(f.notifications().deliver(a), /crash writing/);
+  f.store.failures.length = 0;
+  await f.notifications().drain();
+  assert.deepEqual(f.staged, [], 'not staged behind the turn');
+  assert.equal(f.submissions.length, 2);
+  assert.deepEqual(f.submissions[0], f.submissions[1], 'the same request again');
+  assert.deepEqual(f.deliveries, [{ run: true, steer: true }, { run: true, steer: true }]);
+  assert.deepEqual(f.submissions[0].notice.metadata.batch.map((ending: any) => ending.requestId), ['child_spawn_b']);
+  await f.notifications().deliver(b);
+  assert.deepEqual(heard(f.submissions), ['child_spawn_a', 'child_spawn_b']);
+});
+
+test('asap: with a wait_agent in flight the ending is staged for the wait, and stays staged once it is (decided once)', async () => {
+  let waiting = true;
+  const f = asapFixture(() => !waiting);
+  const a = await f.child(ended('a', 'mul', 'PR 1', 0.02));
+  await f.notifications().deliver(a);
+  assert.deepEqual(f.staged, ['child_spawn_a']);
+  waiting = false;
+  await f.notifications().drain();
+  assert.equal(f.submissions.length, 0, 'still waiting for the turn to end, as staged');
+  f.land();
+  await f.notifications().drain();
+  assert.deepEqual(f.deliveries, [{ run: true }], 'queued, as its staged request was');
+});
+
+test('the default (notify "turn") never steers: a busy parent stages the ending until its turn ends', async () => {
+  const f = fixture();
+  const a = await f.child(ended('a', 'mul', 'PR 1', 0.02));
+  await f.notifications().deliver(a);
+  assert.deepEqual(f.staged, ['child_spawn_a']);
+  assert.equal(f.submissions.length, 0);
+});
