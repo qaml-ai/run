@@ -127,9 +127,18 @@ export class Delegation {
     await tx.put(prefix + child.key, charged);
     return charged;
   }
-  async landNotice(requestId: string, costUsd: number) {
+  /**
+   * A notice lands (its request is admitted): its child's ending is charged to the run it starts, and so is each ending
+   * it carries (`batch`, multi-agent.ts BatchedEnding), at what each spent. Settling is once per child (`charged`).
+   */
+  async landNotice(requestId: string, costUsd: number, batch: readonly { requestId: string; costUsd: number }[] = []) {
     return this.host.storage.transaction(async tx => {
-      const child = [...(await tx.list<DelegatedChild>({ prefix })).values()].find(child => `child_${child.requestId}` === requestId);
+      const children = [...(await tx.list<DelegatedChild>({ prefix })).values()];
+      for (const carried of batch) {
+        const child = children.find(child => `child_${child.requestId}` === carried.requestId);
+        if (child) await this.settleInTransaction(tx, { ...child, spent: carried.costUsd }, requestId);
+      }
+      const child = children.find(child => `child_${child.requestId}` === requestId);
       if (child) return this.settleInTransaction(tx, { ...child, spent: costUsd }, requestId);
     });
   }

@@ -466,3 +466,84 @@ test("a tool-prepared worker whose node is lost after its run ends, before deliv
   assert.ok(sim.hooks.reached.includes("a tool's spawn directive started a background child"));
   assert.ok(sim.hooks.reached.includes("a sweep found a child's ended run that no one had recorded"), sim.hooks.reached.join(", "));
 });
+
+/**
+ * Two workers (agents of their own, served by b) that a parent on a starts together; its turn after starting them lasts
+ * longer than they do, so both endings wait behind it and the first notification's turn carries the other (a batch).
+ * The notification's turn says how many endings it heard.
+ */
+const batchWorld = (seed: number) => Sim.create({
+  seed, env: { AGENT_LEASE_TTL_MS: "3000", AGENT_ORPHAN_SWEEP_MS: "2000", AGENT_CHILD_SWEEP_MS: "2000", AGENT_IDLE_MS: "600000" },
+  respond: body => {
+    const system = JSON.stringify(body.messages.filter((message: any) => message.role === "system"));
+    const last = body.messages.at(-1);
+    if (system.includes("WORKER")) return { content: "worked", delayMs: 2_000 };
+    if (last.role === "tool") return { content: "spawned", delayMs: 6_000 };
+    const said = JSON.stringify(last.content);
+    if (said.includes("<agent_notification")) return { content: `heard ${said.split("<agent_notification ").length - 1}` };
+    return { tool_calls: ["w1", "w2"].map((agent, index) => ({ index, id: `call_${agent}`, type: "function", function: { name: "spawn_agent", arguments: JSON.stringify({ agent, task: "work" }) } })) };
+  },
+});
+async function spawnedTwo(sim: Sim, nodes: string[]) {
+  for (const node of nodes) await sim.start(node);
+  for (const key of ["w1", "w2"]) {
+    const worker = (await sim.call("b", "/v1/agents", { body: { systemPrompt: "You are a WORKER." }, headers: { "Idempotency-Key": key } })).json.id;
+    await outcome(sim, "b", worker, await prompt(sim, "b", worker, "warm up"));
+  }
+  const parent = (await sim.call("a", "/v1/agents", { body: { builtins: ["agents"], delegate: { agents: [{ agent: "w1" }, { agent: "w2" }] } } })).json.id;
+  const first = await prompt(sim, "a", parent, "start both workers");
+  return { parent, first };
+}
+/** Both endings reached the parent, each exactly once: in history (as a notification or in one's batch) and in what the model heard. */
+async function bothHeardOnce(sim: Sim, node: string, parent: string) {
+  await sim.until(async () => (await sim.db.query("select count(*)::int as n from agent_children where parent = $1 and state = 'notified'", [parent])).rows[0].n === 2, "both endings to land", 120_000);
+  // (While its next owner takes the agent over, a read can answer without its requests: ask again.)
+  await sim.until(async () => {
+    const requests = (await sim.call(node, `/v1/agents/${parent}`)).json?.requests;
+    return Array.isArray(requests) && requests.length > 0 && !requests.some((request: any) => request.state !== "completed");
+  }, "the parent's runs to end", 120_000);
+  const messages = ((await sim.call(node, `/v1/agents/${parent}/history`)).json.messages as any[]).filter((message: any) => message.source?.kind === "agent");
+  const endings = messages.flatMap((message: any) => [message.metadata.agentId, ...(message.metadata.batch ?? []).map((ending: any) => ending.agentId)]);
+  assert.equal(endings.length, 2, JSON.stringify(messages.map((message: any) => message.metadata)));
+  assert.equal(new Set(endings).size, 2, "each ending once");
+  const heard = sim.model.served.filter(served => JSON.stringify(served.body.messages.at(-1).content).includes("<agent_notification"))
+    .reduce((sum, served) => sum + JSON.stringify(served.body.messages.at(-1).content).split("<agent_notification ").length - 1, 0);
+  assert.equal(heard, 2, "the model heard each ending once");
+  assert.deepEqual(sim.hooks.violations, []);
+  return messages;
+}
+
+test("both endings wait behind a busy parent: one notification's turn carries the other, heard once", async t => {
+  const sim = await batchWorld(61);
+  t.after(() => sim.close());
+  const { parent } = await spawnedTwo(sim, ["a", "b"]);
+  const messages = await bothHeardOnce(sim, "a", parent);
+  assert.equal(messages.length, 1, "one turn for both");
+  assert.equal(messages[0].metadata.batch.length, 1);
+});
+
+test("a parent lost just after its notification claims a batch: the next owner lands the same batch, each ending heard once", async t => {
+  const sim = await batchWorld(62);
+  t.after(() => sim.close());
+  const { parent } = await spawnedTwo(sim, ["a", "b", "c"]);
+  // a's first notification claims the other ending into its turn (the statement commits) and is lost before the message lands.
+  sim.pauseAtDbAnswer("a", 10_000, "jsonb_build_object('batchedInto'");
+  await sim.until(() => sim.pauses.some(pause => pause.node === "a"), "a to stop as it claims the batch", 120_000);
+  sim.crash("a");
+  const messages = await bothHeardOnce(sim, "b", parent);
+  assert.equal(messages.length, 1, "the next owner landed the claimed batch: one turn for both");
+  // The carried child is charged to that turn once, though the claim's answer was lost with a (review of #725).
+  const carried = (await sim.db.query("select notice->>'batchedInto' as into, notice->>'chargedInto' as charged from agent_children where parent = $1 and notice->>'batchedInto' is not null", [parent])).rows;
+  assert.equal(carried.length, 1);
+  assert.equal(carried[0].charged, carried[0].into);
+});
+
+test("a parent lost after its notification claims its own ending, before any batch: the other ending still lands once, on its own", async t => {
+  const sim = await batchWorld(63);
+  t.after(() => sim.close());
+  const { parent } = await spawnedTwo(sim, ["a", "b", "c"]);
+  sim.pauseAtDbAnswer("a", 10_000, "set landed_at = $3, landed_by = 'notice', state = 'notified', updated_at = $3 where child");
+  await sim.until(() => sim.pauses.some(pause => pause.node === "a"), "a to stop as its notification lands", 120_000);
+  sim.crash("a");
+  await bothHeardOnce(sim, "b", parent);
+});

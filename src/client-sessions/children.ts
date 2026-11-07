@@ -8,7 +8,7 @@ import { type Sources } from "../tool-sources.ts";
 import { type McpResult } from "../mcp-results.ts";
 import { jsonResult, type ToolCall, type ToolServer, type ToolSourceView } from "../tool-servers.ts";
 import { safeError } from "../metrics.ts";
-import { agentMessage, agentsTools, agentUpdates, childNotice, delegateTool, MULTI_AGENT_LIMITS, PARENT_KEYS, REPORT_PROGRESS, SEND_MESSAGE, startsChildren, type ChildNotice, type DelegateSettings } from "../multi-agent.ts";
+import { agentMessage, agentsTools, agentUpdates, batchedEnding, childNotice, withBatch, delegateTool, MULTI_AGENT_LIMITS, PARENT_KEYS, REPORT_PROGRESS, SEND_MESSAGE, startsChildren, type ChildNotice, type DelegateSettings } from "../multi-agent.ts";
 import { reachable, sometimes } from "../assert.ts";
 
 import * as spend from "./spend.ts";
@@ -794,8 +794,9 @@ async function landNotice(ctx: ChildrenContext, session: Session, record: Reques
     const landed = await ctx.db.query("update agent_children set landed_at = $3, landed_by = 'notice', state = 'notified', updated_at = $3 where child = $1 and request_id = $2 and landed_at is null returning tool_call_id", [notice.source.agentId, childRequest, now]);
     if (landed.rows.length) { fresh = true; toolCallId = landed.rows[0].tool_call_id ?? undefined; }
     else {
-      const row = (await ctx.db.query("select landed_by from agent_children where child = $1 and request_id = $2", [notice.source.agentId, childRequest])).rows[0];
+      const row = (await ctx.db.query("select landed_by, notice->>'batchedInto' as batched_into from agent_children where child = $1 and request_id = $2", [notice.source.agentId, childRequest])).rows[0];
       if (row && row.landed_by !== "notice") return { outcome: { result: { error: null, skipped: "wait_agent answered this sub-agent's ending already" } } };
+      if (row?.batched_into && row.batched_into !== record.id) return { outcome: { result: { error: null, skipped: "this sub-agent's ending reached the agent already, with another one's notification" } } };
     }
   }
   if (message) {
@@ -805,6 +806,32 @@ async function landNotice(ctx: ChildrenContext, session: Session, record: Reques
     // What the child spent counts before the spend check below.
     chargeNotice(ctx, session, record.id, notice.costUsd);
     ctx.publish(session, { type: "event", requestId: record.id, event: { type: "subagent_end", ...toolCallId ? { toolCallId } : {}, agentId: notice.source.agentId, requestId: childRequest, name: notice.source.name, status: metadata.status, ...(metadata.error ? { error: metadata.error } : {}), background: true } });
+  }
+  if (!message) {
+    // Every other ended child whose ending has not reached the agent rides in this turn (a batch): its row lands now, by
+    // this notification (`landed_by` 'notice', its stored notice marked `batchedInto` this request), and its own
+    // notification then lands nothing. Only the landing that claimed its own row claims others; one tried again reads
+    // back what that first attempt claimed and never claims more, so a message that may have landed already is never
+    // landed with other content. As on Workers, a notification bound to land without a turn (stopped) carries none, and
+    // none whose own queued run is so bound is carried: each lands without a turn of its own.
+    const parent = session.header.id;
+    if (fresh && !session.requests.get(record.id)?.landOnly) {
+      const bound = [...session.requests.values()].filter(run => run.id.startsWith("child_") && run.landOnly).map(run => run.id.slice("child_".length));
+      await ctx.db.query(`update agent_children set landed_at = $3, landed_by = 'notice', state = 'notified', updated_at = $3,
+        notice = notice || jsonb_build_object('batchedInto', $2::text)
+        where parent = $1 and kind in ('spawn', 'message', 'resume') and ended_at is not null and landed_at is null and notice is not null
+        and not (child = $4 and request_id = $5) and not (request_id = any($6::text[]))`, [parent, record.id, now, notice.source.agentId, childRequest, bound]);
+    }
+    const rows = (await ctx.db.query("select * from agent_children where parent = $1 and notice->>'batchedInto' = $2 order by ended_at, id", [parent, record.id])).rows;
+    // One charge site, keyed by row: a carried child is charged to this run, and announced, once, by whichever attempt
+    // marks it (`chargedInto`) first. A claim whose answer was lost is charged by the attempt that reads it back.
+    const charged = rows.length ? (await ctx.db.query(`update agent_children set notice = notice || jsonb_build_object('chargedInto', $2::text)
+      where parent = $1 and notice->>'batchedInto' = $2 and notice->>'chargedInto' is null returning *`, [parent, record.id])).rows : [];
+    for (const row of charged) {
+      chargeNotice(ctx, session, record.id, row.notice.notice.costUsd);
+      ctx.publish(session, { type: "event", requestId: record.id, event: { type: "subagent_end", toolCallId: row.tool_call_id ?? undefined, agentId: row.child, requestId: row.request_id, name: row.name, status: row.status, ...(row.notice.notice.metadata.error ? { error: row.notice.notice.metadata.error } : {}), background: true } });
+    }
+    if (rows.length) params = { ...params, notice: withBatch(notice, rows.map(row => batchedEnding(row.notice, `child_${row.request_id}`))) };
   }
   // Stopped before it ran (`stop`): it lands without a turn, which counts no wake.
   const stopped = session.requests.get(record.id)?.landOnly;

@@ -301,6 +301,20 @@ export function childNotice(child: { agentId: string; name: string; root: string
     },
   };
 }
+/**
+ * Another child's ending that rides in a notification's turn (a batch: when one notification lands, every other ended
+ * child whose ending has not reached the parent comes with it). Its notice's metadata, its text (sender.ts renders an
+ * <agent_notification> block of its own), what it spent (charged as it lands) and its request (`child_<request>`,
+ * which then lands nothing of its own). Kept on the landing message's `metadata.batch`.
+ */
+export type BatchedEnding = Record<string, unknown> & { agentId: string; name: string; status: string; text: string; costUsd: number; requestId: string };
+export function batchedEnding(stored: { text: string; notice: { costUsd: number; metadata: Record<string, unknown> } }, requestId: string): BatchedEnding {
+  return { ...stored.notice.metadata, text: stored.text, costUsd: stored.notice.costUsd, requestId } as BatchedEnding;
+}
+/** The landing notice with the endings that ride in its turn (none: it is returned as it was). */
+export function withBatch<T extends { metadata: Record<string, unknown> }>(notice: T, batch: BatchedEnding[]): T {
+  return batch.length ? { ...notice, metadata: { ...notice.metadata, batch } } : notice;
+}
 /** When a child's run started and ended, as its recorder knows them (ms since the epoch). */
 export type ChildRun = { startedAt?: number; endedAt?: number };
 export type ChildNotice = ReturnType<typeof childNotice>;

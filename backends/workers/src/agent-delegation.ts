@@ -50,11 +50,16 @@ export function createNotifications(this: AgentRuntime): DelegationNotifications
         state: 'running', startedAt: Date.now(), accepted: false, noticeQueued: true,
       } satisfies RequestRecord);
     },
-    discard: async request => {
+    discard: async (request, skipped = 'wait_agent answered this sub-agent\'s ending already', carried = false) => {
       const record = await this.ctx.storage.get<RequestRecord>(reqKey(request.id));
-      if (!record?.noticeQueued) return;
-      const done: RequestRecord = { ...record, state: 'completed', status: 'completed', endedAt: Date.now(),
-        outcome: { result: { error: null, skipped: 'wait_agent answered this sub-agent\'s ending already' } } };
+      // A staged notice, once: a discard made again (after a crash) changes nothing and announces nothing. A carried
+      // notice that was never staged gets its request recorded too, answered as carried, as on Node (where every
+      // child's notification is a request).
+      if (record?.state === 'completed' || (record && !record.noticeQueued) || (!record && !carried)) return;
+      const params = { ...request.params, whileRunning: 'queue' };
+      const base: RequestRecord = record ?? { id: request.id, method: 'prompt', params, fingerprint: canonical({ method: 'prompt', params }), state: 'running', startedAt: Date.now(), accepted: false };
+      const done: RequestRecord = { ...base, state: 'completed', status: 'completed', endedAt: Date.now(),
+        outcome: { result: { error: null, skipped } } };
       await this.ctx.storage.put(reqKey(request.id), done);
       await this.emit({ type: 'response', id: request.id, outcome: done.outcome });
     },

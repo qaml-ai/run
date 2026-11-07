@@ -80,8 +80,14 @@ const attribute = (value: unknown) => String(value ?? "").replace(/[^A-Za-z0-9_-
 function noticeBlock(source: MessageSource, metadata: Record<string, unknown> | undefined, parts: Part[]): Part[] {
   const text = escapeParts(parts).flatMap(part => part.type === "text" && part.text !== undefined ? [part.text] : []).join("\n");
   if (metadata?.kind === "message") return [{ type: "text", text: `<agent_message name="${attribute(source.name)}">\n${text}\n</agent_message>` }];
-  return [{ type: "text", text: `<agent_notification name="${attribute(source.name)}" status="${attribute(metadata?.status)}"${runAttributes(metadata)}>\n${text}\n</agent_notification>` }];
+  const block = (name: unknown, meta: Record<string, unknown> | undefined, body: string) =>
+    `<agent_notification name="${attribute(name)}" status="${attribute(meta?.status)}"${runAttributes(meta)}>\n${body}\n</agent_notification>`;
+  // Endings of other sub-agents that rode in this turn (a batch, multi-agent.ts BatchedEnding): a block each.
+  const batch = Array.isArray(metadata?.batch) ? metadata.batch as BatchedEnding[] : [];
+  return [{ type: "text", text: [block(source.name, metadata, text), ...batch.map(ending => block(ending.name, ending, escapeMarkers(String(ending.text ?? ""))))].join("\n") }];
 }
+/** A sub-agent's ending carried in another one's notification (its notice's metadata, and its text). */
+type BatchedEnding = Record<string, unknown> & { name?: string; text?: string };
 
 /**
  * What a child's run took, as a few attributes: its time, model responses, tool calls, tokens (input, output and
