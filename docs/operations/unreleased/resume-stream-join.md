@@ -1,0 +1,3 @@
+### `resumeStream()` joining a run shows everything it said
+
+The AI SDK transport's `reconnectToStream()` (useChat's `resumeStream()`), joining a run under way, could leave out what the run had already said: the answered call's result, or the whole reply when it finished while the join looked the run up. It now waits for the watcher to take in the stream's snapshot, and a watcher no longer takes messages from the history read beside a snapshot that the stream delivers after it (which showed a reply twice). On the Workers backend, a run resumed by an answer now opens its turn with `turn_opened`, as on Node, so a snapshot of it carries its messages by index.
