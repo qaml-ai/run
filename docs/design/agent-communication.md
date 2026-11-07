@@ -346,7 +346,7 @@ These are what neither Claude Code nor Codex has in this form:
 Ranked by value to camelCode and other leads, over cost. S, M and L are rough
 sizes on both backends, tests included.
 
-### 1. List an agent's children, with a tree summary (S–M) — built: see PRs
+### 1. List an agent's children (S–M) — built in #715
 
 **Why.** camelCode's scripts poll history every 3–5 s. They guess "done" by
 counting spawn results against notification messages, and find children by
@@ -358,24 +358,28 @@ and Claude Code (`background_tasks_changed`) both answer it.
 
 ```http
 GET /v1/agents/{id}/children
-→ { children: [{ agentId, name, kind: "spawn" | "delegate", status, requestId,
-     toolCallId, startedAt, endedAt?, progress?, progressAt?, error? }],
-    running: <how many are running> }
+→ { children: [{ agentId, name, background, status, requestId, toolCallId,
+     startedAt, endedAt?, delivered?, progress?, progressAt?, error? }] }
 ```
 
 - **What's listed.** The children that the agent's `spawn_agent` and `delegate`
   calls started (and spawn directives), latest first, deduplicated by child.
   `status` takes the values `list_agents` uses: `running`, `completed`,
   `failed`, `aborted`, `input_required`.
-- **Who can read it.** An API key; a browser token with the `children` scope.
-- **SDKs.** `agent.children()` (TypeScript) and `agent.children()` (Python).
-- **Idle check.** "Is the tree idle" is `!state.running && running === 0` for
-  the lead, recursively if the client wants grandchildren.
+- **`delivered`.** For an ended child: whether its answer has reached the
+  parent yet (its notification landed, or `wait_agent` or the `delegate` call
+  took it). `false` means a notification is still on its way, and it will start
+  or join a turn of the parent's.
+- **Who can read it.** An API key; the agent's own token
+  (`/clients/{id}/children`); a browser token with the `children` scope.
+- **SDKs.** `agent.children()` (TypeScript, Python async and sync).
+- **Idle check.** The tree is settled when the lead is idle and every child has
+  ended with `delivered: true`. Recurse for grandchildren.
 
 **#696.** It already proposes this endpoint as the adapter for scratch children
 that lose their own agent id, so it outlives the spike either way.
 
-### 2. Fix two Workers/Node differences (S) — built: see PRs
+### 2. Fix Workers/Node differences (S) — built in #717 and #716
 
 - **The documented abort value.** `POST /v1/agents/{id}/abort {children:
   "abort"}` is the documented default (OpenAPI, Node, both SDKs), but Workers
@@ -385,8 +389,13 @@ that lose their own agent id, so it outlives the spike either way.
   rides on the parent's next tool result of any tool, as documented. On Workers
   it rides only on the delegation tools' own results (`send_message`,
   `list_agents`…), so a lead busy with `computer` or MCP calls never sees its
-  workers' progress until it calls one of them. (Not built yet: it needs a hook
-  in Workers' generic tool-result path. Next after 1 and 2.)
+  workers' progress until it calls one of them. Fixed in #716 with a Pi
+  `afterTool` hook.
+- **`list_agents` on a long-lived lead.** `agent_children` rows outlive their
+  children (they go with the parent), and Node's `list_agents` took the
+  **oldest** 200. After 200 workers, a keyed lead (camelCode's) would list only
+  old ones. Workers listed every child, with no bound. Both now show the newest
+  200 (#717).
 
 ### 3. A message that cuts in: `send_message({…, interrupt: true})` (M–L)
 
@@ -483,11 +492,22 @@ shared, and camelCode briefs workers in the task. Not recommended now.
 
 ## 7. What was built
 
-| PR | What | State |
-| --- | --- | --- |
-| this one | This note | draft |
-| see the PR list in the description | 1. `GET /v1/agents/{id}/children` and the SDKs' `children()` | see the PR |
-| see the PR list in the description | 2. Workers accepts `children: "abort"` | see the PR |
+| PR | What |
+| --- | --- |
+| #713 | This note |
+| #715 | 1. `GET /v1/agents/{id}/children` and the SDKs' `children()`, with `delivered`. On Workers it replaces the prototype's `GET /children` route |
+| #717 | 2. Workers accepts `children: "abort"`; `list_agents` shows the newest 200 on both backends |
+| #716 | 2. Workers: progress rides on every tool result |
+
+Found on the way, and not changed:
+
+- **A prototype route on Workers.** `POST /v1/agents/{id}/children {task,
+  key, agent}` is undocumented and Workers-only. It is also reachable with the
+  agent's own token (`/clients/{id}/children`). It makes child agents with
+  `ttlSeconds: null`, so they never expire. Only
+  `backends/workers/test/agents.integration.ts` uses it. It should probably go.
+- **Sprite pool.** `rt-pool-2` failed every case of a parity shard after
+  about 20 minutes. The same files passed on other sprites.
 
 ## 8. Decisions for Miguel
 
@@ -498,3 +518,4 @@ shared, and camelCode briefs workers in the task. Not recommended now.
 3. **Improvement 5.** Change the notification envelope the model reads, with
    an eval canary?
 4. **Improvement 8, conversation fork.** Keep it out?
+5. **The prototype route.** Remove the Workers-only `POST /children`?
