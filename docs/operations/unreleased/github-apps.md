@@ -3,7 +3,7 @@
 A tenant can store GitHub Apps (`/v1/github-apps`: App ID, private key, optional webhook secret, a name), sealed with
 the secrets key like provider keys and shown masked. `POST /v1/github-apps/manifest` takes the code from GitHub's
 manifest flow and stores the App it made, key and webhook secret included. `PATCH` rotates the key (checked with
-GitHub first) and `DELETE` stops minting on every node. New table `github_apps` (migration 113); account export
+GitHub first) and `DELETE` stops minting on every node. New table `github_apps` (migration 114); account export
 writes `github-apps.json` and account deletion removes the rows.
 
 Definitions ask for a token with `auth: { type: "github-app", app, repositories?, permissions?, owner?, installation? }`
