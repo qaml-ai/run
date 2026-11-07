@@ -16,7 +16,11 @@ import { INSTANCE_TYPES, type InstanceType } from "./provider.ts";
 export type EgressAuth = ExchangeAuth | GitHubAppAuth;
 export type EgressGrant = { host: string; auth?: EgressAuth; scheme?: "bearer" | "basic" };
 /** A definition's `computer`: what its agents' native computers may reach, how long they stay up idle, and their size. */
-export type ComputerSettings = { egress?: EgressGrant[]; idleSeconds?: number; instance?: InstanceType };
+export type ComputerSettings = {
+  egress?: EgressGrant[]; idleSeconds?: number; instance?: InstanceType;
+  /** What idling out does: "stop" (default) discards the disk; "sleep" saves it first, so the next start or fork resumes it. */
+  idle?: "stop" | "sleep";
+};
 export type EgressIdentity = { issuer: string; claims: RuntimeIdentity };
 /** What the agent hands its computer object with each operation. */
 export type ComputerSetup = { settings: ComputerSettings; identity: EgressIdentity };
@@ -51,9 +55,13 @@ type UrlCheck = (value: unknown) => URL;
  */
 export function computerSettingsInput(value: unknown, checkUrl: UrlCheck, tenant: string): ComputerSettings {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw bad("computer must be an object");
-  const extra = Object.keys(value).find(key => !["egress", "idleSeconds", "instance"].includes(key));
+  const extra = Object.keys(value).find(key => !["egress", "idleSeconds", "instance", "idle"].includes(key));
   if (extra) throw bad(`computer: Unrecognized key: "${extra}"`);
-  const input = value as { egress?: unknown; idleSeconds?: unknown; instance?: unknown }, settings: ComputerSettings = {};
+  const input = value as { egress?: unknown; idleSeconds?: unknown; instance?: unknown; idle?: unknown }, settings: ComputerSettings = {};
+  if (input.idle !== undefined) {
+    if (input.idle !== "stop" && input.idle !== "sleep") throw bad('computer.idle must be "stop" or "sleep"');
+    settings.idle = input.idle;
+  }
   if (input.instance !== undefined) {
     // The deployment's COMPUTER_INSTANCE is the default; a definition picks another size for its agents.
     if (!INSTANCE_TYPES.includes(input.instance as InstanceType)) throw bad(`computer.instance must be one of ${INSTANCE_TYPES.join(", ")}`);

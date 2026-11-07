@@ -100,6 +100,14 @@ A definition's `computer` configures its agents' native `container` computer:
   A changed size replaces a running machine on its next operation.
 - `idleSeconds` (10–3,600, default 60) is how long an idle machine stays up.
   `exec` takes `timeoutMs` up to 600,000.
+- `idle` says what idling out does. `"stop"` (the default) stops the container,
+  and its disk is gone: Cloudflare keeps none across a stop. `"sleep"` saves the
+  disk first, as the `sleep` operation does. When the idle time is up, the
+  computer DO's alarm snapshots the machine and stops it, and the next operation
+  or a fork resumes that disk. The container's own inactivity timeout stays 10
+  minutes past the idle time, as a backstop. A machine that started from its
+  last sleep's snapshot saves only what changed since then. Billing ends at the
+  sleep.
 - Agents take `computer` only from their definition. `POST /v1/agents` and
   `PATCH …/configuration` refuse it. Inline sub-agents inherit their parent's;
   a definition's sub-agent has its definition's. Changed grants replace a

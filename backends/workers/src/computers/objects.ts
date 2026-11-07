@@ -40,15 +40,16 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
   private queue: Promise<unknown> = Promise.resolve();
   private network(setup?: OperateSetup): ComputerNetwork {
     const idleMs = (setup?.settings.idleSeconds ?? COMPUTER_LIMITS.idleSeconds.default) * 1000;
-    const grants = setup?.settings.egress ?? [], instance = setup?.settings.instance;
+    const grants = setup?.settings.egress ?? [], instance = setup?.settings.instance, idle = setup?.settings.idle;
     // The key names what a running container was started with; another key replaces it (ContainerProvider.ready).
-    if (!grants.length) return { key: instance ? JSON.stringify([[], null, instance]) : "", egress: [], idleMs };
+    if (!grants.length) return { key: instance ? JSON.stringify([[], null, instance]) : "", egress: [], idleMs, ...idle ? { idle } : {} };
     const gateway = (this.ctx as unknown as { exports: { ComputerEgress: EgressBinding } }).exports.ComputerEgress;
     return {
       // The identity is part of the key: a gateway's props carry it, so a new one needs new intercepts.
       key: JSON.stringify([grants, setup!.identity.claims, instance ?? null]),
       egress: grants.map(grant => ({ grant, gateway: gateway({ props: { grant, identity: setup!.identity } }) })),
       idleMs,
+      ...idle ? { idle } : {},
     };
   }
   private meter() {
@@ -76,7 +77,12 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
       },
       stopped: (cpuUsec) => meter.stopped(cpuUsec),
     };
-    return new ContainerProvider(this.ctx.container, this.ctx.storage, spec, Date.now, network, bound);
+    return new ContainerProvider(this.ctx.container, this.ctx.storage, spec, Date.now, network, bound, at => this.wake(at));
+  }
+  /** The alarm at `at`, unless one is set sooner (the meter's and the idle sleep's share it; each alarm re-arms both). */
+  private async wake(at: number) {
+    const current = await this.ctx.storage.getAlarm();
+    if (current === null || current > at) await this.ctx.storage.setAlarm(at);
   }
   private serial<T>(run: () => Promise<T>) {
     const result = this.queue.then(run);
@@ -170,11 +176,20 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
       .catch((error: unknown) => console.error(JSON.stringify({ type: "computer_unref_failed", error: error instanceof Error ? error.message.slice(0, 200) : "unknown" })));
     return { purged: true as const };
   }
-  /** Settle a session that idled out, retry charges that failed, and drop fork snapshots no child adopted. */
+  /**
+   * Put a computer that sleeps when idle to sleep once its idle time is up, settle a session that idled out, retry
+   * charges that failed, and drop fork snapshots no child adopted.
+   */
   async alarm() {
     await this.serial(async () => {
+      const provider = this.ctx.container ? this.provider() : undefined;
+      const next = await provider?.sleepIfIdle().catch((error: unknown) => {
+        console.error(JSON.stringify({ type: "computer_idle_sleep_failed", error: error instanceof Error ? error.message.slice(0, 200) : "unknown" }));
+        return undefined;
+      });
       await this.meter().alarm(!!this.ctx.container?.running);
-      await this.provider().dropStale().catch(() => {});
+      await provider?.dropStale().catch(() => {});
+      if (next !== undefined) await this.wake(next);
     });
   }
 }
