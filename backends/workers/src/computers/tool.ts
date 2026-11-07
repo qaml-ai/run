@@ -66,14 +66,29 @@ export function computerTool(bindings: ComputerBindings, agentId: string, setup?
     parameters: computerParameters,
     replay: "unsafe",
     description:
-      "Linux computer: exec a shell command (command, run with bash -lc) or an argv list (timeoutMs up to 600000), read/write relative /workspace paths, parse text/JSON/CSV/HTML, save/restore a named snapshot, or sleep. Parsing accepts 8 MiB, bounds extracted text and never executes document content; PDF is unsupported. Snapshots capture the whole filesystem. The disk lasts while the computer runs: it stops after idling, and sleep saves the disk first so the next operation resumes it. To give a sub-agent its own copy of this disk, start it with computer: \"fork\" on delegate or spawn_agent. Files are separate from agent volumes. Shell syntax requires an explicit shell. " +
+      "Linux computer: exec a shell command (command, run with bash -lc) or an argv list (timeoutMs up to 600000), read/write files in /workspace (paths relative to it, or absolute under it), parse text/JSON/CSV/HTML, save/restore a named snapshot, or sleep. Parsing accepts 8 MiB, bounds extracted text and never executes document content; PDF is unsupported. Snapshots capture the whole filesystem. The disk lasts while the computer runs: it stops after idling, and sleep saves the disk first so the next operation resumes it. To give a sub-agent its own copy of this disk, start it with computer: \"fork\" on delegate or spawn_agent. Files are separate from agent volumes. Shell syntax requires an explicit shell. " +
       egressDescription(settings),
     async execute({ provider, ...request }) {
       const namespace = bindings.COMPUTER_CONTAINERS;
       if (!namespace)
         throw new Error(`Optional ${provider} computer is not configured`);
+      if ("path" in request) request.path = computerPath(request.path);
       const result = await namespace.getByName(agentId).operate(request as never, await setup?.());
       return { output: [{ type: "text", text: JSON.stringify(result) }] };
     },
   });
+}
+
+/**
+ * A read, write or parse path as models write it: an absolute one under /workspace (where exec runs, so models name
+ * files that way) is made relative; any other absolute or `..` path is refused saying where paths resolve, rather than
+ * as an invalid path. On the pilot, nearly every refused computer call of DeepSeek V4.1 Flash, on every host, was a
+ * write to /workspace/<repo>/... or /tmp/... (2026-11-07). The path's own check follows (validation.ts workspacePath).
+ */
+export function computerPath(path: string): string {
+  const trimmed = path.trim();
+  if (trimmed.startsWith("/workspace/")) return trimmed.slice("/workspace/".length);
+  if (trimmed.startsWith("/") || trimmed.split("/").includes(".."))
+    throw new Error(`read, write and parse take paths in /workspace, relative to it (src/app.js is /workspace/src/app.js); ${JSON.stringify(path.slice(0, 200))} is outside it: use a path under /workspace, or exec for other places`);
+  return path;
 }
