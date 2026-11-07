@@ -16,6 +16,7 @@ import type { FileVersions } from "./file-versions.ts";
 import { signVolumeLink, verifyVolumeLink } from "./file-links.ts";
 import { ARCHIVE_LIMITS, READ_ALL_LIMITS } from "./volume-policy.ts";
 import { defineTool } from "@earendil-works/pi-durable";
+import { RE2JS } from "re2js";
 import { obj, opt, str, arr, bool, int } from "@earendil-works/pi-schema";
 import { editArguments } from "./edit-arguments.ts";
 import { withSql } from "./postgres.ts";
@@ -759,6 +760,16 @@ export type PresentedVolumeFile = {
   caption?: string;
 };
 export type WrittenVolumeFile = Pick<FileEntry, "path" | "version" | "size" | "contentType">;
+// Node's budget: a search reads at most this much before answering what it found so far.
+const GREP_BYTES = 32 * 1024 * 1024;
+function regexTest(pattern: string, ignoreCase?: boolean) {
+  try {
+    const re = RE2JS.compile(pattern, ignoreCase ? RE2JS.CASE_INSENSITIVE : 0);
+    return (line: string) => re.test(line);
+  } catch (error) {
+    throw new FileError(`Invalid regular expression: ${(error as Error).message}`);
+  }
+}
 /** Tools and HTTP share the same files; only explicit Linux computers have a separate filesystem. */
 export function volumeTools(
   env: FileBindings,
@@ -1029,7 +1040,7 @@ export function volumeTools(
     defineTool({
       name: "grep",
       description:
-        "Search UTF-8 file contents line by line. Large and binary files are skipped.",
+        "Search UTF-8 file contents line by line for text, or with regex: true for a regular expression in RE2 syntax (no lookarounds or backreferences). Large and binary files are skipped.",
       replay: "safe",
       parameters: obj({
         pattern: str(),
@@ -1042,31 +1053,28 @@ export function volumeTools(
       async execute({ pattern, path, glob, regex, ignoreCase, limit }) {
         if (!pattern || pattern.length > 512)
           throw new FileError("Invalid pattern");
+        // The model writes the pattern. Node runs JS RegExp in a worker it can kill; a DO cannot, so match with
+        // RE2, whose time is linear in the text: a backtracking pattern costs no more than a plain search.
+        const test = regex ? regexTest(pattern, ignoreCase) : ignoreCase
+          ? (line: string) => line.toLowerCase().includes(pattern.toLowerCase())
+          : (line: string) => line.includes(pattern);
         const t = await target(
             path ?? (await getMounts())[0]?.path ?? "/workspace",
           ),
           files = await t.v.list(t.path, undefined, glob),
           matches: { path: string; line: number; text: string }[] = [],
           count = Math.max(1, Math.min(limit ?? 100, 1000));
-        // Node runs untrusted patterns in a killable worker thread. Until this
-        // host routes them through the codemode isolate, do not block a DO on JS RegExp.
-        if (regex)
-          throw new FileError(
-            "Regular-expression grep requires isolated execution",
-            501,
-          );
+        let bytes = 0;
         for (const file of files) {
           if (file.size > 1024 * 1024) continue;
-          const { bytes } = await t.v.read(file.path);
-          if (bytes.subarray(0, 8000).includes(0)) continue;
-          const lines = new TextDecoder().decode(bytes).split("\n");
+          if ((bytes += file.size) > GREP_BYTES)
+            return output({ matches, truncated: true });
+          const { bytes: data } = await t.v.read(file.path);
+          if (data.subarray(0, 8000).includes(0)) continue;
+          const lines = new TextDecoder().decode(data).split("\n");
           for (let i = 0; i < lines.length; i++) {
             const line = lines[i];
-            if (
-              ignoreCase
-                ? line.toLowerCase().includes(pattern.toLowerCase())
-                : line.includes(pattern)
-            ) {
+            if (test(line)) {
               matches.push({
                 path: t.show(file.path),
                 line: i + 1,
