@@ -1,3 +1,4 @@
+import { mergedSendMessage } from "../channels.ts";
 import type { ToolDefinition } from "../protocol.ts";
 import { callableFromCode, errorText, scratchMount } from "../protocol.ts";
 import type { ClientEvent } from "../../shared/client-protocol.ts";
@@ -71,8 +72,10 @@ async function toolServers(ctx: ToolsContext, session: Session, tools: ToolDefin
   const definition = header.definition;
   // An agent with no tools at all (no code mode, file tools or tools of any source) has nothing to present a file from: no present_file either.
   const bare = codeMode === false && fileTools === false && !tools.length && !feature && !multiAgent && !images && !sourced;
+  // A channel agent that also messages agents gets one send_message for both (channels.ts mergedSendMessage).
+  const merged = feature ? await mergedSendMessage(feature, multiAgent) : undefined;
   return [
-    ...feature ? [view("channel", feature)] : [],
+    ...merged ? [view("channel", merged)] : feature ? [view("channel", feature)] : [],
     { tools: () => defaultExposure(tools), call: call => events.callAttached(ctx.eventContext, session, call), sources: async () => [{ kind: "application", name: "application", status: "listed", connected: !!session.attached?.open, tools: defaultExposure(tools) }] },
     ...volumes && (header.mounts?.length || await ctx.options.sources?.computerFilesystem(tenant, header.id) !== undefined) && !bare ? [view("files", fileServer(fileToolsFor(volumes.definitions(), fileTools, codeMode), ({ name, args, signal }) => volumes.tool(toolContext(ctx, session), name, args, signal)))] : [],
     ...multiAgent ? [multiAgent] : [],

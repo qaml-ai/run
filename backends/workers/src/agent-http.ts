@@ -216,14 +216,10 @@ export async function fetchRequestImpl(this: AgentRuntime,
             name: "camel.images",
             tools: await this.imageTools(),
           });
-          this.registry.install({
-            name: "camel.delegation",
-            tools: await this.delegation.toolsFor(
-              incoming.config.delegate ?? {},
-              incoming.config.builtins ?? [],
-              incoming.config.type === "subagent",
-            ),
-          });
+          const messaging = this.channels.messaging(async () => this.config(), async api => { const run = await this.currentRun(api as never); return run.id === "background" ? undefined : run.id; },
+            incoming.config.type === "channel", await this.delegation.toolsFor(incoming.config.delegate ?? {}, incoming.config.builtins ?? [], incoming.config.type === "subagent"));
+          this.registry.install({ name: "camel.channels", tools: messaging.channels });
+          this.registry.install({ name: "camel.delegation", tools: messaging.delegation });
           this.registry.install({ name: "camel.files", tools: wordedFileTools(this.workspaceFileTools, incoming.config), sections: [] });
           this.availableTools = prioritizedTools(this.registry.snapshot().tools());
           const enabled = await this.enabledTools(incoming.config);

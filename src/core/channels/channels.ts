@@ -206,6 +206,27 @@ export const SEND_MESSAGE_TOOL = {
   }, additionalProperties: false },
 } as const;
 /**
+ * send_message for a channel's agent that also messages its sub-agents (or parent): one tool, so neither use shadows
+ * the other. Without `to` it is the channel's (the conversation, `thread`, `files`); with `to`, the agents' one.
+ */
+export const SEND_MESSAGE_WITH_AGENTS_TOOL = {
+  name: "send_message",
+  description: "Send a message right away. Leave out `to` to write to the person you are talking with in this conversation, before your final reply (progress updates, or files; `thread` where messages carry from.thread); your final reply is sent automatically, so do not repeat it here. Give `to` (one of your sub-agents, by name or agentId, or \"parent\", the agent that started you) to message that agent instead: it gets it in its running turn, or as a new turn.",
+  parameters: { type: "object", properties: {
+    to: { type: "string", description: "Leave out for the conversation; a sub-agent's name or agentId, or \"parent\", to message that agent" },
+    text: { type: "string", maxLength: 16_000 },
+    files: { type: "array", maxItems: 10, items: { type: "string" }, description: "Only without `to`: paths of files in your mounts to send, e.g. /workspace/report.pdf" },
+    thread: { type: "string", maxLength: 200, description: "Only without `to`, where messages carry from.thread: the thread to write in, or \"new\" for a message of its own. Default: the thread you are answering" },
+  }, additionalProperties: false },
+} as const;
+/** Which send_message a call of SEND_MESSAGE_WITH_AGENTS_TOOL is: the agents' (with `to`) or the conversation's. */
+export function sendMessageTarget(args: Record<string, unknown>): "agent" | "conversation" {
+  if (args.to === undefined) return "conversation";
+  if (typeof args.to !== "string" || !args.to.trim()) throw new Error("to is a sub-agent's name or agentId, or \"parent\"; leave it out to write to the conversation");
+  if (args.files !== undefined || args.thread !== undefined) throw new Error("files and thread are for the conversation: leave out to");
+  return "agent";
+}
+/**
  * Attachments a message brings in, saved to the agent's workspace: at most `files` of them,
  * each at most `fileBytes` and `messageBytes` in all, each downloaded within `downloadMs`.
  */

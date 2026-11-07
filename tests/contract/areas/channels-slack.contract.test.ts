@@ -228,3 +228,33 @@ channelTest("tests/channels-slack.test.ts:246", "in a channel conversation, a su
   assert.deepEqual(at("started for 100.0001"), ["100.0001"]);
   assert.deepEqual(at("The badge PR is open."), ["100.0001"]);
 });
+
+/** The sub-agent's calls: its first message is its role and task (the lead's own messages name the role only in its tool call). */
+const isWorker = (body: any) => JSON.stringify(body.messages.find((message: any) => message.role === "user")?.content ?? "").includes("Your role:");
+channelTest("tests/channels-slack.test.ts:246", "a channel agent that starts sub-agents has one send_message: with to, to a sub-agent; without, to its thread", async (_t, r) => {
+  r.setModel(body => {
+    const { text } = asked(body);
+    if (isWorker(body)) return { role: "assistant", content: text.includes("use blue") ? "badge done in blue" : "badge done" };
+    const last = body.messages.findLast((message: any) => message.role === "assistant" && message.tool_calls)?.tool_calls?.[0]?.function;
+    if (body.messages.at(-1).role === "tool") {
+      if (last?.name === "spawn_agent") return toolCall("send_message", { to: "badge", text: "use blue" }, "call_to_badge");
+      if (last?.name === "send_message" && JSON.parse(last.arguments).to) return toolCall("send_message", { text: "started the badge" }, "call_to_thread");
+      return { role: "assistant", content: "on it" };
+    }
+    if (text.includes("<agent_")) return { role: "assistant", content: "noted" };
+    return toolCall("spawn_agent", { instructions: "BADGE_WORKER", task: "Add the badge", name: "badge" });
+  });
+  const definition = await r.call("/v1/definitions", { body: { name: "Lead", builtins: ["agents"], delegate: { instructions: true }, codeMode: false, fileTools: false } });
+  assert.equal(definition.status, 201, definition.text);
+  const channel = await r.createChannel({ definition: definition.json.id, settings: { conversation: "channel" } });
+  await r.event(channel, { type: "app_mention", channel: "C1", ts: "100.0001", text: "<@UBOT> add a badge" });
+  const steps = () => JSON.stringify({ calls: r.model.bodies.map(body => [isWorker(body) ? "worker" : "lead", body.messages.at(-1).role, String(typeof body.messages.at(-1).content === "string" ? body.messages.at(-1).content : JSON.stringify(body.messages.at(-1).content)).slice(0, 160)]), posts: r.api.posts().map(post => [post.text, post.thread_ts]) });
+  await until(() => r.api.posts().some(post => post.text === "on it"), "the turn's reply", 60_000).catch(error => { throw new Error(`${error.message}: ${steps()}`); });
+  await until(() => r.model.bodies.some(body => isWorker(body) && asked(body).text.includes("use blue")), "the sub-agent got the message", 60_000).catch(error => { throw new Error(`${error.message}: ${steps()}`); });
+  const at = (text: string) => r.api.posts().filter(post => post.text === text).map(post => post.thread_ts);
+  assert.deepEqual(at("started the badge"), ["100.0001"], `without to, send_message writes in the thread: ${JSON.stringify(r.model.bodies.filter(body => !isWorker(body)).at(-1).messages.filter((message: any) => message.role === "tool").map((message: any) => message.content))}`);
+  assert.deepEqual(at("use blue"), [], "with to, nothing goes to Slack");
+  const tools = r.model.bodies.find(body => !isWorker(body))!.tools.filter((tool: any) => tool.function.name === "send_message");
+  assert.equal(tools.length, 1, "one send_message");
+  assert.deepEqual(Object.keys(tools[0].function.parameters.properties).sort(), ["files", "text", "thread", "to"]);
+});
