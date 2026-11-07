@@ -56,7 +56,27 @@ portedTest("models","tests/openrouter-hosts.test.ts:57")("1017:nitro resolves as
   assert.ok((sent.max_completion_tokens ?? sent.max_tokens) <= 131_072);
 });
 
-portedTest("models","tests/openrouter-hosts.test.ts:77")("1017:morph is 1017 served by Morph alone: sent as 1017 with provider.only morph, priced and resolved as 1017", async t => {
+portedTest("models","tests/openrouter-hosts.test.ts:77")("1017:vetted is 1017 served only by camel-bots' gated hosts, with no ignore list, priced and resolved as 1017", async t => {
+  const vetted = resolveModel(`openrouter/${FLASH_1017.id}:vetted`);
+  assert.deepEqual([vetted.id, vetted.api, vetted.cost], [`${FLASH_1017.id}:vetted`, "openai-completions", FLASH_1017.cost]);
+  const only = ["baseten", "parasail", "deepseek", "fireworks", "deepinfra", "primeintellect", "crusoe"];
+  assert.deepEqual(openRouterHosts(vetted.id), only);
+  assert.equal(openRouterIgnoredHosts(vetted.id), undefined);
+  assert.deepEqual(withOpenRouterHosts(vetted, { model: vetted.id, messages: [] }), { model: FLASH_1017.id, messages: [], provider: { only } });
+  assert.deepEqual(openRouterIgnoredHosts(`${FLASH_1017.id}:nitro`), ["inference-net", "wafer", "relace"], ":nitro is untouched");
+
+  const host = await fakeModel(t, () => ({ role: "assistant", content: "Vetted." }));
+  const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), LOCAL);
+  await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { apiKey: "sk-or", baseUrl: host.url } });
+  const agent = (await r.call("/v1/agents", { body: { model: `openrouter/${FLASH_1017.id}:vetted`, keyScope: "hosted" } })).json.id;
+  assert.equal((await r.prompt(agent, "Hi")).outcome.result.reply, "Vetted.");
+  const [sent] = host.bodies;
+  assert.equal(sent.model, FLASH_1017.id, "OpenRouter knows no :vetted suffix");
+  assert.deepEqual(sent.provider, { only });
+  onlyOnly(host.bodies);
+});
+
+portedTest("models","tests/openrouter-hosts.test.ts:97")("1017:morph is 1017 served by Morph alone: sent as 1017 with provider.only morph, priced and resolved as 1017", async t => {
   const morph = resolveModel(`openrouter/${FLASH_1017.id}:morph`);
   assert.deepEqual([morph.id, morph.api, morph.maxTokens], [`${FLASH_1017.id}:morph`, "openai-completions", 131_072]);
   assert.deepEqual(morph.cost, FLASH_1017.cost);

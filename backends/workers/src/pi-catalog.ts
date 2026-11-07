@@ -151,9 +151,14 @@ const OPENROUTER_IGNORED_HOSTS: Record<string, string[]> = {
  * agents can try a host while every other agent of the model routes as before. Only `only`, never `order` or `sort`.
  * - `:morph` (2026-10-27): Morph's fp8 endpoint alone, a canary of its price and cache hits against `:nitro`
  *   (plans/deepseek-provider-spend.md). One host: a 429 there has nowhere else to go, so canary slices only.
+ * - `:vetted` (2026-11-07): the seven hosts that passed camel-bots' per-host gate. Hosts differ by bugs, not only
+ *   quantization: on default routing, Together served 777 of 794 camelCode pilot responses, and all of its tool calls
+ *   refused for their arguments' shape (6.5%) and its invented PR links. Seven hosts, not a few (a short `only` was
+ *   rate-limited, 2026-10-18). Opt-in by model id; 1017 and `:nitro` route as before.
  */
 const OPENROUTER_HOST_VARIANTS: Record<string, string[]> = {
   morph: ["morph"],
+  vetted: ["baseten", "parasail", "deepseek", "fireworks", "deepinfra", "primeintellect", "crusoe"],
 };
 const hostVariant = (id: string): { base: string; only: string[] } | undefined => {
   const match = /^(.+):([a-z]+)$/.exec(id);
