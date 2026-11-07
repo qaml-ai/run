@@ -787,6 +787,10 @@ export async function answerHumanInputsImpl(this: AgentRuntime,
             usageBaseline: this.usageView(await this.usageForRequest(piId)) };
           await this.ctx.storage.put(reqKey(resumeId), resumed);
           await this.emit({ type: "event", requestId: resumeId, event: { type: "agent_start" } });
+          // Where the resumed run's messages start in history, as Node's host says for every run (a prompt's comes with
+          // its user message): a snapshot of the running turn carries them by index, and a watcher lines the stream up
+          // with history by it.
+          await this.emit({ type: "event", requestId: resumeId, event: { type: "turn_opened", index: this.nextMessage } });
           await this.ctx.storage.put(`resume-for:${piId}`, resumeId);
           created.push(resumed);
         }

@@ -33,7 +33,7 @@ const callDeltas = (id: string, name: string, args: object) => [
 ];
 
 async function setup(t: Parameters<typeof runtime>[0], script: (index: number, body: any) => object[], agent: (r: Awaited<ReturnType<typeof runtime>>) => Promise<object> = async () => ({ instructions: "You help." }),
-  options: { pace?: number; stateDelayMs?: number } = {}) {
+  options: { pace?: number; stateDelayMs?: number; historyDelayMs?: number } = {}) {
   // Tool servers on this machine are allowed (the shop below).
   const r = await runtime(t, () => ({}), { AGENT_BASE_URL: await streamingModel(t, script, options.pace), AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" });
   const handler = createAgentHandler({ apiKey: OPERATOR, url: r.base, browserToken: { url: r.base }, authorize: () => ({ userId: "alice" }), agent: await agent(r) });
@@ -44,6 +44,8 @@ async function setup(t: Parameters<typeof runtime>[0], script: (index: number, b
       if (String(input) === "/api/agent") return handler(new Request("https://app.test/api/agent", init));
       // A slow read of the agent's state, while the run it asks about goes on streaming.
       if (options.stateDelayMs && String(input).endsWith("/state")) await sleep(options.stateDelayMs);
+      // A slow read of the history a stream's snapshot is taken in with.
+      if (options.historyDelayMs && /\/history\?/.test(String(input))) await sleep(options.historyDelayMs);
       return fetch(input, init);
     },
   });
@@ -160,6 +162,26 @@ test("resumeStream() joining a run mid-answer shows each word once, whatever arr
   // The run is answering when the stream joins it, and goes on while the join looks up the run.
   await sleep(300);
   const rest = await transport.reconnectToStream({ chatId: "join" });
+  assert.ok(rest);
+  const resumed = await reply(rest!, first);
+  assert.deepEqual(resumed.parts.filter(part => part.type === "text").map(part => (part as any).text), ["Deploying the release to EU now."]);
+  assert.equal((resumed.parts.find(part => part.type === "dynamic-tool") as any)?.state, "output-available");
+});
+
+test("resumeStream() joining a run mid-answer waits for the stream's snapshot, however slowly history reads", async t => {
+  const ASK = { questions: [{ question: "Which region?", header: "Region", options: [{ label: "EU" }, { label: "US" }] }] };
+  const { transport } = await setup(t, (index, body) => {
+    if (index === 0) return callDeltas("call_ask", "ask_user", ASK);
+    const answer = JSON.parse(body.messages.filter((message: any) => message.role === "tool").at(-1).content).answers["Which region?"];
+    return words(`Deploying the release to ${answer} now.`);
+  }, async r => ({ definition: (await r.call("/v1/definitions", { body: { name: "Asker", builtins: ["ask_user"] } })).json.id }), { pace: 120, historyDelayMs: 1500 });
+  const first = await reply(await transport.sendMessages({ trigger: "submit-message", chatId: "slow", messageId: undefined, messages: [userMessage("msg_00000006", "Deploy it")], abortSignal: undefined }));
+  const asked = first.parts.find(part => part.type === "data-agent-input") as any;
+  await transport.answer(asked.data, "EU", { chatId: "slow" });
+  // The stream joins the run with its snapshot (the answered call's result, the words so far), which the watcher takes
+  // in only once the history read beside it returns: well after the join's own look at the run.
+  await sleep(300);
+  const rest = await transport.reconnectToStream({ chatId: "slow" });
   assert.ok(rest);
   const resumed = await reply(rest!, first);
   assert.deepEqual(resumed.parts.filter(part => part.type === "text").map(part => (part as any).text), ["Deploying the release to EU now."]);
