@@ -602,7 +602,8 @@ export async function fetchRequestImpl(this: AgentRuntime,
       if (path === "/abort" && request.method === "POST") {
         const params = object(await body(request, 32 * 1024, true), ['queued', 'children']);
         if (params.queued !== undefined && !['cancel', 'keep'].includes(String(params.queued))) throw new BadRequest('queued is cancel or keep');
-        if (params.children !== undefined && !['cancel', 'keep'].includes(String(params.children))) throw new BadRequest('children is cancel or keep');
+        // abort is the documented value (as on Node and in the SDKs); cancel, which this backend took first, stays an alias.
+        if (params.children !== undefined && !['abort', 'keep', 'cancel'].includes(String(params.children))) throw new BadRequest('children is abort or keep');
         const aborting = this.admission.then(async () => {
           const stopped = await this.abortRequests(params.queued === 'keep' ? 'keep' : 'cancel', params.children === 'keep');
           await this.state();

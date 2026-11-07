@@ -261,8 +261,9 @@ export async function admitImpl(this: AgentRuntime,
       const params = object(request.params ?? {}, ["queued", "children"]);
       if (params.queued !== undefined && !['cancel', 'keep'].includes(String(params.queued)))
         throw new BadRequest('queued is cancel or keep');
-      if (params.children !== undefined && !['cancel', 'keep'].includes(String(params.children)))
-        throw new BadRequest('children is cancel or keep');
+      // abort is the documented value (as on Node and in the SDKs); cancel stays an alias.
+      if (params.children !== undefined && !['abort', 'keep', 'cancel'].includes(String(params.children)))
+        throw new BadRequest('children is abort or keep');
       const fingerprint = canonical({ method: "abort", params });
       const previous = await this.ctx.storage.get<RequestRecord>(reqKey(id));
       if (previous && previous.fingerprint !== fingerprint)
