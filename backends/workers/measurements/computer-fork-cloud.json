@@ -1,0 +1,253 @@
+{
+  "name": "camelrun-probe-computer-fork",
+  "account": "85bbd288051330fb51ee1c86031a299b",
+  "startedAt": "2026-11-07T00:20:16.831Z",
+  "budgetUsd": 5,
+  "instance": "standard-4",
+  "operations": [
+    {
+      "phase": "preflight",
+      "at": "2026-11-07T00:20:16.831Z"
+    },
+    {
+      "command": "containers images list --filter camelrun-probe-computer-fork --json -c probes/computers/fork-wrangler.jsonc",
+      "exitCode": 0
+    },
+    {
+      "phase": "deploying",
+      "at": "2026-11-07T00:20:38.109Z"
+    },
+    {
+      "command": "deploy -c probes/computers/fork-wrangler.jsonc",
+      "exitCode": 0
+    },
+    {
+      "command": "secret put PROBE_TOKEN -c probes/computers/fork-wrangler.jsonc",
+      "exitCode": 0
+    },
+    {
+      "phase": "preparing",
+      "at": "2026-11-07T00:21:05.067Z"
+    },
+    {
+      "phase": "forking",
+      "at": "2026-11-07T00:21:14.797Z"
+    },
+    {
+      "phase": "verified",
+      "at": "2026-11-07T00:21:28.819Z"
+    },
+    {
+      "phase": "cleanup",
+      "at": "2026-11-07T00:21:28.819Z"
+    },
+    {
+      "command": "deploy -c /var/folders/2w/ghgmsg856n52r27w6r4slplw0000gn/T/camelrun-probe-computer-fork-8bexww/teardown.json",
+      "exitCode": 0
+    },
+    {
+      "command": "containers images list --filter camelrun-probe-computer-fork --json -c probes/computers/fork-wrangler.jsonc",
+      "exitCode": 0
+    },
+    {
+      "command": "containers images delete camelrun-probe-computer-fork-containercomputer-workspace:rootfs-set-d180d1be8446fcc711ceff9e017c4342d1920a6709b1236ab1686557fb7601ad -y -c probes/computers/fork-wrangler.jsonc",
+      "exitCode": 0
+    },
+    {
+      "command": "containers images delete camelrun-probe-computer-fork-containercomputer-workspace:rootfs-snapshot-80f35908168ea92a40d62c029468fb25ec96f1937967fce0c7cb5888eafbb459 -y -c probes/computers/fork-wrangler.jsonc",
+      "exitCode": 0
+    },
+    {
+      "command": "containers images delete camelrun-probe-computer-fork-containercomputer-workspace:wrangler-mw5nqel8 -y -c probes/computers/fork-wrangler.jsonc",
+      "exitCode": 0
+    },
+    {
+      "command": "containers images list --filter camelrun-probe-computer-fork --json -c probes/computers/fork-wrangler.jsonc",
+      "exitCode": 0
+    }
+  ],
+  "cleanup": {
+    "stopStatus": 200,
+    "deletedImages": [
+      "camelrun-probe-computer-fork-containercomputer-workspace:rootfs-set-d180d1be8446fcc711ceff9e017c4342d1920a6709b1236ab1686557fb7601ad",
+      "camelrun-probe-computer-fork-containercomputer-workspace:rootfs-snapshot-80f35908168ea92a40d62c029468fb25ec96f1937967fce0c7cb5888eafbb459",
+      "camelrun-probe-computer-fork-containercomputer-workspace:wrangler-mw5nqel8"
+    ],
+    "workers": [],
+    "namespaces": [],
+    "applications": [],
+    "images": [],
+    "workersDev": 404,
+    "errors": [],
+    "verifiedAbsent": true
+  },
+  "preflight": {
+    "worker": false,
+    "namespace": false,
+    "application": false,
+    "images": []
+  },
+  "prepare": {
+    "attempt": 1,
+    "status": 200,
+    "clientMs": 9728,
+    "value": {
+      "startMs": 2949,
+      "workspaceMs": 6308,
+      "workspace": {
+        "stdout": "1074009503\n21026\n3cef2bda8cdf9fb77d62101d1a177cb5576f0b00a409c6816116fe1b1bc86411\n",
+        "stderr": "",
+        "exitCode": 0
+      }
+    }
+  },
+  "fork": {
+    "attempt": 1,
+    "status": 200,
+    "clientMs": 13698,
+    "value": {
+      "snapshotMs": 12417,
+      "snapshot": {
+        "id": "32bdcb8e-d353-43cb-8276-96362bbd0949",
+        "name": "fork-63916659a7708688395efb166d4d8252",
+        "size": 1082105238,
+        "image": "registry.cloudflare.com/85bbd288051330fb51ee1c86031a299b/camelrun-probe-computer-fork-containercomputer-workspace@sha256:95df34057aa074fe367d29623a5f78d802b198bee37c27cf8e062cdcc3fc4b63",
+        "createdAt": 1794010887435,
+        "expiresAt": 1796602887435
+      },
+      "reusedMs": 4,
+      "reusedSame": true,
+      "seedAllMs": 696,
+      "firstCommandAllMs": 260,
+      "firstCommandP50Ms": 233,
+      "firstCommandP95Ms": 260,
+      "children": [
+        {
+          "name": "child-1",
+          "firstCommandMs": 233,
+          "result": {
+            "stdout": "parent-marker\n3cef2bda8cdf9fb77d62101d1a177cb5576f0b00a409c6816116fe1b1bc86411\n/dev/vdb       btrfs  19531252 1248172  18218516   7% /\n",
+            "stderr": "",
+            "exitCode": 0,
+            "computer": {
+              "restoredFrom": "fork"
+            }
+          }
+        },
+        {
+          "name": "child-2",
+          "firstCommandMs": 211,
+          "result": {
+            "stdout": "parent-marker\n3cef2bda8cdf9fb77d62101d1a177cb5576f0b00a409c6816116fe1b1bc86411\n/dev/vdb       btrfs  19531252 1248172  18218516   7% /\n",
+            "stderr": "",
+            "exitCode": 0,
+            "computer": {
+              "restoredFrom": "fork"
+            }
+          }
+        },
+        {
+          "name": "child-3",
+          "firstCommandMs": 247,
+          "result": {
+            "stdout": "parent-marker\n3cef2bda8cdf9fb77d62101d1a177cb5576f0b00a409c6816116fe1b1bc86411\n/dev/vdb       btrfs  19531252 1248172  18218516   7% /\n",
+            "stderr": "",
+            "exitCode": 0,
+            "computer": {
+              "restoredFrom": "fork"
+            }
+          }
+        },
+        {
+          "name": "child-4",
+          "firstCommandMs": 196,
+          "result": {
+            "stdout": "parent-marker\n3cef2bda8cdf9fb77d62101d1a177cb5576f0b00a409c6816116fe1b1bc86411\n/dev/vdb       btrfs  19531252 1248172  18218516   7% /\n",
+            "stderr": "",
+            "exitCode": 0,
+            "computer": {
+              "restoredFrom": "fork"
+            }
+          }
+        },
+        {
+          "name": "child-5",
+          "firstCommandMs": 260,
+          "result": {
+            "stdout": "parent-marker\n3cef2bda8cdf9fb77d62101d1a177cb5576f0b00a409c6816116fe1b1bc86411\n/dev/vdb       btrfs  19531252 1248172  18218516   7% /\n",
+            "stderr": "",
+            "exitCode": 0,
+            "computer": {
+              "restoredFrom": "fork"
+            }
+          }
+        }
+      ],
+      "seen": [
+        {
+          "name": "parent",
+          "value": {
+            "stdout": "parent-marker\n0\n",
+            "stderr": "",
+            "exitCode": 0
+          }
+        },
+        {
+          "name": "child-1",
+          "value": {
+            "stdout": "changed\n1\n",
+            "stderr": "",
+            "exitCode": 0
+          }
+        },
+        {
+          "name": "child-2",
+          "value": {
+            "stdout": "changed\n1\n",
+            "stderr": "",
+            "exitCode": 0
+          }
+        },
+        {
+          "name": "child-3",
+          "value": {
+            "stdout": "changed\n1\n",
+            "stderr": "",
+            "exitCode": 0
+          }
+        },
+        {
+          "name": "child-4",
+          "value": {
+            "stdout": "changed\n1\n",
+            "stderr": "",
+            "exitCode": 0
+          }
+        },
+        {
+          "name": "child-5",
+          "value": {
+            "stdout": "changed\n1\n",
+            "stderr": "",
+            "exitCode": 0
+          }
+        }
+      ],
+      "forkedFrom": {
+        "parent": "acf2b7bc3549ee09e870187035aeb9510ba963edca89eec2fe3a463f47b16407",
+        "agent": "probe-parent",
+        "batch": "probe:m1",
+        "at": 1794010887466,
+        "snapshot": "32bdcb8e-d353-43cb-8276-96362bbd0949"
+      }
+    }
+  },
+  "verified": true,
+  "applications": [
+    {
+      "id": "d3fdb84d5d67433aa9724e0a971bdbd5",
+      "name": "camelrun-probe-computer-fork"
+    }
+  ],
+  "endedAt": "2026-11-07T00:22:25.073Z"
+}
