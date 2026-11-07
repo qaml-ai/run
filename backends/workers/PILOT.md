@@ -49,7 +49,32 @@ scripts/pilot-deploy
 ```
 
 Run heavy dependency installs, typechecking, builds and tests on the Sprites pool.
-Wrangler uploads may run on the operator's laptop. The deploy script creates
+Wrangler uploads may run on the operator's laptop.
+
+The deploy script first brings the pilot Postgres up to the checkout's
+`migrations/`, before any Worker is deployed. It lists the pending migrations,
+then applies them through a short-lived Worker (`scripts/pilot-migrate.mjs`)
+whose only binding is the pilot Hyperdrive. That Worker runs
+`scripts/migrate.mjs` (the same `schema_migrations` bookkeeping as the
+template-database tests) over the SQL files bundled into it. Its bearer stays in
+the deploying process's memory; the Worker holds only its hash, expires after
+one hour and is deleted in `finally`. No database password is handled. It
+returns only migration names (and, on a failure, the failing name and its
+SQLSTATE). A failed migration is rolled back and stops the deploy.
+
+Migrations are tracked by file name only; no checksum is kept. Never edit a
+migration after it is merged: add a new one. The script refuses to migrate or
+deploy when the database has applied a name this checkout lacks, that is, when
+it is ahead of the commit being deployed or a file was renamed. Keep migrations
+additive, so the running version keeps working on the new schema until its
+replacement is live.
+
+```sh
+scripts/pilot-deploy --dry-run           # list pending migrations; change nothing
+scripts/pilot-deploy --migrations-only   # apply pending migrations; deploy no Worker
+```
+
+The deploy script then creates
 missing named R2/Queue resources, deploys the sandbox and fake model before the
 API, and creates missing signing/encryption secrets without displaying values.
 Repeat deploys preserve those secrets and set the measured Hyperdrive limit to
