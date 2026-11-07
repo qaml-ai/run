@@ -254,6 +254,20 @@ export function childPrompt(ctx: DelegationContext, session: Session, run: Reque
   };
 }
 
+/**
+ * The parent that made this agent and its chain's first, as the parent's row for it records them: the lineage of a run its
+ * parent did not start (one prompted through the API). Undefined for an agent no delegate or spawn_agent call made.
+ */
+export async function madeBy(db: Db, session: Session) {
+  const parent = session.header.parent?.agentId;
+  if (!parent) return undefined;
+  const { rows } = await db.query("select root from agent_children where tenant = $1 and parent = $2 and child = $3 and made order by created_at limit 1", [session.header.tenant, parent, session.header.id]);
+  return { parent, root: (rows[0]?.root as string | undefined) ?? parent };
+}
+
+/** A report_progress call in a run its parent did not start: the parent waits on no task of it. */
+export const NOT_ITS_RUN = 'Your parent did not start this run, so it is not waiting on it for progress: tell it what it needs to know with send_message to "parent"';
+
 /** In a child's run (its chain signed by the runtime): its parent agent and its chain's first, for identity tokens. */
 export function lineage(ctx: DelegationContext, session: Session, run: RequestRecord | undefined) {
   const chain = run ? delegation(ctx, session.header.id, run.id, run.metadata).chain : [];

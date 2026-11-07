@@ -189,3 +189,32 @@ contractTest("delegation", "tests/agent-messaging.test.ts:156", "a child that wa
   assert.match(notices[1].outcome.result.reply, /status="completed"[^>]*>\nregion EU/);
 
 });
+
+contractTest("delegation", "tests/agent-messaging.test.ts:178", "a child prompted directly, not by its parent, still messages its parent; its progress report says the parent is not waiting", async (t, f) => {
+  const r = await useFixture(f, body => {
+    const said = lastUser(body);
+    if (roleText(body).includes("WORKER")) {
+      if (said.includes("first task")) return { role: "assistant", content: "first done" };
+      const results = toolResults(body);
+      if (!results.length) return toolCall("send_message", { to: "parent", text: "a reviewer asked me directly" }, "call_tell");
+      if (results.length === 1) return toolCall("report_progress", { text: "reviewing" }, "call_report");
+      return { role: "assistant", content: `results: ${results.join(" | ")}` };
+    }
+    if (last(body).role === "tool") return { role: "assistant", content: "ok" };
+    if (said.startsWith("<agent_message")) return { role: "assistant", content: `heard: ${said}` };
+    if (said.includes("start")) return toolCall("spawn_agent", { instructions: "You are a WORKER.", task: "first task", name: "w" }, "call_spawn");
+    return { role: "assistant", content: "ok" };
+  });
+  const parent = await lead(r);
+  const nested = await watchEvents(t, `${r.base}/v1/agents/${parent}/events`, { Authorization: `Bearer ${OPERATOR}` }, { query: "watch=1&subagents=1" });
+  await r.prompt(parent, "start");
+  const child = (await until(() => nested.frames.find(frame => frame.data.event?.type === "subagent_start"), "subagent_start")).data.event.agentId;
+  await ended(r, parent, "child_");
+
+  // The API prompts the child: its run carries no lineage, and the parent that made it is still its parent.
+  const direct = await r.prompt(child, "please review the change");
+  assert.match(direct.outcome.result.reply, /^results: \{"sent":true,"to":"parent"/);
+  assert.match(direct.outcome.result.reply, /Your parent did not start this run, so it is not waiting on it for progress/);
+  const [message] = await ended(r, parent, "msg_");
+  assert.match(message.outcome.result.reply, /^heard: <agent_message name="w">\na reviewer asked me directly\n<\/agent_message>$/);
+});

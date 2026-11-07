@@ -6520,6 +6520,9 @@ starts a turn or counts against the wake cap:
   shown no more: its notification (or `wait_agent`) carries its answer.
 - **Watchers see it at once**, as `subagent_progress` (see [Events](https://run.camelai.com/docs/guides/multi-agent.md#events)),
   while the parent runs on the sub-agent's node.
+- **Only in a run its parent started.** A sub-agent prompted through the API
+  has no task its parent waits on: `report_progress` fails saying so, and
+  `send_message` to `"parent"` reaches the parent.
 
 Use `send_message` to `"parent"` instead for something the parent must act on:
 that interrupts it (see [Messages](https://run.camelai.com/docs/guides/multi-agent.md#messages)).
@@ -6534,7 +6537,9 @@ else:
   again, and its answer comes back as a new notification. The sub-agent reads
   `<agent_message name="parent">…</agent_message>`.
 - **Sub-agent to parent:** `to: "parent"`, which the runtime resolves through
-  the run's signed chain, without the sub-agent's turn ending. A parent that is
+  the run's signed chain (in a run its parent did not start, one an application
+  prompted through the API, through the parent that made it), without the
+  sub-agent's turn ending. A parent that is
   running takes it into that turn at its next step, after the tool calls it
   is making, as a person's `whileRunning: "steer"` prompt is taken. It starts
   no turn, and its request ends `steeredInto` that turn. A `wait_agent` in
