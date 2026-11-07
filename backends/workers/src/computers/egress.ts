@@ -1,8 +1,8 @@
-// A native computer starts with enableInternet: false. Its definition may grant
-// HTTPS egress to named hosts: the Container's traffic to each host is
-// intercepted (Container.interceptOutboundHttps) and handed to ComputerEgress,
-// which makes the request itself. Every other host stays unreachable, so the
-// grants are an allowlist. A grant with `auth` gets its credential from the
+// A native computer starts with enableInternet: true: every host is reachable
+// directly. Its definition may grant HTTPS egress to named hosts: the
+// Container's traffic to each host is intercepted
+// (Container.interceptOutboundHttps) and handed to ComputerEgress, which makes
+// the request itself. A grant with `auth` gets its credential from the
 // definition's exchange endpoint, as an MCP server's does, or (`github-app`) an
 // installation token the runtime mints from one of the tenant's GitHub Apps, and
 // the gateway adds it outside the Container: the machine and the model never see it.
@@ -52,14 +52,6 @@ export const EGRESS_ENV: Record<string, string> = {
   REQUESTS_CA_BUNDLE: SYSTEM_BUNDLE,
   PIP_CERT: SYSTEM_BUNDLE,
 };
-/**
- * Offline, a lookup of a name nothing answers (any host that is not granted) waits out the resolver's defaults: 28 s
- * on Cloudflare, per lookup. Granted hosts are answered locally at once, so one 1 s try per nameserver loses nothing.
- * Best effort: a read-only resolv.conf keeps the defaults. (The machine's own hostname, which git resolves for every
- * reflog it writes, is answered by nss-myhostname in the image: Cloudflare's /etc/hosts is read-only and lacks it.)
- */
-export const RESOLVER_COMMAND = `{ grep -q '^options .*timeout:' /etc/resolv.conf || echo 'options timeout:1 attempts:1' >> /etc/resolv.conf; } 2>/dev/null || true`;
-
 const HOST = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$/;
 const RESERVED = /(^|\.)(localhost|local|internal|localdomain|home|lan|test|invalid|example)$/;
 const bad = (message: string) => new HttpError(400, message);
@@ -143,10 +135,8 @@ export function authorization(grant: EgressGrant, token: string) {
 
 /** The computer's description of its network, for the tool the model reads. */
 export function egressDescription(settings?: ComputerSettings) {
-  const hosts = settings?.egress?.map(grant => grant.host) ?? [];
-  if (!hosts.length) return "No Internet access.";
-  const authed = settings!.egress!.filter(grant => grant.auth).map(grant => grant.host);
-  return `HTTPS access only to ${hosts.join(", ")}; every other host is unreachable.` +
+  const authed = settings?.egress?.filter(grant => grant.auth).map(grant => grant.host) ?? [];
+  return "Internet access." +
     (authed.length ? ` Requests to ${authed.join(", ")} are authenticated by the runtime: use plain https:// URLs and never put credentials in commands, files or remotes.` : "");
 }
 
