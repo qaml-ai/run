@@ -15,6 +15,9 @@ import type { McpResult } from './attached-tools.ts';
 import { waitsForProgress } from './delegation-progress.ts';
 import { followEvents } from './event-follow.ts';
 import { scriptOf } from './codemode-run.ts';
+import { computerChoice, forkBatch } from '../../../src/core/computer-fork.ts';
+import type { ComputerSnapshot } from './computers/provider.ts';
+import type { NativeForkOrigin } from './computers/native-fork.ts';
 
 type Configuration = { model?: string | object; systemPrompt?: string; delegate?: DelegateSettings; builtins?: string[]; spendLimit?: { usd: number }; [key: string]: unknown };
 export type ParentRun = { id: string; piId?: string; startedAt?: number; params?: { spendLimit?: { usd: number }; bucket?: string; actor?: string }; metadata?: unknown };
@@ -32,8 +35,15 @@ export interface DelegationHost {
   /** Authoritative remaining spend after completed work, before active child shares. */
   remainingBudget?(background: boolean, api?: ToolExecutionApi): Promise<number | undefined>;
   create(config: Configuration, key: string, parent?: { agent: string; run: string }): Promise<{ id: string }>;
-  /** Copy an eligible parent connection before a newly created child starts. */
-  inheritComputer?(parent: string, child: string): Promise<void>;
+  /**
+   * Copy an eligible parent connection before a newly created child starts. `computer` is the call's choice: "none"
+   * attaches nothing, a fork (forkComputer's) starts the child's computers from the parent's snapshots.
+   */
+  inheritComputer?(parent: string, child: string, computer?: 'none' | ChildComputerFork): Promise<void>;
+  /** Snapshot the parent's computers for a fork: once per batch (one call's children share it). Throws FORK_UNSUPPORTED or NO_SESSION. */
+  forkComputer?(batch: string): Promise<ChildComputerFork>;
+  /** A made child's work ended (its delegate call answered): its computers stop billing. */
+  releaseComputer?(child: string): Promise<void>;
   target(ref: { agent?: string; definition?: string }): Promise<{ id?: string; config: Configuration; description?: string }>;
   fetch(id: string, request: Request): Promise<Response>;
   /** Cancel exactly this child request, including a queued request of an existing agent. */
@@ -48,6 +58,8 @@ export interface DelegationHost {
   sendMessage?(targetId: string, request: NoticeRequest, notice: RuntimeNotice): Promise<unknown>;
   reportProgress?(parentId: string, report: ChildProgressReport): Promise<unknown>;
 }
+/** What a fork gives a child: a seed for its computer connection, and the native computer's snapshot. */
+export type ChildComputerFork = { connection?: { seed: string; connection?: string; provider?: string; at?: number }; native?: { snapshot: ComputerSnapshot; origin: NativeForkOrigin } };
 type ChildRelay = { abort(): void; drained: Promise<void> };
 const prefix = 'delegation:';
 type ChildCharge = { requestId: string; usd: number; at: number };
@@ -153,6 +165,12 @@ export class Delegation {
     // so the replay sends what the first try may have sent already, its spend limit included, never a recomputed one.
     const resumed = stored;
     const place = await this.place(id, run, settings);
+    // The child's computer: a fork's snapshot is taken now (once per call: its siblings share it), before anything is
+    // admitted, so a fork that cannot be taken fails the call with nothing made.
+    const choice = computerChoice(args.computer);
+    if (choice === 'fork' && target?.agent !== undefined) throw new HttpError(400, 'computer: "fork" makes a new sub-agent with a copy of your computer: give instructions or a definition target, not an existing agent');
+    if (choice === 'fork' && !this.host.forkComputer) throw new HttpError(409, 'Computers cannot be forked on this runtime. Use computer: "fresh" or "none".', 'FORK_UNSUPPORTED');
+    const fork = choice === 'fork' ? await this.host.forkComputer!(forkBatch(run.id, site?.assistant, toolCallId)) : undefined;
     const maxParallel = settings.maxParallel ?? MULTI_AGENT_LIMITS.maxParallel;
     let group: { messageIndex: number; delegates: number } | undefined;
     if (!resumed && !background && !override && site && !site.innerCallId && api?.commit) {
@@ -208,9 +226,12 @@ export class Delegation {
           await this.checkCancellation(admitted, signal);
           const resolved = target ? await this.host.target(target) : undefined;
           if (resolved?.id && place.chain.includes(resolved.id)) throw new HttpError(400, 'This agent is already working on the delegation chain');
-          const made = resolved?.id ? resolved : await this.host.create({ ...childConfig(config, resolved?.config, run.params), name: admitted.name, type: 'subagent', ttlSeconds: MULTI_AGENT_LIMITS.childTtlSeconds }, key, { agent: id, run: run.id });
+          const childConf: Configuration = childConfig(config, resolved?.config, run.params);
+          // No computer: no native computer settings either (egress grants and their credentials stay the parent's).
+          if (choice === 'none') delete childConf.computer;
+          const made = resolved?.id ? resolved : await this.host.create({ ...childConf, name: admitted.name, type: 'subagent', ttlSeconds: MULTI_AGENT_LIMITS.childTtlSeconds }, key, { agent: id, run: run.id });
           Object.assign(admitted, await this.update(admitted, { id: made.id! }));
-          if (!resolved?.id) await this.host.inheritComputer?.(id, admitted.id);
+          if (!resolved?.id) await this.host.inheritComputer?.(id, admitted.id, choice === 'none' ? 'none' : fork);
           await this.checkCancellation(admitted, signal);
           const metadata = { [PARENT_KEYS.agent]: id, [PARENT_KEYS.run]: run.id, [PARENT_KEYS.toolCall]: toolCallId, [PARENT_KEYS.depth]: String(place.depth), [PARENT_KEYS.maxDepth]: String(place.maxDepth), [PARENT_KEYS.chain]: place.chain.join(',') };
           const signed = { ...metadata, [PARENT_KEYS.signature]: await signature(this.host.secret, admitted.id, admitted.requestId, String(place.depth), String(place.maxDepth), place.chain.join(',')) };
@@ -308,6 +329,8 @@ export class Delegation {
           if (!value.background) value = await this.settleInTransaction(tx, value, value.parentRequestId);
           return { child: value, changed: !folded };
         });
+        // A delegate child answered: its computers (keyed by the child) stop, so they bill nothing more.
+        if (finished.changed && !child.background && child.made && child.id) this.host.waitUntil(this.host.releaseComputer?.(child.id).catch(() => {}) ?? Promise.resolve());
         if (finished.changed) await this.host.emit({ type: 'event', requestId: child.parentRequestId, event: { type: 'subagent_end', toolCallId: child.toolCallId, agentId: child.id, requestId: child.requestId, name: child.name, status: finished.child.status, ...(child.background ? { background: true } : {}), ...(finished.child.error ? { error: finished.child.error } : {}) } });
         return finished.child;
       }

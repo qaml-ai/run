@@ -24,22 +24,40 @@ export const HOUR = 3_600_000;
 /** What Boat bills a small machine: a billable second every two seconds, at 1e-5 dollars each. */
 export const cost = (ms: number) => Math.floor(ms / 2000) * 10;
 
-/** Boat as these tests need it: a machine per key, what it has cost by the clock, and refusals when told to refuse. */
+/**
+ * Boat as these tests need it: a machine per key, what it has cost by the clock, and refusals when told to refuse. Each
+ * machine has files (`put <path> <text>` writes one, `get <path>` reads it) that saved snapshots copy, for forks.
+ */
 export function fakeBoat(clock: () => number) {
-  const machines = new Map<string, { id: string; tenant: string; createdAt: number; since: string; ttlUntil: number }>();
-  const state = { refusals: [] as { code: string; retryAfterMs?: number }[], loseAnswer: false, creates: 0, removed: [] as string[], extended: [] as number[], runs: [] as { command: string; timeoutSeconds: number }[], listFails: false, removeFails: false, stderr: "", hidden: new Set<string>(), dollars: undefined as number | undefined };
+  const machines = new Map<string, { id: string; tenant: string; createdAt: number; since: string; ttlUntil: number; files: Map<string, string>; from?: string }>();
+  const state = { refusals: [] as { code: string; retryAfterMs?: number }[], loseAnswer: false, creates: 0, removed: [] as string[], extended: [] as number[], runs: [] as { command: string; timeoutSeconds: number }[], listFails: false, removeFails: false, stderr: "", hidden: new Set<string>(), dollars: undefined as number | undefined,
+    snapshots: new Map<string, Map<string, string>>(), taken: [] as string[], dropped: [] as string[], snapshotFails: false };
   let since = "2026-10-01T00:00:00.000Z";
   const expire = () => { for (const [key, machine] of machines) if (machine.ttlUntil <= clock()) machines.delete(key); };
+  const byId = (id: string) => [...machines.values()].find(machine => machine.id === id);
   const boat: ManagedMachines = {
-    async create(computer, tenant, ttlSeconds) {
+    async create(computer, tenant, ttlSeconds, options) {
       const refusal = state.refusals.shift();
       if (refusal) throw new BoatRefused(refusal);
       state.creates++;
       let machine = machines.get(computer);
-      if (!machine) machines.set(computer, machine = { id: `bx_${machines.size + state.creates}`, tenant, createdAt: clock(), since, ttlUntil: clock() + ttlSeconds * 1000 });
+      if (!machine) {
+        const seed = options?.from ? state.snapshots.get(options.from.id) : undefined;
+        if (options?.from && !seed) throw new Error("no such snapshot");
+        machines.set(computer, machine = { id: `bx_${machines.size + state.creates}`, tenant, createdAt: clock(), since, ttlUntil: clock() + ttlSeconds * 1000, files: new Map(seed), ...options?.from ? { from: options.from.id } : {} });
+      }
       if (state.loseAnswer) { state.loseAnswer = false; throw new Error("the answer was lost"); }
       return { id: machine.id };
     },
+    async snapshot(id, name) {
+      if (state.snapshotFails) throw new Error("provider down");
+      const machine = byId(id);
+      if (!machine) throw new Error("no such machine");
+      state.snapshots.set(name, new Map(machine.files));
+      state.taken.push(name);
+      return { provider: "boat", id: name, createdAt: clock() };
+    },
+    async dropSnapshot(snapshot) { state.dropped.push(snapshot.id); state.snapshots.delete(snapshot.id); },
     async extend(id, ttlSeconds) { state.extended.push(ttlSeconds); for (const machine of machines.values()) if (machine.id === id) machine.ttlUntil = clock() + ttlSeconds * 1000; },
     async remove(id) { if (state.removeFails) throw new Error("provider down"); state.removed.push(id); for (const [key, machine] of machines) if (machine.id === id) machines.delete(key); },
     async list(computer) {
@@ -51,7 +69,13 @@ export function fakeBoat(clock: () => number) {
         return { id: machine.id, computer: key, tenant: machine.tenant, createdAt: machine.createdAt, since, seconds: micro / 10, dollars: state.dollars ?? micro / 1e6 };
       });
     },
-    async run(_id, command, timeoutSeconds) { state.runs.push({ command, timeoutSeconds }); return { exitCode: 0, stdout: "done", stderr: state.stderr, truncated: false }; },
+    async run(id, command, timeoutSeconds) {
+      state.runs.push({ command, timeoutSeconds });
+      const files = byId(id)?.files, put = /^put (\S+) (.*)$/.exec(command), get = /^get (\S+)$/.exec(command);
+      if (files && put) { files.set(put[1], put[2]); return { exitCode: 0, stdout: "written", stderr: "", truncated: false }; }
+      if (files && get) return files.has(get[1]) ? { exitCode: 0, stdout: files.get(get[1])!, stderr: "", truncated: false } : { exitCode: 1, stdout: "", stderr: "missing", truncated: false };
+      return { exitCode: 0, stdout: "done", stderr: state.stderr, truncated: false };
+    },
   };
   return { boat, state, machines, rollover: (at: string) => { since = at; } };
 }

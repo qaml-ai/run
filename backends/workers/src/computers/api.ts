@@ -2,6 +2,7 @@ import { body } from '../validation.ts';
 import { HttpError } from '../errors.ts';
 import type { AuthContext } from '../control.ts';
 import { ComputerService, type ComputerEnv } from './service.ts';
+import { forkTargets } from '../../../../src/core/computer-fork.ts';
 const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { 'cache-control': 'no-store' } });
 async function agentCall(env: ComputerEnv, tenant: string, agent: string, operation: string, args: Record<string, unknown> = {}, key: string = crypto.randomUUID()) {
   return env.AGENTS.getByName(agent).fetch(new Request('https://computer.internal/__computer', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ tenant, operation, args, key }) }));
@@ -24,6 +25,16 @@ export async function handleComputerRequest(request: Request, env: ComputerEnv, 
     const c = (await service.list()).find(c => c.id === decodeURIComponent(remove[1]));
     if (!c) throw new HttpError(404, 'Unknown computer connection');
     return agentCall(env, auth.tenantId, c.agent, 'remove');
+  }
+  // Fork a computer into other agents: by its connection (that connection only), or by its agent (every computer it has).
+  const fork = /^\/v1\/computers\/([^/]+)\/fork$/.exec(path) ?? /^\/v1\/agents\/([^/]+)\/computer\/fork$/.exec(path);
+  if (fork && request.method === 'POST') {
+    const byConnection = path.startsWith('/v1/computers/'), id = decodeURIComponent(fork[1]);
+    const source = byConnection ? (await service.list()).find(c => c.id === id)?.agent : id;
+    if (!source) throw new HttpError(404, 'Unknown computer connection');
+    const agents = forkTargets(await body(request), source);
+    await service.forkTargets(source, agents);
+    return agentCall(env, auth.tenantId, source, 'fork', { agents, connectionOnly: byConnection });
   }
   const agent = /^\/v1\/agents\/([^/]+)\/computer(?:\/(stop|confirm-cleanup))?$/.exec(path);
   if (agent) {

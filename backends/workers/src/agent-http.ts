@@ -1,4 +1,5 @@
 import { computerSetup } from "./computers/agent-setup.ts";
+import { forkComputerInto } from "./computers/child-fork.ts";
 import { modelCompactionSettings } from "./model-context.ts";
 import { forkSnapshot } from "./fork-snapshot.ts";
 import { seedHistory, writeModelContext } from "./history-seed.ts";
@@ -295,6 +296,11 @@ export async function fetchRequestImpl(this: AgentRuntime,
         if (!conf) return json({ error: "Agent not found" }, 404);
         if (input.tenant !== conf.tenantId)
           return json({ error: "Forbidden" }, 403);
+        // The fork route: its snapshot takes the serial queue itself (forkChildComputers), so it runs outside it.
+        if (input.operation === "fork")
+          return json(await forkComputerInto(this.env, conf.tenantId, conf.id, input.args.agents, {
+            connectionOnly: !!input.args.connectionOnly, setup: async () => computerSetup(this.env, conf),
+            serialize: run => this.serializeComputer(run) }), 201);
         return await this.serializeComputer(async () => {
           const service = new ComputerService(this.env, conf.tenantId);
           if (input.operation === "sweep") {
@@ -313,6 +319,11 @@ export async function fetchRequestImpl(this: AgentRuntime,
           }
           if (input.operation === "confirm-cleanup")
             return json(await service.confirmCleanup(conf.id));
+          if (input.operation === "release") {
+            await service.release(conf.id);
+            await this.arm();
+            return json({ released: true });
+          }
           try {
             return json(
               await service.call(
