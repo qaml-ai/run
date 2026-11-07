@@ -73,15 +73,44 @@ the filesystem came from and `expiresAt` is 30 days after creation or the latest
 restore made here. Restoring a handle from another image digest, or past
 `expiresAt`, is refused before anything starts. The handle is plain data, so any
 computer DO can start from another's (`takeSnapshot`, `snapshotHandle`,
-`startFromSnapshot` RPCs): the base of forking a computer. A restore runs a
-command before it reports success, so one that does not come up throws. A
-restored filesystem lasts while that container runs: after `sleep` or the idle
-stop, the next operation starts from the base image again. Deleting an agent
-calls `purge()` (after its session is aborted), which stops its container,
-charges its time and drops its handles. The snapshots themselves stay on
-Cloudflare until their 30-day expiry: the API cannot delete one, so a deleted
-agent's computer files can outlive it by up to 30 days. Snapshots are tags in
-the application's image repository; deleting that repository deletes them.
+`startFromSnapshot` RPCs).
+
+A container's disk lasts only while it runs, so a computer keeps a **base**: the
+snapshot its next start restores instead of the image. `sleep` snapshots the
+disk as the base before it stops the container; a restore makes the restored
+snapshot the base; a fork's child gets the parent's snapshot as its base. An
+idle stop loses what changed since the base, and the operation that starts the
+container again says what it restored (`computer: { restoredFrom, note }`), or
+that a base it could not use (expired, or from an older image) was dropped
+(`resumed: false`). Booting from the base also keeps snapshots small:
+Cloudflare stores only what changed since the snapshot a container was
+restored from.
+
+**Fork** (`src/computers/native-fork.ts`): the parent's computer answers
+`forkSnapshot(batch)` with one snapshot per batch (one delegate or spawn_agent
+call's children share it), of its running container or else its base;
+`seed(snapshot, origin)` makes it a child's base, and the child `adopt`s it at
+the parent. A child's `release("purge")` (its work done) or deletion `unref`s
+it; the last child takes the batch's entry with it, and one no child adopted is
+dropped after ten minutes. `release("sleep")` saves a child's disk and stops it.
+
+Every start is bounded: a start or restore that does not run its first command
+in 12 s is destroyed and tried once more (3 of about 60 restores in the
+benchmark took 22–63 s; a new placement usually comes up at once), then the
+operation answers `COMPUTER_STARTING` ("still starting, call again") and the
+next call waits for that container instead of booting another. A start the
+account's limits refuse fails at once with `monitor()`'s reason.
+
+Deleting an agent calls `purge()` (after its session is aborted), which stops
+its container, charges its time and drops its handles. The snapshots
+themselves stay on Cloudflare until their 30-day expiry: **there is no Worker
+API to list or delete a snapshot**, so a deleted agent's computer files can
+outlive it by up to 30 days. A snapshot this runtime no longer uses is logged as
+`computer_snapshot_unused` (with its id) and recorded under `dropped:<id>` in
+its computer's storage; its `rootfs-snapshot-*` registry tag can be deleted by
+hand. A snapshot restored from another (a child's own sleep) may depend on it,
+so delete tags of whole fork trees. Snapshots are tags in the application's
+image repository; deleting that repository deletes them.
 
 `wrangler.computers.test.jsonc` binds the computer for
 `test/computers.integration.ts` (Docker required) and the pilot binds it too

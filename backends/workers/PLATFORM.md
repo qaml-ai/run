@@ -104,13 +104,15 @@ A definition's `computer` configures its agents' native `container` computer:
   `PATCH …/configuration` refuse it. Inline sub-agents inherit their parent's;
   a definition's sub-agent has its definition's. Changed grants replace a
   running machine on its next operation.
-- **Fork stand-in.** A sub-agent the runtime made can start its container as a
-  copy of its parent's: `{"op": "restore", "name": "base", "from": "parent"}`.
-  The runtime finds the parent from the signed parent link, never from model
-  input. It reads the parent computer's named `snapshotContainer()` handle and
-  starts this agent's own machine from it (`start({containerSnapshot})`) with
-  this agent's grants. The parent's machine is unchanged. This stands in for a
-  `fork` computer API.
+- **Fork.** A sub-agent made with `computer: "fork"` (delegate, spawn_agent)
+  starts its container as a copy of its parent's disk: one `snapshotContainer()`
+  of the parent per call, shared by that call's children, each child's own
+  machine started from it (`start({containerSnapshot})`) with the child's own
+  grants. The parent's machine is unchanged. The RPCs are in
+  `src/computers/native-fork.ts`; #701's `restore {from: "parent"}` stand-in is
+  gone. Cloudflare has no Worker API to delete a snapshot: snapshots the runtime
+  stops using are logged (`computer_snapshot_unused`) for their registry tags to
+  be deleted, and otherwise expire 30 days after their last restore.
 
 `test/computers.integration.ts` (its second test) covers clone and push through a local
 `git http-backend` (`TEST_EGRESS_UPSTREAM` maps every granted host to a loopback
