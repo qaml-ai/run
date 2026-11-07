@@ -36,6 +36,22 @@ export const COMPUTER_LIMITS = {
 export const CONTAINER_CA = "/etc/cloudflare/certs/cloudflare-containers-ca.crt";
 /** Trusts that CA for every TLS client in the image: OpenSSL (git, curl, python) through the system bundle, Node through NODE_EXTRA_CA_CERTS. */
 export const TRUST_COMMAND = `cp ${CONTAINER_CA} /usr/local/share/ca-certificates/cloudflare-containers-ca.crt && update-ca-certificates >/dev/null`;
+/** The system bundle, which holds the interception CA once TRUST_COMMAND ran. */
+const SYSTEM_BUNDLE = "/etc/ssl/certs/ca-certificates.crt";
+/**
+ * The environment of every process on a machine with grants. Clients with their own CA store need to be pointed at
+ * the interception CA: Node (npm, fetch) through NODE_EXTRA_CA_CERTS, and Python's requests and pip, which bundle
+ * certifi, through REQUESTS_CA_BUNDLE and PIP_CERT. Without these, `npm install` behind the gateway failed with
+ * SELF_SIGNED_CERT_IN_CHAIN. git never prompts for a credential the gateway supplies. Set both at start() and on each
+ * exec: exec does not inherit start()'s env.
+ */
+export const EGRESS_ENV: Record<string, string> = {
+  NODE_EXTRA_CA_CERTS: CONTAINER_CA,
+  GIT_TERMINAL_PROMPT: "0",
+  SSL_CERT_FILE: SYSTEM_BUNDLE,
+  REQUESTS_CA_BUNDLE: SYSTEM_BUNDLE,
+  PIP_CERT: SYSTEM_BUNDLE,
+};
 /**
  * Offline, a lookup of a name nothing answers (any host that is not granted) waits out the resolver's defaults: 28 s
  * on Cloudflare, per lookup. Granted hosts are answered locally at once, so one 1 s try per nameserver loses nothing.

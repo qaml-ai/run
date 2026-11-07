@@ -172,8 +172,8 @@ function container() {
     async setInactivityTimeout(ms: number) { calls.push(["idle", ms]); },
     async interceptOutboundHttps(host: string) { calls.push(["intercept", host]); },
     async snapshotContainer() { return { id: "snap" }; },
-    async exec(argv: string[]) {
-      calls.push(["exec", argv]);
+    async exec(argv: string[], options?: { env?: Record<string, string> }) {
+      calls.push(["exec", argv, options?.env]);
       const empty = () => new ReadableStream<Uint8Array>({ start(c) { c.close(); } });
       return { stdout: empty(), stderr: empty(), exitCode: Promise.resolve(0), kill() {} };
     },
@@ -198,6 +198,11 @@ test("a computer with grants starts offline, intercepts each granted host and tr
   // Names nothing answers fail in seconds, not the resolver's default 28 s.
   assert.ok(calls.some(call => call[0] === "exec" && (call[1] as string[]).join(" ").includes(RESOLVER_COMMAND)));
   assert.deepEqual(calls.find(call => call[0] === "idle"), ["idle", 900_000]);
+  // exec does not inherit start()'s env: the model's command gets the CA trust (npm failed SELF_SIGNED_CERT_IN_CHAIN).
+  const command = calls.filter(call => call[0] === "exec").at(-1)!;
+  assert.deepEqual(command[1], ["true"]);
+  assert.equal((command[2] as Record<string, string>).NODE_EXTRA_CA_CERTS, CONTAINER_CA);
+  assert.equal((command[2] as Record<string, string>).PIP_CERT, "/etc/ssl/certs/ca-certificates.crt");
 
   // The same grants reuse the running machine; changed grants replace it.
   calls.length = 0;
@@ -216,6 +221,7 @@ test("a computer without grants keeps the original offline start", async () => {
   // Without grants every lookup is unanswered: it fails fast, and no CA is trusted.
   assert.deepEqual(calls.filter(call => call[0] === "exec")[1][1], ["sh", "-c", RESOLVER_COMMAND]);
   assert.deepEqual(calls.find(call => call[0] === "idle"), ["idle", 60_000]);
+  assert.equal(calls.filter(call => call[0] === "exec").at(-1)![2], undefined, "no grants, no CA environment");
 });
 
 test("a forked child boots from the parent's snapshot (its seed), with this computer's grants", async () => {
