@@ -71,23 +71,36 @@ export function inputRequests(result: { inputRequests?: unknown }): { key: strin
   });
 }
 
-/** ask_user's questions: 1–4, each with a header (a label of at most 12 characters; a longer one is clipped) and 2–4 options. */
+/**
+ * ask_user's questions: 1–4, each with a header (a label of at most 12 characters; a longer one is clipped, a missing one
+ * is the question's first words) and 2–4 options, or none: a question without options is answered in the person's
+ * own words (allowOther). Models often write either shape; repaired rather than refused.
+ */
 export function questionsInput(value: unknown) {
   if (!Array.isArray(value) || value.length < 1 || value.length > 4) throw new Error("Ask 1 to 4 questions");
   return value.map((entry: any) => {
     if (!entry || typeof entry.question !== "string" || !entry.question.trim()) throw new Error("Each question needs its text");
     // The header is only a label: models often write a longer one, which is clipped rather than refusing the question.
-    if (typeof entry.header !== "string" || !entry.header.trim()) throw new Error("Each question needs a header, a label of at most 12 characters");
-    if (!Array.isArray(entry.options) || entry.options.length < 2 || entry.options.length > 4 || entry.options.some((option: any) => typeof option?.label !== "string" || !option.label.trim())) throw new Error("Each question needs 2 to 4 options, each with a label");
-    const labels = entry.options.map((option: any) => option.label);
+    if (entry.header !== undefined && typeof entry.header !== "string") throw new Error("A question's header is a label of at most 12 characters");
+    const header = typeof entry.header === "string" && entry.header.trim() ? entry.header.trim() : firstWords(entry.question, 12);
+    const open = entry.options === undefined || (Array.isArray(entry.options) && entry.options.length === 0);
+    if (!open && (!Array.isArray(entry.options) || entry.options.length < 2 || entry.options.length > 4 || entry.options.some((option: any) => typeof option?.label !== "string" || !option.label.trim()))) throw new Error("Each question needs 2 to 4 options, each with a label, or none (answered in the person's own words)");
+    const options: any[] = open ? [] : entry.options;
+    const labels = options.map((option: any) => option.label);
     if (new Set(labels).size !== labels.length) throw new Error("A question's option labels must differ");
     if (value.filter((other: any) => other?.question === entry.question).length > 1) throw new Error("Each question must be different");
     return {
-      question: clip(entry.question, 1000), header: clip(entry.header.trim(), 12).trimEnd(),
-      options: entry.options.map((option: any) => ({ label: clip(option.label, 200), ...(typeof option.description === "string" ? { description: clip(option.description, 1000) } : {}) })),
-      multiSelect: entry.multiSelect === true, allowOther: entry.allowOther === true,
+      question: clip(entry.question, 1000), header: clip(header, 12).trimEnd(),
+      options: options.map((option: any) => ({ label: clip(option.label, 200), ...(typeof option.description === "string" ? { description: clip(option.description, 1000) } : {}) })),
+      multiSelect: !open && entry.multiSelect === true, allowOther: open || entry.allowOther === true,
     };
   });
+}
+/** A header made from a question's first words, within `max` characters (at least its first word, clipped). */
+function firstWords(text: string, max: number) {
+  let header = "";
+  for (const word of text.trim().split(/\s+/)) { const next = header ? `${header} ${word}` : word; if (next.length > max) break; header = next; }
+  return header || text.trim().slice(0, max);
 }
 const questionMessage = (questions: unknown) => Array.isArray(questions) && questions.length === 1 ? clip((questions[0] as any)?.question, 1000) : `${Array.isArray(questions) ? questions.length : 0} questions`;
 
@@ -113,7 +126,7 @@ export function answerInput(input: Pick<Input, "kind" | "detail">, body: any): {
     const labels = question.options.map(option => option.label);
     const fits = (value: unknown) => typeof value === "string" && value.trim().length > 0 && value.length <= 2000 && (labels.includes(value) || question.allowOther);
     if (question.multiSelect ? !Array.isArray(given) || !given.length || !given.every(fits) : !fits(given)) {
-      throw new HttpError(400, `Answer "${question.question}" with ${question.multiSelect ? "a list of" : "one of"} ${labels.map(label => JSON.stringify(label)).join(", ")}${question.allowOther ? ", or your own words" : ""}`);
+      throw new HttpError(400, `Answer "${question.question}" with ${labels.length ? `${question.multiSelect ? "a list of" : "one of"} ${labels.map(label => JSON.stringify(label)).join(", ")}${question.allowOther ? ", or your own words" : ""}` : "your own words"}`);
     }
     checked[question.question] = given;
   }

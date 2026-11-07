@@ -9,7 +9,7 @@ import { type McpResult } from "../mcp-results.ts";
 import { jsonResult, type ToolCall } from "../tool-servers.ts";
 import { safeError } from "../metrics.ts";
 import type { Mount } from "../volumes.ts";
-import { definitionId, MULTI_AGENT_LIMITS, PARENT_KEYS, roleAndTask, SUBAGENT_PROMPT, type AgentTarget, type DelegateSettings } from "../multi-agent.ts";
+import { definitionId, MULTI_AGENT_LIMITS, PARENT_KEYS, roleAndTask, SUBAGENT_PROMPT, type AgentTarget, type DelegateSettings, modelOutputSchema } from "../multi-agent.ts";
 import { computerChoice, forkBatch } from "../core/computer-fork.ts";
 import * as events from "./events.ts";
 import * as spend from "./spend.ts";
@@ -183,7 +183,7 @@ export function childTarget(settings: DelegateSettings, args: Record<string, unk
   if ((target === undefined) === (instructions === undefined)) throw new Error(settings.instructions && settings.agents?.length ? `Name an agent to ${verb} (agent), or give instructions of your own (instructions): one of them, not both` : settings.instructions ? "Give instructions too: who the sub-agent is and how it should work, besides its task" : `Name an agent to ${verb} (agent)`);
   if (typeof task !== "string" || !task.trim()) throw new Error("Give the sub-agent its task");
   // The model's own instructions go to the sub-agent with its task, as its first message (SUBAGENT_PROMPT).
-  return { target, task: instructions === undefined ? task : roleAndTask(instructions, task), output: schema === undefined ? undefined : outputInput({ schema }) };
+  return { target, task: instructions === undefined ? task : roleAndTask(instructions, task), output: schema === undefined ? undefined : outputInput({ schema: modelOutputSchema(schema) }) };
 }
 
 /** Where a child of this run goes in its chain: one deeper, within the chain's limit and the settings' (`what` names the refusal). */

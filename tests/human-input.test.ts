@@ -538,5 +538,14 @@ test("humanInput.onExpire is gone: new input with it is refused; a definition st
 test("ask_user: a header longer than its 12 characters is clipped, not a refused question", () => {
   const [question] = questionsInput([{ question: "How should halves round?", header: "Rounding mode", options: [{ label: "Up" }, { label: "Even" }] }]);
   assert.equal(question.header, "Rounding mod");
-  assert.throws(() => questionsInput([{ question: "Q?", header: " ", options: [{ label: "a" }, { label: "b" }] }]), /needs a header/);
+  // A missing or blank header is the question's first words (DeepSeek V4.1 Flash left it out).
+  assert.equal(questionsInput([{ question: "Q?", header: " ", options: [{ label: "a" }, { label: "b" }] }])[0].header, "Q?");
+  assert.equal(questionsInput([{ question: "Should I invent the missing test file?", options: [{ label: "a" }, { label: "b" }] }])[0].header, "Should I");
+});
+
+test("ask_user: a question without options is answered in the person's own words; one option is still refused", () => {
+  const [open] = questionsInput([{ question: "test/parser.test.js does not exist: what did you mean?", header: "Parser test" }]);
+  assert.deepEqual([open.options, open.allowOther, open.multiSelect], [[], true, false]);
+  assert.deepEqual(questionsInput([{ question: "What next?", header: "Next", options: [] }])[0].allowOther, true);
+  assert.throws(() => questionsInput([{ question: "Q?", header: "H", options: [{ label: "only" }] }]), /2 to 4 options, each with a label, or none/);
 });
