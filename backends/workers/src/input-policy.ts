@@ -71,18 +71,19 @@ export function inputRequests(result: { inputRequests?: unknown }): { key: strin
   });
 }
 
-/** ask_user's questions: 1–4, each with a header of at most 12 characters and 2–4 options. */
+/** ask_user's questions: 1–4, each with a header (a label of at most 12 characters; a longer one is clipped) and 2–4 options. */
 export function questionsInput(value: unknown) {
   if (!Array.isArray(value) || value.length < 1 || value.length > 4) throw new Error("Ask 1 to 4 questions");
   return value.map((entry: any) => {
     if (!entry || typeof entry.question !== "string" || !entry.question.trim()) throw new Error("Each question needs its text");
-    if (typeof entry.header !== "string" || !entry.header.trim() || entry.header.length > 12) throw new Error("Each question needs a header of at most 12 characters");
+    // The header is only a label: models often write a longer one, which is clipped rather than refusing the question.
+    if (typeof entry.header !== "string" || !entry.header.trim()) throw new Error("Each question needs a header, a label of at most 12 characters");
     if (!Array.isArray(entry.options) || entry.options.length < 2 || entry.options.length > 4 || entry.options.some((option: any) => typeof option?.label !== "string" || !option.label.trim())) throw new Error("Each question needs 2 to 4 options, each with a label");
     const labels = entry.options.map((option: any) => option.label);
     if (new Set(labels).size !== labels.length) throw new Error("A question's option labels must differ");
     if (value.filter((other: any) => other?.question === entry.question).length > 1) throw new Error("Each question must be different");
     return {
-      question: clip(entry.question, 1000), header: entry.header,
+      question: clip(entry.question, 1000), header: clip(entry.header.trim(), 12).trimEnd(),
       options: entry.options.map((option: any) => ({ label: clip(option.label, 200), ...(typeof option.description === "string" ? { description: clip(option.description, 1000) } : {}) })),
       multiSelect: entry.multiSelect === true, allowOther: entry.allowOther === true,
     };
