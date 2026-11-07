@@ -63,7 +63,7 @@ export const noSession = () =>
   new HttpError(409, 'This agent\'s computer has no running session to fork: start it first (computer_start, or any computer operation), or use computer: "fresh".', "NO_SESSION");
 /** 503: a machine (often a restore whose disk is loading on a new host) did not answer within its bounded wait. */
 export const computerStarting = (seconds: number) =>
-  new HttpError(503, `The computer is still starting (it did not answer within ${seconds} seconds; restores of large disks sometimes take up to a minute). Nothing was lost. Call it again in a few seconds.`, "COMPUTER_STARTING");
+  Object.assign(new HttpError(503, `The computer is still starting (it did not answer within ${seconds} seconds; restores of large disks sometimes take up to a minute). Nothing was lost. Call it again in a few seconds.`, "COMPUTER_STARTING"), { retryAfter: 5 });
 
 /**
  * The key that makes the children of one call share one snapshot: the run, and the model response (its message index)

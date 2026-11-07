@@ -21142,6 +21142,33 @@
                           "expiresAt",
                           "closedAt"
                         ]
+                      },
+                      "forkedFrom": {
+                        "type": "object",
+                        "properties": {
+                          "agent": {
+                            "type": "string"
+                          },
+                          "connection": {
+                            "type": "string"
+                          },
+                          "snapshot": {
+                            "type": "string"
+                          },
+                          "provider": {
+                            "type": "string"
+                          },
+                          "at": {
+                            "type": "number"
+                          }
+                        },
+                        "required": [
+                          "agent",
+                          "snapshot",
+                          "provider",
+                          "at"
+                        ],
+                        "description": "A forked connection: whose computer it copies, and the snapshot its sessions start from"
                       }
                     },
                     "required": [
@@ -21362,6 +21389,33 @@
                         "expiresAt",
                         "closedAt"
                       ]
+                    },
+                    "forkedFrom": {
+                      "type": "object",
+                      "properties": {
+                        "agent": {
+                          "type": "string"
+                        },
+                        "connection": {
+                          "type": "string"
+                        },
+                        "snapshot": {
+                          "type": "string"
+                        },
+                        "provider": {
+                          "type": "string"
+                        },
+                        "at": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "agent",
+                        "snapshot",
+                        "provider",
+                        "at"
+                      ],
+                      "description": "A forked connection: whose computer it copies, and the snapshot its sessions start from"
                     }
                   },
                   "required": [
@@ -21375,6 +21429,516 @@
                     "createdAt",
                     "billing",
                     "session"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/computers/{id}/fork": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "agents": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "maxItems": 16,
+                    "description": "The agents to fork the computer into: each gets a connection whose sessions start from one snapshot of this computer, taken now. Each must have no computer connection yet"
+                  },
+                  "agent": {
+                    "type": "string",
+                    "description": "One agent, instead of agents"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Fork this computer into other agents: one exact snapshot of its running session's disk, taken now, and for each agent a connection whose sessions start from it. Each fork is its own machine, billed as any session; writes never reach the source or each other. 409 FORK_UNSUPPORTED when the provider cannot copy a disk (Lambda, Sprites, E2B, Daytona, Modal, tunnels, browsers; Boat can), 409 NO_SESSION when no session runs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "snapshot": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "provider": {
+                          "type": "string"
+                        },
+                        "createdAt": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "provider",
+                        "createdAt"
+                      ]
+                    },
+                    "forks": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "agent": {
+                            "type": "string"
+                          },
+                          "provider": {
+                            "type": "string",
+                            "enum": [
+                              "lambda",
+                              "modal",
+                              "daytona",
+                              "boat",
+                              "e2b",
+                              "sprites",
+                              "browserbase",
+                              "browser-use",
+                              "tunnel"
+                            ]
+                          },
+                          "managed": {
+                            "type": "boolean"
+                          },
+                          "subagents": {
+                            "type": "boolean"
+                          },
+                          "leaseSeconds": {
+                            "type": "number"
+                          },
+                          "dailySeconds": {
+                            "type": "number"
+                          },
+                          "createdAt": {
+                            "type": "number"
+                          },
+                          "billing": {
+                            "type": "string",
+                            "enum": [
+                              "provider_account",
+                              "credits"
+                            ]
+                          },
+                          "session": {
+                            "type": [
+                              "object",
+                              "null"
+                            ],
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "provider": {
+                                "type": "string",
+                                "enum": [
+                                  "lambda",
+                                  "modal",
+                                  "daytona",
+                                  "boat",
+                                  "e2b",
+                                  "sprites",
+                                  "browserbase",
+                                  "browser-use",
+                                  "tunnel"
+                                ]
+                              },
+                              "workspaceId": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "state": {
+                                "type": "string",
+                                "enum": [
+                                  "starting",
+                                  "active",
+                                  "closing",
+                                  "closed",
+                                  "uncertain"
+                                ]
+                              },
+                              "recoveryRequired": {
+                                "type": "boolean"
+                              },
+                              "createdAt": {
+                                "type": "number"
+                              },
+                              "expiresAt": {
+                                "type": "number"
+                              },
+                              "closedAt": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "error": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "provider",
+                              "workspaceId",
+                              "state",
+                              "recoveryRequired",
+                              "createdAt",
+                              "expiresAt",
+                              "closedAt"
+                            ]
+                          },
+                          "forkedFrom": {
+                            "type": "object",
+                            "properties": {
+                              "agent": {
+                                "type": "string"
+                              },
+                              "connection": {
+                                "type": "string"
+                              },
+                              "snapshot": {
+                                "type": "string"
+                              },
+                              "provider": {
+                                "type": "string"
+                              },
+                              "at": {
+                                "type": "number"
+                              }
+                            },
+                            "required": [
+                              "agent",
+                              "snapshot",
+                              "provider",
+                              "at"
+                            ],
+                            "description": "A forked connection: whose computer it copies, and the snapshot its sessions start from"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "agent",
+                          "provider",
+                          "managed",
+                          "subagents",
+                          "leaseSeconds",
+                          "dailySeconds",
+                          "createdAt",
+                          "billing",
+                          "session"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "snapshot",
+                    "forks"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/computer/fork": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "agents": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "maxItems": 16,
+                    "description": "The agents to fork the computer into: each gets a connection whose sessions start from one snapshot of this computer, taken now. Each must have no computer connection yet"
+                  },
+                  "agent": {
+                    "type": "string",
+                    "description": "One agent, instead of agents"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Fork this computer into other agents: one exact snapshot of its running session's disk, taken now, and for each agent a connection whose sessions start from it. Each fork is its own machine, billed as any session; writes never reach the source or each other. 409 FORK_UNSUPPORTED when the provider cannot copy a disk (Lambda, Sprites, E2B, Daytona, Modal, tunnels, browsers; Boat can), 409 NO_SESSION when no session runs. The same as POST /v1/computers/{id}/fork, by the agent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "snapshot": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "provider": {
+                          "type": "string"
+                        },
+                        "createdAt": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "provider",
+                        "createdAt"
+                      ]
+                    },
+                    "forks": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "agent": {
+                            "type": "string"
+                          },
+                          "provider": {
+                            "type": "string",
+                            "enum": [
+                              "lambda",
+                              "modal",
+                              "daytona",
+                              "boat",
+                              "e2b",
+                              "sprites",
+                              "browserbase",
+                              "browser-use",
+                              "tunnel"
+                            ]
+                          },
+                          "managed": {
+                            "type": "boolean"
+                          },
+                          "subagents": {
+                            "type": "boolean"
+                          },
+                          "leaseSeconds": {
+                            "type": "number"
+                          },
+                          "dailySeconds": {
+                            "type": "number"
+                          },
+                          "createdAt": {
+                            "type": "number"
+                          },
+                          "billing": {
+                            "type": "string",
+                            "enum": [
+                              "provider_account",
+                              "credits"
+                            ]
+                          },
+                          "session": {
+                            "type": [
+                              "object",
+                              "null"
+                            ],
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "provider": {
+                                "type": "string",
+                                "enum": [
+                                  "lambda",
+                                  "modal",
+                                  "daytona",
+                                  "boat",
+                                  "e2b",
+                                  "sprites",
+                                  "browserbase",
+                                  "browser-use",
+                                  "tunnel"
+                                ]
+                              },
+                              "workspaceId": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "state": {
+                                "type": "string",
+                                "enum": [
+                                  "starting",
+                                  "active",
+                                  "closing",
+                                  "closed",
+                                  "uncertain"
+                                ]
+                              },
+                              "recoveryRequired": {
+                                "type": "boolean"
+                              },
+                              "createdAt": {
+                                "type": "number"
+                              },
+                              "expiresAt": {
+                                "type": "number"
+                              },
+                              "closedAt": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "error": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "provider",
+                              "workspaceId",
+                              "state",
+                              "recoveryRequired",
+                              "createdAt",
+                              "expiresAt",
+                              "closedAt"
+                            ]
+                          },
+                          "forkedFrom": {
+                            "type": "object",
+                            "properties": {
+                              "agent": {
+                                "type": "string"
+                              },
+                              "connection": {
+                                "type": "string"
+                              },
+                              "snapshot": {
+                                "type": "string"
+                              },
+                              "provider": {
+                                "type": "string"
+                              },
+                              "at": {
+                                "type": "number"
+                              }
+                            },
+                            "required": [
+                              "agent",
+                              "snapshot",
+                              "provider",
+                              "at"
+                            ],
+                            "description": "A forked connection: whose computer it copies, and the snapshot its sessions start from"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "agent",
+                          "provider",
+                          "managed",
+                          "subagents",
+                          "leaseSeconds",
+                          "dailySeconds",
+                          "createdAt",
+                          "billing",
+                          "session"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "snapshot",
+                    "forks"
                   ]
                 }
               }
@@ -21645,6 +22209,33 @@
                             "expiresAt",
                             "closedAt"
                           ]
+                        },
+                        "forkedFrom": {
+                          "type": "object",
+                          "properties": {
+                            "agent": {
+                              "type": "string"
+                            },
+                            "connection": {
+                              "type": "string"
+                            },
+                            "snapshot": {
+                              "type": "string"
+                            },
+                            "provider": {
+                              "type": "string"
+                            },
+                            "at": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "agent",
+                            "snapshot",
+                            "provider",
+                            "at"
+                          ],
+                          "description": "A forked connection: whose computer it copies, and the snapshot its sessions start from"
                         }
                       },
                       "required": [

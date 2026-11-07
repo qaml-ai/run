@@ -52,6 +52,8 @@ retry.
 | 409 | `AGENT_BUSY` | A context reset while a run is active or queued; abort it or wait for it to end, then reset |
 | 409 | `context_too_large` | A context reset would leave a context still too large to load; keep fewer messages or give a shorter summary |
 | 409 | `FORK_POINT_RUNNING` | A fork's `atMessage` is in a turn that has not ended (running, or waiting on a person); fork at an earlier message, or once it ends |
+| 409 | `FORK_UNSUPPORTED` | A computer fork (`computer: "fork"`, `POST /v1/computers/{id}/fork`) on a provider that cannot copy a disk (`provider` names it); nothing was made. Ask for `"fresh"` instead. See [Forking a computer](../guides/computers.md#forking-a-computer) |
+| 409 | `NO_SESSION` | A computer fork of a computer with no running session, or of an agent with no computer: start it first, or ask for `"fresh"` |
 | 409 | `REPLAY_GAP` | The Last-Event-ID is behind the buffer; read `/state` (or ask for a snapshot) and continue from its cursor |
 | 409 | `CONFLICT` | Another conflict, named in the message |
 | 410 | `GONE` | The agent was deleted or has expired |
@@ -67,6 +69,7 @@ retry.
 | 502 | `TRANSCRIPTION_FAILED` | The transcription provider failed or refused the key; nothing was charged |
 | 502 | `IMAGE_FAILED` | The image provider failed or refused the key; nothing was charged |
 | 503 | `UNAVAILABLE` | Retry after `Retry-After`: capacity, an agent moving, a node draining |
+| 503 | `COMPUTER_STARTING` | A computer did not answer within its bounded start (often a restore whose disk is loading on a new host); nothing was lost, call again in a few seconds |
 | 503 | `DATABASE_RETRY` | The database refused the request for now (a conflict with another request, or a statement timeout); retry after `Retry-After` |
 | 507 | `STORAGE_LIMIT` | The account's storage limit would be passed; the body has `limit` and `used`, in bytes |
 | 500 | `INTERNAL` | A bug; retry, and report it with the request id |

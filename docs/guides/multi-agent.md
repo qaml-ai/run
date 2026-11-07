@@ -61,6 +61,7 @@ The model gets a `delegate` tool that lists the agents with what each is for
 | `instructions` | Instead of `agent`, with `instructions: true` in the settings: who a sub-agent the model designs itself is and how it works, on its own model. It gets them with its task, as its first message |
 | `task` | What to do. The sub-agent sees only this, not the conversation |
 | `output` | A JSON Schema for an object: the answer comes back in that shape (see [Structured output](structured-output.md)) |
+| `computer` | `"fresh"` (default): a new computer with the parent's connection settings; `"fork"`: a copy of the parent's computer disk, one snapshot for all the children of the response; `"none"`: no computer (see [Forking a computer](computers.md#forking-a-computer)) |
 
 The call's result is `{ agentId, requestId, status, text, output?, error? }`.
 `status` is `completed`, `input_required` (the sub-agent waits on a person) or
