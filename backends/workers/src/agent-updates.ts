@@ -21,8 +21,8 @@ export function agentUpdatesExtension(delegation: () => Delegation, assistant: (
   return { name: 'camel.agent-updates', hooks: [hook(ToolTask, {
     async afterTool(call, result, api, context) {
       if (call.parent || call.name === 'codemode' || DELEGATION_TOOLS.has(call.name) || result.isError || result.output === undefined) return;
-      if (result.diagnostics?.some(value => NOT_ANSWERED.has(value.code))) return;
-      if (result.output.some(part => part.type === 'text' && (part as Record<string, unknown>)[AGENT_UPDATES] === true)) return;
+      if (result.diagnostics?.some(value => NOT_ANSWERED.has(value.code ?? ''))) return;
+      if (result.output.some(part => part.type === 'text' && (part as unknown as Record<string, unknown>)[AGENT_UPDATES] === true)) return;
       let reports = await api.memo<JsonValue>(MEMO, context) as ShownProgress[] | undefined;
       if (!reports) {
         const fresh = await delegation().unshownProgress(await assistant(api, call.id));
