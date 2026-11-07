@@ -16,6 +16,8 @@ const replacements = {
     ['"./http.ts"', '"./policy-host.ts"'],
     ['"./limits.ts"', '"../../../src/limits.ts"'],
     ['"./metrics.ts"', '"./policy-host.ts"'],
+    // The questions' shapes and checks are shared core code (src/core), imported where they are.
+    ['"./core/decision-questions.ts"', '"../../../src/core/decision-questions.ts"'],
   ],
   'decision-providers.ts': [
     ['"./outbound.ts"', '"./policy-host.ts"'],
