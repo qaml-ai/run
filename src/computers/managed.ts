@@ -95,7 +95,7 @@ export function boatMachines(apiKey: string, outbound: Outbound, runtime: string
     async create(computer, tenant, ttlSeconds, options) {
       const created = await request("/sandboxes", {
         headers: { "Idempotency-Key": computer }, waitSeconds: 45,
-        body: { type: "small", ttlSeconds, noEnv: true, snapshots: false, monitoring: false, labels: { [RUNTIME_LABEL]: runtime, computer, tenant }, ...options?.from ? { from: options.from.id } : {} },
+        body: { type: "small", ttlSeconds, noEnv: true, snapshots: true, monitoring: false, labels: { [RUNTIME_LABEL]: runtime, computer, tenant }, ...options?.from ? { from: options.from.id } : {} },
       });
       const id = created.sandbox.id as string;
       if (setup && (await machines.run(id, setup, 60)).exitCode !== 0) throw new Error("Computer setup failed");

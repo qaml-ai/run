@@ -241,7 +241,8 @@ export async function driver(provider: Provider, credentials: Credentials, outbo
   } : {
     refused: httpRefused,
     async create(_id, seconds, allocated, created) {
-      const r = await request("/sandboxes", { type: "small", ttlSeconds: seconds, noEnv: true, snapshots: false, monitoring: false, ...created?.from ? { from: created.from.id } : {} });
+      // Snapshots on: Boat refuses a saved snapshot (a fork) of a sandbox made without them, and they cannot be turned on later.
+      const r = await request("/sandboxes", { type: "small", ttlSeconds: seconds, noEnv: true, snapshots: true, monitoring: false, ...created?.from ? { from: created.from.id } : {} });
       const ref = { id: r.sandbox.id };
       await allocated?.(ref);
       for (const until = Date.now() + 60000; Date.now() < until;) {

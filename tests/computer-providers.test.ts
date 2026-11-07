@@ -33,7 +33,7 @@ test('Boat uses isolated provisioning options, camelCase API fields and confirme
   } } as unknown as Outbound;
   const provider=await driver('boat',{apiKey:'fake'},outbound);
   const ref=await provider.create('test',60);
-  assert.deepEqual(calls[0].body,{type:'small',ttlSeconds:60,noEnv:true,snapshots:false,monitoring:false});
+  assert.deepEqual(calls[0].body,{type:'small',ttlSeconds:60,noEnv:true,snapshots:true,monitoring:false});
   const result:any=await provider.call(ref,'computer_exec',{command:'exit 7',timeoutSeconds:12});
   assert.equal(result.exitCode,7);
   assert.equal(calls[2].body.timeoutSeconds,12);
