@@ -1,5 +1,5 @@
 import { workspacePath } from "../validation.ts";
-import { CONTAINER_CA, COMPUTER_LIMITS, RESOLVER_COMMAND, TRUST_COMMAND, type EgressGrant } from "./egress.ts";
+import { COMPUTER_LIMITS, EGRESS_ENV, RESOLVER_COMMAND, TRUST_COMMAND, type EgressGrant } from "./egress.ts";
 import { boundedStart, FORK_LIMITS } from "../../../../src/core/computer-fork.ts";
 import type { NativeForkAnswer, NativeForkOrigin, NativeForkedFrom } from "./native-fork.ts";
 
@@ -287,7 +287,7 @@ export class ContainerProvider implements ComputerProvider {
       ...from,
       instance: this.spec.instance,
       enableInternet: false,
-      ...(egress.length ? { env: { NODE_EXTRA_CA_CERTS: CONTAINER_CA, GIT_TERMINAL_PROMPT: "0" } } : {}),
+      ...(egress.length ? { env: EGRESS_ENV } : {}),
     } as ContainerStartupOptions);
     await this.container.setInactivityTimeout(this.containerTimeout);
     for (const { grant, gateway } of egress)
@@ -447,6 +447,8 @@ export class ContainerProvider implements ComputerProvider {
     signal.throwIfAborted();
     const process = await this.container.exec(argv, {
       cwd: "/workspace",
+      // exec does not inherit start()'s env: each process gets what trusting the egress CA needs (EGRESS_ENV).
+      ...(this.network.egress.length ? { env: EGRESS_ENV } : {}),
       signal,
       stdin: stdin === undefined ? undefined : "pipe",
       stdout: "pipe",
