@@ -32,7 +32,7 @@ import { agentBuiltins } from "./agent-builtins.ts";
 import { resetContext } from "./context-reset.ts";
 import { setAgentSpendLimit } from "./agent-spend.ts";
 import { releasePresentedFiles } from "./file-output.ts";
-import { Config, RequestRecord, Env, json, canonical, Child, reqKey } from "./agent-types.ts";
+import { Config, RequestRecord, Env, json, canonical, reqKey } from "./agent-types.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
 
 export function replayedRequestImpl(this: AgentRuntime,
@@ -432,12 +432,10 @@ export async function fetchRequestImpl(this: AgentRuntime,
         await this.arm();
         return json({ deleted });
       }
+      // The public list (GET /v1/agents/{id}/children, as on Node). It replaces the prototype's list of `child:` records,
+      // which nothing read; the prototype's POST below still makes one.
       if (path === "/children" && request.method === "GET")
-        return json([
-          ...(await this.ctx.storage
-            .list<Child>({ prefix: "child:" })
-            .then((x) => x.values())),
-        ]);
+        return json({ children: childrenView(await this.delegation.children()) });
       if (path === "/children" && request.method === "POST") {
         const input = object(await body(request), ["task", "key", "agent"]);
         return json(
@@ -519,8 +517,6 @@ export async function fetchRequestImpl(this: AgentRuntime,
       }
       if (path === "/state" && request.method === "GET")
         return json(await this.state());
-      if (path === "/children" && request.method === "GET")
-        return json({ children: childrenView(await this.delegation.children()) });
       if (path === "/requests" && request.method === "POST")
         return this.requestResponse(await this.submit(await body(request, 6 * 1024 * 1024)));
       if (path.startsWith("/requests/") && request.method === "GET") {
