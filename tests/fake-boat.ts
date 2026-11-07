@@ -12,7 +12,7 @@ import { join } from "node:path";
 export async function fakeBoatServer() {
   const root = await mkdtemp(join(tmpdir(), "fake-boat-"));
   const state = {
-    sandboxes: new Map<string, { dir: string; from?: string }>(), saved: new Map<string, { dir: string; from: string }>(),
+    sandboxes: new Map<string, { dir: string; snapshots: boolean; from?: string }>(), saved: new Map<string, { dir: string; from: string }>(),
     creates: 0, snapshots: [] as string[], dropped: [] as string[], commands: [] as { sandbox: string; command: string }[], keys: new Set<string>(),
   };
   let next = 0;
@@ -47,7 +47,7 @@ export async function fakeBoatServer() {
           await cp(saved.dir, dir, { recursive: true });
         } else await mkdir(dir);
         state.creates++;
-        state.sandboxes.set(id, { dir, ...body.from !== undefined ? { from: body.from } : {} });
+        state.sandboxes.set(id, { dir, snapshots: body.snapshots !== false, ...body.from !== undefined ? { from: body.from } : {} });
         return send(201, { sandbox: { id, state: "ready" } });
       }
       if ((match = /^\/sandboxes\/([^/]+)$/.exec(path))) {
@@ -66,6 +66,8 @@ export async function fakeBoatServer() {
       if (path === "/saved-snapshots" && request.method === "POST") {
         const box = state.sandboxes.get(body.sandboxId);
         if (!box) return send(404, { code: "not_found" });
+        // As Boat: a sandbox made with snapshots off can never be saved.
+        if (!box.snapshots) return send(409, { code: "snapshots_disabled" });
         if (typeof body.name !== "string" || state.saved.has(body.name)) return send(409, { code: "name_taken" });
         const dir = join(root, `saved-${state.saved.size + state.dropped.length + 1}`);
         await cp(box.dir, dir, { recursive: true });

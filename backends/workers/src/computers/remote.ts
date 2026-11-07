@@ -163,7 +163,7 @@ export function remoteDriver(env: RemoteBindings, tenant: string, agent: string,
     const saved = boatSnapshots(boat);
     return { ...common,
       async create(_id, seconds, allocated, options) {
-        const value = await boat('/sandboxes', { type: 'small', ttlSeconds: seconds, noEnv: true, snapshots: false, monitoring: false, ...options?.from ? { from: options.from.id } : {} });
+        const value = await boat('/sandboxes', { type: 'small', ttlSeconds: seconds, noEnv: true, snapshots: true, monitoring: false, ...options?.from ? { from: options.from.id } : {} });
         const ref = { id: value.sandbox.id as string };
         await allocated?.(ref);
         for (const until = Date.now() + 60_000; Date.now() < until; await new Promise(resolve => setTimeout(resolve, 1000))) {
