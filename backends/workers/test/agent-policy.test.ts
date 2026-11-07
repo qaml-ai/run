@@ -412,6 +412,23 @@ test('a message folded into a running child keeps its original answer for wait_a
   assert.equal(JSON.parse(waited.output[0].text).agents[0].text, 'the full answer');
   await Promise.all(f.tasks);
 });
+test('a message that never reached its child ends failed, with no notification, rather than waiting on a request the child never had', async () => {
+  const f = fixture();
+  f.values.set('delegation:original', { id: 'child', key: 'original', requestId: 'child-run', parentRequestId: 'parent-run', toolCallId: 'spawn', task: 'work', name: 'worker', depth: 1, createdAt: 1, status: 'completed', background: true, accepted: true, made: true, outcome: { result: { reply: 'done' } } });
+  f.host.sendMessage = async () => { throw new Error('A call to blockConcurrencyWhile() in a Durable Object waited for too long.'); };
+  const fetch = f.host.fetch;
+  f.host.fetch = async (id, request) => new URL(request.url).pathname.startsWith('/requests/msg_') ? new Response('', { status: 404 }) : fetch(id, request);
+  const tools = f.delegation.tools({ instructions: true }, ['agents']);
+  const send = tools.find(tool => tool.name === 'send_message')!;
+  await assert.rejects((send.execute as any)({ to: 'worker', text: 'also this' }, toolApi('send'), { abortSignal: signal() }), /blockConcurrencyWhile/);
+  const message = [...f.values.entries()].find(([key]) => key.startsWith('delegation:message-'))![1] as any;
+  assert.deepEqual([message.status, message.notified, message.accepted], ['failed', true, false]);
+  assert.match(message.error, /did not reach worker/);
+  const wait = tools.find(tool => tool.name === 'wait_agent')!;
+  const waited = JSON.parse((await (wait.execute as any)({ agents: ['worker'] }, toolApi('wait'), { abortSignal: signal() })).output[0].text);
+  assert.doesNotMatch(JSON.stringify(waited), /deleted/);
+  await Promise.all(f.tasks);
+});
 test('progress is idempotent, shown once in tool results, and never starts a turn', async () => {
   const parent = fixture(), child = await childFixture();
   parent.values.set('delegation:live', { id: 'child', key: 'live', requestId: 'child-run', parentRequestId: 'parent-run', toolCallId: 'spawn', task: 'go', name: 'helper', depth: 1, createdAt: 1, status: 'running', made: true, background: true, accepted: true });
