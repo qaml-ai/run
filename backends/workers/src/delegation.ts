@@ -26,6 +26,8 @@ export type ChildRun = { state: string; status?: string; error?: string; steered
 export function childUsageCost(usage?: ChildUsage) {
   return (usage?.costUsd ?? 0) + (usage?.subagentCostUsd ?? 0) + (usage?.imageCostUsd ?? 0) + (usage?.decisionCostUsd ?? 0) + (usage?.webCostUsd ?? 0) + (usage?.transcriptionCostUsd ?? 0);
 }
+/** A child's progress report as a parent's tool result shows it (`agentUpdates`), with what marks it shown. */
+export type ShownProgress = { key: string; name: string; text: string; at: number; sequence: number };
 export type ChildProgressReport = { agentId: string; requestId: string; text: string; callId: string };
 export type DelegatedChild = { id: string; key: string; requestId: string; parentRequestId: string; toolCallId: string; callId?: string; task: string; name: string; depth: number; maxDepth?: number; chain?: string[]; root?: string; background?: boolean; folded?: boolean; createdAt: number; endedAt?: number; status: string; made: boolean; held?: number; spent?: number; charged?: boolean; outcome?: ChildRun['outcome']; error?: string; notified?: boolean; landedBy?: 'wait' | 'notice'; accepted?: boolean; cancelRequested?: boolean; progress?: { text: string; at: number; sequence: number }; progressShown?: number; progressCalls?: string[] };
 export interface DelegationHost {
@@ -406,13 +408,30 @@ export class Delegation {
   private async takeProgress(api?: ToolExecutionApi) {
     const site = api ? await toolCallSite(api) : undefined;
     const entry = site?.assistant !== undefined ? await api!.commit(tx => tx.entry(site.assistant as never), BACKGROUND_CONTEXT) : undefined;
-    return this.host.storage.transaction(async tx => {
-      const reports = [];
-      for (const child of (await tx.list<DelegatedChild>({ prefix })).values()) if (child.status === 'running' && child.progress && child.progress.sequence > (child.progressShown ?? 0) && !waitsForProgress(entry?.model ?? [], child)) {
-        reports.push({ name: child.name, text: child.progress.text, at: child.progress.at });
-        await tx.put(prefix + child.key, { ...child, progressShown: child.progress.sequence });
+    const reports = await this.unshownProgress(entry?.model ?? []);
+    await this.markShown(reports);
+    return reports.map(({ name, text, at }) => ({ name, text, at }));
+  }
+  /**
+   * The latest progress reports of the running children the model was not shown yet, leaving out those a wait_agent of
+   * the same response (`assistant`, its model messages) shows itself. Nothing is marked shown: `markShown` does, once
+   * the reports are in a result.
+   */
+  async unshownProgress(assistant: readonly { role: string; content: unknown }[]): Promise<ShownProgress[]> {
+    const reports: ShownProgress[] = [];
+    for (const child of (await this.host.storage.list<DelegatedChild>({ prefix })).values())
+      if (child.status === 'running' && child.progress && child.progress.sequence > (child.progressShown ?? 0) && !waitsForProgress(assistant, child))
+        reports.push({ key: child.key, name: child.name, text: child.progress.text, at: child.progress.at, sequence: child.progress.sequence });
+    return reports;
+  }
+  /** Mark these reports shown to the model, so no later result repeats them (a later report is still shown). */
+  async markShown(reports: readonly ShownProgress[]) {
+    if (!reports.length) return;
+    await this.host.storage.transaction(async tx => {
+      for (const report of reports) {
+        const child = await tx.get<DelegatedChild>(prefix + report.key);
+        if (child && report.sequence > (child.progressShown ?? 0)) await tx.put(prefix + report.key, { ...child, progressShown: report.sequence });
       }
-      return reports;
     });
   }
   private async toolResult(value: unknown, api?: ToolExecutionApi) {

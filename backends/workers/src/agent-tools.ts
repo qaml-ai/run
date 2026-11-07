@@ -3,6 +3,7 @@ import { modelCompactionSettings } from "./model-context.ts";
 import { withCompactionPrompt } from "./model-compaction.ts";
 import { takesFiles } from './tool-file-schema.ts';
 import { toolOutputExtension } from "./tool-output.ts";
+import { agentUpdatesExtension } from "./agent-updates.ts";
 import { assertContextRange, contextRangeExtension, contextRangeLimit } from "./context-range.ts";
 import { toolCallSite } from "./tool-call-context.ts";
 import { Harness, type ToolRegistration } from "@earendil-works/pi-durable";
@@ -258,6 +259,12 @@ export function createHarness(this: AgentRuntime): PiHarness {
           site.messageIndex = this.historyIndex.messageIndex(site.assistant);
         }
         return { tenant: conf.tenantId, agent: conf.id, mounts: (conf.config.mounts ?? []) as Mount[], fileTools: conf.config.fileTools, codeMode: conf.config.codeMode, fileArguments: Object.fromEntries([...(conf.config.mcpServers ?? []), ...(conf.config.openApi ?? [])].map(source => [source.name, takesFiles(source)])), call: site };
+      }));
+      // After the result is capped (tool-output.ts keeps the <agent_updates> part whole): children's progress rides on it.
+      registry.install(agentUpdatesExtension(() => this.delegation, async (api, callId) => {
+        const pi = await this.harness.pi();
+        const site = await toolCallSite({ taskId: api.taskId, callId, getTask: pi.getTask.bind(pi) } as ToolExecutionApi);
+        return site.assistant === undefined ? [] : (await api.entry(site.assistant as never, BACKGROUND_CONTEXT))?.model ?? [];
       }));
       registry.install(this.limits.extension());
       registry.install(contextRangeExtension(
