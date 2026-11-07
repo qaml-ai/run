@@ -1,5 +1,7 @@
 import { workspacePath } from "../validation.ts";
 import { CONTAINER_CA, COMPUTER_LIMITS, TRUST_COMMAND, type EgressGrant } from "./egress.ts";
+import { boundedStart, FORK_LIMITS } from "../../../../src/core/computer-fork.ts";
+import type { NativeForkAnswer, NativeForkOrigin, NativeForkedFrom } from "./native-fork.ts";
 
 export type ComputerRequest =
   | { op: "exec"; argv: string[]; timeoutMs?: number }
@@ -8,7 +10,7 @@ export type ComputerRequest =
   | { op: "write"; path: string; content: string }
   | { op: "parse"; path: string; format: "text" | "json" | "csv" | "html" }
   | { op: "snapshot"; name: string }
-  | { op: "restore"; name: string; from?: "parent" }
+  | { op: "restore"; name: string }
   | { op: "sleep" };
 /**
  * How a computer starts its container: HTTPS egress per granted host (each a gateway the container's traffic to that
@@ -36,11 +38,15 @@ export interface ComputerProvider {
   snapshot(name: string, signal: AbortSignal): Promise<ComputerSnapshot>;
   restore(name: string, signal: AbortSignal): Promise<ComputerSnapshot>;
   startFrom(handle: ComputerSnapshot, signal: AbortSignal): Promise<ComputerSnapshot>;
-  sleep(): Promise<void>;
+  /** Save the disk as the next start's base, then stop. */
+  sleep(): Promise<{ saved: boolean }>;
 }
 export interface SnapshotStore {
   get<T>(key: string): Promise<T | undefined>;
   put<T>(key: string, value: T): Promise<void>;
+  /** The fork registry needs these (DO storage has them). */
+  delete?(key: string): Promise<boolean>;
+  list?<T>(options: { prefix: string }): Promise<Map<string, T>>;
 }
 export type ContainerApi = Pick<
   Container,
@@ -52,7 +58,7 @@ export type ContainerApi = Pick<
   | "destroy"
   | "snapshotContainer"
   | "interceptOutboundHttps"
->;
+> & Partial<Pick<Container, "monitor">>;
 
 export const INSTANCE_TYPES = [
   "lite",
@@ -133,6 +139,28 @@ export function snapshotHandle(value: unknown): ComputerSnapshot {
 // The image the current filesystem descends from. A container started from a
 // snapshot reports no image (inspect() gives ""), so the lineage is kept here.
 const IMAGE_KEY = "computer:image";
+/**
+ * What a start without a running container boots from, when set: a fork's seed, or the snapshot this computer's last
+ * sleep took. Booting from it rather than the image keeps later snapshots small: Cloudflare stores only what changed
+ * since the snapshot a container was restored from. `restores` counts the starts from it.
+ */
+const BASE_KEY = "computer:base";
+export type ComputerBase = ComputerSnapshot & { kind: "fork" | "sleep" | "restore"; restores: number };
+/** A start that did not answer in time and may still be coming up: the next call waits for it instead of booting another. */
+const STARTING_KEY = "computer:starting";
+type StartPlan = { from: { image: string } | { containerSnapshot: { id: string } }; init: string[]; image: string; base?: ComputerBase["kind"] };
+/** Where a seeded computer came from (the parent's computer, its batch, the snapshot). */
+const FORKED_FROM_KEY = "computer:forked-from";
+/** The parent's registry: one entry per batch, `fork:<batch>`, with the children that adopted its snapshot. */
+const FORK_PREFIX = "fork:";
+export type ForkEntry = { snapshot: ComputerSnapshot; children: string[]; adopted: boolean; at: number };
+/** Snapshots this computer stopped using, kept as a record for cleanup (Cloudflare has no Worker API to delete one). */
+const DROPPED_PREFIX = "dropped:";
+const message = (error: unknown) => (error instanceof Error ? error.message : String(error)).slice(0, 300);
+async function hex(value: string) {
+  const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)));
+  return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 32);
+}
 /** Container time for whoever pays for this computer (computers/meter.ts); without one nothing is metered. */
 export interface ProviderMeter {
   /** Before every paid operation: throws when the payer may not use compute. */
@@ -190,6 +218,10 @@ export class ContainerProvider implements ComputerProvider {
   protected now: () => number;
   protected network: ComputerNetwork;
   protected meter?: ProviderMeter;
+  /** How long one start may take before it is tried again (FORK_LIMITS.startWaitMs; tests shorten it). */
+  startWaitMs: number = FORK_LIMITS.startWaitMs;
+  /** What the operation that started the container should tell the model about its disk (restored, or not). */
+  private notice?: Record<string, unknown>;
   constructor(
     container: ContainerApi,
     store: SnapshotStore,
@@ -204,6 +236,12 @@ export class ContainerProvider implements ComputerProvider {
     this.now = now;
     this.network = network ?? { key: "", egress: [], idleMs: COMPUTER_LIMITS.idleSeconds.default * 1000 };
     this.meter = meter;
+  }
+  /** The notice of the start this operation made, once. */
+  takeNotice() {
+    const notice = this.notice;
+    this.notice = undefined;
+    return notice;
   }
   get sleepAfter() {
     return this.network.idleMs;
@@ -229,17 +267,49 @@ export class ContainerProvider implements ComputerProvider {
    * later) and exec waits for a starting one, so `init` is the readiness check. A container that does not come up is
    * destroyed, never left running without its idle timeout, its first command or its egress trust.
    */
-  protected async bootReady(from: { image: string } | { containerSnapshot: { id: string } }, init: string[]) {
+  protected async bootReady(plan: StartPlan) {
     try {
-      await this.boot(from);
-      const ready = await this.container.exec(init, { signal: AbortSignal.timeout(30_000), stdout: "ignore", stderr: "ignore" });
-      if (await ready.exitCode) throw new Error("Computer did not start");
+      // Bounded: a start that does not answer in startWaitMs is destroyed and tried once more (a slow restore on a
+      // host that must fetch the snapshot usually comes up at once elsewhere); then "still starting" (COMPUTER_STARTING).
+      await boundedStart(async (signal) => {
+        await this.boot(plan.from);
+        await this.awaitReady(plan.init, signal);
+      }, { waitMs: this.startWaitMs, onTimeout: () => this.halt(false) });
       await this.trust();
     } catch (error) {
-      if (this.container.running) await this.container.destroy().catch(() => {});
-      await this.meter?.stopped();
+      if ((error as { code?: string }).code === "COMPUTER_STARTING" && this.container.running) {
+        // The last try keeps starting: the next call waits for it rather than booting another.
+        await this.store.put(STARTING_KEY, { ...plan, at: this.now() });
+        throw error;
+      }
+      await this.halt(false);
       throw error;
     }
+  }
+  /**
+   * Destroy whatever runs (no snapshot), ending its metered session; with `read`, a last CPU reading first. A start
+   * that never came up is not read: its exec would only wait for it.
+   */
+  async halt(read = true) {
+    const cpu = read ? await this.cpuUsec() : undefined;
+    if (this.container.running) await this.container.destroy().catch(() => {});
+    await this.meter?.stopped(cpu);
+  }
+  /**
+   * Wait until the container runs `init` (exec waits for a starting container), or fail as soon as `monitor()` says
+   * it will not run: a start past the account's limits never comes up, and only monitor() says why.
+   */
+  protected async awaitReady(init: string[], signal: AbortSignal) {
+    const watch = this.container.monitor?.().then(
+      () => { throw new Error("Computer stopped while starting"); },
+      (error) => { throw new Error(`Computer could not start: ${message(error)}`); },
+    );
+    watch?.catch(() => {});
+    const probe = (async () => {
+      const ready = await this.container.exec(init, { signal, stdout: "ignore", stderr: "ignore" });
+      if (await ready.exitCode) throw new Error("Computer did not start");
+    })();
+    await (watch ? Promise.race([probe, watch]) : probe);
   }
   /** Destroy the running container, ending its metered session with a last CPU reading. */
   protected async stop() {
@@ -283,14 +353,55 @@ export class ContainerProvider implements ComputerProvider {
     // Grants changed since this container started: replace it, so no host stays reachable that the definition dropped.
     if (this.container.running && (await this.store.get<string>("network") ?? "") !== this.network.key)
       await this.stop();
-    if (!this.container.running) {
-      const image = this.image();
-      // The readiness command also puts /workspace in the writable layer, which snapshots capture.
-      await this.bootReady({ image }, ["mkdir", "-p", "/workspace"]);
-      await this.store.put(IMAGE_KEY, image);
+    const starting = await this.store.get<StartPlan | null>(STARTING_KEY);
+    if (starting && this.container.running) await this.awaitStarting(starting);
+    else if (!this.container.running) {
+      if (starting) await this.store.put(STARTING_KEY, null);
+      const plan = await this.plan();
+      await this.bootReady(plan);
+      await this.started(plan);
     }
     await this.container.setInactivityTimeout(this.sleepAfter);
     await this.meter?.used();
+  }
+  /** What a start boots: this computer's base when it has a usable one, else the image. */
+  private async plan(): Promise<StartPlan> {
+    const image = this.image(), base = await this.store.get<ComputerBase | null>(BASE_KEY);
+    if (base) {
+      const why = base.expiresAt <= this.now() ? "its snapshot expired" : base.image !== image ? "it was saved on an older image version" : undefined;
+      if (!why) return { from: { containerSnapshot: { id: base.id } }, init: ["true"], image: base.image, base: base.kind };
+      await this.store.put(BASE_KEY, null);
+      this.notice = { resumed: false, reason: `This computer's saved disk (${base.kind === "fork" ? "its fork of the parent's" : "from its last sleep"}) could not be restored because ${why}. It started empty.` };
+    }
+    // The readiness command also puts /workspace in the writable layer, which snapshots capture.
+    return { from: { image }, init: ["mkdir", "-p", "/workspace"], image };
+  }
+  /** A start came up: record its lineage, refresh its base's 30-day TTL (each restore resets it) and say what it restored. */
+  private async started(plan: StartPlan) {
+    await this.store.put(IMAGE_KEY, plan.image);
+    await this.store.put(STARTING_KEY, null);
+    if (!plan.base) return;
+    const base = await this.store.get<ComputerBase | null>(BASE_KEY);
+    if (!base) return;
+    await this.store.put(BASE_KEY, { ...base, expiresAt: this.now() + SNAPSHOT_TTL_MS, restores: base.restores + 1 });
+    this.notice = {
+      restoredFrom: plan.base,
+      ...(base.restores > 0 || plan.base === "sleep" ? { note: `This computer stopped and started again from its ${plan.base === "fork" ? "fork snapshot (the parent's disk at the fork)" : plan.base === "sleep" ? "last sleep's snapshot" : "last restored snapshot"}: changes made after that snapshot were lost. Use sleep to keep work across stops.` } : {}),
+    };
+  }
+  /** Wait (bounded, once) for a start an earlier call left coming up. */
+  private async awaitStarting(plan: StartPlan) {
+    try {
+      await boundedStart((signal) => this.awaitReady(plan.init, signal), { waitMs: this.startWaitMs, attempts: 1 });
+      await this.trust();
+    } catch (error) {
+      if ((error as { code?: string }).code !== "COMPUTER_STARTING") {
+        await this.halt(false);
+        await this.store.put(STARTING_KEY, null);
+      }
+      throw error;
+    }
+    await this.started(plan);
   }
   protected async run(
     argv: string[],
@@ -425,22 +536,123 @@ export class ContainerProvider implements ComputerProvider {
     await this.meter?.admit();
     if (this.container.running) await this.stop();
     // A restore that does not come up throws here: no caller gets a blank computer it thinks was restored.
-    await this.bootReady({ containerSnapshot: { id: snapshot.id } }, ["true"]);
-    await this.store.put(IMAGE_KEY, snapshot.image);
+    const plan: StartPlan = { from: { containerSnapshot: { id: snapshot.id } }, init: ["true"], image: snapshot.image };
+    await this.bootReady(plan);
+    await this.started(plan);
     const restored = { ...snapshot, expiresAt: this.now() + SNAPSHOT_TTL_MS };
     await this.store.put(`snapshot:${snapshot.name}`, restored);
+    // The restored disk is what a later start (after an idle stop) comes back to.
+    await this.store.put(BASE_KEY, { ...restored, kind: "restore", restores: 1 } satisfies ComputerBase);
     return restored;
   }
-  async sleep() {
+  /**
+   * Stop the container, saving its disk first as the base the next start restores (Cloudflare keeps no disk across a
+   * stop). A computer that is not running has nothing to save. A failed save keeps the container running and throws,
+   * unless `force` (a release at the end of a child's work), which stops it anyway.
+   */
+  async sleep(force = false) {
+    if (!this.container.running) return { saved: false };
+    let saved: ComputerSnapshot | undefined;
+    try { saved = await this.snapshot("camelrun-sleep", AbortSignal.timeout(180_000)); }
+    catch (error) {
+      if (!force) throw error;
+      console.error(JSON.stringify({ type: "computer_sleep_save_failed", error: message(error) }));
+    }
+    if (saved) await this.store.put(BASE_KEY, { ...saved, kind: "sleep", restores: 0 } satisfies ComputerBase);
     await this.stop();
+    return { saved: !!saved };
+  }
+
+  // Forking (native-fork.ts): the parent's side.
+  /**
+   * The snapshot a batch's children start from: the one this batch already took, else a snapshot of the running
+   * container, else this computer's base (a stopped computer's saved disk), else NO_SESSION.
+   */
+  async forkSnapshot(batch: string, signal: AbortSignal): Promise<NativeForkAnswer> {
+    const key = `${FORK_PREFIX}${batch}`, existing = await this.store.get<ForkEntry | null>(key);
+    if (existing) return { ok: true, snapshot: existing.snapshot };
+    await this.dropStale();
+    let snapshot: ComputerSnapshot | undefined;
+    if (this.container.running) snapshot = await this.snapshot(`fork-${await hex(batch)}`, signal);
+    else {
+      const base = await this.store.get<ComputerBase | null>(BASE_KEY);
+      if (base && base.expiresAt > this.now() && base.image === this.image()) {
+        const { kind: _kind, restores: _restores, ...handle } = base;
+        snapshot = handle;
+      }
+    }
+    if (!snapshot) return { ok: false, code: "NO_SESSION", message: "This agent's computer has no running session or saved disk to fork: use it first (any computer operation), or use computer: \"fresh\"." };
+    await this.store.put<ForkEntry>(key, { snapshot, children: [], adopted: false, at: this.now() });
+    return { ok: true, snapshot };
+  }
+  /** A child started from the batch's snapshot. */
+  async adopt(batch: string, child: string) {
+    const key = `${FORK_PREFIX}${batch}`, entry = await this.store.get<ForkEntry | null>(key);
+    if (!entry) return;
+    await this.store.put<ForkEntry>(key, { ...entry, adopted: true, children: [...new Set([...entry.children, child])] });
+  }
+  /** A child is gone; the last one takes the batch's snapshot with it. */
+  async unref(batch: string, child: string) {
+    const key = `${FORK_PREFIX}${batch}`, entry = await this.store.get<ForkEntry | null>(key);
+    if (!entry) return;
+    const children = entry.children.filter((each) => each !== child);
+    if (entry.adopted && !children.length) await this.drop(batch, entry);
+    else await this.store.put<ForkEntry>(key, { ...entry, children });
+  }
+  /** Batches whose snapshot no child adopted within the grace (a child that was never made). */
+  async dropStale() {
+    if (!this.store.list) return;
+    for (const [key, entry] of await this.store.list<ForkEntry | null>({ prefix: FORK_PREFIX }))
+      if (entry && !entry.adopted && entry.at + FORK_LIMITS.dropGraceMs <= this.now()) await this.drop(key.slice(FORK_PREFIX.length), entry);
+  }
+  /**
+   * Forget a batch's snapshot. Cloudflare has no Worker API to delete a snapshot (it expires 30 days after its last
+   * restore), so one nothing here uses any more is logged and recorded under `dropped:`, for its registry tag
+   * (`rootfs-snapshot-*`) to be deleted by hand. A snapshot that is still this computer's base, or another batch's,
+   * stays. Snapshots restored from this one (a child's own) may depend on it: delete tags only of whole trees.
+   */
+  private async drop(batch: string, entry: ForkEntry) {
+    if (this.store.delete) await this.store.delete(`${FORK_PREFIX}${batch}`);
+    else await this.store.put(`${FORK_PREFIX}${batch}`, null);
+    const id = entry.snapshot.id, base = await this.store.get<ComputerBase | null>(BASE_KEY);
+    if (base?.id === id) return;
+    if (this.store.list) for (const other of (await this.store.list<ForkEntry | null>({ prefix: FORK_PREFIX })).values()) if (other?.snapshot.id === id) return;
+    if (entry.snapshot.name.startsWith("fork-")) await this.store.delete?.(`snapshot:${entry.snapshot.name}`);
+    console.error(JSON.stringify({ type: "computer_snapshot_unused", id, name: entry.snapshot.name, size: entry.snapshot.size }));
+    await this.store.put(`${DROPPED_PREFIX}${id}`, { id, name: entry.snapshot.name, size: entry.snapshot.size, createdAt: entry.snapshot.createdAt, droppedAt: this.now() });
+  }
+
+  // Forking: the child's side.
+  /** Make `snapshot` this computer's base: its next start restores the parent's disk. A running container is replaced. */
+  async seed(handle: ComputerSnapshot, origin: NativeForkOrigin) {
+    const snapshot = snapshotHandle(handle);
+    if (snapshot.expiresAt <= this.now()) throw new Error("The fork's snapshot expired; fork again");
+    if (snapshot.image !== this.image()) throw new Error("The fork's snapshot was taken on another image version; fork again");
+    if (this.container.running) await this.stop();
+    await this.store.put(STARTING_KEY, null);
+    await this.store.put(BASE_KEY, { ...snapshot, kind: "fork", restores: 0 } satisfies ComputerBase);
+    await this.store.put<NativeForkedFrom>(FORKED_FROM_KEY, { ...origin, snapshot: snapshot.id });
+  }
+  async forkedFrom() {
+    return (await this.store.get<NativeForkedFrom | null>(FORKED_FROM_KEY)) ?? null;
   }
 }
 
 export async function operate(
-  provider: ComputerProvider,
+  provider: ComputerProvider & { takeNotice?(): Record<string, unknown> | undefined },
   request: ComputerRequest,
   signal: AbortSignal = AbortSignal.timeout(30_000),
-  parent?: ComputerSnapshot,
+) {
+  const result = await operation(provider, request, signal);
+  // A start this operation made says what disk it came up with (restored from a fork or a sleep, or not).
+  const notice = provider.takeNotice?.();
+  return notice && result && typeof result === "object" ? { ...result, computer: notice } : result;
+}
+
+async function operation(
+  provider: ComputerProvider,
+  request: ComputerRequest,
+  signal: AbortSignal,
 ) {
   switch (request.op) {
     case "exec": {
@@ -493,15 +705,10 @@ export async function operate(
     case "restore":
       if (!SNAPSHOT_NAME.test(request.name))
         throw new Error("Invalid snapshot name");
-      if (request.op === "restore" && (request.from === "parent") !== !!parent)
-        throw new Error("A restore from the parent needs the parent's snapshot");
-      // A disk fork's stand-in: a sub-agent's own machine starts from its parent's snapshot, found by the runtime.
-      if (parent) await provider.startFrom(parent, signal);
-      else await provider[request.op](request.name, signal);
-      return { [request.op]: request.name, ...(parent ? { from: "parent" } : {}) };
+      await provider[request.op](request.name, signal);
+      return { [request.op]: request.name };
     case "sleep":
-      await provider.sleep();
-      return { sleeping: true };
+      return { sleeping: true, ...(await provider.sleep()) };
     default:
       throw new Error("Unsupported computer operation");
   }

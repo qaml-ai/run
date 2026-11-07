@@ -213,15 +213,14 @@ test("a computer without grants keeps the original offline start", async () => {
   assert.deepEqual(calls.find(call => call[0] === "idle"), ["idle", 60_000]);
 });
 
-test("restore from the parent boots this computer from the parent's snapshot handle, with this computer's grants", async () => {
+test("a forked child boots from the parent's snapshot (its seed), with this computer's grants", async () => {
   const { calls, box, store } = container();
-  await assert.rejects(operate(new ContainerProvider(box as never, store), { op: "restore", name: "base", from: "parent" }), /needs the parent's snapshot/);
-  // The child's own snapshot of that name is not what a parent restore uses.
-  await store.put("snapshot:base", { id: "own" });
   const network: ComputerNetwork = { key: "child", egress: [{ grant: { host: "github.com" }, gateway: {} as Fetcher }], idleMs: 60_000 };
-  const handle = { id: "parent-snap", name: "base", size: 1, image: "img", createdAt: Date.now(), expiresAt: Date.now() + 86_400_000 };
-  assert.deepEqual(await operate(new ContainerProvider(box as never, store, undefined, Date.now, network), { op: "restore", name: "base", from: "parent" }, undefined, handle),
-    { restore: "base", from: "parent" });
+  const handle = { id: "parent-snap", name: "fork-a", size: 1, image: "img", createdAt: Date.now(), expiresAt: Date.now() + 86_400_000 };
+  const child = new ContainerProvider(box as never, store, undefined, Date.now, network);
+  await child.seed(handle, { parent: "parent-computer", agent: "parent", batch: "run:m1", at: Date.now() });
+  const result = await operate(child, { op: "exec", argv: ["true"] }) as Record<string, any>;
+  assert.equal(result.computer.restoredFrom, "fork");
   const start = calls.find(call => call[0] === "start")![1] as Record<string, unknown>;
   assert.deepEqual(start.containerSnapshot, { id: "parent-snap" });
   assert.equal(start.enableInternet, false);
