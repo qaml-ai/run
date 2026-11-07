@@ -341,7 +341,8 @@ async function reportProgress(ctx: ChildrenContext, session: Session, call: Tool
   if (count >= MULTI_AGENT_LIMITS.progressPerRun) throw new Error(`This turn has reported progress ${count} times, the most one turn may: report less often`);
   sent.set(run.id, count + 1);
   const lineage = delegation.lineage(ctx, session, run);
-  if (!lineage) throw new Error("You have no parent agent to report to: only a sub-agent has one");
+  // Progress is of a run the parent waits on; a run it did not start (prompted through the API) is no task of its.
+  if (!lineage) throw new Error(await delegation.madeBy(ctx.db, session) ? delegation.NOT_ITS_RUN : "You have no parent agent to report to: only a sub-agent has one");
   const now = Date.now();
   const { rows } = await ctx.db.query(`update agent_children set progress = $4, progress_seq = progress_seq + 1, progress_at = $5, updated_at = $5
     where child = $1 and request_id = $2 and parent = $3 and ended_at is null returning name, kind, tool_call_id, parent_run`, [session.header.id, run.id, lineage.parent, text.trim(), now]);
@@ -679,12 +680,14 @@ async function sendMessage(ctx: ChildrenContext, session: Session, settings: Del
   sent.set(run.id, count);
   const lineage = delegation.lineage(ctx, session, run);
   if (to === "parent") {
-    if (!lineage) throw new Error("You have no parent agent to message: only a sub-agent has one");
+    // A run its parent did not start (prompted through the API) still has the parent that made this agent.
+    const parent = lineage ?? await delegation.madeBy(ctx.db, session);
+    if (!parent) throw new Error("You have no parent agent to message: only a sub-agent has one");
     // The parent's name for this agent, as its notifications say.
-    const named = (await ctx.db.query("select name from agent_children where parent = $1 and child = $2 order by created_at desc limit 1", [lineage.parent, header.id])).rows[0]?.name as string | undefined;
-    const message = agentMessage({ agentId: header.id, name: named ?? header.metadata?.name ?? "subagent", root: lineage.root }, text, "parent");
+    const named = (await ctx.db.query("select name from agent_children where parent = $1 and child = $2 order by created_at desc limit 1", [parent.parent, header.id])).rows[0]?.name as string | undefined;
+    const message = agentMessage({ agentId: header.id, name: named ?? header.metadata?.name ?? "subagent", root: parent.root }, text, "parent");
     // Its running turn takes it in at its next step (a wait_agent of its answers at once); an idle parent, as a turn of its own.
-    const record = await submit(lineage.parent, tenant, { id: requestId, method: "prompt", params: { ...message, allowDisconnected: true, whileRunning: "steer" } });
+    const record = await submit(parent.parent, tenant, { id: requestId, method: "prompt", params: { ...message, allowDisconnected: true, whileRunning: "steer" } });
     return jsonResult({ sent: true, to: "parent", into: record.steer === "accepted" || record.steeredInto ? "its running turn" : "a new turn of its own" });
   }
   const latest = await childNamed(ctx, header.id, to);

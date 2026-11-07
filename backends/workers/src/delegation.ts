@@ -57,13 +57,16 @@ export function childrenView(children: DelegatedChild[]) {
     };
   });
 }
+const NOT_ITS_RUN = 'Your parent did not start this run, so it is not waiting on it for progress: tell it what it needs to know with send_message to "parent"';
 export interface DelegationHost {
   storage: DurableObjectStorage;
   secret: string;
   context(api?: ToolExecutionApi): Promise<{ id: string; config: Configuration; run: ParentRun }>;
   /** Authoritative remaining spend after completed work, before active child shares. */
   remainingBudget?(background: boolean, api?: ToolExecutionApi): Promise<number | undefined>;
-  create(config: Configuration, key: string, parent?: { agent: string; run: string }): Promise<{ id: string }>;
+  create(config: Configuration, key: string, parent?: { agent: string; run: string; root: string }): Promise<{ id: string }>;
+  /** This agent's parent and chain's first when a parent made it, whichever run this is (`childParent`). */
+  parent?(): Promise<{ parent: string; root: string } | undefined>;
   /**
    * Copy an eligible parent connection before a newly created child starts. `computer` is the call's choice: "none"
    * attaches nothing, a fork (forkComputer's) starts the child's computers from the parent's snapshots.
@@ -276,7 +279,7 @@ export class Delegation {
           const childConf: Configuration = childConfig(config, resolved?.config, run.params);
           // No computer: no native computer settings either (egress grants and their credentials stay the parent's).
           if (choice === 'none') delete childConf.computer;
-          const made = resolved?.id ? resolved : await this.host.create({ ...childConf, name: admitted.name, type: 'subagent', ttlSeconds: MULTI_AGENT_LIMITS.childTtlSeconds }, key, { agent: id, run: run.id });
+          const made = resolved?.id ? resolved : await this.host.create({ ...childConf, name: admitted.name, type: 'subagent', ttlSeconds: MULTI_AGENT_LIMITS.childTtlSeconds }, key, { agent: id, run: run.id, root: place.chain[0] });
           let fork: ChildComputerFork | undefined;
           try { fork = await forking; }
           catch (error) {
@@ -494,9 +497,11 @@ export class Delegation {
     await this.countCall('messages', run.id, callId, MULTI_AGENT_LIMITS.messagesPerRun);
     const identity = await digest(`${id}:${run.id}:${callId}`), requestId = `msg_${identity.slice(0, 48)}`;
     if (args.to === 'parent') {
-      if (!lineage?.parent) throw new HttpError(400, 'This run has no parent');
-      const message = agentMessage({ agentId: id, name: typeof config.name === 'string' ? config.name : 'subagent', root: lineage.root }, args.text, 'parent');
-      const response = await this.host.sendMessage(lineage.parent, { id: requestId, method: 'prompt', params: { text: args.text, allowDisconnected: true, whileRunning: 'followUp' } }, message.notice) as { steer?: string; steeredInto?: string } | undefined;
+      // A run its parent did not start (prompted through the API) still has the parent that made this agent.
+      const parent = lineage ?? await this.host.parent?.();
+      if (!parent?.parent) throw new HttpError(400, 'This run has no parent');
+      const message = agentMessage({ agentId: id, name: typeof config.name === 'string' ? config.name : 'subagent', root: parent.root }, args.text, 'parent');
+      const response = await this.host.sendMessage(parent.parent, { id: requestId, method: 'prompt', params: { text: args.text, allowDisconnected: true, whileRunning: 'followUp' } }, message.notice) as { steer?: string; steeredInto?: string } | undefined;
       return { sent: true, to: 'parent', into: response?.steer === 'accepted' || response?.steeredInto ? 'its running turn' : 'a new turn of its own' };
     }
     const children = await this.children();
@@ -543,7 +548,8 @@ export class Delegation {
     if (!this.host.reportProgress) throw new HttpError(400, 'Progress reports are unavailable');
     if (typeof args.text !== 'string' || !args.text.trim() || args.text.length > MULTI_AGENT_LIMITS.progressChars) throw new HttpError(400, 'Invalid progress report');
     const { id, run } = await this.host.context(api), lineage = await this.lineage(id, run);
-    if (!lineage?.parent) throw new HttpError(400, 'This run has no parent');
+    // Progress is of a run the parent waits on; a run it did not start (prompted through the API) is no task of its.
+    if (!lineage?.parent) throw new HttpError(400, await this.host.parent?.() ? NOT_ITS_RUN : 'This run has no parent');
     await this.countCall('progress reports', run.id, callId, MULTI_AGENT_LIMITS.progressPerRun);
     await this.host.reportProgress(lineage.parent, { agentId: id, requestId: run.id, text: args.text.trim(), callId });
     return { reported: true };
