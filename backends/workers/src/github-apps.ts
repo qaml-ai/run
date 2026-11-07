@@ -35,12 +35,12 @@ export class GitHubAppTokenError extends Error {
 }
 
 /** An Authorization header from a GitHub App's installation token, for a tool source; `refused` drops the last one sent. */
-export function githubAppHeaders(env: GitHubAppsEnv, tenant: string, auth: GitHubAppAuth, label: string) {
+export function githubAppHeaders(env: GitHubAppsEnv, tenant: string, auth: GitHubAppAuth, label: string, destination: string) {
   let last: (() => void) | undefined;
   return {
     async headers(): Promise<Record<string, string>> {
       try {
-        const minted = await (await workerGitHubApps(env)).token(tenant, auth);
+        const minted = await (await workerGitHubApps(env)).token(tenant, auth, destination);
         last = minted.refused;
         return { Authorization: `Bearer ${minted.token}` };
       } catch (error) {

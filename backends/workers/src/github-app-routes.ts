@@ -25,12 +25,15 @@ async function body(request: Request): Promise<Record<string, unknown>> {
 }
 
 /** `/v1/github-apps` and below, for an authenticated tenant; undefined for other paths. */
-export async function githubAppRoutes(request: Request, env: Env, tenant: string): Promise<Response | undefined> {
+export async function githubAppRoutes(request: Request, env: Env, auth: { tenantId: string; kind: string }): Promise<Response | undefined> {
   const match = /^\/v1\/github-apps(?:\/([^/]+))?$/.exec(new URL(request.url).pathname);
   if (!match) return undefined;
   const [, ref] = match, method = request.method;
   const route = !ref ? method === "GET" || method === "POST" : ref === "manifest" ? method === "POST" : ["GET", "PATCH", "DELETE"].includes(method);
   if (!route) return undefined;
+  // An App says where its tokens may go (hosts): an OAuth client acting for the tenant neither reads nor changes one.
+  if (auth.kind === "oauth") throw new HttpError(403, "An OAuth access token works with agents only: use an API token or the console");
+  const tenant = auth.tenantId;
   try {
     const apps = await workerGitHubApps(env as unknown as GitHubAppsEnv);
     if (!ref) return method === "GET" ? reply(await apps.list(tenant)) : reply(await apps.create(tenant, await body(request)), 201);

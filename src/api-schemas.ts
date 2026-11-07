@@ -1747,12 +1747,14 @@ export const VoiceSessionList = z.object({
 
 export const GitHubAppInput = z.strictObject({
   name: z.string().optional().openapi({ description: "What definitions call it (auth.app): 1–100 letters, digits, '_', '.' or '-'; the App's slug by default" }),
+  hosts: z.array(z.string()).max(20).optional().openapi({ description: "Hosts besides GitHub's own (github.com, api.github.com, uploads.github.com, codeload.github.com, raw.githubusercontent.com, api.githubcopilot.com) that MCP servers and OpenAPI sources may send the App's tokens to" }),
   appId: z.union([z.string(), z.number()]).openapi({ description: "The App ID, from the App's General settings" }),
   privateKey: z.string().openapi({ description: "A private key generated for the App (PEM, PKCS#1 as GitHub gives it, or PKCS#8); stored encrypted and never returned" }),
   webhookSecret: z.string().optional().openapi({ description: "The App's webhook secret, for a GitHub channel that uses this App; stored encrypted and never returned" }),
 }).openapi("GitHubAppInput");
 export const GitHubAppUpdate = z.strictObject({
   name: z.string().optional(),
+  hosts: z.array(z.string()).max(20).nullable().optional().openapi({ description: "Replaces the App's hosts; null or [] removes them" }),
   privateKey: z.string().optional().openapi({ description: "A new key for the App (rotation): checked with GitHub before it replaces the old one, which you can then delete in the App's settings" }),
   webhookSecret: z.string().nullable().optional().openapi({ description: "A new webhook secret; null removes it" }),
 }).openapi("GitHubAppUpdate");
@@ -1767,6 +1769,7 @@ export const GitHubApp = z.object({
   slug: z.string().openapi({ description: "The App's slug on GitHub: its bot is <slug>[bot]" }),
   owner: z.string().optional().openapi({ description: "The account that owns the App" }),
   htmlUrl: z.string().optional(),
+  hosts: z.array(z.string()).optional().openapi({ description: "Hosts besides GitHub's own its tokens may be sent to" }),
   masked: z.object({ privateKey: z.string(), webhookSecret: z.string().optional() }).openapi({ description: "The credentials, masked; they are never returned" }),
   keyRotatedAt: z.number().optional(),
   createdAt: z.number(),

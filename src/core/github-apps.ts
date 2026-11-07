@@ -15,7 +15,10 @@ import { pem, randomHex, rs256, rsaSigningKey, textBase64Url, toBase64Url } from
  * owner), scoped to the repositories and permissions the definition names. It is kept in this process's memory until
  * five minutes before it expires, and only for the same App, key, installation and scope; the App's row is read on
  * every use, so a deleted App stops minting at once on every node, and a rotated key is used from the next token on.
- * Tokens are never stored, logged or returned by an API: they go only to where the runtime injects them.
+ * Tokens are never stored, logged or returned by an API: they go only to where the runtime injects them, and only to
+ * GitHub's own hosts or the hosts the App's record names (`hosts`, which only the tenant's API keys can set): a
+ * definition saved by anything else that may write definitions (an OAuth client acting for the tenant) cannot send
+ * the App's tokens to a server of its choosing.
  *
  * This module is shared by the Node runtime and the Workers backend: hosts give it the database, sealing and fetch.
  */
@@ -40,6 +43,8 @@ export type GitHubAppAuth = {
 export interface GitHubAppRecord {
   id: string; tenant: string; name: string;
   appId: string; slug: string; owner?: string; htmlUrl?: string;
+  /** Hosts besides GitHub's own that MCP servers and OpenAPI sources may send this App's tokens to. */
+  hosts?: string[];
   masked: { privateKey: string; webhookSecret?: string };
   sealed: Sealed;
   /** Raised by every key change, so tokens minted under an older key are not reused. */
@@ -48,8 +53,8 @@ export interface GitHubAppRecord {
 }
 export type GitHubAppView = Omit<GitHubAppRecord, "sealed" | "tenant" | "keyVersion"> & { keyRotatedAt?: number };
 export type GitHubAppCredentials = { appId: string; privateKey: string; webhookSecret?: string };
-export type GitHubAppInput = { name?: unknown; appId?: unknown; privateKey?: unknown; webhookSecret?: unknown };
-export type GitHubAppUpdate = { name?: unknown; privateKey?: unknown; webhookSecret?: unknown };
+export type GitHubAppInput = { name?: unknown; hosts?: unknown; appId?: unknown; privateKey?: unknown; webhookSecret?: unknown };
+export type GitHubAppUpdate = { name?: unknown; hosts?: unknown; privateKey?: unknown; webhookSecret?: unknown };
 /** An installation token at its injection point: `refused` drops it when the upstream turns it away (401). */
 export type GitHubToken = { token: string; expiresAt: number; refused(): void };
 
@@ -80,6 +85,9 @@ export const GITHUB_APP_LIMITS = Object.freeze({
 });
 /** Hosts a `github-app` egress grant may name: GitHub's own, where an installation token is the credential. */
 export const GITHUB_HOSTS = ["github.com", "api.github.com", "uploads.github.com", "codeload.github.com", "raw.githubusercontent.com"] as const;
+/** Where a token may go without the App naming the host: GitHub's own, and GitHub's MCP server. */
+const GITHUB_DESTINATIONS = new Set<string>([...GITHUB_HOSTS, "api.githubcopilot.com"]);
+const HOSTNAME = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
 const ID = /^gha_[a-f0-9]{20}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/;
@@ -88,6 +96,13 @@ const REPOSITORY = /^([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))\/([A-Za-z0-9_.-]{1,100}
 const PERMISSION = /^[a-z][a-z_]{0,63}$/;
 const bad = (message: string) => new HttpError(400, message);
 const aad = (id: string) => `github-app:${id}`;
+/** An App's `hosts`: DNS names (lowercase, no scheme, port or path), at most 20. */
+function hostsInput(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > 20 || value.some(host => typeof host !== "string" || !HOSTNAME.test(host)))
+    throw bad("hosts is a list of at most 20 host names (lowercase, without scheme, port or path) that MCP servers and OpenAPI sources may send the App's tokens to, besides GitHub's own");
+  return [...new Set(value as string[])];
+}
 /** A request body's fields: an object of only these. */
 function fields(input: unknown, known: string[], usage: string) {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw bad(`Body must be ${usage}`);
@@ -205,13 +220,14 @@ export class GitHubApps {
   /** Store an App: its key is checked by asking GitHub who the App is with a JWT it signs (GET /app). */
   async create(tenant: string, input: GitHubAppInput) {
     if (!this.host.keys.canStore) throw new HttpError(503, "This runtime has no AGENT_SECRETS_KEY, so it cannot store GitHub Apps");
-    fields(input, ["name", "appId", "privateKey", "webhookSecret"], "{ name?, appId, privateKey, webhookSecret? }");
+    fields(input, ["name", "hosts", "appId", "privateKey", "webhookSecret"], "{ name?, hosts?, appId, privateKey, webhookSecret? }");
     const { appId, privateKey, webhookSecret } = input;
+    const hosts = hostsInput(input.hosts);
     if (typeof appId !== "string" && typeof appId !== "number" || !/^\d{1,20}$/.test(String(appId))) throw bad("appId is the App ID from the App's General settings");
     const key = this.privateKeyInput(privateKey);
     const secret = this.webhookSecretInput(webhookSecret);
     const about = await this.whoAmI(String(appId), key);
-    return this.insert(tenant, input.name, { appId: String(appId), privateKey: key, ...(secret ? { webhookSecret: secret } : {}) }, about);
+    return this.insert(tenant, input.name, { appId: String(appId), privateKey: key, ...(secret ? { webhookSecret: secret } : {}) }, { ...about, ...(hosts ? { hosts } : {}) });
   }
 
   /**
@@ -231,14 +247,14 @@ export class GitHubApps {
       { slug, ...(typeof owner?.login === "string" ? { owner: owner.login } : {}), ...(typeof htmlUrl === "string" ? { htmlUrl } : {}) });
   }
 
-  private async insert(tenant: string, requested: unknown, credentials: GitHubAppCredentials, about: { slug: string; owner?: string; htmlUrl?: string }) {
+  private async insert(tenant: string, requested: unknown, credentials: GitHubAppCredentials, about: { slug: string; owner?: string; htmlUrl?: string; hosts?: string[] }) {
     const name = this.name(requested, about.slug);
     const count = Number((await this.host.sql.query("select count(*) as count from github_apps where tenant = $1", [tenant])).rows[0]?.count ?? 0);
     if (count >= GITHUB_APP_LIMITS.apps) throw new HttpError(409, `A tenant can have at most ${GITHUB_APP_LIMITS.apps} GitHub Apps`);
     const id = `gha_${randomHex(10)}`, now = Date.now();
     const { privateKey, webhookSecret } = credentials;
     const app: GitHubAppRecord = {
-      id, tenant, name, appId: credentials.appId, slug: about.slug, ...(about.owner ? { owner: about.owner } : {}), ...(about.htmlUrl ? { htmlUrl: about.htmlUrl } : {}),
+      id, tenant, name, appId: credentials.appId, slug: about.slug, ...(about.owner ? { owner: about.owner } : {}), ...(about.htmlUrl ? { htmlUrl: about.htmlUrl } : {}), ...(about.hosts ? { hosts: about.hosts } : {}),
       masked: { privateKey: mask(privateKey), ...(webhookSecret ? { webhookSecret: `…${webhookSecret.slice(-4)}` } : {}) },
       sealed: this.host.keys.seal(aad(id), JSON.stringify({ privateKey, ...(webhookSecret ? { webhookSecret } : {}) })),
       keyVersion: 1, createdAt: now, updatedAt: now,
@@ -252,9 +268,11 @@ export class GitHubApps {
   async update(tenant: string, ref: string, input: GitHubAppUpdate) {
     const app = await this.owned(tenant, ref);
     if ((input as Record<string, unknown> | null)?.appId !== undefined) throw bad("An App's appId cannot change: store the other App on its own");
-    fields(input, ["name", "privateKey", "webhookSecret"], "{ name?, privateKey?, webhookSecret? }");
+    fields(input, ["name", "hosts", "privateKey", "webhookSecret"], "{ name?, hosts?, privateKey?, webhookSecret? }");
     const next: GitHubAppRecord = { ...app, masked: { ...app.masked }, updatedAt: Date.now() };
     if (input.name !== undefined) next.name = this.name(input.name, app.name);
+    if (input.hosts === null || (Array.isArray(input.hosts) && !input.hosts.length)) delete next.hosts;
+    else if (input.hosts !== undefined) next.hosts = hostsInput(input.hosts);
     if (input.privateKey !== undefined || input.webhookSecret !== undefined) {
       const secrets = this.secrets(app);
       if (input.privateKey !== undefined) {
@@ -303,12 +321,17 @@ export class GitHubApps {
   // Tokens --------------------------------------------------------------------------------------------------------
 
   /**
-   * An installation token for `auth`, minted by the tenant's App or reused while it has five minutes left. The App's
-   * row is read each time: a deleted App gives none, and a rotated key's tokens are fresh ones.
+   * An installation token for `auth`, to be sent to `destination` (a URL), minted by the tenant's App or reused while it
+   * has five minutes left. The App's row is read each time: a deleted App gives none, and a rotated key's tokens are
+   * fresh ones. A destination that is neither GitHub's nor one of the App's `hosts` gets none.
    */
-  async token(tenant: string, auth: GitHubAppAuth): Promise<GitHubToken> {
+  async token(tenant: string, auth: GitHubAppAuth, destination: string): Promise<GitHubToken> {
     const app = await this.read(tenant, auth.app);
     if (!app) throw new GitHubAppError(404, `GitHub App ${auth.app} is not one of this tenant's (POST /v1/github-apps)`);
+    let host = "";
+    try { host = new URL(destination).hostname.toLowerCase(); } catch { /* refused below */ }
+    if (!GITHUB_DESTINATIONS.has(host) && host !== new URL(this.base).hostname && !app.hosts?.includes(host))
+      throw new GitHubAppError(403, `GitHub App ${app.name} does not send its tokens to ${host || "that URL"}: only to GitHub's hosts and the App's own hosts (PATCH /v1/github-apps/${app.id} with hosts, using an API key)`);
     const key = [app.id, app.keyVersion, auth.installation ?? "", (auth.owner ?? "").toLowerCase(), (auth.repositories ?? []).join(","),
       Object.entries(auth.permissions ?? {}).map(([name, level]) => `${name}=${level}`).join(",")].join("|");
     const now = Date.now();

@@ -33,16 +33,24 @@ curl -X POST https://run.camelai.com/v1/github-apps \
   optional; a [GitHub channel](channels.md) that uses the App needs it.
 - `name` is what definitions call the App; it defaults to the App's slug. A
   tenant has at most 50 Apps.
+- `hosts` lists the hosts, besides GitHub's own, that MCP servers and OpenAPI
+  sources may send the App's tokens to (at most 20, host names only). GitHub's
+  own are `github.com`, `api.github.com`, `uploads.github.com`,
+  `codeload.github.com`, `raw.githubusercontent.com` and
+  `api.githubcopilot.com` (GitHub's MCP server). A source at any other host
+  gets no token. Only your API keys and console can change an App, so a client
+  you let write definitions (an OAuth app acting for you) cannot point a token
+  at a server of its own.
 - The key and the webhook secret are sealed with the runtime's secrets key, as
   provider keys are, and never returned: the API shows them masked.
 
 | Call | |
 | --- | --- |
 | `GET /v1/github-apps` | your Apps, masked |
-| `POST /v1/github-apps` | store one: `{ name?, appId, privateKey, webhookSecret? }` |
+| `POST /v1/github-apps` | store one: `{ name?, appId, privateKey, webhookSecret?, hosts? }` |
 | `POST /v1/github-apps/manifest` | store the App GitHub made from your manifest: `{ code, name? }` |
 | `GET /v1/github-apps/{app}` | one App, by id or name |
-| `PATCH /v1/github-apps/{app}` | `{ name?, privateKey?, webhookSecret? }`: rename it, rotate its key, set its secret (`null` removes it) |
+| `PATCH /v1/github-apps/{app}` | `{ name?, hosts?, privateKey?, webhookSecret? }`: rename it, change its hosts, rotate its key, set its secret (`null` removes it or the hosts) |
 | `DELETE /v1/github-apps/{app}` | delete it |
 
 ### From a manifest
@@ -161,6 +169,8 @@ webhooks and mints the agents' tokens. See [Channels](channels.md).
   credential.
 - **Your tenant's only.** An App is found by name or id within the tenant of
   the agent asking; another tenant's App of the same name is never used.
+- **Only to GitHub, or where you said.** A token is minted only for a request to
+  one of GitHub's hosts or the App's `hosts`.
 - **Deleted means stopped.** Each use reads the App's record, so after `DELETE`
   no token is minted or served from it, on any node; the tokens the deleting
   node held are revoked at GitHub, and any other node's lapse within the hour,

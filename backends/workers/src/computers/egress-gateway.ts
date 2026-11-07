@@ -25,7 +25,7 @@ export class ComputerEgress extends WorkerEntrypoint<Env, EgressProps> {
       testUpstream,
       async credential(authed) {
         // The tenant's own App, by the agent's tenant: another tenant's App of the same name is never found.
-        if (authed.auth.type === "github-app") return (await workerGitHubApps(env as unknown as GitHubAppsEnv)).token(identity.claims.tenant, authed.auth);
+        if (authed.auth.type === "github-app") return (await workerGitHubApps(env as unknown as GitHubAppsEnv)).token(identity.claims.tenant, authed.auth, `https://${authed.host}`);
         const exchange = credentialExchange(env as unknown as IdentityEnv, grantSource({ ...authed, auth: authed.auth }), async () => identity,
           (url, init, max) => fetchSource(env, sourceUrl(url, env), init, max));
         const headers = await exchange.headers();

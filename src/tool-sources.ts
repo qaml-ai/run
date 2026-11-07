@@ -434,7 +434,7 @@ export class ToolSources {
     // A GitHub App's installation token, minted by the runtime: the same for every agent of the tenant that asks for the same scope.
     if (spec.auth?.type === "github-app") {
       const auth = spec.auth;
-      return { url: spec.url, headers, token: async () => (await this.githubToken(context.tenant, auth, `MCP server ${spec.name}`)).token, refused: token => this.options.githubApps?.refuse(token), scope: `${context.agent}:github-app` };
+      return { url: spec.url, headers, token: async () => (await this.githubToken(context.tenant, auth, `MCP server ${spec.name}`, spec.url)).token, refused: token => this.options.githubApps?.refuse(token), scope: `${context.agent}:github-app` };
     }
     if (spec.auth?.type !== "runtime") return { url: spec.url, headers };
     // Each request is signed for the turn it is made in (callScope), and each agent has its own session.
@@ -456,12 +456,12 @@ export class ToolSources {
   private async credential(context: SourceContext, spec: McpServerSpec) {
     const exchange = this.exchanged(context, spec);
     if (exchange) await this.exchange.token(exchange.caller, exchange.target);
-    if (spec.auth?.type === "github-app") await this.githubToken(context.tenant, spec.auth, `MCP server ${spec.name}`);
+    if (spec.auth?.type === "github-app") await this.githubToken(context.tenant, spec.auth, `MCP server ${spec.name}`, spec.url);
   }
   /** A GitHub App's installation token for a source: a failure is the source's, for this call, saying why and never with a credential. */
-  private async githubToken(tenant: string, auth: GitHubAppAuth, label: string) {
+  private async githubToken(tenant: string, auth: GitHubAppAuth, label: string, destination: string) {
     if (!this.options.githubApps) throw new GitHubAppTokenError(`${label}: this runtime holds no GitHub Apps`, false);
-    try { return await this.options.githubApps.token(tenant, auth); }
+    try { return await this.options.githubApps.token(tenant, auth, destination); }
     catch (error) {
       if (error instanceof HttpError) throw new GitHubAppTokenError(`${label}'s GitHub App token: ${error.message}`, (error as { transient?: boolean }).transient === true);
       throw error;
@@ -632,7 +632,7 @@ export class ToolSources {
             if (api.sealed && !context.definition) throw new Error(`OpenAPI source ${api.name} has sealed credentials but no definition to unseal them with`);
             const secrets = api.sealed ? this.headers(sealedAad(context.definition!, api.name, "openapi"), api.sealed) : {};
             if (api.auth?.type === "runtime") secrets.Authorization = `Bearer ${await this.identityToken(context, audienceOf(api.audience, api.baseUrl, context.tenant), turn)}`;
-            const minted = api.auth?.type === "github-app" ? await this.githubToken(context.tenant, api.auth, `OpenAPI source ${api.name}`) : undefined;
+            const minted = api.auth?.type === "github-app" ? await this.githubToken(context.tenant, api.auth, `OpenAPI source ${api.name}`, api.baseUrl) : undefined;
             if (minted) secrets.Authorization = `Bearer ${minted.token}`;
             // The call's key, as APIs that dedupe writes take one (Stripe's convention).
             if (idempotencyKey) init.headers = { ...init.headers as Record<string, string>, "Idempotency-Key": idempotencyKey };

@@ -103,8 +103,9 @@ export const cases: Record<string, (t: T, start: Start) => Promise<void>> = {
     assert.equal(typeof rotated.json.keyRotatedAt, "number");
     await refused({ privateKey: old }, 422, /GitHub rejected the App's credentials/, "PATCH", `/v1/github-apps/${app.id}`);
     await refused({ appId: "1" }, 400, /appId cannot change/, "PATCH", `/v1/github-apps/${app.id}`);
-    const renamed = await r.call(`/v1/github-apps/${app.id}`, { method: "PATCH", body: { name: "camel", webhookSecret: null } });
-    assert.deepEqual([renamed.status, renamed.json.name, renamed.json.masked.webhookSecret], [200, "camel", undefined]);
+    await refused({ hosts: ["https://mcp.example.com/x"] }, 400, /hosts is a list of at most 20 host names/, "PATCH", `/v1/github-apps/${app.id}`);
+    const renamed = await r.call(`/v1/github-apps/${app.id}`, { method: "PATCH", body: { name: "camel", webhookSecret: null, hosts: ["mcp.example.com"] } });
+    assert.deepEqual([renamed.status, renamed.json.name, renamed.json.masked.webhookSecret, renamed.json.hosts], [200, "camel", undefined, ["mcp.example.com"]]);
     noSecrets(renamed.text + rotated.text, github);
 
     assert.deepEqual((await r.call(`/v1/github-apps/${app.id}`, { method: "DELETE" })).json, { deleted: true });

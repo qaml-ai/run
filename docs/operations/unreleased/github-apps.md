@@ -10,5 +10,6 @@ Definitions ask for a token with `auth: { type: "github-app", app, repositories?
 on MCP servers and OpenAPI sources (both backends), and on Workers computer egress grants to GitHub's hosts (git gets
 `Basic x-access-token`, the API a bearer token, added by the gateway outside the machine). Tokens are minted by
 camelRun (an App JWT, then the installation's access token scoped to the repositories and permissions asked for), kept
-in memory until five minutes before they expire, and never stored, logged or returned. A GitHub channel can name a
+in memory until five minutes before they expire, and never stored, logged or returned. They go only to GitHub's hosts
+(and GitHub's MCP server) or hosts the App lists (`hosts`, set only with an API key or the console). A GitHub channel can name a
 stored App with `credentials: { app }` instead of carrying its own credentials. Guide: `docs/guides/github-apps.md`.

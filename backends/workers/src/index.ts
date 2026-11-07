@@ -353,7 +353,7 @@ const worker = {
         if (definition) return definition;
         const channel = await channelRoutes(request, env, auth.tenantId, ctx);
         if (channel) return channel;
-        const githubApp = await githubAppRoutes(request, env, auth.tenantId);
+        const githubApp = await githubAppRoutes(request, env, auth);
         if (githubApp) return githubApp;
         const provider = await providerRoutes(request, env, auth);
         if (provider) return provider;

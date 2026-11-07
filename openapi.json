@@ -9361,6 +9361,13 @@
           "htmlUrl": {
             "type": "string"
           },
+          "hosts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Hosts besides GitHub's own its tokens may be sent to"
+          },
           "masked": {
             "type": "object",
             "properties": {
@@ -9402,6 +9409,14 @@
           "name": {
             "type": "string",
             "description": "What definitions call it (auth.app): 1–100 letters, digits, '_', '.' or '-'; the App's slug by default"
+          },
+          "hosts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "description": "Hosts besides GitHub's own (github.com, api.github.com, uploads.github.com, codeload.github.com, raw.githubusercontent.com, api.githubcopilot.com) that MCP servers and OpenAPI sources may send the App's tokens to"
           },
           "appId": {
             "anyOf": [
@@ -9450,6 +9465,17 @@
         "properties": {
           "name": {
             "type": "string"
+          },
+          "hosts": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "description": "Replaces the App's hosts; null or [] removes them"
           },
           "privateKey": {
             "type": "string",

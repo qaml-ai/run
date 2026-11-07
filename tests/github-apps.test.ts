@@ -23,6 +23,8 @@ async function service(t: { after(fn: () => Promise<void> | void): void }) {
   const app = await apps.create("alice", { appId: "5151", privateKey: github.state.pem, name: "code" });
   return { github, db, apps, app };
 }
+/** Where the tokens go: GitHub's API, as a source's would. */
+const DEST = "https://api.github.com/repos";
 const auth = (fields: Partial<GitHubAppAuth> = {}): GitHubAppAuth => ({ type: "github-app", app: "code", ...fields });
 
 test("auth github-app is checked where it is saved: an App, one owner's repositories, GitHub's permission levels", () => {
@@ -46,52 +48,66 @@ test("auth github-app is checked where it is saved: an App, one owner's reposito
 
 test("a token is minted for the repositories' installation, scoped to them, and reused until five minutes before it expires", async t => {
   const { github, apps } = await service(t);
-  const first = await apps.token("alice", auth({ repositories: ["acme/app"], permissions: { contents: "write" } }));
+  const first = await apps.token("alice", auth({ repositories: ["acme/app"], permissions: { contents: "write" } }), DEST);
   assert.equal(github.tokenFor(`Bearer ${first.token}`)?.installation, 101);
   assert.deepEqual(github.minted().map(entry => [entry.repositories, entry.permissions]), [[["app"], { contents: "write" }]]);
-  const again = await apps.token("alice", auth({ repositories: ["acme/app"], permissions: { contents: "write" } }));
+  const again = await apps.token("alice", auth({ repositories: ["acme/app"], permissions: { contents: "write" } }), DEST);
   assert.equal(again.token, first.token, "reused");
   assert.ok(first.expiresAt > Date.now() + 50 * 60_000);
   // Another scope is another token; calls at once share one mint.
-  const [a, b] = await Promise.all([apps.token("alice", auth({ repositories: ["acme/other"] })), apps.token("alice", auth({ repositories: ["acme/other"] }))]);
+  const [a, b] = await Promise.all([apps.token("alice", auth({ repositories: ["acme/other"] }), DEST), apps.token("alice", auth({ repositories: ["acme/other"] }), DEST)]);
   assert.equal(a.token, b.token);
   assert.equal(github.minted().length, 2);
   // A token turned away (401) is replaced at the next use.
   a.refused();
-  assert.notEqual((await apps.token("alice", auth({ repositories: ["acme/other"] }))).token, a.token);
+  assert.notEqual((await apps.token("alice", auth({ repositories: ["acme/other"] }), DEST)).token, a.token);
   apps.refuse(first.token);
-  assert.notEqual((await apps.token("alice", auth({ repositories: ["acme/app"], permissions: { contents: "write" } }))).token, first.token);
+  assert.notEqual((await apps.token("alice", auth({ repositories: ["acme/app"], permissions: { contents: "write" } }), DEST)).token, first.token);
   assert.equal(github.minted().length, 4);
 });
 
 test("the installation is the one named, the owner's, or the App's only one; a repository it is not on is refused", async t => {
   const { github, apps } = await service(t);
-  assert.equal(github.tokenFor(`Bearer ${(await apps.token("alice", auth({ owner: "solo" }))).token}`)?.installation, 202);
-  assert.equal(github.tokenFor(`Bearer ${(await apps.token("alice", auth({ owner: "acme" }))).token}`)?.installation, 101);
-  assert.equal(github.tokenFor(`Bearer ${(await apps.token("alice", auth({ installation: 202 }))).token}`)?.installation, 202);
-  await assert.rejects(apps.token("alice", auth()), /has more than one installation: say which with installation, owner or repositories/);
-  await assert.rejects(apps.token("alice", auth({ repositories: ["acme/missing"] })), /GitHub App code is not installed on acme\/missing: GitHub answered HTTP 404/);
-  await assert.rejects(apps.token("alice", auth({ owner: "nobody" })), /not installed for nobody/);
-  await assert.rejects(apps.token("alice", auth({ installation: 999 })), (error: any) => error.status === 404 && /access_tokens: GitHub answered HTTP 404/.test(error.message));
+  assert.equal(github.tokenFor(`Bearer ${(await apps.token("alice", auth({ owner: "solo" }), DEST)).token}`)?.installation, 202);
+  assert.equal(github.tokenFor(`Bearer ${(await apps.token("alice", auth({ owner: "acme" }), DEST)).token}`)?.installation, 101);
+  assert.equal(github.tokenFor(`Bearer ${(await apps.token("alice", auth({ installation: 202 }), DEST)).token}`)?.installation, 202);
+  await assert.rejects(apps.token("alice", auth(), DEST), /has more than one installation: say which with installation, owner or repositories/);
+  await assert.rejects(apps.token("alice", auth({ repositories: ["acme/missing"] }), DEST), /GitHub App code is not installed on acme\/missing: GitHub answered HTTP 404/);
+  await assert.rejects(apps.token("alice", auth({ owner: "nobody" }), DEST), /not installed for nobody/);
+  await assert.rejects(apps.token("alice", auth({ installation: 999 }), DEST), (error: any) => error.status === 404 && /access_tokens: GitHub answered HTTP 404/.test(error.message));
 });
 
 test("a rotated key mints fresh tokens; a deleted App mints none, and the tokens this node held are revoked", async t => {
   const { github, apps, app } = await service(t);
-  const before = await apps.token("alice", auth({ owner: "solo" }));
+  const before = await apps.token("alice", auth({ owner: "solo" }), DEST);
   await apps.update("alice", app.id, { privateKey: github.rotate() });
-  const after = await apps.token("alice", auth({ owner: "solo" }));
+  const after = await apps.token("alice", auth({ owner: "solo" }), DEST);
   assert.notEqual(after.token, before.token, "minted again, under the new key");
   assert.equal(github.state.requests.filter(request => request.path.endsWith("/access_tokens")).at(-1)!.jwt, true);
   await assert.rejects(apps.update("alice", app.id, { privateKey: "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----" }), /privateKey must be the App's RSA private key/);
   await apps.remove("alice", "code");
   assert.equal(github.tokenFor(`Bearer ${after.token}`), undefined, "revoked at GitHub");
-  await assert.rejects(apps.token("alice", auth({ owner: "solo" })), (error: any) => error.status === 404 && /GitHub App code is not one of this tenant's/.test(error.message));
+  await assert.rejects(apps.token("alice", auth({ owner: "solo" }), DEST), (error: any) => error.status === 404 && /GitHub App code is not one of this tenant's/.test(error.message));
   await assert.rejects(apps.remove("alice", "code"), /Unknown GitHub App code/);
+});
+
+test("tokens go only to GitHub's hosts and the App's own: a definition cannot send them to a server of its choosing", async t => {
+  const { apps, app } = await service(t);
+  await apps.token("alice", auth({ owner: "solo" }), "https://api.githubcopilot.com/mcp/");
+  await apps.token("alice", auth({ owner: "solo" }), "https://github.com/acme/app.git");
+  await assert.rejects(apps.token("alice", auth({ owner: "solo" }), "https://mcp.example.com/github"),
+    (error: any) => error.status === 403 && /GitHub App code does not send its tokens to mcp\.example\.com: only to GitHub's hosts and the App's own hosts/.test(error.message));
+  await assert.rejects(apps.update("alice", app.id, { hosts: ["https://mcp.example.com"] }), /hosts is a list of at most 20 host names/);
+  assert.deepEqual((await apps.update("alice", app.id, { hosts: ["mcp.example.com"] })).hosts, ["mcp.example.com"]);
+  await apps.token("alice", auth({ owner: "solo" }), "https://mcp.example.com/github");
+  await assert.rejects(apps.token("alice", auth({ owner: "solo" }), "https://other.example.com/"), /does not send its tokens to other\.example\.com/);
+  assert.equal((await apps.update("alice", app.id, { hosts: null })).hosts, undefined);
+  await assert.rejects(apps.token("alice", auth({ owner: "solo" }), "https://mcp.example.com/github"), /does not send its tokens/);
 });
 
 test("an App is its tenant's alone, and a tenant holds at most 50", async t => {
   const { github, apps, app, db } = await service(t);
-  await assert.rejects(apps.token("bob", auth()), /not one of this tenant's/);
+  await assert.rejects(apps.token("bob", auth(), DEST), /not one of this tenant's/);
   await assert.rejects(apps.get("bob", app.id), /Unknown GitHub App/);
   await assert.rejects(apps.remove("bob", app.id), /Unknown GitHub App/);
   const stored = (await db.query("select tenant, name, app from github_apps")).rows;

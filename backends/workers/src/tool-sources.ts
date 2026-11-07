@@ -406,7 +406,7 @@ export async function discoverSources(env: Env, tenant: string, definition: stri
   return Promise.all(sources.map(async source => {
     const identity = async () => ({ issuer: origin, claims: { tenant, agent: definition, definition, sub: definition } });
     const exchange = source.auth?.type === "exchange" ? credentialExchange(env as IdentityEnv, { name: source.name, url: source.url!, auth: source.auth }, identity, (url, init, max) => fetchSource(env, url, init, max)) : undefined;
-    const github = source.auth?.type === "github-app" ? githubAppHeaders(env as unknown as GitHubAppsEnv, tenant, source.auth, `MCP server ${source.name}`) : undefined;
+    const github = source.auth?.type === "github-app" ? githubAppHeaders(env as unknown as GitHubAppsEnv, tenant, source.auth, `MCP server ${source.name}`, source.url!) : undefined;
     const runtimeHeaders = async (): Promise<Record<string, string>> => exchange ? exchange.headers() : github ? github.headers() : source.auth?.type === "runtime" ? { Authorization: `Bearer ${await signRuntimeIdentity(env as IdentityEnv, origin, source.audience ?? source.url!, (await identity()).claims)}` } : {};
     const headers = await unseal(env, aad(tenant, definition, "mcpServers", source.name), source.sealed);
     try {
@@ -443,7 +443,7 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
   for (const kind of ["mcpServers", "openApi"] as const) for (const source of config[kind] ?? []) {
     const headers = await unseal(env, aad(tenant, definition ?? "", kind, source.name), source.sealed);
     const exchange = source.auth?.type === "exchange" && identity && env.HYPERDRIVE ? credentialExchange(env as IdentityEnv, { name: source.name, url: source.url!, auth: source.auth }, identity, (url, init, max) => fetchSource(env, url, init, max)) : undefined;
-    const github = source.auth?.type === "github-app" ? githubAppHeaders(env as unknown as GitHubAppsEnv, tenant, source.auth, `${kind === "mcpServers" ? "MCP server" : "OpenAPI source"} ${source.name}`) : undefined;
+    const github = source.auth?.type === "github-app" ? githubAppHeaders(env as unknown as GitHubAppsEnv, tenant, source.auth, `${kind === "mcpServers" ? "MCP server" : "OpenAPI source"} ${source.name}`, (source.url ?? source.baseUrl)!) : undefined;
     const runtimeHeaders = async (api?: ToolExecutionApi, approval?: ToolInputReply["approval"]): Promise<Record<string, string>> => {
       if (exchange) return exchange.headers(api);
       if (github) return github.headers();
