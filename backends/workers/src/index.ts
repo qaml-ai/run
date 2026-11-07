@@ -8,7 +8,7 @@ import { serveAgentMcp, agentMcpPreflight, agentMcpSignIn } from "./agent-mcp.ts
 import { publicOrigins } from "./account-origins.ts";
 import { serveHostedMcp } from "./hosted-mcp.ts";
 import { resolveDefinition, definitionUpsert } from "./definitions.ts";
-import { sweepComputers } from './computers/service.ts';
+import { sweepComputers, sweepSnapshots } from './computers/service.ts';
 import { CamelAgent, json, type Env } from "./agent.ts";
 import {
   Directory,
@@ -638,6 +638,7 @@ const worker = {
       await moneyMaintenance(env);
       await publishScheduleEmails(env);
       await sweepComputers(env);
+      await sweepSnapshots(env);
       await sendJourney(env);
       // The backstop for channel work whose wake was lost or is further out than a queue delay.
       await (await workerChannels(env)).scan();
