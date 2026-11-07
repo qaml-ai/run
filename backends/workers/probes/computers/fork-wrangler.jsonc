@@ -1,0 +1,19 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "camelrun-probe-computer-fork",
+  "main": "fork-worker.ts",
+  "compatibility_date": "2026-11-05",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "durable_objects": { "bindings": [{ "name": "COMPUTER_CONTAINERS", "class_name": "ContainerComputer" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ContainerComputer"] }],
+  "containers": [{
+    "name": "camelrun-probe-computer-fork",
+    "class_name": "ContainerComputer",
+    "scheduling_policy": "durable_object",
+    "images": { "workspace": { "dockerfile": "../../computers/Dockerfile" } }
+  }],
+  "vars": { "COMPUTER_INSTANCE": "standard-4" },
+  "observability": { "enabled": false }
+}
