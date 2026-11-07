@@ -62,6 +62,11 @@ random webhook secret are stored encrypted; the API returns only masked values.
 
   A turn not started by a message or a sub-agent (a schedule) replies at the
   channel's top level.
+
+  A channel agent that can also message agents (the `agents` builtin, or a
+  sub-agent with a parent) has one `send_message`. With `to` (a sub-agent's
+  name or id, or `"parent"`) it goes to that agent; without `to` it goes to the
+  conversation, and takes `files` and `thread`.
 - **GitHub.** Create a GitHub App with the repository permissions Pull requests
   (read and write), Issues (read and write), Contents (read) and Metadata (read),
   subscribe it to Pull request, Issue comment, Pull request review comment (and

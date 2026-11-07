@@ -293,3 +293,12 @@ test("conversation: channel makes a Slack channel one agent: each thread is part
   await until(() => r.api.posts().length === 8, "the notice's reply");
   assert.deepEqual([r.api.posts()[7].text, r.api.posts()[7].thread_ts], ["The badge PR is open.", "100.0001"]);
 });
+
+test("send_message for a channel agent that messages agents: to names an agent, and files or thread with it are refused", async () => {
+  const { sendMessageTarget } = await import("../src/core/channels/channels.ts");
+  assert.equal(sendMessageTarget({ text: "hi" }), "conversation");
+  assert.equal(sendMessageTarget({ text: "hi", thread: "new" }), "conversation");
+  assert.equal(sendMessageTarget({ to: "badge", text: "use blue" }), "agent");
+  assert.throws(() => sendMessageTarget({ to: "badge", text: "x", thread: "new" }), /leave out to/);
+  assert.throws(() => sendMessageTarget({ to: "", text: "x" }), /sub-agent's name/);
+});

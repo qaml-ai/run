@@ -316,8 +316,11 @@ export function createHarness(this: AgentRuntime): PiHarness {
         sections: [],
       });
       registry.install({ name: "camel.human", tools: [askHuman, askUser] });
-      // A channel's agents send updates and files to their conversation before the final reply.
-      registry.install({ name: "camel.channels", tools: conf.config.type === "channel" ? [this.channels.tool(async () => this.config(), async api => { const run = await this.currentRun(api as never); return run.id === "background" ? undefined : run.id; })] : [] });
+      // A channel's agents send updates and files to their conversation before the final reply. One that also messages
+      // agents (its sub-agents) gets one send_message for both, dispatched on `to` (installed with camel.delegation).
+      const messaging = this.channels.messaging(async () => this.config(), async api => { const run = await this.currentRun(api as never); return run.id === "background" ? undefined : run.id; },
+        conf.config.type === "channel", await this.delegation.toolsFor(conf.config.delegate ?? {}, conf.config.builtins ?? [], conf.config.type === "subagent"));
+      registry.install({ name: "camel.channels", tools: messaging.channels });
       registry.install({
         name: "camel.images",
         tools: await this.imageTools(),
@@ -416,11 +419,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
       });
       registry.install({
         name: "camel.delegation",
-        tools: await this.delegation.toolsFor(
-          conf.config.delegate ?? {},
-          conf.config.builtins ?? [],
-          conf.config.type === "subagent",
-        ),
+        tools: messaging.delegation,
       });
       registry.install({
         name: "camel.linux",

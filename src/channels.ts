@@ -4,7 +4,7 @@ import type { AgentRef, SessionHooks } from "./client-sessions/state.ts";
 import type { ToolDefinition } from "./protocol.ts";
 import { errorText } from "./protocol.ts";
 import { safeError as safeErrorOf } from "./metrics.ts";
-import { valueServer } from "./tool-servers.ts";
+import { valueServer, type ToolServer } from "./tool-servers.ts";
 import type { Definitions } from "./definitions.ts";
 import { readText } from "./http.ts";
 import type { RequestRecord } from "../shared/client-protocol.ts";
@@ -15,7 +15,7 @@ import type { Input } from "./inputs.ts";
 import { network } from "./node-context.ts";
 import { decisionsRequest, type DecisionService } from "./decisions.ts";
 import {
-  Channels as CoreChannels, conversationAgentKey as coreConversationAgentKey, fetchFile as coreFetchFile, SEND_MESSAGE_TOOL, TYPING_MAX_MS,
+  Channels as CoreChannels, conversationAgentKey as coreConversationAgentKey, fetchFile as coreFetchFile, SEND_MESSAGE_TOOL, SEND_MESSAGE_WITH_AGENTS_TOOL, sendMessageTarget, TYPING_MAX_MS,
   type ChannelFiles as CoreChannelFiles, type Presented,
 } from "./core/channels/channels.ts";
 
@@ -32,6 +32,20 @@ export {
 } from "./core/channels/channels.ts";
 
 export const SEND_MESSAGE: ToolDefinition = { ...SEND_MESSAGE_TOOL, parameters: structuredClone(SEND_MESSAGE_TOOL.parameters) as ToolDefinition["parameters"], exposure: "direct", callers: ["model"] };
+const SEND_MESSAGE_WITH_AGENTS: ToolDefinition = { ...SEND_MESSAGE_WITH_AGENTS_TOOL, parameters: structuredClone(SEND_MESSAGE_WITH_AGENTS_TOOL.parameters) as ToolDefinition["parameters"], exposure: "direct", callers: ["model"] };
+
+/**
+ * A channel agent that also messages agents (its sub-agents, or its parent) has two send_message tools: the channel's
+ * (`feature`) and the agents' (`agents`, multi-agent.ts). One shadowed the other, so this gives it one instead, which
+ * the agents' server answers when the call names `to` and the channel's otherwise. Placed first, it takes precedence.
+ */
+export async function mergedSendMessage(feature: ToolServer, agents: ToolServer | undefined): Promise<ToolServer | undefined> {
+  if (!agents || !(await agents.tools()).some(tool => tool.name === "send_message")) return undefined;
+  return {
+    tools: () => [SEND_MESSAGE_WITH_AGENTS],
+    call: call => sendMessageTarget(call.args) === "agent" ? agents.call(call) : feature.call(call),
+  };
+}
 
 /** A conversation's agent's provisioning key (#692): one copy, in core (`conversationAgentKey` there). */
 export const conversationAgentKey = (type: string, channel: string, conversation: string, generation = 0) =>

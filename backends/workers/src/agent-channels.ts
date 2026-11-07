@@ -1,5 +1,5 @@
-import type { ToolRegistration } from "@earendil-works/pi-durable";
-import { SEND_MESSAGE_TOOL, TYPING_MAX_MS, type ChannelRun } from "../../../src/core/channels/channels.ts";
+import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
+import { SEND_MESSAGE_TOOL, SEND_MESSAGE_WITH_AGENTS_TOOL, sendMessageTarget, TYPING_MAX_MS, type ChannelRun } from "../../../src/core/channels/channels.ts";
 import type { Env } from "./agent-types.ts";
 import { workerChannels } from "./channels.ts";
 import { safeError } from "./observability.ts";
@@ -79,6 +79,33 @@ export class AgentChannels {
         return { output: [{ type: "text", text: JSON.stringify(sent) }] };
       },
     } as ToolRegistration;
+  }
+
+  /**
+   * One send_message for a channel agent that also messages agents: the agents' tool (`agents`, multi-agent) answers a
+   * call that names `to`, the conversation's (`channel`) any other. Neither shadows the other.
+   */
+  merged(channel: ToolRegistration, agents: ToolRegistration): ToolRegistration {
+    return defineTool({
+      name: SEND_MESSAGE_WITH_AGENTS_TOOL.name, description: SEND_MESSAGE_WITH_AGENTS_TOOL.description,
+      parameters: structuredClone(SEND_MESSAGE_WITH_AGENTS_TOOL.parameters) as never,
+      callers: ["model"], replay: "unsafe", structuredOutputSchema: {},
+      execute: (args: Record<string, unknown>, api, context) =>
+        ((sendMessageTarget(args ?? {}) === "agent" ? agents : channel).execute as (...input: unknown[]) => never)(args, api, context),
+    }) as ToolRegistration;
+  }
+
+  /**
+   * The messaging tools of an agent: its channel's send_message, if it is a channel agent, and its delegation tools;
+   * one send_message for both when it has both (see `merged`). Both install sites (startup and reconfiguration) use it.
+   */
+  messaging(owner: () => Promise<{ id: string; tenantId: string }>, run: (api: unknown) => Promise<string | undefined>, channel: boolean, delegation: ToolRegistration[]) {
+    const own = channel ? this.tool(owner, run) : undefined;
+    const agents = own && delegation.find(tool => tool.name === "send_message");
+    return {
+      channels: own && !agents ? [own] : [],
+      delegation: agents ? delegation.map(tool => tool === agents ? this.merged(own!, agents) : tool) : delegation,
+    };
   }
 
   /** What a tool call of this agent's run is told of where it came from: the channel, the conversation and the sender. */
