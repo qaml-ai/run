@@ -19,6 +19,7 @@ import { signVolumeLink } from "./file-links.ts";
 import { transaction, withSql, type Sql } from "./postgres.ts";
 import { safeError } from "./observability.ts";
 import { SendError } from "../../../src/core/channels/channels.ts";
+import { workerGitHubApps, type GitHubAppsEnv } from "./github-apps.ts";
 
 /**
  * Channels on Workers: the shared logic (src/core/channels) with this backend's host.
@@ -67,9 +68,14 @@ const EMAIL_PERMANENT = /^E_(VALIDATION_ERROR|FIELD_MISSING|TOO_MANY_RECIPIENTS|
 
 /** One GitHub provider per isolate and API, so an installation token (and a repository's name) is reused across deliveries and replies, as on ECS. */
 const githubProviders = new Map<string, ChannelProvider>();
-function githubFor(apiUrl: string, fetcher: typeof fetch): ChannelProvider {
-  let provider = githubProviders.get(apiUrl);
-  if (!provider) githubProviders.set(apiUrl, provider = github({ ...(apiUrl ? { apiUrl } : {}), fetch: fetcher }));
+function githubFor(env: ChannelEnv, apiUrl: string, fetcher: typeof fetch): ChannelProvider {
+  // A channel may name one of the tenant's stored GitHub Apps; those are read from this database.
+  const key = `${env.HYPERDRIVE.connectionString}|${apiUrl}`;
+  let provider = githubProviders.get(key);
+  if (!provider) {
+    if (githubProviders.size > 16) githubProviders.clear();
+    githubProviders.set(key, provider = github({ ...(apiUrl ? { apiUrl } : {}), fetch: fetcher, apps: async (tenant, ref) => (await workerGitHubApps(env as unknown as GitHubAppsEnv)).credentials(tenant, ref) }));
+  }
   return provider;
 }
 
@@ -79,7 +85,7 @@ function providers(env: ChannelEnv, outbound: Awaited<ReturnType<typeof keyServi
   return {
     telegram: telegram({ apiUrl: env.AGENT_TELEGRAM_API_URL, fetch: fetcher }),
     slack: slack({ apiUrl: env.AGENT_SLACK_API_URL, fetch: fetcher, ...(env.TEST_MODE === "1" && Number(env.AGENT_TEST_SLACK_MAX_FILE_BYTES) ? { maxFileBytes: Number(env.AGENT_TEST_SLACK_MAX_FILE_BYTES) } : {}) }),
-    github: githubFor(env.AGENT_GITHUB_API_URL ?? "", fetcher),
+    github: githubFor(env, env.AGENT_GITHUB_API_URL ?? "", fetcher),
     webhook: webhook({ outbound: { check: url => outbound.check(url), fetch: (url, init) => outbound.fetch(url, init as never) } }),
     ...(env.AGENT_EMAIL_DOMAIN ? { email: emailProvider({
       sql: { query: (text, values) => withSql(env, sql => sql.query(text, values as unknown[])) }, domain: env.AGENT_EMAIL_DOMAIN,

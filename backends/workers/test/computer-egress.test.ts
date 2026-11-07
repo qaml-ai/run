@@ -44,6 +44,40 @@ test("computer settings: hosts are public DNS names, auth is an exchange, scheme
   ] as const) assert.throws(() => computerSettingsInput(value, check, "acme"), message as RegExp);
 });
 
+test("computer settings: a github-app grant names one of the tenant's Apps, is for GitHub's hosts, and defaults to git's Basic on github.com", () => {
+  const app = { type: "github-app", app: "code", repositories: ["Acme/App"], permissions: { pull_requests: "write", contents: "write" } };
+  assert.deepEqual(computerSettingsInput({ egress: [{ host: "github.com", auth: app }, { host: "api.github.com", auth: { type: "github-app", app: "code", owner: "acme" } }] }, check, "acme").egress, [
+    { host: "github.com", auth: { type: "github-app", app: "code", repositories: ["acme/app"], permissions: { contents: "write", pull_requests: "write" } }, scheme: "basic" },
+    { host: "api.github.com", auth: { type: "github-app", app: "code", owner: "acme" }, scheme: "bearer" },
+  ]);
+  assert.equal(computerSettingsInput({ egress: [{ host: "github.com", auth: app, scheme: "bearer" }] }, check, "acme").egress![0].scheme, "bearer");
+  for (const [value, message] of [
+    [{ egress: [{ host: "registry.npmjs.org", auth: app }] }, /auth github-app is for GitHub's hosts: github\.com, api\.github\.com/],
+    [{ egress: [{ host: "github.com", auth: { type: "github-app" } }] }, /computer\.egress\[0\]\.auth\.app is the name or id/],
+    [{ egress: [{ host: "github.com", auth: { ...app, url: "https://x.example.net" } }] }, /Unrecognized key: "url"/],
+    [{ egress: [{ host: "github.com", auth: { ...app, repositories: ["acme/a", "other/b"] } }] }, /must all have one owner/],
+  ] as const) assert.throws(() => computerSettingsInput(value, check, "acme"), message as RegExp);
+});
+
+test("a github-app grant's token is dropped only when GitHub answers 401: a 403 is what the scoped token may not do", async () => {
+  const grant: EgressGrant = { host: "github.com", auth: { type: "github-app", app: "code", repositories: ["acme/app"] }, scheme: "basic" };
+  const dropped: string[] = [];
+  const tokens = ["ghs_one", "ghs_two"];
+  const credential = async () => { const token = tokens[0]!; return { token, refused: () => { dropped.push(token); tokens.shift(); } }; };
+  const forbidden = upstream([403]);
+  const denied = await forwardEgress(new Request("https://github.com/acme/other.git/info/refs?service=git-receive-pack", { headers: { authorization: "Basic bWFjaGluZQ==" } }), grant, { credential, send: forbidden.send });
+  assert.equal(denied.status, 403);
+  assert.deepEqual([forbidden.seen.length, dropped], [1, []], "not retried, and the token is kept");
+  assert.equal(forbidden.seen[0].headers.get("authorization"), `Basic ${btoa("x-access-token:ghs_one")}`, "the machine's own Authorization never reaches GitHub");
+  const expired = upstream([401, 200]);
+  assert.equal((await forwardEgress(new Request("https://github.com/acme/app.git/info/refs"), grant, { credential, send: expired.send })).status, 200);
+  assert.deepEqual(dropped, ["ghs_one"]);
+  assert.deepEqual(expired.seen.map(request => request.headers.get("authorization")), [`Basic ${btoa("x-access-token:ghs_one")}`, `Basic ${btoa("x-access-token:ghs_two")}`]);
+  const failed = await forwardEgress(new Request("https://github.com/acme/app.git/info/refs"), grant, { credential: async () => { throw new Error("GitHub App code is not one of this tenant's"); }, send: expired.send });
+  assert.equal(failed.status, 502);
+  assert.match((await failed.json() as { error: string }).error, /camelRun egress credential for github\.com: GitHub App code is not one of this tenant's/);
+});
+
 test("the tool tells the model which hosts it reaches and that the runtime authenticates them", () => {
   assert.equal(egressDescription(undefined), "No Internet access.");
   const text = egressDescription({ egress: [{ host: "github.com", auth: exchange, scheme: "basic" }, { host: "registry.npmjs.org" }] });

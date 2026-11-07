@@ -47,6 +47,7 @@ import {
 } from "./webhooks.ts";
 import { handleFileRequest, handleSignedFileRequest } from "./files.ts";
 import { channelRoutes, channelWebhook } from "./channel-routes.ts";
+import { githubAppRoutes } from "./github-app-routes.ts";
 import { workerChannels } from "./channels.ts";
 import { receiveChannelEmail } from "./channel-email.ts";
 import { publicMoneyRoutes, authenticateMoney, moneyRoutes, moneyMaintenance, sendMoneyWebhooks, consumeAccountDeletionMessage } from "./money-api.ts";
@@ -352,6 +353,8 @@ const worker = {
         if (definition) return definition;
         const channel = await channelRoutes(request, env, auth.tenantId, ctx);
         if (channel) return channel;
+        const githubApp = await githubAppRoutes(request, env, auth);
+        if (githubApp) return githubApp;
         const provider = await providerRoutes(request, env, auth);
         if (provider) return provider;
         const run = await statelessRoutes(request, env, auth);

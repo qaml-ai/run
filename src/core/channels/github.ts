@@ -36,8 +36,13 @@ const truncate = (text: string, max: number) => text.length > max ? `${text.slic
  * pastes the channel's `webhookUrl` into the app. A pull request or issue is a conversation
  * (`<installation>-<repository id>-<number>`), its agent made on the first event that starts a turn;
  * replies are comments on it. `apiUrl` is configurable so tests run against a fake; `fetch` is the host's outbound fetch.
+ *
+ * Instead of its own credentials a channel may name one of the tenant's stored GitHub Apps (`credentials: { app }`,
+ * src/core/github-apps.ts), so one App answers webhooks and mints the tokens agents use. The channel then keeps only
+ * a reference (the App's id); its key and webhook secret are read from the App each time, so rotating the App's key
+ * rotates the channel's too. `apps` reads them.
  */
-export function github(options: { apiUrl?: string; fetch: typeof fetch }): ChannelProvider {
+export function github(options: { apiUrl?: string; fetch: typeof fetch; apps?: (tenant: string, ref: string) => Promise<{ id: string; name: string; appId: string; privateKey: string; webhookSecret?: string }> }): ChannelProvider {
   const base = (options.apiUrl ?? "https://api.github.com").replace(/\/+$/, "");
   const tokens = new Map<string, { token: string; expires: number }>();
   const names = new Map<string, string>();
@@ -72,6 +77,13 @@ export function github(options: { apiUrl?: string; fetch: typeof fetch }): Chann
     const value = credentials.webhookSecret;
     if (typeof value !== "string" || !value) throw new HttpError(400, "Send credentials.webhookSecret: the app's webhook secret");
     return value;
+  };
+  /** A stored App's credentials for a channel that names it; a channel's own as they are. */
+  const own = async (credentials: Record<string, string>): Promise<Record<string, string>> => {
+    if (credentials.app === undefined) return credentials;
+    if (!options.apps) throw new SendError("This runtime holds no GitHub Apps", true);
+    const app = await options.apps(credentials.tenant ?? "", credentials.app);
+    return { appId: app.appId, privateKey: app.privateKey, ...(app.webhookSecret ? { webhookSecret: app.webhookSecret } : {}) };
   };
   /** A JWT the app signs for itself, good for ten minutes (backdated a minute for clock drift). */
   const jwt = async (credentials: Record<string, string>) => {
@@ -135,15 +147,30 @@ export function github(options: { apiUrl?: string; fetch: typeof fetch }): Chann
     // Comments carry no files: the core sends a link instead.
     maxFileBytes: 0,
     maxBodyBytes: 5 * 1024 * 1024,
-    async setup(credentials) {
+    async setup(given, _webhook, context) {
+      let credentials = given, stored: { id: string; name: string } | undefined;
+      if (given.app !== undefined) {
+        const extra = Object.keys(given).find(name => name !== "app");
+        if (extra) throw new HttpError(400, `credentials is { app } (one of your GitHub Apps) or { appId, privateKey, webhookSecret }, not both: ${extra}`);
+        if (!options.apps || !context) throw new HttpError(400, "This runtime holds no GitHub Apps; give the channel { appId, privateKey, webhookSecret }");
+        let app;
+        try { app = await options.apps(context.tenant, given.app); }
+        catch (error) { throw new HttpError(400, `credentials.app: ${error instanceof Error ? error.message : "unknown GitHub App"}`); }
+        if (!app.webhookSecret) throw new HttpError(400, `GitHub App ${app.name} has no webhook secret: set its webhookSecret (PATCH /v1/github-apps/${app.id}) for a channel to verify deliveries`);
+        credentials = { appId: app.appId, privateKey: app.privateKey, webhookSecret: app.webhookSecret };
+        stored = { id: app.id, name: app.name };
+      }
       webhookSecret(credentials);
       let app;
       try { app = await call(await jwt(credentials), "GET", "/app"); }
       catch (error) { throw new HttpError(422, `GitHub rejected the app credentials (${error instanceof Error ? error.message : "GET /app failed"})`); }
       if (typeof app.slug !== "string") throw new HttpError(422, "GitHub did not name the app");
       const pem = credentials.privateKey;
+      const account = { id: String(app.id), slug: app.slug, username: app.slug, botLogin: `${app.slug}[bot]`, ...(typeof app.name === "string" ? { name: app.name } : {}) };
+      // A stored App's channel keeps the reference only; the App's id in its account keeps the App from being deleted under it.
+      if (stored) return { account: { ...account, githubApp: stored.id } as Record<string, string>, masked: { app: stored.name, appId: appId(credentials) } as Record<string, string>, credentials: { app: stored.id, tenant: context!.tenant } };
       return {
-        account: { id: String(app.id), slug: app.slug, username: app.slug, botLogin: `${app.slug}[bot]`, ...(typeof app.name === "string" ? { name: app.name } : {}) },
+        account,
         masked: { appId: appId(credentials), privateKey: `…${pem.trim().slice(-40, -30)}…`, webhookSecret: `…${credentials.webhookSecret.slice(-4)}` },
       };
     },
@@ -169,7 +196,9 @@ export function github(options: { apiUrl?: string; fetch: typeof fetch }): Chann
       return { events: [...new Set(events)], repos, ignoreDrafts, reply, authors, debounceSeconds } satisfies GitHubSettings;
     },
     replies: settings => settings.reply !== "none",
-    async verify(headers, body, _secret, credentials) {
+    async verify(headers, body, _secret, stored) {
+      const credentials = await own(stored);
+      if (!credentials.webhookSecret) return false;
       const expected = `sha256=${toHex(await hmacSha256(webhookSecret(credentials), body))}`;
       return sameText(headers.get("x-hub-signature-256") ?? "", expected);
     },
@@ -178,7 +207,8 @@ export function github(options: { apiUrl?: string; fetch: typeof fetch }): Chann
     parse(payload: any, context: ParseContext): Inbound | undefined {
       return parseEvent(payload, context);
     },
-    async download(credentials, file) {
+    async download(stored, file) {
+      const credentials = await own(stored);
       const [installation, repo, number] = file.id.split(":");
       if (!/^\d+$/.test(installation ?? "") || !/^\d+$/.test(repo ?? "") || !/^\d+$/.test(number ?? "")) throw new Error("Not a GitHub diff");
       const token = await installationToken(credentials, installation);
@@ -186,7 +216,8 @@ export function github(options: { apiUrl?: string; fetch: typeof fetch }): Chann
       // The token goes only to the API host; fetchFile refuses redirects.
       return fetchFile(options.fetch, `${base}/repos/${name}/pulls/${number}`, headers(token, "application/vnd.github.diff"));
     },
-    async send(credentials, conversationId, text) {
+    async send(stored, conversationId, text) {
+      const credentials = await own(stored);
       const { installation, repo, number } = target(conversationId);
       const token = await installationToken(credentials, installation);
       await call(token, "POST", `/repos/${await repository(token, repo)}/issues/${number}/comments`, { body: text });

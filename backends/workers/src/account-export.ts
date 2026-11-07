@@ -32,6 +32,8 @@ export interface ExportOptions {
   volumes?: VolumeService;
   definitions?: Definitions;
   channels?: Channels;
+  /** The tenant's GitHub Apps, their keys and secrets masked. */
+  githubApps?: { list(tenant: string): Promise<unknown[]> };
   webhooks?: Webhooks;
   oauth?: OAuth;
   /** Journey events (src/journey.ts), where the operator configured them: the store is asked for what it holds of the account. */
@@ -49,6 +51,7 @@ schedule-deliveries.json  scheduled email delivery status
 workspace-usage.json       daily model and tool usage attributed to each workspace
 definitions.json           your agent definitions (secrets left out)
 channels.json              your channels (credentials masked)
+github-apps.json           your GitHub Apps (their keys and webhook secrets masked, never the keys)
 webhooks.json              your webhook endpoints (signing secrets left out)
 tokens.json                your API tokens' names and prefixes (never the tokens)
 keys.json                  which provider keys are set (the last four characters, never the keys)
@@ -120,6 +123,7 @@ export async function* exportAccount(options: ExportOptions, tenant: string): As
 
   if (options.definitions) yield* zip.file("definitions.json", json(await options.definitions.list(tenant)));
   if (options.channels) yield* zip.file("channels.json", json(await options.channels.list(tenant)));
+  if (options.githubApps) yield* zip.file("github-apps.json", json(await options.githubApps.list(tenant)));
   if (options.webhooks) yield* zip.file("webhooks.json", json(await options.webhooks.list(tenant)));
   yield* zip.file("tokens.json", json(await accounts.listTokens(tenant)));
   yield* zip.file("keys.json", json(await accounts.keyStatus(tenant)));

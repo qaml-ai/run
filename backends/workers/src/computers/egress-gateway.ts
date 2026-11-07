@@ -6,6 +6,7 @@ import type { IdentityEnv } from "../tool-identity.ts";
 import { modelOutbound } from "../security-outbound.ts";
 import { testEndpoint } from "./microvm.ts";
 import { forwardEgress, grantSource, type EgressGrant, type EgressIdentity } from "./egress.ts";
+import { workerGitHubApps, type GitHubAppsEnv } from "../github-apps.ts";
 
 export type EgressProps = { grant: EgressGrant; identity: EgressIdentity };
 
@@ -23,7 +24,9 @@ export class ComputerEgress extends WorkerEntrypoint<Env, EgressProps> {
     return forwardEgress(request, grant, {
       testUpstream,
       async credential(authed) {
-        const exchange = credentialExchange(env as unknown as IdentityEnv, grantSource(authed), async () => identity,
+        // The tenant's own App, by the agent's tenant: another tenant's App of the same name is never found.
+        if (authed.auth.type === "github-app") return (await workerGitHubApps(env as unknown as GitHubAppsEnv)).token(identity.claims.tenant, authed.auth, `https://${authed.host}`);
+        const exchange = credentialExchange(env as unknown as IdentityEnv, grantSource({ ...authed, auth: authed.auth }), async () => identity,
           (url, init, max) => fetchSource(env, sourceUrl(url, env), init, max));
         const headers = await exchange.headers();
         return { token: headers.Authorization.replace(/^Bearer /, ""), refused: () => exchange.refused() };

@@ -28,6 +28,8 @@ import { limitRefused } from "./limit-hits.ts";
 import { AGENT_PAGE_MAX } from "./client-sessions/configuration.ts";
 import type { Channels } from "./channels.ts";
 import { channelRoutes } from "./channels-api.ts";
+import type { GitHubApps } from "./core/github-apps.ts";
+import { githubAppRoutes } from "./github-apps-api.ts";
 import { validTtl, type Definitions } from "./definitions.ts";
 import { AWS_REGION, checkScope, scopeEntry, type KeyScopes } from "./key-scopes.ts";
 import { providerInput, type ModelProviders } from "./model-providers.ts";
@@ -97,6 +99,8 @@ export interface ApiContext {
   verifyKeys?: boolean;
   scheduler?: Scheduler;
   channels?: Channels;
+  /** A tenant's GitHub Apps (`/v1/github-apps`), which egress grants and tool sources mint tokens from. */
+  githubApps?: GitHubApps;
   volumes?: VolumeService;
   definitions?: Definitions;
   /** Tenants whose operator tokens may adjust any tenant's credit (AGENT_BILLING_ADMINS). */
@@ -1199,7 +1203,7 @@ export function api(context: ApiContext) {
     return context.accountDeletions;
   };
   const exported = (tenant: string) => {
-    const options = { accounts, clients, volumes: context.volumes, definitions: context.definitions, channels: context.channels, webhooks: context.webhooks, oauth: context.oauth, journey: context.journey };
+    const options = { accounts, clients, volumes: context.volumes, definitions: context.definitions, channels: context.channels, githubApps: context.githubApps, webhooks: context.webhooks, oauth: context.oauth, journey: context.journey };
     // Past the first bytes the status is sent: a failure cuts the zip off before its directory, so no reader takes it as whole.
     const zip = (async function* () {
       try { yield* exportAccount(options, tenant); }
@@ -1353,6 +1357,7 @@ export function api(context: ApiContext) {
   });
 
   channelRoutes(route, () => context.channels);
+  githubAppRoutes(route, () => context.githubApps);
   definitionRoutes(route, () => context);
   workspaceRoutes(route, () => accounts.db);
   computerRoutes(route, () => context.computers, operatorOnly);

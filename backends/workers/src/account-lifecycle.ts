@@ -107,6 +107,7 @@ async function exportResponse(env: AccountLifecycleEnv, service: AccountServices
   const chunks = exportAccount({
     accounts: service.accounts, oauth: service.oauth, webhooks, journey: service.journey,
     channels: { list: async owner => (await (await import("./channels.ts")).workerChannels(env as never)).list(owner) },
+    githubApps: { list: async owner => (await (await import("./github-apps.ts")).workerGitHubApps(env as never)).list(owner) },
     clients: {
       async historyPageFor(id, _tenant, query) {
         const response = await env.AGENTS.getByName(id).fetch(new Request(`https://agent/history?${new URLSearchParams(query as Record<string, string>)}`));

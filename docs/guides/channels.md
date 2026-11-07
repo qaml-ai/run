@@ -19,7 +19,7 @@ the channel.
 | --- | --- | --- | --- |
 | `telegram` | `botToken` | webhook, registered for you | a chat |
 | `slack` | `botToken` (`xoxb-…`), `signingSecret` | webhook, pasted into the app | a thread started by an @mention, or a DM |
-| `github` | `appId`, `privateKey`, `webhookSecret` | webhook, pasted into the GitHub App | a pull request or issue |
+| `github` | `appId`, `privateKey`, `webhookSecret`, or `app` (a [stored GitHub App](github-apps.md)) | webhook, pasted into the GitHub App | a pull request or issue |
 | `webhook` | `secret`, optional `replyUrl` | webhook, pasted into the sending service | whatever the `key` template names (one agent by default) |
 | `email` | none | SES, on the runtime's domain | an email thread |
 
@@ -69,7 +69,11 @@ random webhook secret are stored encrypted; the API returns only masked values.
   secret, and install it on the repositories it should see. Create the channel
   with the App ID, the private key (PEM) and the secret, which the runtime checks
   by calling `GET /app` with a JWT the key signs; then paste the channel's
-  `webhookUrl` into the app's Webhook URL. Deliveries must carry a valid
+  `webhookUrl` into the app's Webhook URL. If the App is already one of your
+  [GitHub Apps](github-apps.md) with a webhook secret, give `credentials:
+  {"app": "<its name or id>"}` instead: the channel keeps only the reference,
+  uses the App's key and secret as they are now (a rotated key included), and
+  the App cannot be deleted while the channel uses it. Deliveries must carry a valid
   `X-Hub-Signature-256` and are deduplicated by `X-GitHub-Delivery`; pings are
   answered. Each pull request or issue gets its own agent. The prompt describes
   the event (marked `[From GitHub]`) and a pull request's current diff is

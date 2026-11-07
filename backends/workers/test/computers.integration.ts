@@ -11,6 +11,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fakeGitHubApp, type FakeGitHubApp } from "../../../tests/github-app-fake.ts";
 
 async function dockerUnavailable() {
   for (const args of [["info"], ["buildx", "version"]]) {
@@ -519,4 +520,125 @@ test("computer egress: git clone and push through the runtime's credential gatew
   await sh(child!, "touch /workspace/child-only");
   assert.match((await sh(lead.id, "test -e /workspace/child-only && echo shared || echo separate")).stdout, /separate/);
   await computer(lead.id, { op: "restore", name: "base", from: "parent" }, [500]);
+});
+
+/** Git's smart HTTP for the GitHub App case: it serves a repository only to a token the fake GitHub minted for it, and a push only with contents: write. */
+async function appGitServer(root: string, github: FakeGitHubApp) {
+  const seen: { path: string; reached: boolean; host?: string }[] = [];
+  const { server, origin } = await listen((request, response) => {
+    const url = new URL(request.url!, "http://local");
+    const [, owner, repo] = /^\/([^/]+)\/([^/]+)\.git\//.exec(url.pathname) ?? [];
+    const issued = github.tokenFor(request.headers.authorization);
+    const push = url.pathname.endsWith("/git-receive-pack") || url.searchParams.get("service") === "git-receive-pack";
+    const reached = !!owner && github.reaches(issued, owner, repo!) && (!push || issued!.permissions.contents === "write");
+    seen.push({ path: url.pathname, reached, host: request.headers["x-camelrun-egress-host"] as string | undefined });
+    if (request.headers["x-camelrun-egress-host"] !== "github.com") { response.writeHead(421); response.end("not routed by the egress gateway"); return; }
+    if (!issued) { response.writeHead(401, { "www-authenticate": 'Basic realm="GitHub"' }); response.end(); return; }
+    if (!reached) { response.writeHead(403); response.end("Write access to repository not granted."); return; }
+    const cgi = spawn("git", ["http-backend"], { env: {
+      ...process.env, GIT_PROJECT_ROOT: root, GIT_HTTP_EXPORT_ALL: "1", REMOTE_USER: "x-access-token",
+      PATH_INFO: url.pathname, QUERY_STRING: url.search.slice(1), REQUEST_METHOD: request.method!,
+      CONTENT_TYPE: request.headers["content-type"] ?? "", ...(request.headers["content-encoding"] ? { HTTP_CONTENT_ENCODING: request.headers["content-encoding"] } : {}),
+    } });
+    request.pipe(cgi.stdin);
+    let head = Buffer.alloc(0), sent = false;
+    cgi.stdout.on("data", (chunk: Buffer) => {
+      if (sent) { response.write(chunk); return; }
+      head = Buffer.concat([head, chunk]);
+      const end = head.indexOf("\r\n\r\n");
+      if (end < 0) return;
+      const headers: Record<string, string> = {};
+      let status = 200;
+      for (const line of head.subarray(0, end).toString().split("\r\n")) {
+        const [name, ...rest] = line.split(":"), value = rest.join(":").trim();
+        if (name.toLowerCase() === "status") status = Number(value.split(" ")[0]); else headers[name] = value;
+      }
+      response.writeHead(status, headers);
+      response.write(head.subarray(end + 4));
+      sent = true;
+    });
+    cgi.on("close", () => response.end());
+  });
+  return { server, origin, seen };
+}
+
+test("computer egress with a GitHub App: a git push gets a token the runtime mints, scoped to the grant's repository; deleting the App stops it", {
+  timeout: 600_000, skip: requireDocker ? false : unavailable,
+}, async (t) => {
+  assert.equal(unavailable, undefined, unavailable);
+  const egressImage = await egressImageWithoutSocketMatch(t);
+  if (egressImage) {
+    process.env.MINIFLARE_CONTAINER_EGRESS_IMAGE = egressImage;
+    t.after(() => { delete process.env.MINIFLARE_CONTAINER_EGRESS_IMAGE; });
+  }
+  const github = await fakeGitHubApp(t);
+  const repos = await mkdtemp(join(tmpdir(), "camelrun-egress-app-"));
+  t.after(() => rm(repos, { recursive: true, force: true }));
+  for (const name of ["app", "other"]) {
+    await run("git", ["init", "--bare", "-b", "main", join(repos, `acme/${name}.git`)]);
+    const seed = join(repos, `seed-${name}`);
+    await run("git", ["clone", join(repos, `acme/${name}.git`), seed]);
+    await run("sh", ["-c", `cd ${seed} && echo '# ${name}' > README.md && git add . && git -c user.name=t -c user.email=t@t commit -qm init && git push -q origin HEAD:main`]);
+  }
+  const git = await appGitServer(repos, github);
+  t.after(() => close(git.server));
+  const model = await listen(async (request, response) => {
+    for await (const _chunk of request) { /* drained */ }
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.end(`data: ${JSON.stringify({ id: "m", object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: "done" }, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0 } })}\n\ndata: [DONE]\n\n`);
+  });
+  t.after(() => close(model.server));
+
+  const fixture = await startFixture({ config: "wrangler.computers.test.jsonc", modelURL: `${model.origin}/v1`, vars: { TEST_EGRESS_UPSTREAM: git.origin, AGENT_GITHUB_API_URL: github.url } });
+  t.after(async () => {
+    const names = new Set([...fixture.worker.logs().matchAll(/containerName = (workerd-camelrun-proto-workers-computers-local-(?:ContainerComputer|SandboxComputer)-[a-f0-9]{64})/g)].map(match => match[1]));
+    await fixture.stop();
+    for (const name of names) for (const target of [name, `${name}-proxy`]) await run("docker", ["rm", "-f", target]).catch(() => {});
+  });
+  const api = async (path: string, init: { method?: string; body?: unknown } = {}, expected = [200, 201, 202]) => {
+    const response = await fetch(fixture.url + path, {
+      method: init.method ?? (init.body === undefined ? "GET" : "POST"),
+      headers: { authorization: `Bearer ${fixture.token}`, "content-type": "application/json" },
+      ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
+      signal: AbortSignal.timeout(200_000),
+    });
+    const text = await response.text();
+    assert.ok(expected.includes(response.status), `${path}: ${response.status} ${text}\n${fixture.worker.logs().slice(-4000)}`);
+    return { ...JSON.parse(text || "{}"), text } as any;
+  };
+  const sh = (agent: string, command: string) => api(`/experimental/agents/${agent}/computer`, { body: { provider: "container", op: "exec", argv: ["bash", "-lc", command], timeoutMs: 120_000 } });
+
+  const app = await api("/v1/github-apps", { body: { name: "code", appId: "5151", privateKey: github.state.pem } });
+  assert.doesNotMatch(app.text, /PRIVATE KEY/);
+  await api("/v1/definitions", { body: { name: "Bad", computer: { egress: [{ host: "registry.npmjs.org", auth: { type: "github-app", app: "code" } }] } } }, [400]);
+  const definition = await api("/v1/definitions", { body: {
+    name: "Coder", codeMode: false, fileTools: false,
+    computer: { idleSeconds: 600, egress: [{ host: "github.com", auth: { type: "github-app", app: "code", repositories: ["acme/app"], permissions: { contents: "write", metadata: "read" } } }] },
+  } });
+  assert.deepEqual(definition.computer.egress[0], { host: "github.com", auth: { type: "github-app", app: "code", repositories: ["acme/app"], permissions: { contents: "write", metadata: "read" } }, scheme: "basic" });
+  const agent = await api("/v1/agents", { body: { definition: definition.id } });
+
+  const pushed = await sh(agent.id, "git clone -q https://github.com/acme/app.git /workspace/app && cd /workspace/app && git switch -qc camel/badge && echo badge >> README.md && git -c user.name=camel -c user.email=c@c commit -qam badge && git push -q origin camel/badge");
+  assert.equal(pushed.exitCode, 0, JSON.stringify(pushed));
+  assert.equal((await run("git", ["--git-dir", join(repos, "acme/app.git"), "log", "--format=%s", "-1", "camel/badge"])).stdout.trim(), "badge");
+  assert.ok(git.seen.some(request => request.path.endsWith("/git-receive-pack") && request.reached));
+  // One token, for this repository with these permissions, minted by the App for acme's installation.
+  assert.deepEqual(github.minted().map(entry => [entry.installation, entry.repositories, entry.permissions]), [[101, ["app"], { contents: "write", metadata: "read" }]]);
+
+  // The grant's token reaches no other repository of the installation.
+  const other = await sh(agent.id, "git clone -q https://github.com/acme/other.git /workspace/other 2>&1; echo exit=$?");
+  assert.match(other.stdout, /exit=128/);
+  assert.ok(git.seen.some(request => request.path.startsWith("/acme/other.git/") && !request.reached));
+  assert.equal(github.minted().length, 1);
+
+  // The machine never holds the token.
+  const hygiene = await sh(agent.id, "env; cat /workspace/app/.git/config; cat ~/.git-credentials 2>/dev/null; grep -rIl ghs_ /workspace /root /tmp /etc 2>/dev/null; true");
+  for (const issued of github.state.issued) assert.ok(!hygiene.stdout.includes(issued.token));
+  assert.doesNotMatch(fixture.worker.logs(), /ghs_[a-f0-9]{8}/);
+
+  // Deleted: the gateway has no credential for the grant, and git is refused.
+  await api(`/v1/github-apps/${app.id}`, { method: "DELETE" });
+  const after = await sh(agent.id, "git -C /workspace/app fetch -q origin 2>&1; echo exit=$?");
+  assert.match(after.stdout, /exit=128/);
+  assert.equal(github.minted().length, 1, "nothing minted after the App is deleted");
 });
