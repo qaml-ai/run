@@ -12,6 +12,7 @@ import { SessionCodemodeSandbox } from "../codemode/sandbox.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord";
 import { PiHarness } from "agents/harness/pi";
+import { startStuck } from "./agent-lifecycle.ts";
 import { computerTool } from "./computers/tool.ts";
 import { computerSetup } from "./computers/agent-setup.ts";
 import { askHuman, askUser, humanInputExtension } from "./human.ts";
@@ -227,8 +228,12 @@ export function createHarness(this: AgentRuntime): PiHarness {
     harness: async ({ storage, context, onWake }) => {
       // Pi's open runs inside the SDK's startup (blockConcurrencyWhile, reset after 30 s): its slow parts are logged
       // (agent_start_slow), as restorePending's are; on the pilot, resets came before onStart ran.
-      let lapAt = Date.now();
-      const lap = (step: string) => { const now = Date.now(); if (now - lapAt > 2_000) console.warn(JSON.stringify({ type: "agent_start_slow", step, ms: now - lapAt, sinceConstructedMs: now - this.constructedAt })); lapAt = now; };
+      let lapAt = Date.now(), stuck = startStuck(this, "harness model (config, custom providers, key services)");
+      const lap = (step: string, next?: string) => {
+        const now = Date.now(); clearTimeout(stuck);
+        if (now - lapAt > 2_000) console.warn(JSON.stringify({ type: "agent_start_slow", step, ms: now - lapAt, sinceConstructedMs: now - this.constructedAt }));
+        lapAt = now; if (next) stuck = startStuck(this, next);
+      };
       const registry = this.registry;
       const conf = await this.config();
       // A recreated object must register the stored custom model before Pi resumes tasks.
@@ -243,7 +248,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
         (await keyServices(this.env)).tenants.modelEndpoints(conf.tenantId),
         conf.resolvedModel,
       );
-      lap("harness model (config, custom providers, key services)");
+      lap("harness model (config, custom providers, key services)", "harness tools");
       this.modelCompaction = fixed => modelCompactionSettings(model, conf.config.maxOutputTokens, fixed);
       registry.install(
         runtimePromptSections(
@@ -449,7 +454,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
       });
       registry.install(this.codeExtension);
       this.availableTools = prioritizedTools(registry.snapshot().tools());
-      lap("harness tools");
+      lap("harness tools", "Harness.open");
       const opened = await Harness.open(
         storage,
         {
