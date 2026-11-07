@@ -84,6 +84,8 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
       AGENT_TENANTS_JSON: JSON.stringify(tenants),
       ...(env.AGENT_GITHUB_WEB_URL ? { TEST_GITHUB_WEB_URL: env.AGENT_GITHUB_WEB_URL } : {}),
       ...(env.AGENT_GITHUB_API_URL ? { TEST_GITHUB_API_URL: env.AGENT_GITHUB_API_URL } : {}),
+      // Node's Boat API base; Workers redirects every computer provider's origin to the one test endpoint.
+      ...(env.AGENT_BOAT_API_URL ? { TEST_COMPUTER_ENDPOINT: new URL(env.AGENT_BOAT_API_URL).origin } : {}),
       ...(env.AGENT_GOOGLE_ISSUER ? { TEST_GOOGLE_ISSUER: env.AGENT_GOOGLE_ISSUER } : {}),
       // Point the real Worker mail transport at the same local sink. Its raw
       // EmailMessageBuilder payload is not an SES envelope: no fixture code
