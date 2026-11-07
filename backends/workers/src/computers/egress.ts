@@ -32,6 +32,13 @@ export const COMPUTER_LIMITS = {
 export const CONTAINER_CA = "/etc/cloudflare/certs/cloudflare-containers-ca.crt";
 /** Trusts that CA for every TLS client in the image: OpenSSL (git, curl, python) through the system bundle, Node through NODE_EXTRA_CA_CERTS. */
 export const TRUST_COMMAND = `cp ${CONTAINER_CA} /usr/local/share/ca-certificates/cloudflare-containers-ca.crt && update-ca-certificates >/dev/null`;
+/**
+ * Offline, a lookup of a name nothing answers (any host that is not granted) waits out the resolver's defaults: 28 s
+ * on Cloudflare, per lookup. Granted hosts are answered locally at once, so one 1 s try per nameserver loses nothing.
+ * Best effort: a read-only resolv.conf keeps the defaults. (The machine's own hostname, which git resolves for every
+ * reflog it writes, is answered by nss-myhostname in the image: Cloudflare's /etc/hosts is read-only and lacks it.)
+ */
+export const RESOLVER_COMMAND = `{ grep -q '^options .*timeout:' /etc/resolv.conf || echo 'options timeout:1 attempts:1' >> /etc/resolv.conf; } 2>/dev/null || true`;
 
 const HOST = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$/;
 const RESERVED = /(^|\.)(localhost|local|internal|localdomain|home|lan|test|invalid|example)$/;

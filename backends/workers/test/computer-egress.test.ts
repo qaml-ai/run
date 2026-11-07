@@ -5,6 +5,7 @@ import {
   egressDescription,
   forwardEgress,
   CONTAINER_CA,
+  RESOLVER_COMMAND,
   type EgressGrant,
 } from "../src/computers/egress.ts";
 import { ContainerProvider, operate, type ComputerNetwork } from "../src/computers/provider.ts";
@@ -194,6 +195,8 @@ test("a computer with grants starts offline, intercepts each granted host and tr
   assert.equal(start.env.NODE_EXTRA_CA_CERTS, CONTAINER_CA);
   assert.deepEqual(calls.filter(call => call[0] === "intercept").map(call => call[1]), ["github.com", "registry.npmjs.org"]);
   assert.ok(calls.some(call => call[0] === "exec" && (call[1] as string[]).join(" ").includes("update-ca-certificates")));
+  // Names nothing answers fail in seconds, not the resolver's default 28 s.
+  assert.ok(calls.some(call => call[0] === "exec" && (call[1] as string[]).join(" ").includes(RESOLVER_COMMAND)));
   assert.deepEqual(calls.find(call => call[0] === "idle"), ["idle", 900_000]);
 
   // The same grants reuse the running machine; changed grants replace it.
@@ -210,6 +213,8 @@ test("a computer without grants keeps the original offline start", async () => {
   const start = calls.find(call => call[0] === "start")![1] as Record<string, unknown>;
   assert.deepEqual(start, { image: "img", instance: "lite", enableInternet: false });
   assert.deepEqual(calls.find(call => call[0] === "exec")![1], ["mkdir", "-p", "/workspace"]);
+  // Without grants every lookup is unanswered: it fails fast, and no CA is trusted.
+  assert.deepEqual(calls.filter(call => call[0] === "exec")[1][1], ["sh", "-c", RESOLVER_COMMAND]);
   assert.deepEqual(calls.find(call => call[0] === "idle"), ["idle", 60_000]);
 });
 

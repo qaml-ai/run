@@ -1,5 +1,5 @@
 import { workspacePath } from "../validation.ts";
-import { CONTAINER_CA, COMPUTER_LIMITS, TRUST_COMMAND, type EgressGrant } from "./egress.ts";
+import { CONTAINER_CA, COMPUTER_LIMITS, RESOLVER_COMMAND, TRUST_COMMAND, type EgressGrant } from "./egress.ts";
 import { boundedStart, FORK_LIMITS } from "../../../../src/core/computer-fork.ts";
 import type { NativeForkAnswer, NativeForkOrigin, NativeForkedFrom } from "./native-fork.ts";
 
@@ -343,8 +343,9 @@ export class ContainerProvider implements ComputerProvider {
    * Unread output pipes would hold the process open (update-ca-certificates warns on stderr), so they are ignored.
    */
   protected async trust() {
-    if (!this.network.egress.length) return;
-    const trust = await this.container.exec(["sh", "-c", TRUST_COMMAND], { signal: AbortSignal.timeout(30_000), stdout: "ignore", stderr: "ignore" });
+    // Every start: lookups of unreachable names fail fast (RESOLVER_COMMAND), and with grants, the CA is trusted.
+    const command = this.network.egress.length ? `${RESOLVER_COMMAND}; ${TRUST_COMMAND}` : RESOLVER_COMMAND;
+    const trust = await this.container.exec(["sh", "-c", command], { signal: AbortSignal.timeout(30_000), stdout: "ignore", stderr: "ignore" });
     if (await trust.exitCode) throw new Error("Computer could not trust the egress certificate authority");
   }
   /** This deployment's digest-pinned reference for the spec's image. */
