@@ -209,6 +209,12 @@ export async function admitImpl(this: AgentRuntime,
   acceptedFingerprint?: string) {
     await this.config();
     const request = object(input, ["id", "method", "params"]);
+    // The old steer request spelling shares prompt payer checks and own-turn fallback.
+    if (request.method === "steer") {
+      request.method = "prompt";
+      if (!request.params || typeof request.params !== "object" || Array.isArray(request.params)) throw new BadRequest("Expected a JSON object");
+      request.params = { ...request.params, whileRunning: "steer" };
+    }
     const id = boundedText(request.id, "id", 80);
     if (!/^[A-Za-z0-9_-]+$/.test(id))
       throw new BadRequest("Invalid request id");
@@ -437,7 +443,7 @@ export async function admitImpl(this: AgentRuntime,
       throw Object.assign(new Error("Too many requests queued for this agent"), { status: 429 });
     const conf = await this.config();
     if (params.endUser !== undefined) {
-      if (request.method !== "prompt" || params.whileRunning === "steer") throw new BadRequest("endUser is for a prompt that starts its own turn");
+      if (request.method !== "prompt") throw new BadRequest("endUser is for a prompt");
       const { accounts } = await keyServices(this.env);
       await new EndUserCredits(accounts.db).requireExisting(conf.tenantId, params.endUser as string);
     }
@@ -462,7 +468,8 @@ export async function admitImpl(this: AgentRuntime,
     // Pending operation receipts can outlive their native run. Only a live
     // turn can take a steer; its accepted steers remain part of that logical
     // turn when Pi drains them after a final answer.
-    const candidate = params.whileRunning === 'steer' ? await this.runningRequest() : undefined;
+    let candidate = params.whileRunning === 'steer' ? await this.runningRequest() : undefined;
+    if (candidate && ((await this.ctx.storage.get<RequestRecord>(reqKey(candidate.owner)))?.params?.endUser ?? null) !== (params.endUser ?? null)) candidate = undefined;
     const running = old?.steerCommitted ? old.steeredInto : candidate?.owner;
     const messageWake = async () => {
       const wake = notice!.root === conf.id
@@ -544,21 +551,6 @@ export async function admitImpl(this: AgentRuntime,
       : params.images
         ? imageReferenceInput(text, params.images as ImageRef[], conf.tenantId)
         : text;
-    if (request.method === 'steer' && !running) {
-      record.state = 'completed';
-      record.status = 'completed';
-      record.endedAt = Date.now();
-      record.outcome = { result: { queued: true } };
-      await this.ctx.storage.put(`held-steer:${id}`, { id, prompt, startedAt: record.startedAt });
-      await this.ctx.storage.put(reqKey(id), record);
-      if (preparing) {
-        await this.promptPreparations.finish(id);
-        await releaseTurn(this.env, conf.tenantId, conf.id, id);
-        await this.env.TENANTS.getByName(conf.tenantId).release(`${conf.id}:${id}`);
-      }
-      await this.emit({ type: 'response', id, outcome: record.outcome });
-      return record;
-    }
     const configurationWait = record.configurationWait ?? await this.configurationQueue.pendingOrder();
     if (configurationWait > await this.configurationQueue.completedOrder()) {
       if (preparing) { record.admitted = true; await this.promptPreparations.finish(id); }
@@ -640,10 +632,10 @@ export async function admitImpl(this: AgentRuntime,
         if (await root.commit(async tx => !!(await tx.submissionByRequest(root.id, taking.request)), BACKGROUND_CONTEXT)) await this.ctx.storage.delete(taking.keys);
         await this.ctx.storage.delete('held-steer-taking');
       }
-      const held = !pending ? await this.ctx.storage.list<{ id: string; prompt: typeof prompt; startedAt: number }>({ prefix: 'held-steer:' }) : new Map();
+      const held = !pending ? new Map([...(await this.ctx.storage.list<{ id: string; prompt: typeof prompt; endUser?: string; startedAt: number }>({ prefix: 'held-steer:' }))].filter(([, steer]) => (steer.endUser ?? null) === (params.endUser ?? null))) : new Map();
       const submission = {
         operationId: id,
-        whenBusy: params.whileRunning === "steer" ? "steer" as const : "followUp" as const,
+        whenBusy: params.whileRunning === "steer" && running ? "steer" as const : "followUp" as const,
         entry: {
           kind: record.steeredInto ? "camel.steer" : "camel.prompt",
           data: {
@@ -662,7 +654,7 @@ export async function admitImpl(this: AgentRuntime,
         : await this.batchQueue.holds(conf, { id, ...(record.actor ? { actor: record.actor } : {}), bucket: effectiveBucket, params }, notice !== undefined);
       if (holding) {
         const accepted = await this.batchQueue.hold(record, prompt, submission, holding === "window");
-        if (requestedBucket !== undefined) await this.ctx.storage.put("run-bucket", requestedBucket);
+        if (requestedBucket !== undefined && params.endUser === undefined) await this.ctx.storage.put("run-bucket", requestedBucket);
         await this.arm();
         return accepted;
       }
@@ -709,7 +701,7 @@ export async function admitImpl(this: AgentRuntime,
       const latest = (await tx.get<RequestRecord>(reqKey(id))) ?? record;
       const accepted = { ...latest, accepted: true };
       await tx.put(reqKey(id), accepted);
-      if (requestedBucket !== undefined) await tx.put("run-bucket", requestedBucket);
+      if (requestedBucket !== undefined && params.endUser === undefined) await tx.put("run-bucket", requestedBucket);
       return accepted;
     });
     this.track(id);

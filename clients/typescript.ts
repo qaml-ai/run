@@ -2521,20 +2521,20 @@ export class AgentClient {
   /**
    * Hand a message to the running turn (`whileRunning: "steer"`) and return as soon as the runtime has it, without waiting
    * for the turn: `accepted`, the running turn reads it after its current step; `taken`, it has read it already
-   * (`steeredInto` names the turn, whose request has the turn's outcome); `queued`, no turn was running, so it starts one.
+   * (`steeredInto` names the turn, whose request has the turn's outcome); `queued`, no turn with the same payer selection could take it, so it starts one.
    * A `steer_taken` event on the agent's stream says when the model has it. A taken steer no longer counts against the
    * agent's open requests, however long its turn goes on.
    */
-  async steerMessage(text: string, options?: RequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; allowDisconnected?: boolean }): Promise<SteerReceipt> {
+  async steerMessage(text: string, options?: RequestOptions & { endUser?: string; files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; allowDisconnected?: boolean }): Promise<SteerReceipt> {
     if (this.closed || this.closing || this.fatal) throw this.fatal ?? new AgentError("Client closed");
     const id = options?.idempotencyKey ?? globalThis.crypto.randomUUID();
     if (!REQUEST_ID.test(id)) throw new AgentError(`An idempotency key is 1 to 80 letters, digits, _ and -: ${JSON.stringify(id.slice(0, 100))} is not`, 400);
     const files = options?.files?.length ? await this.attach(id, options.files) : undefined;
     const params = {
-      text, ...(files ? { files } : {}), whileRunning: "steer", ...(options?.actor ? { actor: options.actor } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}),
+      text, ...(options?.endUser !== undefined ? { endUser: options.endUser } : {}), ...(files ? { files } : {}), whileRunning: "steer", ...(options?.actor ? { actor: options.actor } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}),
       ...(options?.from ? { from: options.from } : {}), ...(options?.metadata ? { metadata: options.metadata } : {}),
     };
-    const record = await this.transport.json(this.path("/requests"), this.session.token, "POST", { id, method: "prompt", params }, true) as RequestRecord;
+    const record = await this.submitRequest(id, "prompt", params) as RequestRecord;
     if (record.outcome) this.settle(id, record.outcome);
     return steerReceipt(record);
   }
@@ -2625,8 +2625,8 @@ export class AgentClient {
     return this.http(`/history?${query}`);
   }
   continue(options?: RunRequestOptions & { actor?: string }) { return this.request("continue", { ...(options?.actor ? { actor: options.actor } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}) }, options); }
-  /** The legacy steer request: a message held for the running turn. New code: `prompt(text, { whileRunning: "steer" })`. */
-  steer(text: string, options?: { from?: Sender; files?: Attachment[]; metadata?: Record<string, string> }) { return this.message("steer", text, options); }
+  /** Prompt with whileRunning: "steer": the same payer joins the running turn, otherwise this starts its own. */
+  steer(text: string, options?: { endUser?: string; from?: Sender; files?: Attachment[]; metadata?: Record<string, string> }) { return this.prompt(text, { ...options, whileRunning: "steer" }); }
   /** Change the prompt, thinking level, tools, model ("provider/model-id"), maxOutputTokens, temperature, dataCollection or language (null removes any of the last four) between runs. */
   async configure(options: { systemPrompt?: string; thinkingLevel?: ThinkingLevel; tools?: Tools; mcp?: ToolServer; model?: string; maxOutputTokens?: number | null; temperature?: number | null; dataCollection?: "deny" | null; language?: string | null }) {
     const { tools, mcp, ...rest } = options;

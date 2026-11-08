@@ -2172,9 +2172,9 @@ class AgentClient(_AgentCalls):
         finally:
             self._release(request_id, future)
 
-    async def steer(self, text, *, from_=None, files=None, metadata=None):
-        """The legacy steer request: a message held for the running turn. New code: prompt(text, while_running="steer")."""
-        return await self._message("steer", text, from_=from_, files=files, metadata=metadata)
+    async def steer(self, text, *, end_user=None, from_=None, files=None, metadata=None):
+        """Prompt with while_running="steer": join the same payer's turn, or start a separate turn."""
+        return await self.prompt(text, end_user=end_user, from_=from_, files=files, metadata=metadata, while_running="steer")
 
     async def _message(self, method, text, *, from_=None, files=None, metadata=None, idempotency_key=None, extra=None, **options):
         request_id = idempotency_key or str(uuid.uuid4())
@@ -2205,20 +2205,19 @@ class AgentClient(_AgentCalls):
             return await self.wait_for_request(into, timeout=options.get("timeout"))
         return result
 
-    async def steer_message(self, text, *, actor=None, from_=None, files=None, metadata=None, idempotency_key=None, allow_disconnected=False):
+    async def steer_message(self, text, *, end_user=None, actor=None, from_=None, files=None, metadata=None, idempotency_key=None, allow_disconnected=False):
         """Hand a message to the running turn (while_running="steer") and return as soon as the runtime has it, without
         waiting for the turn: {"id", "status", "steeredInto"?}. status "accepted": the running turn reads it after its current
         step; "taken": it has read it already (steeredInto names the turn, whose request has the turn's outcome); "queued": no
-        turn was running, so it starts one. A steer_taken event on the agent's stream says when the model has it. A taken
+        turn with the same payer selection could take it, so it starts one. A steer_taken event on the agent's stream says when the model has it. A taken
         steer no longer counts against the agent's open requests, however long its turn goes on."""
         if self.closed or self.closing or self.fatal:
             raise self.fatal or AgentError("Client closed")
         request_id = idempotency_key or str(uuid.uuid4())
         _check_request_id(request_id)
         attached = await self._attach(request_id, files) if files else None
-        params = _message_params(text, attached, _prompt_extra(actor, "steer", allow_disconnected), from_, metadata)
-        record = await _http(self.http, self.base, self.path + "/requests", self.session["token"], "POST",
-                             {"id": request_id, "method": "prompt", "params": params})
+        params = _message_params(text, attached, _prompt_extra(actor, "steer", allow_disconnected, end_user=end_user), from_, metadata)
+        record = await self._submit_request(request_id, "prompt", params)
         if "outcome" in record:
             self._settle(request_id, record["outcome"])
         return _steer_receipt(record)

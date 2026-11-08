@@ -175,7 +175,8 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
                  "AGENT_IMAGES_URL": f"http://127.0.0.1:{self.transcriber.server_port}",
                  **({"AGENT_RUNTIME": os.environ["AGENT_RUNTIME"]} if "AGENT_RUNTIME" in os.environ else {})},
         )
-        ready = json.loads(await asyncio.wait_for(self.host.stdout.readline(), 15))
+        # Schema migrations and cold imports can exceed 15 seconds on a busy Sprite.
+        ready = json.loads(await asyncio.wait_for(self.host.stdout.readline(), 60))
         # Keep reading the host's log, so it never writes into a closed pipe as it shuts down.
         self.logs = asyncio.create_task(self.host.stdout.read())
         self.url = f"http://127.0.0.1:{ready['address']['port']}"
@@ -1693,16 +1694,19 @@ class PromptPayerTest(unittest.IsolatedAsyncioTestCase):
         try:
             await client.prompt("one", end_user="guest", idempotency_key="one")
             await client.submit("two", end_user="guest", idempotency_key="two")
+            await client.steer_message("steer", end_user="guest", idempotency_key="steer")
             await client.prompt("default", idempotency_key="default")
             self.assertEqual([(path, token, body.get("endUser")) for path, token, body in calls], [
                 (f"/v1/agents/{client.id}/prompt", "Bearer tenant-test", "guest"),
                 (f"/v1/agents/{client.id}/prompt", "Bearer tenant-test", "guest"),
+                (f"/v1/agents/{client.id}/prompt", "Bearer tenant-test", "guest"),
                 (f"/clients/{client.id}/requests", "Bearer agent-test", None)])
             self.assertEqual(calls[0][2]["requestId"], "one")
+            self.assertEqual(calls[2][2]["whileRunning"], "steer")
             client._api_key = None
             with self.assertRaisesRegex(AgentError, "tenant API key"):
                 await client.submit("no", end_user="guest")
-            self.assertEqual(len(calls), 3)
+            self.assertEqual(len(calls), 4)
         finally:
             await client.close(drain=0)
 

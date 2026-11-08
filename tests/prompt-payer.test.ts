@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { makeChild } from '../src/client-sessions/delegation.ts';
 import { ClientSessions } from '../src/client-sessions.ts';
 import { endUserCharge, payer } from '../src/client-sessions/spend.ts';
 import { runBuiltin } from '../src/builtins.ts';
@@ -17,6 +18,7 @@ test('payer is run-local; batches require the same payer selection', () => {
   assert.equal(joins(member('a'), member('b')), false);
   assert.equal(joins(member('a'), member()), false);
   assert.equal(joins(member('a'), member('a')), true);
+  assert.equal(joins({ ...member('a'), params: { text: 'steer', endUser: 'a', whileRunning: 'steer' } }, member('a')), false);
 });
 
 test('late tool usage keeps the originating run payer and bucket', async () => {
@@ -54,4 +56,16 @@ test('web services preserve the originating request in their usage callbacks', a
   assert.deepEqual(recorded.map(usage => [usage.model, usage.requestId]), [
     ['web_search', 'original'], ['x_search', 'original'], ['web_fetch', 'original'],
   ]);
+});
+
+test('child creation separates the owner identity from the creating run payer', async () => {
+  let config: any, parent: any;
+  const ctx = { options: { createAgent: async (_tenant: string, given: unknown, _key: string, provenance: unknown) => {
+    config = given; parent = provenance; return { id: 'child' };
+  } }, spendContext: { options: {} } } as any;
+  const session = { header: { id: 'parent', tenant: 'tenant', identity: { subject: 'owner' }, config: { model: { provider: 'fixture', id: 'model' } } } } as any;
+  await makeChild(ctx, session, { id: 'run', endUser: 'guest', bucket: 'bot:7' } as any, undefined, 'key', 'tool', { depth: 1, maxDepth: 2, chain: ['parent'] });
+  assert.equal(config.subject, 'owner');
+  assert.equal(config.bucket, 'bot:7');
+  assert.equal(parent.payer, 'guest');
 });

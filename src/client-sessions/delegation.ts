@@ -76,8 +76,8 @@ export async function delegate(ctx: DelegationContext, session: Session, setting
     if (chain.includes(agent)) throw new Error(`${target!.name} is already working on this task's chain: delegating to it would wait on itself`);
     // The child's row first, kept when the call is made again: an abort that reads the rows after this finds the child.
     const now = Date.now();
-    await underClaim(ctx.db, session.claim, sql => sql.query(`insert into agent_children (id, tenant, parent, child, request_id, name, depth, root, parent_run, tool_call_id, kind, made, checked_at, created_at, updated_at)
-      values ($1, $2, $3, $4, $1, $5, $6, $7, $8, $9, 'delegate', $10, $11, $11, $11) on conflict do nothing`, [requestId, tenant, header.id, agent, target?.name ?? "subagent", depth, chain[0], run.id, toolCallId, made, now]));
+    await underClaim(ctx.db, session.claim, sql => sql.query(`insert into agent_children (id, tenant, parent, child, request_id, name, depth, root, parent_run, tool_call_id, kind, made, checked_at, created_at, updated_at, payer, bucket)
+      values ($1, $2, $3, $4, $1, $5, $6, $7, $8, $9, 'delegate', $10, $11, $11, $11, $12, $13) on conflict do nothing`, [requestId, tenant, header.id, agent, target?.name ?? "subagent", depth, chain[0], run.id, toolCallId, made, now, run.endUser ?? null, spend.bucketOf(ctx.spendContext, session, run)]));
     // An abort that read the rows before this one was written: the call stops here, before the child has a prompt.
     call.signal.throwIfAborted();
     if (session.aborted?.has(run.id)) throw new Error("The run was aborted");
@@ -227,11 +227,12 @@ export async function makeChild(ctx: DelegationContext, session: Session, run: R
       ...childMounts(header.mounts),
     },
     name: target?.name ?? "subagent", type: "subagent", ttlSeconds: MULTI_AGENT_LIMITS.childTtlSeconds,
-    ...(run.endUser ?? header.identity?.subject) !== undefined ? { subject: run.endUser ?? header.identity?.subject } : {}, ...header.identity?.context ? { context: header.identity.context } : {},
+    ...header.identity?.subject !== undefined ? { subject: header.identity.subject } : {}, ...header.identity?.context ? { context: header.identity.context } : {},
     ...header.keyScope ? { keyScope: header.keyScope } : {},
-    // Its parent's end user pays for it, from the bucket the parent's run spends.
+    // Tool identity stays the owner's; childPrompt passes the run payer separately.
+    // The task spends from its parent's run bucket.
     bucket: spend.bucketOf(ctx.spendContext, session, run),
-  }, key, { agentId: header.id, runId: run.id, toolCallId, ...place, ...computer ? { computer } : {} })).id;
+  }, key, { agentId: header.id, runId: run.id, toolCallId, payer: run.endUser, ...place, ...computer ? { computer } : {} })).id;
 }
 
 /**
@@ -248,7 +249,7 @@ export function childMounts(mounts: Mount[] | undefined) {
 export function childPrompt(ctx: DelegationContext, session: Session, run: RequestRecord, call: ToolCall, child: { agent: string; requestId: string; depth: number; maxDepth: number; chain: string[]; task: string; output?: unknown; budget?: number }) {
   const { agent, requestId, depth, maxDepth, chain, task, output, budget } = child;
   return {
-    text: task, ...output ? { output } : {}, ...budget !== undefined ? { spendLimit: { usd: budget } } : {}, ...run.actor ? { actor: run.actor } : {},
+    text: task, ...(run.endUser ? { endUser: run.endUser } : {}), bucket: spend.bucketOf(ctx.spendContext, session, run), ...output ? { output } : {}, ...budget !== undefined ? { spendLimit: { usd: budget } } : {}, ...run.actor ? { actor: run.actor } : {},
     metadata: { [PARENT_KEYS.agent]: session.header.id, [PARENT_KEYS.run]: run.id, [PARENT_KEYS.toolCall]: call.toolCallId!, [PARENT_KEYS.depth]: String(depth), [PARENT_KEYS.maxDepth]: String(maxDepth), [PARENT_KEYS.chain]: chain.join(","),
       [PARENT_KEYS.signature]: delegationSignature(ctx, agent, requestId, String(depth), String(maxDepth), chain.join(",")) },
   };

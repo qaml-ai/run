@@ -34,7 +34,7 @@ const RUNTIME_IDS = /^(?:delegate_|spawn_|msg_|resume_|child_|schedule-|kept-que
 export function batchable(given: unknown, id?: string) {
   const params = given as Record<string, unknown> | undefined;
   const metadata = params?.metadata as Record<string, unknown> | undefined;
-  return !!params && typeof params === "object" && params.notice === undefined && params.landOnly === undefined && params.output === undefined
+  return !!params && typeof params === "object" && params.whileRunning !== "steer" && params.notice === undefined && params.landOnly === undefined && params.output === undefined
     && params.spendLimit === undefined && params.runLimits === undefined && !(id !== undefined && RUNTIME_IDS.test(id))
     && metadata?.parentAgentId === undefined && metadata?.delegationSignature === undefined;
 }

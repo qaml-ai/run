@@ -4481,7 +4481,7 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 200,
-            "description": "Charge this prompt to an existing end user of this tenant instead of the agent subject. Tenant API key only. Not for whileRunning: steer. New child agents inherit this payer; later prompts without it use the agent subject"
+            "description": "Charge this prompt to an existing end user of this tenant instead of the agent subject. Tenant API key only. A steer joins only a turn with the same endUser selection. Child tasks, their notifications and messages inherit the run payer; child tool identity stays the owner. Later prompts without it use the agent subject"
           },
           "text": {
             "type": "string",
@@ -4531,7 +4531,7 @@
               "queue",
               "steer"
             ],
-            "description": "What happens if the agent is working on a turn when this arrives. queue (default): it runs as the next turn. steer: the running turn takes it after its current step. The 202 says so at once (steer: \"accepted\"; \"queued\" when no turn could take it), and this request completes as soon as the turn takes the message (steeredInto names the turn, whose own request has its outcome; a steer_taken event marks it), so steered messages never wait for the turn's end, nor count against the agent's queue once taken. If the turn ends first, it runs as a turn of its own. With no turn running, both start one"
+            "description": "What happens if the agent is working on a turn when this arrives. queue (default): it runs as the next turn. steer: a running turn with the same endUser selection takes it after its current step; a different payer queues a separate turn. The 202 says so at once (steer: \"accepted\"; \"queued\" when no turn could take it), and this request completes as soon as the turn takes the message (steeredInto names the turn, whose own request has its outcome; a steer_taken event marks it), so steered messages never wait for the turn's end, nor count against the agent's queue once taken. If the turn ends first, it runs as a turn of its own. With no turn running, both start one"
           },
           "spendLimit": {
             "allOf": [

@@ -1658,9 +1658,11 @@ export class ClientSessions {
    */
   private async accept(session: Session, body: any, trusted = false): Promise<{ status: 200 | 202; record: RequestRecord; rate?: RateLimitState }> {
     if (!validId(body?.id) || !REQUEST_METHODS.includes(body.method) || !body.params || typeof body.params !== "object" || Array.isArray(body.params)) throw new HttpError(400, "Invalid request");
+    // Every steer uses prompt admission, including the old request spelling: payer checks and queuing are identical.
+    if (body.method === "steer") body = { ...body, method: "prompt", params: { ...body.params, whileRunning: "steer" } };
     if (body.params.endUser !== undefined) {
       if (!trusted) throw new HttpError(403, "Only a tenant key can choose a run payer");
-      if (body.method !== "prompt" || body.params.whileRunning === "steer") throw new HttpError(400, "endUser is for a prompt that starts its own turn");
+      if (body.method !== "prompt") throw new HttpError(400, "endUser is for a prompt");
       if (!this.options.endUsers) throw new HttpError(404, "End-user credits are unavailable");
       await this.options.endUsers.requireExisting(session.header.tenant, body.params.endUser);
     }
@@ -1786,7 +1788,7 @@ export class ClientSessions {
     const limited = body.method === "resume" || notice ? undefined : await spend.runLimit(this.spendContext, session, body.method, bucket, endUser);
     if (limited) throw limited;
     // The bucket the tenant names for a run is the one the runs the runtime starts for the agent after it spend from.
-    if (bucket && body.method !== "resume" && session.header.runBucket !== bucket) {
+    if (bucket && endUser === undefined && body.method !== "resume" && session.header.runBucket !== bucket) {
       session.header.runBucket = bucket;
       await this.writeHeader(session);
     }
@@ -1896,6 +1898,7 @@ export class ClientSessions {
     const ahead = () => [...session.running.values()].some(run => run.id !== id && run.method !== "execute" && RUN_METHODS.includes(run.method));
     while (!session.turn && ahead() && Date.now() <= deadline) await new Promise(resolve => setTimeout(resolve, 25));
     for (const turn = session.turn; turn && turn.requestId !== id;) {
+      if ((session.requests.get(id)?.endUser ?? null) !== (session.requests.get(turn.requestId)?.endUser ?? null)) return false;
       let steered = false;
       try { steered = !!(await this.supervisor.request(session.header.id, "steer", params))?.steered; }
       catch { return false; /* Not running after all: the queued prompt runs. */ }

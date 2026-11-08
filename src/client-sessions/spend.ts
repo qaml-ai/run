@@ -287,7 +287,7 @@ export function payer(ctx: SpendContext, session: Session, run: RequestRecord | 
 }
 
 /**
- * The bucket a run of the agent spends from: its own, else the agent's, else the one the tenant's latest run of it named
+ * The bucket a run of the agent spends from: its own, else the agent's, else the one the tenant's latest run without endUser named
  * (`runBucket`), so a run the runtime starts (a schedule's, a sub-agent's notice, a channel's or a voice session's
  * message) spends where the agent's do. Only with none of them the default, said once per load for a tenant that meters.
  */
@@ -372,7 +372,7 @@ export function nativeUsageEffect(ctx: SpendContext, session: Session, entry: im
   if (!message || !billed(message)) return undefined;
   const usage = responseUsage(ctx, session, message, true);
   const via = endpoint(ctx, session) ? `${session.header.config.model.provider}/` : "";
-  const request = [...session.running.values()].find(record => RUN_METHODS.includes(record.method));
+  const request = runningRun(session);
   const { keyScope } = session.header;
   const identity = billingIdentity(session, request);
   const payload: UsageRecord = { usage, provider: via + (message as any).provider, model: (message as any).model,
