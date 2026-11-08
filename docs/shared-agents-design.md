@@ -365,3 +365,13 @@ on a camelCode lead and have a teammate join, by Google or by password, since ma
    cancel, which does not exist today.
 6. **Email code sign-in.** It does not exist. Add it for guests, or keep Google, GitHub and password?
 7. **The guest-tools allowlist** (`share.tools`): v1 or later?
+
+## Decisions on the open questions (2026-11-08)
+
+1. A new prompt cancels only pending questions addressed to its sender (or open to anyone), never questions addressed to someone else. Changes the existing cancel-on-prompt rule for shared agents only.
+2. Guests use console sign-in only in v1; guest API keys later.
+3. Approvals go to the owner and the definition's approvers, never a guest.
+4. Keep the 32-viewer limit; viewers past it use the polling fallback.
+5. No per-request cancel for guests in v1.
+6. Reuse the console's existing sign-in (Google, GitHub, password); no email-code sign-in in v1.
+7. No per-guest tool allowlist in v1: a guest's turn can do what the agent can. Share links only with people you trust; a tool allowlist comes later.
