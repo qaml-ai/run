@@ -1,3 +1,4 @@
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { useEffect, useRef, useState } from "react";
 import { AgentInputView } from "../../../packages/registry/src/agent-chat/agent-parts";
 import type { InputAnswer, InputValue } from "@camelai/run/chat";
@@ -9,6 +10,7 @@ import { Link, navigate } from "@/lib/router";
 
 export const inputLink = (item: InboxItem) => `agents/${encodeURIComponent(item.agent)}?input=${encodeURIComponent(item.inputId)}`;
 export function InboxPage() {
+  const [shortcuts, setShortcuts] = useState(false);
   const [priority, setPriority] = useState("");
   const [kind, setKind] = useState("");
   const [cursor, setCursor] = useState<string>();
@@ -21,7 +23,9 @@ export function InboxPage() {
   useEffect(() => { setSelected(0); }, [cursor, priority, kind]);
   useEffect(() => {
     function key(event: KeyboardEvent) {
-      if (event.ctrlKey || event.metaKey || event.altKey || (event.target instanceof HTMLElement && (event.target.matches("input,textarea,select") || event.target.isContentEditable))) return;
+      if (event.ctrlKey || event.metaKey || event.altKey || (event.target instanceof HTMLElement && (event.target.matches("input,textarea,select") || event.target.closest('[role="dialog"]') || event.target.isContentEditable))) return;
+      if (event.key === "?") { event.preventDefault(); setShortcuts(true); return; }
+      if (shortcuts) return;
       const item = items[selected];
       if (!item) return;
       if (event.key === "j" || event.key === "k") {
@@ -31,13 +35,14 @@ export function InboxPage() {
         const questions = item.detail.questions as { multiSelect?: boolean }[] | undefined;
         if (radio && questions?.length === 1 && !questions[0].multiSelect) setTimeout(() => radio.form?.requestSubmit(), 0);
       }
-      else if (event.key === "a" && item.kind === "approval") { event.preventDefault(); cards.current[selected]?.querySelectorAll("button")[0]?.click(); }
+      else if (event.key === "a" && item.kind === "approval") { event.preventDefault(); cards.current[selected]?.querySelector<HTMLButtonElement>('[data-input-action="approve"]')?.click(); }
       else if (event.key === "x") { event.preventDefault(); cards.current[selected]?.querySelector<HTMLButtonElement>('[data-dismiss]')?.click(); }
     }
     window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key);
-  }, [items, selected]);
+  }, [items, selected, shortcuts]);
   return <>
-    <PageHeader title="Inbox" description={`${inboxCount(page.data)} unanswered · j/k move · Enter opens chat · 1–4 select · a approve · x dismiss`} actions={<Button variant="outline" onClick={() => void page.reload()}>Refresh</Button>} />
+    <PageHeader title="Inbox" description={`${inboxCount(page.data)} unanswered · j/k move · Enter opens chat · 1–4 select · a approve · x dismiss`} actions={<><Button variant="outline" onClick={() => setShortcuts(true)}>Shortcuts (?)</Button><Button variant="outline" onClick={() => void page.reload()}>Refresh</Button></>} />
+    <Dialog open={shortcuts} onOpenChange={setShortcuts}><DialogContent><DialogHeader><DialogTitle>Inbox shortcuts</DialogTitle><DialogDescription>j / k: next / previous item. Enter: open chat. 1–4: choose an option. a: approve. x: open dismiss confirmation. ?: show shortcuts. Escape: close.</DialogDescription></DialogHeader></DialogContent></Dialog>
     <div className="mb-4 flex flex-wrap gap-2">
       <select aria-label="Priority" value={priority} onChange={event => { setPriority(event.target.value); setCursor(undefined); }} className="rounded border bg-background p-2"><option value="">All priorities</option>{["urgent", "high", "normal", "low"].map(value => <option key={value}>{value}</option>)}</select>
       <select aria-label="Input kind" value={kind} onChange={event => { setKind(event.target.value); setCursor(undefined); }} className="rounded border bg-background p-2"><option value="">All inputs</option>{["question", "decision", "approval", "form", "url"].map(value => <option key={value}>{value}</option>)}</select>
@@ -53,6 +58,7 @@ export function InboxPage() {
   </>;
 }
 function InboxCard({ item, onAnswered }: { item: InboxItem; onAnswered: () => void }) {
+  const [confirmDismiss, setConfirmDismiss] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   async function answer(value: InputValue | InputAnswer) {
@@ -62,5 +68,5 @@ function InboxCard({ item, onAnswered }: { item: InboxItem; onAnswered: () => vo
     catch (error) { setError((error as Error).message); }
     finally { setBusy(false); }
   }
-  return <><AgentInputView input={{ ...item, key: item.key ?? undefined, answering: busy, ...(error ? { error: { code: "answer_failed", message: error } } : {}) }} onAnswer={value => void answer(value)} /><Button data-dismiss type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void answer({ action: "decline" })}>Dismiss</Button></>;
+  return <><AgentInputView input={{ ...item, key: item.key ?? undefined, answering: busy, ...(error ? { error: { code: "answer_failed", message: error } } : {}) }} onAnswer={value => void answer(value)} /><Button data-dismiss type="button" variant="ghost" size="sm" disabled={busy} onClick={() => setConfirmDismiss(true)}>Dismiss</Button><Dialog open={confirmDismiss} onOpenChange={setConfirmDismiss}><DialogContent><DialogHeader><DialogTitle>Dismiss this request?</DialogTitle><DialogDescription>{item.message}</DialogDescription></DialogHeader><Button disabled={busy} onClick={() => { void answer({ action: "decline" }); setConfirmDismiss(false); }}>Confirm dismiss</Button><Button variant="outline" onClick={() => setConfirmDismiss(false)}>Keep request</Button></DialogContent></Dialog></>;
 }

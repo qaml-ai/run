@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { AgentProvider, useAgent, useAgentChat, useAgentStatus } from "@camelai/run-react";
+import { AgentProvider, useAgent, useAgentChat, useAgentStatus, useMessages, type ToolRenderProps } from "@camelai/run-react";
 import type { ChildAgent } from "../../../clients/typescript";
+import { AgentTool, AgentWorker } from "../../../packages/registry/src/agent-chat/agent-parts";
+import { AgentMarkdown } from "../../../packages/registry/src/agent-chat/agent-markdown";
 import { AgentChatView } from "../../../packages/registry/src/agent-chat/agent-chat";
 import { Button } from "@/components/ui/button";
 import { api, putFile } from "@/lib/api";
@@ -34,9 +36,16 @@ export function consoleChatFetch(agentId: string, changed: () => void, request: 
 export function ConsoleAgentChat({ agentId }: { agentId: string }) {
   const frame = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
-    const resize = () => { if (frame.current) frame.current.style.height = `calc(100dvh - ${Math.max(0, frame.current.getBoundingClientRect().top)}px - 16px)`; };
-    resize(); window.addEventListener("resize", resize);
-    return () => window.removeEventListener("resize", resize);
+    const resize = () => {
+      if (!frame.current) return;
+      const viewport = window.visualViewport;
+      const bottom = (viewport?.height ?? window.innerHeight) + (viewport?.offsetTop ?? 0);
+      frame.current.style.height = `${Math.max(0, bottom - frame.current.getBoundingClientRect().top - 16)}px`;
+    };
+    const observer = new ResizeObserver(resize);
+    for (let element = frame.current?.parentElement; element; element = element.parentElement) observer.observe(element);
+    resize(); window.addEventListener("resize", resize); window.visualViewport?.addEventListener("resize", resize);
+    return () => { observer.disconnect(); window.removeEventListener("resize", resize); window.visualViewport?.removeEventListener("resize", resize); };
   }, []);
   const [children, setChildren] = useState<ChildAgent[]>([]);
   const [queued, setQueued] = useState(0);
@@ -54,7 +63,7 @@ export function ConsoleAgentChat({ agentId }: { agentId: string }) {
       }, error => { if (version === generation.current) setRefreshError(error.message); });
     }, 100);
   }, [agentId]);
-  useEffect(() => { refresh(); return () => { clearTimeout(refreshTimer.current); generation.current++; }; }, [refresh]);
+  useEffect(() => { refresh(); return () => { clearTimeout(refreshTimer.current); refreshTimer.current = undefined; generation.current++; }; }, [refresh]);
   const chat = useAgentChat({ endpoint: `/v1/agents/${agentId}`, fetch: consoleChatFetch(agentId, refresh), watch: { transport: "sse", subagents: true },
     onEvent: event => { if (event.type !== "message_update") refresh(); } });
   useEffect(() => {
@@ -64,31 +73,41 @@ export function ConsoleAgentChat({ agentId }: { agentId: string }) {
     const reveal = () => {
       if (found) return;
       requestAnimationFrame(() => {
-        const card = document.getElementById(`input-${target}`);
+        const card = Array.from(document.querySelectorAll<HTMLElement>("[data-input-id]")).find(element => element.dataset.inputId === target);
         if (card) { card.scrollIntoView({ block: "center" }); found = true; }
       });
     };
     reveal();
     return chat.subscribe(reveal);
   }, [chat]);
-  return <div ref={frame} className="min-h-80"><AgentProvider chat={chat}>
-    <AgentChatView className="rounded-xl border" composer={<ConsoleComposer />} activity={<Activity queued={queued} />}>
-      {refreshError && <p role="alert" className="text-sm text-destructive">Could not update workers: {refreshError}</p>}
-      {children.length > 0 && <section aria-label="Workers" className="space-y-2">{children.map(child => <Worker key={child.agentId + child.requestId} child={child} />)}</section>}
-    </AgentChatView>
+  return <div ref={frame} className="min-h-0"><AgentProvider chat={chat}>
+    <ChatThread children={children} queued={queued} error={refreshError} />
   </AgentProvider></div>;
 }
 function Activity({ queued }: { queued: number }) {
   const { status, connected, isRunning } = useAgentStatus();
   return <p role="status" className="mx-auto w-full max-w-3xl px-4 py-2 text-xs text-muted-foreground">{!connected ? "Connecting…" : status === "input_required" ? "Waiting for your answer" : isRunning ? "Working on your message" : "Ready"}{queued > 0 && ` · ${queued} queued`}</p>;
 }
-function Worker({ child }: { child: ChildAgent }) {
-  return <details className="rounded-lg border p-3 text-sm" data-status={child.status}>
-    <summary className="cursor-pointer">{child.name} · {child.status === "running" ? "Working…" : child.status.replaceAll("_", " ")}</summary>
-    {child.progress && <p className="mt-2 whitespace-pre-wrap">{child.progress}</p>}
+function ChatThread({ children, queued, error }: { children: ChildAgent[]; queued: number; error?: string }) {
+  const messages = useMessages();
+  const calls = messages.flatMap(message => message.role === "assistant" ? message.parts.filter(part => part.type === "tool") : []);
+  const childFor = (part: (typeof calls)[number]) => children.find(child => child.toolCallId === part.id || child.agentId === part.subagent?.agentId);
+  const shown = new Set(calls.flatMap(part => childFor(part) ? [childFor(part)!.agentId] : []));
+  const tools = Object.fromEntries(calls.filter(part => childFor(part)).map(part => [part.name, ({ part }: ToolRenderProps) => {
+    const child = childFor(part);
+    return child ? <Worker child={child} result={part.result?.text} /> : <AgentTool part={part} />;
+  }]));
+  return <AgentChatView className="rounded-xl border" tools={tools} composer={<ConsoleComposer />} activity={<Activity queued={queued} />}>
+    {error && <p role="alert" className="text-sm text-destructive">Could not update workers: {error}</p>}
+    {children.filter(child => !shown.has(child.agentId)).map(child => <Worker key={child.agentId + child.requestId} child={child} />)}
+  </AgentChatView>;
+}
+function Worker({ child, result }: { child: ChildAgent; result?: string }) {
+  return <AgentWorker name={child.name} status={child.status} progress={child.progress} startedAt={child.startedAt} endedAt={child.endedAt}>
+    {result && <AgentMarkdown text={result} />}
     {child.error && <p className="text-destructive">{child.error}</p>}
     <Link className="mt-2 inline-block underline" to={`agents/${child.agentId}`}>Open worker conversation</Link>
-  </details>;
+  </AgentWorker>;
 }
 export function ConsoleComposer() {
   const chat = useAgent();
@@ -114,7 +133,7 @@ export function ConsoleComposer() {
   return <form className="mx-auto w-full max-w-3xl shrink-0 space-y-2 p-3 pb-[max(.75rem,env(safe-area-inset-bottom))]" onSubmit={event => { event.preventDefault(); void send(); }}>
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
     {files.map((file, index) => <button type="button" key={index} disabled={busy} className="mr-2 text-xs underline" aria-label={`Remove ${file.name}`} onClick={() => setFiles(files.filter((_, at) => at !== index))}>{file.name} ×</button>)}
-    <textarea aria-label="Message" rows={2} className="max-h-48 w-full resize-y rounded-lg border bg-background p-3 text-sm" placeholder="Message the agent…" value={text} onChange={event => setText(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} />
+    <textarea disabled={busy} aria-label="Message" rows={2} className="max-h-48 w-full resize-y rounded-lg border bg-background p-3 text-sm" placeholder="Message the agent…" value={text} onChange={event => setText(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} />
     <input type="file" multiple hidden ref={upload} onChange={event => { setFiles([...files, ...event.target.files ?? []]); event.target.value = ""; }} />
     <div className="flex flex-wrap items-center gap-2">
       <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => upload.current?.click()}>Attach files</Button>

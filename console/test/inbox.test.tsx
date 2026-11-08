@@ -29,3 +29,17 @@ it("shows counts, filters and cursors, and approves with the keyboard", async ()
 it("counts all priorities", () => {
   expect(inboxCount({ counts: { priority: { urgent: 1, high: 2, normal: 3, low: 4 }, lead: {} }, items: [], cursor: null })).toBe(10);
 });
+
+it("requires confirmation to dismiss and provides shortcut help", async () => {
+  const fetcher = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => Response.json(init?.method === "POST" ? {} : { items: [item], cursor: null, counts: { priority: { urgent: 0, high: 1, normal: 0, low: 0 }, lead: {} } }));
+  vi.stubGlobal("fetch", fetcher);
+  render(<InboxPage />);
+  await screen.findByText("Allow deploy?");
+  fireEvent.keyDown(window, { key: "x" });
+  expect(await screen.findByRole("dialog")).toBeTruthy();
+  expect(fetcher.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  await userEvent.click(screen.getByRole("button", { name: "Confirm dismiss" }));
+  await waitFor(() => expect(fetcher.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1));
+  fireEvent.keyDown(window, { key: "?" });
+  expect(await screen.findByRole("heading", { name: "Inbox shortcuts" })).toBeTruthy();
+});

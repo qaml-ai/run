@@ -1,3 +1,5 @@
+import { useAgentPreviews } from "@/lib/agent-previews";
+import { type InboxPage } from "@/lib/inbox";
 import { useEffect, useState } from "react";
 import { Bot, ChevronDown, ChevronLeft, ChevronRight, RefreshCw, Search } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -89,6 +91,8 @@ export function AgentsPage({ hasAgents, billing }: {
   const page = useApiPage<AgentSummary>(hasAgents ? agentsPath({ ws: scope, filter, q, cursor: cursors.at(-1) }) : undefined, 10_000);
   const shown = page.items ?? page.previous ?? [];
   const rows = nested(shown);
+  const previews = useAgentPreviews(shown);
+  const inbox = useApi<InboxPage>("/v1/inbox?limit=1", 15_000);
   const picked = shown.filter(agent => selected.has(agent.id));
   const toggle = (id: string, on: boolean) => setSelected(current => { const next = new Set(current); if (on) next.add(id); else next.delete(id); return next; });
   const move = async (ids: string[], workspaceId: string | null) => {
@@ -152,7 +156,7 @@ export function AgentsPage({ hasAgents, billing }: {
               <div className={cn("grid gap-3 transition-opacity", page.stale && "opacity-60")} aria-busy={page.stale}>
                 {rows.map(({ agent, depth }) => <div key={agent.id} className="flex flex-wrap items-center gap-3" style={depth ? { marginLeft: `${Math.min(depth, 3)}rem` } : undefined}>
                   {grouped && <input type="checkbox" aria-label={`Select ${agent.name}`} checked={selected.has(agent.id)} onChange={event => toggle(agent.id, event.target.checked)} />}
-                  <AgentPreview agent={agent} />
+                  <AgentPreview agent={agent} preview={previews[agent.id]} pending={inbox.data?.counts?.lead[agent.id] ?? 0} />
                   {showWorkspace && (agent.workspaceId ? <WorkspaceTag directory={directory} id={agent.workspaceId} /> : <MoveMenu directory={directory} current={null} label="Assign to workspace" onMove={target => void move([agent.id], target)}><button type="button" className="text-xs underline" disabled={moving}>Assign…</button></MoveMenu>)}
                 </div>)}
               </div>
@@ -170,15 +174,10 @@ export function AgentsPage({ hasAgents, billing }: {
   );
 }
 
-export function AgentPreview({ agent }: { agent: AgentSummary }) {
-  const history = useApi<{ entries: { message: { role: string; content: string | { type: string; text?: string }[] } }[] }>(`/v1/agents/${agent.id}/history?limit=6&maxBytes=16384`, agent.running ? 10_000 : undefined);
-  const inputs = useApi<{ kind: string }[]>(`/v1/agents/${agent.id}/inputs?state=pending`, 15_000);
-  const last = history.data?.entries.map(entry => entry.message).filter(message => message.role === "assistant" || message.role === "user").at(-1);
-  const preview = last ? typeof last.content === "string" ? last.content : last.content.filter(part => part.type === "text").map(part => part.text).join(" ") : undefined;
-  const pending = inputs.data?.length ?? 0;
+export function AgentPreview({ agent, preview, pending = 0 }: { agent: AgentSummary; preview?: string; pending?: number }) {
   const status = pending ? "Waiting on you" : agent.running ? "Working" : failedRecently(agent) ? "Error" : "Idle";
   return <Link aria-label={agent.name} to={`agents/${agent.id}`} className="min-w-0 flex-1 rounded-xl border bg-card p-4 transition-colors hover:bg-accent focus-visible:ring-2">
     <div className="flex flex-wrap items-center gap-2"><span className="font-semibold">{agent.name}</span><Badge variant={pending ? "secondary" : agent.running ? "live" : status === "Error" ? "destructive" : "outline"}>{status}</Badge>{pending > 0 && <Badge variant="secondary">{pending} pending</Badge>}<span className="ml-auto text-xs text-muted-foreground">{agent.running ? "now" : formatAgo(agent.lastActiveAt)}</span></div>
-    <p className="mt-2 line-clamp-2 text-sm text-muted-foreground">{history.error ? "Could not load last message" : preview || (history.data ? "Start a conversation" : "Loading conversation…")}</p>
+    <p className="mt-2 line-clamp-2 text-sm text-muted-foreground">{preview === undefined ? "Loading conversation…" : preview || "Start a conversation"}</p>
   </Link>;
 }
