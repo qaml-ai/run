@@ -251,6 +251,7 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
     },
     async updateLegacyUsageWebhook(url) { await server.db.query("update usage_webhooks set url=$1 where tenant='alice'", [url]); },
     seedJourneyAccount: input => seedJourneyAccount(server.db, input),
+    inputIndex: async (agent: string) => (await server.db.query("select state, version, priority, priority_rank, blocking, responders from agent_inputs where agent=$1 order by created_at, id", [agent])).rows,
     channelQuery: channelQuery(server.db),
     async deliverEmail(raw, receipt = {}) {
       if (!dkim) throw new Error("Email channel cases set AGENT_EMAIL_DOMAIN");
