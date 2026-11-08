@@ -1,4 +1,5 @@
 import { expireDecisions } from "./inbox-decisions.ts";
+import { restageInputMirrors } from "./agent-input-mirror.ts";
 import { MULTI_AGENT_LIMITS, viaParent } from "./multi-agent-policy.ts";
 import { childParent } from "./child-parent.ts";
 import { type EventSubscription } from "./event-socket.ts";
@@ -201,6 +202,11 @@ export async function restorePendingImpl(this: AgentRuntime) {
       (await this.ctx.storage.list({ prefix: "model-billing:", limit: 1 })).size
     )
       this.ctx.waitUntil(this.flushBilling());
+    // The Pi commit precedes stream emission. A crash in between leaves no outbox row.
+    // Re-stage retained inputs, including settled ones, before flushing on every start.
+    const mirrorConfig = await this.ctx.storage.get<Config>("configuration");
+    if (mirrorConfig && !await this.ctx.storage.get("deleted") && (!mirrorConfig.expiresAt || mirrorConfig.expiresAt > Date.now()))
+      await timed(this, "restageInputMirrors", () => restageInputMirrors(this));
     this.ctx.waitUntil(this.flushTerminalEvents());
     this.batchQueue.kick();
     await timed(this, "arm", () => this.arm());
@@ -264,6 +270,7 @@ export async function wakeImpl(this: AgentRuntime) {
       await this.flushBilling();
       return;
     }
+    await restageInputMirrors(this);
     await this.flushBilling();
     await this.flushTerminalEvents();
     const expire = this.admission.then(() => this.closeHumanInputs("expired"));

@@ -12,6 +12,9 @@ test("human input binds source audience and expiry once before it is published",
   const bound = bindHumanInput(input, "run-a", "alice", settings, 40_000);
   assert.deepEqual(bound.responders, { audience: ["alice"] });
   assert.equal(bound.expiresAt, 40_000);
+  assert.deepEqual(bound.inboxResponders, ["alice", "boss"]);
+  assert.equal(humanInputView("input-a", bound, "agent-a").version, 1);
+  assert.equal(humanInputView("input-a", cancelledHumanInput(bound), "agent-a").version, 2);
   assert.equal(bound.requestId, "run-a");
   assert.strictEqual(bindHumanInput(bound, "run-b", "mallory", undefined, null), bound);
   assert.deepEqual(humanInputView("input-a", bound, "agent-a", "run-a").responders, { audience: ["alice"] });
