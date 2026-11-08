@@ -1,0 +1,78 @@
+{
+  "backend": "node",
+  "area": "all",
+  "nodeKey": "ba4d0c1f073d7312aa7e20ba86dfac9f6fbbbfa87ab131984263565b81399290",
+  "suiteHash": "4f2ed76f323ebda1c73037726f82b7b97dcd04d42bd30ce08b07eb1cfd9b29ff",
+  "revision": "a784a72a40584aa32822ed4589dc421086a58993",
+  "durationMs": 62132.980221000005,
+  "runtime": {
+    "node": "v22.23.4",
+    "platform": "linux",
+    "arch": "x64"
+  },
+  "recordedAt": "2026-11-08T03:06:18.695Z",
+  "expectedCases": 6,
+  "rows": [
+    {
+      "area": "delegation",
+      "source": "tests/agent-messaging.test.ts:136",
+      "name": "a browser token with the children scope reads its agent's sub-agents, and only theirs",
+      "status": "pass",
+      "durationMs": 6152.850348,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-messaging.test.ts:156",
+      "name": "a child that waits on a person notifies its parent, and notifies again when it resumes and ends",
+      "status": "pass",
+      "durationMs": 10674.905004,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-messaging.test.ts:178",
+      "name": "a sub-agent is reached only through its parent: a prompt or schedule from anyone else is refused, its parent's message and an answer to its question still reach it",
+      "status": "pass",
+      "durationMs": 6816.085461,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-messaging.test.ts:21",
+      "name": "a parent messages its finished child, which works again with its history and notifies again; a child messages its parent",
+      "status": "pass",
+      "durationMs": 9026.419743,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-messaging.test.ts:61",
+      "name": "two agents messaging each other in a loop stop at the wake cap with agent_loop_limit, and a turn sends at most 20 messages",
+      "status": "pass",
+      "durationMs": 13670.365266,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-messaging.test.ts:97",
+      "name": "interrupt_agent aborts a child; aborting the parent aborts its children unless children: keep; deleting it deletes the children it made",
+      "status": "pass",
+      "durationMs": 15551.150343,
+      "reason": "",
+      "backend": "node"
+    }
+  ],
+  "shards": [
+    {
+      "index": 1,
+      "total": 1,
+      "durationMs": 62132.980221000005
+    }
+  ]
+}

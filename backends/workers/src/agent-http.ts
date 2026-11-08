@@ -186,6 +186,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
             ),
           });
           this.registry.install({
+            // A sub-agent has no schedules (createScheduleImpl refuses them): it is offered no schedule tools.
             name: "camel.web",
             tools: await agentBuiltins(this.env, async (api) => {
               const conf = await this.config();
@@ -205,7 +206,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
                 bucket: (params?.bucket as string | undefined) ?? conf.config.bucket ?? await this.ctx.storage.get<string>("run-bucket") ?? "default",
                 files: (await this.sourceIdentity(api)).toolFiles('web_fetch'),
               };
-            }, { schedules: this.scheduleTools() }),
+            }, { schedules: incoming.config.type === "subagent" ? undefined : this.scheduleTools() }),
           });
           this.registry.install({
             name: "camel.decisions",

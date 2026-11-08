@@ -180,7 +180,7 @@ test("a sub-agent is reached only through its parent: a prompt or schedule from 
   const r = await runtime(t, body => {
     const said = lastUser(body);
     if (systemText(body).includes("ASKER")) {
-      if (said.includes("set a wake-up")) return last(body).role === "tool" ? { role: "assistant", content: `results: ${toolResults(body).at(-1)}` } : toolCall("schedule", { text: "check in", inSeconds: 3600 }, "call_schedule");
+      if (said.includes("set a wake-up")) return { role: "assistant", content: `tools: ${(body.tools ?? []).map((tool: any) => tool.function?.name ?? tool.name).join(",")}` };
       return last(body).role === "tool" ? { role: "assistant", content: `region ${JSON.parse(toolResults(body).at(-1)).answers["Which region?"]}` } : toolCall("ask_user", ASK, "call_ask");
     }
     if (last(body).role === "tool") return { role: "assistant", content: "ok" };
@@ -218,9 +218,11 @@ test("a sub-agent is reached only through its parent: a prompt or schedule from 
   assert.equal((await r.call(`/v1/agents/${child}/inputs/${input.id}`, { body: { action: "accept", content: { answers: { "Which region?": "EU" } } } })).status, 202);
   assert.match((await ended(r, parent, "child_", 2))[1].outcome.result.reply, /status="completed"[^>]*>\nregion EU/);
 
-  // Its parent's message starts its turn; a wake-up of its own (the schedule builtin) is refused there too.
+  // Its parent's message starts its turn, in which it is offered no schedule tools (its definition's builtin is left out).
   await r.prompt(parent, "tell the child");
   const notices = await ended(r, parent, "child_", 3);
-  assert.match(notices[2].outcome.result.reply, /status="completed"[^>]*>\nresults: [\s\S]*is a sub-agent: message its parent, which reaches it with send_message/);
+  const offered = /status="completed"[^>]*>\ntools: ([^\n<]*)/.exec(notices[2].outcome.result.reply)?.[1].split(",");
+  assert.ok(offered?.includes("ask_user"), notices[2].outcome.result.reply);
+  assert.deepEqual((offered ?? []).filter(name => name.includes("schedule")), []);
   assert.deepEqual((await r.call(`/v1/agents/${child}/schedules`)).json, []);
 });
