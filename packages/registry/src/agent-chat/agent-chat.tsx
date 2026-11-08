@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject, type ReactNode } from "react";
 import {
   AgentProvider, useAgent, useAgentSelector, useAgentStatus, useLoadOlder, useMessages, useSend,
   type AssistantChatMessage, type ChatMessage, type ToolRenderers, type UserChatMessage,
@@ -20,6 +20,11 @@ export interface AgentChatProps {
   suggestions?: string[];
   placeholder?: string;
   className?: string;
+  /** Slots for hosts with uploads, queue controls, or related workers. */
+  composer?: ReactNode;
+  activity?: ReactNode;
+  children?: ReactNode;
+  senderLabel?: (message: UserChatMessage) => ReactNode;
 }
 
 /** A chat with the user's agent, in your shadcn theme. The code is yours: change anything. */
@@ -31,7 +36,7 @@ export function AgentChat({ endpoint, thread, tools, ...props }: AgentChatProps)
   );
 }
 
-export function AgentChatView({ tools, suggestions = [], placeholder = "Message the agent…", className }: Omit<AgentChatProps, "endpoint" | "thread">) {
+export function AgentChatView({ tools, suggestions = [], placeholder = "Message the agent…", className, composer, activity, children, senderLabel }: Omit<AgentChatProps, "endpoint" | "thread">) {
   const messages = useMessages();
   const { status, error } = useAgentStatus();
   const send = useSend();
@@ -52,22 +57,24 @@ export function AgentChatView({ tools, suggestions = [], placeholder = "Message 
                 </div>
               </div>
             )}
-            {messages.map(message => <Row key={message.id} message={message} tools={tools} />)}
+            {messages.map(message => <Row key={message.id} message={message} tools={tools} senderLabel={senderLabel} />)}
+            {children}
+            <Inputs />
             {waiting && <p className="animate-pulse text-sm text-muted-foreground" aria-hidden="true">Thinking…</p>}
           </div>
         </div>
         {!atBottom && <Button variant="outline" size="sm" className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full shadow" onClick={() => toBottom(true)}>Jump to latest</Button>}
       </div>
       <Announcer />
-      <Inputs />
+      {activity}
       {status === "error" && error && <p role="alert" className="mx-auto mb-2 w-full max-w-3xl rounded-md border border-destructive px-3 py-2 text-sm text-destructive">{error.message}</p>}
-      <Composer placeholder={placeholder} />
+      {composer ?? <Composer placeholder={placeholder} />}
     </div>
   );
 }
 
-const Row = memo(function Row({ message, tools }: { message: ChatMessage; tools?: ToolRenderers }) {
-  return message.role === "user" ? <UserBubble message={message} /> : <AssistantTurn message={message} tools={tools} />;
+const Row = memo(function Row({ message, tools, senderLabel }: { message: ChatMessage; tools?: ToolRenderers; senderLabel?: AgentChatProps["senderLabel"] }) {
+  return message.role === "user" ? <UserBubble message={message} senderLabel={senderLabel} /> : <AssistantTurn message={message} tools={tools} />;
 });
 
 /** A sub-agent's notification or message: the runtime wrote it, so it is a notice, never the user's bubble. */
@@ -83,12 +90,12 @@ function AgentNotice({ message }: { message: UserChatMessage }) {
   );
 }
 
-const UserBubble = memo(function UserBubble({ message }: { message: UserChatMessage }) {
+const UserBubble = memo(function UserBubble({ message, senderLabel }: { message: UserChatMessage; senderLabel?: AgentChatProps["senderLabel"] }) {
   const chat = useAgent();
   if (message.agent) return <AgentNotice message={message} />;
   return (
     <div className="flex flex-col items-end gap-1">
-      {message.from?.name && <span className="text-xs text-muted-foreground">{message.from.name}</span>}
+      {(senderLabel || message.from?.name) && <span className="text-xs text-muted-foreground">{senderLabel ? senderLabel(message) : message.from?.name}</span>}
       <div className={cn("max-w-[85%] whitespace-pre-wrap break-words rounded-2xl bg-secondary px-4 py-2 text-sm text-secondary-foreground", message.status === "sending" && "opacity-70")}>{message.text}</div>
       {message.status === "failed" && (
         <p role="alert" className="text-xs text-destructive">

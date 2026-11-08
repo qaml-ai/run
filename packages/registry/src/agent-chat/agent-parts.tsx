@@ -3,6 +3,7 @@
 import { memo, useCallback, useEffect, useState, type FormEvent } from "react";
 import { useAgent, useToolRendererFor, type ChatInput, type FilePart, type InputAnswer, type InputValue, type ToolPart, type ToolRenderers } from "@camelai/run-react";
 import { Button } from "@/components/ui/button";
+import { AgentMarkdown } from "./agent-markdown";
 import { cn } from "@/lib/utils";
 
 const localName = (name: string) => name.includes("__") ? name.slice(name.lastIndexOf("__") + 2) : name;
@@ -20,6 +21,13 @@ export const AgentTool = memo(function AgentTool({ part, tools }: { part: ToolPa
     return <Renderer part={part} name={part.name} args={part.args} state={part.state} result={part.result} progress={part.progress} input={part.input} answer={answer} />;
   }
   if (part.input) return <AgentInputCard input={part.input} />;
+  if (part.subagent) return <details className="rounded-lg border p-3 text-sm" data-status={part.subagent.status ?? "running"}>
+    <summary className="cursor-pointer">{part.subagent.name} · {part.subagent.status ?? "working"}</summary>
+    {part.subagent.progress && <p className="mt-2">{part.subagent.progress}</p>}
+    {part.subagent.messages.filter(message => message.role === "assistant").map((message, index) => <AgentMarkdown key={index} text={message.content.filter(part => part.type === "text").map(part => part.text).join("\n")} />)}
+    {part.result && <AgentMarkdown text={part.result.text} />}
+    {part.subagent.error && <p className="text-destructive">{part.subagent.error}</p>}
+  </details>;
   const name = localName(part.name);
   const label = part.state === "done" ? `Used ${name}` : part.state === "error" ? `${name} failed` : `Running ${name}…`;
   return (
@@ -42,10 +50,14 @@ interface Question { question: string; header?: string; options?: { label: strin
 /** What the agent waits on: an approval, questions, a form, or a page to visit. */
 export const AgentInputCard = memo(function AgentInputCard({ input }: { input: ChatInput }) {
   const chat = useAgent();
-  const answer = (value: InputValue | InputAnswer) => { void chat.answer(input, value); };
+  return <AgentInputView input={input} onAnswer={value => { void chat.answer(input, value); }} />;
+});
+
+/** The same input card for account-wide inboxes, with the host supplying its answer route. */
+export function AgentInputView({ input, onAnswer: answer }: { input: ChatInput; onAnswer: (value: InputValue | InputAnswer) => void }) {
   const busy = input.answering;
   return (
-    <div className="space-y-3 rounded-lg border p-4 text-sm" aria-busy={busy || undefined}>
+    <div id={`input-${input.id}`} className="space-y-3 rounded-lg border p-4 text-sm" aria-busy={busy || undefined}>
       {input.kind === "approval" && (
         <>
           <p className="font-medium">{input.message}</p>
@@ -73,7 +85,7 @@ export const AgentInputCard = memo(function AgentInputCard({ input }: { input: C
       {input.error && <p role="alert" className="text-destructive">{input.error.message}</p>}
     </div>
   );
-});
+}
 
 function Questions({ questions, busy, onAnswer }: { questions: Question[]; busy: boolean; onAnswer(value: InputValue): void }) {
   const [chosen, setChosen] = useState<Record<string, string[]>>({});
