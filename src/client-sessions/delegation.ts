@@ -89,7 +89,7 @@ export async function delegate(ctx: DelegationContext, session: Session, setting
       let computer: Awaited<ReturnType<typeof childComputer>>;
       try { computer = await childComputer(ctx, session, run, call, made); }
       catch (error) { await landDelegate(ctx, requestId, "failed", "call").catch(() => {}); throw error; }
-      agent = await makeChild(ctx, session, run, target, key, toolCallId, depth, computer);
+      agent = await makeChild(ctx, session, run, target, key, toolCallId, { depth, maxDepth, chain }, computer);
     }
     child = { agent, requestId, made };
     (session.children ??= new Map()).set(call.innerCallId ? `${toolCallId}/${call.innerCallId}` : toolCallId, child);
@@ -188,8 +188,7 @@ export function childTarget(settings: DelegateSettings, args: Record<string, unk
 
 /** Where a child of this run goes in its chain: one deeper, within the chain's limit and the settings' (`what` names the refusal). */
 export function childPlace(ctx: DelegationContext, session: Session, run: RequestRecord, settings: DelegateSettings, what: string) {
-  // Where this run is in its chain: the prompt that started it says so, if a delegate or spawn_agent call sent it (signed by the runtime).
-  const place = delegation(ctx, session.header.id, run.id, run.metadata);
+  const place = position(ctx, session, run);
   const depth = place.depth + 1;
   const maxDepth = Math.min(place.maxDepth, settings.maxDepth ?? MULTI_AGENT_LIMITS.maxDepth);
   if (depth > maxDepth) throw new Error(`${what} has reached its depth limit of ${maxDepth}: do this task yourself`);
@@ -215,7 +214,7 @@ export async function childComputer(ctx: DelegationContext, session: Session, ru
   return { seed: (await computers.forkSnapshot(session.header.tenant, session.header.id, forkBatch(run.id, call.messageIndex, call.toolCallId!))).id };
 }
 
-export async function makeChild(ctx: DelegationContext, session: Session, run: RequestRecord, target: AgentTarget | undefined, key: string, toolCallId: string, depth: number, computer?: "none" | { seed: string }) {
+export async function makeChild(ctx: DelegationContext, session: Session, run: RequestRecord, target: AgentTarget | undefined, key: string, toolCallId: string, place: { depth: number; maxDepth: number; chain: string[] }, computer?: "none" | { seed: string }) {
   const { header } = session, tenant = header.tenant;
   const web = (header.sources?.builtins ?? []).filter(builtin => builtin === "web_search" || builtin === "web_fetch");
   // An inline child has its parent's model: as it is (its endpoint too), or by name on the tenant's own providers, which take only names.
@@ -231,7 +230,7 @@ export async function makeChild(ctx: DelegationContext, session: Session, run: R
     ...header.keyScope ? { keyScope: header.keyScope } : {},
     // Its parent's end user pays for it, from the bucket the parent's run spends.
     bucket: spend.bucketOf(ctx.spendContext, session, run),
-  }, key, { agentId: header.id, runId: run.id, toolCallId, depth, ...computer ? { computer } : {} })).id;
+  }, key, { agentId: header.id, runId: run.id, toolCallId, ...place, ...computer ? { computer } : {} })).id;
 }
 
 /**
@@ -252,6 +251,18 @@ export function childPrompt(ctx: DelegationContext, session: Session, run: Reque
     metadata: { [PARENT_KEYS.agent]: session.header.id, [PARENT_KEYS.run]: run.id, [PARENT_KEYS.toolCall]: call.toolCallId!, [PARENT_KEYS.depth]: String(depth), [PARENT_KEYS.maxDepth]: String(maxDepth), [PARENT_KEYS.chain]: chain.join(","),
       [PARENT_KEYS.signature]: delegationSignature(ctx, agent, requestId, String(depth), String(maxDepth), chain.join(",")) },
   };
+}
+
+/**
+ * Where run `run` of this agent is in its chain: as its prompt's signed place says (a delegate, spawn_agent or
+ * send_message of its parent's), else, for a sub-agent the runtime made, the place it was made at, else a chain's start.
+ * A sub-agent's turn a notification or message of the runtime's started is signed into no chain, and its depth, limit
+ * and root hold there too. One made before its chain was recorded has its depth and parent alone.
+ */
+export function position(ctx: DelegationContext, session: Session, run: RequestRecord) {
+  const signed = delegation(ctx, session.header.id, run.id, run.metadata), made = session.header.parent;
+  if (signed.chain.length || !made) return signed;
+  return { depth: made.depth, maxDepth: made.maxDepth ?? MULTI_AGENT_LIMITS.depthCeiling, chain: made.chain ?? [made.agentId] };
 }
 
 /** In a child's run (its chain signed by the runtime): its parent agent and its chain's first, for identity tokens. */

@@ -99,7 +99,7 @@ test("delegate and spawn_agent children: a fork's seed starts the child's sessio
   await exec(f.service, f.parent, "put repo cloned");
   const snapshot = await f.service.forkSnapshot("payg", f.parent, forkBatch("run", 1, "call"));
   const ctx = (f.sessions as unknown as { delegationContext: DelegationContext }).delegationContext;
-  const make = (key: string, computer?: "none" | { seed: string }) => makeChild(ctx, f.sessions.sessions.get(f.parent)!, { id: "run" } as Parameters<typeof makeChild>[2], undefined, key, key, 1, computer);
+  const make = (key: string, computer?: "none" | { seed: string }) => makeChild(ctx, f.sessions.sessions.get(f.parent)!, { id: "run" } as Parameters<typeof makeChild>[2], undefined, key, key, { depth: 1, maxDepth: 1, chain: [f.parent] }, computer);
   const forked = await make("forked", { seed: snapshot.id });
   const status = await f.service.status("payg", forked);
   assert.equal(status.connection.forkedFrom?.snapshot, snapshot.id);

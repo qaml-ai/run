@@ -120,7 +120,19 @@ test('a structured child request wraps its schema and records its runtime parent
   f.host.create = async (_config, _key, parent) => { relation = parent; return { id: 'structured-child' }; };
   await f.delegation.start({ instructions: 'help', task: 'answer', output: schema }, 'structured', signal());
   assert.deepEqual(f.submitted[0].params.output, { schema });
-  assert.deepEqual(relation, { agent: 'parent', run: 'parent-run' });
+  assert.deepEqual(relation, { agent: 'parent', run: 'parent-run', place: { depth: 1, maxDepth: 2, chain: ['parent'] } });
+  await Promise.all(f.tasks);
+});
+test('a sub-agent\'s turn signed into no chain (a notification\'s) delegates from the place it was made at', async () => {
+  const f = fixture();
+  f.setId('mid');
+  f.host.made = async () => ({ depth: 2, maxDepth: 2, chain: ['root', 'parent'] });
+  await assert.rejects(f.delegation.start({ instructions: 'helper', task: 'help' }, 'deep', signal()), /depth limit of 2/);
+  assert.equal(f.submitted.length, 0);
+  f.host.made = async () => ({ depth: 1, maxDepth: 2, chain: ['root'] });
+  await f.delegation.start({ instructions: 'helper', task: 'help' }, 'shallow', signal());
+  assert.equal(f.submitted[0].params.metadata.delegationDepth, '2');
+  assert.equal(f.submitted[0].params.metadata.delegationChain, 'root,mid');
   await Promise.all(f.tasks);
 });
 test('new child inherits the parent computer before submission, once across replay', async () => {

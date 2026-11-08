@@ -141,6 +141,6 @@ export async function family(t: { after(fn: () => Promise<void> | void): void },
   if (subagents !== undefined) await f.service.create("payg", { agent: parent, provider: "boat", subagents, leaseSeconds: 600, dailySeconds: 1200 });
   sessions.options.createAgent = (tenant, params, key, parent) => sessions.create([], { model }, key, {}, tenant, undefined, params.mounts, undefined, undefined, { parent });
   const ctx = (sessions as unknown as { delegationContext: DelegationContext }).delegationContext;
-  const child = (of: string, key: string) => makeChild(ctx, sessions.sessions.get(of)!, { id: "run" } as Parameters<typeof makeChild>[2], undefined, key, key, 1);
+  const child = (of: string, key: string) => makeChild(ctx, sessions.sessions.get(of)!, { id: "run" } as Parameters<typeof makeChild>[2], undefined, key, key, { depth: 1, maxDepth: 1, chain: [of] });
   return { ...f, sessions, parent, child };
 }

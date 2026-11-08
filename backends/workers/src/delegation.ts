@@ -18,6 +18,7 @@ import { scriptOf } from './codemode-run.ts';
 import { computerChoice, forkBatch } from '../../../src/core/computer-fork.ts';
 import type { ComputerSnapshot } from './computers/provider.ts';
 import type { NativeForkOrigin } from './computers/native-fork.ts';
+import type { ChildPlace } from './child-parent.ts';
 
 type Configuration = { model?: string | object; systemPrompt?: string; delegate?: DelegateSettings; builtins?: string[]; spendLimit?: { usd: number }; [key: string]: unknown };
 export type ParentRun = { id: string; piId?: string; startedAt?: number; params?: { spendLimit?: { usd: number }; bucket?: string; actor?: string }; metadata?: unknown };
@@ -63,7 +64,9 @@ export interface DelegationHost {
   context(api?: ToolExecutionApi): Promise<{ id: string; config: Configuration; run: ParentRun }>;
   /** Authoritative remaining spend after completed work, before active child shares. */
   remainingBudget?(background: boolean, api?: ToolExecutionApi): Promise<number | undefined>;
-  create(config: Configuration, key: string, parent?: { agent: string; run: string }): Promise<{ id: string }>;
+  create(config: Configuration, key: string, parent?: { agent: string; run: string; place: ChildPlace }): Promise<{ id: string }>;
+  /** This agent's place as its parent made it, when the runtime made it (`madePlace`). */
+  made?(): Promise<ChildPlace | undefined>;
   /**
    * Copy an eligible parent connection before a newly created child starts. `computer` is the call's choice: "none"
    * attaches nothing, a fork (forkComputer's) starts the child's computers from the parent's snapshots.
@@ -167,7 +170,9 @@ export class Delegation {
     return { depth: Number(depth), maxDepth: Number(max), chain: parents, parent: parents.at(-1)!, root: parents[0]! };
   }
   private async place(id: string, run: ParentRun, settings: DelegateSettings) {
-    const lineage = await this.lineage(id, run);
+    // A turn signed into no chain (a notification's or message's) of a sub-agent the runtime made is where it was made:
+    // its depth, limit and root hold in every turn it runs.
+    const lineage = await this.lineage(id, run) ?? await this.host.made?.();
     const parentDepth = lineage?.depth ?? 0;
     const maxDepth = Math.min(lineage?.maxDepth ?? MULTI_AGENT_LIMITS.depthCeiling, settings.maxDepth ?? MULTI_AGENT_LIMITS.maxDepth);
     if (parentDepth + 1 > maxDepth) throw new HttpError(400, `Delegation has reached its depth limit of ${maxDepth}: do this task yourself`, 'DELEGATION_DEPTH');
@@ -276,7 +281,7 @@ export class Delegation {
           const childConf: Configuration = childConfig(config, resolved?.config, run.params);
           // No computer: no native computer settings either (egress grants and their credentials stay the parent's).
           if (choice === 'none') delete childConf.computer;
-          const made = resolved?.id ? resolved : await this.host.create({ ...childConf, name: admitted.name, type: 'subagent', ttlSeconds: MULTI_AGENT_LIMITS.childTtlSeconds }, key, { agent: id, run: run.id });
+          const made = resolved?.id ? resolved : await this.host.create({ ...childConf, name: admitted.name, type: 'subagent', ttlSeconds: MULTI_AGENT_LIMITS.childTtlSeconds }, key, { agent: id, run: run.id, place });
           let fork: ChildComputerFork | undefined;
           try { fork = await forking; }
           catch (error) {

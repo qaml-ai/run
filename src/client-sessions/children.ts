@@ -106,7 +106,7 @@ async function spawnAgent(ctx: ChildrenContext, session: Session, settings: Dele
   if (!agent) throw new Error(`The agent ${target!.name} does not exist`);
   return startChild(ctx, session, run, call, settings, {
     agent, made, ...(asked !== undefined ? { name: asked as string } : {}), base: target?.name ?? "subagent", task, ...(output ? { output } : {}),
-    ...(made ? { make: async (depth: number) => delegation.makeChild(ctx, session, run, target, key, call.toolCallId!, depth, await delegation.childComputer(ctx, session, run, call, made)) } : {}),
+    ...(made ? { make: async (place: { depth: number; maxDepth: number; chain: string[] }) => delegation.makeChild(ctx, session, run, target, key, call.toolCallId!, place, await delegation.childComputer(ctx, session, run, call, made)) } : {}),
   });
 }
 
@@ -118,7 +118,7 @@ async function spawnAgent(ctx: ChildrenContext, session: Session, settings: Dele
  * once, and an agent already in the chain is refused. A child already busy (a persistent worker) queues the task.
  */
 async function startChild(ctx: ChildrenContext, session: Session, run: RequestRecord, call: ToolCall, settings: DelegateSettings | undefined,
-  child: { agent: string; made: boolean; name?: string; preferred?: string; base: string; task: string; output?: unknown; make?: (depth: number) => Promise<string> }): Promise<McpResult> {
+  child: { agent: string; made: boolean; name?: string; preferred?: string; base: string; task: string; output?: unknown; make?: (place: { depth: number; maxDepth: number; chain: string[] }) => Promise<string> }): Promise<McpResult> {
   const { header } = session;
   const tenant = header.tenant;
   const submit = ctx.options.submit!;
@@ -141,7 +141,7 @@ async function startChild(ctx: ChildrenContext, session: Session, run: RequestRe
   let record = fresh ? undefined : await delegation.requestOf(ctx, agent, tenant, requestId, 0, call.signal).catch(error => { if ((error as HttpError).status === 404) return undefined; throw error; });
   if (!record) {
     try {
-      if (child.make) agent = await child.make(depth);
+      if (child.make) agent = await child.make({ depth, maxDepth, chain });
       const budget = await spend.childShare(ctx.spendContext, session, requestId, settings?.maxParallel ?? MULTI_AGENT_LIMITS.maxParallel);
       if (budget !== undefined && budget <= 0) throw new Error("This agent has no budget left for a sub-agent: its spend limit is reached");
       relayChild(ctx, session, run.id, at);
@@ -693,7 +693,7 @@ async function sendMessage(ctx: ChildrenContext, session: Session, settings: Del
   if (!latest) throw new Error(`You have no sub-agent ${to}: you can message the sub-agents you started (by name or agentId), and "parent"`);
   const child = latest.child as string;
   // The child's turn is placed in this agent's chain, signed, so its "parent" and depth hold in it.
-  const place = delegation.delegation(ctx, header.id, run.id, run.metadata);
+  const place = delegation.position(ctx, session, run);
   const chain = [...place.chain, header.id];
   const depth = Number(latest.depth);
   const maxDepth = Math.min(place.maxDepth, settings?.maxDepth ?? MULTI_AGENT_LIMITS.maxDepth);
