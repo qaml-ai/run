@@ -45,6 +45,16 @@ export class BatchQueue {
     return { waiting: items.filter(item => item.mode === "followUp").map(item => item.entry?.data?.requestId), steering: items.some(item => item.mode === "steer"), idle: live?.run === undefined && !items.length };
   }
 
+  /** At a final boundary Pi can place a steer and queued follow-ups in the same run. */
+  async canSteer(endUser: string | undefined) {
+    const { waiting } = await this.inbox();
+    for (const id of waiting) {
+      const record = id ? await this.storage.get<RequestRecord>(reqKey(id)) : undefined;
+      if (!record || (record.params?.endUser ?? null) !== (endUser ?? null)) return false;
+    }
+    return true;
+  }
+
   /**
    * Whether a request being admitted is held rather than given to Pi now: everything while prompts are held (the queue
    * keeps its order), and on a batching agent one that may not join the follow-ups waiting in Pi's inbox, or a joinable

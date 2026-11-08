@@ -16,7 +16,7 @@ const { InboxDoc } = await import('@earendil-works/pi-durable');
 const { BatchQueue } = await import('../src/batch-queue.ts');
 
 function fixture() {
-  let items: { mode: string }[] = [], run: object | undefined = {};
+  let items: { mode: string; entry?: { data: { requestId: string } } }[] = [], run: object | undefined = {};
   const sent: unknown[] = [], values = new Map<string, any>();
   const storage = {
     get: async (key: string) => values.get(key),
@@ -49,4 +49,15 @@ test('a rejected steer is held until idle and released as its own turn', async (
   await (f.queue as any).release();
   assert.equal(f.sent.length, 1);
   assert.equal(f.values.has('batch-hold:1'), false);
+});
+
+test('a steer cannot share a final boundary with another payer already queued', async () => {
+  const f = fixture();
+  f.inbox([{ mode: 'followUp', entry: { data: { requestId: 'next' } } }]);
+  f.values.set('request:next', { params: { endUser: 'other' } });
+  assert.equal(await f.queue.canSteer('guest'), false);
+  assert.equal(await f.queue.canSteer('other'), true);
+  f.values.set('request:next', { params: {} });
+  assert.equal(await f.queue.canSteer('guest'), false);
+  assert.equal(await f.queue.canSteer(undefined), true);
 });

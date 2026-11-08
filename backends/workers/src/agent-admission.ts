@@ -470,6 +470,7 @@ export async function admitImpl(this: AgentRuntime,
     // turn when Pi drains them after a final answer.
     let candidate = params.whileRunning === 'steer' ? await this.runningRequest() : undefined;
     if (candidate && ((await this.ctx.storage.get<RequestRecord>(reqKey(candidate.owner)))?.params?.endUser ?? null) !== (params.endUser ?? null)) candidate = undefined;
+    if (candidate && !await this.batchQueue.canSteer(params.endUser as string | undefined)) candidate = undefined;
     const running = old?.steerCommitted ? old.steeredInto : candidate?.owner;
     const messageWake = async () => {
       const wake = notice!.root === conf.id

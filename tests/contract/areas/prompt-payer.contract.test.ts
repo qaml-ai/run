@@ -140,6 +140,31 @@ contractTest('credits', 'tests/prompt-payer.test.ts', 'only a steer with the run
   }
 }, { timeout: 180_000, env: payerEnv });
 
+contractTest('credits', 'tests/prompt-payer.test.ts', 'a follow-up queued before a steer keeps its own payer at the final boundary', async (_t, r) => {
+  await seedPayers(r);
+  const hold = deferred(), began = deferred();
+  r.setModel(body => {
+    if (lastText(body) === 'wait-before-steer') { began.resolve(); return priced({ content: 'held', wait: hold.promise }); }
+    return priced({ content: 'done' });
+  });
+  const { id } = (await r.call('/v1/agents', { body: { subject: 'owner', queue: { mode: 'batch' } } })).json;
+  let steered = false;
+  try {
+    assert.equal((await r.call(`/v1/agents/${id}/prompt`, { body: { text: 'wait-before-steer', requestId: 'before', endUser: 'guest' } })).status, 202);
+    await began.promise;
+    assert.equal((await r.call(`/v1/agents/${id}/prompt`, { body: { text: 'next', requestId: 'next', endUser: 'other' } })).status, 202);
+    const steer = await r.call(`/v1/agents/${id}/prompt`, { body: { text: 'late', requestId: 'late', endUser: 'guest', whileRunning: 'steer' } });
+    assert.equal(steer.status, 202, steer.text);
+    steered = steer.json.steer === 'accepted';
+  } finally { hold.resolve(); }
+  for (const request of ['before', 'next', 'late']) await completed(r, id, request);
+  for (const [user, expected] of [['guest', steered ? ['before'] : ['before', 'late']], ['other', ['next']]] as const) {
+    const entries = (await r.call(`/v1/end-users/${user}/ledger`)).json.entries.filter((e: any) => e.kind === 'usage');
+    assert.deepEqual([...new Set(entries.map((e: any) => e.metadata.requestId))].sort(), [...expected].sort(), JSON.stringify(entries));
+    assert.equal((await r.call(`/v1/end-users/${user}`)).json.held, 0);
+  }
+}, { timeout: 180_000, env: payerEnv });
+
 contractTest('credits', 'tests/prompt-payer.test.ts', 'first prompt accepts a payer, malformed JSON is 400, and payer buckets do not become the subject default', async (_t, r) => {
   await seedPayers(r);
   r.setModel(() => priced({ content: 'done' }));
