@@ -197,7 +197,7 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
         let value: unknown = raw;
         try { value = JSON.parse(raw); } catch { /* text */ }
         const result = await ops.answer(api(), agent, inputId, value, { from: flags.from, wait: waitSeconds(flags) });
-        return "requestId" in result ? printRun(result, print, io) : (print(result, () => result.note), 0);
+        return "requestId" in result ? printRun(result, print, io) : (print(result, () => result.note ?? "Decision answered."), 0);
       }
       case "schedules": return await schedules(args, flags, api, print, io.err);
       default: throw new UsageError(`Unknown command: ${command}. Run camelrun --help`);

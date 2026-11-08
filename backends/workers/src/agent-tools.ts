@@ -362,7 +362,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
           return { output: [{ type: "text", text: JSON.stringify(value) }], structuredOutput: value };
         } };
         const runtime = this;
-        registry.install({ name: "camel.human", tools: [askHuman, makeAskUser(attachments), ...((conf.config.builtins ?? []).includes("request_decision") ? [requestDecision] : [])] });
+        registry.install({ name: "camel.human", tools: [askHuman, makeAskUser(attachments, conf.config.builtins ?? []), ...((conf.config.builtins ?? []).includes("request_decision") ? [requestDecision] : [])] });
         // A channel's agents send updates and files to their conversation before the final reply. One that also messages
         // agents (its sub-agents) gets one send_message for both, dispatched on `to` (installed with camel.delegation).
         const messaging = this.channels.messaging(async () => this.config(), async api => { const run = await this.currentRun(api as never); return run.id === "background" ? undefined : run.id; },

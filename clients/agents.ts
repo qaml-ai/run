@@ -196,7 +196,7 @@ export interface AnswerOptions {
   throwOnError?: boolean;
   signal?: AbortSignal;
 }
-/** Human input a run waits on, with the means to answer it. Answering resolves with the resumed run. */
+/** Human input with the means to answer it. Decisions return a completed receipt; blocking inputs return the resumed run. */
 export interface RunInput<T = unknown> extends Omit<AgentInput, "answer"> {
   answer(value: InputValue, options?: AnswerOptions): Promise<Run<T>>;
   decline(options?: AnswerOptions): Promise<Run<T>>;
@@ -676,8 +676,8 @@ export class Agent {
       const { request } = await this.client.answer(input.id, answer);
       if (request) return this.settle<T>(request.id, this.client.waitForRequest(request.id, { ...(options.signal ? { signal: options.signal } : {}) }), options.throwOnError, schema);
       // Other inputs of the run still wait: it resumes once they are answered too.
-      const pending = (await this.client.inputs("pending")).filter(other => other.requestId === input.requestId);
-      return { id: input.requestId, status: "input_required", text: "", inputs: pending.map(other => this.input<T>(other, schema)), error: null, usage: null, files: [], toolErrors: [], toolCalls: [], sourceErrors: [], raw: null };
+      const pending = input.blocking === false ? [] : (await this.client.inputs("pending")).filter(other => other.requestId === input.requestId && other.blocking !== false);
+      return { id: input.requestId, status: pending.length ? "input_required" : "completed", text: "", inputs: pending.map(other => this.input<T>(other, schema)), error: null, usage: null, files: [], toolErrors: [], toolCalls: [], sourceErrors: [], raw: null };
     };
     return {
       ...input,
@@ -786,7 +786,7 @@ function answerFor(input: AgentInput, value: InputValue): InputAnswer {
     case "approval": case "url":
       if (typeof value !== "boolean") throw new AgentError(`Answer ${input.kind === "approval" ? "an approval" : "a url step"} with true or false`);
       return { action: value ? "accept" : "decline" };
-    case "question": {
+    case "question": case "decision": {
       const questions = (input.detail.questions ?? []) as { question: string }[];
       if (typeof value === "string" || Array.isArray(value)) {
         if (questions.length !== 1) throw new AgentError(`This input asks ${questions.length} questions: answer with { "<question>": "<answer>" } for each`);

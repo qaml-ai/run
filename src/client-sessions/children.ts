@@ -537,7 +537,7 @@ export async function childEnded(ctx: ChildrenContext, child: string, record: Re
 async function deliverChild(ctx: ChildrenContext, row: any) {
   const release = () => ctx.db.query("update agent_children set claimed_until = null where id = $1", [row.id]).catch(() => {});
   try {
-    if ((await ctx.options.inputs?.pending(row.parent))?.length) return void await release();
+    if ((await ctx.options.inputs?.pending(row.parent))?.some(input => input.blocking !== false)) return void await release();
     const submit = ctx.options.submit ?? ((agent, tenant, request) => ctx.submit(agent, tenant, request));
     await submit(row.parent, row.tenant, { id: `child_${row.request_id}`, method: "prompt", params: { ...row.notice, allowDisconnected: true } });
   } catch (error) {

@@ -38,3 +38,10 @@ test('key replacement is serialized, replay does not withdraw newer work, and an
   await store.delivered([...deliveries.keys()][0]);
   assert.equal((await store.deliveries('a1')).size, 0);
 });
+
+test('ask_user keeps its original text unless request_decision is also enabled', async () => {
+  const { builtinDefinitions } = await import('../src/builtins.ts');
+  const original = "Ask the user 1-4 questions, each with 2-4 options, when you are blocked on a choice only they can make. Your turn pauses until they answer, which may take days; the answers come back as this call's result. Don't ask about what you can find out yourself.";
+  assert.equal(builtinDefinitions(['ask_user'])[0].description, original);
+  assert.equal(builtinDefinitions(['ask_user', 'request_decision'])[0].description, original + ' If you can keep working while you wait, use request_decision instead.');
+});

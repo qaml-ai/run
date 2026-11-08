@@ -1,7 +1,8 @@
+import { askUserDefinition } from "./inbox-definitions.ts";
 import { defineDoc, defineTool, hook, ToolTask, type Extension, type Harness, type ToolExecutionApi, type ToolRegistration, type ToolTaskInput } from "@earendil-works/pi-durable";
 import { obj, str } from "@earendil-works/pi-schema";
 import type { Context } from "@earendil-works/chord";
-import { answerInput, expiresAt, inboxDetail, inboxFields, expiryAnswer, INPUT_LIMITS, mayAnswer, questionsInput, resolution, settledAlready, type Answer, type HumanInputSettings, type InputRow, type Responder } from "./input-policy.ts";
+import { answerInput, expiresAt, inboxDetail, expiryAnswer, INPUT_LIMITS, mayAnswer, questionsInput, resolution, settledAlready, type Answer, type HumanInputSettings, type InputRow, type Responder } from "./input-policy.ts";
 import { HostExecutionRequest } from "./host-execution.ts";
 import { senderInput } from "./sender.ts";
 import { actorInput } from "./security-policy.ts";
@@ -203,10 +204,8 @@ export function humanInputExtension(): Extension {
 }
 
 export const askUser: ToolRegistration = makeAskUser();
-export function makeAskUser(attachments?: (items: any[]) => Promise<any[]>): ToolRegistration { return {
-  name: "ask_user",
-  description: "Ask the user 1–4 questions. Your turn pauses until they answer or the questions expire. Use request_decision to keep working.",
-  parameters: { type: "object", required: ["questions"], properties: { ...inboxFields, questions: { type: "array", minItems: 1, maxItems: 4, items: { type: "object" } } }, additionalProperties: false },
+export function makeAskUser(attachments?: (items: any[]) => Promise<any[]>, builtins: readonly string[] = []): ToolRegistration { return {
+  ...askUserDefinition(builtins),
   replay: "safe",
   structuredOutputSchema: {},
   // From code too: the turn pauses for the answer either way.

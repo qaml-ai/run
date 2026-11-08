@@ -48,11 +48,11 @@ const clip = (text: unknown, max: number = INPUT_LIMITS.text) => String(text ?? 
 
 /** Shared fields for a question or an independent decision. */
 export const inboxFields = {
-  priority: { type: "string", enum: ["urgent", "high", "normal", "low"] },
+  priority: { type: "string", enum: ["urgent", "high", "normal", "low"], description: "How soon a person should look: urgent, high, normal or low." },
   attachments: { type: "array", maxItems: 32, items: { type: "object", required: ["path"], properties: { path: { type: "string" }, caption: { type: "string" } }, additionalProperties: false } },
   links: { type: "array", maxItems: 32, items: { type: "string" } },
-  recommendation: { type: "object", required: ["answer", "reason"], properties: { answer: {}, reason: { type: "string" } }, additionalProperties: false },
-  applyRecommendationOnExpiry: { type: "boolean" },
+  recommendation: { type: "object", required: ["answer", "reason"], properties: { answer: {}, reason: { type: "string", description: "Why you recommend it, in a sentence." } }, additionalProperties: false },
+  applyRecommendationOnExpiry: { type: "boolean", description: "Apply your recommendation if nobody answers before it expires. Never for approvals." },
 };
 export function inboxDetail(args: Record<string, any>, kind: InputKind = "question") {
   if (args.priority !== undefined && !["urgent", "high", "normal", "low"].includes(args.priority)) throw new Error("Invalid priority");

@@ -134,7 +134,7 @@ const DEFINITIONS: Record<string, ToolDefinition> = {
   // AskUserQuestion's shape, which models already use well. From code too: the turn pauses for the answer either way.
   ask_user: {
     name: "ask_user", exposure: "direct", callers: ["model", "tools"],
-    description: "Ask the user 1–4 questions. Your turn pauses until they answer or the questions expire. Use request_decision to keep working.",
+    description: "Ask the user 1-4 questions, each with 2-4 options, when you are blocked on a choice only they can make. Your turn pauses until they answer, which may take days; the answers come back as this call's result. Don't ask about what you can find out yourself.",
     parameters: { type: "object", additionalProperties: false, required: ["questions"], properties: {
       ...inboxFields,
       questions: { type: "array", minItems: 1, maxItems: 4, items: { type: "object", additionalProperties: false, required: ["question", "header", "options"], properties: {
@@ -143,7 +143,7 @@ const DEFINITIONS: Record<string, ToolDefinition> = {
         options: { type: "array", minItems: 2, maxItems: 4, items: { type: "object", additionalProperties: false, required: ["label"], properties: {
           label: { type: "string", minLength: 1, maxLength: 200 }, description: { type: "string", maxLength: 1000, description: "What choosing it means" },
         } } },
-        recommended: { type: "string" }, reason: { type: "string", maxLength: 1000 },
+        recommended: { type: "string", description: "The option you recommend." }, reason: { type: "string", maxLength: 1000, description: "Why you recommend it, in a sentence." },
         multiSelect: { type: "boolean", description: "Let the user choose several options" },
         allowOther: { type: "boolean", description: "Let the user answer in their own words instead" },
       } } },
@@ -151,10 +151,10 @@ const DEFINITIONS: Record<string, ToolDefinition> = {
   },
   request_decision: {
     name: "request_decision", exposure: "direct", callers: ["model", "tools"],
-    description: "Ask for a decision and keep working. Answers arrive as a notice. Expires in seven days. Reuse a key to replace a pending decision.",
+    description: "Ask the user for a decision without stopping: your turn continues, and the answer arrives later as a <decision_answer> message. Give a title, a body saying what they must decide, and 2-4 options (or none, for an answer in their own words). It stays open for 7 days, then is cancelled unless you set applyRecommendationOnExpiry with a recommendation. New messages never cancel it. Reuse the same key to replace your earlier pending decision about the same thing.",
     parameters: { type: "object", additionalProperties: false, required: ["title", "body"], properties: {
       ...inboxFields, title: { type: "string", minLength: 1, maxLength: 1000 }, body: { type: "string", maxLength: 4000 },
-      options: { type: "array", minItems: 2, maxItems: 4, items: { type: "object", required: ["label"], properties: { label: { type: "string" }, description: { type: "string" } }, additionalProperties: false } }, key: { type: "string", minLength: 1, maxLength: 200 },
+      options: { type: "array", minItems: 2, maxItems: 4, items: { type: "object", required: ["label"], properties: { label: { type: "string" }, description: { type: "string" } }, additionalProperties: false } }, key: { type: "string", minLength: 1, maxLength: 200, description: "A stable name for this decision; a new decision with the same key replaces the pending one." },
     } },
   },
   cancel_schedule: {
@@ -163,8 +163,13 @@ const DEFINITIONS: Record<string, ToolDefinition> = {
   },
 };
 
+/** Only agents with request_decision are directed to use it. */
+export function askUserDefinition(builtins: readonly string[] = []) {
+  return { ...DEFINITIONS.ask_user, description: DEFINITIONS.ask_user.description + (builtins.includes("request_decision") ? " If you can keep working while you wait, use request_decision instead." : "") };
+}
+
 /** The built-ins' tools; with web_fetch not enabled, web_search does not point the model at it. */
-export const builtinDefinitions = (builtins: string[] = []) => builtinNames(builtins).map(name => name === "web_search" && !builtins.includes("web_fetch")
+export const builtinDefinitions = (builtins: string[] = []) => builtinNames(builtins).map(name => name === "ask_user" ? askUserDefinition(builtins) : name === "web_search" && !builtins.includes("web_fetch")
   ? { ...DEFINITIONS[name], description: DEFINITIONS[name].description.replace(" The excerpts often hold the answer, so you may not need to open the page; when they don't, or a result has only a snippet, read the page with web_fetch.", " Answer from the excerpts and snippets: pages cannot be opened.") }
   : DEFINITIONS[name]);
 

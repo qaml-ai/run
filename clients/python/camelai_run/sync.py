@@ -400,11 +400,10 @@ class AgentFiles(_AsyncFiles):
 
 
 class RunInput(_AsyncInput):
-    """Human input a run waits on (a dict: id, kind, message, detail...), with the means to answer it. answer() and
-    decline() return the resumed run."""
+    """Human input with the means to answer it. Decisions return a completed receipt; blocking inputs return the resumed run."""
 
     def answer(self, value, *, from_=None, throw_on_error=True, timeout=None):
-        """approval or url: True or False; question: the label chosen (or labels, or your own words), or a dict of question
+        """approval or url: True or False; question or decision: the label chosen (or labels, or your own words), or a dict of question
         to answer; form: its fields. `from_`: who answers (your user id, or {"id", "name"?})."""
         return self._agent._respond(self, _answer_for(self, value), from_, throw_on_error, timeout)
 
@@ -523,8 +522,8 @@ class Agent:
         if request:
             return self._settled(request["id"], self.client._outcome(request["id"], timeout=timeout), input._output, throw_on_error, timeout)
         # Other inputs of the run still wait: it resumes once they are answered too.
-        pending = [RunInput(self, other, input._output) for other in self.client.inputs(state="pending") if other["requestId"] == input["requestId"]]
-        return Run(input["requestId"], "input_required", inputs=pending)
+        pending = [] if input.get("blocking") is False else [RunInput(self, other, input._output) for other in self.client.inputs(state="pending") if other["requestId"] == input["requestId"] and other.get("blocking") is not False]
+        return Run(input["requestId"], "input_required" if pending else "completed", inputs=pending)
 
     def send(self, text, *, user=None, files=None, metadata=None, idempotency_key=None, allow_disconnected=False, spend_limit=None,
              output=None, history=None, run_limits=None):

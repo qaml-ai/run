@@ -260,8 +260,8 @@ export async function workerChannels(env: Env, background?: (work: Promise<unkno
       async pending(agent) {
         const response = await env.AGENTS.getByName(agent).fetch(new Request("https://agent/inputs?state=pending"));
         if (!response.ok) return [];
-        const inputs = await response.json() as { id: string; requestId: string; kind: string; message: string; detail: Record<string, unknown>; createdAt: number }[];
-        return inputs.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+        const inputs = await response.json() as { id: string; requestId: string; kind: string; message: string; detail: Record<string, unknown>; createdAt: number; blocking?: boolean }[];
+        return inputs.filter(input => input.blocking !== false).sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
       },
       answer: (agent, _tenant, input, answer) => agentCall(env, agent, `/inputs/${encodeURIComponent(input)}`, {
         method: "POST", headers: { "content-type": "application/json", "x-camel-input-via": "channel" }, body: JSON.stringify(answer),
