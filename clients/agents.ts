@@ -149,7 +149,7 @@ export interface RunFailure extends Partial<ModelFailure> {
   reason?: CreditReason;
   /** With code end_user_credit: the bucket refused. */
   bucket?: string;
-  /** With code end_user_credit: whose credit (the subject). */
+  /** With code end_user_credit: whose credit (the payer). */
   endUser?: string;
 }
 
@@ -220,6 +220,8 @@ export type OutputSchema = StandardOutputSchema<any> | TSchema | Record<string, 
 export type OutputOf<S> = S extends { readonly "~standard": { readonly types?: { readonly output: infer T } } } ? T : S extends TSchema ? Static<S> : unknown;
 
 export interface RunOptions {
+  /** Charge this existing end user. Requires a tenant API key; unavailable for steers. */
+  endUser?: string;
   /** Who sent it (your user id, or a Sender): the model sees who, and tools get it as `identity.user`. */
   user?: string | Sender;
   files?: Attachment[];
@@ -772,6 +774,7 @@ function messageOptions(options: Pick<RunOptions, "user" | "files" | "metadata">
 function promptOptions(id: string, options: RunOptions) {
   return {
     ...messageOptions(options), idempotencyKey: id,
+    ...(options.endUser !== undefined ? { endUser: options.endUser } : {}),
     ...(options.signal ? { signal: options.signal } : {}), ...(options.whileRunning ? { whileRunning: options.whileRunning } : {}),
     ...(options.allowDisconnected ? { allowDisconnected: true } : {}), ...(options.spendLimit ? { spendLimit: options.spendLimit } : {}),
     ...(options.runLimits ? { runLimits: options.runLimits } : {}),

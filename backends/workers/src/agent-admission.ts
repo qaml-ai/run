@@ -1,3 +1,5 @@
+import { keyServices } from "./security-services.ts";
+import { EndUserCredits } from "./end-user-credits.ts";
 import { admitAgentMessage } from "./message-admission.ts";
 import { MULTI_AGENT_LIMITS, viaParent } from "./multi-agent-policy.ts";
 import { childParent } from "./child-parent.ts";
@@ -349,6 +351,7 @@ export async function admitImpl(this: AgentRuntime,
       "runLimits",
       "actor",
       "bucket",
+      "endUser",
     ]);
     const text =
       request.method === "continue"
@@ -433,6 +436,11 @@ export async function admitImpl(this: AgentRuntime,
     if (!old && request.method !== "steer" && (await this.records()).filter(record => record.state !== "completed").length >= MAX_OPEN_REQUESTS)
       throw Object.assign(new Error("Too many requests queued for this agent"), { status: 429 });
     const conf = await this.config();
+    if (params.endUser !== undefined) {
+      if (request.method !== "prompt" || params.whileRunning === "steer") throw new BadRequest("endUser is for a prompt that starts its own turn");
+      const { accounts } = await keyServices(this.env);
+      await new EndUserCredits(accounts.db).requireExisting(conf.tenantId, params.endUser as string);
+    }
     const requestedBucket = params.bucket as string | undefined;
     const effectiveBucket = requestedBucket ?? conf.config.bucket ?? await this.ctx.storage.get<string>("run-bucket") ?? "default";
     params.bucket = effectiveBucket;
@@ -446,7 +454,7 @@ export async function admitImpl(this: AgentRuntime,
         status: 402,
         code: "SPEND_LIMIT",
       });
-    const endUserRefusal = await this.endUserLimit(conf, effectiveBucket);
+    const endUserRefusal = await this.endUserLimit(conf, effectiveBucket, params.endUser as string | undefined);
     if (endUserRefusal) throw endUserRefusal;
     const pending = (await this.harness.pending()).find(
       (item) => item.status === "running",
@@ -468,7 +476,7 @@ export async function admitImpl(this: AgentRuntime,
     await this.requireApplication(params.allowDisconnected);
     const preparing = params.files !== undefined && !old?.admitted && !(delivery && !delivery.run && notice);
     if (preparing) {
-      await this.promptPreparations.begin({ tenant: conf.tenantId, agent: conf.id, requestId: id, fingerprint }, () => this.admitRequest(conf, id, params.bucket as string | undefined));
+      await this.promptPreparations.begin({ tenant: conf.tenantId, agent: conf.id, requestId: id, fingerprint }, () => this.admitRequest(conf, id, params.bucket as string | undefined, params.endUser as string | undefined));
       await this.arm();
     }
     let files: Awaited<ReturnType<PromptAttachments["attach"]>> | undefined;
@@ -491,7 +499,7 @@ export async function admitImpl(this: AgentRuntime,
               spendLimit: (params.spendLimit as { usd?: number } | undefined)?.usd,
               ...(Number.isFinite(audioBudget) ? { budget: audioBudget } : {}),
               keyScope: conf.config.keyScope,
-              identity: { subject: conf.config.subject, context: conf.config.context },
+              identity: { subject: (params.endUser as string | undefined) ?? conf.config.subject, context: conf.config.context },
               actor: params.actor as string | undefined,
               bucket: (params.bucket as string | undefined) ?? conf.config.bucket,
             },
@@ -517,6 +525,7 @@ export async function admitImpl(this: AgentRuntime,
         model: conf.config.model,
       },
       params,
+      ...(typeof params.endUser === "string" ? { endUser: params.endUser } : {}),
       agentSpendAt: spend?.setAt ?? null,
       ...(params.metadata !== undefined ? { metadata: params.metadata } : {}),
       ...((params.actor ?? (params.from as { id?: string } | undefined)?.id) ? { actor: String(params.actor ?? (params.from as { id: string }).id) } : {}),
@@ -612,7 +621,7 @@ export async function admitImpl(this: AgentRuntime,
     if (noTurn && notice) return landWithoutTurn(noTurn);
     await this.arm(Date.now() + 1000);
     if (!record.admitted) {
-      await this.admitRequest(conf, id, params.bucket as string | undefined);
+      await this.admitRequest(conf, id, params.bucket as string | undefined, params.endUser as string | undefined);
       record.admitted = true;
     }
     await this.ctx.storage.put(reqKey(id), record);

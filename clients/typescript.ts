@@ -476,7 +476,7 @@ export interface CreateAgentOptions extends AgentOptions {
    * A first prompt, sent in the same call once the agent is made (upsertAgent returns its request, or why it was refused).
    * Give it a `requestId`: a retried call with the same key and requestId sends it once.
    */
-  prompt?: { text: string; requestId?: string; actor?: string; from?: Sender; metadata?: Record<string, string>; spendLimit?: { usd: number }; whileRunning?: "queue" | "steer"; allowDisconnected?: boolean; files?: ({ path: string } | { name?: string; data: string; contentType?: string })[] };
+  prompt?: { text: string; endUser?: string; requestId?: string; actor?: string; from?: Sender; metadata?: Record<string, string>; spendLimit?: { usd: number }; whileRunning?: "queue" | "steer"; allowDisconnected?: boolean; files?: ({ path: string } | { name?: string; data: string; contentType?: string })[] };
 }
 /**
  * A tool the runtime answers itself: web_fetch, web_search, x_search, schedule (wake-ups), ask_user (questions, waiting for the answer),
@@ -2096,6 +2096,7 @@ export class AgentClient {
   readonly tools: Tools;
   private server: ToolServer;
   private readonly transport: Transport;
+  private readonly tenantKey?: string;
   /** The last event taken from the stream: a reconnect resumes after it (a new client starts from a snapshot). */
   private cursor = 0;
   private readonly options: AgentOptions;
@@ -2143,6 +2144,7 @@ export class AgentClient {
     this.options = options;
     this.transport = new Transport(runtime);
     this.openFile = runtime.openFile;
+    this.tenantKey = runtime.apiKey;
     this.pollMs = runtime.pollMs ?? 30_000;
     this.files = new AgentFiles(this.transport, this.session.token, this.path());
   }
@@ -2423,6 +2425,14 @@ export class AgentClient {
     } finally { this.active.delete(key); }
   }
 
+  private submitRequest(id: string, method: RequestMethod, params: Record<string, unknown>) {
+    if (method === "prompt" && params.endUser !== undefined) {
+      if (!this.tenantKey) throw new AgentError("endUser requires a tenant API key", 403);
+      return this.transport.json(`/v1/agents/${this.id}/prompt`, this.tenantKey, "POST", { ...params, requestId: id }, true);
+    }
+    return this.transport.json(this.path("/requests"), this.session.token, "POST", { id, method, params }, true);
+  }
+
   /**
    * Send a request and wait for its outcome, however long the run takes: there is no timeout unless
    * `timeoutMs` or `signal` says so, and either only stops the wait (the request goes on).
@@ -2436,7 +2446,7 @@ export class AgentClient {
     if (this.lazy && this.listeners.size) await this.connect();
     const deferred = this.waiter(id, options, "Request timed out; it may still be running: requestStatus() or waitForRequest() observe it");
     try {
-      const record = await this.transport.json(this.path("/requests"), this.session.token, "POST", { id, method, params }, true);
+      const record = await this.submitRequest(id, method, params);
       if (record.outcome) this.settle(id, record.outcome);
       return await this.outcome(id, deferred.promise);
     } catch (error) {
@@ -2498,8 +2508,8 @@ export class AgentClient {
    * budget: it ends before its next model request once it has spent that; the agent's spendLimit is unchanged.
    * `output: { schema }` (a JSON Schema for an object) asks for structured output: the run ends with an answer that fits it, as `output`.
    */
-  async prompt(text: string, options?: RunRequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; whileRunning?: "queue" | "steer"; spendLimit?: { usd: number }; runLimits?: { maxResponses?: number; maxSeconds?: number }; output?: { schema: Record<string, unknown> }; /** @deprecated Ignored: every run sees the agent's history. For a run without it, use `createRun` (POST /v1/runs). */ history?: "full" | "none" }) {
-    const result = await this.message("prompt", text, options, { ...(options?.actor ? { actor: options.actor } : {}), ...(options?.whileRunning === "steer" ? { whileRunning: "steer" } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}), ...(options?.spendLimit ? { spendLimit: options.spendLimit } : {}), ...(options?.runLimits ? { runLimits: options.runLimits } : {}), ...(options?.output ? { output: options.output } : {}), ...(options?.history === "none" ? { history: "none" } : {}) });
+  async prompt(text: string, options?: RunRequestOptions & { endUser?: string; files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; whileRunning?: "queue" | "steer"; spendLimit?: { usd: number }; runLimits?: { maxResponses?: number; maxSeconds?: number }; output?: { schema: Record<string, unknown> }; /** @deprecated Ignored: every run sees the agent's history. For a run without it, use `createRun` (POST /v1/runs). */ history?: "full" | "none" }) {
+    const result = await this.message("prompt", text, options, { ...(options?.endUser !== undefined ? { endUser: options.endUser } : {}), ...(options?.actor ? { actor: options.actor } : {}), ...(options?.whileRunning === "steer" ? { whileRunning: "steer" } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}), ...(options?.spendLimit ? { spendLimit: options.spendLimit } : {}), ...(options?.runLimits ? { runLimits: options.runLimits } : {}), ...(options?.output ? { output: options.output } : {}), ...(options?.history === "none" ? { history: "none" } : {}) });
     // A steered message's request completes as the running turn takes it, naming the turn: its outcome is the turn's. So
     // does a prompt that ran in another's turn, on an agent whose queue batches (`batchedInto`).
     const into = !isRecord(result) || "reply" in result ? undefined
@@ -2533,17 +2543,17 @@ export class AgentClient {
    * Send a message and return as soon as the runtime has it (202), without waiting for its run: `{ id, state }`, the
    * request's id and whether it runs or is queued. Follow it with `waitForRequest(id)`, the stream, or a webhook.
    */
-  async submit(text: string, options?: RequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; spendLimit?: { usd: number }; runLimits?: { maxResponses?: number; maxSeconds?: number }; output?: { schema: Record<string, unknown> }; /** @deprecated Ignored: every run sees the agent's history. For a run without it, use `createRun` (POST /v1/runs). */ history?: "full" | "none"; allowDisconnected?: boolean }): Promise<{ id: string; state: string }> {
+  async submit(text: string, options?: RequestOptions & { endUser?: string; files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; spendLimit?: { usd: number }; runLimits?: { maxResponses?: number; maxSeconds?: number }; output?: { schema: Record<string, unknown> }; /** @deprecated Ignored: every run sees the agent's history. For a run without it, use `createRun` (POST /v1/runs). */ history?: "full" | "none"; allowDisconnected?: boolean }): Promise<{ id: string; state: string }> {
     if (this.closed || this.closing || this.fatal) throw this.fatal ?? new AgentError("Client closed");
     const id = options?.idempotencyKey ?? globalThis.crypto.randomUUID();
     if (!REQUEST_ID.test(id)) throw new AgentError(`An idempotency key is 1 to 80 letters, digits, _ and -: ${JSON.stringify(id.slice(0, 100))} is not`, 400);
     const files = options?.files?.length ? await this.attach(id, options.files) : undefined;
     const params = {
-      text, ...(files ? { files } : {}), ...(options?.actor ? { actor: options.actor } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}),
+      text, ...(options?.endUser !== undefined ? { endUser: options.endUser } : {}), ...(files ? { files } : {}), ...(options?.actor ? { actor: options.actor } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}),
       ...(options?.spendLimit ? { spendLimit: options.spendLimit } : {}), ...(options?.runLimits ? { runLimits: options.runLimits } : {}), ...(options?.output ? { output: options.output } : {}), ...(options?.history === "none" ? { history: "none" } : {}),
       ...(options?.from ? { from: options.from } : {}), ...(options?.metadata ? { metadata: options.metadata } : {}),
     };
-    const record = await this.transport.json(this.path("/requests"), this.session.token, "POST", { id, method: "prompt", params }, true) as RequestRecord;
+    const record = await this.submitRequest(id, "prompt", params) as RequestRecord;
     if (record.outcome) this.settle(id, record.outcome);
     return { id: record.id, state: record.state };
   }

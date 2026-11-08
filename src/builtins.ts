@@ -158,7 +158,7 @@ export const builtinDefinitions = (builtins: string[] = []) => builtinNames(buil
   : DEFINITIONS[name]);
 
 /** `searchProviders`: the order the agent's definition gives web_search, instead of the runtime's; `files`, where web_fetch saves files. */
-export type BuiltinContext = { tenant: string; agent: string; claim?: Claim; searchProviders?: string[]; files?: ToolFiles };
+export type BuiltinContext = { tenant: string; agent: string; requestId?: string; claim?: Claim; searchProviders?: string[]; files?: ToolFiles };
 export type BuiltinServices = { outbound: Outbound; scheduler?: Scheduler; search?: WebSearch; render?: WebRender; xSearch?: XSearch; links?: FileLinks };
 
 export async function runBuiltin(services: BuiltinServices, context: BuiltinContext, name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<McpResult> {
@@ -185,7 +185,7 @@ async function builtinValue(services: BuiltinServices, context: BuiltinContext, 
   }
   if (name === "web_search") {
     if (!services.search) throw new Error("Web search is not enabled on this runtime");
-    return services.search.search({ tenant: context.tenant, agent: context.agent, ...(context.searchProviders ? { providers: context.searchProviders } : {}) }, args, signal);
+    return services.search.search({ tenant: context.tenant, agent: context.agent, ...(context.requestId ? { requestId: context.requestId } : {}), ...(context.searchProviders ? { providers: context.searchProviders } : {}) }, args, signal);
   }
   const scheduler = services.scheduler;
   if (!scheduler) throw new Error("Schedules are not enabled on this runtime");

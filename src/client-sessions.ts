@@ -449,7 +449,7 @@ export class ClientSessions {
    */
   private runEvent(session: Session, record: RequestRecord, usage?: RunUsage): WebhookEvent {
     const { id: agentId, tenant } = session.header;
-    const base = { agentId, requestId: record.id, method: record.method, ...(record.actor ? { actor: record.actor } : {}), ...(record.metadata ? { metadata: record.metadata } : {}) };
+    const base = { agentId, requestId: record.id, method: record.method, ...(record.endUser ? { endUser: record.endUser } : {}), ...(record.actor ? { actor: record.actor } : {}), ...(record.metadata ? { metadata: record.metadata } : {}) };
     if (record.state === "running") return webhookEvent("run.started", tenant, { ...base, ...(record.resumes ? { resumes: record.resumes } : {}) }, `run.started:${agentId}:${record.id}`);
     const outcome = record.outcome ?? { error: "No outcome was recorded" };
     const result = (outcome.result ?? {}) as { stopped?: string; inputs?: { id: string }[]; replyIndex?: number; messages?: number; code?: unknown; limit?: unknown; reason?: unknown; bucket?: unknown; endUser?: unknown; servedModel?: string; modelError?: object };
@@ -866,8 +866,9 @@ export class ClientSessions {
         modelAttempt: async event => {
           if (event.type === "begin" && session.header.revoked) return Promise.reject(new Error("Session revoked"));
           const run = runningRun(session);
-          const { identity, keyScope } = session.header;
-          // Who pays is the runtime's to say, never the host's: the agent's subject, from its run's bucket.
+          const { keyScope } = session.header;
+          const identity = spend.billingIdentity(session, run);
+          // The runtime selects the payer and bucket; the host cannot override them.
           const payer = event.type === "begin" ? spend.modelPayer(this.spendContext, session, run) : undefined;
           const { endUser: _given, ...asked } = event as Extract<typeof event, { type: "begin" }>;
           const scoped = event.type === "begin" ? { ...asked, ...(payer ? { endUser: payer } : {}), context: { ...(run ? { requestId: run.id, actor: run.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) } } : event;
@@ -1657,6 +1658,12 @@ export class ClientSessions {
    */
   private async accept(session: Session, body: any, trusted = false): Promise<{ status: 200 | 202; record: RequestRecord; rate?: RateLimitState }> {
     if (!validId(body?.id) || !REQUEST_METHODS.includes(body.method) || !body.params || typeof body.params !== "object" || Array.isArray(body.params)) throw new HttpError(400, "Invalid request");
+    if (body.params.endUser !== undefined) {
+      if (!trusted) throw new HttpError(403, "Only a tenant key can choose a run payer");
+      if (body.method !== "prompt" || body.params.whileRunning === "steer") throw new HttpError(400, "endUser is for a prompt that starts its own turn");
+      if (!this.options.endUsers) throw new HttpError(404, "End-user credits are unavailable");
+      await this.options.endUsers.requireExisting(session.header.tenant, body.params.endUser);
+    }
     // Only the runtime resumes a suspension, once its inputs have settled.
     if (body.method === "resume" && (!trusted || Object.keys(body.params).length !== 1 || !validId(body.params.suspension))) throw new HttpError(400, "Answer the agent's inputs to resume its turn");
     // Applying a definition reads the tenant's definitions, so only the tenant may ask for it, not the agent's own token.
@@ -1727,6 +1734,7 @@ export class ClientSessions {
     let actor: string | undefined;
     let { actor: rawActor, bucket: rawBucket, ...params } = body.params;
     if (spendLimit !== undefined) delete params.spendLimit;
+    let endUser = params.endUser as string | undefined;
     let bucket = body.method === "configure" || rawBucket === undefined ? undefined : bucketInput(rawBucket);
     if (rawActor !== undefined && !isRun) throw new HttpError(400, "actor is only for runs (prompt, continue, execute)");
     const isMessage = ["prompt", "steer"].includes(body.method);
@@ -1762,6 +1770,7 @@ export class ClientSessions {
       if (body.method === "resume") {
         actor = session.requests.get(params.suspension)?.actor;
         bucket = session.requests.get(params.suspension)?.bucket;
+        endUser = session.requests.get(params.suspension)?.endUser;
       }
     } catch (error) { throw new HttpError(400, errorText(error)); }
     // A child's notification (`notice`) is the runtime's alone. Its child's run was counted and checked already, and it is
@@ -1774,7 +1783,7 @@ export class ClientSessions {
     // or notification of the runtime's. Anyone else's prompt, steer, continue or code is refused (answering its inputs still resumes it).
     if (session.header.parent && ["prompt", "steer", "continue", "execute"].includes(body.method) && !notice && !delegation.delegation(this.delegationContext, session.header.id, body.id, params.metadata).chain.length) throw viaParent(session.header.id);
     const rate = isRun && body.method !== "resume" && !notice ? await this.options.runRate?.(session.header.tenant) ?? undefined : undefined;
-    const limited = body.method === "resume" || notice ? undefined : await spend.runLimit(this.spendContext, session, body.method, bucket);
+    const limited = body.method === "resume" || notice ? undefined : await spend.runLimit(this.spendContext, session, body.method, bucket, endUser);
     if (limited) throw limited;
     // The bucket the tenant names for a run is the one the runs the runtime starts for the agent after it spend from.
     if (bucket && body.method !== "resume" && session.header.runBucket !== bucket) {
@@ -1811,7 +1820,7 @@ export class ClientSessions {
         if (work && work.fingerprint !== fingerprint) throw new HttpError(409, "Request ID reused with different arguments", "IDEMPOTENCY_CONFLICT");
         if (!work) {
           const budget = params.spendLimit?.usd as number | undefined;
-          work = { fingerprint, files: tools.attach(this.toolsContext, session, body.id, params.files).then(files => spend.transcribeAttached(this.spendContext, session, body.id, files, { actor, budget, bucket })) };
+          work = { fingerprint, files: tools.attach(this.toolsContext, session, body.id, params.files).then(files => spend.transcribeAttached(this.spendContext, session, body.id, files, { actor, budget, bucket, endUser })) };
           attaching.set(body.id, work);
           const done = () => { if (attaching.get(body.id) === work) attaching.delete(body.id); };
           work.files.then(done, done);
@@ -1839,7 +1848,7 @@ export class ClientSessions {
       const record = this.upsertRequest(session, {
         startedAt: Date.now(), ...(body.method === "prompt" && typeof body.params.text === "string" ? { prompt: body.params.text } : {}),
         ...(body.method === "execute" && typeof body.params.code === "string" ? { code: body.params.code } : {}),
-        id: body.id, method: body.method, fingerprint, state: "running", ...(queued ? { params } : {}), ...(actor ? { actor } : {}), ...(bucket ? { bucket } : {}), ...(params.metadata ? { metadata: params.metadata } : {}),
+        id: body.id, method: body.method, fingerprint, state: "running", ...(queued ? { params } : {}), ...(actor ? { actor } : {}), ...(endUser ? { endUser } : {}), ...(bucket ? { bucket } : {}), ...(params.metadata ? { metadata: params.metadata } : {}),
         ...(body.method === "resume" ? { suspension: params.suspension } : {}),
       });
       // Taken: its running record now keeps the agent busy, so it is no longer being admitted. An abort that cancels it
@@ -1996,7 +2005,8 @@ export class ClientSessions {
           // Failed calls report zero usage; count only responses the provider completed.
           // Responses through the tenant's own endpoint count under it: `chiridion/openrouter/<model>`.
           const via = spend.endpoint(this.spendContext, session) ? `${session.header.config.model.provider}/` : "";
-          const { identity, keyScope } = session.header;
+          const { keyScope } = session.header;
+          const identity = spend.billingIdentity(session, record);
           const run = { requestId: record.id, ...(record.actor ? { actor: record.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) };
           if (spend.billed(event?.type === "message_end" ? event.message : undefined)) {
             const usage = spend.responseUsage(this.spendContext, session, event.message);
@@ -2175,7 +2185,7 @@ export class ClientSessions {
         // A run queued behind the one that reached the cap never begins; a resumed turn is stopped by the host.
         // A child's notification is never refused: at a limit it lands without a turn (`landNotice`).
         if (!session.resuming.has(record.id) && (params as { notice?: unknown } | undefined)?.notice === undefined) {
-          const limited = await spend.runLimit(this.spendContext, session, record.method, record.bucket);
+          const limited = await spend.runLimit(this.spendContext, session, record.method, record.bucket, record.endUser);
           if (limited) throw limited;
         }
         try {
@@ -2394,7 +2404,7 @@ export class ClientSessions {
   /**
    * The prompts that join `lead`'s turn as it begins, on an agent whose queue batches (`queue: {mode: "batch"}`): those
    * queued behind it, in arrival order, up to the first that cannot join it (`joins`: a notification, a prompt with an
-   * output schema or limits of its own, another actor or bucket) or is not a prompt waiting to begin. A sub-agent's runs
+   * output schema or limits of its own, another actor, payer selection or bucket) or is not a prompt waiting to begin. A sub-agent's runs
    * are its parent's to send, one turn each, so it never batches.
    */
   private batchOf(session: Session, lead: RequestRecord): RequestRecord[] {
@@ -2485,7 +2495,16 @@ export class ClientSessions {
   }
 
   endUserCharge(agent: string, usage: UsageRecord) { spend.endUserCharge(this.spendContext, agent, usage); }
-  /** Who pays for the agent's current run, where the tenant meters its end users. */
+  /** Attribute tool usage to the run that made it. */
+  billingUsage(agent: string, usage: UsageRecord): UsageRecord {
+    const session = this.sessions.get(agent);
+    if (!session) return usage;
+    const run = usage.requestId ? session.requests.get(usage.requestId) : runningRun(session);
+    const identity = spend.billingIdentity(session, run);
+    return { ...usage, ...(run ? { requestId: run.id } : {}), ...(identity ? { identity } : {}) };
+  }
+
+  /** Who pays for the current run. */
   payerOf(agent: string) { const session = this.sessions.get(agent); return session && spend.payer(this.spendContext, session, runningRun(session)); }
 
   /** Give the agent a budget of `usd` from now (null: none). A new value starts counting from zero. */

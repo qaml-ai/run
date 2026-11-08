@@ -11,11 +11,23 @@ them, their stateless runs, transcriptions, images, web searches and the rest. Y
 still pay camelRun for raw usage as before (see [Pricing](../pricing.md)); end-user
 balances are your ledger of your users, and camelRun never moves money for them.
 
+For a shared agent, a tenant API key can send `POST /v1/agents/{id}/prompt` with
+`{"text":"Help with this brief","endUser":"collaborator","bucket":"bot:42"}`.
+`endUser` must already exist in your tenant (create it with a credit entry or an
+end-user update). That prompt's allowance, balance, holds and usage belong to the
+named user. Without it, the agent's subject pays. New child agents created during
+the run inherit its payer and bucket. Delegation to an existing agent keeps that
+agent's own subject and bucket, as before. Later prompts do not inherit the payer. Browser,
+OAuth and agent tokens cannot set it, nor can a steer. Batches keep different
+`endUser` selections apart. With a tenant-key SDK client, pass `endUser` to
+TypeScript `agent.run` or `agent.send`, or `end_user` to their Python equivalents.
+The CLI accepts `camelrun run <agent> <message> --end-user collaborator`.
+
 ## The model
 
 - **End user**: the `subject` of an agent (set when you upsert it) or of a call
   (`POST /v1/runs`, `/v1/transcriptions`, `/v1/images`). Children of an agent
-  (delegate, spawn) act for its subject too. Work with no subject is not metered:
+  (delegate, spawn) inherit the payer of the run that creates them. Work with no subject is not metered:
   you pay for it, as today.
 - **Bucket**: the part of your product that spends, such as `builder` or `bot:42`. An
   agent spends from its `bucket`; a stateless run or call names its own. A run sent

@@ -101,7 +101,7 @@ const lead = await agents.upsert("triage", { instructions, queue: { mode: "batch
 - A prompt joins only prompts like it: none that is a sub-agent's notification or
   message, a delegate call's or another prompt of the runtime's, has an `output`
   schema, a `spendLimit` or `runLimits` of its own, or acts for another `actor` or
-  spends from another `bucket`. The first that does not fit starts the turn after
+  spends from another `bucket` or names another `endUser`. The first that does not fit starts the turn after
   the batch, so order is kept.
 - `windowMs` (0 to 2000, default 0): a prompt that reaches an idle agent waits that
   long before its turn starts, so a burst sent at once merges too (on the Workers

@@ -151,6 +151,7 @@ Run options (`run`, `stream`):
 
 | TypeScript | Python | |
 | --- | --- | --- |
+| `endUser` | `end_user=` | existing end user whose credits pay for this prompt; requires a tenant-key client, unavailable for steers. Omit to charge the agent subject. See [End-user credits](../guides/end-user-credits.md) |
 | `user` | `user=` | who sent it: your user id, or `{ id, name, username }`; the model sees who, tools get `identity.actor` |
 | `files` | `files=` | attachments, by bytes, path, `{ url }` or `{ path }` in the agent's mounts; audio among them is transcribed for the model (`transcribe: false` keeps a file plain). See [Files](../guides/files.md) and [Voice and audio](../guides/voice.md). With audio, the text may be `""` |
 | `metadata` | `metadata=` | your own key-value data about the message (16 strings); the model never sees it |

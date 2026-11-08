@@ -227,7 +227,7 @@ export async function makeChild(ctx: DelegationContext, session: Session, run: R
       ...childMounts(header.mounts),
     },
     name: target?.name ?? "subagent", type: "subagent", ttlSeconds: MULTI_AGENT_LIMITS.childTtlSeconds,
-    ...header.identity?.subject !== undefined ? { subject: header.identity.subject } : {}, ...header.identity?.context ? { context: header.identity.context } : {},
+    ...(run.endUser ?? header.identity?.subject) !== undefined ? { subject: run.endUser ?? header.identity?.subject } : {}, ...header.identity?.context ? { context: header.identity.context } : {},
     ...header.keyScope ? { keyScope: header.keyScope } : {},
     // Its parent's end user pays for it, from the bucket the parent's run spends.
     bucket: spend.bucketOf(ctx.spendContext, session, run),

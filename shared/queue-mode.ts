@@ -40,9 +40,9 @@ export function batchable(given: unknown, id?: string) {
 }
 
 /**
- * Whether `member` may join `lead`'s turn: both batchable, acting for the same actor and spending from the same bucket
+ * Whether `member` may join `lead`'s turn: both batchable, acting for the same actor, payer selection and bucket
  * (the turn acts for one and is charged to one).
  */
 export function joins(lead: { id?: string; actor?: string; bucket?: string; params?: unknown }, member: { id?: string; actor?: string; bucket?: string; params?: unknown }) {
-  return batchable(lead.params, lead.id) && batchable(member.params, member.id) && (lead.actor ?? null) === (member.actor ?? null) && (lead.bucket ?? null) === (member.bucket ?? null);
+  return batchable(lead.params, lead.id) && batchable(member.params, member.id) && (lead.actor ?? null) === (member.actor ?? null) && (lead.bucket ?? null) === (member.bucket ?? null) && ((lead.params as { endUser?: string })?.endUser ?? null) === ((member.params as { endUser?: string })?.endUser ?? null);
 }

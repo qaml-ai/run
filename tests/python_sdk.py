@@ -1680,6 +1680,54 @@ class RateLimitRetryTest(unittest.IsolatedAsyncioTestCase):
             await runtime.close()
 
 
+class PromptPayerTest(unittest.IsolatedAsyncioTestCase):
+    async def test_async_payer_uses_tenant_key(self):
+        calls = []
+        def answer(request):
+            body = json.loads(request.content)
+            calls.append((request.url.path, request.headers["Authorization"], body))
+            return httpx.Response(200, json={"id": body.get("requestId", body.get("id")), "state": "completed", "outcome": {"result": {"reply": "done"}}})
+        client = AgentClient("http://localhost", {"id": "client_" + "a" * 40, "token": "agent-test"}, [], attach=False, connection="lazy", api_key="tenant-test")
+        await client.http.aclose()
+        client.http = httpx.AsyncClient(transport=httpx.MockTransport(answer))
+        try:
+            await client.prompt("one", end_user="guest", idempotency_key="one")
+            await client.submit("two", end_user="guest", idempotency_key="two")
+            await client.prompt("default", idempotency_key="default")
+            self.assertEqual([(path, token, body.get("endUser")) for path, token, body in calls], [
+                (f"/v1/agents/{client.id}/prompt", "Bearer tenant-test", "guest"),
+                (f"/v1/agents/{client.id}/prompt", "Bearer tenant-test", "guest"),
+                (f"/clients/{client.id}/requests", "Bearer agent-test", None)])
+            self.assertEqual(calls[0][2]["requestId"], "one")
+            client._api_key = None
+            with self.assertRaisesRegex(AgentError, "tenant API key"):
+                await client.submit("no", end_user="guest")
+            self.assertEqual(len(calls), 3)
+        finally:
+            await client.close(drain=0)
+
+    async def test_sync_payer_uses_tenant_key(self):
+        calls = []
+        def answer(request):
+            body = json.loads(request.content)
+            calls.append((request.url.path, request.headers["Authorization"], body))
+            return httpx.Response(200, json={"id": body.get("requestId", body.get("id")), "state": "completed", "outcome": {"result": {"reply": "done"}}})
+        client = sync.AgentClient("http://localhost", {"id": "client_" + "a" * 40, "token": "agent-test"}, api_key="tenant-test")
+        client.http.close()
+        client.http = httpx.Client(transport=httpx.MockTransport(answer))
+        try:
+            client.prompt("one", end_user="guest", idempotency_key="one")
+            client.prompt("default", idempotency_key="default")
+            self.assertEqual(calls[0][:2], (f"/v1/agents/{client.id}/prompt", "Bearer tenant-test"))
+            self.assertEqual(calls[0][2]["endUser"], "guest")
+            self.assertEqual(calls[1][1], "Bearer agent-test")
+            client._api_key = None
+            with self.assertRaisesRegex(AgentError, "tenant API key"):
+                client.prompt("no", end_user="guest")
+        finally:
+            client.http.close()
+
+
 class ReconnectHintTest(unittest.IsolatedAsyncioTestCase):
     """A stream the runtime closes on purpose (event: reconnect) is reconnected at once; one that just ends, after a backoff."""
 

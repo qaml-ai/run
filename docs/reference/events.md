@@ -324,7 +324,7 @@ dedupe by `id`. See [Webhooks](../guides/webhooks.md).
 
 | Type | `data` |
 | --- | --- |
-| `run.started` | `agentId`, `requestId`, `method` (`prompt`, `continue`, `resume`, `execute`), `actor?`, `metadata?`, `resumes?` |
+| `run.started` | `agentId`, `requestId`, `method` (`prompt`, `continue`, `resume`, `execute`), `actor?`, `metadata?`, `resumes?`, `endUser?` (the prompt's explicit payer) |
 | `run.completed` | the above, `usage` (`{responses, input, output, cacheRead, cacheWrite, costUsd}` or null), `stopped?`, `inputIds?`, `replyIndex?`, `messageCount?`, `steeredInto?`, `batchedInto?` (a prompt that ran in that request's turn), `batch?` (the prompts this run's turn took too) |
 | `run.failed` | the above, `usage`, `error`, `code?` (the outcome's code: `cancelled`, `aborted`, `model_stream_stalled`, `turn_limit`, `spend_limit`, `end_user_credit`…), `limit?` (with `spend_limit` or `end_user_credit`: which limit), `reason?`, `bucket?`, `endUser?` (with `end_user_credit`: why, which bucket, whose; see [credit reasons](errors.md#end-user-credit-reasons)), `uncertain?`, `steeredInto?`. A run refused as it came to start in the queue carries them as one stopped mid-way does |
 | `input.requested` | `agentId`, `requestId`, `inputId`, `toolCallId`, `kind`, `expiresAt` |

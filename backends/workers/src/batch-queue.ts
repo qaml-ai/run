@@ -25,7 +25,7 @@ type Member = { id?: string; actor?: string; bucket?: string; params?: unknown }
  * `followUpMode` is "all" for it (agent-tools.ts `settings`), so the follow-ups waiting in Pi's inbox when a run ends
  * are placed together and start one run, each its own user message, and Pi settles them all with that run's answer.
  * Pi merges whatever is in its inbox, so the inbox must only ever hold prompts that may share a turn (`joins`): a prompt
- * that may not (an output schema, limits of its own, another actor or bucket, a delegated or runtime prompt, a
+ * that may not (an output schema, limits of its own, another actor, payer selection or bucket, a delegated or runtime prompt, a
  * notification) is held here while follow-ups wait in Pi's inbox, and so is everything after it, in order. Once Pi has
  * no follow-ups waiting, `release` gives Pi the first held prompt, and those after it that may join it.
  *

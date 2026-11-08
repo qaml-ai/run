@@ -320,7 +320,7 @@ const lead = await agents.upsert("triage", { instructions, queue: { mode: "batch
 - A prompt joins only prompts like it: none that is a sub-agent's notification or
   message, a delegate call's or another prompt of the runtime's, has an `output`
   schema, a `spendLimit` or `runLimits` of its own, or acts for another `actor` or
-  spends from another `bucket`. The first that does not fit starts the turn after
+  spends from another `bucket` or names another `endUser`. The first that does not fit starts the turn after
   the batch, so order is kept.
 - `windowMs` (0 to 2000, default 0): a prompt that reaches an idle agent waits that
   long before its turn starts, so a burst sent at once merges too (on the Workers
@@ -4758,11 +4758,23 @@ them, their stateless runs, transcriptions, images, web searches and the rest. Y
 still pay camelRun for raw usage as before (see [Pricing](https://run.camelai.com/docs/pricing.md)); end-user
 balances are your ledger of your users, and camelRun never moves money for them.
 
+For a shared agent, a tenant API key can send `POST /v1/agents/{id}/prompt` with
+`{"text":"Help with this brief","endUser":"collaborator","bucket":"bot:42"}`.
+`endUser` must already exist in your tenant (create it with a credit entry or an
+end-user update). That prompt's allowance, balance, holds and usage belong to the
+named user. Without it, the agent's subject pays. New child agents created during
+the run inherit its payer and bucket. Delegation to an existing agent keeps that
+agent's own subject and bucket, as before. Later prompts do not inherit the payer. Browser,
+OAuth and agent tokens cannot set it, nor can a steer. Batches keep different
+`endUser` selections apart. With a tenant-key SDK client, pass `endUser` to
+TypeScript `agent.run` or `agent.send`, or `end_user` to their Python equivalents.
+The CLI accepts `camelrun run <agent> <message> --end-user collaborator`.
+
 ## The model
 
 - **End user**: the `subject` of an agent (set when you upsert it) or of a call
   (`POST /v1/runs`, `/v1/transcriptions`, `/v1/images`). Children of an agent
-  (delegate, spawn) act for its subject too. Work with no subject is not metered:
+  (delegate, spawn) inherit the payer of the run that creates them. Work with no subject is not metered:
   you pay for it, as today.
 - **Bucket**: the part of your product that spends, such as `builder` or `bot:42`. An
   agent spends from its `bucket`; a stateless run or call names its own. A run sent
@@ -8048,6 +8060,7 @@ Run options (`run`, `stream`):
 
 | TypeScript | Python | |
 | --- | --- | --- |
+| `endUser` | `end_user=` | existing end user whose credits pay for this prompt; requires a tenant-key client, unavailable for steers. Omit to charge the agent subject. See [End-user credits](https://run.camelai.com/docs/guides/end-user-credits.md) |
 | `user` | `user=` | who sent it: your user id, or `{ id, name, username }`; the model sees who, tools get `identity.actor` |
 | `files` | `files=` | attachments, by bytes, path, `{ url }` or `{ path }` in the agent's mounts; audio among them is transcribed for the model (`transcribe: false` keeps a file plain). See [Files](https://run.camelai.com/docs/guides/files.md) and [Voice and audio](https://run.camelai.com/docs/guides/voice.md). With audio, the text may be `""` |
 | `metadata` | `metadata=` | your own key-value data about the message (16 strings); the model never sees it |
@@ -8963,7 +8976,9 @@ its id (`def_…`).
 `--from user-1` says who is sending, `--steer` gives the message to a run that
 is going. An agent whose tools are attached by an application that is not
 connected refuses the run (`APPLICATION_NOT_CONNECTED`) unless you pass
-`--allow-disconnected`.
+`--allow-disconnected`. `--end-user collaborator` charges that existing end user
+instead of the agent subject. It requires a tenant API key and cannot accompany
+`--steer`.
 
 `answer` takes `true` or `false` for an approval, the chosen label or your own
 words for a question (`{"<question>": "<answer>"}` for several), the fields as
@@ -9464,7 +9479,7 @@ dedupe by `id`. See [Webhooks](https://run.camelai.com/docs/guides/webhooks.md).
 
 | Type | `data` |
 | --- | --- |
-| `run.started` | `agentId`, `requestId`, `method` (`prompt`, `continue`, `resume`, `execute`), `actor?`, `metadata?`, `resumes?` |
+| `run.started` | `agentId`, `requestId`, `method` (`prompt`, `continue`, `resume`, `execute`), `actor?`, `metadata?`, `resumes?`, `endUser?` (the prompt's explicit payer) |
 | `run.completed` | the above, `usage` (`{responses, input, output, cacheRead, cacheWrite, costUsd}` or null), `stopped?`, `inputIds?`, `replyIndex?`, `messageCount?`, `steeredInto?`, `batchedInto?` (a prompt that ran in that request's turn), `batch?` (the prompts this run's turn took too) |
 | `run.failed` | the above, `usage`, `error`, `code?` (the outcome's code: `cancelled`, `aborted`, `model_stream_stalled`, `turn_limit`, `spend_limit`, `end_user_credit`…), `limit?` (with `spend_limit` or `end_user_credit`: which limit), `reason?`, `bucket?`, `endUser?` (with `end_user_credit`: why, which bucket, whose; see [credit reasons](https://run.camelai.com/docs/reference/errors.md#end-user-credit-reasons)), `uncertain?`, `steeredInto?`. A run refused as it came to start in the queue carries them as one stopped mid-way does |
 | `input.requested` | `agentId`, `requestId`, `inputId`, `toolCallId`, `kind`, `expiresAt` |
@@ -9836,7 +9851,7 @@ retry.
 | 401 | `UNAUTHORIZED` | No valid token; the message says where to create one (https://run.camelai.com/console/tokens) |
 | 402 | `SPEND_LIMIT` | A spend limit is reached: the agent's, or the account's monthly cap; or a message's audio, or an image, would cost more than the run's or agent's spend limit has left |
 | 402 | `INSUFFICIENT_CREDIT` | The account's prepaid credit is spent (or a payment for it is disputed): no runs start and no files are stored |
-| 402 | `END_USER_CREDIT` | With [end-user credits](https://run.camelai.com/docs/guides/end-user-credits.md) on: the run's or call's end user (its subject) may not spend more in its bucket. The body names whose (`endUser`), which `bucket`, and why (`reason`, one of the [credit reasons](https://run.camelai.com/docs/reference/errors.md#end-user-credit-reasons)). Grant them credit, raise the limit, or wait for tomorrow's allowance |
+| 402 | `END_USER_CREDIT` | With [end-user credits](https://run.camelai.com/docs/guides/end-user-credits.md) on: the run's or call's payer (`endUser`, else its subject) may not spend more in its bucket. The body names whose (`endUser`), which `bucket`, and why (`reason`, one of the [credit reasons](https://run.camelai.com/docs/reference/errors.md#end-user-credit-reasons)). Grant them credit, raise the limit, or wait for tomorrow's allowance |
 | 403 | `FORBIDDEN` | The token may not do this |
 | 404 | `NOT_FOUND` | No such agent, request, input or other resource for this account, or no such path at all (the message points at `/llms.txt`) |
 | 409 | `IDEMPOTENCY_CONFLICT` | The Idempotency-Key or request id was used for another request |

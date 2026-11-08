@@ -10,7 +10,7 @@ export function childConfig(parent: Record<string, any>, target?: Record<string,
   const web = (parent.builtins as string[] | undefined)?.filter(name => name === 'web_search' || name === 'web_fetch') ?? [];
   return {
     ...(target ?? { model: parent.model, systemPrompt: SUBAGENT_PROMPT, ...(web.length ? { builtins: web } : {}), ...childMounts(parent.mounts), ...(parent.computer ? { computer: parent.computer } : {}) }),
-    ...(parent.subject !== undefined ? { subject: parent.subject } : {}),
+    ...((params?.endUser ?? parent.subject) !== undefined ? { subject: params?.endUser ?? parent.subject } : {}),
     ...(parent.context ? { context: parent.context } : {}),
     ...(parent.keyScope ? { keyScope: parent.keyScope } : {}),
     ...((params?.bucket ?? parent.bucket) ? { bucket: params?.bucket ?? parent.bucket } : {}),

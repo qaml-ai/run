@@ -16,3 +16,7 @@ test('definition children retain the resolved definition configuration', () => {
   const target = { definition: 'def_example', definitionRevision: 2, systemPrompt: 'Target', builtins: ['ask_user'], model: 'target/model', mounts: [{ workspace: true }] };
   assert.deepEqual(childConfig({ model: 'parent/model', subject: 'end-user' }, target), { ...target, subject: 'end-user' });
 });
+
+test('children inherit the current run payer rather than the agent owner', () => {
+  assert.equal(childConfig({ subject: 'owner' }, undefined, { endUser: 'guest', bucket: 'bot:7' }).subject, 'guest');
+});

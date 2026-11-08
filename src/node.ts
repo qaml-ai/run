@@ -393,7 +393,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   // prepaid tenant, or an admin tenant without platformKeys: false), whose calls a prepaid tenant pays for at that
   // provider's price, and so does its end user, where the tenant meters them.
   const webKey = (tenant: string, provider: string) => resolveKey(accounts, tenant, provider);
-  const meterCall = (tenant: string, agent: string, usage: UsageRecord) => meter(accounts, clients, tenant, agent, usage);
+  const meterCall = (tenant: string, agent: string, usage: UsageRecord) => meter(accounts, clients, tenant, agent, clients.billingUsage(agent, usage));
   const search = new WebSearch({
     outbound: outbound.withoutOrigins(), ...searchProvidersFromEnvironment(env), key: webKey, timeoutMs: config.searchTimeoutMs,
     price: provider => accounts.billing.pricing.webSearch[provider],

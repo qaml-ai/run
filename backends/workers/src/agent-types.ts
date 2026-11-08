@@ -25,6 +25,7 @@ export type RequestRecord = {
   id: string;
   method: string;
   params?: Record<string, unknown>;
+  endUser?: string;
   configurationOrder?: number;
   configurationOrigin?: string;
   configurationWait?: number;
