@@ -216,6 +216,6 @@ test("a sub-agent is reached only through its parent: a prompt or schedule from 
   // Its parent's message starts its turn; a wake-up of its own (the schedule builtin) is refused there too.
   await r.prompt(parent, "tell the child");
   const notices = await ended(r, parent, "child_", 3);
-  assert.match(notices[2].outcome.result.reply, /status="completed"[^>]*>\nresults: .*is a sub-agent: message its parent, which reaches it with send_message/);
+  assert.match(notices[2].outcome.result.reply, /status="completed"[^>]*>\nresults: [\s\S]*is a sub-agent: message its parent, which reaches it with send_message/);
   assert.deepEqual((await r.call(`/v1/agents/${child}/schedules`)).json, []);
 });
