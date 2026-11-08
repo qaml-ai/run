@@ -35,6 +35,8 @@ export interface ContractFixture {
   setScheduleDueAt(agent: string, schedule: string, dueAt: number): Promise<void>;
   /** Make an agent's pending inputs due now, as if no one had answered in time; the backend's own expiry (its scheduler, or its alarm) then answers them. */
   expireInputs(agent: string): Promise<void>;
+  /** Seed only the shared inbox index, independently of either backend's input authority. */
+  seedInbox(rows: import('./fixtures/inbox.ts').InboxSeed[]): Promise<void>;
   setScheduleLegacyHistory(agent: string, schedule: string, history: "none"): Promise<void>;
   resetChildSettlement(parent: string): Promise<void>;
   /** A definition as stored before the workflow builtin was removed (#624): its builtins and settings name it. */

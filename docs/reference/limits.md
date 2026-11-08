@@ -293,3 +293,27 @@ spend limits like any other.
 | Run limits | 1,000 model responses and 2 hours a run (see [Runs and requests](#runs-and-requests)): `stopped: "turn_limit"` |
 | A tenant's monthly cap (`maxMonthlyCost`) | 402 for new runs once reached |
 | Prepaid credit | 402 at a zero balance, for runs and for storing files; free credit allows $1 of usage per hour (429 past it) |
+
+### Decision inbox
+
+`GET /v1/inbox` reads the shared input index on Node and Workers. It returns
+`{items, cursor, counts: {priority: {urgent, high, normal, low}, lead}}`.
+Only pending items whose `expiresAt` is still in the future appear.
+
+Filter with `for` (actor), `subject`, `root` (root agent), `priority`
+(`urgent`, `high`, `normal`, `low`) or `kind` (`question`, `approval`, `form`, `url`).
+Filters combine. `for` includes items whose frozen responders contain that actor,
+and open items with no responders. API keys and console sessions can see every
+subject in their tenant; browser tokens cannot read this endpoint.
+
+Items sort by priority, soonest expiry, oldest creation time, then id. `limit`
+defaults to 50 and must be an integer from 1 to 100. Pass the returned opaque
+`cursor` with the same filters to read the next page; null means the last page.
+Counts apply to all filtered items before pagination. A lead is `root_agent`,
+falling back to the asking agent for rows without lineage. Pages reflect live
+state: items may settle between requests.
+
+`GET /v1/inputs` uses the same index and order but keeps its array response,
+default limit of 100, and optional `state` filter. Without `state`, it includes
+all states. Its item representation is unchanged. It accepts the inbox filters
+and paging parameters; use `/v1/inbox` when you need a next cursor or counts.

@@ -716,10 +716,20 @@ export const Input = z.object({
   message: z.string(),
   detail: z.record(z.string(), z.unknown()).openapi({ description: "question: { questions }; approval: { tool, source, arguments, argumentsHash }, built by the runtime from the real call; form: { requestedSchema }; url: { url, origin }" }),
   responders: z.object({ audience: z.array(z.string()).optional() }).openapi({ description: "Who may answer besides the definition's humanInput.approvers: by default the sender or actor whose message started the turn" }),
-  state: z.enum(["pending", "answered", "declined", "cancelled", "expired", "superseded"]).openapi({ description: "expired: no one answered by expiresAt, so the runtime answered for the person (answer.by.system \"expired\"; an approval is not given) and the agent went on without them" }),
+  state: z.enum(["pending", "answered", "declined", "cancelled", "expired", "superseded", "withdrawn"]).openapi({ description: "expired: no one answered by expiresAt, so the runtime answered for the person (answer.by.system \"expired\"; an approval is not given) and the agent went on without them" }),
   answer: z.object({ action: z.enum(["accept", "decline", "cancel"]), content: z.unknown().optional(), by: z.record(z.string(), z.unknown()), at: z.number() }).optional(),
   createdAt: z.number(), expiresAt: z.number(),
 }).openapi("Input");
+export const InboxQuery = z.object({
+  for: z.string().optional(), subject: z.string().optional(), root: z.string().optional(),
+  priority: z.enum(["urgent", "high", "normal", "low"]).optional(), kind: z.enum(["question", "approval", "form", "url"]).optional(),
+  cursor: z.string().optional(), limit: z.coerce.number().int().min(1).max(100).optional(),
+});
+export const InboxPage = z.object({
+  items: z.array(Input.extend({ priority: z.enum(["urgent", "high", "normal", "low"]), blocking: z.boolean(),
+    subject: z.string().nullable(), root: z.string(), lineage: z.array(z.string()), key: z.string().nullable(), version: z.number().int() })),
+  cursor: z.string().nullable(), counts: z.object({ priority: z.object({ urgent: z.number(), high: z.number(), normal: z.number(), low: z.number() }), lead: z.record(z.string(), z.number()) }),
+}).openapi("InboxPage");
 export const AnswerInput = z.object({
   action: z.enum(["accept", "decline", "cancel"]),
   content: z.unknown().optional().openapi({ description: "question: { answers: { \"<question>\": \"<label>\" | [\"<label>\"] | \"<own words>\" } }; form: the fields, checked against its schema; approval decline: { reason? }" }),
