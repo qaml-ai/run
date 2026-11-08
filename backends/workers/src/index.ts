@@ -338,11 +338,9 @@ const worker = {
         const control = await controlRoutes(request, env, auth);
         if (control) return control;
         if ((path === "/v1/inputs" || path === "/v1/inbox") && request.method === "GET") {
-          const legacy = path === "/v1/inputs";
           try {
-            const query = inboxQuery(url.searchParams, legacy);
-            const page = await inboxSql(env, sql => readInbox(sql, auth.tenantId, query, legacy));
-            return json(legacy ? page.items : page);
+            const query = inboxQuery(url.searchParams);
+            return json(await inboxSql(env, sql => readInbox(sql, auth.tenantId, query)));
           } catch (error) { if (error instanceof InboxQueryError) throw new ApiError(400, error.message); throw error; }
         }
         const media = await handleMediaRequest(request, env, auth);

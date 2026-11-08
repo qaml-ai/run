@@ -6358,6 +6358,10 @@
                 {
                   "type": "object",
                   "properties": {
+                    "inputId": {
+                      "type": "string",
+                      "description": "Use this id with the per-agent input answer route; id identifies the inbox row"
+                    },
                     "priority": {
                       "type": "string",
                       "enum": [
@@ -6396,6 +6400,7 @@
                     }
                   },
                   "required": [
+                    "inputId",
                     "priority",
                     "blocking",
                     "subject",
@@ -17271,30 +17276,74 @@
         }
       }
     },
-    "/v1/inputs": {
+    "/v1/inbox": {
       "get": {
         "parameters": [
           {
             "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "for",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "subject",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "root",
+            "in": "query"
+          },
+          {
+            "schema": {
               "type": "string",
               "enum": [
-                "pending",
-                "answered",
-                "declined",
-                "cancelled",
-                "expired",
-                "superseded"
+                "urgent",
+                "high",
+                "normal",
+                "low"
               ]
             },
             "required": false,
-            "name": "state",
+            "name": "priority",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "question",
+                "approval",
+                "form",
+                "url"
+              ]
+            },
+            "required": false,
+            "name": "kind",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "cursor",
             "in": "query"
           },
           {
             "schema": {
               "type": "integer",
               "minimum": 1,
-              "maximum": 500
+              "maximum": 100
             },
             "required": false,
             "name": "limit",
@@ -17303,14 +17352,11 @@
         ],
         "responses": {
           "200": {
-            "description": "The tenant's human inputs, newest first (legacy array response)",
+            "description": "Pending inputs in priority order, with filtered counts before pagination",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/Input"
-                  }
+                  "$ref": "#/components/schemas/InboxPage"
                 }
               }
             }
@@ -17328,7 +17374,7 @@
         }
       }
     },
-    "/v1/inbox": {
+    "/v1/inputs": {
       "get": {
         "parameters": [
           {

@@ -379,6 +379,10 @@ export interface AgentInput {
   answer?: { action: string; content?: unknown; by: Record<string, unknown>; at: number };
   createdAt: number; expiresAt: number;
 }
+export type InboxPriority = "urgent" | "high" | "normal" | "low";
+export interface InboxOptions { for?: string; subject?: string; root?: string; priority?: InboxPriority; kind?: AgentInput["kind"]; cursor?: string; limit?: number }
+export interface InboxItem extends AgentInput { inputId: string; priority: InboxPriority; blocking: boolean; subject: string | null; root: string; lineage: string[]; key: string | null; version: number }
+export interface InboxPage { items: InboxItem[]; cursor: string | null; counts: { priority: Record<InboxPriority, number>; lead: Record<string, number> } }
 /** What an input asks: by its `kind`, the fields of one of these. */
 export interface InputDetail {
   /** question: the model's questions (ask_user). */
@@ -1807,8 +1811,8 @@ export class AgentRuntime {
   /** Who the API key is: `tenant` is your tenant's id, which serveTools and verifyRuntimeToken take. */
   /** Who the API key is (`tenant`), and `defaultModel`, the model an agent gets when it names none. */
   me(): Promise<{ tenant: string; via: string; login?: string; defaultModel: string }> { return this.transport.json("/v1/me", this.operator()); }
-  /** Inputs waiting on someone across all the tenant's agents (`pending` ones, say), newest first. */
-  inbox(state?: AgentInput["state"]): Promise<AgentInput[]> { return this.transport.json(`/v1/inputs${state ? `?state=${state}` : ""}`, this.operator()); }
+  /** Pending inputs in priority order, with a cursor and filtered counts. */
+  inbox(options: InboxOptions = {}): Promise<InboxPage> { return this.transport.json(`/v1/inbox?${queryOf({ ...options })}`, this.operator()); }
   async toolSources(agentId: string, options: { schemas?: boolean; refresh?: boolean } = {}): Promise<ToolSource[]> {
     const query = [options.schemas && "schemas=true", options.refresh && "refresh=true"].filter(Boolean).join("&");
     return (await this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}${query ? `?${query}` : ""}`, this.operator())).toolSources;

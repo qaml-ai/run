@@ -1027,9 +1027,6 @@ export class ClientSessions {
    */
   async answer(id: string, tenant: string, answers: { id: string; body: any }[], via: Responder["via"] = "api"): Promise<{ status: 200 | 202; inputs: Input[]; requests: RequestRecord[] }> { return humanInput.answer(this.inputsContext, id, tenant, answers, via); }
 
-  /** A tenant's inputs across its agents, newest first: the inbox of what waits on someone. */
-  async inbox(tenant: string, state?: string) { return humanInput.inbox(this.inputsContext, tenant, state); }
-
   /**
    * Expire inputs past their time, on any node: each suspension whose last input expired is resumed
    * on the node serving its agent, which gives each call the runtime's answer and asks the model.

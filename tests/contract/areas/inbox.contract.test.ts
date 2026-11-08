@@ -38,33 +38,22 @@ contractTest('human-input', 'shared/inbox.ts', 'the inbox reads the shared index
   }
   for (const query of ['limit=101', 'limit=0', 'limit=1.5', 'priority=invalid', 'kind=invalid', 'cursor=garbage']) {
     assert.equal((await r.call(`/v1/inbox?${query}`)).status, 400, query);
+    assert.equal((await r.call(`/v1/inputs?${query}`)).status, 400, query);
   }
   assert.equal((await r.call('/v1/inbox', { token: null })).status, 401);
   assert.deepEqual((await r.call('/v1/inbox', { token: OTHER_OPERATOR })).json.items.map((x: any) => x.id), ['other-tenant']);
-  const legacy = (await r.call('/v1/inputs?state=answered')).json;
-  assert.equal(legacy.length, 1); assert.equal(legacy[0].id, 'settled');
-  assert.deepEqual(Object.keys(legacy[0]).sort(), ['id', 'agent', 'tenant', 'requestId', 'toolCallId', 'kind', 'message', 'detail', 'responders', 'state', 'createdAt', 'expiresAt'].sort());
+  const alias = await r.call('/v1/inputs?limit=2');
+  assert.equal(alias.status, 200, alias.text);
+  assert.deepEqual(alias.json, first.json);
   assert.equal(JSON.stringify(first.json).includes('private'), false);
-}, { timeout: 90_000 });
-
-contractTest('human-input', 'shared/inbox.ts', 'the legacy input list keeps newest-first ordering, up to 500 rows, and ignores cursors', async t => {
-  const r = await createContractFixture(t);
-  const rows = Array.from({ length: 502 }, (_, i) => ({ id: `legacy-${String(i).padStart(3, '0')}`, createdAt: Math.floor(i / 2),
-    // Keep the background expiry worker from settling deliberately overdue fixture rows.
-    expiresAt: 0, deferExpiry: true, priority: i % 2 ? 'urgent' as const : 'low' as const }));
-  await r.seedInbox(rows);
-  const expected = [...rows].sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id)).map(row => row.id);
-  const ids = async (query = '') => {
-    const response = await r.call(`/v1/inputs${query}`);
-    assert.equal(response.status, 200, response.text);
-    return response.json.map((row: any) => row.id);
-  };
-  assert.deepEqual(await ids(), expected.slice(0, 100));
-  assert.deepEqual(await ids('?state=pending&limit=500'), expected.slice(0, 500));
-  assert.deepEqual(await ids('?limit=3&cursor=not-a-cursor&priority=invalid'), expected.slice(0, 3));
-  assert.deepEqual(await ids('?state=answered'), []);
-  assert.equal((await r.call('/v1/inputs?limit=501')).status, 400);
-  assert.deepEqual((await r.call('/v1/inbox')).json.items, [], 'inbox alone hides expired pending rows');
+  await r.seedInbox(Array.from({ length: 101 }, (_, i) => ({ id: `page-${i}`, subject: 'pages' })));
+  for (const route of ['/v1/inbox', '/v1/inputs']) {
+    const defaults = (await r.call(`${route}?subject=pages`)).json;
+    assert.equal(defaults.items.length, 50);
+    assert.equal(defaults.counts.priority.normal, 101);
+    assert.ok(defaults.cursor);
+    assert.equal((await r.call(`${route}?subject=pages&limit=100`)).json.items.length, 100);
+  }
 }, { timeout: 90_000 });
 
 // Slice 3 must land first. Register on both backends as soon as its mirror module
@@ -88,10 +77,11 @@ if (existsSync(new URL('../../../backends/workers/src/input-mirror.ts', import.m
     }, 'the real question reaches the shared index');
     const listed = page.items.find((item: any) => item.agent === agent && item.toolCallId === input.toolCallId);
     assert.equal(listed.message, input.message);
-    const legacy = (await r.call('/v1/inputs?state=pending')).json;
-    assert.equal(legacy.find((item: any) => item.agent === agent).id, input.id, 'legacy uses the per-agent public id');
+    assert.equal(listed.inputId, input.id);
+    const alias = (await r.call('/v1/inputs')).json;
+    assert.deepEqual(alias, page);
     assert.equal(page.counts.priority.normal, 1);
-    const answer = await r.call(`/v1/agents/${agent}/inputs/${input.id}`, { body: { action: 'accept', content: { answers: { 'Which region?': 'EU' } } } });
+    const answer = await r.call(`/v1/agents/${agent}/inputs/${listed.inputId}`, { body: { action: 'accept', content: { answers: { 'Which region?': 'EU' } } } });
     assert.equal(answer.status, 202, answer.text);
     await until(async () => !(await r.call('/v1/inbox')).json.items.some((item: any) => item.id === listed.id), 'the answer settles the mirrored input');
   }, { timeout: 90_000 });

@@ -801,15 +801,12 @@ export function api(context: ApiContext) {
     const { status, ...answered } = await clients.answer(c.req.param("id")!, c.var.principal.tenant, answerList(await readJson(c.req.raw.body, 1024 * 1024, {})));
     return json(c, status, answered);
   });
-  route(createRoute({ method: "get", path: "/v1/inputs", request: { query: inputState.extend({ limit: z.coerce.number().int().min(1).max(500).optional() }) }, responses: { 200: reply("The tenant's human inputs, newest first (legacy array response)", z.array(schema.Input)) } }),
-    async c => {
-      try { return json(c, 200, (await readInbox(accounts.db, c.var.principal.tenant, inboxQuery(new URL(c.req.url).searchParams, true), true)).items); }
+  for (const path of ["/v1/inbox", "/v1/inputs"]) {
+    route(createRoute({ method: "get", path, request: { query: schema.InboxQuery }, responses: { 200: reply("Pending inputs in priority order, with filtered counts before pagination", schema.InboxPage) } }), async c => {
+      try { return json(c, 200, await readInbox(accounts.db, c.var.principal.tenant, inboxQuery(new URL(c.req.url).searchParams))); }
       catch (error) { if (error instanceof InboxQueryError) throw new HttpError(400, error.message); throw error; }
     });
-  route(createRoute({ method: "get", path: "/v1/inbox", request: { query: schema.InboxQuery }, responses: { 200: reply("Pending inputs in priority order, with filtered counts before pagination", schema.InboxPage) } }), async c => {
-    try { return json(c, 200, await readInbox(accounts.db, c.var.principal.tenant, inboxQuery(new URL(c.req.url).searchParams))); }
-    catch (error) { if (error instanceof InboxQueryError) throw new HttpError(400, error.message); throw error; }
-  });
+  }
 
   route(createRoute({ method: "get", path: "/v1/agents/{id}/schedule-deliveries", request: { params: agentId }, responses: { 200: reply("The latest 100 scheduled email deliveries", z.array(z.object({ id: z.string(), state: z.string(), email: z.record(z.string(), z.unknown()), createdAt: z.number(), sentAt: z.number().nullable(), messageId: z.string().nullable(), error: z.string().nullable() }))) } }), async c => {
     const { rows } = await accounts.db.query('select id,state,email,created_at as "createdAt",sent_at as "sentAt",message_id as "messageId",error from schedule_deliveries where tenant=$1 and agent=$2 order by created_at desc limit 100', [c.var.principal.tenant,c.req.param("id")]);

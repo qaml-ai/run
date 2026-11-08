@@ -726,7 +726,7 @@ export const InboxQuery = z.object({
   cursor: z.string().optional(), limit: z.coerce.number().int().min(1).max(100).optional(),
 });
 export const InboxPage = z.object({
-  items: z.array(Input.extend({ priority: z.enum(["urgent", "high", "normal", "low"]), blocking: z.boolean(),
+  items: z.array(Input.extend({ inputId: z.string().openapi({ description: "Use this id with the per-agent input answer route; id identifies the inbox row" }), priority: z.enum(["urgent", "high", "normal", "low"]), blocking: z.boolean(),
     subject: z.string().nullable(), root: z.string(), lineage: z.array(z.string()), key: z.string().nullable(), version: z.number().int() })),
   cursor: z.string().nullable(), counts: z.object({ priority: z.object({ urgent: z.number(), high: z.number(), normal: z.number(), low: z.number() }), lead: z.record(z.string(), z.number()) }),
 }).openapi("InboxPage");

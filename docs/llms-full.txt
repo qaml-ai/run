@@ -2278,8 +2278,8 @@ Inputs outlive your process: answer later from anywhere.
 
 - `agent.pendingInputs()` (Python `pending_inputs()`) lists an agent's waiting
   inputs, each with `answer()`.
-- `agents.runtime.inbox("pending")` lists the inputs waiting across all your
-  agents, for an approvals queue.
+- `agents.runtime.inbox()` returns a page (`items`, `cursor`, `counts`) of pending inputs across your
+  agents. Pass the cursor to read the next page; use each item's `inputId` to answer through its agent.
 - Over REST: `GET /v1/agents/:id/inputs?state=pending`, and `POST
   /v1/agents/:id/inputs/:inputId {action: "accept" | "decline" | "cancel",
   content?, from?}`. A question's `content` is `{answers: {"<question>":
@@ -7866,7 +7866,7 @@ Before you ship an application on the runtime, check each of these.
       `uncertain` when a restart cut the run short); `run.toolErrors` lists tool
       calls that did not complete.
 - [ ] Runs that wait on people (`status: "input_required"`) are shown to someone
-      who can answer, or answered from your inbox (`agents.runtime.inbox("pending")`
+      who can answer, or answered from your inbox (`agents.runtime.inbox()`
       and the `input.requested` webhook). After 15 minutes by default
       (`humanInput.expiresInSeconds`) the runtime answers for them, approving
       nothing, and the agent goes on.
@@ -8284,7 +8284,7 @@ available and stable for code that needs the wire's shape: `agents.runtime`,
 | `runtime.upsertDefinition(key, input)`, `createDefinition`, `updateDefinition`, `definition(s)`, `deleteDefinition` | `upsert_definition(key, …)`, `create_definition`, … | definitions; the same key is the same definition |
 | `runtime.createVolume`, `volume(id)`, `mounts`, `setMounts` | `create_volume`, `volume(id)`, … | volumes and mounts |
 | `runtime.projects.create({ key, template })`, `project.mount`, `project.publish`, `publishTool` | `camelai_run.projects`: `Projects(runtime).create(key, template=)`, `mount`, `publish`, `publish_tool` | [projects](https://run.camelai.com/docs/guides/projects.md): an agent builds in a keyed volume; your code checks and publishes snapshots |
-| `runtime.inbox(state)`, `toolSources(agentId)` | `inbox(state=)`, `tool_sources(agent_id)` | inputs across agents; an agent's tools |
+| `runtime.inbox(options)`, `toolSources(agentId)` | `inbox(for_=, subject=, root=, priority=, kind=, cursor=, limit=)`, `tool_sources(agent_id)` | pending input page (`items`, `cursor`, `counts`); an agent's tools |
 | | `set_scope_key(scope, provider, api_key=, base_url=, headers=, region=)`, `key_scope(scope)`, `delete_scope_key(scope, provider)`, `delete_key_scope(scope)` | a key scope's provider keys (`/v1/key-scopes`): agents made with `key_scope=` use them first; see [Models and keys](https://run.camelai.com/docs/guides/models-and-keys.md) |
 | | `set_scope_provider(scope, name, base_url=, models=, …)`, `scope_providers(scope)`, `delete_scope_provider(scope, name)` | a key scope's own providers, as `set_provider`'s |
 | | `usage(days=)` | tokens and cost per day and model (`GET /v1/usage`) |
@@ -9814,14 +9814,11 @@ Counts apply to all filtered items before pagination. A lead is `root_agent`,
 falling back to the asking agent for rows without lineage. Pages reflect live
 state: items may settle between requests.
 
-`GET /v1/inputs` reads the same table but keeps its legacy array response and
-newest-first order (`created_at` descending, then id). Its default limit is 100,
-with a maximum of 500. The optional `state` filter includes all states when
-omitted, and pending rows remain visible past expiry until settled. This route
-does not paginate or apply inbox filters; it ignores `cursor`. Use `/v1/inbox`
-for priority ordering, inbox filters, a next cursor, and counts.
-Inbox IDs identify globally unique index rows. Use the IDs from `/v1/inputs`
-with the per-agent answer routes; on Workers these IDs can differ.
+`GET /v1/inputs` is an alias of `/v1/inbox` with the same filters and page
+response. Both list only pending, unexpired inputs; `state` is no longer a
+filter. For one agent's settled inputs, use `GET /v1/agents/:id/inputs?state=...`.
+Inbox `id` identifies the globally unique index row. Use `inputId` with the
+per-agent answer route; on Workers these IDs can differ.
 
 ---
 

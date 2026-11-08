@@ -159,7 +159,7 @@ test("a run waiting on a person exits 2 and resumes once answered", async t => {
   assert.equal(waiting.json.status, "input_required");
   const [input] = waiting.json.inputs;
   assert.equal(input.kind, "question");
-  assert.equal((await run("inputs")).json[0].id, input.id);
+  assert.equal((await run("inputs")).json.items[0].inputId, input.id);
 
   const resumed = await run("answer", "asker-1", input.id, "EU");
   assert.equal(resumed.code, 0, resumed.err);

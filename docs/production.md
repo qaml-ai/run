@@ -59,7 +59,7 @@ Before you ship an application on the runtime, check each of these.
       `uncertain` when a restart cut the run short); `run.toolErrors` lists tool
       calls that did not complete.
 - [ ] Runs that wait on people (`status: "input_required"`) are shown to someone
-      who can answer, or answered from your inbox (`agents.runtime.inbox("pending")`
+      who can answer, or answered from your inbox (`agents.runtime.inbox()`
       and the `input.requested` webhook). After 15 minutes by default
       (`humanInput.expiresInSeconds`) the runtime answers for them, approving
       nothing, and the agent goes on.

@@ -1846,6 +1846,34 @@ class VersionTest(unittest.TestCase):
         self.assertEqual(camelai_run.__version__, tomllib.loads((ROOT / "clients" / "python" / "pyproject.toml").read_text())["project"]["version"])
 
 
+class InboxTest(unittest.IsolatedAsyncioTestCase):
+    async def test_inbox_filters_and_page_async_and_sync(self):
+        seen = []
+        page = {"items": [{"id": "global", "inputId": "local"}], "cursor": "next", "counts": {"priority": {"urgent": 1}, "lead": {"lead": 1}}}
+
+        def handle(request):
+            seen.append(request)
+            return httpx.Response(200, json=page)
+
+        runtime = AgentRuntime(url="https://runtime.example", api_key="test-key")
+        await runtime.http.aclose()
+        runtime.http = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+        try:
+            self.assertEqual(await runtime.inbox(for_="sam & alex", subject="customer", root="lead", priority="urgent", kind="question", cursor="a+b=", limit=7), page)
+        finally:
+            await runtime.http.aclose()
+        runtime = sync.AgentRuntime(url="https://runtime.example", api_key="test-key")
+        runtime.http.close()
+        runtime.http = httpx.Client(transport=httpx.MockTransport(handle))
+        try:
+            self.assertEqual(runtime.inbox(for_="sam & alex", subject="customer", root="lead", priority="urgent", kind="question", cursor="a+b=", limit=7), page)
+        finally:
+            runtime.http.close()
+        for request in seen:
+            self.assertEqual(request.url.path, "/v1/inbox")
+            self.assertEqual(dict(request.url.params), {"for": "sam & alex", "subject": "customer", "root": "lead", "priority": "urgent", "kind": "question", "cursor": "a+b=", "limit": "7"})
+
+
 class VoiceLibraryTest(unittest.IsolatedAsyncioTestCase):
     async def test_get_async_and_sync(self):
         seen = []
