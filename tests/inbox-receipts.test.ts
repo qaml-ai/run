@@ -26,3 +26,29 @@ test('receipts serialize identical callers, refuse changed payloads, expire and 
   await sweepInboxReceipts(db);
   assert.equal((await db.query('select count(*)::int as count from inbox_answer_receipts')).rows[0].count, 0);
 });
+
+test('a slow authority call renews its receipt without holding a SQL transaction', async t => {
+  const { db } = await testDatabase();
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const work = inboxReceipt(db, 'alice', { requestId: 'slow', answers: [{ id: 'a', version: 1 }] }, async () => {
+    entered();
+    await blocked;
+    return [{ id: 'a', outcome: 'answered', status: 202 }];
+  });
+  try {
+    await started;
+    assert.equal((await db.query("select count(*)::int as count from pg_stat_activity where datname=current_database() and state='idle in transaction'")).rows[0].count, 0);
+    await db.query("update inbox_answer_receipts set claimed_until=now()-interval '1 second' where request_id='slow'");
+    t.mock.timers.tick(30_000);
+    let renewed = false;
+    for (let attempt = 0; attempt < 50; attempt++) {
+      renewed = (await db.query("select claimed_until > now() as renewed from inbox_answer_receipts where request_id='slow'")).rows[0].renewed;
+      if (renewed) break;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.equal(renewed, true);
+  } finally { release(); await work; }
+});

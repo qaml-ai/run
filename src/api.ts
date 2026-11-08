@@ -805,14 +805,13 @@ export function api(context: ApiContext) {
   route(createRoute({ method: "post", path: "/v1/inbox/answers", request: { body: content(schema.InboxAnswers) }, responses: { 200: reply("One outcome per item; replayed by requestId", schema.InboxOutcomes), 409: reply("requestId was used with different answers", schema.ApiError) } }), async c => {
     const body = inboxAnswers(await readJson(c.req.raw.body, 1024 * 1024, {}));
     const tenant = c.var.principal.tenant;
-    const sql = await accounts.db.connect();
-    try { return json(c, 200, await inboxReceipt(sql, tenant, body, async () => {
+    return json(c, 200, await inboxReceipt(accounts.db, tenant, body, async () => {
       const rows = (await accounts.db.query("select id,agent from agent_inputs where tenant=$1 and id=any($2::text[])", [tenant, body.answers.map(a => a.id)])).rows;
       const groups = new Map<string, typeof body.answers>();
       for (const entry of body.answers) { const agent = rows.find(row => row.id === entry.id)?.agent; if (agent) groups.set(agent, [...groups.get(agent) ?? [], entry]); }
       const outcomes = (await Promise.all([...groups].map(([agent, entries]) => clients.answerInbox(agent, tenant, entries).catch(error => { return entries.map(entry => inboxAgentFailure(entry.id, error)); })))).flat();
       return body.answers.map(entry => outcomes.find(o => o.id === entry.id) ?? { id: entry.id, outcome: "unknown" as const, status: 404 });
-    })); } finally { sql.release(); }
+    }));
   });
   for (const path of ["/v1/inbox", "/v1/inputs"]) {
     route(createRoute({ method: "get", path, request: { query: schema.InboxQuery }, responses: { 200: reply("Pending inputs in priority order, with filtered counts before pagination", schema.InboxPage) } }), async c => {

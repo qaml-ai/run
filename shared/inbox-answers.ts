@@ -80,6 +80,10 @@ export async function inboxReceipt(sql: Sql, tenant: string, body: ReturnType<ty
         or (inbox_answer_receipts.answers_hash=excluded.answers_hash and inbox_answer_receipts.result is null and inbox_answer_receipts.claimed_until <= now())
       returning owner`, [tenant, body.requestId, hash, owner, cutoff()])).rows.length > 0;
     if (claimed) {
+      // Keep a slow authority call from losing its receipt to a concurrent retry.
+      const renewal = setInterval(() => { void sql.query(`update inbox_answer_receipts
+        set claimed_until=now()+interval '2 minutes' where tenant=$1 and request_id=$2 and owner=$3 and result is null`,
+        [tenant, body.requestId, owner]).catch(() => {}); }, 30_000);
       try {
         const result = { outcomes: await run() };
         const saved = await sql.query(`update inbox_answer_receipts set result=$4, claimed_until=null
@@ -89,7 +93,7 @@ export async function inboxReceipt(sql: Sql, tenant: string, body: ReturnType<ty
       } catch (error) {
         await sql.query('delete from inbox_answer_receipts where tenant=$1 and request_id=$2 and owner=$3 and result is null', [tenant, body.requestId, owner]);
         throw error;
-      }
+      } finally { clearInterval(renewal); }
     }
     const previous = (await sql.query(`select answers_hash,result from inbox_answer_receipts
       where tenant=$1 and request_id=$2 and created_at > $3`, [tenant, body.requestId, cutoff()])).rows[0];

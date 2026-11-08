@@ -1,6 +1,6 @@
 import { inboxAnswers, inboxReceipt, inboxAgentFailure, sweepInboxReceipts, type InboxOutcome } from "../../../shared/inbox-answers.ts";
 import { inboxQuery, readInbox, InboxQueryError } from '../../../shared/inbox.ts';
-import { withSql as inboxSql } from './postgres.ts';
+import { withSql as inboxSql, database as inboxDatabase } from './postgres.ts';
 import { sweepInputMirrors } from "./input-mirror.ts";
 import { HttpError as CoreHttpError } from "../../../src/core/http-error.ts";
 import { serveToolFile } from './tool-files.ts';
@@ -341,7 +341,8 @@ const worker = {
         if (control) return control;
         if (path === "/v1/inbox/answers" && request.method === "POST") {
           const input = inboxAnswers(await body(request, 1024 * 1024));
-          return json(await inboxSql(env, sql => inboxReceipt(sql, auth.tenantId, input, async () => {
+          const sql = inboxDatabase(env);
+          return json(await inboxReceipt(sql, auth.tenantId, input, async () => {
             const rows = (await sql.query("select id,agent,input from agent_inputs where tenant=$1 and id=any($2::text[])", [auth.tenantId, input.answers.map(a => a.id)])).rows;
             const groups = new Map<string, typeof input.answers>();
             for (const answer of input.answers) { const row = rows.find(r => r.id === answer.id); if (row) groups.set(row.agent, [...groups.get(row.agent) ?? [], { ...answer, id: row.input.workersInputId ?? row.id }]); }
@@ -355,7 +356,7 @@ const worker = {
               } catch (error) { for (const row of rows.filter(r => r.agent === agent)) outcomes.push(inboxAgentFailure(row.id, error)); }
             }
             return input.answers.map(a => outcomes.find(o => o.id === a.id) ?? { id: a.id, outcome: "unknown" as const, status: 404 });
-          })));
+          }));
         }
         if ((path === "/v1/inputs" || path === "/v1/inbox") && request.method === "GET") {
           try {
