@@ -49,6 +49,9 @@ const CLASSES: [string, RegExp][] = [
   ["compaction", /Compaction failed|Summarization failed/i],
   ["resume_limit", /^This turn exhausted its \d+ node-loss resumes/],
   ["runtime_restart", /runtime restarted/i],
+  // Workers resets a Durable Object whose startup (blockConcurrencyWhile, 30 s) ran too long: the runtime's, not the
+  // model's, and its "too long" is no context overflow.
+  ["startup_reset", /blockConcurrencyWhile\(\).{0,40}waited for too long/],
   // A run its caller stopped (agent-host.ts: "The run was aborted"; Pi's "Request was aborted"): not a failure of the model's.
   ["aborted", /^The run was aborted|^Request was aborted/],
   // DeepSeek's own API refusing history without reasoning (deepseek-replay.ts): a bug of ours if it ever recurs, alarmed.
