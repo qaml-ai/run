@@ -1,7 +1,7 @@
 import { AsyncResource } from "node:async_hooks";
 import { readdirSync, readFileSync } from "node:fs";
 import { PGlite } from "@electric-sql/pglite";
-import type { Db, DbClient, Rows } from "../../src/db.ts";
+import { CONCURRENT_MIGRATION, type Db, type DbClient, type Rows } from "../../src/db.ts";
 
 const INT8 = 20;
 
@@ -231,7 +231,13 @@ export class SimDb implements WorldDb {
     const files = readdirSync(MIGRATIONS).filter(name => /^\d{3}_[a-z0-9_]+\.sql$/.test(name)).sort();
     await this.pglite.exec("create table if not exists schema_migrations (name text primary key, applied_at timestamptz not null default now())");
     for (const name of files) {
-      await this.pglite.exec(readFileSync(new URL(name, MIGRATIONS), "utf8"));
+      const text = readFileSync(new URL(name, MIGRATIONS), "utf8");
+      // A concurrent migration's indexes are built one statement at a time, as src/db.ts does: several statements in
+      // one exec are an implicit transaction, where CREATE INDEX CONCURRENTLY cannot run.
+      if (text.startsWith(CONCURRENT_MIGRATION)) {
+        const statements = text.split("\n").filter(line => !line.trimStart().startsWith("--")).join("\n").split(";").map(statement => statement.trim()).filter(Boolean);
+        for (const statement of statements) await this.pglite.exec(statement);
+      } else await this.pglite.exec(text);
       await this.pglite.query("insert into schema_migrations (name) values ($1)", [name]);
     }
   }
