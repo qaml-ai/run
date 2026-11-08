@@ -597,7 +597,7 @@ export class ClientSessions {
   private async fold(session: Session) {
     if (session.log.appendedSinceRewrite < FOLD_AFTER_RECORDS && session.requests.size < 4 * RETAINED_SETTLED) return;
     const prune = <T extends { id: string; state: string }>(records: Map<string, T>, at: (record: T) => number) => {
-      const old = [...records.values()].filter(record => settled(record.state)).sort((a, b) => at(a) - at(b));
+      const old = [...records.values()].filter(record => settled(record.state) && !("method" in record && record.method === "steer" && "params" in record && record.params !== undefined)).sort((a, b) => at(a) - at(b));
       for (const record of old.slice(0, Math.max(0, old.length - RETAINED_SETTLED))) records.delete(record.id);
     };
     prune(session.requests, record => record.endedAt ?? record.startedAt ?? 0);
@@ -961,6 +961,7 @@ export class ClientSessions {
     const cancelled: RequestRecord[] = [];
     let kept = false;
     if (queued === "cancel") {
+      for (const record of session.requests.values()) if (record.method === "steer" && record.state === "completed" && record.params !== undefined) this.upsertRequest(session, { ...record, params: undefined });
       for (const record of [...session.running.values()]) {
         if (record.began || !CANCELLABLE.includes(record.method) || (run && record.batchedInto === run.id)) continue;
         // A sub-agent's notification (or message to its parent) is the runtime's, sent once: it is not cancelled, but
@@ -1658,13 +1659,17 @@ export class ClientSessions {
    */
   private async accept(session: Session, body: any, trusted = false): Promise<{ status: 200 | 202; record: RequestRecord; rate?: RateLimitState }> {
     if (!validId(body?.id) || !REQUEST_METHODS.includes(body.method) || !body.params || typeof body.params !== "object" || Array.isArray(body.params)) throw new HttpError(400, "Invalid request");
-    // Every steer uses prompt admission, including the old request spelling: payer checks and queuing are identical.
-    if (body.method === "steer") body = { ...body, method: "prompt", params: { ...body.params, whileRunning: "steer" } };
+    // An idle raw steer is held for the next prompt. Active steers use payer-aware prompt admission.
+    const rawSteer = body.method === "steer";
+    const oldSteer = rawSteer && session.requests.get(body.id);
+    const heldSteer = rawSteer && (oldSteer ? oldSteer.method === "steer" : ![...session.running.values()].some(record => RUN_METHODS.includes(record.method)));
+    if (rawSteer && !heldSteer) body = { ...body, method: "prompt", params: { ...body.params, whileRunning: "steer" } };
     if (body.params.endUser !== undefined) {
       if (!trusted) throw new HttpError(403, "Only a tenant key can choose a run payer");
-      if (body.method !== "prompt") throw new HttpError(400, "endUser is for a prompt");
+      if (!["prompt", "steer"].includes(body.method)) throw new HttpError(400, "endUser is for a prompt");
       if (!this.options.endUsers) throw new HttpError(404, "End-user credits are unavailable");
-      await this.options.endUsers.requireExisting(session.header.tenant, body.params.endUser);
+      const internal = /^(child_|msg_|delegate_|spawn_)/.test(body.id) && (childSessions.validNotice(body.params.notice) || delegation.delegation(this.delegationContext, session.header.id, body.id, body.params.metadata).chain.length > 0);
+      if (!internal) await this.options.endUsers.requireExisting(session.header.tenant, body.params.endUser);
     }
     // Only the runtime resumes a suspension, once its inputs have settled.
     if (body.method === "resume" && (!trusted || Object.keys(body.params).length !== 1 || !validId(body.params.suspension))) throw new HttpError(400, "Answer the agent's inputs to resume its turn");
@@ -1677,7 +1682,7 @@ export class ClientSessions {
     // Which of its end user's buckets the agent's runs spend from: the tenant's to say, applied at once, as a spend limit is.
     const agentBucket = body.method === "configure" && Object.hasOwn(body.params, "bucket") ? body.params.bucket === null ? null : bucketInput(body.params.bucket) : undefined;
     // A run's own bucket, likewise the tenant's alone: an agent's token choosing one could spend another bucket's allowance.
-    if (body.method !== "configure" && body.params.bucket !== undefined && (!trusted || !MODEL_RUNS.includes(body.method))) {
+    if (body.method !== "configure" && body.params.bucket !== undefined && (!trusted || (!MODEL_RUNS.includes(body.method) && body.method !== "steer"))) {
       throw new HttpError(trusted ? 400 : 403, trusted ? "bucket is for a model run (prompt, continue)" : "Only the tenant can choose a run's bucket");
     }
     if (applying && (!trusted || !this.options.definitionFor || Object.keys(body.params).length !== 1 || typeof body.params.definition?.id !== "string")) throw new HttpError(400, "Apply a definition with PATCH /v1/definitions/<id> and apply: \"all\"");
@@ -1810,7 +1815,7 @@ export class ClientSessions {
       }
       const queued = QUEUED_METHODS.includes(body.method);
       // Status and aborts need no process; queued requests start it (if at all) when their turn comes.
-      if (!queued && !["status", "abort"].includes(body.method)) await this.ensureStarted(session);
+      if (!queued && !["status", "abort", "steer"].includes(body.method)) await this.ensureStarted(session);
       // Concurrent retries may have waited on the same process startup.
       const raced = existing();
       if (raced) return taken(raced);
@@ -1837,6 +1842,13 @@ export class ClientSessions {
       if (["prompt", "steer"].includes(body.method) && params.message === undefined && !(typeof params.text === "string" && params.text.trim()) && !params.files?.some((file: FileRef) => file.transcript)) {
         throw new HttpError(400, "Send {\"text\": \"...\"}, or attach audio to transcribe");
       }
+      if (heldSteer) {
+        const record = this.upsertRequest(session, { id: body.id, method: "steer", fingerprint, state: "completed", startedAt: Date.now(), endedAt: Date.now(), params,
+          ...(endUser ? { endUser } : {}), ...(bucket ? { bucket } : {}), outcome: { result: { queued: true, running: false } } });
+        await this.commit(session, true);
+        this.publish(session, { type: "response", id: record.id, outcome: record.outcome! });
+        return { status: 202, record: visible(record) };
+      }
       // Work is open: marked before the request is taken (a failed write takes nothing, so a retry starts afresh) and before
       // it is durable, so a node dying with it leaves it for another's sweep (see `resumeOrphans`).
       // One write per busy spell: the mark stays until an unload with nothing open clears it.
@@ -1846,6 +1858,19 @@ export class ClientSessions {
         // A retry of the same id may have been taken while this waited.
         const again = existing();
         if (again) return taken(again);
+      }
+      const later: RequestRecord[] = [];
+      if (body.method === "prompt") {
+        const held = [...session.requests.values()].filter(record => record.method === "steer" && record.state === "completed" && record.params !== undefined).sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0));
+        const matching: unknown[] = [];
+        for (const steer of held) {
+          const { params: input, outcome: _outcome, endedAt: _end, ...base } = steer;
+          if ((steer.endUser ?? null) === (endUser ?? null)) {
+            matching.push(input);
+            this.upsertRequest(session, { ...steer, params: undefined });
+          } else later.push(this.upsertRequest(session, { ...base, method: "prompt", state: "running", startedAt: Date.now(), params: { ...input as object, whileRunning: "steer" } }));
+        }
+        if (matching.length) params = { ...params, batch: [...(Array.isArray(params.batch) ? params.batch : []), ...matching] };
       }
       const record = this.upsertRequest(session, {
         startedAt: Date.now(), ...(body.method === "prompt" && typeof body.params.text === "string" ? { prompt: body.params.text } : {}),
@@ -1862,6 +1887,7 @@ export class ClientSessions {
       finally { session.accepting.delete(record.id); }
       if (queued) this.enqueue(session, record, params);
       else void this.run(session, record, params);
+      for (const steer of later) this.enqueue(session, steer, steer.params);
       // A child's ending to an agent set to hear it at once (delegate.notify "asap"), while a turn runs: landed now (its
       // row claimed with the endings it carries, charged; or found taken by a wait, then nothing is offered), and offered
       // to the running turn as a steer. One the turn does not take runs as a turn of its own, whose landing finds it landed
@@ -2230,7 +2256,7 @@ export class ClientSessions {
         batch = record.method === "prompt" && !session.resuming.has(record.id) ? this.batchOf(session, session.requests.get(record.id)!) : [];
         record = this.upsertRequest(session, { ...rest, ...notice ? { notice } : {}, began: continued && rest.began ? rest.began : Date.now(), ...(session.resuming.has(record.id) && !continued ? { resumes: (rest.resumes ?? 0) + 1 } : {}) });
         for (const member of batch) this.upsertRequest(session, { ...member, batchedInto: record.id });
-        if (batch.length) params = { ...params as object, batch: batch.map(member => member.params) };
+        if (batch.length) params = { ...params as object, batch: [...((params as { batch?: unknown[] })?.batch ?? []), ...batch.map(member => member.params)] };
         // Code has no effect outside its sandbox until it calls a tool, and every tool call
         // makes this record durable first (`beforeEffect`; the application's tools do it when
         // their call is recorded, which is appended after it). So an execution needs no commit of its

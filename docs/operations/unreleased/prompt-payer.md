@@ -11,6 +11,6 @@ apart. Later prompts without `endUser`, and background work outside a prompt's
 run, bill the agent's subject. An override payer's bucket is not inherited by
 later subject-paid runs.
 
-The low-level `steer` request now uses prompt admission too: when idle or when
-the payer differs, it starts its own turn instead of holding input for a future
-turn. The SDKs' `client.steer` follows the same rule.
+The low-level `steer` request keeps idle input for the next prompt: matching
+payers share its turn; other payers run separately afterward. The SDKs keep
+this behavior when `client.steer` has no explicit payer.

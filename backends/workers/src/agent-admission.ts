@@ -1,5 +1,6 @@
 import { keyServices } from "./security-services.ts";
 import { EndUserCredits } from "./end-user-credits.ts";
+import { billingRunStop } from "./billing-run-stop.ts";
 import { admitAgentMessage } from "./message-admission.ts";
 import { MULTI_AGENT_LIMITS, viaParent } from "./multi-agent-policy.ts";
 import { childParent } from "./child-parent.ts";
@@ -209,7 +210,8 @@ export async function admitImpl(this: AgentRuntime,
   acceptedFingerprint?: string) {
     await this.config();
     const request = object(input, ["id", "method", "params"]);
-    // The old steer request spelling shares prompt payer checks and own-turn fallback.
+    // Keep the raw spelling's idle hold; active steers share prompt payer checks.
+    const rawSteer = request.method === "steer";
     if (request.method === "steer") {
       request.method = "prompt";
       if (!request.params || typeof request.params !== "object" || Array.isArray(request.params)) throw new BadRequest("Expected a JSON object");
@@ -445,7 +447,8 @@ export async function admitImpl(this: AgentRuntime,
     if (params.endUser !== undefined) {
       if (request.method !== "prompt") throw new BadRequest("endUser is for a prompt");
       const { accounts } = await keyServices(this.env);
-      await new EndUserCredits(accounts.db).requireExisting(conf.tenantId, params.endUser as string);
+      const internal = /^(child_|msg_|delegate_|spawn_)/.test(id) && (notice !== undefined || !!await this.delegation.lineage(conf.id, { id, metadata: params.metadata }));
+      if (!internal) await new EndUserCredits(accounts.db).requireExisting(conf.tenantId, params.endUser as string);
     }
     const requestedBucket = params.bucket as string | undefined;
     const effectiveBucket = requestedBucket ?? conf.config.bucket ?? await this.ctx.storage.get<string>("run-bucket") ?? "default";
@@ -461,7 +464,7 @@ export async function admitImpl(this: AgentRuntime,
         code: "SPEND_LIMIT",
       });
     const endUserRefusal = await this.endUserLimit(conf, effectiveBucket, params.endUser as string | undefined);
-    if (endUserRefusal) throw endUserRefusal;
+    if (endUserRefusal && !notice) throw endUserRefusal;
     const pending = (await this.harness.pending()).find(
       (item) => item.status === "running",
     );
@@ -479,7 +482,7 @@ export async function admitImpl(this: AgentRuntime,
       return wake.allowed ? undefined : { error: `This agent's chain has had ${this.delegateWakeLimit ? Number(this.delegateWakeLimit) : MULTI_AGENT_LIMITS.wakesPerHour} turns started by sub-agent notifications and messages this hour, its limit: the message is in its history, but no turn ran. Send a message to go on`, code: 'agent_loop_limit', stopped: 'agent_loop_limit' };
     };
     const noTurn = notice
-      ? refusal ?? (delivery && !delivery.run ? { error: delivery.message, code: delivery.stopped, stopped: delivery.stopped } : undefined)
+      ? refusal ?? billingRunStop(endUserRefusal) ?? (delivery && !delivery.run ? { error: delivery.message, code: delivery.stopped, stopped: delivery.stopped } : undefined)
       : undefined;
     await this.requireApplication(params.allowDisconnected);
     const preparing = params.files !== undefined && !old?.admitted && !(delivery && !delivery.run && notice);
@@ -522,7 +525,7 @@ export async function admitImpl(this: AgentRuntime,
       if (preparing) await this.promptPreparations.fail(id);
       throw error;
     }
-    if (request.method === "prompt" && !notice && !old?.accepted)
+    if (request.method === "prompt" && !rawSteer && !notice && !old?.accepted)
       await this.closeHumanInputs("superseded");
     const record: RequestRecord = old && !old.noticeQueued ? old : {
       id,
@@ -552,6 +555,22 @@ export async function admitImpl(this: AgentRuntime,
       : params.images
         ? imageReferenceInput(text, params.images as ImageRef[], conf.tenantId)
         : text;
+    if (rawSteer && !pending && !running && !(await this.records()).some(other => other.id !== id && other.state !== "completed")) {
+      record.method = "steer";
+      record.state = "completed";
+      record.status = "completed";
+      record.endedAt = Date.now();
+      record.outcome = { result: { queued: true, running: false } };
+      await this.ctx.storage.put(`held-steer:${id}`, { id, prompt, params, fingerprint, endUser: params.endUser, startedAt: record.startedAt });
+      await this.ctx.storage.put(reqKey(id), record);
+      if (preparing) {
+        await this.promptPreparations.finish(id);
+        await releaseTurn(this.env, conf.tenantId, conf.id, id);
+        await this.env.TENANTS.getByName(conf.tenantId).release(`${conf.id}:${id}`);
+      }
+      await this.emit({ type: "response", id, outcome: record.outcome });
+      return record;
+    }
     const configurationWait = record.configurationWait ?? await this.configurationQueue.pendingOrder();
     if (configurationWait > await this.configurationQueue.completedOrder()) {
       if (preparing) { record.admitted = true; await this.promptPreparations.finish(id); }
@@ -633,7 +652,8 @@ export async function admitImpl(this: AgentRuntime,
         if (await root.commit(async tx => !!(await tx.submissionByRequest(root.id, taking.request)), BACKGROUND_CONTEXT)) await this.ctx.storage.delete(taking.keys);
         await this.ctx.storage.delete('held-steer-taking');
       }
-      const held = !pending ? new Map([...(await this.ctx.storage.list<{ id: string; prompt: typeof prompt; endUser?: string; startedAt: number }>({ prefix: 'held-steer:' }))].filter(([, steer]) => (steer.endUser ?? null) === (params.endUser ?? null))) : new Map();
+      const allHeld = !pending ? await this.ctx.storage.list<{ id: string; prompt: typeof prompt; params?: Record<string, unknown>; fingerprint?: string; endUser?: string; startedAt: number }>({ prefix: 'held-steer:' }) : new Map();
+      const held = new Map([...allHeld].filter(([, steer]) => (steer.endUser ?? null) === (params.endUser ?? null)));
       const submission = {
         operationId: id,
         whenBusy: params.whileRunning === "steer" && running ? "steer" as const : "followUp" as const,
@@ -651,7 +671,7 @@ export async function admitImpl(this: AgentRuntime,
       };
       // A steer the running turn takes and an agent's message join a turn already going; anything else may be held for
       // a batch, so Pi's inbox only holds prompts that may share a turn (batch-queue.ts).
-      const holding = running || notice?.metadata.kind === 'message' ? false
+      const holding = running || notice?.metadata.kind === 'message' || allHeld.size ? false
         : await this.batchQueue.holds(conf, { id, ...(record.actor ? { actor: record.actor } : {}), bucket: effectiveBucket, params }, notice !== undefined);
       if (holding) {
         const accepted = await this.batchQueue.hold(record, prompt, submission, holding === "window");
@@ -696,6 +716,21 @@ export async function admitImpl(this: AgentRuntime,
             await tx.appendEntry(root.id, { kind: 'camel.steer', data: { requestId: value.id }, model: [{ role: 'user', content: value.prompt, timestamp: Date.now() }] });
         }, BACKGROUND_CONTEXT);
         await this.ctx.storage.delete([...held.keys(), 'held-steer-taking']);
+      }
+      // Different payers run after this prompt; their original receipt and fingerprint remain idempotent.
+      for (const [key, steer] of allHeld) {
+        if (held.has(key)) continue;
+        const old = await this.ctx.storage.get<RequestRecord>(reqKey(steer.id));
+        if (!old || !steer.params) continue;
+        const next = { ...old, method: "prompt", state: "queued" as const, accepted: false, outcome: undefined, endedAt: undefined, status: undefined, params: { ...steer.params, whileRunning: "steer" } };
+        await this.ctx.storage.put(reqKey(steer.id), next);
+        await this.ctx.storage.delete(key);
+        try { await this.admit({ id: steer.id, method: "prompt", params: next.params }, undefined, undefined, old.fingerprint); }
+        catch (error) {
+          const outcome = { error: error instanceof Error ? error.message : String(error) };
+          await this.ctx.storage.put(reqKey(steer.id), { ...next, state: "completed", status: "failed", endedAt: Date.now(), outcome });
+          await this.emit({ type: "response", id: steer.id, outcome });
+        }
       }
     }
     const accepted = await this.ctx.storage.transaction(async (tx) => {

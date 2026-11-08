@@ -2173,8 +2173,10 @@ class AgentClient(_AgentCalls):
             self._release(request_id, future)
 
     async def steer(self, text, *, end_user=None, from_=None, files=None, metadata=None):
-        """Prompt with while_running="steer": join the same payer's turn, or start a separate turn."""
-        return await self.prompt(text, end_user=end_user, from_=from_, files=files, metadata=metadata, while_running="steer")
+        """Hold idle input for the next run; an explicit payer uses prompt steering."""
+        if end_user is not None:
+            return await self.prompt(text, end_user=end_user, from_=from_, files=files, metadata=metadata, while_running="steer")
+        return await self._message("steer", text, from_=from_, files=files, metadata=metadata)
 
     async def _message(self, method, text, *, from_=None, files=None, metadata=None, idempotency_key=None, extra=None, **options):
         request_id = idempotency_key or str(uuid.uuid4())

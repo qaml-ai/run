@@ -166,6 +166,26 @@ contractTest('credits', 'tests/prompt-payer.test.ts', 'a follow-up queued before
   }
 }, { timeout: 180_000, env: payerEnv });
 
+contractTest('credits', 'tests/prompt-payer.test.ts', 'an idle raw steer waits and runs after a next prompt with a different payer', async (_t, r) => {
+  await seedPayers(r);
+  r.setModel(() => priced({ content: 'done' }));
+  const made = await r.call('/v1/agents', { body: { subject: 'owner', queue: { mode: 'batch' } } });
+  const { id, token } = made.json;
+  const held = await r.call(`/clients/${id}/requests`, { token, body: { id: 'held-owner', method: 'steer', params: { text: 'owner message' } } });
+  assert.equal(held.status, 202, held.text);
+  assert.equal(held.json.method, 'steer');
+  assert.equal(r.model.bodies.length, 0);
+  await r.prompt(id, 'guest message', undefined, { requestId: 'guest-next', endUser: 'guest' });
+  await completed(r, id, 'held-owner');
+  assert.equal(r.model.bodies.length, 2);
+  for (const [user, request] of [['guest', 'guest-next'], ['owner', 'held-owner']]) {
+    const entries = (await r.call(`/v1/end-users/${user}/ledger`)).json.entries.filter((entry: any) => entry.kind === 'usage');
+    assert.deepEqual(entries.map((entry: any) => entry.metadata.requestId), [request]);
+    assert.equal(entries[0].raw, 10_000);
+    assert.equal((await r.call(`/v1/end-users/${user}`)).json.held, 0);
+  }
+}, { timeout: 180_000, env: payerEnv });
+
 contractTest('credits', 'tests/prompt-payer.test.ts', 'first prompt accepts a payer, malformed JSON is 400, and payer buckets do not become the subject default', async (_t, r) => {
   await seedPayers(r);
   r.setModel(() => priced({ content: 'done' }));

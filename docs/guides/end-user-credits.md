@@ -25,7 +25,9 @@ Later prompts do not inherit the payer or an override payer's bucket. Browser,
 OAuth and agent tokens cannot set `endUser`. A tenant can set it on a steer: the
 steer joins a running turn only with the same `endUser` selection (including
 omission); otherwise it queues its own turn. Batches keep different
-`endUser` selections apart. With a tenant-key SDK client, pass `endUser` to
+`endUser` selections apart. A raw `steer` sent while idle waits for the next
+prompt; it joins only a matching payer, otherwise runs separately afterward.
+With a tenant-key SDK client, pass `endUser` to
 TypeScript `agent.run` or `agent.send`, or `end_user` to their Python equivalents.
 The CLI accepts `camelrun run <agent> <message> --end-user collaborator`.
 
