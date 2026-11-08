@@ -27,7 +27,7 @@ contractTest('human-input', 'tests/inbox-decisions.test.ts:8', 'an approval requ
   assert.match(run.outcome.result.reply, /Approvals cannot apply recommendations on expiry/);
   assert.notEqual(run.outcome.result.stopped, 'input_required');
   assert.deepEqual((await f.call(`/v1/agents/${agent}/inputs`)).json, []);
-}, { timeout: 90_000 }); // The first Workers fixture also builds the local bundle.
+});
 
 contractTest('human-input', 'tests/inbox-decisions.test.ts:20', 'mixed decision and blocking answers are refused atomically on Workers', async (_t, f) => {
   f.setModel((body, index) => index === 0 ? toolCall('request_decision', decision, 'decision')
