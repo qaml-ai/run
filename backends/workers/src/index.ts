@@ -1,3 +1,5 @@
+import { SharedAgents, ShareLinkInput, MemberInput } from '../../../src/shared-agents.ts';
+import { database } from './postgres.ts';
 import { HttpError as CoreHttpError } from "../../../src/core/http-error.ts";
 import { serveToolFile } from './tool-files.ts';
 import { withMoneyMetrics } from "./money-metrics.ts";
@@ -159,6 +161,12 @@ function scopedConfiguration(input: unknown) {
         `Only the tenant can change an agent's ${key}`,
         key === "definition" ? "INVALID_REQUEST" : "FORBIDDEN",
       );
+}
+
+function shareInput<T>(schema: { safeParse(value: unknown): { success: true; data: T } | { success: false } }, value: unknown): T {
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) throw new ApiError(400, 'Invalid share settings', 'INVALID_REQUEST');
+  return parsed.data;
 }
 
 function httpFailure(error: unknown, env: Env): Response {
@@ -433,6 +441,30 @@ const worker = {
           "Agent initialization is pending; retry creation",
           "INITIALIZATION_PENDING",
         );
+      const shareRoute = /^\/(share-links|members)(?:\/([^/]+))?$/.exec(tail);
+      if (shareRoute) {
+        if (!auth || auth.kind === 'oauth' || match[1] !== 'v1/agents') throw new ApiError(403, 'An owner API key or console session is required', 'FORBIDDEN');
+        const shared = new SharedAgents(database(env));
+        const [, resource, item] = shareRoute;
+        const tenant = entry.tenantId, agent = entry.id;
+        if (resource === 'share-links') {
+          if (!item && request.method === 'POST') return json(await shared.create(tenant, agent, shareInput(ShareLinkInput, await body(request, 4096, true)), env.AGENT_PUBLIC_URL || url.origin), 201);
+          if (!item && request.method === 'GET') return json(await shared.links(tenant, agent));
+          if (item && request.method === 'DELETE') { await shared.revoke(tenant, agent, item); return json({ deleted: true }); }
+        } else {
+          if (!item && request.method === 'GET') return json(await shared.members(tenant, agent));
+          if (item && request.method === 'PATCH') {
+            await shared.change(tenant, agent, item, shareInput(MemberInput, await body(request, 4096)));
+            return json((await shared.members(tenant, agent)).find(m => m.id === item));
+          }
+          if (item && request.method === 'DELETE') {
+            await shared.change(tenant, agent, item, 'remove');
+            await env.AGENTS.getByName(agent).removeMember(item);
+            return json({ deleted: true });
+          }
+        }
+        throw new ApiError(404, 'Unknown API route', 'NOT_FOUND');
+      }
       if (tail === "/mcp" && match[1] === "v1/agents") {
         const definition = entry.config.definition
           ? await resolveDefinition(env, entry.tenantId, entry.config.definition).catch(() => undefined)

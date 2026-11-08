@@ -1405,6 +1405,28 @@ export class ClientSessions {
     return [...requests.values()].map(visible);
   }
 
+  /** S5 will attach member identities to guest streams; today no guest stream route exists. */
+  async removeMember(id: string, tenant: string, member: string) {
+    if (!await this.owns(id, tenant)) return;
+    const session = await this.load(id);
+    if (!session) return;
+    await session.starting?.catch(() => {});
+    events.endMember(session, member);
+    const announcing = await (this.options.runEvents?.(session.header.tenant) ?? false);
+    const cancelled: RequestRecord[] = [];
+    for (const record of [...session.running.values()]) {
+      if (record.began || !CANCELLABLE.includes(record.method) || record.actor !== `member:${member}` || (record.batchedInto && session.running.get(record.batchedInto)?.began)) continue;
+      const { params: _params, ...rest } = record;
+      cancelled.push(this.upsertRequest(session, { ...rest, state: 'completed', endedAt: Date.now(), outcome: { result: { error: CANCELLED, code: 'cancelled' } }, ...(announcing ? { announce: true as const } : {}) }));
+    }
+    if (cancelled.length) { await this.releaseBusy(session); await this.commit(session, true); }
+    for (const record of cancelled) {
+      this.publish(session, { type: 'event', requestId: record.id, event: { type: 'run_cancelled', reason: 'stopped' } });
+      this.publish(session, { type: 'response', id: record.id, outcome: record.outcome! });
+    }
+    if (announcing && cancelled.length) void this.announce(session, cancelled);
+  }
+
   /** Abort the running turn of a tenant's agent. Returns false when the agent is not theirs. */
   /**
    * Stop a tenant's agent (`stop`): its running turn, and unless `queued` is "keep", the runs queued behind it. Returns
@@ -2617,6 +2639,7 @@ export class ClientSessions {
     if (!session || (session.header.revoked && !session.unsettled)) return;
     session.header.revoked = true;
     await this.writeHeader(session);
+    await this.db.query('update agent_members set removed_at=coalesce(removed_at,$2), revision=revision+1 where agent=$1', [id, Date.now()]);
     // Stop the model while the host and its usage listener are still alive. Killing the host first drops
     // message_end (and its bill), although the provider still charges for the streamed response.
     await session.starting?.catch(() => {});

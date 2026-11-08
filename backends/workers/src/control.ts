@@ -373,6 +373,7 @@ export class Directory {
         [entry.id, this.tenantId, JSON.stringify(entry)],
       ),
     );
+    await withSql(this.env, sql => sql.query('update agent_members set removed_at=coalesce(removed_at,$2), revision=revision+1 where agent=$1', [entry.id, Date.now()]));
     // The agent is revoked from here on: a shutdown that threw (an object reset while starting) is cleanup still
     // pending, as one that answered an error is, not a failed deletion. Another DELETE finishes it.
     const response = await this.env.AGENTS.getByName(entry.id).fetch(

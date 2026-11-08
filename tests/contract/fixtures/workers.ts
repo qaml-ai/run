@@ -1,3 +1,4 @@
+import { sharedAgentsQuery } from './shared-agent-state.ts';
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { seedOpsAccount } from "./ops-seed.ts";
 import { fileURLToPath } from "node:url";
@@ -251,6 +252,7 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
     },
     async updateLegacyUsageWebhook(url) { await server.db.query("update usage_webhooks set url=$1 where tenant='alice'", [url]); },
     seedJourneyAccount: input => seedJourneyAccount(server.db, input),
+    sharedAgentsQuery: sharedAgentsQuery(server.db),
     channelQuery: channelQuery(server.db),
     async deliverEmail(raw, receipt = {}) {
       if (!dkim) throw new Error("Email channel cases set AGENT_EMAIL_DOMAIN");
