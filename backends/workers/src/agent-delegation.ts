@@ -1,4 +1,4 @@
-import { childParent, recordChildParent } from "./child-parent.ts";
+import { recordChildParent } from "./child-parent.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { BadRequest, body } from "./validation.ts";
 import { HumanInputs } from "./human.ts";
@@ -123,12 +123,8 @@ export function createDelegation(this: AgentRuntime): Delegation {
       );
       if ("failed" in entry)
         throw Object.assign(new Error(entry.error), { status: entry.status });
-      if (parent) await recordChildParent(this.env, conf.tenantId, entry.id, parent.agent, parent.run, parent.root);
+      if (parent) await recordChildParent(this.env, conf.tenantId, entry.id, parent.agent, parent.run);
       return entry;
-    },
-    parent: async () => {
-      const conf = await this.config();
-      return childParent(this.env, conf.tenantId, conf.id);
     },
     remove: async (id) => {
       const conf = await this.ctx.storage.get<Config>("configuration");

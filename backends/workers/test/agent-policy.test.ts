@@ -120,7 +120,7 @@ test('a structured child request wraps its schema and records its runtime parent
   f.host.create = async (_config, _key, parent) => { relation = parent; return { id: 'structured-child' }; };
   await f.delegation.start({ instructions: 'help', task: 'answer', output: schema }, 'structured', signal());
   assert.deepEqual(f.submitted[0].params.output, { schema });
-  assert.deepEqual(relation, { agent: 'parent', run: 'parent-run', root: 'parent' });
+  assert.deepEqual(relation, { agent: 'parent', run: 'parent-run' });
   await Promise.all(f.tasks);
 });
 test('new child inherits the parent computer before submission, once across replay', async () => {

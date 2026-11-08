@@ -1,5 +1,6 @@
 import { admitAgentMessage } from "./message-admission.ts";
-import { MULTI_AGENT_LIMITS } from "./multi-agent-policy.ts";
+import { MULTI_AGENT_LIMITS, viaParent } from "./multi-agent-policy.ts";
+import { childParent } from "./child-parent.ts";
 import { refreshIdleLifetime } from "./idle-lifetime.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { BadRequest, boundedText, object } from "./validation.ts";
@@ -209,6 +210,15 @@ export async function admitImpl(this: AgentRuntime,
     const id = boundedText(request.id, "id", 80);
     if (!/^[A-Za-z0-9_-]+$/.test(id))
       throw new BadRequest("Invalid request id");
+    // A sub-agent the runtime made runs only what its parent sends it: a run signed into its parent's chain, or a message
+    // or notification of the runtime's. Anyone else's prompt, steer or code is refused (answering its inputs still resumes it).
+    if (!notice && ["prompt", "steer", "execute"].includes(String(request.method))) {
+      const conf = await this.config();
+      const metadata = request.params && typeof request.params === "object" ? (request.params as { metadata?: unknown }).metadata : undefined;
+      if (conf.config.type === "subagent" && !await this.delegation.lineage(conf.id, { id, metadata })
+        && await childParent(this.env, conf.tenantId, conf.id))
+        throw viaParent(conf.id);
+    }
     if (request.method === "execute") {
       let params;
       const raw = object(request.params, [

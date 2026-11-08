@@ -80,7 +80,6 @@ export interface DirectoryEntry {
   pendingFork?: { sourceId: string; fingerprint: string };
   parentAgentId?: string;
   parentRunId?: string;
-  parentRootId?: string;
   /** Returned for an upsert of an existing agent; never persisted in its header. */
   existingAgent?: true;
 }
@@ -272,7 +271,7 @@ export class Directory {
             : (old?.revision ?? 0) + 1,
         initialized: false,
         ...(old?.tokenVersion ? { tokenVersion: old.tokenVersion } : {}),
-        ...(old?.parentAgentId ? { parentAgentId: old.parentAgentId, parentRunId: old.parentRunId, ...(old.parentRootId ? { parentRootId: old.parentRootId } : {}) } : {}),
+        ...(old?.parentAgentId ? { parentAgentId: old.parentAgentId, parentRunId: old.parentRunId } : {}),
         ...(pendingFork ? { pendingFork } : {}),
       };
       const written = await sql.query(

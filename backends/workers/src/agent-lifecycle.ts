@@ -1,4 +1,5 @@
-import { MULTI_AGENT_LIMITS } from "./multi-agent-policy.ts";
+import { MULTI_AGENT_LIMITS, viaParent } from "./multi-agent-policy.ts";
+import { childParent } from "./child-parent.ts";
 import { type EventSubscription } from "./event-socket.ts";
 import { withMoneyMetrics } from "./money-metrics.ts";
 import { BadRequest } from "./validation.ts";
@@ -65,6 +66,8 @@ export async function createScheduleImpl(this: AgentRuntime,
     )
       throw new BadRequest("At most 100 schedules per agent");
     const conf = await this.config();
+    // A wake-up would start a turn its parent did not send: a sub-agent the runtime made has none (its builtin's either).
+    if (conf.config.type === "subagent" && await childParent(this.env, conf.tenantId, conf.id)) throw viaParent(conf.id);
     const schedule = await newSchedule(this.env, conf.tenantId, conf.id, raw);
     await this.ctx.storage.put(`schedule:${schedule.id}`, schedule);
     await this.arm();

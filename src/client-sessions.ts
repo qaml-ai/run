@@ -40,7 +40,7 @@ import { fileResponse, type FileRef } from "./files.ts";
 import { AgentHistory, PAGE_BYTES, type HistoryPage } from "./history-pages.ts";
 import { inputView, resolution, type Input, type Responder } from "./inputs.ts";
 import { recordBillingFailure, recordHandoff, recordStart, safeError, Steps } from "./metrics.ts";
-import { PARENT_KEYS, type DelegateSettings } from "./multi-agent.ts";
+import { PARENT_KEYS, viaParent, type DelegateSettings } from "./multi-agent.ts";
 import { clock, random } from "./node-context.ts";
 import { always, reachable, sometimes } from "./assert.ts";
 import * as tools from "./client-sessions/tools.ts";
@@ -1560,7 +1560,7 @@ export class ClientSessions {
       const tenant = c.var.session.header.tenant;
       let input;
       try { input = scheduleInput(await readJson(body(c), 64 * 1024)); } catch (error) { throw new HttpError(400, errorText(error)); }
-      try { return json(c, 201, await scheduler.create({ agent: c.var.session.header.id, tenant, ...input }, c.var.session.claim)); } catch (error) { if (error instanceof LostClaim) throw error; throw new HttpError(400, errorText(error)); }
+      try { return json(c, 201, await scheduler.create({ agent: c.var.session.header.id, tenant, ...input }, c.var.session.claim)); } catch (error) { if (error instanceof LostClaim || error instanceof HttpError) throw error; throw new HttpError(400, errorText(error)); }
     });
     app.delete(`${agent}/schedules/:schedule`, async c => {
       if (!await this.scheduler().remove(c.var.session.header.id, c.req.param("schedule"), c.var.session.claim)) throw new HttpError(404, "Unknown schedule");
@@ -1767,6 +1767,9 @@ export class ClientSessions {
     // A message between an agent and its child or parent may join the recipient's running turn; anything else of the runtime's is a turn of its own.
     const steerable = params.notice?.metadata?.kind === "message" && ["child", "parent"].includes(params.notice.metadata.to);
     if (notice && (!trusted || body.method !== "prompt" || (params.whileRunning !== undefined && !steerable) || !childSessions.validNotice(params.notice))) throw new HttpError(400, "Invalid request");
+    // A sub-agent the runtime made runs only what its parent sends it: a run signed into its parent's chain, or a message
+    // or notification of the runtime's. Anyone else's prompt, steer or code is refused (answering its inputs still resumes it).
+    if (session.header.parent && ["prompt", "steer", "execute"].includes(body.method) && !notice && !delegation.delegation(this.delegationContext, session.header.id, body.id, params.metadata).chain.length) throw viaParent(session.header.id);
     const rate = isRun && body.method !== "resume" && !notice ? await this.options.runRate?.(session.header.tenant) ?? undefined : undefined;
     const limited = body.method === "resume" || notice ? undefined : await spend.runLimit(this.spendContext, session, body.method, bucket);
     if (limited) throw limited;

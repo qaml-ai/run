@@ -190,31 +190,47 @@ contractTest("delegation", "tests/agent-messaging.test.ts:156", "a child that wa
 
 });
 
-contractTest("delegation", "tests/agent-messaging.test.ts:178", "a child prompted directly, not by its parent, still messages its parent; its progress report says the parent is not waiting", async (t, f) => {
+contractTest("delegation", "tests/agent-messaging.test.ts:178", "a sub-agent is reached only through its parent: a prompt or schedule from anyone else is refused, its parent's message and an answer to its question still reach it", async (t, f) => {
+  const ASK = { questions: [{ question: "Which region?", header: "Region", options: [{ label: "EU" }, { label: "US" }] }] };
   const r = await useFixture(f, body => {
     const said = lastUser(body);
-    if (roleText(body).includes("WORKER")) {
-      if (said.includes("first task")) return { role: "assistant", content: "first done" };
-      const results = toolResults(body);
-      if (!results.length) return toolCall("send_message", { to: "parent", text: "a reviewer asked me directly" }, "call_tell");
-      if (results.length === 1) return toolCall("report_progress", { text: "reviewing" }, "call_report");
-      return { role: "assistant", content: `results: ${results.join(" | ")}` };
+    if (systemText(body).includes("ASKER")) {
+      if (said.includes("set a wake-up")) return last(body).role === "tool" ? { role: "assistant", content: `results: ${toolResults(body).at(-1)}` } : toolCall("schedule", { text: "check in", inSeconds: 3600 }, "call_schedule");
+      return last(body).role === "tool" ? { role: "assistant", content: `region ${JSON.parse(toolResults(body).at(-1)).answers["Which region?"]}` } : toolCall("ask_user", ASK, "call_ask");
     }
     if (last(body).role === "tool") return { role: "assistant", content: "ok" };
-    if (said.startsWith("<agent_message")) return { role: "assistant", content: `heard: ${said}` };
-    if (said.includes("start")) return toolCall("spawn_agent", { instructions: "You are a WORKER.", task: "first task", name: "w" }, "call_spawn");
-    return { role: "assistant", content: "ok" };
+    if (said.startsWith("<agent_notification")) return { role: "assistant", content: `heard ${said}` };
+    if (said.includes("tell the child")) return toolCall("send_message", { to: "w", text: "set a wake-up" }, "call_tell");
+    return toolCall("spawn_agent", { agent: "asker", task: "ask", name: "w" }, "call_spawn");
   });
-  const parent = await lead(r);
-  const nested = await watchEvents(t, `${r.base}/v1/agents/${parent}/events`, { Authorization: `Bearer ${OPERATOR}` }, { query: "watch=1&subagents=1" });
-  await r.prompt(parent, "start");
-  const child = (await until(() => nested.frames.find(frame => frame.data.event?.type === "subagent_start"), "subagent_start")).data.event.agentId;
-  await ended(r, parent, "child_");
+  const definition = await r.call("/v1/definitions", { headers: { "Idempotency-Key": "asker" }, body: { name: "Asker", systemPrompt: "You are ASKER.", builtins: ["ask_user", "schedule"] } });
+  assert.equal(definition.status, 201, definition.text);
+  const parent = (await r.call("/v1/agents", { body: { builtins: ["agents"], delegate: { agents: ["asker"] } } })).json.id;
+  await r.prompt(parent, "go");
+  const [first] = await ended(r, parent, "child_");
+  assert.match(first.outcome.result.reply, /status="input_required"/);
+  const child = (await r.call("/v1/agents")).json.find((agent: any) => agent.parentAgentId === parent).id;
 
-  // The API prompts the child: its run carries no lineage, and the parent that made it is still its parent.
-  const direct = await r.prompt(child, "please review the change");
-  assert.match(direct.outcome.result.reply, /^results: \{"sent":true,"to":"parent"/);
-  assert.match(direct.outcome.result.reply, /Your parent did not start this run, so it is not waiting on it for progress/);
-  const [message] = await ended(r, parent, "msg_");
-  assert.match(message.outcome.result.reply, /^heard: <agent_message name="w">\na reviewer asked me directly\n<\/agent_message>$/);
+  // The API neither prompts, steers nor schedules it.
+  const refusal = `${child} is a sub-agent: message its parent, which reaches it with send_message`;
+  for (const body of [{ text: "please review" }, { text: "and this", whileRunning: "steer" }]) {
+    const prompted = await r.call(`/v1/agents/${child}/prompt`, { body });
+    assert.equal(prompted.status, 409, prompted.text);
+    assert.equal(prompted.json.code, "SUBAGENT_VIA_PARENT");
+    assert.equal(prompted.json.error, refusal);
+  }
+  const scheduled = await r.call(`/v1/agents/${child}/schedules`, { body: { text: "wake", inSeconds: 3600 } });
+  assert.equal(scheduled.status, 409, scheduled.text);
+  assert.equal(scheduled.json.error, refusal);
+
+  // Its question is answered as before, and its parent hears how it ended.
+  const [input] = (await r.call(`/v1/agents/${child}/inputs?state=pending`)).json;
+  assert.equal((await r.call(`/v1/agents/${child}/inputs/${input.id}`, { body: { action: "accept", content: { answers: { "Which region?": "EU" } } } })).status, 202);
+  assert.match((await ended(r, parent, "child_", 2))[1].outcome.result.reply, /status="completed"[^>]*>\nregion EU/);
+
+  // Its parent's message starts its turn; a wake-up of its own (the schedule builtin) is refused there too.
+  await r.prompt(parent, "tell the child");
+  const notices = await ended(r, parent, "child_", 3);
+  assert.match(notices[2].outcome.result.reply, /status="completed"[^>]*>\nresults: [\s\S]*is a sub-agent: message its parent, which reaches it with send_message/);
+  assert.deepEqual((await r.call(`/v1/agents/${child}/schedules`)).json, []);
 });
