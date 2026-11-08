@@ -196,13 +196,18 @@ test("a sub-agent is reached only through its parent: a prompt or schedule from 
   assert.match(first.outcome.result.reply, /status="input_required"/);
   const child = (await r.call("/v1/agents")).json.find((agent: any) => agent.parentAgentId === parent).id;
 
-  // The API neither prompts, steers nor schedules it.
+  // The API neither prompts, steers, continues, runs code in nor schedules it.
   const refusal = `${child} is a sub-agent: message its parent, which reaches it with send_message`;
   for (const body of [{ text: "please review" }, { text: "and this", whileRunning: "steer" }]) {
     const prompted = await r.call(`/v1/agents/${child}/prompt`, { body });
     assert.equal(prompted.status, 409, prompted.text);
     assert.equal(prompted.json.code, "SUBAGENT_VIA_PARENT");
     assert.equal(prompted.json.error, refusal);
+  }
+  for (const [method, params] of [["continue", {}], ["execute", { code: "return 1" }]] as const) {
+    const sent = await r.call(`/registry/${child}/requests`, { body: { id: `outside-${method}`, method, params } });
+    assert.equal(sent.status, 409, sent.text);
+    assert.equal(sent.json.code, "SUBAGENT_VIA_PARENT");
   }
   const scheduled = await r.call(`/v1/agents/${child}/schedules`, { body: { text: "wake", inSeconds: 3600 } });
   assert.equal(scheduled.status, 409, scheduled.text);
