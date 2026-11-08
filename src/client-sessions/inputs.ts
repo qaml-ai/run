@@ -8,11 +8,14 @@ import { actorInput } from "../identity.ts";
 import { senderInput } from "../sender.ts";
 import { type ToolCall } from "../tool-servers.ts";
 import { answerInput, argumentsHash, settledAlready, expiresAt, INPUT_LIMITS, inputRequests, inputView, mayAnswer, type Answer, type Input, type InputRow, type Responder } from "../inputs.ts";
+import * as delegation from "./delegation.ts";
 import { type Session, type ClientSessionOptions } from "./state.ts";
 
 export type InputContext = {
   options: ClientSessionOptions;
   sessions: Map<string, Session>;
+  /** Where the agent that asks sits in its chain: the input's root_agent and lineage, frozen when it is made. */
+  delegation: delegation.DelegationContext;
   publish(session: Session, data: ClientEvent): void;
   accept(session: Session, body: any, trusted?: boolean): Promise<{ record: RequestRecord }>;
   headerFor(id: string, tenant: string): Promise<Pick<Session, "header">>;
@@ -71,9 +74,12 @@ export async function suspend(ctx: InputContext, session: Session, call: ToolCal
     detail: { ...entry.detail, tool: call.name, source: call.name.includes("__") ? call.name.split("__")[0] : header.definitions.some(tool => tool.name === call.name) ? "application" : "runtime",
       ...shown.length > INPUT_LIMITS.arguments ? { argumentsPreview: `${shown.slice(0, INPUT_LIMITS.arguments)}…` } : { arguments: call.args }, argumentsHash: hashed },
   });
+  // The chain from the root agent to this one, the asking agent last: who the item is for, and what a person filters by.
+  const lineage = [...delegation.position(ctx.delegation, session, request).chain, header.id];
   const rows = await inputs.create({
     agent: header.id, tenant: header.tenant, requestId: request.id, toolCallId,
     responders: request.actor ? { audience: [request.actor] } : {}, expiresAt: expiresAt(header.sources?.humanInput, header.expiresAt),
+    approvers: header.sources?.humanInput?.approvers, rootAgent: lineage[0], lineage,
     tool: call.name, argumentsHash: hashed, ...(typeof result.requestState === "string" ? { requestState: result.requestState } : {}),
   }, requests, session.claim);
   for (const row of rows) ctx.publish(session, { type: "event", requestId: request.id, event: { type: "input_required", input: inputView(row) } });

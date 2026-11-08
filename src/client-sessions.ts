@@ -39,7 +39,7 @@ import { metadataInput, senderInput } from "./sender.ts";
 import { CodeGate, DEFAULT_CODE_CAPACITY } from "./codemode.ts";
 import { fileResponse, type FileRef } from "./files.ts";
 import { AgentHistory, PAGE_BYTES, type HistoryPage } from "./history-pages.ts";
-import { inputView, resolution, type Input, type Responder } from "./inputs.ts";
+import { INBOX_CHANNEL, inputView, resolution, type Input, type Responder } from "./inputs.ts";
 import { recordBillingFailure, recordHandoff, recordStart, safeError, Steps } from "./metrics.ts";
 import { PARENT_KEYS, viaParent, type DelegateSettings } from "./multi-agent.ts";
 import { clock, random } from "./node-context.ts";
@@ -217,7 +217,7 @@ export class ClientSessions {
       startStep: (session, record, work) => this.startStep(session, record, work),
     };
     this.inputsContext = {
-      options, sessions: this.sessions, publish: (session, data) => this.publish(session, data),
+      options, sessions: this.sessions, delegation: this.delegationContext, publish: (session, data) => this.publish(session, data),
       accept: (session, body, trusted) => this.accept(session, body, trusted),
       headerFor: (id, tenant) => this.headerFor(id, tenant),
       submit: (agent, tenant, request) => this.submit(agent, tenant, request),
@@ -2739,6 +2739,8 @@ export class ClientSessions {
         await sql.query("delete from channel_agents where agent = $1", [id]);
         await sql.query("delete from channel_conversations where agent = $1", [id]);
         await sql.query("delete from volume_watchers where agent = $1", [id]);
+        // The items of a purged agent are not answered: its tenant's inbox hears that they are gone, before the rows go.
+        await sql.query("select pg_notify($2, tenant) from agent_inputs where agent = $1 and state = 'pending' group by tenant", [id, INBOX_CHANNEL]);
         await sql.query("delete from agent_inputs where agent = $1", [id]);
         await sql.query("delete from agent_spend_limits where agent = $1", [id]);
         // Its FileRefs are gone with its transcript: their chunks may be collected (storage-gc.ts).

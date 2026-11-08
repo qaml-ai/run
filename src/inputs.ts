@@ -17,7 +17,9 @@ import { enqueueEvents, webhookEvent, type WebhookEvent } from "./webhooks.ts";
  * call its result: the answer itself, or the call run again with it (`RetryPlan`).
  */
 export type InputKind = "question" | "approval" | "form" | "url";
-export type InputState = "pending" | "answered" | "declined" | "cancelled" | "expired" | "superseded";
+export type InputState = "pending" | "answered" | "declined" | "cancelled" | "expired" | "superseded" | "withdrawn";
+/** Where an item sits in a person's queue (agent_inputs.priority): an approval is `high`, everything else `normal`. */
+export type Priority = "urgent" | "high" | "normal" | "low";
 export type Action = "accept" | "decline" | "cancel";
 /** Who answered: the application (its token, and whom it names), a channel's sender, or the runtime itself. */
 export type Responder = { via?: "api" | "agent" | "channel"; from?: Sender; actor?: string; system?: "expired" | "aborted" | "superseded" };
@@ -44,6 +46,11 @@ export type InputRow = Input & { stored: Stored };
 /** How a call is run again once its inputs are answered: with the approval's proof, and the tool's requests' answers. */
 export type RetryPlan = { argumentsHash: string; approval?: { input: string; by: Responder; at: number }; inputResponses?: Record<string, unknown>; requestState?: string; note: string };
 export type HumanInputSettings = { expiresInSeconds?: number; approvers?: string[] };
+/**
+ * The channel an item's change is announced on (`pg_notify`, the tenant as payload), in the transaction that writes it:
+ * a node's inbox watchers (`GET /v1/inbox/events`) re-read what changed. Heard by every node; the tenant says whose it was.
+ */
+export const INBOX_CHANNEL = "inbox";
 type Sealer = { seal(aad: string, plaintext: string): Sealed; unseal(aad: string, sealed: Sealed): string };
 
 /**
@@ -53,6 +60,14 @@ type Sealer = { seal(aad: string, plaintext: string): Sealed; unseal(aad: string
  */
 export const INPUT_LIMITS = Object.freeze({ defaultExpiresSeconds: 15 * 60, maxExpiresSeconds: 30 * 86_400, perCall: 8, text: 4_000, arguments: 4_000 });
 const FINAL: Record<Action, InputState> = { accept: "answered", decline: "declined", cancel: "cancelled" };
+/** The priority a kind of input gets unless its asker names one: an approval is high, a question, form or url step normal. */
+const priorityOf = (kind: InputKind): Priority => kind === "approval" ? "high" : "normal";
+/**
+ * The queue order of each priority, for the index (`agent_inputs.priority_rank`): urgent first. The priority text sorts
+ * alphabetically (high, low, normal, urgent), so the rank is what a page is ordered by, and the migration's check keeps
+ * the two in step.
+ */
+const PRIORITY_RANK: Record<Priority, number> = { urgent: 0, high: 1, normal: 2, low: 3 };
 
 export const argumentsHash = (name: string, args: unknown) => createHash("sha256").update(canonical({ name, arguments: args })).digest("hex");
 const clip = (text: unknown, max: number = INPUT_LIMITS.text) => String(text ?? "").slice(0, max);
@@ -269,9 +284,20 @@ export class Inputs {
    * Record a call's inputs. `requestState` is sealed when the runtime can seal. Made again (a retry whose first answer
    * was lost), it returns the rows the call's run already has pending, and records nothing new.
    */
-  async create(base: Pick<Input, "agent" | "tenant" | "requestId" | "toolCallId" | "responders" | "expiresAt"> & { tool: string; argumentsHash: string; requestState?: string },
+  async create(base: Pick<Input, "agent" | "tenant" | "requestId" | "toolCallId" | "responders" | "expiresAt"> & {
+    tool: string; argumentsHash: string; requestState?: string;
+    /** The definition's approvers (humanInput.approvers): with the audience, who may answer, frozen into `responders`. */
+    approvers?: string[];
+    /** The asking agent's chain (delegation.position): its root, and the chain from that root to it. */
+    rootAgent?: string; lineage?: string[];
+  },
     requests: { key?: string; kind: InputKind; message: string; detail: Record<string, unknown> }[], claim?: Claim): Promise<InputRow[]> {
     const createdAt = Date.now();
+    // Who may answer, as the row holds it: the audience plus the approvers, frozen now (a later change to the definition
+    // does not widen or narrow an item that was already asked).
+    const responders = [...new Set([...base.responders.audience ?? [], ...base.approvers ?? []])];
+    const lineage = base.lineage ?? (base.rootAgent === undefined ? undefined : [base.rootAgent]);
+    const rootAgent = base.rootAgent ?? lineage?.[0];
     const rows = requests.map(request => {
       const id = `inp_${randomBytes(16).toString("hex")}`;
       const requestState = base.requestState === undefined ? undefined : this.sealer ? this.sealer.seal(`input:${base.agent}:${base.toolCallId}`, base.requestState) : base.requestState;
@@ -288,10 +314,16 @@ export class Inputs {
       const same = pending.filter(input => keys.has(input.stored.key ?? null));
       if (same.length === requests.length) return same;
       for (const input of rows) {
-        await sql.query("insert into agent_inputs (id, agent, tenant, request_id, tool_call_id, kind, input, created_at, expires_at) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-          [input.id, input.agent, input.tenant, input.requestId, input.toolCallId, input.kind, JSON.stringify(input.stored), input.createdAt, input.expiresAt]);
+        const priority = priorityOf(input.kind);
+        await sql.query(`insert into agent_inputs (id, agent, tenant, request_id, tool_call_id, kind, input, created_at, expires_at,
+          priority, priority_rank, blocking, responders, root_agent, lineage)
+          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, true, $12, $13, $14)`,
+          [input.id, input.agent, input.tenant, input.requestId, input.toolCallId, input.kind, JSON.stringify(input.stored), input.createdAt, input.expiresAt,
+            priority, PRIORITY_RANK[priority], responders, rootAgent ?? null, lineage ?? null]);
       }
       await enqueueEvents(sql, rows.map(input => inputEvent("input.requested", input)));
+      // Heard by the inbox watchers of every node, in this transaction: a listener sees it once, at commit.
+      await sql.query("select pg_notify($1, $2)", [INBOX_CHANNEL, base.tenant]);
       return rows;
     });
   }
@@ -328,9 +360,11 @@ export class Inputs {
   /** Settle a pending input, once: undefined when it had already settled (or does not exist). Inside `sql`'s transaction, if given. */
   async settle(id: string, answer: Answer, state: InputState = FINAL[answer.action], sql?: Sql): Promise<InputRow | undefined> {
     const work = async (sql: Sql) => {
-      const updated = (await sql.query("update agent_inputs set state = $2, answer = $3 where id = $1 and state = 'pending' returning *", [id, state, JSON.stringify(answer)])).rows[0];
-      if (updated) await enqueueEvents(sql, [inputEvent("input.resolved", row(updated))]);
-      return updated && row(updated);
+      const updated = (await sql.query("update agent_inputs set state = $2, answer = $3, version = version + 1, updated_at = now() where id = $1 and state = 'pending' returning *", [id, state, JSON.stringify(answer)])).rows[0];
+      if (!updated) return undefined;
+      await enqueueEvents(sql, [inputEvent("input.resolved", row(updated))]);
+      await sql.query("select pg_notify($1, $2)", [INBOX_CHANNEL, updated.tenant]);
+      return row(updated);
     };
     return sql ? work(sql) : transaction(this.db, work);
   }

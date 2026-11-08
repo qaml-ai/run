@@ -5,8 +5,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type pg from "pg";
+import { Client } from "pg";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { memoryStorage } from "../shared/storage.ts";
+import { INBOX_CHANNEL } from "../src/inputs.ts";
 import { postgresTail } from "../src/log-tail.ts";
 import { Ownership } from "../src/ownership.ts";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
@@ -30,6 +32,16 @@ async function node(t: Context, db: pg.Pool, storage: ReturnType<typeof memorySt
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
   return { sessions, supervisor };
+}
+
+/** A second connection, listening on the inbox channel as a node's inbox watchers do. */
+async function listening(url: string) {
+  const client = new Client({ connectionString: url });
+  await client.connect();
+  const heard: string[] = [];
+  client.on("notification", message => { if (message.channel === INBOX_CHANNEL) heard.push(message.payload ?? ""); });
+  await client.query(`listen "${INBOX_CHANNEL}"`);
+  return { heard, close: () => client.end() };
 }
 
 /** Objects (segments, snapshots, blobs) stored for an agent's logs. */
@@ -132,4 +144,33 @@ test("the sweep purges agents revoked before it existed and agents whose TTL exp
   }
   assert.ok(objectsOf(storage, live) > 0);
   assert.equal((await a.sessions.inspect(live, "default")).requests.length, 1);
+});
+
+test("purging an agent tells its tenant's inbox when the agent had an item waiting, and says nothing when it did not", { timeout: 60_000 }, async t => {
+  const { db, url } = await testDatabase();
+  const storage = memoryStorage(postgresTail(db));
+  const { sessions } = await node(t, db, storage, "a");
+  const listened = await listening(url);
+  try {
+    const { id } = await sessions.create([], { model }, "asker", {}, "default");
+    // A question it left waiting, as Inputs.create writes one (the purge reads the state, never the item itself).
+    const input = `inp_${"a".repeat(32)}`;
+    await db.query(`insert into agent_inputs (id, agent, tenant, request_id, tool_call_id, kind, input, created_at, expires_at)
+      values ($1, $2, 'default', 'r1', 'call_1', 'question', '{"message":"Which region?"}', $3, $4)`, [input, id, Date.now(), Date.now() + 60_000]);
+
+    assert.equal(await sessions.destroyAgent(id, "default"), true);
+    await sessions.sweep();
+    await until(() => listened.heard.length === 1, "the purge's notification");
+    assert.deepEqual(listened.heard, ["default"], "the item's tenant hears that its queue changed");
+    assert.equal((await db.query("select count(*) as count from agent_inputs where agent = $1", [id])).rows[0].count, 0, "the rows go with the purge");
+
+    // An agent with nothing waiting changes no one's inbox: its purge is quiet.
+    const quiet = await sessions.create([], { model }, "quiet", {}, "default");
+    assert.equal(await sessions.destroyAgent(quiet.id, "default"), true);
+    await sessions.sweep();
+    await sleep(200);
+    assert.deepEqual(listened.heard, ["default"]);
+  } finally {
+    await listened.close();
+  }
 });
