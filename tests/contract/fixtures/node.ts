@@ -259,6 +259,7 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
     },
     async updateLegacyUsageWebhook(url) { await db.query("update usage_webhooks set url=$1 where tenant='alice'", [url]); },
     seedJourneyAccount: input => seedJourneyAccount(db, input),
+    inputIndex: async (agent: string) => (await db.query("select state, version, priority, priority_rank, blocking, responders from agent_inputs where agent=$1 order by created_at, id", [agent])).rows,
     channelQuery: channelQuery(db),
     async deliverEmail(raw, receipt = {}) {
       if (!sns) throw new Error("Email channel cases set AGENT_EMAIL_DOMAIN");
