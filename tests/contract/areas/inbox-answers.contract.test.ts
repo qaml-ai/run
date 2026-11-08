@@ -16,6 +16,9 @@ contractTest('inbox-answers', 'shared/inbox-answers.ts', 'batch answers use the 
   assert.equal(forbidden.json.outcomes[0].outcome, 'forbidden');
   assert.equal('state' in forbidden.json.outcomes[0], false);
   assert.equal('by' in forbidden.json.outcomes[0], false);
+  const forbiddenVersion = await f.call(`/v1/agents/${agent}/inputs/${item.inputId}`, { body: { ...answer, actor: 'mallory', version: 20 } });
+  assert.equal(forbiddenVersion.status, 403, forbiddenVersion.text);
+  assert.equal('input' in forbiddenVersion.json, false);
   const moved = await f.call('/v1/inbox/answers', { body: { requestId: 'moved', answers: [{ ...answer, version: 20 }] } });
   assert.equal(moved.json.outcomes[0].outcome, 'conflict');
   const batch = { requestId: 'batch', answers: [answer, { ...answer, id: 'absent' }] };

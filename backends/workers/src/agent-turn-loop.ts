@@ -784,9 +784,10 @@ export async function answerHumanInputsImpl(this: AgentRuntime,
         const view = humanInputView(entry.id, pending, conf.id, owner);
         if (!system && owner && await this.ctx.storage.get(`cancelled-request:${owner}`))
           throw Object.assign(new Error("This input is cancelled"), { status: 409, input: view });
+        const answer = system ? systemHumanAnswer(system) : answerHuman(pending, entry.body, via, conf.config.humanInput?.approvers as string[] | undefined);
         if (!system && (entry.body as any)?.version !== undefined && (entry.body as any).version !== (pending.version ?? 1))
           throw Object.assign(new Error("Input version moved"), { status: 409, input: view });
-        checked.push({ ...entry, pending, owner, answer: system ? systemHumanAnswer(system) : answerHuman(pending, entry.body, via, conf.config.humanInput?.approvers as string[] | undefined) });
+        checked.push({ ...entry, pending, owner, answer });
       }
       const fresh = checked.every(entry => entry.pending.answer === undefined);
       if (!fresh && !checked.every(entry => sameHumanAnswer(entry.pending, entry.answer)))
