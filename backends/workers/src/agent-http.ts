@@ -205,7 +205,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
                 bucket: (params?.bucket as string | undefined) ?? conf.config.bucket ?? await this.ctx.storage.get<string>("run-bucket") ?? "default",
                 files: (await this.sourceIdentity(api)).toolFiles('web_fetch'),
               };
-            }, { schedules: this.scheduleTools() }),
+            }, { schedules: await this.offeredScheduleTools() }),
           });
           this.registry.install({
             name: "camel.decisions",

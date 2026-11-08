@@ -45,7 +45,7 @@ import { agentSpendImpl, admitRequestImpl, endUserLimitImpl, requestUsageImpl, u
 import { admitDelegateWakeImpl, receiveAgentMessageImpl, receiveAgentProgressImpl, hasBackgroundChildImpl, createNotifications, createDelegation } from "./agent-delegation.ts";
 import { replayedRequestImpl, requestResponseImpl, activityImpl, stateImpl, historyImpl, fetchImpl, fetchRequestImpl } from "./agent-http.ts";
 import { emitImpl, flushTerminalEventsImpl, recoverWatchersImpl, closeWatchersImpl, checkWatchersImpl, webSocketEventsImpl, negotiateAgentEventsImpl, restoreWebSocketsImpl, sendAttachedSocketImpl, closeBrowserSocketImpl, retireAttachedSocketImpl, webSocketMessageImpl, webSocketCloseImpl, webSocketErrorImpl, replayEventsImpl, runReplayImpl, eventsImpl } from "./agent-transport.ts";
-import { purgeAccountDataImpl, configImpl, scheduleToolsImpl, createScheduleImpl, armImpl, onStartImpl, restorePendingImpl, onJobImpl, wakeImpl } from "./agent-lifecycle.ts";
+import { purgeAccountDataImpl, configImpl, scheduleToolsImpl, offeredScheduleToolsImpl, createScheduleImpl, armImpl, onStartImpl, restorePendingImpl, onJobImpl, wakeImpl } from "./agent-lifecycle.ts";
 import type { CamelAgent } from "./agent.ts";
 import { DbProfile } from "./db-profile.ts";
 
@@ -464,6 +464,10 @@ export class AgentRuntime extends AgentContext {
 
   scheduleTools(): ScheduleToolsHost {
     return scheduleToolsImpl.call(this);
+  }
+
+  offeredScheduleTools(): Promise<ScheduleToolsHost | undefined> {
+    return offeredScheduleToolsImpl.call(this);
   }
 
   createSchedule(raw: unknown): Promise<Schedule> {

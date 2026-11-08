@@ -398,7 +398,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
               bucket: (params?.bucket as string | undefined) ?? conf.config.bucket ?? await this.ctx.storage.get<string>("run-bucket") ?? "default",
               files: (await this.sourceIdentity(api)).toolFiles('web_fetch'),
             };
-          }, { schedules: this.scheduleTools() }),
+          }, { schedules: await this.offeredScheduleTools() }),
         });
         registry.install({
           name: "camel.decisions",

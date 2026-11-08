@@ -55,6 +55,8 @@ const OUTPUT_TOOL_CALLS = 100;
  */
 async function toolServers(ctx: ToolsContext, session: Session, tools: ToolDefinition[], sources: Sources | undefined, fileTools: boolean | undefined, codeMode = session.header.config.codeMode): Promise<ToolServer[]> {
   const header = session.header;
+  // A sub-agent the runtime made has no schedules (Scheduler.create refuses them): it is not offered the schedule tools.
+  if (header.parent && sources?.builtins?.includes("schedule")) sources = { ...sources, builtins: sources.builtins.filter(builtin => builtin !== "schedule") };
   const tenant = header.tenant;
   const agent: AgentRef = { id: header.id, tenant, claim: session.claim };
   const feature = await ctx.options.hooks?.server?.(agent);

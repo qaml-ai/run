@@ -88,9 +88,11 @@ A sub-agent the runtime makes is a real agent:
   (`par` and `root`; `identity.parentAgentId` and `rootAgentId` in the SDKs).
 - It is **reached only through its parent**. A prompt to it
   (`POST /v1/agents/{child}/prompt`, a steer, a channel's or an MCP client's
-  message, a `continue`, a code run) or a schedule on it (the API's, or its
-  own `schedule` builtin's) is refused with 409 `SUBAGENT_VIA_PARENT`: `<id>
-  is a sub-agent: message its parent, which reaches it with send_message`. Its parent's
+  message, a `continue`, a code run) or a schedule on it (`POST
+  /v1/agents/{child}/schedules`) is refused with 409 `SUBAGENT_VIA_PARENT`:
+  `<id> is a sub-agent: message its parent, which reaches it with
+  send_message`. Its definition's `schedule` builtin is left out of its tools
+  (`schedule`, `list_schedules`, `cancel_schedule`). Its parent's
   `send_message`, `wait_agent` and `interrupt_agent` reach it as before. You
   can still answer its questions and approvals (`POST
   /v1/agents/{child}/inputs/{inputId}`), read its history, events and requests,
