@@ -3,7 +3,7 @@ import { contractTest, toolCall, until } from '../support.ts';
 
 contractTest('inbox', 'tests/inputs-inbox.test.ts', 'both backends index human inputs and advance versions only on settlement', async (_t, f) => {
   f.setModel((_body, index) => index === 0
-    ? toolCall('ask_user', { questions: [{ question: 'Which region?', options: [{ label: 'EU' }, { label: 'US' }] }] })
+    ? toolCall('ask_user', { questions: [{ question: 'Which region?', header: 'Region', allowOther: true, options: [{ label: 'EU' }, { label: 'US' }] }] })
     : { role: 'assistant', content: 'Recorded.' });
   const definition = (await f.call('/v1/definitions', { body: {
     name: 'Inbox asker', builtins: ['ask_user'], humanInput: { approvers: ['boss'] },
