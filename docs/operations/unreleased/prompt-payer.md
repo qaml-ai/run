@@ -1,3 +1,5 @@
+### A tenant can bill one prompt's run to an end user (endUser)
+
 A tenant API key can set `endUser` on `POST /v1/agents/{id}/prompt` to charge
 an existing end user of that tenant instead of the agent subject. Holds, usage
 and settlement follow that run. TypeScript accepts `endUser`, Python accepts

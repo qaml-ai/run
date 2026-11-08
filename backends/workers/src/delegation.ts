@@ -283,7 +283,7 @@ export class Delegation {
           const childConf: Configuration = childConfig(config, resolved?.config, run.params);
           // No computer: no native computer settings either (egress grants and their credentials stay the parent's).
           if (choice === 'none') delete childConf.computer;
-          const made = resolved?.id ? resolved : await this.host.create({ ...childConf, name: admitted.name, type: 'subagent', ttlSeconds: MULTI_AGENT_LIMITS.childTtlSeconds }, key, { agent: id, run: run.id, place: { ...place, payer: admitted.payer } });
+          const made = resolved?.id ? resolved : await this.host.create({ ...childConf, name: admitted.name, type: 'subagent', ttlSeconds: MULTI_AGENT_LIMITS.childTtlSeconds }, key, { agent: id, run: run.id, place: { ...place, ...(admitted.payer !== undefined ? { payer: admitted.payer } : {}) } });
           let fork: ChildComputerFork | undefined;
           try { fork = await forking; }
           catch (error) {
