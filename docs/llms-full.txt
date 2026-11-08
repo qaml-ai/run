@@ -9820,6 +9820,8 @@ with a maximum of 500. The optional `state` filter includes all states when
 omitted, and pending rows remain visible past expiry until settled. This route
 does not paginate or apply inbox filters; it ignores `cursor`. Use `/v1/inbox`
 for priority ordering, inbox filters, a next cursor, and counts.
+Inbox IDs identify globally unique index rows. Use the IDs from `/v1/inputs`
+with the per-agent answer routes; on Workers these IDs can differ.
 
 ---
 

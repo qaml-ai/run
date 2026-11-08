@@ -58,7 +58,7 @@ export async function readInbox(sql: Sql, tenant: string, query: ReturnType<type
   let pageFilter = filter;
   if (!legacy && query.cursor) pageFilter += ` and (priority_rank, expires_at, created_at, id) > (${query.cursor.map(bind).join(', ')})`;
   const rows = (await sql.query(`select * from agent_inputs where ${pageFilter}
-    order by ${legacy ? 'created_at desc, id' : 'priority_rank, expires_at, created_at, id'} limit ${bind(query.limit + (legacy ? 0 : 1))}`, values)).rows;
+    order by ${legacy ? "created_at desc, coalesce(input->>'workersInputId', id)" : 'priority_rank, expires_at, created_at, id'} limit ${bind(query.limit + (legacy ? 0 : 1))}`, values)).rows;
   const more = rows.length > query.limit;
   const page = rows.slice(0, query.limit);
   const counts = { priority: { urgent: 0, high: 0, normal: 0, low: 0 } as Record<string, number>, lead: {} as Record<string, number> };
@@ -71,7 +71,7 @@ export async function readInbox(sql: Sql, tenant: string, query: ReturnType<type
     }
   }
   const last = page.at(-1);
-  return { items: page.map(row => legacy ? inputView(row) : { ...inputView(row), priority: row.priority, blocking: row.blocking,
+  return { items: page.map(row => legacy ? { ...inputView(row), id: row.input.workersInputId ?? row.id } : { ...inputView(row), priority: row.priority, blocking: row.blocking,
     subject: row.subject, root: row.root_agent ?? row.agent, lineage: row.lineage ?? [row.agent], key: row.item_key, version: row.version }),
     cursor: more && last ? Buffer.from(JSON.stringify([last.priority_rank, Number(last.expires_at), Number(last.created_at), last.id])).toString('base64url') : null, counts };
 }

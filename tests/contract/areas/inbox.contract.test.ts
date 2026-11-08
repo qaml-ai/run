@@ -84,12 +84,15 @@ if (existsSync(new URL('../../../backends/workers/src/input-mirror.ts', import.m
     const page = await until(async () => {
       const reply = await r.call('/v1/inbox');
       assert.equal(reply.status, 200, reply.text);
-      return reply.json.items.some((item: any) => item.id === input.id) && reply.json;
+      return reply.json.items.some((item: any) => item.agent === agent && item.requestId === input.requestId && item.toolCallId === input.toolCallId) && reply.json;
     }, 'the real question reaches the shared index');
-    assert.equal(page.items.find((item: any) => item.id === input.id).agent, agent);
+    const listed = page.items.find((item: any) => item.agent === agent && item.toolCallId === input.toolCallId);
+    assert.equal(listed.message, input.message);
+    const legacy = (await r.call('/v1/inputs?state=pending')).json;
+    assert.equal(legacy.find((item: any) => item.agent === agent).id, input.id, 'legacy uses the per-agent public id');
     assert.equal(page.counts.priority.normal, 1);
     const answer = await r.call(`/v1/agents/${agent}/inputs/${input.id}`, { body: { action: 'accept', content: { answers: { 'Which region?': 'EU' } } } });
     assert.equal(answer.status, 202, answer.text);
-    await until(async () => !(await r.call('/v1/inbox')).json.items.some((item: any) => item.id === input.id), 'the answer settles the mirrored input');
+    await until(async () => !(await r.call('/v1/inbox')).json.items.some((item: any) => item.id === listed.id), 'the answer settles the mirrored input');
   }, { timeout: 90_000 });
 }
