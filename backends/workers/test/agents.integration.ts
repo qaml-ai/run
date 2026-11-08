@@ -120,29 +120,6 @@ test(
       },
     );
     await t.test(
-      "delegate to a durable child and read its independent history",
-      async () => {
-        const child = await request(`/v1/agents/${alpha.id}/children`, {
-          task: "child task",
-          key: "child-one",
-        });
-        assert.match(child.id, /^client_/);
-        let result: any;
-        for (let i = 0; i < 100; i++) {
-          result = await request(
-            `/v1/agents/${child.id}/requests/${child.requestId}?wait=1`,
-          );
-          if (result.state === "completed") break;
-          await delay(20);
-        }
-        assert.equal(result.outcome.result.reply, "Echo: child task");
-        assert.match(
-          JSON.stringify(await request(`/v1/agents/${child.id}/history`)),
-          /child task/,
-        );
-      },
-    );
-    await t.test(
       "remote codemode reaches ordered R2-backed tools",
       async () => {
         const r = await alpha.run(

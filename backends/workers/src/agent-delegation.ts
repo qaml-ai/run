@@ -3,7 +3,6 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { BadRequest, body } from "./validation.ts";
 import { HumanInputs } from "./human.ts";
 import { Directory } from "./control.ts";
-import { inheritComputer } from "./computers/service.ts";
 import { attachChildComputers, forkChildComputers, releaseChildComputers } from "./computers/child-fork.ts";
 import { computerSetup } from "./computers/agent-setup.ts";
 import { Delegation } from "./delegation.ts";
@@ -12,7 +11,7 @@ import { DelegationNotifications, type RuntimeNotice, type NoticeRequest, type W
 import type { ChildProgressReport } from "./delegation.ts";
 import { runSpend } from "./agent-spend.ts";
 import { withSql } from "./postgres.ts";
-import { Config, RequestRecord, canonical, Child, reqKey } from "./agent-types.ts";
+import { Config, RequestRecord, canonical, reqKey } from "./agent-types.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
 
 export async function admitDelegateWakeImpl(this: AgentRuntime,
@@ -171,60 +170,3 @@ export function createDelegation(this: AgentRuntime): Delegation {
     retry: (afterMs = 1000) => this.arm(Date.now() + afterMs),
   });
 }
-
-export async function delegateImpl(this: AgentRuntime,
-  task: string,
-  key: string,
-  definition?: string): Promise<Child> {
-    const conf = await this.config();
-    const childKey = `${conf.id.slice(-24)}-${key.slice(-40)}`;
-    const directory = new Directory(this.env, conf.tenantId);
-    const base = definition ? await directory.get(definition) : null;
-    if (definition && !base)
-      throw Object.assign(new Error("Unknown delegate agent"), { status: 404 });
-    if (
-      definition &&
-      conf.config.delegate?.agents &&
-      !conf.config.delegate.agents.some(
-        (target) => target.agent === definition || target.name === definition,
-      )
-    )
-      throw Object.assign(new Error("Delegate is not allowed"), {
-        status: 403,
-      });
-    const entry = await directory.upsert(
-      {
-        ...(base?.config ?? conf.config),
-        name: `Child of ${conf.id}`,
-        ttlSeconds: null,
-      },
-      childKey,
-    );
-    if ("failed" in entry)
-      throw Object.assign(new Error(entry.error), { status: entry.status });
-    await inheritComputer(this.env, conf.tenantId, conf.id, entry.id);
-    const child: Child = {
-      id: entry.id,
-      key: childKey,
-      requestId: `delegated-${key.slice(-60)}`,
-      task,
-      createdAt: Date.now(),
-    };
-    await this.ctx.storage.put(`child:${key}`, child);
-    const response = await this.env.AGENTS.getByName(entry.id).fetch(
-      new Request("https://agent/requests", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          id: child.requestId,
-          method: "prompt",
-          params: { text: task },
-        }),
-      }),
-    );
-    if (!response.ok)
-      throw Object.assign(new Error("Child submission failed"), {
-        status: response.status,
-      });
-    return child;
-  }

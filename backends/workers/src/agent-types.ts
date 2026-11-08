@@ -103,12 +103,4 @@ export const canonical = (value: unknown): string =>
 
 export type BillingReceipt = TurnReceipt;
 
-export type Child = {
-  id: string;
-  key: string;
-  requestId: string;
-  task: string;
-  createdAt: number;
-};
-
 export const reqKey = (id: string) => `request:${id}`;

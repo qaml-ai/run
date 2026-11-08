@@ -35,14 +35,14 @@ import { DurableFileVersions } from "./file-versions.ts";
 import { AgentWebhooks } from "./run-webhooks.ts";
 import { AgentChannels } from "./agent-channels.ts";
 import type { WebhookEvent } from "./webhook-policy.ts";
-import { Config, RequestRecord, Env, Child } from "./agent-types.ts";
+import { Config, RequestRecord, Env } from "./agent-types.ts";
 import { currentRunImpl, recordsImpl, markBeganImpl, observeImpl, requestForInputsImpl, runningRequestImpl, projectMessageImpl, reconcileSteeringImpl, steeringOwnerImpl, onViewImpl, onHumanImpl, trackImpl, settleImpl, submitImpl, answerHumanInputsImpl, closeHumanInputsImpl, dueHumanInputsImpl } from "./agent-turn-loop.ts";
 import { abortRequestsImpl, resumeKeptQueueImpl, cancelRequestImpl, resumeCancellationImpl, restoreCancellationsImpl, abortExecutionsImpl, markCancelledRequestsImpl, cancelHostIntentImpl, cancelHumanInputsImpl, startHostRequestImpl, restoreHostAdmissionsImpl } from "./agent-cancellation.ts";
 import { releaseConfigurationWaitersImpl, configureRequestImpl, acceptConfigurationRequestImpl, applyConfigurationRequestImpl, requireApplicationImpl, admitImpl, createConfigurationQueue } from "./agent-admission.ts";
 import { imageToolsImpl, sourceIdentityImpl, fileRequestIdImpl } from "./agent-attachments.ts";
 import { computerNamesImpl, refreshComputerToolsImpl, enabledToolsImpl, createDecisions, createModels, createHarness } from "./agent-tools.ts";
 import { agentSpendImpl, admitRequestImpl, endUserLimitImpl, requestUsageImpl, usageViewImpl, usageForRequestImpl, flushBillingImpl, createLimits } from "./agent-billing.ts";
-import { admitDelegateWakeImpl, receiveAgentMessageImpl, receiveAgentProgressImpl, hasBackgroundChildImpl, delegateImpl, createNotifications, createDelegation } from "./agent-delegation.ts";
+import { admitDelegateWakeImpl, receiveAgentMessageImpl, receiveAgentProgressImpl, hasBackgroundChildImpl, createNotifications, createDelegation } from "./agent-delegation.ts";
 import { replayedRequestImpl, requestResponseImpl, activityImpl, stateImpl, historyImpl, fetchImpl, fetchRequestImpl } from "./agent-http.ts";
 import { emitImpl, flushTerminalEventsImpl, recoverWatchersImpl, closeWatchersImpl, checkWatchersImpl, webSocketEventsImpl, negotiateAgentEventsImpl, restoreWebSocketsImpl, sendAttachedSocketImpl, closeBrowserSocketImpl, retireAttachedSocketImpl, webSocketMessageImpl, webSocketCloseImpl, webSocketErrorImpl, replayEventsImpl, runReplayImpl, eventsImpl } from "./agent-transport.ts";
 import { purgeAccountDataImpl, configImpl, scheduleToolsImpl, createScheduleImpl, armImpl, onStartImpl, restorePendingImpl, onJobImpl, wakeImpl } from "./agent-lifecycle.ts";
@@ -460,14 +460,6 @@ export class AgentRuntime extends AgentContext {
 
   flushBilling(propagate = false) {
     return flushBillingImpl.call(this, propagate);
-  }
-
-  delegate(
-    task: string,
-    key: string,
-    definition?: string,
-  ): Promise<Child> {
-    return delegateImpl.call(this, task, key, definition);
   }
 
   scheduleTools(): ScheduleToolsHost {

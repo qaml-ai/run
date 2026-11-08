@@ -8,7 +8,7 @@ import { failure } from "./observability.ts";
 import { withMoneyMetrics } from "./money-metrics.ts";
 import { type Message } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { BadRequest, boundedText, object, body } from "./validation.ts";
+import { BadRequest, object, body } from "./validation.ts";
 import { computerParameters } from "./computers/tool.ts";
 import { compile } from "@earendil-works/pi-schema";
 import { humanInputView, HumanInputs } from "./human.ts";
@@ -434,21 +434,9 @@ export async function fetchRequestImpl(this: AgentRuntime,
         await this.arm();
         return json({ deleted });
       }
-      // The public list (GET /v1/agents/{id}/children, as on Node). It replaces the prototype's list of `child:` records,
-      // which nothing read; the prototype's POST below still makes one.
+      // The public list (GET /v1/agents/{id}/children, as on Node).
       if (path === "/children" && request.method === "GET")
         return json({ children: childrenView(await this.delegation.children()) });
-      if (path === "/children" && request.method === "POST") {
-        const input = object(await body(request), ["task", "key", "agent"]);
-        return json(
-          await this.delegate(
-            boundedText(input.task, "task", 24000),
-            String(input.key ?? crypto.randomUUID()),
-            input.agent as string | undefined,
-          ),
-          201,
-        );
-      }
       if (path === "/prompt" && request.method === "POST") {
         const input = object(await body(request, 6 * 1024 * 1024), [
           "text",
