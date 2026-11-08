@@ -3,7 +3,8 @@ import { keyRoutes } from "../src/key-routes.ts";
 import { billingRoutes } from "../src/billing-routes.ts";
 import { keyServices, type SecurityEnv } from "../src/security-services.ts";
 import { accountDeletions, type AccountLifecycleEnv } from "../src/account-lifecycle.ts";
-import type { AccountServices } from "../src/account-services.ts";
+import { accountManagementRoutes, type AccountServices } from "../src/account-services.ts";
+import { Passwords } from "../src/account-passwords.ts";
 import { withSql } from "../src/postgres.ts";
 import type { CamelAgent } from "../src/agent.ts";
 
@@ -45,18 +46,30 @@ export default function pilotOperator(options: Options) {
           return reply(await agents.getByName(input.agent).databaseProfile(input.reset === true));
         }
         const targeted = /^\/v1\/tenants\/([a-z0-9-]+)(?:\/(limits|deletion))?$/.exec(path);
+        const password = request.method === "PUT" && /^\/v1\/tenants\/([a-z0-9-]+)\/password$/.exec(path);
         const tokens = /^\/v1\/tenants\/([a-z0-9-]+)\/tokens(?:\/([a-f0-9-]{36}))?$/.exec(path);
         const inspect = path === "/pilot/inspect" && request.method === "GET";
         const cleanup = path === "/pilot/cleanup" && request.method === "POST";
         let tenant: string | undefined;
         if (targeted) tenant = targeted[1];
         else if (tokens) tenant = tokens[1];
+        else if (password) tenant = password[1];
         else if (inspect) tenant = url.searchParams.get("tenant") ?? undefined;
         else if (cleanup || (path === "/v1/tenants" || path === "/v1/billing/adjustments") && request.method === "POST") {
           const body = await request.clone().json() as { id?: string; tenant?: string };
           tenant = path === "/v1/tenants" ? body.id : body.tenant;
         } else return reply({ error: "Not found" }, 404);
         if ((!tenant || !allowed.has(tenant)) && !(inspect && tenant === undefined)) return reply({ error: "Tenant outside bootstrap scope" }, 403);
+
+        if (password) {
+          // Only this route uses this projection: no console or OAuth services.
+          return await accountManagementRoutes(request, {
+            accounts: services.accounts,
+            passwords: new Passwords(services.accounts.db),
+            billingAdmins: new Set([principal.tenantId]),
+          } as unknown as AccountServices, { tenant: principal.tenantId, via: "operator" })
+            ?? reply({ error: "Not found" }, 404);
+        }
 
         if (tokens) {
           if (!await services.accounts.exists(tenant!) || await accountDeletions(setup, { accounts: services.accounts } as AccountServices, tenant).status(tenant!))
