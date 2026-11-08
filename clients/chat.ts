@@ -88,6 +88,8 @@ export interface ChatSnapshot {
   messages: ChatMessage[];
   /** Everything the agent waits on (each is also on its tool part, where the call is shown). */
   inputs: ChatInput[];
+  /** Successful answers from this chat session, retained after the pending input disappears. */
+  answers?: { input: ChatInput; answer: InputAnswer }[];
   /** The latest failure to connect, send or act; null once things work again. */
   error: ChatError | null;
   hasOlder: boolean;
@@ -506,6 +508,7 @@ export function createAgentChat(options: AgentChatOptions): AgentChat {
   // before the next message (when the send's echo can lag behind the reply, on a slow connection).
   let replying = false;
   const answering = new Map<string, ChatError | null>();
+  let answers: NonNullable<ChatSnapshot["answers"]> = [];
   const files = new Map<string, { url: string; expiresAt?: number }>();
   let fileUrls = new Map<string, string>();
   const memo: ProjectMemo = new Map();
@@ -564,7 +567,7 @@ export function createAgentChat(options: AgentChatOptions): AgentChat {
       : stableInputs.some(input => input.blocking !== false && !input.answering) ? "input_required"
       : !view?.transport ? "connecting"
       : "ready";
-    const next: ChatSnapshot = { status, messages, inputs: stableInputs, error, hasOlder: view?.hasOlder ?? false, connected: view?.connected ?? false, loaded: view?.loaded ?? false, agentId };
+    const next: ChatSnapshot = { status, messages, inputs: stableInputs, answers, error, hasOlder: view?.hasOlder ?? false, connected: view?.connected ?? false, loaded: view?.loaded ?? false, agentId };
     return reuse(snapshot, next);
   }
   function emit() {
@@ -699,6 +702,7 @@ export function createAgentChat(options: AgentChatOptions): AgentChat {
         report(failure);
         return;
       }
+      answers = [...answers.filter(item => item.input.id !== input.id), { input, answer }];
       schedule();
     },
     decline(target) { return chat.answer(target, { action: "decline" }); },

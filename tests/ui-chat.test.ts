@@ -243,6 +243,8 @@ test("an agent's question shows on its call, is answered through the store, and 
   assert.equal(call.state, "input_required");
   assert.equal(call.input?.id, snapshot.inputs[0].id);
   await chat.answer(snapshot.inputs[0], "EU");
+  assert.equal(chat.getSnapshot().answers?.[0].input.id, snapshot.inputs[0].id);
+  assert.deepEqual(chat.getSnapshot().answers?.[0].answer, { action: "accept", content: { answers: { "Which region?": "EU" } } });
   await until(() => chat.getSnapshot().status === "ready" && chat.getSnapshot().inputs.length === 0 && (chat.getSnapshot().messages[1] as AssistantChatMessage).parts.some(part => part.type === "text"), "the resumed turn", 20_000);
   const turn = chat.getSnapshot().messages[1] as AssistantChatMessage;
   assert.equal((turn.parts[0] as ToolPart).state, "done");

@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useCallback, useEffect, useState, useId, type ReactNode, type FormEvent } from "react";
-import { useAgent, useToolRendererFor, type ChatInput, type FilePart, type InputAnswer, type InputValue, type ToolPart, type ToolRenderers } from "@camelai/run-react";
+import { useAgent, useAgentSelector, useToolRendererFor, type ChatInput, type FilePart, type InputAnswer, type InputValue, type ToolPart, type ToolRenderers } from "@camelai/run-react";
 import { Button } from "@/components/ui/button";
 import { AgentMarkdown } from "./agent-markdown";
 import { cn } from "@/lib/utils";
@@ -15,11 +15,13 @@ export const AgentTool = memo(function AgentTool({ part, tools }: { part: ToolPa
   const chat = useAgent();
   const exact = useToolRendererFor(part.name, tools);
   const local = useToolRendererFor(localName(part.name), tools);
+  const answered = useAgentSelector(snapshot => snapshot.answers?.find(item => item.input.toolCallId === part.id));
   const Renderer = exact ?? local;
   if (Renderer) {
     const answer = (value: InputValue | InputAnswer) => part.input ? chat.answer(part.input, value) : Promise.reject(new Error(`${part.name} is not waiting for an answer`));
     return <Renderer part={part} name={part.name} args={part.args} state={part.state} result={part.result} progress={part.progress} input={part.input} answer={answer} />;
   }
+  if (answered) return <AgentAnswer input={answered.input} answer={answered.answer} />;
   if (part.input) return <AgentInputCard input={part.input} />;
   if (part.subagent) return <AgentWorker name={part.subagent.name} status={part.subagent.status ?? "running"} progress={part.subagent.progress} startedAt={part.startedAt} endedAt={part.endedAt}>
     {part.subagent.messages.filter(message => message.role === "assistant").map((message, index) => <AgentMarkdown key={index} text={message.content.filter(part => part.type === "text").map(part => part.text).join("\n")} />)}
@@ -71,6 +73,17 @@ export const AgentInputCard = memo(function AgentInputCard({ input }: { input: C
   const chat = useAgent();
   return <AgentInputView input={input} onAnswer={value => { void chat.answer(input, value); }} />;
 });
+
+/** Keep the user's choice visible after the pending question is resolved. */
+export function AgentAnswer({ input, answer }: { input: ChatInput; answer: InputAnswer }) {
+  const content = answer.content as { answers?: Record<string, unknown> } | undefined;
+  const choices = content?.answers ? Object.values(content.answers).flat().map(String).join(", ") : "";
+  const label = choices ? `You chose ${choices}` : answer.action === "accept" ? "You approved" : answer.action === "decline" ? "You declined" : "You cancelled";
+  return <details data-input-id={input.id} className="rounded-lg border px-4 py-3 text-sm">
+    <summary className="cursor-pointer text-muted-foreground" aria-live="polite">{label}</summary>
+    <p className="mt-2">{input.message}</p>
+  </details>;
+}
 
 /** The same input card for account-wide inboxes, with the host supplying its answer route. */
 export function AgentInputView({ input, onAnswer: answer }: { input: ChatInput; onAnswer: (value: InputValue | InputAnswer) => void }) {
@@ -134,7 +147,10 @@ function Questions({ questions, busy, onAnswer }: { questions: Question[]; busy:
                 onChange={event => {
                   const checked = event.currentTarget.checked;
                   setChosen(current => ({ ...current, [question.question]: question.multiSelect ? checked ? [...current[question.question] ?? [], option.label] : (current[question.question] ?? []).filter(label => label !== option.label) : [option.label] }));
-                  if (!question.multiSelect) setOther(current => ({ ...current, [question.question]: "" }));
+                  if (!question.multiSelect) {
+                    setOther(current => ({ ...current, [question.question]: "" }));
+                    if (questions.length === 1 && !other[question.question]?.trim()) onAnswer({ [question.question]: option.label });
+                  }
                 }} />
               <span>{option.label}{option.description && <span className="block text-xs text-muted-foreground">{option.description}</span>}</span>
             </label>
