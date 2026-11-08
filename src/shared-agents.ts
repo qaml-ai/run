@@ -4,12 +4,12 @@ import type { Db, Sql } from './db.ts';
 import { HttpError } from './core/http-error.ts';
 
 export const ShareLinkInput = z.object({ expiresIn: z.union([z.literal(86400), z.literal(604800), z.literal(2592000)]).nullable().optional() }).strict();
-export const MemberInput = z.object({ dailyCap: z.number().finite().nonnegative().max(Number.MAX_SAFE_INTEGER / 1e6).nullable().optional(), removed: z.literal(false).optional() }).strict().refine(x => Object.keys(x).length > 0);
+export const MemberInput = z.object({ dailyCapMicros: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable().optional(), removed: z.literal(false).optional() }).strict().refine(x => Object.keys(x).length > 0);
 export const ShareLink = z.object({ id: z.string(), createdAt: z.number(), expiresAt: z.number().nullable(), revokedAt: z.number().nullable(), joins: z.number(), lastJoinedAt: z.number().nullable() });
 export const CreatedShareLink = z.object({ id: z.string(), url: z.string(), expiresAt: z.number().nullable() });
-export const Member = z.object({ id: z.string(), name: z.string(), email: z.string().nullable(), role: z.enum(['owner', 'guest']), addedAt: z.number(), removedAt: z.number().nullable(), dailyCap: z.number().nullable(), spentToday: z.number() });
+export const Member = z.object({ id: z.string(), name: z.string(), email: z.string().nullable(), role: z.enum(['owner', 'guest']), addedAt: z.number(), removedAt: z.number().nullable(), dailyCapMicros: z.number().int().nullable(), spentToday: z.number() });
 const linkColumns = 'id, created_at as "createdAt", expires_at as "expiresAt", revoked_at as "revokedAt", joins, last_joined_at as "lastJoinedAt"';
-const memberColumns = `m.id, m.name, m.email, m.role, m.added_at as "addedAt", m.removed_at as "removedAt", m.daily_cap as "dailyCap", coalesce(d.charge, 0) as "spentToday"`;
+const memberColumns = `m.id, m.name, m.email, m.role, m.added_at as "addedAt", m.removed_at as "removedAt", m.daily_cap as "dailyCapMicros", coalesce(d.charge, 0) as "spentToday"`;
 const id = (prefix: string) => prefix + randomBytes(8).toString('hex');
 
 /** Shared SQL policy for both HTTP backends. No link secret leaves the create response. */
@@ -29,7 +29,7 @@ export class SharedAgents {
       if (!row) throw new HttpError(404, 'Unknown agent');
       if (row.header.parent || row.header.parentAgentId) throw new HttpError(400, 'Sub-agents cannot be shared');
       const now = Date.now();
-      const count = (await sql.query('select count(*)::int as n from agent_share_links where agent=$1 and created_at>$2', [agent, now - 3600000])).rows[0].n;
+      const count = (await sql.query('select count(*)::int as n from agent_share_links where tenant=$1 and agent=$2 and created_at>$3', [tenant, agent, now - 3600000])).rows[0].n;
       if (count >= 100) throw new HttpError(429, 'Share link creation limit reached');
       const identity = (await sql.query(`select coalesce(t.google_email, p.email) as email, t.github, (select name from console_sessions where tenant=t.id and name is not null order by created_at desc limit 1) as name from tenants t left join tenant_passwords p on p.tenant=t.id where t.id=$1`, [tenant])).rows[0];
       const name = identity?.name || identity?.github || identity?.email?.split('@')[0] || 'Owner';
@@ -50,7 +50,7 @@ export class SharedAgents {
   }
   async members(tenant: string, agent: string) {
     const rows = (await this.db.query(`select ${memberColumns} from agent_members m left join agent_member_days d on d.member=m.id and d.day=(now() at time zone 'UTC')::date where m.tenant=$1 and m.agent=$2 order by m.added_at,m.id`, [tenant,agent])).rows;
-    return rows.map(row => ({ ...row, dailyCap: row.dailyCap === null ? null : row.dailyCap / 1e6, spentToday: row.spentToday / 1e6 }));
+    return rows.map(row => ({ ...row, spentToday: row.spentToday / 1e6 }));
   }
   async change(tenant: string, agent: string, member: string, input: z.infer<typeof MemberInput> | 'remove') {
     const remove = input === 'remove';
@@ -58,7 +58,7 @@ export class SharedAgents {
       removed_at=case when $4 then coalesce(removed_at,$5) when $6 then null else removed_at end,
       daily_cap=case when $7 then $8 else daily_cap end, revision=revision+1
       where tenant=$1 and agent=$2 and id=$3 and (role='guest' or not ($4 or $6)) returning id`,
-      [tenant,agent,member,remove,Date.now(),!remove && input.removed === false,!remove && 'dailyCap' in input,!remove && input.dailyCap != null ? Math.round(input.dailyCap * 1e6) : null]);
+      [tenant,agent,member,remove,Date.now(),!remove && input.removed === false,!remove && 'dailyCapMicros' in input,!remove && input.dailyCapMicros != null ? input.dailyCapMicros : null]);
     if (!result.rowCount) {
       const owner = (await this.db.query('select 1 from agent_members where tenant=$1 and agent=$2 and id=$3 and role=\'owner\'', [tenant,agent,member])).rows.length;
       throw new HttpError(owner ? 400 : 404, owner ? 'The owner cannot be removed or restored' : 'Unknown member');

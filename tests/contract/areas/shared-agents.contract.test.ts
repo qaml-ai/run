@@ -25,17 +25,24 @@ contractTest('shared-agents', 'native', 'owner links, membership and caps stay p
   assert.equal(owner.role, 'owner');
   assert.match(owner.id, /^m_[a-f0-9]{16}$/);
   assert.equal((await r.call(`${base}/members/${owner.id}`, { method: 'DELETE' })).status, 400);
-  assert.equal((await r.call(`${base}/members/${owner.id}`, { method: 'PATCH', body: { dailyCap: 1 } })).status, 200);
+  assert.equal((await r.call(`${base}/members/${owner.id}`, { method: 'PATCH', body: { dailyCapMicros: 1 } })).status, 200);
   await r.sharedAgentsQuery(`insert into agent_members (id,tenant,agent,person,role,name,email,link,added_at) select 'm_0123456789abcdef',tenant,agent,'fixture-guest','guest','Dana','dana@example.test',id,$2 from agent_share_links where id=$1`, [made.json.id, Date.now()]);
   const member = 'm_0123456789abcdef';
   await r.sharedAgentsQuery(`insert into agent_member_days (member,day,charge) values ($1,(now() at time zone 'UTC')::date,1250000)`, [member]);
-  const capped = await r.call(`${base}/members/${member}`, { method: 'PATCH', body: { dailyCap: 2.5 } });
+  const capped = await r.call(`${base}/members/${member}`, { method: 'PATCH', body: { dailyCapMicros: 2500000 } });
   assert.equal(capped.status, 200, capped.text);
-  assert.equal(capped.json.dailyCap, 2.5);
+  assert.equal(capped.json.dailyCapMicros, 2500000);
   assert.equal(capped.json.spentToday, 1.25);
-  assert.equal((await r.call(`${base}/members/${member}`, { method: 'PATCH', body: { dailyCap: -1 } })).status, 400);
+  assert.equal((await r.call(`${base}/members/${member}`, { method: 'PATCH', body: { dailyCapMicros: -1 } })).status, 400);
+  for (const dailyCapMicros of [0.1, 0.0000001, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.equal((await r.call(`${base}/members/${member}`, { method: 'PATCH', body: { dailyCapMicros } })).status, 400);
+  }
+  assert.equal((await r.call(`${base}/members/${member}`, { method: 'PATCH', body: { dailyCap: 2.5 } })).status, 400, 'the old float field is rejected');
+  assert.equal((await r.call(`${base}/members/${member}`, { method: 'PATCH', body: { dailyCapMicros: 1 } })).json.dailyCapMicros, 1, 'one micro is stored without rounding');
+  assert.equal((await r.call(`${base}/members/${member}`, { method: 'PATCH', body: { dailyCapMicros: 0 } })).json.dailyCapMicros, 0, 'zero is an explicit cap');
+
   assert.equal((await r.call(`${base}/members/${member}`, { method: 'PATCH', body: { removed: true } })).status, 400);
-  assert.equal((await r.call(`${base}/members/${member}`, { method: 'PATCH', body: { dailyCap: null } })).json.dailyCap, null);
+  assert.equal((await r.call(`${base}/members/${member}`, { method: 'PATCH', body: { dailyCapMicros: null } })).json.dailyCapMicros, null);
   assert.equal((await r.call(`${base}/share-links/${made.json.id}`, { method: 'DELETE' })).status, 200);
   members = await r.call(`${base}/members`);
   assert.equal(members.json[1].removedAt, null, 'revoking a link preserves membership');
@@ -52,22 +59,24 @@ contractTest('shared-agents', 'native', 'owner links, membership and caps stay p
   assert.ok((await r.sharedAgentsQuery('select removed_at from agent_members where agent=$1', [agent])).rows.every(row => row.removed_at));
 }, { timeout: 90_000 });
 
-contractTest('shared-agents', 'native', 'removal cancels only the member’s queued runs and leaves the active turn alone', async t => {
+for (const mode of ['each', 'batch'] as const) contractTest('shared-agents', 'native', `${mode}: removal cancels only the member’s queued runs and leaves the active turn alone`, async t => {
   const { until } = await import('../support.ts');
   const r = await createContractFixture(t, { respond: (_body, index) => ({ role: 'assistant', content: 'done', ...(index === 0 ? { delayMs: 5000 } : {}) }) });
-  const agent = (await r.call('/v1/agents', { body: {} })).json.id;
+  const agent = (await r.call('/v1/agents', { body: { queue: { mode } } })).json.id;
   const base = `/v1/agents/${agent}`;
   const link = (await r.call(`${base}/share-links`, { body: {} })).json.id;
   const member = 'm_0123456789abcdef';
   await r.sharedAgentsQuery(`insert into agent_members (id,tenant,agent,person,role,name,link,added_at) select $1,tenant,agent,'guest','guest','Dana',id,$3 from agent_share_links where id=$2`, [member, link, Date.now()]);
   await r.call(`${base}/prompt`, { body: { text: 'active', requestId: 'active', actor: `member:${member}` } });
   await until(() => r.model.bodies.length === 1, 'the active model call');
-  for (const [requestId, actor] of [['removed-queue', `member:${member}`], ['owner-queue', 'owner']]) {
+  for (const [requestId, actor] of [['owner-queue', 'owner'], ['removed-queue', `member:${member}`], ['removed-queue-2', `member:${member}`]]) {
     assert.equal((await r.call(`${base}/prompt`, { body: { text: requestId, requestId, actor } })).status, 202);
   }
   assert.equal((await r.call(`${base}/members/${member}`, { method: 'DELETE' })).status, 200);
-  const cancelled = await until(async () => { const record = (await r.call(`${base}/requests/removed-queue`)).json; return record.state === 'completed' && record; }, 'the removed member’s queued run to cancel');
-  assert.equal(cancelled.outcome.result.code, 'cancelled');
+  for (const queued of ['removed-queue', 'removed-queue-2']) {
+    const cancelled = await until(async () => { const record = (await r.call(`${base}/requests/${queued}`)).json; return record.state === 'completed' && record; }, 'the removed member’s queued run to cancel');
+    assert.equal(cancelled.outcome.result.code, 'cancelled');
+  }
   for (const requestId of ['active', 'owner-queue']) {
     const ended = await until(async () => { const record = (await r.call(`${base}/requests/${requestId}`)).json; return record.state === 'completed' && record; }, `${requestId} to finish`);
     assert.equal(ended.outcome.result.reply, 'done');
@@ -86,9 +95,42 @@ contractTest('shared-agents', 'native', 'only the owning console session or tena
   assert.equal((await consoleCall(`${base}/members`)).json[0].email, 'owner@example.test');
   for (const [path, method, body] of [
     ['share-links', 'POST', {}], ['share-links', 'GET', undefined], ['share-links/asl_unknown', 'DELETE', undefined],
-    ['members', 'GET', undefined], ['members/m_unknown', 'PATCH', { dailyCap: 1 }], ['members/m_unknown', 'DELETE', undefined],
+    ['members', 'GET', undefined], ['members/m_unknown', 'PATCH', { dailyCapMicros: 1 }], ['members/m_unknown', 'DELETE', undefined],
   ] as const) assert.equal((await r.call(`${base}/${path}`, { method, ...(body === undefined ? {} : { body }) })).status, 404);
   const browser = await consoleCall(`${base}/browser-tokens`, {});
   assert.equal(browser.status, 201, browser.text);
   assert.equal((await r.call(`${base}/members`, { token: browser.json.token })).status, 403);
 });
+
+contractTest('shared-agents', 'native', 'member ids are scoped to their agent and OAuth cannot manage shares', async t => {
+  const r = await createContractFixture(t);
+  const first = (await r.call('/v1/agents', { body: {} })).json.id;
+  const second = (await r.call('/v1/agents', { body: {}, token: OTHER_OPERATOR })).json.id;
+  const link = (await r.call(`/v1/agents/${second}/share-links`, { body: {}, token: OTHER_OPERATOR })).json.id;
+  const member = 'm_0123456789abcdef';
+  await r.sharedAgentsQuery(`insert into agent_members (id,tenant,agent,person,role,name,link,added_at) select $1,tenant,agent,'guest','guest','Dana',id,$3 from agent_share_links where id=$2`, [member, link, Date.now()]);
+  assert.equal((await r.call(`/v1/agents/${first}/members/${member}`, { method: 'DELETE' })).status, 404);
+  assert.equal((await r.call(`/v1/agents/${second}/members/${member}`, { method: 'DELETE' })).status, 404);
+  assert.equal((await r.call(`/v1/agents/${second}/members`, { token: OTHER_OPERATOR })).json.find((m: any) => m.id === member).removedAt, null);
+  const token = 'aro_shared_owner_fixture';
+  await r.seedOAuthAccessToken({ grantId: 'grt_shared', tenant: 'alice', clientId: 'mcp_shared', clientName: 'Test', login: 'alice', scope: 'agents', resource: 'agents', token, expiresAt: Date.now() + 3600000 });
+  // Prove this is an otherwise valid owner credential, not an authentication failure.
+  assert.equal((await r.call(`/v1/agents/${first}`, { token })).status, 200);
+  for (const [path, method, body] of [
+    ['share-links', 'POST', {}], ['share-links', 'GET', undefined], ['share-links/asl_unknown', 'DELETE', undefined],
+    ['members', 'GET', undefined], ['members/m_unknown', 'PATCH', { dailyCapMicros: 1 }], ['members/m_unknown', 'DELETE', undefined],
+  ] as const) assert.equal((await r.call(`/v1/agents/${first}/${path}`, { token, method, ...(body === undefined ? {} : { body }) })).status, 403);
+}, { timeout: 90_000 });
+
+contractTest('shared-agents', 'native', 'failed membership cleanup leaves deletion retryable', async t => {
+  const r = await createContractFixture(t);
+  const agent = (await r.call('/v1/agents', { body: {} })).json.id;
+  await r.call(`/v1/agents/${agent}/share-links`, { body: {} });
+  await r.sharedAgentsQuery('alter table agent_members add constraint reject_removal check (removed_at is null) not valid');
+  const failed = await r.call(`/v1/agents/${agent}`, { method: 'DELETE' });
+  assert.ok(failed.status >= 400 && failed.status < 600, 'the forced database failure reaches the caller');
+  assert.equal((await r.call(`/v1/agents/${agent}`)).status, 200, 'the agent was not revoked before cleanup succeeded');
+  await r.sharedAgentsQuery('alter table agent_members drop constraint reject_removal');
+  assert.equal((await r.call(`/v1/agents/${agent}`, { method: 'DELETE' })).status, 200);
+  assert.ok((await r.sharedAgentsQuery('select removed_at from agent_members where agent=$1', [agent])).rows.every(row => row.removed_at));
+}, { timeout: 90_000 });

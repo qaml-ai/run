@@ -15005,9 +15005,9 @@
                           "null"
                         ]
                       },
-                      "dailyCap": {
+                      "dailyCapMicros": {
                         "type": [
-                          "number",
+                          "integer",
                           "null"
                         ]
                       },
@@ -15022,7 +15022,7 @@
                       "role",
                       "addedAt",
                       "removedAt",
-                      "dailyCap",
+                      "dailyCapMicros",
                       "spentToday"
                     ]
                   }
@@ -15069,13 +15069,13 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "dailyCap": {
+                  "dailyCapMicros": {
                     "type": [
-                      "number",
+                      "integer",
                       "null"
                     ],
                     "minimum": 0,
-                    "maximum": 9007199254.740992
+                    "maximum": 9007199254740991
                   },
                   "removed": {
                     "type": "boolean",
@@ -15125,9 +15125,9 @@
                         "null"
                       ]
                     },
-                    "dailyCap": {
+                    "dailyCapMicros": {
                       "type": [
-                        "number",
+                        "integer",
                         "null"
                       ]
                     },
@@ -15142,7 +15142,7 @@
                     "role",
                     "addedAt",
                     "removedAt",
-                    "dailyCap",
+                    "dailyCapMicros",
                     "spentToday"
                   ]
                 }

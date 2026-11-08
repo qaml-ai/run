@@ -19,7 +19,7 @@ import { outputInput } from "./tool-policy.ts";
 import { importedHistory, validateUserMessages } from "./history.ts";
 import { convertToLlm, createCompactionSummaryMessage } from "./pi-harness/messages.ts";
 import { canonical } from "../shared/durable-json.ts";
-import { joins } from "../shared/queue-mode.ts";
+import { joins, CANCELLABLE_METHODS as CANCELLABLE } from "../shared/queue-mode.ts";
 import type { CommitEffect } from "../shared/append-log.ts";
 import { fileStorage, type Storage } from "../shared/storage.ts";
 import { FRAME_BYTES, outcomeEnding, type ClientEvent, type Outcome, type RequestMethod, type RequestRecord, type TurnSnapshot } from "../shared/client-protocol.ts";
@@ -63,8 +63,6 @@ const RUN_OVERRUN_MS = 60_000;
  * idempotent assignment) until it settles.
  */
 const QUEUED_METHODS = [...RUN_METHODS, "configure"];
-/** Queued runs a stop cancels (`stop`): what callers asked for. A `resume` closes a suspended turn, and is the runtime's. */
-const CANCELLABLE = ["prompt", "continue", "execute"];
 /** How long a steer waits for a turn that has begun to open, before it queues as a turn of its own. */
 const STEER_OPEN_WAIT_MS = 5_000;
 const CANCELLED = "Cancelled: the agent was stopped before this run began";
@@ -2637,9 +2635,9 @@ export class ClientSessions {
     const session = await this.load(id);
     // A revocation whose write may not have landed is written again.
     if (!session || (session.header.revoked && !session.unsettled)) return;
+    await this.db.query('update agent_members set removed_at=coalesce(removed_at,$2), revision=revision+1 where agent=$1', [id, Date.now()]);
     session.header.revoked = true;
     await this.writeHeader(session);
-    await this.db.query('update agent_members set removed_at=coalesce(removed_at,$2), revision=revision+1 where agent=$1', [id, Date.now()]);
     // Stop the model while the host and its usage listener are still alive. Killing the host first drops
     // message_end (and its bill), although the provider still charges for the streamed response.
     await session.starting?.catch(() => {});

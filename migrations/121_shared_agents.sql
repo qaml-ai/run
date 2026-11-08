@@ -10,6 +10,7 @@ create table agent_share_links (
   joins integer not null default 0,
   last_joined_at bigint
 );
+create index agent_share_links_owner_created on agent_share_links (tenant, agent, created_at);
 create table agent_members (
   id text primary key,
   tenant text not null,

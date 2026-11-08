@@ -38,7 +38,7 @@ import { BatchQueue } from "./batch-queue.ts";
 import type { WebhookEvent } from "./webhook-policy.ts";
 import { Config, RequestRecord, Env } from "./agent-types.ts";
 import { currentRunImpl, recordsImpl, markBeganImpl, observeImpl, requestForInputsImpl, runningRequestImpl, projectMessageImpl, reconcileSteeringImpl, steeringOwnerImpl, onViewImpl, onHumanImpl, trackImpl, settleImpl, submitImpl, answerHumanInputsImpl, closeHumanInputsImpl, dueHumanInputsImpl } from "./agent-turn-loop.ts";
-import { abortRequestsImpl, resumeKeptQueueImpl, cancelRequestImpl, resumeCancellationImpl, restoreCancellationsImpl, abortExecutionsImpl, markCancelledRequestsImpl, cancelHostIntentImpl, cancelHumanInputsImpl, startHostRequestImpl, restoreHostAdmissionsImpl } from "./agent-cancellation.ts";
+import { removeMemberImpl, abortRequestsImpl, resumeKeptQueueImpl, cancelRequestImpl, resumeCancellationImpl, restoreCancellationsImpl, abortExecutionsImpl, markCancelledRequestsImpl, cancelHostIntentImpl, cancelHumanInputsImpl, startHostRequestImpl, restoreHostAdmissionsImpl } from "./agent-cancellation.ts";
 import { releaseConfigurationWaitersImpl, configureRequestImpl, acceptConfigurationRequestImpl, applyConfigurationRequestImpl, requireApplicationImpl, admitImpl, createConfigurationQueue } from "./agent-admission.ts";
 import { imageToolsImpl, sourceIdentityImpl, fileRequestIdImpl } from "./agent-attachments.ts";
 import { computerNamesImpl, refreshComputerToolsImpl, enabledToolsImpl, createDecisions, createModels, createHarness } from "./agent-tools.ts";
@@ -355,30 +355,8 @@ export class AgentRuntime extends AgentContext {
     return resumeKeptQueueImpl.call(this);
   }
 
-  async removeMember(member: string) {
-    // Guest socket attachments and their periodic revision check arrive in S5.
-    for (const socket of this.ctx.getWebSockets()) {
-      if (socket.deserializeAttachment()?.member === member) socket.close(1008, JSON.stringify({ reason: 'removed' }));
-    }
-    const pending = this.admission.then(async () => {
-      for (const record of (await this.ctx.storage.list<RequestRecord>({ prefix: 'request:' })).values()) {
-        if (record.state === 'completed' || record.began || record.actor !== `member:${member}`) continue;
-        await this.ctx.storage.put(`cancelled-request:${record.id}`, true);
-        if (record.batchHeld) await this.batchQueue.cancel(record.id);
-        else {
-          await this.harness.session().abort(record.piId ?? record.id);
-          const completed: RequestRecord = { ...record, state: 'completed', status: 'failed', endedAt: Date.now(), outcome: { result: { error: 'Queued run cancelled', code: 'cancelled' } } };
-          await this.ctx.storage.put(`request:${record.id}`, completed);
-          const conf = await this.config();
-          await releaseTurn(this.env, conf.tenantId, conf.id, record.id);
-          await this.env.TENANTS.getByName(conf.tenantId).release(`${conf.id}:${record.id}`);
-          await this.emit({ type: 'event', requestId: record.id, event: { type: 'run_cancelled', reason: 'stopped' } });
-          await this.emit({ type: 'response', id: record.id, outcome: completed.outcome! });
-        }
-      }
-    });
-    this.admission = pending.catch(() => {});
-    await pending;
+  removeMember(member: string) {
+    return removeMemberImpl.call(this, member);
   }
 
   cancelRequest(id: string) {
