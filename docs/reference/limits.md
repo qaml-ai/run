@@ -313,7 +313,9 @@ Counts apply to all filtered items before pagination. A lead is `root_agent`,
 falling back to the asking agent for rows without lineage. Pages reflect live
 state: items may settle between requests.
 
-`GET /v1/inputs` uses the same index and order but keeps its array response,
-default limit of 100, and optional `state` filter. Without `state`, it includes
-all states. Its item representation is unchanged. It accepts the inbox filters
-and paging parameters; use `/v1/inbox` when you need a next cursor or counts.
+`GET /v1/inputs` reads the same table but keeps its legacy array response and
+newest-first order (`created_at` descending, then id). Its default limit is 100,
+with a maximum of 500. The optional `state` filter includes all states when
+omitted, and pending rows remain visible past expiry until settled. This route
+does not paginate or apply inbox filters; it ignores `cursor`. Use `/v1/inbox`
+for priority ordering, inbox filters, a next cursor, and counts.

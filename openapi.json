@@ -17276,76 +17276,6 @@
         "parameters": [
           {
             "schema": {
-              "type": "string"
-            },
-            "required": false,
-            "name": "for",
-            "in": "query"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": false,
-            "name": "subject",
-            "in": "query"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": false,
-            "name": "root",
-            "in": "query"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "enum": [
-                "urgent",
-                "high",
-                "normal",
-                "low"
-              ]
-            },
-            "required": false,
-            "name": "priority",
-            "in": "query"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "enum": [
-                "question",
-                "approval",
-                "form",
-                "url"
-              ]
-            },
-            "required": false,
-            "name": "kind",
-            "in": "query"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": false,
-            "name": "cursor",
-            "in": "query"
-          },
-          {
-            "schema": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 100
-            },
-            "required": false,
-            "name": "limit",
-            "in": "query"
-          },
-          {
-            "schema": {
               "type": "string",
               "enum": [
                 "pending",
@@ -17359,11 +17289,21 @@
             "required": false,
             "name": "state",
             "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
           }
         ],
         "responses": {
           "200": {
-            "description": "The tenant's human inputs in inbox order (legacy array response)",
+            "description": "The tenant's human inputs, newest first (legacy array response)",
             "content": {
               "application/json": {
                 "schema": {

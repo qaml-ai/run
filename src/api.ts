@@ -801,7 +801,7 @@ export function api(context: ApiContext) {
     const { status, ...answered } = await clients.answer(c.req.param("id")!, c.var.principal.tenant, answerList(await readJson(c.req.raw.body, 1024 * 1024, {})));
     return json(c, status, answered);
   });
-  route(createRoute({ method: "get", path: "/v1/inputs", request: { query: schema.InboxQuery.extend(inputState.shape) }, responses: { 200: reply("The tenant's human inputs in inbox order (legacy array response)", z.array(schema.Input)) } }),
+  route(createRoute({ method: "get", path: "/v1/inputs", request: { query: inputState.extend({ limit: z.coerce.number().int().min(1).max(500).optional() }) }, responses: { 200: reply("The tenant's human inputs, newest first (legacy array response)", z.array(schema.Input)) } }),
     async c => {
       try { return json(c, 200, (await readInbox(accounts.db, c.var.principal.tenant, inboxQuery(new URL(c.req.url).searchParams, true), true)).items); }
       catch (error) { if (error instanceof InboxQueryError) throw new HttpError(400, error.message); throw error; }
