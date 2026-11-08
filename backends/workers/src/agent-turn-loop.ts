@@ -84,6 +84,9 @@ export async function markBeganImpl(this: AgentRuntime,
   }
 
 export async function observeImpl(this: AgentRuntime) {
+    // Startup may itself observe restored host requests. An outside caller must
+    // not cache a promise waiting for that startup, or both wait on each other.
+    await this.lifecycle.ready();
     return (this.observer ??= (async () => {
       const watch = await this.harness.session().watch();
       const pi = await this.harness.pi();
