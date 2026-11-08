@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import type { Db } from "./db.ts";
 import { historyNoneIgnored } from "./history-none.ts";
 import { HttpError } from "./http.ts";
+import { viaParent } from "./multi-agent.ts";
 import { underClaim, type Claim } from "./ownership.ts";
 
 /**
@@ -97,6 +98,8 @@ export class Scheduler {
     const created: Schedule = { id: randomUUID(), ...rest, dueAt: Math.round(input.dueAt), createdAt: Date.now() };
     await underClaim(this.db, claim, async sql => {
       await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`schedules:${input.agent}`]);
+      // A wake-up would start a turn its parent did not send: a sub-agent the runtime made has none (its builtin's either).
+      if ((await sql.query("select 1 from agents where id = $1 and header->'parent' is not null", [input.agent])).rowCount) throw viaParent(input.agent);
       if ((await sql.query("select count(*) as count from schedules where agent = $1", [input.agent])).rows[0].count >= 100) throw new Error("An agent can have at most 100 schedules");
       await sql.query("insert into schedules (id, agent, tenant, text, code, due_at, every_seconds, created_at, calendar, email) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         [created.id, created.agent, created.tenant, created.text ?? null, created.code ?? null, created.dueAt, created.everySeconds ?? null, created.createdAt, created.calendar ?? null, created.email ?? null]);

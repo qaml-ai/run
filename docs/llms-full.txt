@@ -6213,6 +6213,16 @@ A sub-agent the runtime makes is a real agent:
   parent's key scope. It is billed to the same account. Its tool servers'
   [identity tokens](https://run.camelai.com/docs/guides/tools.md) also name its parent and its chain's first agent
   (`par` and `root`; `identity.parentAgentId` and `rootAgentId` in the SDKs).
+- It is **reached only through its parent**. A prompt to it
+  (`POST /v1/agents/{child}/prompt`, a steer, a channel's or an MCP client's
+  message, a code run) or a schedule on it (the API's, or its own `schedule`
+  builtin's) is refused with 409 `SUBAGENT_VIA_PARENT`: `<id> is a sub-agent:
+  message its parent, which reaches it with send_message`. Its parent's
+  `send_message`, `wait_agent` and `interrupt_agent` reach it as before. You
+  can still answer its questions and approvals (`POST
+  /v1/agents/{child}/inputs/{inputId}`), read its history, events and requests,
+  abort it and delete it. A named agent a parent delegates to (`{ agent: "…" }`)
+  is not one the runtime made, and stays yours to prompt.
 - An inline child **shares the parent's volume mounts**, including its mounted
   workspace, at the same paths. A child made from a definition uses that
   definition's mounts. Mount a shared [volume](https://run.camelai.com/docs/guides/files.md#volumes) in both
@@ -6520,9 +6530,6 @@ starts a turn or counts against the wake cap:
   shown no more: its notification (or `wait_agent`) carries its answer.
 - **Watchers see it at once**, as `subagent_progress` (see [Events](https://run.camelai.com/docs/guides/multi-agent.md#events)),
   while the parent runs on the sub-agent's node.
-- **Only in a run its parent started.** A sub-agent prompted through the API
-  has no task its parent waits on: `report_progress` fails saying so, and
-  `send_message` to `"parent"` reaches the parent.
 
 Use `send_message` to `"parent"` instead for something the parent must act on:
 that interrupts it (see [Messages](https://run.camelai.com/docs/guides/multi-agent.md#messages)).
@@ -6537,9 +6544,7 @@ else:
   again, and its answer comes back as a new notification. The sub-agent reads
   `<agent_message name="parent">…</agent_message>`.
 - **Sub-agent to parent:** `to: "parent"`, which the runtime resolves through
-  the run's signed chain (in a run its parent did not start, one an application
-  prompted through the API, through the parent that made it), without the
-  sub-agent's turn ending. A parent that is
+  the run's signed chain, without the sub-agent's turn ending. A parent that is
   running takes it into that turn at its next step, after the tool calls it
   is making, as a person's `whileRunning: "steer"` prompt is taken. It starts
   no turn, and its request ends `steeredInto` that turn. A `wait_agent` in

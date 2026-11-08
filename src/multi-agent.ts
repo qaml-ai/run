@@ -81,6 +81,14 @@ export const SUBAGENT_EVENTS: readonly string[] = ["subagent_start", "subagent_e
  */
 export const PARENT_KEYS = { agent: "parentAgentId", run: "parentRunId", toolCall: "parentToolCallId", depth: "delegationDepth", maxDepth: "delegationMaxDepth", chain: "delegationChain", signature: "delegationSignature" } as const;
 
+/**
+ * A sub-agent the runtime made (delegate, spawn_agent) is reached only through its parent: a prompt, steer, code run or
+ * schedule from anyone else is refused, while its parent's own calls, messages and notifications go on.
+ */
+export function viaParent(agent: string) {
+  return new HttpError(409, `${agent} is a sub-agent: message its parent, which reaches it with send_message`, "SUBAGENT_VIA_PARENT");
+}
+
 const NAME = /^[A-Za-z0-9_-]{1,64}$/;
 /** A definition id, or a definition's or agent's key. */
 const KEY = /^[A-Za-z0-9_-]{1,80}$/;

@@ -206,7 +206,7 @@ original suite.
 | `agent-lifetime.test.ts` | 7 / 7 |
 | `agent-links.test.ts` | 1 / 1 |
 | `agent-mcp.test.ts` | 3 / 3 |
-| `agent-messaging.test.ts` | 5 / 5 |
+| `agent-messaging.test.ts` | 6 / 6 |
 | `agent-progress.test.ts` | 10 / 10 |
 | `anthropic-federation.test.ts` | 1 / 6 |
 | `agents-list.test.ts` | 1 / 2 |
