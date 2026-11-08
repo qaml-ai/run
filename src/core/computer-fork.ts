@@ -11,18 +11,21 @@ import { HttpError } from "./http-error.ts";
 import type { Sql } from "./host.ts";
 
 export const COMPUTER_CHOICES = ["fork", "fresh", "none"] as const;
-/** fork: a copy of the parent's disk; fresh (the default): a new, empty machine with the parent's settings; none: no computer. */
+/**
+ * fork: a copy of the parent's disk; fresh: a new, empty machine with the parent's settings; none (the default, unless
+ * the definition the sub-agent is made from declares its own computer): no computer.
+ */
 export type ComputerChoice = typeof COMPUTER_CHOICES[number];
 
 /** The `computer` argument of delegate and spawn_agent as the model sees it. */
 export const COMPUTER_ARGUMENT = Object.freeze({
   type: "string", enum: [...COMPUTER_CHOICES],
-  description: "Only if you have a computer: fork gives the sub-agent its own copy of your computer's disk as it is now (repos, installed packages, build caches; not running processes), so it can build and test on its own branch; its writes never reach yours. fresh (default): a new, empty computer. none: no computer.",
+  description: "Only if you have a computer: fork gives the sub-agent its own copy of your computer's disk as it is now (repos, installed packages, build caches; not running processes), so it can build and test on its own branch; its writes never reach yours. fresh: a new, empty computer. none (default unless the agent you start declares one): no computer.",
 });
 
-/** A call's `computer` argument: fresh when left out. */
-export function computerChoice(value: unknown): ComputerChoice {
-  if (value === undefined || value === null) return "fresh";
+/** A call's `computer` argument: none when left out, fresh when it is and the definition the child is made from declares a computer of its own. */
+export function computerChoice(value: unknown, declared = false): ComputerChoice {
+  if (value === undefined || value === null) return declared ? "fresh" : "none";
   if (typeof value === "string" && (COMPUTER_CHOICES as readonly string[]).includes(value)) return value as ComputerChoice;
   throw new HttpError(400, 'computer must be "fork", "fresh" or "none"');
 }

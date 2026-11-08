@@ -44,11 +44,11 @@ test('a computer connected during eager startup is available on the first turn',
 });
 
 
-for (const builtin of ['delegate', 'agents']) for (const subagents of [true, false]) test(`${builtin} child creation inherits computer attachments: ${subagents}`, async t => {
+for (const builtin of ['delegate', 'agents']) for (const subagents of [true, false]) test(`${builtin} child creation inherits computer attachments when asked for a fresh computer: ${subagents}`, async t => {
   const r = await runtime(t, body => {
     const system = body.messages.filter((m: any) => m.role === 'system' || m.role === 'developer').map((m: any) => JSON.stringify(m.content)).join(' ');
     if (!system.includes('COMPUTER_PARENT') || body.messages.some((m: any) => m.role === 'tool')) return { role: 'assistant', content: 'done' };
-    return toolCall(builtin === 'agents' ? 'spawn_agent' : 'delegate', { agent: 'worker', task: 'child task' }, 'child');
+    return toolCall(builtin === 'agents' ? 'spawn_agent' : 'delegate', { agent: 'worker', task: 'child task', computer: 'fresh' }, 'child');
   });
   await r.call('/v1/definitions', { headers: { 'Idempotency-Key': 'worker' }, body: { name: 'Worker', systemPrompt: 'COMPUTER_CHILD' } });
   const parent = (await r.call('/v1/agents', { body: { systemPrompt: 'COMPUTER_PARENT', builtins: [builtin], delegate: { agents: ['worker'] } } })).json.id;
@@ -69,4 +69,32 @@ for (const builtin of ['delegate', 'agents']) for (const subagents of [true, fal
   }
   await r.call(`/v1/agents/${child}`, { method: 'DELETE' });
   assert.ok(!(await r.call('/v1/computers')).json.some((c: any) => c.agent === child));
+});
+
+// A sub-agent gets no computer unless asked: left out, the computer argument is none, whatever the parent's connection allows.
+for (const builtin of ['delegate', 'agents']) for (const [name, target, computer, has] of [
+  ['an instructions child has no computer by default', { instructions: 'You check one thing.' }, undefined, false],
+  ['a definition child without computer settings has none by default', { agent: 'worker' }, undefined, false],
+  ['an explicit none gives a child no computer', { instructions: 'You check one thing.' }, 'none', false],
+  ['an explicit fresh gives a child a computer', { instructions: 'You check one thing.' }, 'fresh', true],
+] as const) test(`${builtin}: ${name}`, async t => {
+  const childTools: string[][] = [];
+  const r = await runtime(t, body => {
+    const system = body.messages.filter((m: any) => m.role === 'system' || m.role === 'developer').map((m: any) => JSON.stringify(m.content)).join(' ');
+    if (system.includes('COMPUTER_PARENT')) return body.messages.some((m: any) => m.role === 'tool') ? { role: 'assistant', content: 'done' }
+      : toolCall(builtin === 'agents' ? 'spawn_agent' : 'delegate', { ...target, task: 'child task', ...computer ? { computer } : {} }, 'child');
+    childTools.push((body.tools ?? []).map((tool: any) => tool.function.name));
+    return { role: 'assistant', content: 'done' };
+  });
+  await r.call('/v1/definitions', { headers: { 'Idempotency-Key': 'worker' }, body: { name: 'Worker', systemPrompt: 'COMPUTER_CHILD' } });
+  const parent = (await r.call('/v1/agents', { body: { systemPrompt: 'COMPUTER_PARENT', builtins: [builtin], delegate: { agents: ['worker'], instructions: true } } })).json.id;
+  assert.equal((await r.call('/v1/computers', { body: { agent: parent, provider: 'e2b', credentials: { apiKey: 'fixture-only' }, subagents: true } })).status, 201);
+  const run = await r.prompt(parent, 'start');
+  const child = run.outcome.result.toolCalls.find((c: any) => c.agentId)?.agentId;
+  assert.ok(child);
+  assert.equal((await r.call(`/v1/agents/${child}/computer`)).status, has ? 200 : 404);
+  if (builtin === 'delegate') {
+    assert.equal(childTools.length, 1);
+    assert.equal(childTools[0].some(tool => tool.startsWith('computer_')), has);
+  }
 });

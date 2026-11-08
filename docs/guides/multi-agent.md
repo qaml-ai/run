@@ -61,7 +61,7 @@ The model gets a `delegate` tool that lists the agents with what each is for
 | `instructions` | Instead of `agent`, with `instructions: true` in the settings: who a sub-agent the model designs itself is and how it works, on its own model. It gets them with its task, as its first message |
 | `task` | What to do. The sub-agent sees only this, not the conversation |
 | `output` | A JSON Schema for an object: the answer comes back in that shape (see [Structured output](structured-output.md)) |
-| `computer` | `"fresh"` (default): a new computer with the parent's connection settings; `"fork"`: a copy of the parent's computer disk, one snapshot for all the children of the response; `"none"`: no computer (see [Forking a computer](computers.md#forking-a-computer)) |
+| `computer` | `"none"` (default, unless the definition the sub-agent is made from declares its own computer): no computer; `"fresh"`: a new computer with the parent's connection settings; `"fork"`: a copy of the parent's computer disk, one snapshot for all the children of the response (see [Forking a computer](computers.md#forking-a-computer)) |
 
 The call's result is `{ agentId, requestId, status, text, output?, error? }`.
 `status` is `completed`, `input_required` (the sub-agent waits on a person) or
@@ -155,8 +155,13 @@ account's code slots, so its children can run code. `delegate`'s
 
 ### Computers
 
-If the parent has a [computer connection](computers.md), each newly created
-child gets a separate connection with the same provider, credentials, managed
+A sub-agent gets no computer unless asked: left out, `computer` is `"none"`.
+The exception is a child made from a definition whose configuration declares
+its own computer (Workers backend), which keeps it. Ask for `"fresh"` or `"fork"` to
+give a child a computer.
+
+If the parent has a [computer connection](computers.md), a child made with
+`computer: "fresh"` gets a separate connection with the same provider, credentials, managed
 setting, lease and daily limits. This covers inline and definition children,
 `delegate` and `spawn_agent`. Existing named agents and
 agents targeted by tool spawn directives keep their own connections.
