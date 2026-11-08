@@ -21,6 +21,7 @@ import { Link, navigate, usePath, useSearch } from "@/lib/router";
 import { reportPages } from "@/lib/journey";
 import { cn } from "@/lib/utils";
 import { AccountPage } from "@/pages/account";
+import { InboxPage } from "@/pages/inbox";
 import { AgentsPage } from "@/pages/agents";
 import { OverviewPage } from "@/pages/overview";
 import { AgentPage } from "@/pages/agent";
@@ -112,6 +113,7 @@ function Console({ me }: { me: Me }) {
   useEffect(() => { document.title = title; }, [title]);
   if (redirect || (!section && !agents.data && !agents.error && !startFrom(location.search))) return <div className="text-muted-foreground flex h-dvh items-center justify-center"><Loader2 className="animate-spin" /></div>;
   const page = starting ? <GetStartedPage billing={billing.data} onboarding={onboarding} />
+    : section === "inbox" ? <InboxPage />
     : section === "agents" && rest[0] ? <AgentPage id={rest[0]} />
     : section === "volumes" ? (rest[0] ? <VolumePage id={rest[0]} /> : <VolumesPage />)
     : section === "computers" ? <ComputersPage />
