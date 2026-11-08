@@ -55,6 +55,10 @@ test("ask_user suspends the turn; the answer, after the agent unloaded, resumes 
   assert.equal(input.toolCallId, "call_ask");
   assert.deepEqual(input.detail.questions[0].options.map((option: any) => option.label), ["EU", "US"]);
   assert.ok(Math.abs(input.expiresAt - Date.now() - 15 * 60_000) < 60_000, "inputs wait 15 minutes by default");
+  // The row carries the inbox's fields (docs/inbox-and-peers-design.md): a question is normal and blocking, nobody is
+  // named for it here, and its lineage is the agent itself, which starts its own chain.
+  const [row] = (await r.db.query("select priority, blocking, responders, root_agent, lineage, version from agent_inputs where id = $1", [input.id])).rows;
+  assert.deepEqual([row.priority, row.blocking, row.responders, row.root_agent, row.lineage, row.version], ["normal", true, [], agent, [agent], 1]);
   assert.equal(r.model.bodies.length, 1, "the model is not called while the turn waits");
   const system = r.model.bodies[0].messages.find((message: any) => message.role === "system" || message.role === "developer").content;
   assert.match(system, /ask them with ask_user; your turn pauses until they answer/);

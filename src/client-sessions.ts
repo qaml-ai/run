@@ -217,7 +217,7 @@ export class ClientSessions {
       startStep: (session, record, work) => this.startStep(session, record, work),
     };
     this.inputsContext = {
-      options, sessions: this.sessions, publish: (session, data) => this.publish(session, data),
+      options, sessions: this.sessions, delegation: this.delegationContext, publish: (session, data) => this.publish(session, data),
       accept: (session, body, trusted) => this.accept(session, body, trusted),
       headerFor: (id, tenant) => this.headerFor(id, tenant),
       submit: (agent, tenant, request) => this.submit(agent, tenant, request),
