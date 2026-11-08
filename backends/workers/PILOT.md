@@ -27,6 +27,7 @@ Postgres or use customer credentials. All dates below are UTC.
 | Analytics Engine | `camelrun_pilot` / `METRICS` | Runtime metrics |
 | Email Sending | `EMAIL` | Sender restricted to `camelrun@staging.camelai.dev` |
 | Cron | `*/5 * * * *` | Maintenance and outbox repair |
+| Inbox cron (configured for the next deploy) | `* * * * *` | Reconcile at most 100 stale human-input mirrors; other maintenance stays on the five-minute cron |
 | Model secret | `PILOT_OPENROUTER_KEY` | Account secret `CAMELRUN_PILOT_OPENROUTER_KEY`, store `c8c66b0210e64900864182073dcd5e09` |
 | Runtime secrets | `API_TOKEN`, `FILE_SIGNING_SECRET`, `AGENT_SECRETS_KEY` | Stable authentication, signing and encryption keys; values never displayed |
 

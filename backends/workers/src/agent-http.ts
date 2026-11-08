@@ -387,10 +387,15 @@ export async function fetchRequestImpl(this: AgentRuntime,
         const unaccepted = await this.testStorage.get<number>("test:host-unaccepted-task");
         return json({
           crashReached: !!(await this.testStorage.get("test:crash-reached")),
+          inputEmitReached: !!(await this.testStorage.get("test:input-emit-owner")),
           pending: (await this.ctx.storage.list({ prefix: "billing:" })).size,
           hostFinishedAt: await this.testStorage.get<number>("test:host-finished-at"),
           unacceptedFinishedAt: unaccepted === undefined ? undefined : (await waitHostExecution(await this.harness.pi(), unaccepted as never)).endedAt,
         });
+      }
+      if (path === "/__test/crash-input-before-emit" && this.env.TEST_HOOKS === "1" && request.method === "POST") {
+        await this.testStorage.put("test:crash-input-emit", true);
+        return json({ armed: true });
       }
       if (
         path === "/__test/crash-next-settlement" &&
@@ -588,8 +593,8 @@ export async function fetchRequestImpl(this: AgentRuntime,
         if (input.tenant !== conf.tenantId) throw new BadRequest("Tenant mismatch");
         if (!Array.isArray(input.ids) || input.ids.length > 100 || input.ids.some(id => typeof id !== "string"))
           throw new BadRequest("Expected at most 100 input IDs");
-        await repairInputMirrors(this, input.ids);
-        return json({ refreshed: true });
+        const missing = await repairInputMirrors(this, input.ids);
+        return json({ refreshed: true, missing });
       }
       if ((path === "/inputs" || path.startsWith("/inputs/")) && request.method === "POST") {
         const input = await body(request, 1024 * 1024);
@@ -599,7 +604,6 @@ export async function fetchRequestImpl(this: AgentRuntime,
         this.admission = answering.catch(() => {});
         const answered = await answering.catch(async error => {
           if (errorStatus(error, 500) === 409) {
-            await this.closeHumanInputs("expired").catch(() => {});
             await repairInputMirrors(this, answers.map((entry: { id: string }) => entry.id)).catch(error => failure(this.env, "input_mirror_repair_failed", error));
           }
           throw error;

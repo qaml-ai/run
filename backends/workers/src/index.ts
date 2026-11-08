@@ -641,7 +641,7 @@ const worker = {
   async scheduled(_controller: ScheduledController, env: Env) {
     return withMoneyMetrics(env, async () => {
     try {
-      if (_controller.cron === "* * * * *") return sweepInputMirrors(env);
+      if (_controller.cron === "* * * * *") { await sweepInputMirrors(env); return; }
       await maintenance(env);
       await moneyMaintenance(env);
       await publishScheduleEmails(env);

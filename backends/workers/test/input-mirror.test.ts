@@ -92,3 +92,35 @@ test('sweep leases 100 old pending Workers rows and rotates past unchanged rows'
   assert.equal(calls.length, 103);
   assert.equal(new Set(calls).size, 103);
 });
+
+test('sweep withdraws missing inputs and gone agents, preserves concurrent updates and retries outages', async () => {
+  const { db, url } = await testDatabase();
+  await transaction(db, sql => upsertInputMirrors(sql, [
+    input({ agent: 'gone', id: 'gone' }), input({ id: 'missing' }), input({ id: 'raced' }), input({ agent: 'offline', id: 'offline' }),
+  ]));
+  await db.query("update agent_inputs set updated_at=now()-interval '2 hours'");
+  const env = { HYPERDRIVE: { connectionString: url }, AGENTS: { getByName: (agent: string) => ({ fetch: async () => {
+    if (agent === 'gone') return new Response(null, { status: 410 });
+    if (agent === 'offline') return new Response(null, { status: 503 });
+    await transaction(db, sql => upsertInputMirrors(sql, [input({ id: 'raced', version: 2 })]));
+    return Response.json({ missing: ['missing', 'raced'] });
+  } }) } } as unknown as Env;
+  await assert.rejects(sweepInputMirrors(env), /could not refresh/);
+  const rows = (await db.query("select input->>'workersInputId' as id, state, version from agent_inputs")).rows;
+  assert.deepEqual(rows.find(row => row.id === 'gone'), { id: 'gone', state: 'withdrawn', version: 2 });
+  assert.deepEqual(rows.find(row => row.id === 'missing'), { id: 'missing', state: 'withdrawn', version: 2 });
+  assert.deepEqual(rows.find(row => row.id === 'raced'), { id: 'raced', state: 'pending', version: 2 });
+  assert.deepEqual(rows.find(row => row.id === 'offline'), { id: 'offline', state: 'pending', version: 1 });
+});
+
+test('the oldest pending sweep can use its partial index', async () => {
+  const { db } = await testDatabase();
+  const plan = await transaction(db, async sql => {
+    await sql.query('set local enable_seqscan=off');
+    return (await sql.query(`explain select id from agent_inputs where state='pending' and input ? 'workersInputId'
+      and updated_at < now()-interval '1 hour' and (claimed_until is null or claimed_until < now())
+      order by updated_at limit 100 for update skip locked`)).rows.map(row => row['QUERY PLAN']).join('\n');
+  });
+  assert.match(plan, /Index Scan using agent_inputs_pending_updated_at/);
+  assert.doesNotMatch(plan, /Sort/);
+});

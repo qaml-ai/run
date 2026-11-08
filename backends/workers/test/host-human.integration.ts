@@ -109,3 +109,39 @@ test("HTTP host scripts keep separate human inputs across restart and cancellati
   const messages = (await call(`${base}/history`)).value.messages;
   assert.ok(messages.some((message: any) => message.role === "toolResult" && message.content?.some((part: any) => /sent a new message instead/.test(part.text ?? ""))));
 });
+
+test('startup repairs a Pi input committed before its first stream event and mirror', { timeout: 120_000 }, async t => {
+  const fixture = await startFixture();
+  t.after(() => fixture.stop());
+  const call = async (path: string, body?: unknown) => {
+    const response = await fetch(fixture.url + path, { method: body ? 'POST' : 'GET',
+      headers: { authorization: `Bearer ${fixture.token}`, 'content-type': 'application/json' },
+      ...(body ? { body: JSON.stringify(body) } : {}) });
+    assert.ok(response.ok, `${path}: ${response.status}`);
+    return await response.json() as any;
+  };
+  const { id } = await call('/v1/agents', { model: 'test/echo', builtins: ['ask_human'] });
+  const experimental = `/experimental/agents/${id}`;
+  await call(`${experimental}/__test/crash-input-before-emit`, {});
+  await call(`/v1/agents/${id}/requests`, { id: 'crash-input', method: 'execute', params: { code: 'return await tools.ask_human({question:"Recover me?"})' } });
+  let reached = false;
+  for (let n = 0; n < 150; n++) {
+    if ((await call(`${experimental}/__test/settlement-state`)).inputEmitReached) { reached = true; break; }
+    await delay(20);
+  }
+  assert.ok(reached, 'stopped after Pi commit and before emit');
+  assert.equal((await fixture.db.query('select count(*)::int as n from agent_inputs where agent=$1', [id])).rows[0].n, 0);
+  await fixture.worker.stop(true);
+  await fixture.worker.start();
+  await call(`/v1/agents/${id}/inputs`); // First wake runs startup recovery.
+  let row: any;
+  for (let n = 0; n < 150; n++) {
+    row = (await fixture.db.query('select * from agent_inputs where agent=$1', [id])).rows[0];
+    if (row) break;
+    await delay(20);
+  }
+  assert.equal(row?.state, 'pending');
+  assert.equal(row?.version, 1);
+  assert.equal(row?.input.message, 'Recover me?');
+  await call(`/v1/agents/${id}/inputs/${row.input.workersInputId}`, { answer: 'Recovered' });
+});

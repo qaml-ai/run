@@ -54,13 +54,14 @@ export async function sweepInputMirrors(env: Env) {
     with stale as (
       select id from agent_inputs where state='pending' and input ? 'workersInputId'
         and updated_at < now() - interval '1 hour' and (claimed_until is null or claimed_until < now())
-      order by claimed_until nulls first, updated_at, id limit 100 for update skip locked
+      order by updated_at limit 100 for update skip locked
     ) update agent_inputs set claimed_until=now() + interval '1 hour'
-      where id in (select id from stale) returning agent, tenant, input->>'workersInputId' as input_id`)).rows);
-  const agents = new Map<string, { tenant: string; ids: string[] }>();
+      where id in (select id from stale) returning id, version, agent, tenant, input->>'workersInputId' as input_id`)).rows);
+  const agents = new Map<string, { tenant: string; ids: string[]; rows: { id: string; version: number; input_id: string }[] }>();
   for (const row of rows) {
-    const group: { tenant: string; ids: string[] } = agents.get(row.agent) ?? { tenant: row.tenant, ids: [] };
+    const group = agents.get(row.agent) ?? { tenant: row.tenant, ids: [] as string[], rows: [] as { id: string; version: number; input_id: string }[] };
     group.ids.push(row.input_id);
+    group.rows.push(row);
     agents.set(row.agent, group);
   }
   const groups = [...agents];
@@ -69,11 +70,30 @@ export async function sweepInputMirrors(env: Env) {
     const results = await Promise.allSettled(groups.slice(offset, offset + 10).map(async ([agent, group]) => {
       const response = await env.AGENTS.getByName(agent).fetch(new Request("https://agent/_input-mirror", {
         method: "POST", headers: { "content-type": "application/json" }, signal: AbortSignal.timeout(10_000),
-        body: JSON.stringify(group),
+        body: JSON.stringify({ tenant: group.tenant, ids: group.ids }),
       }));
+      if (response.status === 404 || response.status === 410) {
+        await withdrawInputMirrors(env, agent, group.tenant);
+        return;
+      }
       if (!response.ok) throw new Error(`Input mirror refresh failed (${response.status})`);
+      const result = await response.json() as { missing?: string[] };
+      const missing = group.rows.filter(row => result.missing?.includes(row.input_id));
+      if (missing.length) await withdrawInputMirrors(env, agent, group.tenant, missing);
     }));
     failed ||= results.some(result => result.status === "rejected");
   }
   if (failed) throw new Error("Input mirror sweep could not refresh every agent");
+}
+
+/** Missing authority is terminal; a stale sweep must not overwrite a newer mirror. */
+async function withdrawInputMirrors(env: Env, agent: string, tenant: string, expected?: { id: string; version: number }[]) {
+  await transaction(env, async sql => {
+    const result = await sql.query(`update agent_inputs set state='withdrawn', version=version+1, updated_at=now(), claimed_until=null
+      where agent=$1 and tenant=$2 and state='pending' and input ? 'workersInputId'
+      and ($3::jsonb is null or exists (select 1 from jsonb_to_recordset($3::jsonb) as r(id text, version integer)
+        where r.id=agent_inputs.id and r.version=agent_inputs.version)) returning id`,
+      [agent, tenant, expected ? JSON.stringify(expected) : null]);
+    if (result.rowCount) await sql.query("select pg_notify('inbox', $1)", [tenant]);
+  });
 }

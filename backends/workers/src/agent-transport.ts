@@ -19,6 +19,13 @@ export async function emitImpl(this: AgentRuntime,
   delivery?: TerminalDelivery,
   webhook?: WebhookEvent) {
     const inputEvent = (event as any).event;
+    if (inputEvent?.type === "input_required" && this.env.TEST_HOOKS === "1") {
+      if (await this.testStorage.get("test:crash-input-emit")) {
+        await this.testStorage.delete("test:crash-input-emit");
+        await this.testStorage.put("test:input-emit-owner", this.instanceId);
+      }
+      if (await this.testStorage.get("test:input-emit-owner") === this.instanceId) return;
+    }
     const mirrors = ["input_required", "input_resolved"].includes(inputEvent?.type)
       ? await readInputMirrors(this, [inputEvent.input?.id ?? inputEvent.id]) : [];
     let committed: { owner?: Config; record?: RequestRecord } = {};
