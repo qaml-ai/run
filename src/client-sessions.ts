@@ -1768,8 +1768,8 @@ export class ClientSessions {
     const steerable = params.notice?.metadata?.kind === "message" && ["child", "parent"].includes(params.notice.metadata.to);
     if (notice && (!trusted || body.method !== "prompt" || (params.whileRunning !== undefined && !steerable) || !childSessions.validNotice(params.notice))) throw new HttpError(400, "Invalid request");
     // A sub-agent the runtime made runs only what its parent sends it: a run signed into its parent's chain, or a message
-    // or notification of the runtime's. Anyone else's prompt, steer or code is refused (answering its inputs still resumes it).
-    if (session.header.parent && ["prompt", "steer", "execute"].includes(body.method) && !notice && !delegation.delegation(this.delegationContext, session.header.id, body.id, params.metadata).chain.length) throw viaParent(session.header.id);
+    // or notification of the runtime's. Anyone else's prompt, steer, continue or code is refused (answering its inputs still resumes it).
+    if (session.header.parent && ["prompt", "steer", "continue", "execute"].includes(body.method) && !notice && !delegation.delegation(this.delegationContext, session.header.id, body.id, params.metadata).chain.length) throw viaParent(session.header.id);
     const rate = isRun && body.method !== "resume" && !notice ? await this.options.runRate?.(session.header.tenant) ?? undefined : undefined;
     const limited = body.method === "resume" || notice ? undefined : await spend.runLimit(this.spendContext, session, body.method, bucket);
     if (limited) throw limited;

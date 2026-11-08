@@ -211,8 +211,8 @@ export async function admitImpl(this: AgentRuntime,
     if (!/^[A-Za-z0-9_-]+$/.test(id))
       throw new BadRequest("Invalid request id");
     // A sub-agent the runtime made runs only what its parent sends it: a run signed into its parent's chain, or a message
-    // or notification of the runtime's. Anyone else's prompt, steer or code is refused (answering its inputs still resumes it).
-    if (!notice && ["prompt", "steer", "execute"].includes(String(request.method))) {
+    // or notification of the runtime's. Anyone else's prompt, steer, continue or code is refused (answering its inputs still resumes it).
+    if (!notice && ["prompt", "steer", "continue", "execute"].includes(String(request.method))) {
       const conf = await this.config();
       const metadata = request.params && typeof request.params === "object" ? (request.params as { metadata?: unknown }).metadata : undefined;
       if (conf.config.type === "subagent" && !await this.delegation.lineage(conf.id, { id, metadata })
