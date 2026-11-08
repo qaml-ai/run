@@ -44,7 +44,7 @@ contractTest('credits', 'tests/prompt-payer.test.ts', 'prompt payer owns holds a
   await r.call('/v1/end-users/guest/entries', { body: { kind: 'adjustment', amount: -100_000, key: 'empty' } });
   const refused = await send('broke', 'guest');
   assert.deepEqual([refused.status, refused.json.code, refused.json.endUser], [402, 'END_USER_CREDIT', 'guest'], refused.text);
-}, { timeout: 180_000, env: { AGENT_MODEL: 'openai/gpt-4.1', AGENT_OPENROUTER_CREDIT_MULTIPLIER: '1', AGENT_OUTBOUND_ALLOW_HTTP: 'true', AGENT_OUTBOUND_ALLOW_CIDRS: '127.0.0.0/8' } });
+}, { timeout: 60_000, env: { AGENT_MODEL: 'openai/gpt-4.1', AGENT_OPENROUTER_CREDIT_MULTIPLIER: '1', AGENT_OUTBOUND_ALLOW_HTTP: 'true', AGENT_OUTBOUND_ALLOW_CIDRS: '127.0.0.0/8' } });
 
 contractTest('credits', 'tests/prompt-payer.test.ts', 'a newly spawned child inherits the prompt payer and bucket', async (_t, r) => {
   r.setModel(body => {
@@ -138,7 +138,7 @@ contractTest('credits', 'tests/prompt-payer.test.ts', 'only a steer with the run
     assert.deepEqual([...new Set(entries.map((e: any) => e.metadata.requestId))].sort(), [...requests].sort(), JSON.stringify(entries));
     assert.equal((await r.call(`/v1/end-users/${user}`)).json.held, 0);
   }
-}, { timeout: 180_000, env: payerEnv });
+}, { timeout: 60_000, env: payerEnv });
 
 contractTest('credits', 'tests/prompt-payer.test.ts', 'a follow-up queued before a steer keeps its own payer at the final boundary', async (_t, r) => {
   await seedPayers(r);
@@ -164,7 +164,7 @@ contractTest('credits', 'tests/prompt-payer.test.ts', 'a follow-up queued before
     assert.equal(entries.reduce((sum: number, entry: any) => sum + entry.raw, 0), user === 'guest' ? 20_000 : 10_000, 'each payer owns its model calls');
     assert.equal((await r.call(`/v1/end-users/${user}`)).json.held, 0);
   }
-}, { timeout: 180_000, env: payerEnv });
+}, { timeout: 60_000, env: payerEnv });
 
 contractTest('credits', 'tests/prompt-payer.test.ts', 'an idle raw steer waits and runs after a next prompt with a different payer', async (_t, r) => {
   await seedPayers(r);
@@ -186,7 +186,7 @@ contractTest('credits', 'tests/prompt-payer.test.ts', 'an idle raw steer waits a
     assert.equal(entries[0].raw, 10_000);
     assert.equal((await r.call(`/v1/end-users/${user}`)).json.held, 0);
   }
-}, { timeout: 180_000, env: payerEnv });
+}, { timeout: 60_000, env: payerEnv });
 
 contractTest('credits', 'tests/prompt-payer.test.ts', 'first prompt accepts a payer, malformed JSON is 400, and payer buckets do not become the subject default', async (_t, r) => {
   await seedPayers(r);
@@ -249,7 +249,7 @@ contractTest('credits', 'tests/prompt-payer.test.ts', 'idle parent messages and 
   assert.ok(other.every((e: any) => e.bucket === 'second-bucket'));
   assert.equal((await r.call('/v1/end-users/owner/ledger')).json.entries.filter((e: any) => e.kind === 'usage').length, 0);
   for (const user of ['guest', 'other']) assert.equal((await r.call(`/v1/end-users/${user}`)).json.held, 0);
-}, { timeout: 180_000, env: payerEnv });
+}, { timeout: 60_000, env: payerEnv });
 
 contractTest('credits', 'tests/prompt-payer.test.ts', 'a collaborator pays for a child without becoming its MCP identity', async (t, r) => {
   await seedPayers(r);
@@ -314,4 +314,4 @@ contractTest('credits', 'tests/prompt-payer.test.ts', 'a deleted payer does not 
   const history = (await r.call(`/v1/agents/${id}/history`)).json.messages;
   assert.ok(history.some((entry: any) => JSON.stringify(entry.content).includes('child result survived')), 'notice is durable in parent history');
   assert.equal((await r.call('/v1/end-users/guest/ledger')).json.entries.filter((e: any) => e.kind === 'usage' && e.metadata.requestId === `child_${child.requestId}`).length, 0);
-}, { timeout: 180_000, env: payerEnv });
+}, { timeout: 60_000, env: payerEnv });
