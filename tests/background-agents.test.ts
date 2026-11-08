@@ -335,9 +335,10 @@ test("with delegate.notify asap, a wait_agent in flight still takes the child's 
     return toolCall("spawn_agent", { instructions: "You are a WORKER.", task: "find the answer" }, "call_spawn");
   });
   const parent = (await r.call("/v1/agents", { body: { builtins: ["agents"], delegate: { instructions: true, notify: "asap" } } })).json.id;
+  const events = await watchEvents(t, `${r.base}/v1/agents/${parent}/events`, { Authorization: `Bearer ${OPERATOR}` });
   const turn = r.prompt(parent, "start a worker and wait for it");
-  await until(async () => (await parentRequests(r, parent)).length && true, "the turn to start");
-  await sleep(500);
+  // The child ends only once the wait is in flight: released before it, the child's ending is a notification instead.
+  await until(() => events.frames.some(frame => frame.data.event?.type === "tool_execution_start" && frame.data.event.toolCallId === "call_wait"), "wait_agent to start");
   release();
   const record = await turn;
   assert.match(record.outcome.result.reply, /^waited: .*the answer is 42/, JSON.stringify(record.outcome));

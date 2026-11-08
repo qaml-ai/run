@@ -650,40 +650,44 @@ export class Delegation {
         const deadline = Date.now() + Number(args.timeoutMs ?? MULTI_AGENT_LIMITS.waitMs), earliestProgress = Date.now() + MULTI_AGENT_LIMITS.progressWaitMs;
         const watches = selected.filter(child => child.status === 'running').map(child => this.wait(child, wait).catch(() => {}));
         const messaged = new Set<string>(), updated = new Set<string>();
+        // In flight (`waiting`, the asap check) until the endings it answers are taken: a notification arriving meanwhile
+        // is not steered into the turn, so this wait, not a steer, takes its ending.
         this.waiting++;
         try {
-          while (Date.now() < deadline) {
-            signal.throwIfAborted();
-            const latest = (await this.children()).filter(child => selected.some(old => old.key === child.key));
-            if (latest.some(child => child.status !== 'running' && !child.landedBy) || latest.every(child => child.status !== 'running')) break;
-            for (const notice of (await this.host.storage.list<{ request: { id: string }; notice: RuntimeNotice }>({ prefix: 'delegation-notice:' })).values()) {
-              if (notice.notice.metadata.kind !== 'message') continue;
-              const record = await this.host.storage.get<{ state: string; accepted?: boolean }>(`request:${notice.request.id}`);
-              // Admission writes the request before Pi queues its steering input. A wait may
-              // return only after that input is durable, so the next step sees the message.
-              if (record?.accepted && record.state !== 'completed') messaged.add(notice.notice.source.name);
+          try {
+            while (Date.now() < deadline) {
+              signal.throwIfAborted();
+              const latest = (await this.children()).filter(child => selected.some(old => old.key === child.key));
+              if (latest.some(child => child.status !== 'running' && !child.landedBy) || latest.every(child => child.status !== 'running')) break;
+              for (const notice of (await this.host.storage.list<{ request: { id: string }; notice: RuntimeNotice }>({ prefix: 'delegation-notice:' })).values()) {
+                if (notice.notice.metadata.kind !== 'message') continue;
+                const record = await this.host.storage.get<{ state: string; accepted?: boolean }>(`request:${notice.request.id}`);
+                // Admission writes the request before Pi queues its steering input. A wait may
+                // return only after that input is durable, so the next step sees the message.
+                if (record?.accepted && record.state !== 'completed') messaged.add(notice.notice.source.name);
+              }
+              if (messaged.size) break;
+              if (args.untilProgress && Date.now() >= earliestProgress) for (const child of latest) if (child.progress && child.progress.sequence > (child.progressShown ?? 0)) updated.add(child.name);
+              if (updated.size) break;
+              await sleep(Math.min(25, Math.max(1, deadline - Date.now())), signal);
             }
-            if (messaged.size) break;
-            if (args.untilProgress && Date.now() >= earliestProgress) for (const child of latest) if (child.progress && child.progress.sequence > (child.progressShown ?? 0)) updated.add(child.name);
-            if (updated.size) break;
-            await sleep(Math.min(25, Math.max(1, deadline - Date.now())), signal);
-          }
-        } finally { this.waiting--; stop.abort(); await Promise.all(watches); }
-        const { run } = await this.host.context(api);
-        const answers = await this.host.storage.transaction(async tx => {
-          const answers: (ReturnType<Delegation['answer']> | { agentId: string; name: string; status: string; note: string })[] = [];
-          for (const old of selected) {
-            const child = await tx.get<DelegatedChild>(prefix + old.key) ?? old;
-            if (child.status !== 'running' && child.landedBy) answers.push({ agentId: child.id, name: child.name, status: child.status, note: 'Its answer comes (or came) as a notification' });
-            else {
-              answers.push({ ...this.answer(child), ...(child.status === 'running' && child.progress ? { progress: child.progress.text, progressAt: child.progress.at } : {}) });
-              if (child.status !== 'running') await this.settleInTransaction(tx, { ...child, notified: true, landedBy: 'wait' }, run.id);
-              else if (child.progress) await tx.put(prefix + child.key, { ...child, progressShown: child.progress.sequence });
+          } finally { stop.abort(); await Promise.all(watches); }
+          const { run } = await this.host.context(api);
+          const answers = await this.host.storage.transaction(async tx => {
+            const answers: (ReturnType<Delegation['answer']> | { agentId: string; name: string; status: string; note: string })[] = [];
+            for (const old of selected) {
+              const child = await tx.get<DelegatedChild>(prefix + old.key) ?? old;
+              if (child.status !== 'running' && child.landedBy) answers.push({ agentId: child.id, name: child.name, status: child.status, note: 'Its answer comes (or came) as a notification' });
+              else {
+                answers.push({ ...this.answer(child), ...(child.status === 'running' && child.progress ? { progress: child.progress.text, progressAt: child.progress.at } : {}) });
+                if (child.status !== 'running') await this.settleInTransaction(tx, { ...child, notified: true, landedBy: 'wait' }, run.id);
+                else if (child.progress) await tx.put(prefix + child.key, { ...child, progressShown: child.progress.sequence });
+              }
             }
-          }
-          return answers;
-        });
-        return this.toolResult({ agents: answers, ...(messaged.size ? { messaged: [...messaged], message: `${[...messaged].join(', ')} sent you a message, which follows this result: read it, then wait again if you need to` } : {}), ...(updated.size ? { updated: [...updated] } : {}), ...(!messaged.size && !updated.size && answers.every(child => child.status === 'running') ? { timedOut: true } : {}) }, api);
+            return answers;
+          });
+          return this.toolResult({ agents: answers, ...(messaged.size ? { messaged: [...messaged], message: `${[...messaged].join(', ')} sent you a message, which follows this result: read it, then wait again if you need to` } : {}), ...(updated.size ? { updated: [...updated] } : {}), ...(!messaged.size && !updated.size && answers.every(child => child.status === 'running') ? { timedOut: true } : {}) }, api);
+        } finally { this.waiting--; }
       }
       const child = children.find(child => child.id === args.agent || child.name === args.agent || child.id === args.to || child.name === args.to);
       if (!child) throw new HttpError(404, 'Unknown sub-agent');

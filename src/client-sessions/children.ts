@@ -388,31 +388,33 @@ async function waitAgents(ctx: ChildrenContext, session: Session, call: ToolCall
       return named.filter(open).at(-1) ?? named.at(-1);
     });
   };
-  let chosen = pick(await rows());
-  if (!chosen.length) return jsonResult({ agents: [], message: "No sub-agents are running" });
   // A sub-agent's message cuts the wait short, as does one already on its way to the model: it reads it next.
   const messaged = new Set(session.agentMessages?.values() ?? []);
-  // With untilProgress, a report it has not seen ends the wait too, once it has waited progressWaitMs: reports coalesce.
-  const updated = new Set<string>();
-  const earliest = Date.now() + (ctx.options.progressWaitMs ?? MULTI_AGENT_LIMITS.progressWaitMs);
-  const reported = async (signal: AbortSignal) => {
-    if (!untilProgress) return new Promise<never>(() => {});
-    const pause = (ms: number) => new Promise<void>(resolve => { const timer = setTimeout(resolve, ms); signal.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true }); });
-    await pause(earliest - Date.now());
-    while (!signal.aborted) {
-      const watched = new Set(chosen.filter(row => row.ended_at === null).map(row => row.child as string));
-      for (const report of (await progressOf(ctx, parent)).values()) {
-        if (watched.has(report.child) && Number(report.progress_seq) > (session.progressShown?.get(report.id) ?? 0)) updated.add(report.name);
-      }
-      if (updated.size) return;
-      await pause(1_000);
-    }
-    return new Promise<never>(() => {});
-  };
   let wake: (() => void) | undefined;
   const waiter = (name: string) => { messaged.add(name); wake?.(); };
+  // In flight (`messageWaiters`) from before it reads the rows until it has taken the endings it answers: an asap
+  // notification arriving meanwhile is not offered to the turn (accept), so this wait, not a steer, takes its ending.
   (session.messageWaiters ??= new Set()).add(waiter);
   try {
+    let chosen = pick(await rows());
+    if (!chosen.length) return jsonResult({ agents: [], message: "No sub-agents are running" });
+    // With untilProgress, a report it has not seen ends the wait too, once it has waited progressWaitMs: reports coalesce.
+    const updated = new Set<string>();
+    const earliest = Date.now() + (ctx.options.progressWaitMs ?? MULTI_AGENT_LIMITS.progressWaitMs);
+    const reported = async (signal: AbortSignal) => {
+      if (!untilProgress) return new Promise<never>(() => {});
+      const pause = (ms: number) => new Promise<void>(resolve => { const timer = setTimeout(resolve, ms); signal.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true }); });
+      await pause(earliest - Date.now());
+      while (!signal.aborted) {
+        const watched = new Set(chosen.filter(row => row.ended_at === null).map(row => row.child as string));
+        for (const report of (await progressOf(ctx, parent)).values()) {
+          if (watched.has(report.child) && Number(report.progress_seq) > (session.progressShown?.get(report.id) ?? 0)) updated.add(report.name);
+        }
+        if (updated.size) return;
+        await pause(1_000);
+      }
+      return new Promise<never>(() => {});
+    };
     // A resume not yet sent (its person has not answered) is answered as waiting on them, not waited for.
     const waitable = (row: any) => row.ended_at === null && row.kind !== "resume";
     const ready = () => chosen.some(row => open(row) && row.ended_at !== null) || !chosen.some(waitable);
@@ -441,24 +443,24 @@ async function waitAgents(ctx: ChildrenContext, session: Session, call: ToolCall
       chosen = pick(await rows());
       if (!chosen.length) return jsonResult({ agents: [], message: "No sub-agents are running" });
     }
+    const answers = [];
+    const progress = await progressOf(ctx, parent);
+    for (const row of chosen) {
+      const taken = row.landed_at === null && row.ended_at !== null ? await takeEnding(ctx, session, run, row) : undefined;
+      const notice = (taken ?? row).notice as ChildNotice | null;
+      answers.push({
+        agentId: row.child, name: row.name, status: row.ended_at === null && !taken ? row.kind === "resume" ? "input_required" : "running" : row.status ?? taken?.status,
+        ...(taken ? { text: notice!.text, ...(notice!.notice.metadata.output !== undefined ? { output: notice!.notice.metadata.output } : {}), ...(notice!.notice.metadata.error ? { error: notice!.notice.metadata.error } : {}) }
+          : row.ended_at !== null ? { note: "Its answer comes (or came) as a notification" } : progress.has(row.child) ? { progress: progress.get(row.child).progress, progressAt: Number(progress.get(row.child).progress_at) } : {}),
+      });
+      // Shown here, so its next tool result's <agent_updates> does not repeat it.
+      if (!taken && row.ended_at === null && progress.has(row.child)) markShown(session, progress.get(row.child));
+    }
+    const senders = [...messaged];
+    if (senders.length) return jsonResult({ agents: answers, messaged: senders, message: `${senders.join(", ")} sent you a message, which follows this result: read it, then wait again if you need to` });
+    if (updated.size && answers.some(answer => answer.status === "running")) return jsonResult({ agents: answers, updated: [...updated] });
+    return jsonResult({ agents: answers, ...(answers.every(answer => answer.status === "running") ? { timedOut: true } : {}) });
   } finally { session.messageWaiters.delete(waiter); }
-  const answers = [];
-  const progress = await progressOf(ctx, parent);
-  for (const row of chosen) {
-    const taken = row.landed_at === null && row.ended_at !== null ? await takeEnding(ctx, session, run, row) : undefined;
-    const notice = (taken ?? row).notice as ChildNotice | null;
-    answers.push({
-      agentId: row.child, name: row.name, status: row.ended_at === null && !taken ? row.kind === "resume" ? "input_required" : "running" : row.status ?? taken?.status,
-      ...(taken ? { text: notice!.text, ...(notice!.notice.metadata.output !== undefined ? { output: notice!.notice.metadata.output } : {}), ...(notice!.notice.metadata.error ? { error: notice!.notice.metadata.error } : {}) }
-        : row.ended_at !== null ? { note: "Its answer comes (or came) as a notification" } : progress.has(row.child) ? { progress: progress.get(row.child).progress, progressAt: Number(progress.get(row.child).progress_at) } : {}),
-    });
-    // Shown here, so its next tool result's <agent_updates> does not repeat it.
-    if (!taken && row.ended_at === null && progress.has(row.child)) markShown(session, progress.get(row.child));
-  }
-  const senders = [...messaged];
-  if (senders.length) return jsonResult({ agents: answers, messaged: senders, message: `${senders.join(", ")} sent you a message, which follows this result: read it, then wait again if you need to` });
-  if (updated.size && answers.some(answer => answer.status === "running")) return jsonResult({ agents: answers, updated: [...updated] });
-  return jsonResult({ agents: answers, ...(answers.every(answer => answer.status === "running") ? { timedOut: true } : {}) });
 }
 
 /**
