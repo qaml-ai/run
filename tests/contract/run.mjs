@@ -132,6 +132,12 @@ async function run(which) {
   const serial = files.filter(file => Object.hasOwn(serialFiles, file));
   const concurrency = Number(process.env.CONTRACT_CONCURRENCY ?? (which === "workers" ? 2 : 6));
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 16) throw new Error("CONTRACT_CONCURRENCY must be an integer from 1 to 16");
+  if (which === "workers" && files.length) {
+    console.log("Preparing Workers runtime before parallel cases");
+    const warmup = await command(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", "tests/contract/warm-workers.mjs"], {});
+    if (warmup.code !== 0) throw new Error(`Workers preparation failed: ${warmup.log.slice(-5000)}`);
+    logs.set("warmup", warmup.log);
+  }
   async function next() {
     for (;;) {
       if (stopping) return;

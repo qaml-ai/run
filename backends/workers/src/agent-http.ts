@@ -1,3 +1,5 @@
+import { answerInboxGroup, type InboxAnswer } from "../../../shared/inbox-answers.ts";
+import { answerInput, mayAnswer } from "./input-policy.ts";
 import { repairInputMirrors } from "./agent-input-mirror.ts";
 import { computerSetup } from "./computers/agent-setup.ts";
 import { forkComputerInto } from "./computers/child-fork.ts";
@@ -596,6 +598,36 @@ export async function fetchRequestImpl(this: AgentRuntime,
         const missing = await repairInputMirrors(this, input.ids);
         return json({ refreshed: true, missing });
       }
+      if (path === "/inbox-answers" && request.method === "POST") {
+        const input = await body(request) as { answers: InboxAnswer[] };
+        const conf = await this.config();
+        const internal = (method: string, pathname: string, data?: unknown) => {
+          const url = new URL(request.url); url.pathname = pathname;
+          return this.fetch(new Request(url, { method, headers: { "Content-Type": "application/json" }, ...(data ? { body: JSON.stringify(data) } : {}) }));
+        };
+        const snapshot = (async () => {
+          const response = await internal("GET", "/inputs");
+          if (!response.ok) throw Object.assign(new Error("Input authority unavailable"), { status: response.status });
+          return await response.json() as any[];
+        })();
+        const read = async (id: string) => (await snapshot).find(item => item.id === id);
+        const outcomes = (await Promise.all([false, true].map(decision => answerInboxGroup(input.answers.filter(a => a.id.startsWith("inp_") === decision), read, (view, answer) => {
+          if (!mayAnswer(view, { via: "api", actor: answer.actor, from: answer.from }, conf.config.humanInput?.approvers as string[] | undefined))
+            throw Object.assign(new Error("This person may not answer this input"), { status: 403 });
+          answerInput(view, answer);
+        }, async answers => {
+          // Reuse the per-agent writer: it partitions Pi inputs and Postgres decisions on slices 6–7.
+          const response = await internal("POST", "/inputs", { answers: answers.map(({ id, body }) => ({ ...body, id })) });
+          if (!response.ok) {
+            const error = await response.json() as { error?: string };
+            throw Object.assign(new Error(error.error ?? "Input answer failed"), { status: response.status });
+          }
+          return { status: response.status };
+        })))).flat();
+        await repairInputMirrors(this, input.answers.map(a => a.id));
+        return json({ outcomes: input.answers.map(a => outcomes.find(o => o.id === a.id)) });
+      }
+
       if ((path === "/inputs" || path.startsWith("/inputs/")) && request.method === "POST") {
         const input = await body(request, 1024 * 1024);
         const batch = path === "/inputs";

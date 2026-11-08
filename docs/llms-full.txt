@@ -2338,6 +2338,25 @@ confirmation. The next message from someone allowed to answer, if it fits (an
 option's number or label, `approve`/`yes` or `deny`/`no`, `done`), is the answer;
 anything else is a new message. See [Channels](https://run.camelai.com/docs/guides/channels.md).
 
+### Answer the inbox in a batch
+
+`POST /v1/inbox/answers` takes `{requestId, answers}`. Use a new `requestId` for each
+submission and reuse it to retrieve the same outcomes. Each of the 1–100 answers
+names the inbox row's `id` and observed `version`, plus `action` and optional
+`content`, `actor` or `from`. `accept: "recommended"` uses the stored recommendation
+at that version. A changed version is a conflict.
+
+The response is `{outcomes: [{id, outcome, status, state?, by?, error?}]}` in request
+order. Each item independently returns `answered` (202), `same` (200), `conflict`
+(409), `forbidden` (403), `unknown` (404), or `invalid` (400); the batch returns 200.
+Answers are checked at the input authority, including the responder policy, and
+valid answers for one agent are submitted together. The inbox index only routes
+Workers answers to their agent.
+
+TypeScript: `runtime.answerInbox(answers, requestId)`. Python, async or sync:
+`runtime.answer_inbox(answers, request_id="review-1")`. CLI:
+`camelrun inbox-answer '{"requestId":"review-1","answers":[{"id":"inp_...","version":1,"action":"accept","content":{"answers":{"Which region?":"EU"}},"actor":"alice"}]}'`.
+
 ---
 
 <!-- https://run.camelai.com/docs/guides/stateless-runs.md -->

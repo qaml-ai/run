@@ -382,6 +382,8 @@ export interface AgentInput {
 export type InboxPriority = "urgent" | "high" | "normal" | "low";
 export interface InboxOptions { for?: string; subject?: string; root?: string; priority?: InboxPriority; kind?: AgentInput["kind"]; cursor?: string; limit?: number }
 export interface InboxItem extends AgentInput { inputId: string; priority: InboxPriority; blocking: boolean; subject: string | null; root: string; lineage: string[]; key: string | null; version: number }
+export interface InboxAnswer { id: string; version: number; action?: "accept" | "decline" | "cancel"; content?: unknown; accept?: "recommended"; actor?: string; from?: Sender }
+export interface InboxOutcome { id: string; outcome: "answered" | "same" | "conflict" | "forbidden" | "unknown" | "invalid"; status: number; state?: string; by?: unknown; error?: string }
 export interface InboxPage { items: InboxItem[]; cursor: string | null; counts: { priority: Record<InboxPriority, number>; lead: Record<string, number> } }
 /** What an input asks: by its `kind`, the fields of one of these. */
 export interface InputDetail {
@@ -1813,6 +1815,7 @@ export class AgentRuntime {
   me(): Promise<{ tenant: string; via: string; login?: string; defaultModel: string }> { return this.transport.json("/v1/me", this.operator()); }
   /** Pending inputs in priority order, with a cursor and filtered counts. */
   inbox(options: InboxOptions = {}): Promise<InboxPage> { return this.transport.json(`/v1/inbox?${queryOf({ ...options })}`, this.operator()); }
+  answerInbox(answers: InboxAnswer[], requestId: string): Promise<{ outcomes: InboxOutcome[] }> { return this.transport.json("/v1/inbox/answers", this.operator(), "POST", { answers, requestId }); }
   async toolSources(agentId: string, options: { schemas?: boolean; refresh?: boolean } = {}): Promise<ToolSource[]> {
     const query = [options.schemas && "schemas=true", options.refresh && "refresh=true"].filter(Boolean).join("&");
     return (await this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}${query ? `?${query}` : ""}`, this.operator())).toolSources;

@@ -1,3 +1,4 @@
+import { inboxAnswers, inboxReceipt, type InboxOutcome } from "../../../shared/inbox-answers.ts";
 import { inboxQuery, readInbox, InboxQueryError } from '../../../shared/inbox.ts';
 import { withSql as inboxSql } from './postgres.ts';
 import { sweepInputMirrors } from "./input-mirror.ts";
@@ -338,6 +339,22 @@ const worker = {
         }
         const control = await controlRoutes(request, env, auth);
         if (control) return control;
+        if (path === "/v1/inbox/answers" && request.method === "POST") {
+          const input = inboxAnswers(await body(request, 1024 * 1024));
+          return json(await inboxSql(env, sql => inboxReceipt(sql, auth.tenantId, input, async () => {
+            const rows = (await sql.query("select id,agent,input from agent_inputs where tenant=$1 and id=any($2::text[])", [auth.tenantId, input.answers.map(a => a.id)])).rows;
+            const groups = new Map<string, typeof input.answers>();
+            for (const answer of input.answers) { const row = rows.find(r => r.id === answer.id); if (row) groups.set(row.agent, [...groups.get(row.agent) ?? [], { ...answer, id: row.input.workersInputId ?? row.id }]); }
+            const outcomes: InboxOutcome[] = [];
+            for (const [agent, answers] of groups) {
+              const response = await forward(new Request(request.url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answers }) }), env, agent, "/inbox-answers", ctx);
+              if (!response.ok && ![403, 404].includes(response.status)) throw new ApiError(response.status, "Inbox authority unavailable");
+              const result = response.ok ? await response.json() as { outcomes: InboxOutcome[] } : { outcomes: answers.map(a => ({ id: a.id, outcome: response.status === 404 ? "unknown" as const : "forbidden" as const, status: response.status })) };
+              for (const outcome of result.outcomes) { const row = rows.find(r => r.agent === agent && (r.input.workersInputId ?? r.id) === outcome.id); outcomes.push({ ...outcome, id: row.id }); }
+            }
+            return input.answers.map(a => outcomes.find(o => o.id === a.id) ?? { id: a.id, outcome: "unknown" as const, status: 404 });
+          })));
+        }
         if ((path === "/v1/inputs" || path === "/v1/inbox") && request.method === "GET") {
           try {
             const query = inboxQuery(url.searchParams);

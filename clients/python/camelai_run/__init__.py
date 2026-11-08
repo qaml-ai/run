@@ -769,6 +769,10 @@ class _RuntimeCalls:
         body = {key: value for key, value in {"ttlSeconds": ttl_seconds, "scopes": scopes, "events": events, "redact": redact, "subject": subject}.items() if value is not None}
         return self._rest("POST", f"/v1/agents/{_path(agent_id)}/browser-tokens", body, retry=False)
 
+    def answer_inbox(self, answers, *, request_id):
+        """Answer inbox row IDs at their observed versions; reuse request_id to replay outcomes."""
+        return self._rest("POST", "/v1/inbox/answers", {"answers": answers, "requestId": request_id})
+
     def inbox(self, *, for_=None, subject=None, root=None, priority=None, kind=None, cursor=None, limit=None):
         """A page of pending inputs in priority order: {items, cursor, counts}. inputId addresses the per-agent answer route."""
         query = urlencode({key: value for key, value in {"for": for_, "subject": subject, "root": root,

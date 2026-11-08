@@ -5,7 +5,9 @@ import { compile } from '@earendil-works/pi-schema';
 const schemaAccepts = (schema: object, value: unknown) => compile(schema).check(value);
 type Sealed = object;
 export type InputKind = "question" | "approval" | "form" | "url";
-export type InputState = "pending" | "answered" | "declined" | "cancelled" | "expired" | "superseded";
+export type InputState = "pending" | "answered" | "declined" | "cancelled" | "expired" | "superseded" | "withdrawn";
+/** Where an item sits in a person's queue (agent_inputs.priority): an approval is `high`, everything else `normal`. */
+export type Priority = "urgent" | "high" | "normal" | "low";
 export type Action = "accept" | "decline" | "cancel";
 /** Who answered: the application (its token, and whom it names), a channel's sender, or the runtime itself. */
 export type Responder = { via?: "api" | "agent" | "channel"; from?: Sender; actor?: string; system?: "expired" | "aborted" | "superseded" };
@@ -17,7 +19,7 @@ export interface Input {
   detail: Record<string, any>;
   /** Who may answer, besides the definition's approvers: the person whose message started the turn. */
   responders: { audience?: string[] };
-  state: InputState; answer?: Answer; createdAt: number; expiresAt: number;
+  version?: number; state: InputState; answer?: Answer; createdAt: number; expiresAt: number;
 }
 /** What is stored beyond what callers see: how the call is retried once answered. */
 type Stored = Pick<Input, "message" | "detail" | "responders"> & {
@@ -32,6 +34,11 @@ export type InputRow = Input & { stored: Stored };
 /** How a call is run again once its inputs are answered: with the approval's proof, and the tool's requests' answers. */
 export type RetryPlan = { argumentsHash: string; approval?: { input: string; by: Responder; at: number }; inputResponses?: Record<string, unknown>; requestState?: string; note: string };
 export type HumanInputSettings = { expiresInSeconds?: number; approvers?: string[] };
+/**
+ * The channel an item's change is announced on (`pg_notify`, the tenant as payload), in the transaction that writes it:
+ * a node's inbox watchers (`GET /v1/inbox/events`) re-read what changed. Heard by every node; the tenant says whose it was.
+ */
+export const INBOX_CHANNEL = "inbox";
 export const INPUT_LIMITS = Object.freeze({ defaultExpiresSeconds: 15 * 60, maxExpiresSeconds: 30 * 86_400, perCall: 8, text: 4_000, arguments: 4_000 });
 const clip = (text: unknown, max: number = INPUT_LIMITS.text) => String(text ?? "").slice(0, max);
 

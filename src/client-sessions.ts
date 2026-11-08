@@ -1,3 +1,5 @@
+import { mayAnswer, answerInput } from "./inputs.ts";
+import { answerInboxGroup, type InboxAnswer } from "../shared/inbox-answers.ts";
 import { rejectWorkflow } from "./builtins.ts";
 import { currentModel, modelReference } from "./virtual-models.ts";
 import type { Message } from "@earendil-works/pi-ai";
@@ -1025,6 +1027,17 @@ export class ClientSessions {
    * among those who may answer (403). The last answer of a suspension queues its `resume` run on the
    * node serving the agent, returned in `requests`.
    */
+  async answerInbox(id: string, tenant: string, entries: InboxAnswer[]) {
+    const { header } = await this.inputsContext.headerFor(id, tenant);
+    return answerInboxGroup(entries, async inputId => {
+      const input = await this.inputsContext.options.inputs!.get(inputId);
+      return input?.agent === id && input.tenant === tenant ? input : undefined;
+    }, (input, body) => {
+      if (!mayAnswer(input, { via: "api", actor: body.actor, from: body.from }, header.sources?.humanInput?.approvers)) throw new HttpError(403, "This person may not answer this input");
+      answerInput(input, body);
+    }, answers => this.answer(id, tenant, answers));
+  }
+
   async answer(id: string, tenant: string, answers: { id: string; body: any }[], via: Responder["via"] = "api"): Promise<{ status: 200 | 202; inputs: Input[]; requests: RequestRecord[] }> { return humanInput.answer(this.inputsContext, id, tenant, answers, via); }
 
   /**

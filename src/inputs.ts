@@ -31,7 +31,7 @@ export interface Input {
   detail: Record<string, any>;
   /** Who may answer, besides the definition's approvers: the person whose message started the turn. */
   responders: { audience?: string[] };
-  state: InputState; answer?: Answer; createdAt: number; expiresAt: number;
+  version?: number; state: InputState; answer?: Answer; createdAt: number; expiresAt: number;
 }
 /** What is stored beyond what callers see: how the call is retried once answered. */
 type Stored = Pick<Input, "message" | "detail" | "responders"> & {
@@ -260,7 +260,7 @@ export function resolution(inputs: InputRow[], unseal: (row: InputRow) => string
 const row = (value: any): InputRow => {
   const { message, detail, responders } = value.input as Stored;
   return {
-    id: value.id, agent: value.agent, tenant: value.tenant, requestId: value.request_id, toolCallId: value.tool_call_id, kind: value.kind,
+    version: value.version, id: value.id, agent: value.agent, tenant: value.tenant, requestId: value.request_id, toolCallId: value.tool_call_id, kind: value.kind,
     message, detail, responders, state: value.state, ...(value.answer ? { answer: value.answer } : {}),
     createdAt: Number(value.created_at), expiresAt: Number(value.expires_at), stored: value.input,
   };
