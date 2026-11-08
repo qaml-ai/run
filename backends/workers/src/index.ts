@@ -1,3 +1,5 @@
+import { inboxQuery, readInbox, InboxQueryError } from '../../../shared/inbox.ts';
+import { withSql as inboxSql } from './postgres.ts';
 import { sweepInputMirrors } from "./input-mirror.ts";
 import { HttpError as CoreHttpError } from "../../../src/core/http-error.ts";
 import { serveToolFile } from './tool-files.ts';
@@ -336,15 +338,11 @@ const worker = {
         }
         const control = await controlRoutes(request, env, auth);
         if (control) return control;
-        if (path === "/v1/inputs" && request.method === "GET") {
-          const entries = await new Directory(env, auth.tenantId).list();
-          const inputs = [];
-          for (const entry of entries) {
-            const response = await forward(request, env, entry.id, "/inputs", ctx);
-            if (!response.ok) return response;
-            inputs.push(...await response.json() as Array<{ id: string; createdAt: number }>);
-          }
-          return json(inputs.sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id)).slice(0, 100));
+        if ((path === "/v1/inputs" || path === "/v1/inbox") && request.method === "GET") {
+          try {
+            const query = inboxQuery(url.searchParams);
+            return json(await inboxSql(env, sql => readInbox(sql, auth.tenantId, query)));
+          } catch (error) { if (error instanceof InboxQueryError) throw new ApiError(400, error.message); throw error; }
         }
         const media = await handleMediaRequest(request, env, auth);
         if (media) return media;

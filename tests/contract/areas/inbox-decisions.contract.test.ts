@@ -8,7 +8,7 @@ contractTest('human-input', 'tests/inbox-decisions.test.ts:18', 'non-blocking de
   const id = made.json.id;
   for (let i = 0; i < 3; i++) {
     // A new call on each prompt, even though old tool results remain in history.
-    f.setModel((body, index) => index % 2 === 0 ? toolCall('request_decision', { title: `Choose ${i}`, body: 'Which path?', key: i < 2 ? 'plan' : 'other', priority: 'high', options: [{ label: 'A' }, { label: 'B' }] }, `decision_${i}`) : { role: 'assistant', content: 'Continuing' });
+    f.setModel((body, index) => index % 2 === 0 ? toolCall('request_decision', { title: `Choose ${i}`, body: 'Which path?', key: i < 2 ? 'plan' : 'other', priority: 'high', options: [{ label: 'A' }, { label: 'B' }], links: ['https://example.com/review'], recommendation: { answer: { answers: { [`Choose ${i}`]: 'A' } }, reason: 'Preferred' }, applyRecommendationOnExpiry: true }, `decision_${i}`) : { role: 'assistant', content: 'Continuing' });
     const run = await f.prompt(id, `Ask ${i}`);
     assert.equal(run.outcome.result.reply, 'Continuing');
   }
@@ -19,6 +19,21 @@ contractTest('human-input', 'tests/inbox-decisions.test.ts:18', 'non-blocking de
   assert.equal(pending.length, 2);
   assert.ok(pending.every((x: any) => x.kind === 'decision' && x.blocking === false && x.priority === 'high'));
   assert.ok(pending.every((x: any) => Math.abs(x.expiresAt - x.createdAt - 7 * 86400000) < 60000));
+  for (const route of ['/v1/inbox', '/v1/inputs']) {
+    const response = await f.call(`${route}?kind=decision&priority=high`);
+    assert.equal(response.status, 200, response.text);
+    const page = response.json;
+    assert.deepEqual(page.items.map((item: any) => item.id).sort(), pending.map((item: any) => item.id).sort());
+    assert.equal(page.counts.priority.high, 2);
+    for (const listed of page.items) {
+      const item = pending.find((item: any) => item.id === listed.id);
+      for (const field of ['kind', 'message', 'detail', 'priority', 'blocking', 'key', 'version', 'links', 'recommendation', 'applyRecommendationOnExpiry'])
+        assert.deepEqual(listed[field], item[field], field);
+      assert.equal(listed.inputId, item.id);
+    }
+    assert.equal(JSON.stringify(page).includes('argumentsHash'), false);
+    assert.equal(JSON.stringify(page).includes('delivery'), false);
+  }
   const before = f.model.bodies.length;
   f.setModel(() => ({ role: 'assistant', content: 'Decisions received' }));
   const answers = { answers: pending.map((x: any) => ({ id: x.id, action: 'accept', content: { answers: { [x.message]: 'A' } } })) };
@@ -29,6 +44,7 @@ contractTest('human-input', 'tests/inbox-decisions.test.ts:18', 'non-blocking de
   for (const item of pending) assert.ok(text.includes(item.id));
   assert.ok(text.includes('decision_answer'));
   assert.equal((await f.call(`/v1/agents/${id}/inputs`, { body: answers })).status, 200);
+  assert.deepEqual((await f.call('/v1/inbox?kind=decision')).json.items, [], 'answered decisions leave the inbox');
 });
 
 contractTest('human-input', 'tests/inbox-decisions.test.ts:8', 'ask_user stores its recommendation and applies it on expiry only with opt-in', async (_t, f) => {
@@ -50,6 +66,13 @@ contractTest('human-input', 'tests/inbox-decisions.test.ts:8', 'ask_user stores 
   assert.ok(Number.isInteger(input.attachments[0].version));
   assert.deepEqual(input.links, ['https://example.com/review']);
   assert.deepEqual(input.recommendation.answer, { answers: { 'Region?': 'EU' } });
+  const page = await until(async () => {
+    const response = await f.call('/v1/inbox?kind=question&priority=urgent');
+    assert.equal(response.status, 200, response.text);
+    return response.json.items.find((item: any) => item.inputId === input.id);
+  }, 'question metadata reaches the inbox');
+  for (const field of ['attachments', 'links', 'recommendation', 'applyRecommendationOnExpiry'])
+    assert.deepEqual(page[field], input[field], field);
   await f.expireInputs(id);
   await until(() => f.model.bodies.length === 2, 'expiry resumes the question');
   assert.deepEqual(JSON.parse(toolResults(f.model.bodies[1]).at(-1)).answers, { 'Region?': 'EU' });

@@ -14,6 +14,8 @@ test("WebSocket attachments initialize, survive idle, enforce ownership and rele
   assert.deepEqual((await owner.execute('return await tools.echo({value:"first"})')).output, ["first"]);
   await assert.rejects(runtime.connectAgent(owner.session, { tools }), (error: any) => error.code === "APPLICATION_CONNECTED");
   // Hibernatable sockets can go quiet without a heartbeat or a fresh handshake.
+  // The next host request may overlap startup restoring its durable intent;
+  // observer initialization must not make startup wait on itself.
   await new Promise(resolve => setTimeout(resolve, 12_000));
   assert.deepEqual((await owner.execute('return await tools.echo({value:"after idle"})')).output, ["after idle"]);
   await owner.close();

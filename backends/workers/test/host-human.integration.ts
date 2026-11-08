@@ -33,6 +33,14 @@ test("HTTP host scripts keep separate human inputs across restart and cancellati
     }
     throw new Error(`Expected ${count} pending inputs`);
   };
+  const inboxInputs = async (count: number) => {
+    for (let attempt = 0; attempt < 150; attempt++) {
+      const found = (await call("/v1/inbox")).value.items;
+      if (found.length === count) return found as any[];
+      await delay(20);
+    }
+    throw new Error(`Expected ${count} indexed inputs`);
+  };
   assert.equal((await call(`${base}/requests`, { id: "model", method: "prompt", params: { text: "slow:1500:model remains healthy" } })).status, 202);
   for (const id of ["first", "second"]) {
     assert.equal((await call(`${base}/requests`, { id, method: "execute", params: { code: `return await tools.ask_human({question:${JSON.stringify(id)}})` } })).status, 202);
@@ -63,7 +71,7 @@ test("HTTP host scripts keep separate human inputs across restart and cancellati
 
   await call(`${base}/requests`, { id: "batch-host", method: "execute", params: { code: 'return await Promise.all([tools.ask_human({question:"First?"}), tools.ask_human({question:"Second?"})])' } });
   const batchInputs = (await inputs(2)).sort((a, b) => a.question.localeCompare(b.question));
-  assert.deepEqual((await call("/v1/inputs?state=pending")).value.map((item: any) => item.id).sort(), batchInputs.map(item => item.id).sort());
+  assert.deepEqual((await inboxInputs(2)).map((item: any) => item.inputId).sort(), batchInputs.map(item => item.id).sort());
   const batch = { answers: batchInputs.map((item, index) => ({ id: item.id, answer: `answer-${index}` })) };
   assert.equal((await call(`${base}/inputs`, { answers: [batch.answers[0], { id: batchInputs[1].id, action: "invalid" }] })).status, 400);
   assert.equal((await inputs(2)).length, 2, "a bad batch does not record its valid first answer");
@@ -79,7 +87,7 @@ test("HTTP host scripts keep separate human inputs across restart and cancellati
   const retry = await call(`${base}/inputs`, batch);
   assert.equal(retry.status, 200);
   assert.deepEqual(retry.value.inputs.map((item: any) => item.answer.at), batchAnswer.value.inputs.map((item: any) => item.answer.at));
-  assert.deepEqual((await call("/v1/inputs?state=pending")).value, []);
+  assert.deepEqual(await inboxInputs(0), []);
 
   await call(`${base}/requests`, { id: "abort-host", method: "execute", params: { code: 'return await tools.ask_human({question:"Cancel host?"})' } });
   const [hostInput] = await inputs(1);

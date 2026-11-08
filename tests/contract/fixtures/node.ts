@@ -1,3 +1,4 @@
+import { seedInbox } from './inbox.ts';
 import { createHash, randomBytes } from "node:crypto";
 import { seedOpsAccount } from "./ops-seed.ts";
 import { spawn } from "node:child_process";
@@ -197,6 +198,7 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
       }
       return { id, token };
     },
+    seedInbox: rows => seedInbox(db, rows),
     async expireInputs(agent) {
       const result = await db.query("update agent_inputs set expires_at = 0 where agent = $1 and state = 'pending'", [agent]);
       if (!result.rowCount) throw new Error("Fixture inputs not found");

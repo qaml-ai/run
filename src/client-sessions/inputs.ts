@@ -174,11 +174,6 @@ async function resumeAnywhere(ctx: InputContext, agent: string, tenant: string, 
   return requests;
 }
 
-/** A tenant's inputs across its agents, newest first: the inbox of what waits on someone. */
-export async function inbox(ctx: InputContext, tenant: string, state?: string) {
-  return ctx.options.inputs ? (await ctx.options.inputs.list(tenant, state ? { state } : {})).map(inputView) : [];
-}
-
 /**
  * Expire inputs past their time, on any node: each suspension whose last input expired is resumed
  * on the node serving its agent, which gives each call the runtime's answer and asks the model.

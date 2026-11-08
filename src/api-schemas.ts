@@ -724,6 +724,16 @@ export const Input = z.object({
   links: z.array(z.string()).optional(), recommendation: z.object({ answer: z.unknown(), reason: z.string() }).optional(), applyRecommendationOnExpiry: z.boolean().optional(),
   createdAt: z.number(), expiresAt: z.number(),
 }).openapi("Input");
+export const InboxQuery = z.object({
+  for: z.string().optional(), subject: z.string().optional(), root: z.string().optional(),
+  priority: z.enum(["urgent", "high", "normal", "low"]).optional(), kind: z.enum(["question", "approval", "form", "url", "decision"]).optional(),
+  cursor: z.string().optional(), limit: z.coerce.number().int().min(1).max(100).optional(),
+});
+export const InboxPage = z.object({
+  items: z.array(Input.extend({ inputId: z.string().openapi({ description: "Use this id with the per-agent input answer route; id identifies the inbox row" }), priority: z.enum(["urgent", "high", "normal", "low"]), blocking: z.boolean(),
+    subject: z.string().nullable(), root: z.string(), lineage: z.array(z.string()), key: z.string().nullable(), version: z.number().int() })),
+  cursor: z.string().nullable(), counts: z.object({ priority: z.object({ urgent: z.number(), high: z.number(), normal: z.number(), low: z.number() }), lead: z.record(z.string(), z.number()) }),
+}).openapi("InboxPage");
 export const AnswerInput = z.object({
   action: z.enum(["accept", "decline", "cancel"]),
   content: z.unknown().optional().openapi({ description: "question: { answers: { \"<question>\": \"<label>\" | [\"<label>\"] | \"<own words>\" } }; form: the fields, checked against its schema; approval decline: { reason? }" }),
