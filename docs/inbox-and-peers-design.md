@@ -69,9 +69,9 @@ mp4 a computer wrote to the workspace) are ordinary files. No new file primitive
 
 **Where the index lives**
 - **Node:** `agent_inputs` already is the source of truth. One migration adds `priority`, `blocking`, `subject`,
-  `responders text[]`, `root_agent`, `lineage`, `item_key`, `version` and `updated_at`. `responders` is the audience
+  `responders text[]`, `root_agent`, `lineage` (its depth is bounded by delegation's depth limit, not by its own check), `item_key`, `version` and `updated_at`. `responders` is the audience
   plus the definition's approvers, frozen when the input is made. Two indexes back it: a partial index on
-  `(tenant, priority, expires_at, id) where state='pending'`, and a GIN index on `responders`. `Inputs.create` and
+  `(tenant, priority_rank, expires_at, id) where state='pending'` (`priority_rank` is a smallint, urgent 0 to low 3, because the text `priority` sorts alphabetically), and a GIN index on `responders`. `Inputs.create` and
   `settle` (`src/inputs.ts:270-335`) fill the columns and call `pg_notify('inbox', tenant)` in the same transaction,
   as `src/webhooks.ts:192` does.
 - **Workers:** the Pi doc stays the authority for blocking inputs. The agent's DO keeps a **mirror row** in the same
