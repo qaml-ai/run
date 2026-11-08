@@ -137,7 +137,7 @@ async function run(which) {
     // first request. Warm the runtime once, then keep every case isolated and
     // run the files concurrently with their existing timeouts.
     console.log("Preparing Workers runtime before parallel cases");
-    const warmup = await command(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", "tests/contract/warm-workers.ts"], {});
+    const warmup = await command(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", "tests/contract/warm-workers.mjs"], {});
     if (warmup.code !== 0) throw new Error(`Workers preparation failed: ${warmup.log.slice(-5000)}`);
     logs.set("warmup", warmup.log);
   }
