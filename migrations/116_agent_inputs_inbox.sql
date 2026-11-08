@@ -4,6 +4,9 @@
 alter table agent_inputs
   -- urgent, high, normal or low: an approval is high, everything else normal.
   add column priority text not null default 'normal',
+  -- What a queue sorts by: priority's text is alphabetical (high, low, normal, urgent), not urgent first. urgent 0, high 1,
+  -- normal 2, low 3.
+  add column priority_rank smallint not null default 2,
   -- True for every input that exists today (an ask_user question, an approval, a form or a url step): the turn waits.
   -- A non-blocking decision (request_decision) keeps the turn going.
   add column blocking boolean not null default true,
@@ -23,6 +26,9 @@ alter table agent_inputs
 -- Not valid: `agent_inputs` is live, and its rows are written before this constraint exists. Both hold for every row
 -- the runtime wrote, and the writer checks them from now on.
 alter table agent_inputs add constraint agent_inputs_priority_check check (priority in ('urgent', 'high', 'normal', 'low')) not valid;
+-- The rank is the text's order, so the two can never disagree (they are written together, src/inputs.ts).
+alter table agent_inputs add constraint agent_inputs_priority_rank_check
+  check (priority_rank = case priority when 'urgent' then 0 when 'high' then 1 when 'normal' then 2 when 'low' then 3 end) not valid;
 -- `state` was only a comment until now (migrations/016_agent_inputs.sql). `withdrawn` is an item its asker replaced (a
 -- later request with the same item_key) or took back: no one answers it.
 alter table agent_inputs add constraint agent_inputs_state_check check (state in ('pending', 'answered', 'declined', 'cancelled', 'expired', 'superseded', 'withdrawn')) not valid;

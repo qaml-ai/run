@@ -26,7 +26,7 @@ async function listening(url: string) {
 }
 
 const row = async (db: pg.Pool, id: string) =>
-  (await db.query("select priority, blocking, subject, responders, root_agent, lineage, item_key, version, updated_at, state from agent_inputs where id = $1", [id])).rows[0];
+  (await db.query("select priority, priority_rank, blocking, subject, responders, root_agent, lineage, item_key, version, updated_at, state from agent_inputs where id = $1", [id])).rows[0];
 
 test("an input's row carries the fields the inbox orders and filters by, and the tenant is told on the inbox channel", async () => {
   const { db, url } = await testDatabase();
@@ -45,13 +45,14 @@ test("an input's row carries the fields the inbox orders and filters by, and the
       { kind: "approval", message: "Allow deploy to run?", detail: {} },
     ]);
     const asked = await row(db, question.id);
-    assert.equal(asked.priority, "normal", "a question is normal");
+    assert.deepEqual([asked.priority, asked.priority_rank], ["normal", 2], "a question is normal: rank 2, after urgent and high");
     assert.equal(asked.blocking, true, "every input that exists today blocks its turn");
     assert.deepEqual(asked.responders, ["u1", "boss"], "the audience plus the definition's approvers, frozen now");
     assert.deepEqual([asked.root_agent, asked.lineage], ["lead", ["lead", "a1"]], "the chain from the root to the asking agent");
     assert.deepEqual([asked.subject, asked.item_key], [null, null], "the asker names those in later slices");
     assert.equal(asked.version, 1);
-    assert.equal((await row(db, approval.id)).priority, "high", "an approval is high");
+    const askedApproval = await row(db, approval.id);
+    assert.deepEqual([askedApproval.priority, askedApproval.priority_rank], ["high", 1], "an approval is high: rank 1, after urgent");
     // Versions and updated_at are left to their defaults, and the row says when it was made.
     assert.ok(Math.abs(asked.updated_at.getTime() - Date.now()) < 60_000);
 
@@ -116,6 +117,36 @@ test("each row of one settle bumps its own version; one transaction's notificati
     // once per transaction: the tenant hears that something of its changed, which is what the listeners re-read for.
     await until(() => listened.heard.length === 2, "the settle's notification");
     assert.ok(listened.heard.every(heard => heard.channel === "inbox" && heard.payload === "alice"));
+  } finally {
+    await listened.close();
+  }
+});
+
+test("an item the runtime closes itself (expired, superseded) changes too: a new version, updated_at, and a notification each", async () => {
+  const { db, url } = await testDatabase();
+  const inputs = new Inputs({ db });
+  const listened = await listening(url);
+  try {
+    const base = {
+      agent: "a1", tenant: "alice", requestId: "r1", toolCallId: "call_1", expiresAt: Date.now() + 60_000,
+      responders: { audience: ["u1"] }, approvers: [], rootAgent: "a1", lineage: ["a1"], tool: "ask_user", argumentsHash: "h",
+    };
+    // One item run out of time, one the person's next message superseded: neither is answered, both are closed.
+    const [expiring, superseded] = await inputs.create(base, [
+      { kind: "question", message: "Which region?", detail: { questions: [] } },
+      { kind: "question", message: "Which region?", detail: { questions: [] } },
+    ]);
+    const before = await row(db, expiring.id);
+    await until(() => listened.heard.length === 1, "the create's notification");
+    await sleep(5);
+    assert.equal((await inputs.settle(expiring.id, { action: "cancel", by: { system: "expired" }, at: Date.now() }, "expired"))?.state, "expired");
+    assert.equal((await inputs.settle(superseded.id, { action: "cancel", by: { system: "superseded" }, at: Date.now() }, "superseded"))?.state, "superseded");
+    const [timedOut, replaced] = [await row(db, expiring.id), await row(db, superseded.id)];
+    assert.deepEqual([timedOut.state, timedOut.version, replaced.state, replaced.version], ["expired", 2, "superseded", 2], "each close is a change");
+    assert.ok(timedOut.updated_at > before.updated_at && replaced.updated_at > before.updated_at, "updated_at moves with the close");
+    // Two settles, two transactions, one notification each: a listener is told twice that the item is gone from the queue.
+    await until(() => listened.heard.length === 3, "a notification for each closed item");
+    assert.deepEqual(listened.heard.slice(1), [{ channel: "inbox", payload: "alice" }, { channel: "inbox", payload: "alice" }]);
   } finally {
     await listened.close();
   }

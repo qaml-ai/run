@@ -62,6 +62,12 @@ export const INPUT_LIMITS = Object.freeze({ defaultExpiresSeconds: 15 * 60, maxE
 const FINAL: Record<Action, InputState> = { accept: "answered", decline: "declined", cancel: "cancelled" };
 /** The priority a kind of input gets unless its asker names one: an approval is high, a question, form or url step normal. */
 const priorityOf = (kind: InputKind): Priority => kind === "approval" ? "high" : "normal";
+/**
+ * The queue order of each priority, for the index (`agent_inputs.priority_rank`): urgent first. The priority text sorts
+ * alphabetically (high, low, normal, urgent), so the rank is what a page is ordered by, and the migration's check keeps
+ * the two in step.
+ */
+const PRIORITY_RANK: Record<Priority, number> = { urgent: 0, high: 1, normal: 2, low: 3 };
 
 export const argumentsHash = (name: string, args: unknown) => createHash("sha256").update(canonical({ name, arguments: args })).digest("hex");
 const clip = (text: unknown, max: number = INPUT_LIMITS.text) => String(text ?? "").slice(0, max);
@@ -308,11 +314,12 @@ export class Inputs {
       const same = pending.filter(input => keys.has(input.stored.key ?? null));
       if (same.length === requests.length) return same;
       for (const input of rows) {
+        const priority = priorityOf(input.kind);
         await sql.query(`insert into agent_inputs (id, agent, tenant, request_id, tool_call_id, kind, input, created_at, expires_at,
-          priority, blocking, responders, root_agent, lineage)
-          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true, $11, $12, $13)`,
+          priority, priority_rank, blocking, responders, root_agent, lineage)
+          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, true, $12, $13, $14)`,
           [input.id, input.agent, input.tenant, input.requestId, input.toolCallId, input.kind, JSON.stringify(input.stored), input.createdAt, input.expiresAt,
-            priorityOf(input.kind), responders, rootAgent ?? null, lineage ?? null]);
+            priority, PRIORITY_RANK[priority], responders, rootAgent ?? null, lineage ?? null]);
       }
       await enqueueEvents(sql, rows.map(input => inputEvent("input.requested", input)));
       // Heard by the inbox watchers of every node, in this transaction: a listener sees it once, at commit.
