@@ -433,7 +433,7 @@ export async function onHumanImpl(this: AgentRuntime,
               record.endedAt! - (record.began ?? record.endedAt!),
             ),
             startedAt: record.startedAt,
-            subject: conf.config.subject,
+            subject: (record.params?.endUser as string | undefined) ?? conf.config.subject,
             bucket:
               (record.params?.bucket as string | undefined) ??
               conf.config.bucket,
@@ -679,7 +679,7 @@ export async function settleImpl(this: AgentRuntime,
             ),
             startedAt: record.startedAt,
             responses: usage.responses,
-            subject: conf.config.subject,
+            subject: (record.params?.endUser as string | undefined) ?? conf.config.subject,
             bucket:
               (record.params?.bucket as string | undefined) ??
               conf.config.bucket,
@@ -813,7 +813,7 @@ export async function answerHumanInputsImpl(this: AgentRuntime,
         let resumed = await this.ctx.storage.get<RequestRecord>(reqKey(resumeId));
         if (!resumed) {
           await this.flushBilling(true);
-          if (!system) await this.admitRequest(conf, resumeId, old.params?.bucket as string | undefined);
+          if (!system) await this.admitRequest(conf, resumeId, old.params?.bucket as string | undefined, old.params?.endUser as string | undefined);
           resumed = { ...old, id: resumeId, piId, method: "resume", state: "running", status: undefined,
             outcome: undefined, startedAt: Date.now(), began: Date.now(), endedAt: undefined,
             usageBaseline: this.usageView(await this.usageForRequest(piId)) };

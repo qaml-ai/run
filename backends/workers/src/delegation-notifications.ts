@@ -3,7 +3,7 @@ import { childUsageCost, type DelegatedChild } from './delegation.ts';
 import type { MessageSource } from './sender.ts';
 
 export type RuntimeNotice = { source: MessageSource; root: string; costUsd: number; metadata: Record<string, unknown> };
-export type NoticeRequest = { id: string; method: 'prompt'; params: { text: string; allowDisconnected: true; whileRunning: 'followUp'; metadata?: Record<string, string> } };
+export type NoticeRequest = { id: string; method: 'prompt'; params: { endUser?: string; bucket?: string; text: string; allowDisconnected: true; whileRunning: 'followUp'; metadata?: Record<string, string> } };
 export type WakeDecision = { allowed: boolean; hour: number };
 /** `steer`: offered to the parent's running turn at its next step (delegate.notify "asap"), not queued behind it. */
 export type NoticeDelivery = { run: true; steer?: true } | { run: false; stopped: 'agent_loop_limit' | 'aborted'; message: string };
@@ -63,7 +63,7 @@ export interface NotificationHost {
 function outboxEntry(child: DelegatedChild): PendingNotice {
   const { text, notice } = childNotice({ agentId: child.id, name: child.name, root: child.root ?? child.id }, child, { startedAt: child.createdAt, endedAt: child.endedAt });
   notice.costUsd = child.spent ?? childUsageCost(child.outcome?.result?.usage);
-  return { request: { id: `child_${child.requestId}`, method: 'prompt', params: { text, allowDisconnected: true, whileRunning: 'followUp' } }, notice, childKey: child.key };
+  return { request: { id: `child_${child.requestId}`, method: 'prompt', params: { text, endUser: child.payer, bucket: child.bucket, allowDisconnected: true, whileRunning: 'followUp' } }, notice, childKey: child.key };
 }
 
 /** Durable outbox plus idempotent admission covers eviction before or after the parent's submit. */
@@ -138,6 +138,7 @@ export class DelegationNotifications {
           const otherKey = prefix + sibling.key, existing = await tx.get<PendingNotice>(otherKey);
           if (!existing && !sibling.accepted) continue;
           const other = existing ?? outboxEntry(sibling);
+          if ((other.request.params.endUser ?? null) !== (current.request.params.endUser ?? null) || (other.request.params.bucket ?? null) !== (current.request.params.bucket ?? null)) continue;
           if (other.delivered || other.delivery || other.notice.metadata.kind === 'message') continue;
           await tx.put(`delegation:${sibling.key}`, { ...sibling, landedBy: 'notice' });
           await tx.put(otherKey, { ...other, delivered: true, batchedInto: key });

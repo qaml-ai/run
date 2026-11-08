@@ -290,3 +290,16 @@ test('the default (notify "turn") never steers: a busy parent stages the ending 
   assert.deepEqual(f.staged, ['child_spawn_a']);
   assert.equal(f.submissions.length, 0);
 });
+
+
+test('notification batches never combine different task payers or buckets', async () => {
+  const f = fixture();
+  const a = await f.child({ ...ended('a', 'one', 'a', 0.01), payer: 'guest', bucket: 'bot:1' });
+  const b = await f.child({ ...ended('b', 'two', 'b', 0.01), payer: 'other', bucket: 'bot:1' });
+  const c = await f.child({ ...ended('c', 'three', 'c', 0.01), payer: 'guest', bucket: 'bot:2' });
+  for (const child of [a, b, c]) await f.notifications().deliver(child);
+  f.land();
+  await f.notifications().drain();
+  assert.equal(f.submissions.length, 3);
+  for (const { notice } of f.submissions) assert.deepEqual(notice.metadata.batch ?? [], []);
+});

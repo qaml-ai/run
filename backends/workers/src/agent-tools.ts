@@ -58,7 +58,7 @@ export function createDecisions(this: AgentRuntime): ReturnType<typeof decisionS
         spendLimit: (params?.spendLimit as { usd?: number } | undefined)?.usd,
         actor: params?.actor as string | undefined,
         identity: {
-          subject: conf.config.subject,
+          subject: (params?.endUser as string | undefined) ?? conf.config.subject,
           context: conf.config.context,
         },
         keyScope: conf.config.keyScope,
@@ -142,7 +142,7 @@ export function createModels(this: AgentRuntime): ReturnType<typeof modelRuntime
               tenant: conf.tenantId,
               agent: conf.id,
               requestId: run.id === "background" ? undefined : run.id,
-              subject: conf.config.subject,
+              subject: (params?.endUser as string | undefined) ?? conf.config.subject,
               context: conf.config.context,
               bucket:
                 (params?.bucket as string | undefined) ?? conf.config.bucket,
@@ -422,7 +422,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
               builtins: conf.config.builtins,
               webSearch: conf.config.webSearch,
               keyScope: conf.config.keyScope,
-              identity: { subject: conf.config.subject, context: conf.config.context },
+              identity: { subject: (params?.endUser as string | undefined) ?? conf.config.subject, context: conf.config.context },
               actor: ("actor" in run ? run.actor : undefined) ?? params?.actor as string | undefined,
               bucket: (params?.bucket as string | undefined) ?? conf.config.bucket ?? await this.ctx.storage.get<string>("run-bucket") ?? "default",
               files: (await this.sourceIdentity(api)).toolFiles('web_fetch'),

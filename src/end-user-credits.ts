@@ -368,6 +368,12 @@ export class EndUserCredits {
     return { endUsers: page, ...(rows.length > limit ? { next: page.at(-1)!.id } : {}) };
   }
 
+  /** Validate a payer without creating an end user or spending credit. */
+  async requireExisting(tenant: string, id: string) {
+    endUserInput(id);
+    if (!(await this.db.query("select 1 from end_users where tenant = $1 and id = $2", [tenant, id])).rowCount) throw new HttpError(404, "Unknown end user");
+  }
+
   /**
    * An end user as they stand now: their balance, what calls in flight hold of it, their limits, and today's spend by
    * bucket (each bucket spent from or held for today, each the tenant or user names exactly, and `buckets` asked for).

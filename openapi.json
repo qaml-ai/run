@@ -68,6 +68,10 @@
                   "execute"
                 ]
               },
+              "endUser": {
+                "type": "string",
+                "description": "The explicit payer override for this run"
+              },
               "actor": {
                 "type": "string"
               },
@@ -133,6 +137,10 @@
                   "resume",
                   "execute"
                 ]
+              },
+              "endUser": {
+                "type": "string",
+                "description": "The explicit payer override for this run"
               },
               "actor": {
                 "type": "string"
@@ -284,6 +292,10 @@
                   "execute"
                 ]
               },
+              "endUser": {
+                "type": "string",
+                "description": "With an end user's credit refusal: whose credit (the payer)"
+              },
               "actor": {
                 "type": "string"
               },
@@ -363,10 +375,6 @@
               "bucket": {
                 "type": "string",
                 "description": "With an end user's credit refusal: the bucket refused (builder, bot:42, default)"
-              },
-              "endUser": {
-                "type": "string",
-                "description": "With an end user's credit refusal: whose credit (the subject)"
               },
               "uncertain": {
                 "type": "boolean",
@@ -2572,7 +2580,7 @@
           },
           "endUser": {
             "type": "string",
-            "description": "With END_USER_CREDIT: whose credit refused the work (the subject)"
+            "description": "With END_USER_CREDIT: whose credit refused the work (the payer)"
           },
           "bucket": {
             "type": "string",
@@ -3751,6 +3759,10 @@
       "RequestRecord": {
         "type": "object",
         "properties": {
+          "endUser": {
+            "type": "string",
+            "description": "The tenant-selected payer override for this run"
+          },
           "id": {
             "type": "string"
           },
@@ -4468,6 +4480,12 @@
       "PromptInput": {
         "type": "object",
         "properties": {
+          "endUser": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "Charge this prompt to an existing end user of this tenant instead of the agent subject. Tenant API key only. A steer joins only a turn with the same endUser selection. Child tasks, their notifications and messages inherit the run payer; child tool identity stays the owner. Later prompts without it use the agent subject"
+          },
           "text": {
             "type": "string",
             "description": "The message. It may be left out when the message attaches audio, whose transcript is then the message"
@@ -4516,7 +4534,7 @@
               "queue",
               "steer"
             ],
-            "description": "What happens if the agent is working on a turn when this arrives. queue (default): it runs as the next turn. steer: the running turn takes it after its current step. The 202 says so at once (steer: \"accepted\"; \"queued\" when no turn could take it), and this request completes as soon as the turn takes the message (steeredInto names the turn, whose own request has its outcome; a steer_taken event marks it), so steered messages never wait for the turn's end, nor count against the agent's queue once taken. If the turn ends first, it runs as a turn of its own. With no turn running, both start one"
+            "description": "What happens if the agent is working on a turn when this arrives. queue (default): it runs as the next turn. steer: a running turn with the same endUser selection takes it after its current step; a different payer queues a separate turn. The 202 says so at once (steer: \"accepted\"; \"queued\" when no turn could take it), and this request completes as soon as the turn takes the message (steeredInto names the turn, whose own request has its outcome; a steer_taken event marks it), so steered messages never wait for the turn's end, nor count against the agent's queue once taken. If the turn ends first, it runs as a turn of its own. With no turn running, both start one"
           },
           "spendLimit": {
             "allOf": [
@@ -4530,7 +4548,7 @@
           },
           "bucket": {
             "type": "string",
-            "description": "With end-user credits on (/v1/end-user-settings): the bucket of the agent's subject this run spends from, instead of the agent's. Only the tenant may set it"
+            "description": "With end-user credits on (/v1/end-user-settings): the bucket of this run's payer (endUser, else the agent subject) it spends from, instead of the agent's. Only the tenant may set it"
           },
           "runLimits": {
             "type": "object",
@@ -11298,7 +11316,7 @@
           },
           "endUser": {
             "type": "string",
-            "description": "With an end user's credit refusal: whose credit (the subject)"
+            "description": "With an end user's credit refusal: whose credit (the payer)"
           },
           "errorClass": {
             "type": "string",

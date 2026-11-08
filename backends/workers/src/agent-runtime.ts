@@ -156,8 +156,8 @@ export class AgentRuntime extends AgentContext {
     return imageToolsImpl.call(this);
   }
 
-  admitRequest(conf: Config, id: string, bucket?: string) {
-    return this.dbProfile.run("admission", () => admitRequestImpl.call(this, conf, id, bucket));
+  admitRequest(conf: Config, id: string, bucket?: string, endUser?: string) {
+    return this.dbProfile.run("admission", () => admitRequestImpl.call(this, conf, id, bucket, endUser));
   }
 
   toolFileBudgets = new Map<string, { left: number }>();
@@ -173,8 +173,8 @@ export class AgentRuntime extends AgentContext {
     return requestResponseImpl.call(this, record);
   }
 
-  endUserLimit(conf: Config, bucket?: string) {
-    return endUserLimitImpl.call(this, conf, bucket);
+  endUserLimit(conf: Config, bucket?: string, endUser?: string) {
+    return endUserLimitImpl.call(this, conf, bucket, endUser);
   }
 
   sourceIdentity(api?: ToolExecutionApi) {

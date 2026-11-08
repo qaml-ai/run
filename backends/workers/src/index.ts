@@ -362,6 +362,10 @@ const worker = {
           return json(
             modelCatalog(env, url.searchParams.get("provider") ?? undefined),
           );
+        if (path === "/v1/agents" && request.method === "POST") {
+          const input = await body(request.clone(), 17 * 1024 * 1024) as { prompt?: { endUser?: unknown } };
+          if (input?.prompt?.endUser !== undefined && !["operator", "api"].includes(auth.kind)) throw new HttpError(403, "Only a tenant key can choose a run payer");
+        }
         if (path === "/v1/agents") {
           const directory = new Directory(env, auth.tenantId);
           if (request.method === "GET")
@@ -567,13 +571,17 @@ const worker = {
         ? await agentLifecycleRoutes(request, env, entry, tail, auth?.kind !== "oauth")
         : undefined;
       if (lifecycle) return lifecycle;
+      if (request.method === "POST" && ["/prompt", "/requests"].includes(tail)) {
+        const payerInput = await body(request.clone(), (tail === "/prompt" ? 7 : 6) * 1024 * 1024) as { endUser?: unknown; params?: { endUser?: unknown } };
+        if ((payerInput?.endUser !== undefined || payerInput?.params?.endUser !== undefined) && (!auth || !["operator", "api"].includes(auth.kind))) throw new HttpError(403, "Only a tenant key can choose a run payer");
+      }
       if (tail === "/requests" && request.method === "POST") {
-        const input = (await request.clone().json()) as { method?: string; params?: Record<string, unknown> };
-        if (!auth && input.method === "configure") scopedConfiguration(input.params);
-        if (input.method !== "configure" && input.params?.bucket !== undefined &&
-          (!auth || !["prompt", "continue"].includes(input.method ?? "")))
+        const input = (await body(request.clone(), 6 * 1024 * 1024)) as { method?: string; params?: Record<string, unknown> };
+        if (!auth && input?.method === "configure") scopedConfiguration(input.params);
+        if (input?.method !== "configure" && input?.params?.bucket !== undefined &&
+          (!auth || !["prompt", "steer", "continue"].includes(input.method ?? "")))
           throw new HttpError(auth ? 400 : 403, auth
-            ? "bucket is for a model run (prompt, continue)"
+            ? "bucket is for a model run (prompt, steer, continue)"
             : "Only the tenant can choose a run's bucket");
       }
       if (tail === "/inputs" || tail.startsWith("/inputs/")) {

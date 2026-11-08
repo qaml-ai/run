@@ -45,7 +45,7 @@ export async function imageToolsImpl(this: AgentRuntime) {
           builtins: conf.config.builtins,
           keyScope: conf.config.keyScope,
           identity: {
-            subject: conf.config.subject,
+            subject: (params?.endUser as string | undefined) ?? conf.config.subject,
             context: conf.config.context,
           },
           actor: params?.actor as string | undefined,

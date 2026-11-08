@@ -106,7 +106,9 @@ its id (`def_…`).
 `--from user-1` says who is sending, `--steer` gives the message to a run that
 is going. An agent whose tools are attached by an application that is not
 connected refuses the run (`APPLICATION_NOT_CONNECTED`) unless you pass
-`--allow-disconnected`.
+`--allow-disconnected`. `--end-user collaborator` charges that existing end user
+instead of the agent subject. It requires a tenant API key and cannot accompany
+`--steer`.
 
 `answer` takes `true` or `false` for an approval, the chosen label or your own
 words for a question (`{"<question>": "<answer>"}` for several), the fields as

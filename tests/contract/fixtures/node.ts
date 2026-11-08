@@ -218,6 +218,9 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
       const result = await db.query("update agent_children set ended_at=null,landed_at=null,landed_by=null,state='running',checked_at=0 where parent=$1", [parent]);
       if (!result.rowCount) throw new Error("Fixture child settlement not found");
     },
+    async deleteEndUser(tenant, endUser) {
+      await db.query("delete from end_users where tenant=$1 and id=$2", [tenant, endUser]);
+    },
     async seedLegacyWorkflowDefinition(definition) {
       const result = await db.query(`update definitions set spec = (spec::jsonb || '{"builtins":["workflow"],"workflow":{"instructions":true}}'::jsonb)::json where id = $1`, [definition]);
       if (result.rowCount !== 1) throw new Error("Fixture definition not found");

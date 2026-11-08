@@ -16,3 +16,7 @@ test('definition children retain the resolved definition configuration', () => {
   const target = { definition: 'def_example', definitionRevision: 2, systemPrompt: 'Target', builtins: ['ask_user'], model: 'target/model', mounts: [{ workspace: true }] };
   assert.deepEqual(childConfig({ model: 'parent/model', subject: 'end-user' }, target), { ...target, subject: 'end-user' });
 });
+
+test('child tool identity stays the owner when the run has another payer', () => {
+  assert.equal(childConfig({ subject: 'owner' }, undefined, { endUser: 'guest', bucket: 'bot:7' }).subject, 'owner');
+});

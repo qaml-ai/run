@@ -14,7 +14,7 @@ import { languageInput, MAX_LANGUAGE_LENGTH } from "./language.ts";
 /** An end user's credit refusal's fields, the same on a 402, a run's error, run.failed and voice.session.ended. */
 const creditReason = z.enum(CREDIT_REASONS).openapi({ description: "Why an end user's credit refused or stopped it (see the errors reference): balance (no credit left: nothing of the bucket's free allowance today, and no paid balance), daily_limit (the end user's daily credit limit on paid spend), bucket_limit (the bucket's own daily limit on paid spend; a bucket limited to 0 spends only its allowance). More may be added: treat an unknown one as a credit refusal of no particular kind" });
 const creditBucket = z.string().openapi({ description: "With an end user's credit refusal: the bucket refused (builder, bot:42, default)" });
-const creditEndUser = z.string().openapi({ description: "With an end user's credit refusal: whose credit (the subject)" });
+const creditEndUser = z.string().openapi({ description: "With an end user's credit refusal: whose credit (the payer)" });
 
 const SEND_KEY = "Send {\"apiKey\": \"...\"} with the provider's API key";
 const SEND_TEXT = "Send {\"text\": \"...\"}, or attach audio to transcribe";
@@ -42,7 +42,7 @@ export const ApiError = z.object({
     max: z.number().int(),
     windowSeconds: z.number().int(),
   }).optional().openapi({ description: "On a rate limit's 429: the limit reached. Retry-After says when to retry" }),
-  endUser: creditEndUser.optional().openapi({ description: "With END_USER_CREDIT: whose credit refused the work (the subject)" }),
+  endUser: creditEndUser.optional().openapi({ description: "With END_USER_CREDIT: whose credit refused the work (the payer)" }),
   bucket: creditBucket.optional().openapi({ description: "With END_USER_CREDIT: the bucket refused" }),
   reason: creditReason.optional(),
   refundable: z.number().int().optional().openapi({ description: "With INSUFFICIENT_BALANCE: the most a refund may return now (micro-USD)" }),
@@ -155,6 +155,7 @@ const envelope = <T extends string>(type: T, data: z.ZodType, description: strin
 const runFacts = {
   agentId: z.string(), requestId: z.string(),
   method: z.enum(["prompt", "continue", "resume", "execute"]),
+  endUser: z.string().optional().describe("The explicit payer override for this run"),
   actor: z.string().optional(), metadata: z.record(z.string(), z.string()).optional().openapi({ description: "The metadata the message that started it carried" }),
 };
 /** How a failed model call failed (model-errors.ts `ModelFailure`): on a run's error, its run.failed webhook and its events. */
@@ -432,6 +433,7 @@ export const ContextReset = z.object({
   after: ContextRangeSize.openapi({ description: "The context's range after it" }),
 }).openapi("ContextReset");
 export const PromptInput = z.object({
+  endUser: z.string().min(1).max(200).optional().openapi({ description: "Charge this prompt to an existing end user of this tenant instead of the agent subject. Tenant API key only. A steer joins only a turn with the same endUser selection. Child tasks, their notifications and messages inherit the run payer; child tool identity stays the owner. Later prompts without it use the agent subject" }),
   text: z.string({ error: SEND_TEXT }).optional().openapi({ description: "The message. It may be left out when the message attaches audio, whose transcript is then the message" }),
   actor: z.string().optional().openapi({ description: "Who is acting in this turn (a user id in your app): `act` in its tools' identity tokens" }),
   from: z.strictObject({
@@ -442,9 +444,9 @@ export const PromptInput = z.object({
   }).optional().openapi({ description: "Who sent this message. The model sees it in a block only the runtime can write; `from.id` is also the turn's actor unless `actor` is given" }),
   requestId: z.string().optional().openapi({ description: "Idempotency: retrying with the same id returns the same request. The user message records it, so a UI can match its own bubble" }),
   allowDisconnected: z.boolean().optional().openapi({ description: "Run even though the agent's tools need its application and none is connected (else 409 APPLICATION_NOT_CONNECTED): its calls then fail as not connected" }),
-  whileRunning: z.enum(["queue", "steer"]).optional().openapi({ description: "What happens if the agent is working on a turn when this arrives. queue (default): it runs as the next turn. steer: the running turn takes it after its current step. The 202 says so at once (steer: \"accepted\"; \"queued\" when no turn could take it), and this request completes as soon as the turn takes the message (steeredInto names the turn, whose own request has its outcome; a steer_taken event marks it), so steered messages never wait for the turn's end, nor count against the agent's queue once taken. If the turn ends first, it runs as a turn of its own. With no turn running, both start one" }),
+  whileRunning: z.enum(["queue", "steer"]).optional().openapi({ description: "What happens if the agent is working on a turn when this arrives. queue (default): it runs as the next turn. steer: a running turn with the same endUser selection takes it after its current step; a different payer queues a separate turn. The 202 says so at once (steer: \"accepted\"; \"queued\" when no turn could take it), and this request completes as soon as the turn takes the message (steeredInto names the turn, whose own request has its outcome; a steer_taken event marks it), so steered messages never wait for the turn's end, nor count against the agent's queue once taken. If the turn ends first, it runs as a turn of its own. With no turn running, both start one" }),
   spendLimit: SpendLimitInput.optional().openapi({ description: "This run's own budget in USD: it ends before its next model request once it has spent this. The agent's spendLimit is unchanged and counts the run too" }),
-  bucket: z.string().optional().openapi({ description: "With end-user credits on (/v1/end-user-settings): the bucket of the agent's subject this run spends from, instead of the agent's. Only the tenant may set it" }),
+  bucket: z.string().optional().openapi({ description: "With end-user credits on (/v1/end-user-settings): the bucket of this run's payer (endUser, else the agent subject) it spends from, instead of the agent's. Only the tenant may set it" }),
   runLimits: z.strictObject({ maxResponses: z.number().int().min(1).optional(), maxSeconds: z.number().int().min(1).optional() }).optional().openapi({ description: "This run's own limits: at most this many model responses, or seconds. They only lower the agent's runLimits and the runtime's; at one, the run ends with stopped \"turn_limit\"" }),
   output: z.strictObject({
     schema: z.record(z.string(), z.unknown()).openapi({ description: "A JSON Schema for an object (type: \"object\"; at most 64 KB)", example: { type: "object", properties: { sentiment: { type: "string", enum: ["positive", "neutral", "negative"] } }, required: ["sentiment"] } }),
@@ -525,7 +527,7 @@ export const Workspace = z.object({ id: z.string(), name: z.string(), archived: 
 export const QueueSettingInput = z.strictObject({
   mode: z.enum(["each", "batch"]),
   windowMs: z.number().int().min(0).max(2_000).optional().openapi({ description: "With batch: how long a prompt that reaches an idle agent waits for others to join its turn (ms, at most 2000). Default 0" }),
-}).openapi("QueueSetting", { description: "What it does with prompts that arrive while a turn runs. {mode: \"each\"} (the default): each runs as a turn of its own, in order. {mode: \"batch\"}: the prompts waiting when a turn ends run together as the next turn, each its own user message in arrival order, so a burst of events costs one turn instead of one each. Each merged prompt's request ends with that turn, with its answer (reply...) and batchedInto naming the turn's first request, which has the usage. A prompt joins only with prompts like it: not a sub-agent's notification or message nor a delegate call or other prompt of the runtime's, none with an output schema, a spendLimit or runLimits of its own, and all for the same actor and bucket; the first that does not fit runs after the batch. windowMs (0 to 2000): a prompt reaching an idle agent waits this long first, so a burst sent at once merges too. Steers waiting for a boundary are taken all at once there. A sub-agent never batches. See Batching in the concepts guide" });
+}).openapi("QueueSetting", { description: "What it does with prompts that arrive while a turn runs. {mode: \"each\"} (the default): each runs as a turn of its own, in order. {mode: \"batch\"}: the prompts waiting when a turn ends run together as the next turn, each its own user message in arrival order, so a burst of events costs one turn instead of one each. Each merged prompt's request ends with that turn, with its answer (reply...) and batchedInto naming the turn's first request, which has the usage. A prompt joins only with prompts like it: not a sub-agent's notification or message nor a delegate call or other prompt of the runtime's, none with an output schema, a spendLimit or runLimits of its own, and all for the same actor, bucket and endUser; the first that does not fit runs after the batch. windowMs (0 to 2000): a prompt reaching an idle agent waits this long first, so a burst sent at once merges too. Steers accepted by the same turn are taken all at once at its next boundary. A sub-agent never batches. See Batching in the concepts guide" });
 
 export const AgentInput = z.object({
   workspaceId,
@@ -598,6 +600,7 @@ const Activity = z.object({
   queuedRuns: z.number().int().openapi({ description: "Runs accepted and waiting behind it (prompts, steered messages not yet read, continues, executions, resumes)" }),
 });
 export const RequestRecord = z.object({
+  endUser: z.string().optional().describe("The tenant-selected payer override for this run"),
   id: z.string(),
   method: z.enum(["prompt", "execute", "status", "abort", "continue", "steer", "configure", "resume"]).openapi({ description: "resume: the runtime continuing a turn that waited on human input, once its inputs settled" }),
   state: z.enum(["running", "completed"]),

@@ -597,6 +597,7 @@ export function api(context: ApiContext) {
     }
     // A first prompt is checked before anything is made, and sent once the agent is: it runs when the agent has started.
     const first = prompt === undefined ? undefined : promptRequest(parse(schema.PromptInput, prompt));
+    if (prompt?.endUser !== undefined && !["operator", "token"].includes(c.var.principal.via)) throw new HttpError(403, "Only a tenant key can choose a run payer");
     // Counted as the key's agent is found: an upsert that changes nothing is not a create, though its headers say where the tenant stands.
     let counting: Promise<RateLimitState | undefined> | undefined;
     const admit = (unchanged: boolean) => counting ??= context.rateLimits?.agentCreate(tenant, !unchanged) ?? Promise.resolve(undefined);
@@ -740,6 +741,7 @@ export function api(context: ApiContext) {
   route(createRoute({ method: "post", path: "/v1/agents/{id}/prompt", request: { params: agentId, body: content(schema.PromptInput) }, responses: { 202: { ...reply("The accepted request", schema.RequestRecord), headers: rateLimited("Runs") } } }), async c => {
     // Room for inline files (FILE_LIMITS.inlineBytes, as base64); larger ones are uploaded first.
     const body = parse(schema.PromptInput, await readJson(c.req.raw.body, 6 * 1024 * 1024, {}));
+    if (body.endUser !== undefined && !["operator", "token"].includes(c.var.principal.via)) throw new HttpError(403, "Only a tenant key can choose a run payer");
     const record = await clients.submit(c.req.param("id")!, c.var.principal.tenant, promptRequest(body, c.req.header("idempotency-key")),
       rate => { for (const [name, value] of Object.entries(rateLimitHeaders(rate))) c.header(name, value); });
     return json(c, 202, record);

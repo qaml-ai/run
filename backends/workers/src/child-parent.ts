@@ -2,7 +2,7 @@ import { withSql, type PostgresEnv } from './postgres.ts';
 import { MULTI_AGENT_LIMITS } from './multi-agent-policy.ts';
 
 /** A sub-agent's place in its chain as its parent made it: its depth, its chain's limit and its chain (its parent last). */
-export type ChildPlace = { depth: number; maxDepth: number; chain: string[] };
+export type ChildPlace = { payer?: string; depth: number; maxDepth: number; chain: string[] };
 
 /** The runtime writes this relation; public configuration cannot choose a parent. */
 export async function recordChildParent(env: PostgresEnv, tenant: string, child: string, parent: string, run: string, place: ChildPlace) {
