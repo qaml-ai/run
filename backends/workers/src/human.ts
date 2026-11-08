@@ -1,7 +1,7 @@
 import { defineDoc, defineTool, hook, ToolTask, type Extension, type Harness, type ToolExecutionApi, type ToolRegistration, type ToolTaskInput } from "@earendil-works/pi-durable";
 import { obj, str } from "@earendil-works/pi-schema";
 import type { Context } from "@earendil-works/chord";
-import { answerInput, expiresAt, INPUT_LIMITS, mayAnswer, questionsInput, resolution, settledAlready, type Answer, type HumanInputSettings, type InputRow, type Responder } from "./input-policy.ts";
+import { answerInput, expiresAt, inboxDetail, inboxFields, expiryAnswer, INPUT_LIMITS, mayAnswer, questionsInput, resolution, settledAlready, type Answer, type HumanInputSettings, type InputRow, type Responder } from "./input-policy.ts";
 import { HostExecutionRequest } from "./host-execution.ts";
 import { senderInput } from "./sender.ts";
 import { actorInput } from "./security-policy.ts";
@@ -12,6 +12,7 @@ import { endScript, waitsOnPerson } from "../codemode/sandbox.ts";
 
 export type HumanInput = {
   question: string; answer?: string; toolCallId?: string;
+  priority?: "urgent" | "high" | "normal" | "low";
   kind?: "question" | "approval" | "form" | "url";
   detail?: Record<string, any>; createdAt?: number; expiresAt?: number;
   state?: "pending" | "answered" | "declined" | "cancelled" | "expired" | "superseded";
@@ -97,6 +98,8 @@ export function humanInputView(id: string, item: HumanInput, agent: string, requ
   return {
     id, agent, requestId, toolCallId: item.toolCallId ?? id,
     kind: item.kind ?? "question", message: item.question,
+    priority: item.detail?.priority ?? (item.kind === "approval" ? "high" : "normal"), blocking: true,
+    attachments: item.detail?.attachments, links: item.detail?.links, recommendation: item.detail?.recommendation, applyRecommendationOnExpiry: item.detail?.applyRecommendationOnExpiry,
     detail: item.detail ?? {}, state: item.state ?? (item.answer === undefined ? "pending" : "answered"),
     responders: item.responders ?? {},
     createdAt: item.createdAt ?? 0, expiresAt: item.expiresAt ?? 0,
@@ -199,21 +202,24 @@ export function humanInputExtension(): Extension {
   })] };
 }
 
-export const askUser: ToolRegistration = {
+export const askUser: ToolRegistration = makeAskUser();
+export function makeAskUser(attachments?: (items: any[]) => Promise<any[]>): ToolRegistration { return {
   name: "ask_user",
-  description: "Ask the user 1–4 questions with 2–4 options. The turn pauses until the user answers.",
-  parameters: { type: "object", required: ["questions"], properties: { questions: { type: "array", minItems: 1, maxItems: 4, items: { type: "object" } } }, additionalProperties: false },
+  description: "Ask the user 1–4 questions. Your turn pauses until they answer or the questions expire. Use request_decision to keep working.",
+  parameters: { type: "object", required: ["questions"], properties: { ...inboxFields, questions: { type: "array", minItems: 1, maxItems: 4, items: { type: "object" } } }, additionalProperties: false },
   replay: "safe",
   structuredOutputSchema: {},
   // From code too: the turn pauses for the answer either way.
   callers: ["model", "tools"],
   async execute(args, api, context) {
-    const questions = questionsInput((args as { questions: unknown }).questions);
-    const result = await waitForHuman({ kind: "question", question: questions.length === 1 ? questions[0].question : `${questions.length} questions`, detail: { questions } }, api, context);
+    const detail = inboxDetail(args as Record<string, any>);
+    if (detail.attachments?.length) { if (!attachments) throw new Error("Attachments are unavailable"); detail.attachments = await attachments(detail.attachments); }
+    const questions = detail.questions;
+    const result = await waitForHuman({ kind: "question", question: questions.length === 1 ? questions[0].question : `${questions.length} questions`, detail }, api, context);
     // Code gets the answers themselves (structuredOutput); the model, their text.
     const text = result.output.length === 1 && result.output[0].type === "text" ? result.output[0].text : undefined;
     let value: unknown;
     try { value = text === undefined ? undefined : JSON.parse(text); } catch { value = text; }
     return { ...result, ...(value !== undefined ? { structuredOutput: value as never } : {}) };
   },
-};
+}; }

@@ -780,7 +780,7 @@ export function api(context: ApiContext) {
     method: "get", path: "/v1/agents/{id}/children", request: { params: agentId }, security: readers,
     responses: { 200: reply("The children its delegate and spawn_agent calls (and tools' spawn directives) started, newest first, each as its latest run says: whether it runs, how it ended, whether its answer reached the agent yet, and a running one's latest progress. The agent idle (state) and every child ended and delivered: the whole tree is settled", schema.ChildAgents) },
   }), async c => json(c, 200, { children: await clients.childrenFor(c.req.param("id")!) }));
-  const inputState = z.object({ state: z.enum(["pending", "answered", "declined", "cancelled", "expired", "superseded"]).optional() });
+  const inputState = z.object({ state: z.enum(["pending", "answered", "declined", "cancelled", "expired", "superseded", "withdrawn"]).optional() });
   route(createRoute({ method: "get", path: "/v1/agents/{id}/inputs", request: { params: agentId, query: inputState }, security: readers, responses: { 200: reply("The agent's human inputs, newest first", z.array(schema.Input)) } }),
     async c => {
       const inputs = await clients.inputsFor(c.req.param("id")!, c.var.principal.tenant, c.req.query("state"));

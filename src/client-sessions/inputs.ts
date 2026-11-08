@@ -7,7 +7,7 @@ import { type McpResult } from "../mcp-results.ts";
 import { actorInput } from "../identity.ts";
 import { senderInput } from "../sender.ts";
 import { type ToolCall } from "../tool-servers.ts";
-import { answerInput, argumentsHash, settledAlready, expiresAt, INPUT_LIMITS, inputRequests, inputView, mayAnswer, type Answer, type Input, type InputRow, type Responder } from "../inputs.ts";
+import { answerInput, argumentsHash, settledAlready, expiresAt, INPUT_LIMITS, inputRequests, inputView, expiryAnswer, decisionNotice, mayAnswer, type Answer, type Input, type InputRow, type Responder } from "../inputs.ts";
 import * as delegation from "./delegation.ts";
 import { type Session, type ClientSessionOptions } from "./state.ts";
 
@@ -61,7 +61,9 @@ export function approver(by: Responder) {
  */
 export async function suspend(ctx: InputContext, session: Session, call: ToolCall, request: RequestRecord | undefined, result: McpResult) {
   const inputs = ctx.options.inputs;
-  let requests = inputRequests(result);
+  let requests: { key?: string; kind: Input["kind"]; message: string; detail: Record<string, unknown> }[] = inputRequests(result, call.name === "ask_user" || call.name === "request_decision");
+  const decision = call.name === "request_decision";
+  if (decision) requests = requests.map(entry => ({ ...entry, kind: "decision" }));
   const approval = requests.every(entry => entry.kind === "approval");
   if (!call.toolCallId || !request || !inputs) throw new Error(`${call.name} needs the user's ${approval ? "approval" : "input"}, which this request cannot wait for`);
   const toolCallId = callKey(call);
@@ -78,11 +80,13 @@ export async function suspend(ctx: InputContext, session: Session, call: ToolCal
   const lineage = [...delegation.position(ctx.delegation, session, request).chain, header.id];
   const rows = await inputs.create({
     agent: header.id, tenant: header.tenant, requestId: request.id, toolCallId,
-    responders: request.actor ? { audience: [request.actor] } : {}, expiresAt: expiresAt(header.sources?.humanInput, header.expiresAt),
+    responders: request.actor ? { audience: [request.actor] } : {}, expiresAt: expiresAt(decision ? { expiresInSeconds: 7 * 86400 } : header.sources?.humanInput, header.expiresAt),
+    blocking: !decision, ...(decision && typeof call.args.key === "string" ? { itemKey: call.args.key } : {}), subject: header.identity?.subject,
     approvers: header.sources?.humanInput?.approvers, rootAgent: lineage[0], lineage,
     tool: call.name, argumentsHash: hashed, ...(typeof result.requestState === "string" ? { requestState: result.requestState } : {}),
   }, requests, session.claim);
   for (const row of rows) ctx.publish(session, { type: "event", requestId: request.id, event: { type: "input_required", input: inputView(row) } });
+  if (decision) return { content: [{ type: "text", text: JSON.stringify({ inputId: rows[0].id }) }], structuredContent: { inputId: rows[0].id } };
   return { content: [{ type: "text", text: "Waiting for the user's input." }], inputRequired: true };
 }
 
@@ -95,7 +99,7 @@ export async function cancelInputs(ctx: InputContext, session: Session, reason: 
   const inputs = ctx.options.inputs;
   if (!inputs) return;
   const settled: InputRow[] = [];
-  for (const input of await inputs.pending(session.header.id)) {
+  for (const input of (await inputs.pending(session.header.id)).filter(input => input.blocking !== false)) {
     const done = await inputs.settle(input.id, { action: "cancel", by: { system: reason }, at: Date.now() }, reason === "aborted" ? "cancelled" : "superseded");
     if (done) settled.push(done);
   }
@@ -109,7 +113,7 @@ export function resolved(ctx: InputContext, session: Session, input: InputRow) {
 
 /** Queue the run that resumes a suspension once none of its inputs is pending; idempotent per suspension. Returns its record, if any. */
 async function resumeSettled(ctx: InputContext, session: Session, suspension: string): Promise<RequestRecord | undefined> {
-  const rows = await ctx.options.inputs!.forRequest(session.header.id, suspension);
+  const rows = (await ctx.options.inputs!.forRequest(session.header.id, suspension)).filter(input => input.blocking !== false);
   if (!rows.length || rows.some(row => row.state === "pending")) return undefined;
   return (await ctx.accept(session, { id: resumeId(suspension), method: "resume", params: { suspension } }, true)).record;
 }
@@ -135,6 +139,7 @@ export async function answer(ctx: InputContext, id: string, tenant: string, answ
   for (const { id: inputId, body } of answers) {
     const input = await inputs.get(inputId);
     if (!input || input.agent !== id) throw new HttpError(404, `Unknown input ${inputId}`);
+    if (input.state === "pending" && input.expiresAt <= Date.now()) throw new HttpError(409, "This input expired");
     let by: Responder;
     try { by = { via, ...(body?.from !== undefined ? { from: senderInput(body.from) } : {}), ...(body?.actor !== undefined ? { actor: actorInput(body.actor) } : {}) }; }
     catch (error) { throw new HttpError(400, errorText(error)); }
@@ -142,17 +147,19 @@ export async function answer(ctx: InputContext, id: string, tenant: string, answ
     checked.push({ input, answer: { ...answerInput(input, body), by, at: Date.now() } });
   }
   const settled = checked.every(({ input }) => input.state === "pending") ? await inputs.settleAll(checked.map(({ input, answer }) => ({ id: input.id, answer }))) : undefined;
-  const suspensions = [...new Set(checked.map(({ input }) => input.requestId))];
+  const suspensions = [...new Set(checked.filter(({ input }) => input.blocking !== false).map(({ input }) => input.requestId))];
   if (!settled) {
     // Settled already: a retry of these answers is 200; anything else conflicts, showing what was recorded.
     const current = await Promise.all(checked.map(({ input }) => inputs.get(input.id))) as InputRow[];
     const same = current.every((row, index) => row.answer && !row.answer.by.system && row.answer.action === checked[index].answer.action && canonical(row.answer.content ?? null) === canonical(checked[index].answer.content ?? null));
     if (!same) throw Object.assign(new HttpError(409, current.length === 1 ? settledAlready(current[0]) : current.some(row => row.answer?.by.system === "expired") ? settledAlready(current.find(row => row.answer?.by.system === "expired")!) : "An input is already settled"), { input: current.length === 1 ? inputView(current[0]) : current.map(inputView) });
+    await deliverDecisions(ctx, current.filter(input => input.blocking === false));
     return { status: 200, inputs: current.map(inputView), requests: await resumeAnywhere(ctx, id, tenant, suspensions) };
   }
   // Announced here when this node serves the agent; otherwise its resume run announces them.
   const local = ctx.sessions.get(id);
   if (local) for (const input of settled) resolved(ctx, local, input);
+  await deliverDecisions(ctx, settled.filter(input => input.blocking === false));
   return { status: 202, inputs: settled.map(inputView), requests: await resumeAnywhere(ctx, id, tenant, suspensions) };
 }
 
@@ -179,16 +186,31 @@ export async function inbox(ctx: InputContext, tenant: string, state?: string) {
 export async function expireInputs(ctx: InputContext, now = Date.now()) {
   const inputs = ctx.options.inputs;
   if (!inputs) return;
+  for (const rows of (await inputs.deliveries()).values()) await deliverDecisions(ctx, rows).catch(error => console.error(JSON.stringify({ type: "decision_delivery_failed", error: errorText(error) })));
   for (let batch; (batch = await inputs.due(now)).length;) {
     const suspensions = new Map<string, InputRow>();
     for (const input of batch) {
-      const expired = await inputs.settle(input.id, { action: "cancel", by: { system: "expired" }, at: Date.now() }, "expired");
-      if (expired) suspensions.set(`${expired.agent} ${expired.requestId}`, expired);
+      const expired = await inputs.settle(input.id, expiryAnswer(input, now), "expired");
+      if (expired?.blocking === false) await deliverDecisions(ctx, [expired]).catch(error => console.error(JSON.stringify({ type: "decision_delivery_failed", error: errorText(error) })));
+      else if (expired) suspensions.set(`${expired.agent} ${expired.requestId}`, expired);
     }
     for (const input of suspensions.values()) {
       await resumeAnywhere(ctx, input.agent, input.tenant, [input.requestId])
         .catch(error => console.error(JSON.stringify({ type: "input_expiry_failed", agent: input.agent, error: errorText(error) })));
     }
     if (batch.length < 100) break;
+  }
+}
+
+async function deliverDecisions(ctx: InputContext, inputs: InputRow[]) {
+  if (!inputs.length) return;
+  const store = ctx.options.inputs!;
+  for (const [id, rows] of await store.deliveries(inputs[0].agent)) {
+    const first = rows[0], text = decisionNotice(rows);
+    const submit = ctx.options.submit ?? ((agent, tenant, request) => ctx.submit(agent, tenant, request));
+    await submit(first.agent, first.tenant, { id, method: "prompt", params: { text, allowDisconnected: true, notice: {
+      source: { kind: "agent", agentId: first.agent, name: "decision inbox" }, root: first.agent, costUsd: 0, metadata: { kind: "message", to: "decision" },
+    } } });
+    await store.delivered(id);
   }
 }

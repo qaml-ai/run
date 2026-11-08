@@ -12,7 +12,7 @@ import { download, need, readCapped, type ToolFiles } from "./tool-files.ts";
 import { HttpError } from "./http.ts";
 import { textual, type FileLinks } from "./files.ts";
 import { TOOL_FILE_LIMITS } from "./limits.ts";
-import { questionsInput } from "./inputs.ts";
+import { questionsInput, inboxFields, inboxDetail, decisionDetail } from "./inputs.ts";
 import { VOLUME_LIMITS } from "./volumes.ts";
 import { X_SEARCH, xSearchUnavailable, type XSearch } from "./x-search.ts";
 
@@ -36,6 +36,7 @@ export const BUILTINS = {
   x_search: ["x_search"],
   schedule: ["schedule", "list_schedules", "cancel_schedule"],
   ask_user: ["ask_user"],
+  request_decision: ["request_decision"],
   delegate: [],
   generate_image: [],
   agents: [],
@@ -133,17 +134,27 @@ const DEFINITIONS: Record<string, ToolDefinition> = {
   // AskUserQuestion's shape, which models already use well. From code too: the turn pauses for the answer either way.
   ask_user: {
     name: "ask_user", exposure: "direct", callers: ["model", "tools"],
-    description: "Ask the user 1-4 questions, each with 2-4 options, when you are blocked on a choice only they can make. Your turn pauses until they answer, which may take days; the answers come back as this call's result. Don't ask about what you can find out yourself.",
+    description: "Ask the user 1–4 questions. Your turn pauses until they answer or the questions expire. Use request_decision to keep working.",
     parameters: { type: "object", additionalProperties: false, required: ["questions"], properties: {
+      ...inboxFields,
       questions: { type: "array", minItems: 1, maxItems: 4, items: { type: "object", additionalProperties: false, required: ["question", "header", "options"], properties: {
         question: { type: "string", minLength: 1, maxLength: 1000, description: "The full question, ending with a question mark" },
         header: { type: "string", minLength: 1, maxLength: 12, description: "A short label, like \"Auth method\"" },
         options: { type: "array", minItems: 2, maxItems: 4, items: { type: "object", additionalProperties: false, required: ["label"], properties: {
           label: { type: "string", minLength: 1, maxLength: 200 }, description: { type: "string", maxLength: 1000, description: "What choosing it means" },
         } } },
+        recommended: { type: "string" }, reason: { type: "string", maxLength: 1000 },
         multiSelect: { type: "boolean", description: "Let the user choose several options" },
         allowOther: { type: "boolean", description: "Let the user answer in their own words instead" },
       } } },
+    } },
+  },
+  request_decision: {
+    name: "request_decision", exposure: "direct", callers: ["model", "tools"],
+    description: "Ask for a decision and keep working. Answers arrive as a notice. Expires in seven days. Reuse a key to replace a pending decision.",
+    parameters: { type: "object", additionalProperties: false, required: ["title", "body"], properties: {
+      ...inboxFields, title: { type: "string", minLength: 1, maxLength: 1000 }, body: { type: "string", maxLength: 4000 },
+      options: { type: "array", minItems: 2, maxItems: 4, items: { type: "object", required: ["label"], properties: { label: { type: "string" }, description: { type: "string" } }, additionalProperties: false } }, key: { type: "string", minLength: 1, maxLength: 200 },
     } },
   },
   cancel_schedule: {
@@ -164,7 +175,14 @@ export type BuiltinServices = { outbound: Outbound; scheduler?: Scheduler; searc
 export async function runBuiltin(services: BuiltinServices, context: BuiltinContext, name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<McpResult> {
   if (name === "web_fetch") return webFetch(services, context, String(args.url), (args.maxCharacters as number | undefined) ?? FETCH.characters, signal);
   // The questions go to the user as an input; the answers become this call's result.
-  if (name === "ask_user") return { resultType: "input_required", inputRequests: { questions: { method: "agent-runtime/question", params: { questions: questionsInput(args.questions) } } } };
+  if (name === "ask_user" || name === "request_decision") {
+    const detail = name === "ask_user" ? inboxDetail(args) : decisionDetail(args);
+    if (detail.attachments) detail.attachments = await Promise.all(detail.attachments.map(async (attachment: any) => {
+      const file = await need(context.files).open(attachment.path);
+      return { path: file.path, version: file.entry.version, contentType: file.contentType, ...(attachment.caption ? { caption: attachment.caption } : {}) };
+    }));
+    return { resultType: "input_required", inputRequests: { questions: { method: "agent-runtime/question", params: detail } } };
+  }
   return jsonResult(await builtinValue(services, context, name, args, signal));
 }
 

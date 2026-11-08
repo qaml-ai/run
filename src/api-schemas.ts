@@ -221,10 +221,10 @@ export const WebhookEvents = {
     ...ModelFailure.partial().shape,
   }), "A run ended with an error: the runtime's, or the model's"),
   "input.requested": envelope("input.requested", z.object({
-    agentId: z.string(), requestId: z.string(), inputId: z.string(), toolCallId: z.string(), kind: z.enum(["question", "approval", "form", "url"]), expiresAt: z.number(),
+    agentId: z.string(), requestId: z.string(), inputId: z.string(), toolCallId: z.string(), kind: z.enum(["question", "approval", "form", "url", "decision"]), expiresAt: z.number(),
   }), "The agent asks a person for input; the run waits"),
   "input.resolved": envelope("input.resolved", z.object({
-    agentId: z.string(), requestId: z.string(), inputId: z.string(), state: z.enum(["answered", "declined", "cancelled", "expired", "superseded"]),
+    agentId: z.string(), requestId: z.string(), inputId: z.string(), state: z.enum(["answered", "declined", "cancelled", "expired", "superseded", "withdrawn"]),
   }), "An input settled"),
   "usage.recorded": envelope("usage.recorded", z.object({
     agentId: z.string().nullable().openapi({ description: "null for a transcription made with POST /v1/transcriptions, images made with POST /v1/images, or decisions made with POST /v1/decisions, which no agent made" }), requestId: z.string().nullable(), subject: z.string().nullable(), actor: z.string().nullable(), context: z.record(z.string(), z.unknown()), keyScope: z.string().nullable(),
@@ -392,7 +392,7 @@ export const ModelHeaders = z.record(z.string(), z.string()).openapi("ModelHeade
 });
 
 // Documentation only: sessionConfig validates provisioning, with the messages the SDKs rely on.
-const Builtin = z.enum(["file_link", "file_import", "web_fetch", "web_search", "x_search", "schedule", "ask_user", "delegate", "generate_image", "agents", "decide"]).openapi("Builtin", { description: "file_link: short-lived GET or PUT links to workspace files; file_import: public URLs streamed to the workspace; agents: sub-agents in the background (spawn_agent, wait_agent, list_agents), with the delegate settings" });
+const Builtin = z.enum(["file_link", "file_import", "web_fetch", "web_search", "x_search", "schedule", "ask_user", "request_decision", "delegate", "generate_image", "agents", "decide"]).openapi("Builtin", { description: "file_link: short-lived GET or PUT links to workspace files; file_import: public URLs streamed to the workspace; agents: sub-agents in the background (spawn_agent, wait_agent, list_agents), with the delegate settings" });
 const AgentTarget = z.union([
   z.string().openapi({ description: "A definition's key or id; the model sees it by that name" }),
   z.strictObject({
@@ -712,12 +712,16 @@ export const Input = z.object({
   id: z.string(), agent: z.string(), tenant: z.string(),
   requestId: z.string().openapi({ description: "The run that suspended waiting on it" }),
   toolCallId: z.string(),
-  kind: z.enum(["question", "approval", "form", "url"]).openapi({ description: "question: ask_user's questions; approval: a call the runtime or a tool wants approved; form: fields a tool asks for; url: a page a tool asks the user to open" }),
+  kind: z.enum(["question", "approval", "form", "url", "decision"]).openapi({ description: "question: ask_user's questions; approval: a call the runtime or a tool wants approved; form: fields a tool asks for; url: a page a tool asks the user to open" }),
   message: z.string(),
   detail: z.record(z.string(), z.unknown()).openapi({ description: "question: { questions }; approval: { tool, source, arguments, argumentsHash }, built by the runtime from the real call; form: { requestedSchema }; url: { url, origin }" }),
   responders: z.object({ audience: z.array(z.string()).optional() }).openapi({ description: "Who may answer besides the definition's humanInput.approvers: by default the sender or actor whose message started the turn" }),
-  state: z.enum(["pending", "answered", "declined", "cancelled", "expired", "superseded"]).openapi({ description: "expired: no one answered by expiresAt, so the runtime answered for the person (answer.by.system \"expired\"; an approval is not given) and the agent went on without them" }),
+  state: z.enum(["pending", "answered", "declined", "cancelled", "expired", "superseded", "withdrawn"]).openapi({ description: "expired: no one answered by expiresAt, so the runtime answered for the person (answer.by.system \"expired\"; an approval is not given) and the agent went on without them" }),
   answer: z.object({ action: z.enum(["accept", "decline", "cancel"]), content: z.unknown().optional(), by: z.record(z.string(), z.unknown()), at: z.number() }).optional(),
+  priority: z.enum(["urgent", "high", "normal", "low"]).optional(), blocking: z.boolean().optional(),
+  key: z.string().optional(), version: z.number().optional(),
+  attachments: z.array(z.object({ path: z.string(), version: z.number(), contentType: z.string().optional(), caption: z.string().optional() })).optional(),
+  links: z.array(z.string()).optional(), recommendation: z.object({ answer: z.unknown(), reason: z.string() }).optional(), applyRecommendationOnExpiry: z.boolean().optional(),
   createdAt: z.number(), expiresAt: z.number(),
 }).openapi("Input");
 export const AnswerInput = z.object({

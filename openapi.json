@@ -458,7 +458,8 @@
                   "question",
                   "approval",
                   "form",
-                  "url"
+                  "url",
+                  "decision"
                 ]
               },
               "expiresAt": {
@@ -520,7 +521,8 @@
                   "declined",
                   "cancelled",
                   "expired",
-                  "superseded"
+                  "superseded",
+                  "withdrawn"
                 ]
               }
             },
@@ -4218,6 +4220,7 @@
           "x_search",
           "schedule",
           "ask_user",
+          "request_decision",
           "delegate",
           "generate_image",
           "agents",
@@ -6136,7 +6139,8 @@
               "question",
               "approval",
               "form",
-              "url"
+              "url",
+              "decision"
             ],
             "description": "question: ask_user's questions; approval: a call the runtime or a tool wants approved; form: fields a tool asks for; url: a page a tool asks the user to open"
           },
@@ -6168,7 +6172,8 @@
               "declined",
               "cancelled",
               "expired",
-              "superseded"
+              "superseded",
+              "withdrawn"
             ],
             "description": "expired: no one answered by expiresAt, so the runtime answered for the person (answer.by.system \"expired\"; an approval is not given) and the agent went on without them"
           },
@@ -6197,6 +6202,69 @@
               "by",
               "at"
             ]
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "urgent",
+              "high",
+              "normal",
+              "low"
+            ]
+          },
+          "blocking": {
+            "type": "boolean"
+          },
+          "key": {
+            "type": "string"
+          },
+          "version": {
+            "type": "number"
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "number"
+                },
+                "contentType": {
+                  "type": "string"
+                },
+                "caption": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "version"
+              ]
+            }
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "recommendation": {
+            "type": "object",
+            "properties": {
+              "answer": {},
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason"
+            ]
+          },
+          "applyRecommendationOnExpiry": {
+            "type": "boolean"
           },
           "createdAt": {
             "type": "number"
@@ -16963,7 +17031,8 @@
                 "declined",
                 "cancelled",
                 "expired",
-                "superseded"
+                "superseded",
+                "withdrawn"
               ]
             },
             "required": false,
@@ -17168,7 +17237,8 @@
                 "declined",
                 "cancelled",
                 "expired",
-                "superseded"
+                "superseded",
+                "withdrawn"
               ]
             },
             "required": false,
