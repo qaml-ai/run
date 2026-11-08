@@ -356,3 +356,31 @@ contractTest("delegation", "tests/background-agents.test.ts:326", "with delegate
   const history = (await r.call(`/v1/agents/${parent}/history`)).json.messages;
   assert.equal(history.filter((entry: any) => entry.role === "user" && entry.source).length, 0, "no notification in history");
 });
+
+contractTest("delegation", "tests/background-agents.test.ts:353", "a sub-agent's turn a notification started is placed where it was made: past its chain's limit it cannot delegate", async t => {
+  const r = await runtime(t, body => {
+    if (!systemText(body).includes("NESTER")) return { role: "assistant", content: "unexpected" };
+    const said = lastUser(body);
+    if (said.includes("<agent_notification")) {
+      // A grandchild stopped at the limit: the notification's turn tries once more, from where its agent was made.
+      if (last(body).role === "tool") return { role: "assistant", content: `again: ${toolResults(body).at(-1)}` };
+      const tried = body.messages.some((message: any) => message.role === "assistant" && text(message).startsWith("again: "));
+      return said.includes("depth limit") && !tried ? toolCall("spawn_agent", { agent: "nester", task: "go deeper" }, "call_again") : { role: "assistant", content: "heard" };
+    }
+    return last(body).role === "tool" ? { role: "assistant", content: `nested: ${toolResults(body).at(-1)}` } : toolCall("spawn_agent", { agent: "nester", task: "go deeper" }, "call_nest");
+  });
+  const saved = await r.call("/v1/definitions", { headers: { "Idempotency-Key": "nester" }, body: { name: "Nester", systemPrompt: "You are NESTER.", builtins: ["agents"], delegate: { agents: ["nester"], maxDepth: 2 } } });
+  assert.equal(saved.status, 201, saved.text);
+  const root = (await r.call("/v1/agents", { body: { definition: saved.json.id } })).json.id;
+  const nested = await r.prompt(root, "nest");
+  const middle = JSON.parse(nested.outcome.result.reply.slice("nested: ".length)).agentId;
+  // Its child (depth 2) was refused a child of its own; hearing so, the middle agent spawns again in that notification's turn.
+  const again = await until(async () => (await parentRequests(r, middle)).find(request => request.id.startsWith("child_") && request.state === "completed" && request.outcome?.result?.reply?.startsWith("again: ")), "the notification's turn to spawn again");
+  const latest = JSON.parse(again.outcome.result.reply.slice("again: ".length)).agentId;
+  const run = await until(async () => (await parentRequests(r, latest)).find(request => request.method === "prompt" && request.state === "completed" && !request.id.startsWith("child_")), "the new child's run");
+  // That child is at depth 2 of the root's chain, not at 1 of a new one: it is refused as its sibling was.
+  assert.equal(run.metadata.delegationDepth, "2");
+  assert.equal(run.metadata.delegationChain, `${root},${middle}`);
+  assert.match(run.outcome.result.reply, /depth limit of 2/);
+  await notified(r, middle, 2);
+});

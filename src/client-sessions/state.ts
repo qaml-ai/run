@@ -78,7 +78,8 @@ export interface SessionHeader {
    * it is. `computer`: the call's choice for the child's computer: "none", or `{ seed }`, a fork snapshot it starts from
    * (Computers.inherit); left out, a fresh one where the parent's connection allows.
    */
-  parent?: { agentId: string; runId: string; toolCallId: string; depth: number; computer?: "none" | { seed: string } };
+  /** The sub-agent's place as its parent made it: its depth, its chain's limit and its chain (its parent last; missing for one made before they were recorded). */
+  parent?: { agentId: string; runId: string; toolCallId: string; depth: number; maxDepth?: number; chain?: string[]; computer?: "none" | { seed: string } };
   /**
    * A stateless run's single-use session (POST /v1/runs): hidden from the agents list, its one prompt's request is the run.
    * Once the run ends its data is kept `retentionMs`, then purged as an expired agent's is. `fingerprint`: the request
