@@ -503,6 +503,8 @@ export class ClientSessions {
   }
 
   private track(session: Session, record: RequestRecord) {
+    // Releasing an idle steer is a new queue position, including when replaying its journal update.
+    if (session.requests.get(record.id)?.method === "steer" && record.method === "prompt") session.requests.delete(record.id);
     session.requests.set(record.id, record);
     if (record.state === "running") session.running.set(record.id, record);
     else if (session.running.delete(record.id) && session.busy) this.releaseBusy(session);
@@ -1883,7 +1885,6 @@ export class ClientSessions {
       });
       // Recovery sorts by arrival time, with log order breaking ties. Keep the released holds behind their trigger.
       for (const steer of later) {
-        session.requests.delete(steer.id);
         steer.startedAt = record.startedAt;
         this.upsertRequest(session, steer);
       }
