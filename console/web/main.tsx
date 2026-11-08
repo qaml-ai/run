@@ -1,8 +1,9 @@
 import { ComputersPage } from "@/pages/computers";
-import { StrictMode, useEffect, useLayoutEffect } from "react";
+import { StrictMode, useEffect, useLayoutEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { LogOut, Loader2 } from "lucide-react";
+import { LogOut, Loader2, Menu } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { RunLogo } from "@/components/ui/logo";
 import { Separator } from "@/components/ui/separator";
 import { ConsoleNav } from "@/components/console-nav";
@@ -84,6 +85,8 @@ function App() {
 
 function Console({ me }: { me: Me }) {
   const path = usePath();
+  const [menuOpen, setMenuOpen] = useState(false);
+  useEffect(() => setMenuOpen(false), [path]);
   const search = useSearch();
   const [section, ...rest] = path.split("/");
   // Old and shorthand URLs keep working: they are replaced by where the page lives now.
@@ -136,16 +139,19 @@ function Console({ me }: { me: Me }) {
   return (
     <div className="flex min-h-dvh flex-col md:flex-row">
       <aside className="bg-sidebar text-sidebar-foreground border-sidebar-border flex shrink-0 flex-col border-b md:sticky md:top-0 md:h-dvh md:w-60 md:border-r md:border-b-0">
-        <div className="flex items-center justify-between gap-2 px-5 pt-5 pb-4">
+        <div className="flex items-center justify-between gap-2 px-4 py-3 md:px-5 md:pt-5 md:pb-4">
           <div className="min-w-0">
             <RunLogo />
-            <div className="text-muted-foreground mt-2 truncate text-xs">{location.host}</div>
+            <div className="text-muted-foreground mt-2 hidden truncate text-xs md:block">{location.host}</div>
           </div>
-          <div className="flex items-center gap-4 md:hidden"><BillingBalance state={billingState} mobile /><SignOut /></div>
+          <div className="flex items-center gap-2 md:hidden"><Button variant="ghost" size="icon-sm" aria-label="Open navigation" onClick={() => setMenuOpen(true)}><Menu /></Button><BillingBalance state={billingState} mobile /><SignOut /></div>
         </div>
-        <ConsoleNav active={active} workspaces={workspaces.data}
+        <div className="hidden md:block"><ConsoleNav active={active} workspaces={workspaces.data}
           start={{ place: startPlace, progress: !progress.complete && onboarding.loaded && <span className="text-muted-foreground ml-auto pl-2 font-mono text-xs" aria-label={`${progress.done} of ${progress.total} done`}>{progress.done}/{progress.total}</span> }}
-          help={<GetHelp key={me.tenant} tenant={me.tenant} agentId={section === "agents" ? rest[0] : undefined} />} />
+          help={<GetHelp key={me.tenant} tenant={me.tenant} agentId={section === "agents" ? rest[0] : undefined} />} /></div>
+        <Dialog open={menuOpen} onOpenChange={setMenuOpen}><DialogContent className="max-h-[90dvh] overflow-y-auto"><DialogHeader><DialogTitle>Console navigation</DialogTitle><DialogDescription>Agents, inbox and account settings.</DialogDescription></DialogHeader><div className="console-mobile-nav"><ConsoleNav active={active} workspaces={workspaces.data}
+          start={{ place: startPlace, progress: !progress.complete && onboarding.loaded && <span className="text-muted-foreground ml-auto pl-2 font-mono text-xs" aria-label={`${progress.done} of ${progress.total} done`}>{progress.done}/{progress.total}</span> }}
+          help={<GetHelp key={me.tenant} tenant={me.tenant} agentId={section === "agents" ? rest[0] : undefined} />} /></div></DialogContent></Dialog>
         <div className="mt-auto hidden md:block">
           <Separator />
           <BillingBalance state={billingState} />
@@ -158,7 +164,7 @@ function Console({ me }: { me: Me }) {
       <main className="min-w-0 flex-1">
         <BillingBanner state={billingState} hideStarting={active === "billing" || active === "start" || (isAgentsList && !agents.data?.length)} />
         <BillingDialogs state={billingState} />
-        <div className="px-4 py-6 md:px-10 md:py-8">
+        <div className={cn("px-4 md:px-10 md:py-8", section === "agents" && rest[0] ? "py-3" : "py-6")}>
           <div className="mx-auto max-w-6xl">
             {tabs && <SectionTabs group={tabs} active={active} />}
             <PageErrorBoundary key={path}>{active !== "billing" && <ErrorAlert error={billingState.error} />}{page}</PageErrorBoundary>

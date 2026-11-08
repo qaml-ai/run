@@ -2,9 +2,10 @@ import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 import { AgentProvider, createAgentChat } from "@camelai/run-react";
+import { AgentInputView } from "../../packages/registry/src/agent-chat/agent-parts";
 import { AgentChatView } from "../../packages/registry/src/agent-chat/agent-chat";
 import { fakeChat } from "../../packages/react/test/fake-chat";
-import { ConsoleComposer, consoleChatFetch } from "../web/pages/agent-chat";
+import { ConsoleComposer, consoleChatFetch, suggestedPrompts } from "../web/pages/agent-chat";
 afterEach(cleanup);
 it("streams tokens from the authenticated event API into the registry chat", async () => {
   let stream!: ReadableStreamDefaultController<Uint8Array>;
@@ -46,17 +47,22 @@ it("renders collapsed tools, workers, sender labels and answers an inline questi
   expect(screen.getByText("Used search").closest("details")?.open).toBe(false);
   expect(screen.getByText("Researcher · working")).toBeTruthy();
   await userEvent.click(screen.getByRole("radio", { name: "First" }));
-  await userEvent.click(screen.getByRole("button", { name: "Submit" }));
-  expect(fake.chat.answer).toHaveBeenCalledWith(input, { "Which?": "First" });
+  expect(fake.chat.answer).toHaveBeenCalledExactlyOnceWith(input, { "Which?": "First" });
+  act(() => fake.set({ inputs: [], answers: [{ input, answer: { action: "accept", content: { answers: { "Which?": "First" } } } }] }));
+  expect(screen.getByText("You chose First").closest("details")?.open).toBe(false);
+  expect(screen.queryByRole("radio")).toBeNull();
 });
 it("disables empty sends, queues or steers while running, stops and loads history", async () => {
   const fake = fakeChat({ status: "streaming", hasOlder: true });
   render(<AgentProvider chat={fake.chat}><AgentChatView composer={<ConsoleComposer />} /></AgentProvider>);
-  expect((screen.getByRole("button", { name: "Queue" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true);
   await userEvent.type(screen.getByRole("textbox", { name: "Message" }), "Next");
-  await userEvent.selectOptions(screen.getByLabelText("While working"), "steer");
-  await userEvent.click(screen.getByRole("button", { name: "Steer" }));
-  expect(fake.chat.send).toHaveBeenCalledWith("Next", { whileRunning: "steer", data: { files: [] } });
+  await userEvent.keyboard("{Enter}");
+  expect(fake.chat.send).toHaveBeenCalledWith("Next", { whileRunning: "queue", data: { files: [] } });
+  await userEvent.type(screen.getByRole("textbox", { name: "Message" }), "Change course");
+  await userEvent.click(screen.getByRole("button", { name: "Steer instead" }));
+  await userEvent.click(screen.getByRole("button", { name: "Send" }));
+  expect(fake.chat.send).toHaveBeenCalledWith("Change course", { whileRunning: "steer", data: { files: [] } });
   await userEvent.click(screen.getByRole("button", { name: "Stop" }));
   expect(fake.chat.stop).toHaveBeenCalled();
   await userEvent.click(screen.getByRole("button", { name: "Load earlier messages" }));
@@ -70,4 +76,34 @@ it("routes sends, answers, attachments and aborts with CSRF headers", async () =
   const init = (request.mock.calls[0] as unknown as [string, RequestInit])[1];
   expect(new Headers(init.headers).get("X-Agent-Runtime-Console")).toBe("1");
   expect(JSON.parse(String(init.body)).files).toEqual([{ path: "/x" }]);
+});
+
+it("keeps newlines, supports Alt+Enter steering and names attachment controls", async () => {
+  const fake = fakeChat({ status: "streaming" });
+  render(<AgentProvider chat={fake.chat}><ConsoleComposer /></AgentProvider>);
+  const message = screen.getByRole("textbox", { name: "Message" });
+  await userEvent.type(message, "First{Shift>}{Enter}{/Shift}Second");
+  expect(fake.chat.send).not.toHaveBeenCalled();
+  expect((message as HTMLTextAreaElement).value).toBe("First\nSecond");
+  await userEvent.keyboard("{Alt>}{Enter}{/Alt}");
+  expect(fake.chat.send).toHaveBeenCalledWith("First\nSecond", { whileRunning: "steer", data: { files: [] } });
+  expect(screen.getByRole("button", { name: "Attach files" })).toBeTruthy();
+});
+it("enables Submit for Other text and multi-select answers", async () => {
+  const answer = vi.fn();
+  const input = { id: "q", kind: "question", message: "Region", detail: { questions: [{ question: "Region?", multiSelect: true, options: [{ label: "Europe" }] }] }, answering: false } as any;
+  render(<AgentInputView input={input} onAnswer={answer} />);
+  const submit = screen.getByRole("button", { name: "Submit" }) as HTMLButtonElement;
+  expect(submit.disabled).toBe(true);
+  await userEvent.click(screen.getByRole("checkbox", { name: "Europe" }));
+  expect(submit.disabled).toBe(false);
+  expect(answer).not.toHaveBeenCalled();
+  await userEvent.click(submit);
+  expect(answer).toHaveBeenCalledWith({ "Region?": ["Europe"] });
+});
+it("offers definition-specific prompts in an empty conversation", async () => {
+  const fake = fakeChat();
+  render(<AgentProvider chat={fake.chat}><AgentChatView suggestions={suggestedPrompts("Research new markets")} /></AgentProvider>);
+  await userEvent.click(screen.getByRole("button", { name: "Help me get started: Research new markets" }));
+  expect(fake.chat.send).toHaveBeenCalledWith("Help me get started: Research new markets");
 });

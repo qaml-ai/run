@@ -4,6 +4,7 @@ import type { ChildAgent } from "../../../clients/typescript";
 import { AgentTool, AgentWorker } from "../../../packages/registry/src/agent-chat/agent-parts";
 import { AgentMarkdown } from "../../../packages/registry/src/agent-chat/agent-markdown";
 import { AgentChatView } from "../../../packages/registry/src/agent-chat/agent-chat";
+import { Paperclip, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api, putFile } from "@/lib/api";
 import { Link } from "@/lib/router";
@@ -33,7 +34,7 @@ export function consoleChatFetch(agentId: string, changed: () => void, request: 
   };
 }
 
-export function ConsoleAgentChat({ agentId }: { agentId: string }) {
+export function ConsoleAgentChat({ agentId, description }: { agentId: string; description?: string }) {
   const frame = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const resize = () => {
@@ -80,15 +81,15 @@ export function ConsoleAgentChat({ agentId }: { agentId: string }) {
     reveal();
     return chat.subscribe(reveal);
   }, [chat]);
-  return <div ref={frame} className="min-h-0"><AgentProvider chat={chat}>
-    <ChatThread children={children} queued={queued} error={refreshError} />
+  return <div ref={frame} className="console-agent-chat min-h-0"><AgentProvider chat={chat}>
+    <ChatThread children={children} queued={queued} error={refreshError} suggestions={suggestedPrompts(description)} />
   </AgentProvider></div>;
 }
 function Activity({ queued }: { queued: number }) {
   const { status, connected, isRunning } = useAgentStatus();
-  return <p role="status" className="mx-auto w-full max-w-3xl px-4 py-2 text-xs text-muted-foreground">{!connected ? "Connecting…" : status === "input_required" ? "Waiting for your answer" : isRunning ? "Working on your message" : "Ready"}{queued > 0 && ` · ${queued} queued`}</p>;
+  return <p role="status" className="mx-auto w-full max-w-[760px] px-4 py-2 text-xs text-muted-foreground">{!connected ? "Connecting…" : status === "input_required" ? "Waiting for your answer" : isRunning ? "Working on your message" : "Ready"}{queued > 0 && ` · ${queued} queued`}</p>;
 }
-function ChatThread({ children, queued, error }: { children: ChildAgent[]; queued: number; error?: string }) {
+function ChatThread({ children, queued, error, suggestions }: { children: ChildAgent[]; queued: number; error?: string; suggestions: string[] }) {
   const messages = useMessages();
   const calls = messages.flatMap(message => message.role === "assistant" ? message.parts.filter(part => part.type === "tool") : []);
   const childFor = (part: (typeof calls)[number]) => children.find(child => child.toolCallId === part.id || child.agentId === part.subagent?.agentId);
@@ -97,7 +98,7 @@ function ChatThread({ children, queued, error }: { children: ChildAgent[]; queue
     const child = childFor(part);
     return child ? <Worker child={child} result={part.result?.text} /> : <AgentTool part={part} />;
   }]));
-  return <AgentChatView className="rounded-xl border" tools={tools} composer={<ConsoleComposer />} activity={<Activity queued={queued} />}>
+  return <AgentChatView className="rounded-xl border" suggestions={suggestions} senderLabel={message => message.from?.name ?? "You"} tools={tools} composer={<ConsoleComposer />} activity={<Activity queued={queued} />}>
     {error && <p role="alert" className="text-sm text-destructive">Could not update workers: {error}</p>}
     {children.filter(child => !shown.has(child.agentId)).map(child => <Worker key={child.agentId + child.requestId} child={child} />)}
   </AgentChatView>;
@@ -109,6 +110,11 @@ function Worker({ child, result }: { child: ChildAgent; result?: string }) {
     <Link className="mt-2 inline-block underline" to={`agents/${child.agentId}`}>Open worker conversation</Link>
   </AgentWorker>;
 }
+/** Keep the definition's own words in the first starter; the other starters work for any role. */
+export function suggestedPrompts(description?: string): string[] {
+  const context = description?.replace(/\s+/g, " ").trim();
+  return [context ? `Help me get started: ${context.slice(0, 180)}` : "What can you help me with?", "What information do you need from me?", "Suggest a first step"];
+}
 export function ConsoleComposer() {
   const chat = useAgent();
   const { isRunning, status, stop } = useAgentStatus();
@@ -118,29 +124,31 @@ export function ConsoleComposer() {
   const [error, setError] = useState<string>();
   const [mode, setMode] = useState<"queue" | "steer">("queue");
   const upload = useRef<HTMLInputElement>(null);
-  async function send() {
+  async function send(whileRunning = mode) {
     if (busy || !text.trim()) return;
     setBusy(true); setError(undefined);
     try {
       const id = crypto.randomUUID();
       const attached = [];
       for (const file of files) attached.push({ path: (await putFile(`/v1/agents/${chat.getSnapshot().agentId}/uploads/${id}/${encodeURIComponent(file.name)}`, file)).path });
-      await chat.send(text.trim(), { whileRunning: mode, data: { files: attached } });
-      if (!chat.getSnapshot().error) { setText(""); setFiles([]); }
+      await chat.send(text.trim(), { whileRunning, data: { files: attached } });
+      if (!chat.getSnapshot().error) { setText(""); setFiles([]); setMode("queue"); }
     } catch (error) { setError((error as Error).message); }
     finally { setBusy(false); }
   }
-  return <form className="mx-auto w-full max-w-3xl shrink-0 space-y-2 p-3 pb-[max(.75rem,env(safe-area-inset-bottom))]" onSubmit={event => { event.preventDefault(); void send(); }}>
-    {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-    {files.map((file, index) => <button type="button" key={index} disabled={busy} className="mr-2 text-xs underline" aria-label={`Remove ${file.name}`} onClick={() => setFiles(files.filter((_, at) => at !== index))}>{file.name} ×</button>)}
-    <textarea disabled={busy} aria-label="Message" rows={2} className="max-h-48 w-full resize-y rounded-lg border bg-background p-3 text-sm" placeholder="Message the agent…" value={text} onChange={event => setText(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} />
-    <input type="file" multiple hidden ref={upload} onChange={event => { setFiles([...files, ...event.target.files ?? []]); event.target.value = ""; }} />
-    <div className="flex flex-wrap items-center gap-2">
-      <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => upload.current?.click()}>Attach files</Button>
-      {isRunning && <select aria-label="While working" value={mode} onChange={event => setMode(event.target.value as typeof mode)} className="min-w-0 rounded border bg-background p-1 text-sm"><option value="queue">Queue message</option><option value="steer">Steer agent</option></select>}
-      <div className="flex-1" />
-      {(isRunning || status === "input_required") && <Button type="button" variant="outline" size="sm" onClick={() => void stop()}>Stop</Button>}
-      <Button size="sm" disabled={busy || status === "connecting" || !text.trim()}>{busy ? "Sending…" : isRunning ? mode === "queue" ? "Queue" : "Steer" : "Send"}</Button>
+  return <form className="mx-auto w-full max-w-[760px] shrink-0 px-4 pb-[max(.75rem,env(safe-area-inset-bottom))]" onSubmit={event => { event.preventDefault(); void send(); }}>
+    {error && <p role="alert" className="mb-2 text-sm text-destructive">{error}</p>}
+    <div className="rounded-2xl border bg-background p-2 focus-within:ring-1 focus-within:ring-ring">
+      {files.map((file, index) => <button type="button" key={index} disabled={busy} className="mx-2 text-xs underline" aria-label={`Remove ${file.name}`} onClick={() => setFiles(files.filter((_, at) => at !== index))}>{file.name} ×</button>)}
+      <textarea disabled={busy} aria-label="Message" rows={2} className="max-h-48 min-h-16 w-full resize-none bg-transparent px-2 py-1 text-sm outline-none [field-sizing:content]" placeholder="Message the agent…" value={text} onChange={event => setText(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(event.altKey ? "steer" : mode); } }} />
+      <input type="file" multiple hidden ref={upload} onChange={event => { setFiles([...files, ...event.target.files ?? []]); event.target.value = ""; }} />
+      <div className="flex items-center gap-1">
+        <Button type="button" variant="ghost" size="icon-sm" aria-label="Attach files" title="Attach files" disabled={busy} onClick={() => upload.current?.click()}><Paperclip className="size-4" /></Button>
+        {isRunning && <button type="button" aria-pressed={mode === "steer"} title="Send immediately to steer the agent (Alt+Enter)" className="rounded-md px-2 py-1 text-xs text-muted-foreground aria-pressed:bg-accent aria-pressed:text-foreground" onClick={() => setMode(mode === "queue" ? "steer" : "queue")}>Steer instead</button>}
+        <div className="flex-1" />
+        {(isRunning || status === "input_required") && <Button type="button" variant="ghost" size="icon-sm" aria-label="Stop" title="Stop agent" onClick={() => void stop()}><Square className="size-4" /></Button>}
+        <Button size="sm" disabled={busy || status === "connecting" || !text.trim()}>{busy ? "Sending…" : "Send"}</Button>
+      </div>
     </div>
   </form>;
 }

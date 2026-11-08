@@ -32,8 +32,6 @@ export function InboxPage() {
         event.preventDefault(); const next = Math.max(0, Math.min(items.length - 1, selected + (event.key === "j" ? 1 : -1))); setSelected(next); cards.current[next]?.focus();
       } else if (event.key === "Enter" && !(event.target instanceof HTMLElement && event.target.closest("button,a"))) { event.preventDefault(); navigate(inputLink(item)); }
       else if (/^[1-4]$/.test(event.key)) { event.preventDefault(); const radio = cards.current[selected]?.querySelectorAll<HTMLInputElement>('input[type="radio"],input[type="checkbox"]')[Number(event.key) - 1]; radio?.click();
-        const questions = item.detail.questions as { multiSelect?: boolean }[] | undefined;
-        if (radio && questions?.length === 1 && !questions[0].multiSelect) setTimeout(() => radio.form?.requestSubmit(), 0);
       }
       else if (event.key === "a" && item.kind === "approval") { event.preventDefault(); cards.current[selected]?.querySelector<HTMLButtonElement>('[data-input-action="approve"]')?.click(); }
       else if (event.key === "x") { event.preventDefault(); cards.current[selected]?.querySelector<HTMLButtonElement>('[data-dismiss]')?.click(); }

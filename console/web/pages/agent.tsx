@@ -12,8 +12,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatusPanel } from "@/components/brand";
-import { ConfirmButton, CopyButton, ErrorAlert, LearnMore, PageHeader } from "@/components/common";
-import { MoveMenu, WorkspaceTag } from "@/components/workspace-ui";
+import { ConfirmButton, CopyButton, ErrorAlert, LearnMore } from "@/components/common";
+import { MoveMenu } from "@/components/workspace-ui";
 import { moveToWorkspace, useWorkspaceDirectory } from "@/lib/workspace";
 import { FileBrowser, FileCard } from "@/components/files";
 import { api, formatBytes, formatTime, useApi, type AgentDetail, type FileRef, type Mount, type RequestRecord, type RunFiles, type ToolSource } from "@/lib/api";
@@ -220,6 +220,7 @@ export function ForkDialog({ agent, atMessage, onClose }: { agent: AgentDetail; 
 
 export function AgentPage({ id }: { id: string }) {
   const agent = useApi<AgentDetail>(`/v1/agents/${id}`);
+  const definition = useApi<{ description?: string }>(agent.data?.definition ? `/v1/definitions/${encodeURIComponent(agent.data.definition.id)}` : undefined);
   const [error, setError] = useState<string>();
   const directory = useWorkspaceDirectory();
   const [manage, setManage] = useState(false);
@@ -232,19 +233,21 @@ export function AgentPage({ id }: { id: string }) {
   const workspaceId = directory.workspaceOf("agent", id);
   return (
     <>
-      <Link to="agents" className="text-muted-foreground hover:text-foreground mb-3 inline-flex items-center gap-1 text-sm"><ArrowLeft className="size-4" />Agents</Link>
-      <PageHeader
-        title={data.name} docs="events"
-        description={<span className="inline-flex flex-wrap items-center gap-2"><span className="font-mono text-xs">{data.model}</span><span>· {data.type}</span>{data.definition && <Link to="definitions" className="underline">· definition revision {data.definition.revision}</Link>}{data.forkedFrom && <Link to={`agents/${data.forkedFrom.agentId}`} className="underline">· forked from {data.forkedFrom.agentId}{data.forkedFrom.atMessage !== null ? ` at message ${data.forkedFrom.atMessage}` : ""}</Link>}{data.parentAgentId && <Link to={`agents/${data.parentAgentId}`} className="underline">· sub-agent of {data.parentAgentId}</Link>}{!!directory.workspaces?.length && directory.loaded && <span className="inline-flex items-center gap-1">· <WorkspaceTag directory={directory} id={workspaceId} /></span>}</span>}
-        actions={<>
-          <Button variant="outline" size="sm" onClick={() => setManage(true)}>Manage agent</Button>
-
-        </>}
-      />
+      <header className="mb-3 flex min-w-0 items-center gap-3">
+        <Link to="agents" aria-label="Back to agents" className="shrink-0 text-muted-foreground hover:text-foreground"><ArrowLeft className="size-4" /></Link>
+        <div className="min-w-0 flex-1">
+          <h1 className="truncate text-lg font-semibold">{data.name}</h1>
+          <div className="flex items-center justify-between gap-2">
+            <span className="truncate font-mono text-xs text-muted-foreground">{data.model}</span>
+            <Button variant="ghost" size="sm" className="h-7 shrink-0 px-2 text-xs" onClick={() => setManage(true)}>Manage agent</Button>
+          </div>
+        </div>
+      </header>
       <ErrorAlert error={error} />
       {forking && <ForkDialog agent={data} atMessage={forking.atMessage} onClose={() => setForking(undefined)} />}
-      <ConsoleAgentChat key={id} agentId={id} />
+      <ConsoleAgentChat key={id} agentId={id} description={definition.data?.description} />
       <Dialog open={manage} onOpenChange={setManage}><DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-4xl"><DialogHeader><DialogTitle>Manage {data.name}</DialogTitle><DialogDescription>Files, schedules, configuration and agent controls.</DialogDescription></DialogHeader>
+      <p className="text-xs text-muted-foreground">{data.type}{data.definition && <> · definition revision {data.definition.revision}</>}{data.forkedFrom && <> · forked from <Link className="underline" to={`agents/${data.forkedFrom.agentId}`}>{data.forkedFrom.agentId}</Link></>}{data.parentAgentId && <> · worker of <Link className="underline" to={`agents/${data.parentAgentId}`}>{data.parentAgentId}</Link></>}</p>
       <div className="flex flex-wrap gap-2">          {!!directory.workspaces?.length && directory.loaded && <MoveMenu directory={directory} current={workspaceId} align="end"
             onMove={async target => { setError(undefined); try { await moveToWorkspace("agent", [id], target); } catch (caught) { setError((caught as Error).message); } }}>
             <Button variant="outline" size="sm">Move…</Button>
