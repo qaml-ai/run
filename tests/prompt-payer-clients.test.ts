@@ -32,6 +32,13 @@ test('TypeScript prompt and submit use tenant authorization for an explicit paye
   await assert.rejects(tokenOnly.submit('no', { endUser: 'guest' }), /tenant API key/);
   await assert.rejects(tokenOnly.steerMessage('no', { endUser: 'guest' }), /tenant API key/);
   assert.equal(calls.length, 4);
+  await client.steer('held');
+  assert.equal(calls[4].path, `/clients/${id}/requests`);
+  assert.equal(calls[4].body.method, 'steer');
+  await client.steer('paid', { endUser: 'guest' });
+  assert.equal(calls[5].path, `/v1/agents/${id}/prompt`);
+  assert.equal(calls[5].body.endUser, 'guest');
+  assert.equal(calls[5].body.whileRunning, 'steer');
   await client.close();
   await tokenOnly.close();
 });

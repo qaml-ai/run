@@ -1703,10 +1703,17 @@ class PromptPayerTest(unittest.IsolatedAsyncioTestCase):
                 (f"/clients/{client.id}/requests", "Bearer agent-test", None)])
             self.assertEqual(calls[0][2]["requestId"], "one")
             self.assertEqual(calls[2][2]["whileRunning"], "steer")
+            await client.steer("held")
+            self.assertEqual(calls[4][0], f"/clients/{client.id}/requests")
+            self.assertEqual(calls[4][2]["method"], "steer")
+            await client.steer("paid", end_user="guest")
+            self.assertEqual(calls[5][0], f"/v1/agents/{client.id}/prompt")
+            self.assertEqual(calls[5][2]["endUser"], "guest")
+            self.assertEqual(calls[5][2]["whileRunning"], "steer")
             client._api_key = None
             with self.assertRaisesRegex(AgentError, "tenant API key"):
                 await client.submit("no", end_user="guest")
-            self.assertEqual(len(calls), 4)
+            self.assertEqual(len(calls), 6)
         finally:
             await client.close(drain=0)
 

@@ -1871,7 +1871,7 @@ export class ClientSessions {
           if ((steer.endUser ?? null) === (endUser ?? null)) {
             matching.push(input);
             this.upsertRequest(session, { ...steer, params: undefined });
-          } else later.push(this.upsertRequest(session, { ...base, method: "prompt", state: "running", startedAt: Date.now(), params: { ...input as object, whileRunning: "steer" } }));
+          } else later.push({ ...base, method: "prompt", state: "running", params: { ...input as object, whileRunning: "steer" } });
         }
         if (matching.length) params = { ...params, batch: [...(Array.isArray(params.batch) ? params.batch : []), ...matching] };
       }
@@ -1881,6 +1881,12 @@ export class ClientSessions {
         id: body.id, method: body.method, fingerprint, state: "running", ...(queued ? { params } : {}), ...(actor ? { actor } : {}), ...(endUser ? { endUser } : {}), ...(bucket ? { bucket } : {}), ...(params.metadata ? { metadata: params.metadata } : {}),
         ...(body.method === "resume" ? { suspension: params.suspension } : {}),
       });
+      // Recovery sorts by arrival time, with log order breaking ties. Keep the released holds behind their trigger.
+      for (const steer of later) {
+        session.requests.delete(steer.id);
+        steer.startedAt = record.startedAt;
+        this.upsertRequest(session, steer);
+      }
       // Taken: its running record now keeps the agent busy, so it is no longer being admitted. An abort that cancels it
       // before the write below is done then gives the slot back before the run is seen to end, as for any cancelled run.
       if (admitting) { admitting = false; session.admitting!--; }

@@ -4772,7 +4772,9 @@ Later prompts do not inherit the payer or an override payer's bucket. Browser,
 OAuth and agent tokens cannot set `endUser`. A tenant can set it on a steer: the
 steer joins a running turn only with the same `endUser` selection (including
 omission); otherwise it queues its own turn. Batches keep different
-`endUser` selections apart. With a tenant-key SDK client, pass `endUser` to
+`endUser` selections apart. A raw `steer` sent while idle waits for the next
+prompt; it joins only a matching payer, otherwise runs separately afterward.
+With a tenant-key SDK client, pass `endUser` to
 TypeScript `agent.run` or `agent.send`, or `end_user` to their Python equivalents.
 The CLI accepts `camelrun run <agent> <message> --end-user collaborator`.
 
@@ -8320,7 +8322,7 @@ available and stable for code that needs the wire's shape: `agents.runtime`,
 | `client.execute(code)` | `execute(code)` | run code in the sandbox with the agent's tools, outside its history |
 | `client.steerMessage(text, options)` | `steer_message(text, …)` | `prompt` with `whileRunning: "steer"`, answered as soon as the runtime has it: `{id, status: "accepted" \| "taken" \| "queued", steeredInto?}` (`client.prompt(text, { whileRunning: "steer" })` waits for the turn that took it) |
 | `client.status()`, `client.abort({ queued })` | `status()`, `abort(queued=)` | whether the agent is busy (`busy`, `activeRun`, `queuedRuns`, as `GET /v1/agents/{id}` says too); stop it (its running turn, and unless `queued: "keep"` the runs queued behind it) |
-| `client.steer(text)` | `steer()` | `prompt` with `whileRunning: "steer"`; joins only a turn with the same payer, otherwise starts one. Use `steerMessage` for an immediate receipt |
+| `client.steer(text)` | `steer()` | holds idle input for the next run; joins it only with the same payer. An explicit payer uses prompt steering. Use `steerMessage` for an immediate receipt |
 | `client.setMetadata({ name, type })` | `set_metadata(name=, type=)` | rename or regroup |
 | `client.destroy()`, `close()` | same | delete the agent; close the connection |
 

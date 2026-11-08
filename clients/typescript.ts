@@ -2625,7 +2625,7 @@ export class AgentClient {
     return this.http(`/history?${query}`);
   }
   continue(options?: RunRequestOptions & { actor?: string }) { return this.request("continue", { ...(options?.actor ? { actor: options.actor } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}) }, options); }
-  /** Prompt with whileRunning: "steer": the same payer joins the running turn, otherwise this starts its own. */
+  /** Hold idle input for the next run; an explicit payer uses prompt steering. */
   steer(text: string, options?: { endUser?: string; from?: Sender; files?: Attachment[]; metadata?: Record<string, string> }) { return options?.endUser !== undefined ? this.prompt(text, { ...options, whileRunning: "steer" }) : this.message("steer", text, options); }
   /** Change the prompt, thinking level, tools, model ("provider/model-id"), maxOutputTokens, temperature, dataCollection or language (null removes any of the last four) between runs. */
   async configure(options: { systemPrompt?: string; thinkingLevel?: ThinkingLevel; tools?: Tools; mcp?: ToolServer; model?: string; maxOutputTokens?: number | null; temperature?: number | null; dataCollection?: "deny" | null; language?: string | null }) {
