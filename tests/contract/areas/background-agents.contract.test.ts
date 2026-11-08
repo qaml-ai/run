@@ -364,7 +364,7 @@ contractTest("delegation", "tests/background-agents.test.ts:353", "a sub-agent's
     if (said.includes("<agent_notification")) {
       // A grandchild stopped at the limit: the notification's turn tries once more, from where its agent was made.
       if (last(body).role === "tool") return { role: "assistant", content: `again: ${toolResults(body).at(-1)}` };
-      const tried = body.messages.some((message: any) => message.role === "assistant" && text(message).startsWith("again: "));
+      const tried = body.messages.some((message: any) => message.role === "assistant" && typeof message.content === "string" && message.content.startsWith("again: "));
       return said.includes("depth limit") && !tried ? toolCall("spawn_agent", { agent: "nester", task: "go deeper" }, "call_again") : { role: "assistant", content: "heard" };
     }
     return last(body).role === "tool" ? { role: "assistant", content: `nested: ${toolResults(body).at(-1)}` } : toolCall("spawn_agent", { agent: "nester", task: "go deeper" }, "call_nest");
