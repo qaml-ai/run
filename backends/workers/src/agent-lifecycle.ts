@@ -283,7 +283,7 @@ export async function wakeImpl(this: AgentRuntime) {
             id: record.id,
             method: record.method,
             params: record.params,
-          });
+          }, undefined, undefined, record.fingerprint);
         } catch {}
       }
     }

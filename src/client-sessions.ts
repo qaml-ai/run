@@ -1706,7 +1706,10 @@ export class ClientSessions {
     const { allowDisconnected, traceparent: _traceparent, ...asked } = body.params;
     if (allowDisconnected !== undefined && typeof allowDisconnected !== "boolean") throw new HttpError(400, "allowDisconnected is true or false");
     body = { ...body, params: asked };
-    const fingerprint = hash(canonical({ method: body.method, params: body.params }));
+    // A held raw steer may later become an own turn. Its retry must still name the same input.
+    const fingerprint = hash(canonical(rawSteer
+      ? { method: "prompt", params: { ...body.params, whileRunning: "steer" } }
+      : { method: body.method, params: body.params }));
     const existing = () => {
       const record = session.requests.get(body.id);
       if (record && record.fingerprint !== fingerprint) throw new HttpError(409, "Request ID reused with different arguments", "IDEMPOTENCY_CONFLICT");

@@ -210,6 +210,9 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
       const result = await call(`/v1/agents/${parent}/__test/contract-child-settlement`, { body: {} });
       if (result.status !== 200) throw new Error(`Child settlement fixture: ${result.status} ${result.text}`);
     },
+    async deleteEndUser(tenant, endUser) {
+      await server.db.query("delete from end_users where tenant=$1 and id=$2", [tenant, endUser]);
+    },
     async seedLegacyWorkflowDefinition(definition) {
       const result = await server.db.query(`update definitions set spec = (spec::jsonb || '{"builtins":["workflow"],"workflow":{"instructions":true}}'::jsonb)::json where id = $1`, [definition]);
       if (result.rowCount !== 1) throw new Error("Fixture definition not found");

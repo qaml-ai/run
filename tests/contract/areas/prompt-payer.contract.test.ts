@@ -178,6 +178,8 @@ contractTest('credits', 'tests/prompt-payer.test.ts', 'an idle raw steer waits a
   await r.prompt(id, 'guest message', undefined, { requestId: 'guest-next', endUser: 'guest' });
   await completed(r, id, 'held-owner');
   assert.equal(r.model.bodies.length, 2);
+  const replay = await r.call(`/clients/${id}/requests`, { token, body: { id: 'held-owner', method: 'steer', params: { text: 'owner message' } } });
+  assert.equal(replay.status, 200, replay.text);
   for (const [user, request] of [['guest', 'guest-next'], ['owner', 'held-owner']]) {
     const entries = (await r.call(`/v1/end-users/${user}/ledger`)).json.entries.filter((entry: any) => entry.kind === 'usage');
     assert.deepEqual(entries.map((entry: any) => entry.metadata.requestId), [request]);
@@ -283,3 +285,33 @@ contractTest('credits', 'tests/prompt-payer.test.ts', 'a collaborator pays for a
   assert.ok(guest.some((e: any) => e.metadata.agent === child));
   assert.equal((await r.call('/v1/end-users/owner/ledger')).json.entries.filter((e: any) => e.kind === 'usage').length, 0);
 }, { env: { ...payerEnv, AGENT_OUTBOUND_ALLOW_HTTP: 'true', AGENT_OUTBOUND_ALLOW_CIDRS: '127.0.0.0/8', AGENT_PUBLIC_URL: '' } });
+
+contractTest('credits', 'tests/prompt-payer.test.ts', 'a deleted payer does not silently discard a child completion notice', async (_t, r) => {
+  await seedPayers(r);
+  const finish = deferred();
+  const ASK = { questions: [{ question: 'Continue?', header: 'Continue', options: [{ label: 'Yes' }, { label: 'No' }] }] };
+  r.setModel(body => {
+    const text = lastText(body), last = body.messages.at(-1);
+    const child = body.messages.some((m: any) => m.role === 'user' && JSON.stringify(m.content).includes('DELETED_PAYER_CHILD'));
+    if (child) return priced({ content: 'child result survived', wait: finish.promise });
+    if (text === 'unblock') return priced({ content: 'unblocked' });
+    if (last.role === 'tool') return priced(toolCall('ask_user', ASK, 'ask_parent'));
+    return priced(toolCall('spawn_agent', { instructions: 'You are DELETED_PAYER_CHILD.', task: 'work', name: 'worker' }, 'spawn_deleted'));
+  });
+  const { id } = (await r.call('/v1/agents', { body: { subject: 'owner', builtins: ['agents', 'ask_user'], delegate: { instructions: true } } })).json;
+  try {
+    await r.prompt(id, 'start', undefined, { endUser: 'guest' });
+    await until(async () => (await r.call(`/v1/agents/${id}/inputs?state=pending`)).json.length > 0, 'parent waiting for human');
+  } finally { finish.resolve(); }
+  const child = await until(async () => (await r.call(`/v1/agents/${id}/children`)).json.children.find((c: any) => c.name === 'worker' && c.status === 'completed'), 'child settled while parent waits');
+  assert.equal(child.delivered, false);
+  await r.deleteEndUser('alice', 'guest');
+  assert.equal((await r.call(`/v1/agents/${id}/prompt`, { body: { text: 'external', endUser: 'guest' } })).status, 404);
+  await r.prompt(id, 'unblock');
+  await until(async () => (await r.call(`/v1/agents/${id}/children`)).json.children.find((c: any) => c.requestId === child.requestId)?.delivered, 'deleted payer notice delivered');
+  const notice = await completed(r, id, `child_${child.requestId}`);
+  assert.match(JSON.stringify(notice.outcome), /END_USER_CREDIT|end_user_credit/);
+  const history = (await r.call(`/v1/agents/${id}/history`)).json.messages;
+  assert.ok(history.some((entry: any) => JSON.stringify(entry.content).includes('child result survived')), 'notice is durable in parent history');
+  assert.equal((await r.call('/v1/end-users/guest/ledger')).json.entries.filter((e: any) => e.kind === 'usage' && e.metadata.requestId === `child_${child.requestId}`).length, 0);
+}, { timeout: 180_000, env: payerEnv });

@@ -723,8 +723,10 @@ export async function admitImpl(this: AgentRuntime,
         const old = await this.ctx.storage.get<RequestRecord>(reqKey(steer.id));
         if (!old || !steer.params) continue;
         const next = { ...old, method: "prompt", state: "queued" as const, accepted: false, outcome: undefined, endedAt: undefined, status: undefined, params: { ...steer.params, whileRunning: "steer" } };
-        await this.ctx.storage.put(reqKey(steer.id), next);
-        await this.ctx.storage.delete(key);
+        await this.ctx.storage.transaction(async tx => {
+          await tx.put(reqKey(steer.id), next);
+          await tx.delete(key);
+        });
         try { await this.admit({ id: steer.id, method: "prompt", params: next.params }, undefined, undefined, old.fingerprint); }
         catch (error) {
           const outcome = { error: error instanceof Error ? error.message : String(error) };
