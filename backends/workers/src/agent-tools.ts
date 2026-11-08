@@ -379,6 +379,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
           ),
         });
         registry.install({
+          // A sub-agent has no schedules (createScheduleImpl refuses them): it is offered no schedule tools.
           name: "camel.web",
           tools: await agentBuiltins(this.env, async (api) => {
             const conf = await this.config();
@@ -398,7 +399,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
               bucket: (params?.bucket as string | undefined) ?? conf.config.bucket ?? await this.ctx.storage.get<string>("run-bucket") ?? "default",
               files: (await this.sourceIdentity(api)).toolFiles('web_fetch'),
             };
-          }, { schedules: await this.offeredScheduleTools() }),
+          }, { schedules: conf.config.type === "subagent" ? undefined : this.scheduleTools() }),
         });
         registry.install({
           name: "camel.decisions",

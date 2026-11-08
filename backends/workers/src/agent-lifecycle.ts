@@ -45,12 +45,6 @@ export async function configImpl(this: AgentRuntime) {
     return config;
   }
 
-/** The schedule tools to offer: none for a sub-agent the runtime made, which has no schedules (`createScheduleImpl` refuses them). */
-export async function offeredScheduleToolsImpl(this: AgentRuntime): Promise<ScheduleToolsHost | undefined> {
-  const conf = await this.config();
-  return conf.config.type === "subagent" && await childParent(this.env, conf.tenantId, conf.id) ? undefined : this.scheduleTools();
-}
-
 export function scheduleToolsImpl(this: AgentRuntime): ScheduleToolsHost {
     return {
       create: input => this.createSchedule(input),
