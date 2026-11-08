@@ -146,7 +146,10 @@ test("bring-your-own Boat forks through saved snapshots on the provider account"
 });
 
 test("the shared fork policy: choices, batches, route input and a bounded start with one retry", async () => {
-  assert.equal(computerChoice(undefined), "fresh");
+  assert.equal(computerChoice(undefined), "none", "left out, a sub-agent gets no computer");
+  assert.equal(computerChoice(null, true), "fresh", "left out, a definition that declares a computer keeps it");
+  assert.equal(computerChoice("fresh"), "fresh");
+  assert.equal(computerChoice("none", true), "none");
   assert.equal(computerChoice("fork"), "fork");
   assert.throws(() => computerChoice("copy"), (error: HttpError) => error.status === 400);
   assert.equal(forkBatch("r", 2, "c"), "r:m2");

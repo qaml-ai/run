@@ -47,9 +47,9 @@ installed packages and build caches, as they are at the call. Give `delegate` or
 
 | `computer` | The child's computer |
 | --- | --- |
-| `"fresh"` (default) | a new, empty computer with the parent's connection settings, as above |
+| `"fresh"` | a new, empty computer with the parent's connection settings, as above |
 | `"fork"` | a copy of the parent's disk, taken now. Running processes are not copied |
-| `"none"` | no computer |
+| `"none"` (default, unless the definition the child is made from declares its own computer) | no computer |
 
 ```json
 { "instructions": "You fix one flaky test on a branch.", "task": "Fix tests/cluster.test.ts and push a branch", "computer": "fork" }

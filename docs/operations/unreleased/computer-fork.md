@@ -1,6 +1,6 @@
 ### Fork a computer into sub-agents
 
-`delegate` and `spawn_agent` (also from code) take `computer`: `"fresh"` (the default, as before), `"fork"` or
+`delegate` and `spawn_agent` (also from code) take `computer`: `"fresh"`, `"fork"` or
 `"none"`. With `"fork"`, the child's computer starts as a copy of its parent's disk as it is at the call: repos,
 installed packages and build caches, not running processes. Every child of one model response or script starts from
 one snapshot, taken once. Each fork is its own machine, keyed by the child: its writes never reach its parent or a

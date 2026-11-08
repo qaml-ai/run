@@ -200,8 +200,9 @@ export function childPlace(ctx: DelegationContext, session: Session, run: Reques
  * SUBAGENT_PROMPT on the parent's model (the model's instructions come with its task). It acts for whom its parent acts, with the same keys.
  */
 /**
- * The computer a delegate or spawn_agent call gives the child it makes (its `computer` argument): undefined for fresh
- * (the parent's connection settings, as before), "none", or `{ seed }`, a fork snapshot of the parent's computer taken
+ * The computer a delegate or spawn_agent call gives the child it makes (its `computer` argument, none when left out:
+ * a definition here never declares a computer of its own): undefined for fresh (the parent's connection settings),
+ * "none", or `{ seed }`, a fork snapshot of the parent's computer taken
  * now and shared by every child of this call (one model response or script). A fork is for a new sub-agent only.
  */
 export async function childComputer(ctx: DelegationContext, session: Session, run: RequestRecord, call: ToolCall, made: boolean): Promise<"none" | { seed: string } | undefined> {
