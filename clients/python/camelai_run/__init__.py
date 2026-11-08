@@ -1697,13 +1697,13 @@ class _AgentCalls:
     def outcomes(self):
         return self._http("/state")
 
-    def answer(self, input_id, *, action, content=None, actor=None, **sender):
+    def answer(self, input_id, *, action, content=None, actor=None, version=None, **sender):
         """Answer an input the agent waits on: action is accept, decline or cancel. `content`: for a question,
         {"answers": {"<question>": "<label>" | ["<label>"] | "<own words>"}}; for a form, its fields. `from` (as
         from_) or `actor` names who answers, checked against who may. Returns {input, request}: request is the
         run resuming the turn once its last input is answered."""
         who = sender.get("from_") or sender.get("from")
-        body = {"action": action, **({"content": content} if content is not None else {}), **({"actor": actor} if actor else {}), **({"from": who} if who else {})}
+        body = {"action": action, **({"version": version} if version is not None else {}), **({"content": content} if content is not None else {}), **({"actor": actor} if actor else {}), **({"from": who} if who else {})}
         return self._http(f"/inputs/{quote(input_id, safe='')}", "POST", body)
 
     def inputs(self, *, state=None):

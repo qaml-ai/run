@@ -6250,6 +6250,11 @@
       "AnswerInput": {
         "type": "object",
         "properties": {
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Compare-and-set the observed input version"
+          },
           "action": {
             "type": "string",
             "enum": [
@@ -6364,11 +6369,15 @@
                     "conflict",
                     "forbidden",
                     "unknown",
-                    "invalid"
+                    "invalid",
+                    "unavailable"
                   ]
                 },
                 "status": {
                   "type": "number"
+                },
+                "retryable": {
+                  "type": "boolean"
                 },
                 "state": {
                   "type": "string"
@@ -17400,30 +17409,6 @@
         "parameters": [
           {
             "schema": {
-              "type": "string"
-            },
-            "required": false,
-            "name": "for",
-            "in": "query"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": false,
-            "name": "subject",
-            "in": "query"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": false,
-            "name": "root",
-            "in": "query"
-          },
-          {
-            "schema": {
               "type": "string",
               "maxLength": 255,
               "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
@@ -17450,6 +17435,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/InboxOutcomes"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "requestId was used with different answers",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             }

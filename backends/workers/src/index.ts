@@ -1,4 +1,4 @@
-import { inboxAnswers, inboxReceipt, type InboxOutcome } from "../../../shared/inbox-answers.ts";
+import { inboxAnswers, inboxReceipt, inboxAgentFailure, sweepInboxReceipts, type InboxOutcome } from "../../../shared/inbox-answers.ts";
 import { inboxQuery, readInbox, InboxQueryError } from '../../../shared/inbox.ts';
 import { withSql as inboxSql } from './postgres.ts';
 import { sweepInputMirrors } from "./input-mirror.ts";
@@ -347,10 +347,12 @@ const worker = {
             for (const answer of input.answers) { const row = rows.find(r => r.id === answer.id); if (row) groups.set(row.agent, [...groups.get(row.agent) ?? [], { ...answer, id: row.input.workersInputId ?? row.id }]); }
             const outcomes: InboxOutcome[] = [];
             for (const [agent, answers] of groups) {
-              const response = await forward(new Request(request.url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answers }) }), env, agent, "/inbox-answers", ctx);
-              if (!response.ok && ![403, 404].includes(response.status)) throw new ApiError(response.status, "Inbox authority unavailable");
-              const result = response.ok ? await response.json() as { outcomes: InboxOutcome[] } : { outcomes: answers.map(a => ({ id: a.id, outcome: response.status === 404 ? "unknown" as const : "forbidden" as const, status: response.status })) };
-              for (const outcome of result.outcomes) { const row = rows.find(r => r.agent === agent && (r.input.workersInputId ?? r.id) === outcome.id); outcomes.push({ ...outcome, id: row.id }); }
+              try {
+                const response = await forward(new Request(request.url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answers }) }), env, agent, "/inbox-answers", ctx);
+                if (!response.ok && ![403, 404].includes(response.status)) throw new ApiError(response.status, "Inbox authority unavailable");
+                const result = response.ok ? await response.json() as { outcomes: InboxOutcome[] } : { outcomes: answers.map(a => ({ id: a.id, outcome: response.status === 404 ? "unknown" as const : "forbidden" as const, status: response.status })) };
+                for (const outcome of result.outcomes) { const row = rows.find(r => r.agent === agent && (r.input.workersInputId ?? r.id) === outcome.id); outcomes.push({ ...outcome, id: row.id }); }
+              } catch (error) { for (const row of rows.filter(r => r.agent === agent)) outcomes.push(inboxAgentFailure(row.id, error)); }
             }
             return input.answers.map(a => outcomes.find(o => o.id === a.id) ?? { id: a.id, outcome: "unknown" as const, status: 404 });
           })));
@@ -656,7 +658,7 @@ const worker = {
   async scheduled(_controller: ScheduledController, env: Env) {
     return withMoneyMetrics(env, async () => {
     try {
-      if (_controller.cron === "* * * * *") { await sweepInputMirrors(env); return; }
+      if (_controller.cron === "* * * * *") { await sweepInputMirrors(env); await inboxSql(env, sql => sweepInboxReceipts(sql)); return; }
       await maintenance(env);
       await moneyMaintenance(env);
       await publishScheduleEmails(env);

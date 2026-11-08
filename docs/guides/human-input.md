@@ -178,14 +178,17 @@ anything else is a new message. See [Channels](channels.md).
 ### Answer the inbox in a batch
 
 `POST /v1/inbox/answers` takes `{requestId, answers}`. Use a new `requestId` for each
-submission and reuse it to retrieve the same outcomes. Each of the 1–100 answers
+submission and reuse it to retrieve the same outcomes for seven days. Reusing a
+key with different answers returns HTTP 409. Expired receipts are swept automatically. Each of the 1–100 answers
 names the inbox row's `id` and observed `version`, plus `action` and optional
 `content`, `actor` or `from`. `accept: "recommended"` uses the stored recommendation
 at that version. A changed version is a conflict.
 
-The response is `{outcomes: [{id, outcome, status, state?, by?, error?}]}` in request
+The response is `{outcomes: [{id, outcome, status, retryable?, state?, by?, error?}]}` in request
 order. Each item independently returns `answered` (202), `same` (200), `conflict`
-(409), `forbidden` (403), `unknown` (404), or `invalid` (400); the batch returns 200.
+(409), `forbidden` (403), `unknown` (404), `invalid` (400), or `unavailable` (503,
+`retryable: true`); the batch returns 200. Retry unavailable items with a new request
+key. A matching answer already recorded returns `same`, even with its old version.
 Answers are checked at the input authority, including the responder policy, and
 valid answers for one agent are submitted together. The inbox index only routes
 Workers answers to their agent.

@@ -1,4 +1,4 @@
-import { inboxAnswers, inboxReceipt } from "../shared/inbox-answers.ts";
+import { inboxAnswers, inboxReceipt, inboxAgentFailure } from "../shared/inbox-answers.ts";
 import { inboxQuery, readInbox, InboxQueryError } from '../shared/inbox.ts';
 import { rejectWorkflow } from "./builtins.ts";
 import { computerRoutes } from "./computers/api.ts";
@@ -802,7 +802,7 @@ export function api(context: ApiContext) {
     const { status, ...answered } = await clients.answer(c.req.param("id")!, c.var.principal.tenant, answerList(await readJson(c.req.raw.body, 1024 * 1024, {})));
     return json(c, status, answered);
   });
-  route(createRoute({ method: "post", path: "/v1/inbox/answers", request: { body: content(schema.InboxAnswers) }, responses: { 200: reply("One outcome per item; replayed by requestId", schema.InboxOutcomes) } }), async c => {
+  route(createRoute({ method: "post", path: "/v1/inbox/answers", request: { body: content(schema.InboxAnswers) }, responses: { 200: reply("One outcome per item; replayed by requestId", schema.InboxOutcomes), 409: reply("requestId was used with different answers", schema.ApiError) } }), async c => {
     const body = inboxAnswers(await readJson(c.req.raw.body, 1024 * 1024, {}));
     const tenant = c.var.principal.tenant;
     const sql = await accounts.db.connect();
@@ -810,7 +810,7 @@ export function api(context: ApiContext) {
       const rows = (await accounts.db.query("select id,agent from agent_inputs where tenant=$1 and id=any($2::text[])", [tenant, body.answers.map(a => a.id)])).rows;
       const groups = new Map<string, typeof body.answers>();
       for (const entry of body.answers) { const agent = rows.find(row => row.id === entry.id)?.agent; if (agent) groups.set(agent, [...groups.get(agent) ?? [], entry]); }
-      const outcomes = (await Promise.all([...groups].map(([agent, entries]) => clients.answerInbox(agent, tenant, entries).catch(error => { if (![403, 404].includes(error.status)) throw error; return entries.map(entry => ({ id: entry.id, outcome: error.status === 404 ? "unknown" as const : "forbidden" as const, status: error.status })); })))).flat();
+      const outcomes = (await Promise.all([...groups].map(([agent, entries]) => clients.answerInbox(agent, tenant, entries).catch(error => { return entries.map(entry => inboxAgentFailure(entry.id, error)); })))).flat();
       return body.answers.map(entry => outcomes.find(o => o.id === entry.id) ?? { id: entry.id, outcome: "unknown" as const, status: 404 });
     })); } finally { sql.release(); }
   });

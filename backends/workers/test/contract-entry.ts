@@ -98,6 +98,18 @@ export class CamelAgent extends RuntimeAgent {
   }
 
   async fetch(request: Request) {
+    if (this.env.TEST_MODE === "1") {
+      const path = new URL(request.url).pathname;
+      if (path === "/__test/contract-inbox-version" && request.method === "POST") {
+        return Response.json({ updated: await this[DUE_HUMAN_INPUTS](Date.now() + 60_000) });
+      }
+      if (path === "/__test/contract-inbox-unavailable" && request.method === "POST") {
+        await this.ctx.storage.put("contract-inbox-unavailable", true);
+        return Response.json({ unavailable: true });
+      }
+      if (path === "/inbox-answers" && await this.ctx.storage.get("contract-inbox-unavailable"))
+        return Response.json({ error: "Fixture agent unavailable" }, { status: 503 });
+    }
     const configuration = fixtureConfiguration(this.env);
     // A disconnected request must not interrupt the fixture's tenant reload
     // before the real runtime receives its aborted signal.

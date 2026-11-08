@@ -1,3 +1,4 @@
+import { sweepInboxReceipts } from "../../shared/inbox-answers.ts";
 import { createHash } from "node:crypto";
 import { errorText } from "../protocol.ts";
 import { canonical } from "../../shared/durable-json.ts";
@@ -141,7 +142,7 @@ export async function answer(ctx: InputContext, id: string, tenant: string, answ
     if (!mayAnswer(input, by, header.sources?.humanInput?.approvers)) throw new HttpError(403, "This person may not answer this input");
     checked.push({ input, answer: { ...answerInput(input, body), by, at: Date.now() } });
   }
-  const settled = checked.every(({ input }) => input.state === "pending") ? await inputs.settleAll(checked.map(({ input, answer }) => ({ id: input.id, answer }))) : undefined;
+  const settled = checked.every(({ input }) => input.state === "pending") ? await inputs.settleAll(checked.map(({ input, answer }) => ({ id: input.id, answer, version: answers.find(entry => entry.id === input.id)?.body.version }))) : undefined;
   const suspensions = [...new Set(checked.map(({ input }) => input.requestId))];
   if (!settled) {
     // Settled already: a retry of these answers is 200; anything else conflicts, showing what was recorded.
@@ -174,6 +175,7 @@ async function resumeAnywhere(ctx: InputContext, agent: string, tenant: string, 
 export async function expireInputs(ctx: InputContext, now = Date.now()) {
   const inputs = ctx.options.inputs;
   if (!inputs) return;
+  await sweepInboxReceipts(inputs.db, now);
   for (let batch; (batch = await inputs.due(now)).length;) {
     const suspensions = new Map<string, InputRow>();
     for (const input of batch) {

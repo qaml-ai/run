@@ -1034,7 +1034,7 @@ export class ClientSessions {
       return input?.agent === id && input.tenant === tenant ? input : undefined;
     }, (input, body) => {
       if (!mayAnswer(input, { via: "api", actor: body.actor, from: body.from }, header.sources?.humanInput?.approvers)) throw new HttpError(403, "This person may not answer this input");
-      answerInput(input, body);
+      return answerInput(input, body);
     }, answers => this.answer(id, tenant, answers));
   }
 

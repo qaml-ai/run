@@ -605,26 +605,25 @@ export async function fetchRequestImpl(this: AgentRuntime,
           const url = new URL(request.url); url.pathname = pathname;
           return this.fetch(new Request(url, { method, headers: { "Content-Type": "application/json" }, ...(data ? { body: JSON.stringify(data) } : {}) }));
         };
-        const snapshot = (async () => {
+        const read = async (id: string) => {
           const response = await internal("GET", "/inputs");
           if (!response.ok) throw Object.assign(new Error("Input authority unavailable"), { status: response.status });
-          return await response.json() as any[];
-        })();
-        const read = async (id: string) => (await snapshot).find(item => item.id === id);
-        const outcomes = (await Promise.all([false, true].map(decision => answerInboxGroup(input.answers.filter(a => a.id.startsWith("inp_") === decision), read, (view, answer) => {
+          return (await response.json() as any[]).find(item => item.id === id);
+        };
+        const outcomes = await answerInboxGroup(input.answers, read, (view, answer) => {
           if (!mayAnswer(view, { via: "api", actor: answer.actor, from: answer.from }, conf.config.humanInput?.approvers as string[] | undefined))
             throw Object.assign(new Error("This person may not answer this input"), { status: 403 });
-          answerInput(view, answer);
+          return answerInput(view, answer);
         }, async answers => {
-          // Reuse the per-agent writer: it partitions Pi inputs and Postgres decisions on slices 6–7.
+          // One authority write per agent preserves batched decision delivery.
           const response = await internal("POST", "/inputs", { answers: answers.map(({ id, body }) => ({ ...body, id })) });
           if (!response.ok) {
             const error = await response.json() as { error?: string };
             throw Object.assign(new Error(error.error ?? "Input answer failed"), { status: response.status });
           }
           return { status: response.status };
-        })))).flat();
-        await repairInputMirrors(this, input.answers.map(a => a.id));
+        });
+        await repairInputMirrors(this, input.answers.map(a => a.id)).catch(error => failure(this.env, "input_mirror_repair_failed", error));
         return json({ outcomes: input.answers.map(a => outcomes.find(o => o.id === a.id)) });
       }
 

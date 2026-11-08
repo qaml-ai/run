@@ -1,3 +1,4 @@
+import { inboxReceiptFixture } from "./inbox-receipts.ts";
 import { seedInbox } from './inbox.ts';
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { seedOpsAccount } from "./ops-seed.ts";
@@ -192,6 +193,7 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
     signFileToken: (grant, expiresAt) => fixtureSigner(server.db, env.AGENT_SECRETS_KEY, server.url).fileToken(grant, expiresAt),
     signIdentityToken: (audience, claims) => fixtureSigner(server.db, env.AGENT_SECRETS_KEY, server.url).token(audience, claims),
     get logs() { return server.worker.logs().split("\n"); },
+    ...inboxReceiptFixture(server.db),
     seedInbox: rows => seedInbox(server.db, rows),
     async expireInputs(agent) {
       const result = await call(`/v1/agents/${agent}/__test/contract-inputs-due`, { body: {} });
@@ -278,6 +280,14 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
       // workerd has no Node owner lease. Restart the real local process to evict
       // live DOs, preserving its SQLite/R2 directory and Postgres database.
       await server.restart();
+    },
+    async advanceInboxVersion(agent) {
+      const result = await call(`/v1/agents/${agent}/__test/contract-inbox-version`, { body: {} });
+      if (result.status !== 200) throw new Error(result.text);
+    },
+    async failInboxAgent(agent) {
+      const result = await call(`/v1/agents/${agent}/__test/contract-inbox-unavailable`, { body: {} });
+      if (result.status !== 200) throw new Error(result.text);
     },
     async failAgentLoad(_agent) { throw new Error("Unsupported fixture state: Workers agents do not resume from versioned Postgres agent headers"); },
     async agentRecovery(_agent) { throw new Error("Unsupported fixture state: Workers agents have no Postgres resume_failures or resume_after"); },

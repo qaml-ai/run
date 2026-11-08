@@ -784,6 +784,8 @@ export async function answerHumanInputsImpl(this: AgentRuntime,
         const view = humanInputView(entry.id, pending, conf.id, owner);
         if (!system && owner && await this.ctx.storage.get(`cancelled-request:${owner}`))
           throw Object.assign(new Error("This input is cancelled"), { status: 409, input: view });
+        if (!system && (entry.body as any)?.version !== undefined && (entry.body as any).version !== (pending.version ?? 1))
+          throw Object.assign(new Error("Input version moved"), { status: 409, input: view });
         checked.push({ ...entry, pending, owner, answer: system ? systemHumanAnswer(system) : answerHuman(pending, entry.body, via, conf.config.humanInput?.approvers as string[] | undefined) });
       }
       const fresh = checked.every(entry => entry.pending.answer === undefined);
@@ -834,6 +836,8 @@ export async function answerHumanInputsImpl(this: AgentRuntime,
         const doc = await tx.doc(HumanInputs);
         for (const entry of checked) {
           const current = doc.requests[entry.id];
+          if (!system && (entry.body as any)?.version !== undefined && (entry.body as any).version !== (current.version ?? 1))
+            throw Object.assign(new Error("Input version moved"), { status: 409, input: humanInputView(entry.id, current, conf!.id, entry.owner) });
           if (current.answer !== undefined && !sameHumanAnswer(current, entry.answer))
             throw Object.assign(new Error(settledMessage([current])), { status: 409, input: humanInputView(entry.id, current, conf!.id, entry.owner) });
         }

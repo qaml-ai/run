@@ -383,7 +383,7 @@ export type InboxPriority = "urgent" | "high" | "normal" | "low";
 export interface InboxOptions { for?: string; subject?: string; root?: string; priority?: InboxPriority; kind?: AgentInput["kind"]; cursor?: string; limit?: number }
 export interface InboxItem extends AgentInput { inputId: string; priority: InboxPriority; blocking: boolean; subject: string | null; root: string; lineage: string[]; key: string | null; version: number }
 export interface InboxAnswer { id: string; version: number; action?: "accept" | "decline" | "cancel"; content?: unknown; accept?: "recommended"; actor?: string; from?: Sender }
-export interface InboxOutcome { id: string; outcome: "answered" | "same" | "conflict" | "forbidden" | "unknown" | "invalid"; status: number; state?: string; by?: unknown; error?: string }
+export interface InboxOutcome { id: string; outcome: "answered" | "same" | "conflict" | "forbidden" | "unknown" | "invalid" | "unavailable"; status: number; retryable?: boolean; state?: string; by?: unknown; error?: string }
 export interface InboxPage { items: InboxItem[]; cursor: string | null; counts: { priority: Record<InboxPriority, number>; lead: Record<string, number> } }
 /** What an input asks: by its `kind`, the fields of one of these. */
 export interface InputDetail {
@@ -399,7 +399,7 @@ export interface InputDetail {
   url?: string; origin?: string;
 }
 /** An answer. `content`: for a question, { answers: { "<question>": "<label>" | ["<label>"] | "<own words>" } }; for a form, its fields. `from`/`actor`: who answers, checked against who may. */
-export interface InputAnswer { action: "accept" | "decline" | "cancel"; content?: unknown; from?: Sender; actor?: string }
+export interface InputAnswer { version?: number; action: "accept" | "decline" | "cancel"; content?: unknown; from?: Sender; actor?: string }
 export type { ThinkingLevel };
 export interface CreateAgentOptions extends AgentOptions {
   /** Account workspace for spend attribution; null leaves it unassigned. */

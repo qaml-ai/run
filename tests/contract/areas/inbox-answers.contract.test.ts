@@ -14,15 +14,28 @@ contractTest('inbox-answers', 'shared/inbox-answers.ts', 'batch answers use the 
   const forbidden = await f.call('/v1/inbox/answers', { body: { requestId: 'forbidden', answers: [{ ...answer, actor: 'mallory' }] } });
   assert.equal(forbidden.status, 200, forbidden.text);
   assert.equal(forbidden.json.outcomes[0].outcome, 'forbidden');
+  assert.equal('state' in forbidden.json.outcomes[0], false);
+  assert.equal('by' in forbidden.json.outcomes[0], false);
   const moved = await f.call('/v1/inbox/answers', { body: { requestId: 'moved', answers: [{ ...answer, version: 20 }] } });
   assert.equal(moved.json.outcomes[0].outcome, 'conflict');
   const batch = { requestId: 'batch', answers: [answer, { ...answer, id: 'absent' }] };
-  const first = await f.call('/v1/inbox/answers', { body: batch });
+  const [first, concurrent] = await Promise.all([f.call('/v1/inbox/answers', { body: batch }), f.call('/v1/inbox/answers', { body: batch })]);
+  assert.deepEqual(concurrent.json, first.json, concurrent.text);
   assert.equal(first.status, 200, first.text);
   assert.deepEqual(first.json.outcomes.map((o: any) => o.outcome), ['answered', 'unknown']);
   assert.deepEqual((await f.call('/v1/inbox/answers', { body: batch })).json, first.json);
+  const reordered = { requestId: batch.requestId, answers: [{ actor: answer.actor, content: answer.content, action: answer.action, version: answer.version, id: answer.id }, batch.answers[1]] };
+  assert.deepEqual((await f.call('/v1/inbox/answers', { body: reordered })).json, first.json);
+  const changed = { ...batch, answers: [{ ...answer, content: { answers: { 'Region?': 'US' } } }] };
+  assert.equal((await f.call('/v1/inbox/answers', { body: changed })).status, 409);
+  const forbiddenSettled = await f.call('/v1/inbox/answers', { body: { requestId: 'forbidden-settled', answers: [{ ...answer, actor: 'mallory' }] } });
+  assert.deepEqual(forbiddenSettled.json.outcomes.map((o: any) => [o.outcome, 'state' in o, 'by' in o]), [['forbidden', false, false]]);
+  await f.ageInboxReceipt(batch.requestId);
+  assert.equal((await f.call('/v1/inbox/answers', { body: changed })).status, 200, 'expired key accepts a new payload');
+  await f.ageInboxReceipt(batch.requestId);
+  assert.equal(await f.pruneInboxReceipts(), 0);
   const conflict = await f.call('/v1/inbox/answers', { body: { ...batch, requestId: 'again' } });
-  assert.equal(conflict.json.outcomes[0].outcome, 'conflict');
+  assert.equal(conflict.json.outcomes[0].outcome, 'same');
 });
 
 contractTest('inbox-answers', 'shared/inbox-answers.ts', 'several answers for one suspended agent resume one model turn', async (_t, f) => {
@@ -67,7 +80,7 @@ contractTest('inbox-answers', 'shared/inbox-answers.ts', 'a mixed batch answers 
   const body = { requestId: 'mixed', answers: items.map(answer) };
   const result = await f.call('/v1/inbox/answers', { body });
   assert.equal(result.status, 200, result.text);
-  assert.deepEqual(result.json.outcomes.map((o: any) => o.outcome), ['answered', 'conflict', 'conflict']);
+  assert.deepEqual(result.json.outcomes.map((o: any) => o.outcome), ['answered', 'same', 'conflict']);
   assert.equal(result.json.outcomes[2].state, 'expired');
   assert.deepEqual((await f.call('/v1/inbox/answers', { body })).json, result.json);
 });
@@ -103,3 +116,41 @@ if (existsSync(new URL('../../../backends/workers/src/inbox-decisions.ts', impor
     assert.equal(f.model.bodies.length, before + 1);
   });
 }
+
+contractTest('inbox-answers', 'shared/inbox-answers.ts', 'a down agent is unavailable without blocking a healthy agent', async (_t, f) => {
+  f.setModel(() => toolCall('ask_user', { questions: [{ question: 'Region?', header: 'Region', options: [{ label: 'EU' }, { label: 'US' }] }] }));
+  const definition = (await f.call('/v1/definitions', { body: { name: 'Availability', builtins: ['ask_user'] } })).json;
+  const items: any[] = [];
+  for (let i = 0; i < 2; i++) {
+    const created = await f.call('/v1/agents', { body: { definition: definition.id, ttlSeconds: null } });
+    assert.equal(created.status, 201, created.text);
+    await f.prompt(created.json.id, 'Ask');
+    items.push(await until(async () => (await f.call('/v1/inbox')).json.items.find((item: any) => item.agent === created.json.id), 'indexed input'));
+  }
+  f.setModel(() => ({ role: 'assistant', content: 'Recorded.' }));
+  await f.failInboxAgent(items[0].agent);
+  const body = { requestId: 'availability', answers: items.map(item => ({ id: item.id, version: item.version, action: 'accept', content: { answers: { 'Region?': 'EU' } } })) };
+  const response = await f.call('/v1/inbox/answers', { body });
+  assert.equal(response.status, 200, response.text);
+  assert.deepEqual(response.json.outcomes[0], { id: items[0].id, outcome: 'unavailable', status: 503, retryable: true });
+  assert.equal(response.json.outcomes[1].outcome, 'answered');
+  assert.deepEqual((await f.call('/v1/inbox/answers', { body })).json, response.json);
+  const pending = (await f.call('/v1/inbox')).json.items.find((item: any) => item.id === items[0].id);
+  assert.equal(pending.state, 'pending');
+}, { env: { AGENT_IDLE_MS: '1000' }, timeout: 90_000 });
+
+contractTest('inbox-answers', 'shared/inbox-answers.ts', 'the per-agent writer rejects a stale version while the input is still pending', async (_t, f) => {
+  f.setModel(() => toolCall('ask_user', { questions: [{ question: 'Region?', header: 'Region', options: [{ label: 'EU' }, { label: 'US' }] }] }));
+  const definition = (await f.call('/v1/definitions', { body: { name: 'CAS input', builtins: ['ask_user'] } })).json;
+  const created = await f.call('/v1/agents', { body: { definition: definition.id, ttlSeconds: null } });
+  assert.equal(created.status, 201, created.text);
+  const agent = created.json.id;
+  await f.prompt(agent, 'Ask');
+  const item = await until(async () => (await f.call('/v1/inbox')).json.items.find((item: any) => item.agent === agent), 'input');
+  await f.advanceInboxVersion(agent);
+  const response = await f.call(`/v1/agents/${agent}/inputs/${item.inputId}`, { body: { version: item.version, action: 'accept', content: { answers: { 'Region?': 'EU' } } } });
+  assert.equal(response.status, 409, response.text);
+  const current = (await f.call('/v1/inbox')).json.items.find((input: any) => input.id === item.id);
+  assert.equal(current.state, 'pending');
+  assert.equal(current.version, item.version + 1);
+});

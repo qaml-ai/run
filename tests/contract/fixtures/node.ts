@@ -1,3 +1,4 @@
+import { inboxReceiptFixture } from "./inbox-receipts.ts";
 import { seedInbox } from './inbox.ts';
 import { createHash, randomBytes } from "node:crypto";
 import { seedOpsAccount } from "./ops-seed.ts";
@@ -198,6 +199,7 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
       }
       return { id, token };
     },
+    ...inboxReceiptFixture(db),
     seedInbox: rows => seedInbox(db, rows),
     async expireInputs(agent) {
       const result = await db.query("update agent_inputs set expires_at = 0 where agent = $1 and state = 'pending'", [agent]);
@@ -274,6 +276,14 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
     },
     async waitForAgentIdle(agent) {
       await until(async () => !(await db.query("select node from actor_owners where actor=$1", [agent])).rows[0]?.node, "the idle agent to be released", 20_000);
+    },
+    async advanceInboxVersion(agent) {
+      await db.query("update agent_inputs set version=version+1 where agent=$1 and state='pending'", [agent]);
+    },
+    async failInboxAgent(agent) {
+      await until(async () => !(await db.query("select node from actor_owners where actor=$1", [agent])).rows[0]?.node, "unloaded inbox agent", 20_000);
+      // Make the authoritative header unreadable, before any answer can be committed.
+      await db.query("update agents set header=jsonb_set(header::jsonb,'{sources,builtins}','{}')::json where id=$1", [agent]);
     },
     async failAgentLoad(agent) {
       await db.query("update agents set pending_runs=true,header=jsonb_set(header::jsonb,'{version}','99')::json where id=$1", [agent]);
