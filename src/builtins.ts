@@ -12,7 +12,7 @@ import { download, need, readCapped, type ToolFiles } from "./tool-files.ts";
 import { HttpError } from "./http.ts";
 import { textual, type FileLinks } from "./files.ts";
 import { TOOL_FILE_LIMITS } from "./limits.ts";
-import { questionsInput } from "./inputs.ts";
+import { questionsInput, inboxFields, inboxDetail, decisionDetail } from "./inputs.ts";
 import { VOLUME_LIMITS } from "./volumes.ts";
 import { X_SEARCH, xSearchUnavailable, type XSearch } from "./x-search.ts";
 
@@ -36,6 +36,7 @@ export const BUILTINS = {
   x_search: ["x_search"],
   schedule: ["schedule", "list_schedules", "cancel_schedule"],
   ask_user: ["ask_user"],
+  request_decision: ["request_decision"],
   delegate: [],
   generate_image: [],
   agents: [],
@@ -135,15 +136,25 @@ const DEFINITIONS: Record<string, ToolDefinition> = {
     name: "ask_user", exposure: "direct", callers: ["model", "tools"],
     description: "Ask the user 1-4 questions, each with 2-4 options, when you are blocked on a choice only they can make. Your turn pauses until they answer, which may take days; the answers come back as this call's result. Don't ask about what you can find out yourself.",
     parameters: { type: "object", additionalProperties: false, required: ["questions"], properties: {
+      ...inboxFields,
       questions: { type: "array", minItems: 1, maxItems: 4, items: { type: "object", additionalProperties: false, required: ["question", "header", "options"], properties: {
         question: { type: "string", minLength: 1, maxLength: 1000, description: "The full question, ending with a question mark" },
         header: { type: "string", minLength: 1, maxLength: 12, description: "A short label, like \"Auth method\"" },
         options: { type: "array", minItems: 2, maxItems: 4, items: { type: "object", additionalProperties: false, required: ["label"], properties: {
           label: { type: "string", minLength: 1, maxLength: 200 }, description: { type: "string", maxLength: 1000, description: "What choosing it means" },
         } } },
+        recommended: { type: "string", description: "The option you recommend." }, reason: { type: "string", maxLength: 1000, description: "Why you recommend it, in a sentence." },
         multiSelect: { type: "boolean", description: "Let the user choose several options" },
         allowOther: { type: "boolean", description: "Let the user answer in their own words instead" },
       } } },
+    } },
+  },
+  request_decision: {
+    name: "request_decision", exposure: "direct", callers: ["model", "tools"],
+    description: "Ask the user for a decision without stopping: your turn continues, and the answer arrives later as a <decision_answer> message. Give a title, a body saying what they must decide, and 2-4 options (or none, for an answer in their own words). It stays open for 7 days, then is cancelled unless you set applyRecommendationOnExpiry with a recommendation. New messages never cancel it. Reuse the same key to replace your earlier pending decision about the same thing.",
+    parameters: { type: "object", additionalProperties: false, required: ["title", "body"], properties: {
+      ...inboxFields, title: { type: "string", minLength: 1, maxLength: 1000 }, body: { type: "string", maxLength: 4000 },
+      options: { type: "array", minItems: 2, maxItems: 4, items: { type: "object", required: ["label"], properties: { label: { type: "string" }, description: { type: "string" } }, additionalProperties: false } }, key: { type: "string", minLength: 1, maxLength: 200, description: "A stable name for this decision; a new decision with the same key replaces the pending one." },
     } },
   },
   cancel_schedule: {
@@ -152,8 +163,13 @@ const DEFINITIONS: Record<string, ToolDefinition> = {
   },
 };
 
+/** Only agents with request_decision are directed to use it. */
+export function askUserDefinition(builtins: readonly string[] = []) {
+  return { ...DEFINITIONS.ask_user, description: DEFINITIONS.ask_user.description + (builtins.includes("request_decision") ? " If you can keep working while you wait, use request_decision instead." : "") };
+}
+
 /** The built-ins' tools; with web_fetch not enabled, web_search does not point the model at it. */
-export const builtinDefinitions = (builtins: string[] = []) => builtinNames(builtins).map(name => name === "web_search" && !builtins.includes("web_fetch")
+export const builtinDefinitions = (builtins: string[] = []) => builtinNames(builtins).map(name => name === "ask_user" ? askUserDefinition(builtins) : name === "web_search" && !builtins.includes("web_fetch")
   ? { ...DEFINITIONS[name], description: DEFINITIONS[name].description.replace(" The excerpts often hold the answer, so you may not need to open the page; when they don't, or a result has only a snippet, read the page with web_fetch.", " Answer from the excerpts and snippets: pages cannot be opened.") }
   : DEFINITIONS[name]);
 
@@ -164,7 +180,14 @@ export type BuiltinServices = { outbound: Outbound; scheduler?: Scheduler; searc
 export async function runBuiltin(services: BuiltinServices, context: BuiltinContext, name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<McpResult> {
   if (name === "web_fetch") return webFetch(services, context, String(args.url), (args.maxCharacters as number | undefined) ?? FETCH.characters, signal);
   // The questions go to the user as an input; the answers become this call's result.
-  if (name === "ask_user") return { resultType: "input_required", inputRequests: { questions: { method: "agent-runtime/question", params: { questions: questionsInput(args.questions) } } } };
+  if (name === "ask_user" || name === "request_decision") {
+    const detail = name === "ask_user" ? inboxDetail(args) : decisionDetail(args);
+    if (detail.attachments) detail.attachments = await Promise.all(detail.attachments.map(async (attachment: any) => {
+      const file = await need(context.files).open(attachment.path);
+      return { path: file.path, version: file.entry.version, contentType: file.contentType, ...(attachment.caption ? { caption: attachment.caption } : {}) };
+    }));
+    return { resultType: "input_required", inputRequests: { questions: { method: "agent-runtime/question", params: detail } } };
+  }
   return jsonResult(await builtinValue(services, context, name, args, signal));
 }
 

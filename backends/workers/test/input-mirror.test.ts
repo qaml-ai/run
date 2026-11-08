@@ -4,10 +4,12 @@ import { testDatabase } from './billing-database.ts';
 import { webhookEvent } from '../src/webhook-policy.ts';
 import { AgentWebhooks, stageWebhook } from '../src/run-webhooks.ts';
 import { mirrorId, stageInputMirror, sweepInputMirrors, upsertInputMirrors, type InputMirror } from '../src/input-mirror.ts';
+import { humanInputView } from '../src/human.ts';
 import { transaction } from '../src/postgres.ts';
 import type { Env } from '../src/agent-types.ts';
 
 const input = (overrides: Partial<InputMirror> = {}): InputMirror => ({
+  ...humanInputView('1', { question: 'Proceed?', kind: 'approval' }, 'a', 'r'),
   id: '1', agent: 'a', tenant: 't', requestId: 'r', toolCallId: 'call', version: 1,
   kind: 'approval', message: 'Proceed?', question: 'Proceed?', detail: {}, state: 'pending',
   responders: { audience: ['person'] }, audience: ['person', 'approver'], subject: 'customer',
@@ -38,6 +40,22 @@ test('mirrors use agent-scoped IDs, preserve frozen fields, and reject old or eq
     throw new Error('rollback');
   }));
   assert.equal((await db.query('select version from agent_inputs where id=$1', [updated.id])).rows[0].version, 2);
+});
+
+test('question mirrors keep the requested priority and recommendation detail', async () => {
+  const { db } = await testDatabase();
+  const detail = { priority: 'urgent', links: ['https://example.com/review'],
+    attachments: [{ path: '/review.txt', version: 3 }],
+    recommendation: { answer: { answers: { Region: 'EU' } }, reason: 'Nearest.' },
+    applyRecommendationOnExpiry: true };
+  for (const [priority, rank] of Object.entries({ urgent: 0, high: 1, normal: 2, low: 3 })) {
+    const view = humanInputView(priority, { question: 'Region', kind: 'question', detail: { ...detail, priority } }, 'a', 'r');
+    await transaction(db, sql => upsertInputMirrors(sql, [input(view)]));
+    const row = (await db.query('select priority, priority_rank, input from agent_inputs where id=$1', [mirrorId('a', priority)])).rows[0];
+    assert.equal(row.priority, priority);
+    assert.equal(row.priority_rank, rank);
+    assert.deepEqual(row.input.detail, { ...detail, priority });
+  }
 });
 
 test('durable mirror intents survive lost acknowledgements and keep a newer staged row', async () => {

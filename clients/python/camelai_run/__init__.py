@@ -2400,6 +2400,8 @@ class InputDetail(TypedDict):
     call's arguments as a dict (past 4,000 characters of JSON, argumentsPreview, their start, instead). form:
     requestedSchema. url: url, origin."""
     questions: NotRequired[list[dict]]
+    title: NotRequired[str]
+    body: NotRequired[str]
     tool: NotRequired[str]
     source: NotRequired[str]
     reason: NotRequired[str]
@@ -2440,8 +2442,8 @@ def _run_of(request_id, result, output, make_input):
 
 
 class RunInput(dict):
-    """Human input a run waits on (a dict: id, kind, message, detail (an InputDetail)...), with the means to answer it.
-    answer() and decline() return the resumed run."""
+    """Human input (a dict: id, kind, message, detail, blocking, priority...), with the means to answer it.
+    Decisions return a completed receipt; blocking inputs return the resumed run."""
 
     def __init__(self, agent, value, output=None):
         super().__init__(value)
@@ -2449,7 +2451,7 @@ class RunInput(dict):
         self._agent, self._output = agent, output
 
     async def answer(self, value, *, from_=None, throw_on_error=True, timeout=None):
-        """approval or url: True (yes, done) or False; question: the label chosen (or labels, or your own words), or a
+        """approval or url: True (yes, done) or False; question or decision: the label chosen (or labels, or your own words), or a
         dict of question to answer; form: its fields (a confirmation, a form without fields: True or False). `from_`: who answers (your user id, or {"id", "name"?})."""
         return await self._agent._respond(self, _answer_for(self, value), from_, throw_on_error, timeout)
 
@@ -2479,7 +2481,7 @@ def _answer_for(input, value):
         if not isinstance(value, bool):
             raise AgentError(f"Answer {'an approval' if kind == 'approval' else 'a url step'} with True or False")
         return {"action": "accept" if value else "decline"}
-    if kind == "question":
+    if kind in ("question", "decision"):
         questions = input["detail"].get("questions") or []
         if isinstance(value, (str, list)):
             if len(questions) != 1:
@@ -2697,8 +2699,8 @@ class Agent:
         if request:
             return await self._settle(request["id"], self.client.wait_for_request(request["id"], timeout=timeout), throw_on_error, input._output)
         # Other inputs of the run still wait: it resumes once they are answered too.
-        pending = [RunInput(self, other, input._output) for other in await self.client.inputs(state="pending") if other["requestId"] == input["requestId"]]
-        return Run(input["requestId"], "input_required", inputs=pending)
+        pending = [] if input.get("blocking") is False else [RunInput(self, other, input._output) for other in await self.client.inputs(state="pending") if other["requestId"] == input["requestId"] and other.get("blocking") is not False]
+        return Run(input["requestId"], "input_required" if pending else "completed", inputs=pending)
 
     async def send(self, text, *, user=None, files=None, metadata=None, idempotency_key=None, allow_disconnected=False, spend_limit=None,
                    output=None, history=None, run_limits=None):

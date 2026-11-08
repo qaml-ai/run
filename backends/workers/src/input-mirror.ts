@@ -28,7 +28,8 @@ export async function upsertInputMirrors(sql: Sql, rows: InputMirror[]) {
       if (Array.isArray(parent?.chain)) lineage = [...parent.chain, row.agent];
       else if (parent?.parent) lineage = [parent.parent, row.agent];
     }
-    const priority = row.kind === "approval" ? "high" : "normal";
+    const priority = row.priority ?? (row.kind === "approval" ? "high" : "normal");
+    const rank = { urgent: 0, high: 1, normal: 2, low: 3 }[priority as "urgent" | "high" | "normal" | "low"];
     const result = await sql.query(`insert into agent_inputs
       (id, agent, tenant, request_id, tool_call_id, kind, state, input, answer, created_at, expires_at,
        priority, priority_rank, blocking, subject, responders, root_agent, lineage, version)
@@ -38,7 +39,7 @@ export async function upsertInputMirrors(sql: Sql, rows: InputMirror[]) {
       where agent_inputs.version < excluded.version returning tenant`,
     [mirrorId(row.agent, row.id), row.agent, row.tenant, row.requestId, row.toolCallId, row.kind, row.state,
       JSON.stringify({ message: row.message, detail: row.detail, responders: row.responders, workersInputId: row.id }),
-      row.answer ? JSON.stringify(row.answer) : null, row.createdAt, row.expiresAt, priority, priority === "high" ? 1 : 2,
+      row.answer ? JSON.stringify(row.answer) : null, row.createdAt, row.expiresAt, priority, rank,
       row.subject, row.audience, lineage[0], lineage, row.version]);
     if (result.rowCount) await sql.query("select pg_notify('inbox', $1)", [row.tenant]);
   }

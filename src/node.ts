@@ -1061,7 +1061,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       link: async (agent, tenant, path) => (await clients.linkFor(agent, tenant, path, FILE_LIMITS.maxLinkSeconds)).url,
     },
     inputs: {
-      pending: async agent => (await inputs.pending(agent)).map(inputView),
+      pending: async agent => (await inputs.pending(agent)).filter(input => input.blocking !== false).map(inputView),
       answer: (agent, tenant, input, answer) => clients.answer(agent, tenant, [{ id: input, body: answer }], "channel"),
     },
     // Filters: refused by spent credit, as the turn would be, but a message's turn is all that counts as a run.

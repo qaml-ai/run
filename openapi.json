@@ -458,7 +458,8 @@
                   "question",
                   "approval",
                   "form",
-                  "url"
+                  "url",
+                  "decision"
                 ]
               },
               "expiresAt": {
@@ -520,7 +521,8 @@
                   "declined",
                   "cancelled",
                   "expired",
-                  "superseded"
+                  "superseded",
+                  "withdrawn"
                 ]
               }
             },
@@ -4218,6 +4220,7 @@
           "x_search",
           "schedule",
           "ask_user",
+          "request_decision",
           "delegate",
           "generate_image",
           "agents",
@@ -6136,7 +6139,8 @@
               "question",
               "approval",
               "form",
-              "url"
+              "url",
+              "decision"
             ],
             "description": "question: ask_user's questions; approval: a call the runtime or a tool wants approved; form: fields a tool asks for; url: a page a tool asks the user to open"
           },
@@ -6198,6 +6202,69 @@
               "by",
               "at"
             ]
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "urgent",
+              "high",
+              "normal",
+              "low"
+            ]
+          },
+          "blocking": {
+            "type": "boolean"
+          },
+          "key": {
+            "type": "string"
+          },
+          "version": {
+            "type": "number"
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "number"
+                },
+                "contentType": {
+                  "type": "string"
+                },
+                "caption": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "version"
+              ]
+            }
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "recommendation": {
+            "type": "object",
+            "properties": {
+              "answer": {},
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason"
+            ]
+          },
+          "applyRecommendationOnExpiry": {
+            "type": "boolean"
           },
           "createdAt": {
             "type": "number"
@@ -6358,21 +6425,18 @@
                 {
                   "type": "object",
                   "properties": {
+                    "key": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "version": {
+                      "type": "integer"
+                    },
                     "inputId": {
                       "type": "string",
                       "description": "Use this id with the per-agent input answer route; id identifies the inbox row"
-                    },
-                    "priority": {
-                      "type": "string",
-                      "enum": [
-                        "urgent",
-                        "high",
-                        "normal",
-                        "low"
-                      ]
-                    },
-                    "blocking": {
-                      "type": "boolean"
                     },
                     "subject": {
                       "type": [
@@ -6388,26 +6452,17 @@
                       "items": {
                         "type": "string"
                       }
-                    },
-                    "key": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "version": {
-                      "type": "integer"
                     }
                   },
                   "required": [
-                    "inputId",
                     "priority",
                     "blocking",
+                    "key",
+                    "version",
+                    "inputId",
                     "subject",
                     "root",
-                    "lineage",
-                    "key",
-                    "version"
+                    "lineage"
                   ]
                 }
               ]
@@ -17083,7 +17138,8 @@
                 "declined",
                 "cancelled",
                 "expired",
-                "superseded"
+                "superseded",
+                "withdrawn"
               ]
             },
             "required": false,
@@ -17324,7 +17380,8 @@
                 "question",
                 "approval",
                 "form",
-                "url"
+                "url",
+                "decision"
               ]
             },
             "required": false,
@@ -17422,7 +17479,8 @@
                 "question",
                 "approval",
                 "form",
-                "url"
+                "url",
+                "decision"
               ]
             },
             "required": false,

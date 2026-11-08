@@ -7,9 +7,9 @@ test('inbox SDK sends filters and cursor and returns the page', async t => {
   t.mock.method(globalThis, 'fetch', async (input: string | URL | Request) => {
     const url = new URL(String(input));
     assert.equal(url.pathname, '/v1/inbox');
-    assert.deepEqual(Object.fromEntries(url.searchParams), { for: 'sam & alex', subject: 'customer', root: 'lead', priority: 'urgent', kind: 'question', cursor: 'a+b=', limit: '7' });
+    assert.deepEqual(Object.fromEntries(url.searchParams), { for: 'sam & alex', subject: 'customer', root: 'lead', priority: 'urgent', kind: 'decision', cursor: 'a+b=', limit: '7' });
     return Response.json(page);
   });
   const client = new AgentRuntime({ url: 'https://runtime.example', apiKey: 'test-key' });
-  assert.deepEqual(await client.inbox({ for: 'sam & alex', subject: 'customer', root: 'lead', priority: 'urgent', kind: 'question', cursor: 'a+b=', limit: 7 }), page);
+  assert.deepEqual(await client.inbox({ for: 'sam & alex', subject: 'customer', root: 'lead', priority: 'urgent', kind: 'decision', cursor: 'a+b=', limit: 7 }), page);
 });

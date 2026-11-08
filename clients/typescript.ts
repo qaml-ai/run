@@ -366,27 +366,33 @@ export interface ChildAgent {
   error?: string;
 }
 /**
- * Human input a suspended turn waits on (its run ends with `stopped: "input_required"` and these in
- * `inputs`): the model's questions (ask_user), approvals, and a tool's form or URL step.
+ * A question, decision, approval, or a tool's form or URL step. Blocking inputs suspend the turn;
+ * decisions stay open while the agent continues.
  */
 export interface AgentInput {
   id: string; agent: string; requestId: string; toolCallId: string;
-  kind: "question" | "approval" | "form" | "url"; message: string;
+  kind: "question" | "approval" | "form" | "url" | "decision"; message: string;
   /** What it asks, by `kind`. */
   detail: InputDetail;
   responders: { audience?: string[] };
-  state: "pending" | "answered" | "declined" | "cancelled" | "expired" | "superseded";
+  state: "pending" | "answered" | "declined" | "cancelled" | "expired" | "superseded" | "withdrawn";
+  priority?: "urgent" | "high" | "normal" | "low"; blocking?: boolean;
+  key?: string; version?: number;
+  attachments?: { path: string; version: number; contentType?: string; caption?: string }[];
+  links?: string[]; recommendation?: { answer: unknown; reason: string }; applyRecommendationOnExpiry?: boolean;
   answer?: { action: string; content?: unknown; by: Record<string, unknown>; at: number };
   createdAt: number; expiresAt: number;
 }
 export type InboxPriority = "urgent" | "high" | "normal" | "low";
 export interface InboxOptions { for?: string; subject?: string; root?: string; priority?: InboxPriority; kind?: AgentInput["kind"]; cursor?: string; limit?: number }
-export interface InboxItem extends AgentInput { inputId: string; priority: InboxPriority; blocking: boolean; subject: string | null; root: string; lineage: string[]; key: string | null; version: number }
+export interface InboxItem extends Omit<AgentInput, "key"> { inputId: string; priority: InboxPriority; blocking: boolean; subject: string | null; root: string; lineage: string[]; key: string | null; version: number }
 export interface InboxPage { items: InboxItem[]; cursor: string | null; counts: { priority: Record<InboxPriority, number>; lead: Record<string, number> } }
 /** What an input asks: by its `kind`, the fields of one of these. */
 export interface InputDetail {
   /** question: the model's questions (ask_user). */
-  questions?: { question: string; header?: string; options: { label: string; description?: string }[]; multiSelect: boolean; allowOther: boolean }[];
+  questions?: { question: string; header?: string; options: { label: string; description?: string }[]; multiSelect: boolean; allowOther: boolean; recommended?: string; reason?: string }[];
+  /** decision: the title and the choice to make. */
+  title?: string; body?: string;
   /** approval: the tool call it waits on, where its tool comes from ("application", "runtime", or a tool source's name), and why it asks. */
   tool?: string; source?: string; reason?: string;
   /** approval: the call's arguments, as its tool_call event has them; past 4,000 characters of JSON, `argumentsPreview` (their start) instead. */
@@ -487,7 +493,7 @@ export interface CreateAgentOptions extends AgentOptions {
  * delegate (sub-agents: needs `delegate` settings), or agents (sub-agents in the background: spawn_agent, wait_agent and
  * list_agents, with the same settings).
  */
-export type Builtin = "file_link" | "file_import" | "web_fetch" | "web_search" | "x_search" | "schedule" | "ask_user" | "delegate" | "generate_image" | "agents" | "decide";
+export type Builtin = "file_link" | "file_import" | "web_fetch" | "web_search" | "x_search" | "schedule" | "ask_user" | "request_decision" | "delegate" | "generate_image" | "agents" | "decide";
 /**
  * A delegate target: a definition's key or id, as a string or `{ definition }`, or an existing agent's key
  * (`{ agent }`, which keeps its own history across calls). `name` is what the model calls it (default: the key); `description`

@@ -1,3 +1,5 @@
+import { inputView } from "./decision-inputs.ts";
+import { decisionInputs, answerDecisions } from "./inbox-decisions.ts";
 import { repairInputMirrors } from "./agent-input-mirror.ts";
 import { computerSetup } from "./computers/agent-setup.ts";
 import { forkComputerInto } from "./computers/child-fork.ts";
@@ -560,7 +562,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
           root = await pi.root(BACKGROUND_CONTEXT);
         const doc = await pi.snapshot(HumanInputs, BACKGROUND_CONTEXT),
           conf = await this.config();
-        const values = [];
+        const values: Array<ReturnType<typeof humanInputView> | ReturnType<typeof inputView>> = (await decisionInputs(this).list(conf.tenantId, { agent: conf.id, ...(url.searchParams.get("state") ? { state: url.searchParams.get("state")! } : {}) })).filter(row => row.blocking === false).map(row => ({ ...inputView(row), question: row.message }));
         const state = url.searchParams.get("state") ?? "all";
         if (
           ![
@@ -571,6 +573,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
             "cancelled",
             "expired",
             "superseded",
+            "withdrawn",
           ].includes(state)
         )
           throw new BadRequest("Invalid input state");
@@ -600,7 +603,10 @@ export async function fetchRequestImpl(this: AgentRuntime,
         const input = await body(request, 1024 * 1024);
         const batch = path === "/inputs";
         const answers = batch ? answerList(input) : [{ id: decodeURIComponent(path.slice(8)), body: input }];
-        const answering = this.admission.then(() => this.answerHumanInputs(answers, request.headers.get("x-camel-input-via") === "agent" ? "agent" : request.headers.get("x-camel-input-via") === "channel" ? "channel" : "api"));
+        const decision = answers.every((entry: { id: string }) => entry.id.startsWith("inp_"));
+        // Decisions live in Postgres; blocking inputs live in Pi. The inbox answers route must partition these authorities.
+        if (!decision && answers.some((entry: { id: string }) => entry.id.startsWith("inp_"))) throw new BadRequest("Answer decisions and blocking inputs in separate batches");
+        const answering = this.admission.then(async () => (decision ? answerDecisions(this, answers, request.headers.get("x-camel-input-via") === "channel" ? "channel" : "api") : this.answerHumanInputs(answers, request.headers.get("x-camel-input-via") === "agent" ? "agent" : request.headers.get("x-camel-input-via") === "channel" ? "channel" : "api")));
         this.admission = answering.catch(() => {});
         const answered = await answering.catch(async error => {
           if (errorStatus(error, 500) === 409) {

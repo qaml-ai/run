@@ -1,3 +1,4 @@
+import { expireDecisions } from "./inbox-decisions.ts";
 import { restageInputMirrors } from "./agent-input-mirror.ts";
 import { MULTI_AGENT_LIMITS, viaParent } from "./multi-agent-policy.ts";
 import { childParent } from "./child-parent.ts";
@@ -127,6 +128,7 @@ export async function armImpl(this: AgentRuntime,
       await this.promptPreparations.deadline(),
       await this.batchQueue.deadline(config),
       await this.ctx.storage.get<number>("human-input-deadline") ?? Infinity,
+      await this.ctx.storage.get<number>("decision-input-deadline") ?? Infinity,
       deleted || (config.expiresAt && config.expiresAt <= Date.now()) ? Infinity : await this.limits.deadline(),
       ...this.ctx.getWebSockets().filter(socket => socket.readyState === 1).map(socket => (socket.deserializeAttachment() as EventSubscription)?.browser?.exp ?? Infinity),
     );
@@ -274,6 +276,7 @@ export async function wakeImpl(this: AgentRuntime) {
     const expire = this.admission.then(() => this.closeHumanInputs("expired"));
     this.admission = expire.catch(() => {});
     await expire;
+    await expireDecisions(this);
     await this.restoreHostAdmissions();
     // A call's live credit hold reserves its funds. Only check available credit
     // between calls; checking here could abort work that already reserved it.

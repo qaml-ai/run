@@ -71,3 +71,14 @@ test("ask_user: a question without options is answered in the person's own words
   assert.deepEqual(questionsInput([{ question: "What next?", header: "Next", options: [] }])[0].allowOther, true);
   assert.throws(() => questionsInput([{ question: "Q?", header: "H", options: [{ label: "only" }] }]), /2 to 4 options, each with a label, or none/);
 });
+
+test('Workers ask_user has exactly the Node schema and conditional description', async () => {
+  const { makeAskUser } = await import('../src/human.ts');
+  const { builtinDefinitions } = await import('../../../src/builtins.ts');
+  for (const builtins of [['ask_user'], ['ask_user', 'request_decision']]) {
+    const node = builtinDefinitions(builtins)[0];
+    const worker = makeAskUser(undefined, builtins);
+    assert.deepEqual(worker.parameters, node.parameters);
+    assert.equal(worker.description, node.description);
+  }
+});

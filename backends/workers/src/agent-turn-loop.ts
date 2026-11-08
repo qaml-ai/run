@@ -1,3 +1,4 @@
+import { expiryAnswer, type Answer } from "./input-policy.ts";
 import { steeringCanJoin, steeringJoined } from "./steering-placement.ts";
 import { type Message, type AssistantMessage } from "@earendil-works/pi-ai";
 import { type ConversationView, type LiveState, LiveDoc } from "@earendil-works/pi-durable";
@@ -776,7 +777,7 @@ export async function answerHumanInputsImpl(this: AgentRuntime,
       const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
       conf = await this.config();
       const snapshot = await pi.snapshot(HumanInputs, BACKGROUND_CONTEXT);
-      const checked: Array<{ id: string; body: unknown; pending: HumanInput; owner: string | undefined; answer: ReturnType<typeof answerHuman> | ReturnType<typeof systemHumanAnswer> }> = [];
+      const checked: Array<{ id: string; body: unknown; pending: HumanInput; owner: string | undefined; answer: { answer: string; state: NonNullable<HumanInput["state"]>; answerDetail: Answer } }> = [];
       for (const entry of answers) {
         const pending = snapshot?.requests[entry.id];
         if (!pending) throw Object.assign(new Error(`Unknown input ${entry.id}`), { status: 404 });
@@ -784,7 +785,7 @@ export async function answerHumanInputsImpl(this: AgentRuntime,
         const view = humanInputView(entry.id, pending, conf.id, owner);
         if (!system && owner && await this.ctx.storage.get(`cancelled-request:${owner}`))
           throw Object.assign(new Error("This input is cancelled"), { status: 409, input: view });
-        checked.push({ ...entry, pending, owner, answer: system ? systemHumanAnswer(system) : answerHuman(pending, entry.body, via, conf.config.humanInput?.approvers as string[] | undefined) });
+        checked.push({ ...entry, pending, owner, answer: system ? (system === "expired" ? (() => { const answerDetail = expiryAnswer({ kind: pending.kind ?? "question", detail: pending.detail ?? {} }); return { answer: JSON.stringify(answerDetail.content ?? { action: "cancel" }), state: "expired" as const, answerDetail }; })() : systemHumanAnswer(system)) : answerHuman(pending, entry.body, via, conf.config.humanInput?.approvers as string[] | undefined) });
       }
       const fresh = checked.every(entry => entry.pending.answer === undefined);
       if (!fresh && !checked.every(entry => sameHumanAnswer(entry.pending, entry.answer)))

@@ -4,7 +4,7 @@ import { Buffer } from 'node:buffer';
 type Sql = { query(text: string, values?: any[]): Promise<{ rows: any[] }> };
 export class InboxQueryError extends Error {}
 const priorities = ['urgent', 'high', 'normal', 'low'];
-const kinds = ['question', 'approval', 'form', 'url'];
+const kinds = ['question', 'approval', 'form', 'url', 'decision'];
 export function inboxQuery(params: URLSearchParams) {
   const limit = params.get('limit') ?? '50';
   if (!/^\d+$/.test(limit) || Number(limit) < 1 || Number(limit) > 100) throw new InboxQueryError('limit must be an integer from 1 to 100');
@@ -30,6 +30,8 @@ export function inboxQuery(params: URLSearchParams) {
 function inputView(row: any) {
   return { id: row.id, agent: row.agent, tenant: row.tenant, requestId: row.request_id, toolCallId: row.tool_call_id,
     kind: row.kind, message: row.input.message, detail: row.input.detail, responders: row.input.responders,
+    attachments: row.input.detail?.attachments, links: row.input.detail?.links,
+    recommendation: row.input.detail?.recommendation, applyRecommendationOnExpiry: row.input.detail?.applyRecommendationOnExpiry,
     state: row.state, ...(row.answer ? { answer: row.answer } : {}), createdAt: Number(row.created_at), expiresAt: Number(row.expires_at) };
 }
 

@@ -62,6 +62,10 @@ print(run.text)
 - **Questions.** The `ask_user` built-in (`"builtins": ["ask_user"]` on the
   agent or its definition) lets the model ask 1 to 4 multiple-choice questions, with free text
   allowed where it says so.
+- **Decisions.** With `"builtins": ["request_decision"]`, the model asks and keeps working.
+  Use this for always-on agents. Each request takes `title`, `body`, optional `options`, and an
+  optional `key`. Reusing a key withdraws the earlier pending decision. New messages never cancel it.
+  All answers in one batch to the same agent arrive in one later `<decision_answer>` notice.
 - **The tool itself.** `context.confirm(message)`, `context.ask(message,
   schema)` (a flat form) and `context.requireUrl(url, message)` (a step on an
   https page: connect an account, sign something). An ask ends the call; once the
@@ -103,6 +107,7 @@ same. A script's own
 | --- | --- |
 | `approval` | `true` to approve, `false` to decline |
 | `question` | the chosen option's label (or labels, or free text where allowed); for several questions, `{ "<question>": answer, … }` |
+| `decision` | the chosen label or free text, as for a question |
 | `form` | the fields, as an object (checked against the form's schema); a confirmation (`context.confirm`, a form without fields): `true` or `false` |
 | `url` | `true` once the person has done what the page asks, else `false` |
 
@@ -110,6 +115,10 @@ same. A script's own
 when the run waits on other inputs too, with the run still `input_required`
 listing those. Answering the same way twice is safe; a different answer to an
 input already settled is a 409 that says how it settled.
+
+For a decision, `answer()` returns a completed receipt without waiting for the agent's later notice turn.
+Decision answers use the same REST paths. On Workers, send blocking answers and decision answers in separate
+batches: a batch that mixes them returns 400 without answering any items.
 
 Inputs outlive your process: answer later from anywhere.
 
@@ -141,7 +150,7 @@ no way to answer.
 
 ## Waiting, and giving up
 
-- A new message to the agent supersedes its waiting inputs: their calls close
+- A new message to the agent supersedes its blocking inputs: their calls close
   with "Not answered: the user sent a new message instead", then the message runs.
 - `agent.abort()` cancels them: their calls and the turn close without calling
   the model.
@@ -161,6 +170,14 @@ no way to answer.
   the agent's `input_resolved` event and the `input.resolved` webhook say the
   same. An answer that comes later is a 409 (`This input expired: no one answered
   in time…`); send a new message instead.
+
+Both asking tools accept `priority` (`urgent`, `high`, `normal`, or `low`), up to 32 `attachments`
+(`{path, caption?}` in the agent's mounts), and https `links`. `ask_user` questions may name a
+`recommended` option and its `reason`; either tool may supply `recommendation: {answer, reason}`.
+The stored input includes these fields and `blocking`, `key`, and `version` where applicable.
+Decisions expire after 7 days, or when the agent expires if sooner. Expiry cancels them unless the asking
+agent sets `applyRecommendationOnExpiry: true` with a recommendation on that item. The same opt-in works
+for `ask_user`. Approvals always refuse this flag. Expired decisions send a notice to the agent.
 
 ```json
 {"name": "Ops", "builtins": ["ask_user"], "humanInput": {"expiresInSeconds": 86400, "approvers": ["slack:U0123"]},
