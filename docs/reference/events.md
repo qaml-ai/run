@@ -271,7 +271,8 @@ See [Multi-agent](../guides/multi-agent.md). The `subagent_*` events reach only 
 | `auto_retry_start` | `attempt`, `maxAttempts`, `delayMs`, `errorMessage` | a transient provider failure (overload, rate limit, 5xx, dropped stream) is being retried; the failed response was retracted |
 | `auto_retry_end` | `success`, `attempt`, `finalError?` | retrying ended |
 | `model_stream_stalled` | `phase` (`first_token`, `idle`), `ms`, `provider`, `model` | the model's stream went quiet (nothing before its first token for `runLimits.firstTokenSeconds`, or nothing mid-response for `idleSeconds`), so the runtime ended the request; it is retried like any transient failure, and when retries run out the run fails with code `model_stream_stalled`. Provider keep-alives do not count as an answer |
-| `steer_taken` | `steeredInto` | a prompt sent with `whileRunning: "steer"` (its id is the frame's `requestId`) was read by the running turn `steeredInto`: the model has it, and its request has completed |
+| `steer_taken` | `steeredInto` | a prompt sent with `whileRunning: "steer"` (its id is the frame's `requestId`) was read by the running turn `steeredInto`: the model has it; its request ends with the turn, with the turn's answer |
+| `batch_taken` | `batchedInto` | a prompt to an agent whose queue batches (`queue: {mode: "batch"}`; its id is the frame's `requestId`) ran in the turn of the prompt `batchedInto`, with the prompts that waited beside it: the model has it, and its request has completed |
 | `run_cancelled` | `reason` (`stopped`) | a run queued behind the running one was cancelled by a stop (`POST /v1/agents/:id/abort`) before it began; its `response` follows, with code `cancelled` |
 | `compaction_start` | `reason`, `background?` | the conversation is being summarized to fit the model's context. With `background: true` it is made between or alongside runs, outside any run's request (`requestId` is empty), and nothing waits for it |
 | `compaction_end` | `reason`, `background?`, and `skipped`, or `tokensBefore`, `summarizedMessages`, `keptMessages`, or `error` | summarizing ended |
@@ -305,7 +306,10 @@ An `execute` request's result is `{output: string[], truncated}` (plus `files`,
 `presented`, `toolErrors`, `toolCalls`, `sourceErrors` as above). A steered prompt's request
 completes as soon as the running turn reads its message, with `{steeredInto}` as its result and on
 its record: the turn's own request has the turn's outcome. Its 202 says how it was taken at once
-(`steer`: `accepted` by the running turn, or `queued` as a turn of its own).
+(`steer`: `accepted` by the running turn, or `queued` as a turn of its own). On an agent whose queue
+batches, a prompt that ran in another prompt's turn ends with that turn, with its answer and
+`batchedInto` (naming the turn's first request) in its result and on its record; that request's record
+lists the batch (`batch`) and has the usage.
 
 The SDKs turn this into a typed `Run`: `status` (`completed`, `input_required`,
 `failed`), `text`, `output`, `inputs`, `error: {code, message, uncertain?}`, `files`,
@@ -321,7 +325,7 @@ dedupe by `id`. See [Webhooks](../guides/webhooks.md).
 | Type | `data` |
 | --- | --- |
 | `run.started` | `agentId`, `requestId`, `method` (`prompt`, `continue`, `resume`, `execute`), `actor?`, `metadata?`, `resumes?` |
-| `run.completed` | the above, `usage` (`{responses, input, output, cacheRead, cacheWrite, costUsd}` or null), `stopped?`, `inputIds?`, `replyIndex?`, `messageCount?`, `steeredInto?` |
+| `run.completed` | the above, `usage` (`{responses, input, output, cacheRead, cacheWrite, costUsd}` or null), `stopped?`, `inputIds?`, `replyIndex?`, `messageCount?`, `steeredInto?`, `batchedInto?` (a prompt that ran in that request's turn), `batch?` (the prompts this run's turn took too) |
 | `run.failed` | the above, `usage`, `error`, `code?` (the outcome's code: `cancelled`, `aborted`, `model_stream_stalled`, `turn_limit`, `spend_limit`, `end_user_credit`…), `limit?` (with `spend_limit` or `end_user_credit`: which limit), `reason?`, `bucket?`, `endUser?` (with `end_user_credit`: why, which bucket, whose; see [credit reasons](errors.md#end-user-credit-reasons)), `uncertain?`, `steeredInto?`. A run refused as it came to start in the queue carries them as one stopped mid-way does |
 | `input.requested` | `agentId`, `requestId`, `inputId`, `toolCallId`, `kind`, `expiresAt` |
 | `input.resolved` | `agentId`, `requestId`, `inputId`, `state` |

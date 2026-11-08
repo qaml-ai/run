@@ -7,6 +7,7 @@ import { keyServices } from "./security-services.ts";
 import { runAdmission } from "./admission.ts";
 import { billingRunStop } from "./billing-run-stop.ts";
 import { usageCost } from "./webhook-policy.ts";
+import { BatchRuns } from "./batch-runs.ts";
 import { RunProjection } from "./run-projection.ts";
 import { AgentRunLimits } from "./run-limits.ts";
 import { EndUserCredits, creditError } from "./end-user-credits.ts";
@@ -159,6 +160,8 @@ export async function usageForRequestImpl(this: AgentRuntime,
     ]);
     const children = new Map((await this.delegation.children()).filter(child => child.parentRequestId === id).map(child => [child.callId ?? child.toolCallId, child.id]));
     const projection = new RunProjection(id, children);
+    const runs = new BatchRuns(), batching = conf.config.queue?.mode === "batch", keys = new Map<string, Promise<string>>();
+    const key = (request: string) => { let found = keys.get(request); if (!found) keys.set(request, found = this.batchQueue.runKey(request)); return found; };
     let cursor,
       active: string | undefined,
       inputTokens = 0,
@@ -176,8 +179,11 @@ export async function usageForRequestImpl(this: AgentRuntime,
         BACKGROUND_CONTEXT,
       );
       for (const entry of page.items) {
-        projection.add(entry);
-        if (entry.kind === "camel.prompt")
+        // A batch's follow-ups are its first input's turn (one Pi run): what follows them is that input's.
+        const joined = batching && entry.kind === "camel.prompt" && runs.lead !== undefined
+          && await key(runs.lead) === await key((entry.data as { requestId: string }).requestId);
+        projection.add(entry, joined);
+        if (runs.starts(entry, joined))
           active = (entry.data as { requestId: string }).requestId;
         if (active !== id) continue;
         for (const message of entry.model ?? [])

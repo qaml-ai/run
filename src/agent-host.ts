@@ -1054,6 +1054,8 @@ export function createAgentHost(hostIO: HostIO) {
           emitCompaction({ type: "compaction_end", contextTokens: agent!.contextTokens, reason, tokensBefore: contextTokens(before), keptMessages, summarizedMessages: Math.max(0, held - keptMessages) });
         },
       } });
+      // An agent whose queue batches takes the steers that wait for a boundary all at once there.
+      agent.batchSteers = config.queue?.mode === "batch";
       await journal.attach(() => agent!.journalSession());
       // A run that does not go on here: what Pi settles for it is not history, as the host closed that turn itself, above.
       await requireContextSize();
@@ -1117,6 +1119,7 @@ export function createAgentHost(hostIO: HostIO) {
       if (params.temperature !== undefined) config.temperature = params.temperature;
       if (params.dataCollection !== undefined) config.dataCollection = params.dataCollection;
       if (params.language !== undefined) config.language = params.language;
+      if (params.queue !== undefined) { config.queue = params.queue; agent.batchSteers = params.queue?.mode === "batch"; }
       if (params.tools !== undefined) config.tools = params.tools.map(normalizeTool);
       if (params.tools !== undefined || params.codeMode !== undefined) {
         agent.useExtensions((codemode = codeMode()) ? [codemode] : []);
@@ -1158,7 +1161,8 @@ export function createAgentHost(hostIO: HostIO) {
       await journal.refresh();
       return { messages: journal.total, error: null, taken: true };
     }
-    const promptMessages = method === "prompt" ? userMessages(params) : undefined;
+    // A batch (client-sessions.ts `batchOf`): the prompts that waited behind the last turn, each its own message after the first's.
+    const promptMessages = method === "prompt" ? [...userMessages(params), ...(Array.isArray(params.batch) ? params.batch.flatMap(userMessages) : [])] : undefined;
     busy = true;
     contextMetrics.reset();
     reportContextRange = true;

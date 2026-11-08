@@ -34,6 +34,7 @@ import { type ScheduleToolsHost } from "./agent-schedules.ts";
 import { DurableFileVersions } from "./file-versions.ts";
 import { AgentWebhooks } from "./run-webhooks.ts";
 import { AgentChannels } from "./agent-channels.ts";
+import { BatchQueue } from "./batch-queue.ts";
 import type { WebhookEvent } from "./webhook-policy.ts";
 import { Config, RequestRecord, Env } from "./agent-types.ts";
 import { currentRunImpl, recordsImpl, markBeganImpl, observeImpl, requestForInputsImpl, runningRequestImpl, projectMessageImpl, reconcileSteeringImpl, steeringOwnerImpl, onViewImpl, onHumanImpl, trackImpl, settleImpl, submitImpl, answerHumanInputsImpl, closeHumanInputsImpl, dueHumanInputsImpl } from "./agent-turn-loop.ts";
@@ -254,6 +255,12 @@ export class AgentRuntime extends AgentContext {
 
   admission: Promise<unknown> = Promise.resolve();
 
+  /** Prompts held for a batch, for an agent whose queue batches (batch-queue.ts). */
+  batchQueue = new BatchQueue(this);
+
+  /** Whether the agent's queue batches, for Pi's settings (steeringMode and followUpMode "all"), which read it synchronously; set as its configuration is read. */
+  batching = false;
+
   eventsProcessed: Promise<void> = Promise.resolve();
   records() {
     return recordsImpl.call(this);
@@ -303,8 +310,8 @@ export class AgentRuntime extends AgentContext {
     return fileRequestIdImpl.call(this, conversationId);
   }
 
-  projectMessage(id: string, message: Message, ended: boolean) {
-    return projectMessageImpl.call(this, id, message, ended);
+  projectMessage(id: string, message: Message, ended: boolean, member?: string) {
+    return projectMessageImpl.call(this, id, message, ended, member);
   }
 
   reconcileSteering(record: RequestRecord, inputs: readonly number[]) {

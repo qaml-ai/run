@@ -18,9 +18,10 @@ export class RunProjection {
   private children: ReadonlyMap<string, string>;
   readonly requestId: string;
   constructor(requestId: string, children: ReadonlyMap<string, string> = new Map()) { this.requestId = requestId; this.children = children; }
-  add(entry: Pick<EntryRecord, 'kind' | 'data' | 'model'>) {
+  /** `joined`: a prompt Pi placed in the open turn's run (batch-runs.ts), which leaves that turn's. */
+  add(entry: Pick<EntryRecord, 'kind' | 'data' | 'model'>, joined = false) {
     if (entry.kind === 'camel.context' || entry.kind === 'pi.reset') return;
-    if (entry.kind === 'camel.prompt') this.active = (entry.data as { requestId?: string })?.requestId;
+    if (entry.kind === 'camel.prompt' && !joined) this.active = (entry.data as { requestId?: string })?.requestId;
     for (const message of entry.model ?? []) {
       if (message.role === 'system') continue;
       const index = this.index++;

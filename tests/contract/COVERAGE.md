@@ -254,6 +254,7 @@ original suite.
 | `pi-durable-accounting.test.ts` | 2 / 9 |
 | `pi-durable-context-guard.test.ts` | 3 / 7 |
 | `prompt-options.test.ts` | 5 / 5 |
+| `queue-batch.test.ts` | 6 / 8 |
 | `reasoning.test.ts` | 2 / 3 |
 | `request-wait.test.ts` | 2 / 2 |
 | `run-limits.test.ts` | 5 / 5 |

@@ -1,6 +1,7 @@
 import { BadRequest, object } from "./validation.ts";
 
 import { languageInput } from "../../../src/language.ts";
+import { queueInput, type QueueSetting } from "../../../shared/queue-mode.ts";
 import { dataCollectionInput, maxOutputTokensInput, modelHeadersInput, runLimitsInput, temperatureInput, type RunLimits } from "./model-policy.ts";
 import { delegateInput, delegateSettings, type DelegateSettings } from "./multi-agent-policy.ts";
 import { toPiMessages } from "./history-formats.ts";
@@ -33,6 +34,8 @@ export interface AgentConfiguration {
   language?: string | null;
   modelHeaders?: Record<string, string> | null;
   runLimits?: RunLimits | null;
+  /** What it does with prompts that wait while a turn runs (shared/queue-mode.ts); null or absent: one turn each. */
+  queue?: QueueSetting | null;
   builtins?: string[];
   webSearch?: { providers: string[] };
   delegate?: DelegateSettings;
@@ -96,7 +99,7 @@ export function configuration(input: unknown, defaultModel: string, operation: "
   rejectWorkflow(input);
   let fields: Record<string, unknown>;
   try {
-    fields = object(input, ["model", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "name", "type", "thinkingLevel", "mcp", "ttlSeconds", "idleTtlSeconds", "builtins", "webSearch", "delegate", "decide", "mounts", "maxOutputTokens", "temperature", "dataCollection", "language", "modelHeaders", "runLimits", "initialMessages", "importMessages", "definition", "subject", "context", "keyScope", "spendLimit", "bucket", "humanInput", "subagents", "workspaceId", "remount", "prompt", "mcpServers", "openApi", "definitionRevision", "definitionOverrides", "computer"]);
+    fields = object(input, ["model", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "name", "type", "thinkingLevel", "mcp", "ttlSeconds", "idleTtlSeconds", "builtins", "webSearch", "delegate", "decide", "mounts", "maxOutputTokens", "temperature", "dataCollection", "language", "modelHeaders", "runLimits", "queue", "initialMessages", "importMessages", "definition", "subject", "context", "keyScope", "spendLimit", "bucket", "humanInput", "subagents", "workspaceId", "remount", "prompt", "mcpServers", "openApi", "definitionRevision", "definitionOverrides", "computer"]);
   } catch (error) {
     if (error instanceof BadRequest && error.message.startsWith("Unsupported field: "))
       throw new BadRequest(`Unknown agent field: ${error.message.slice("Unsupported field: ".length).split(", ")[0]}`);
@@ -137,6 +140,7 @@ export function configuration(input: unknown, defaultModel: string, operation: "
   if (fields.modelHeaders !== undefined) config.modelHeaders = modelHeadersInput(fields.modelHeaders);
   if (fields.runLimits !== undefined) config.runLimits = runLimitsInput(fields.runLimits);
   if (fields.language !== undefined) { try { config.language = languageInput(fields.language); } catch (error) { throw new ApiError(400, (error as Error).message); } }
+  if (fields.queue !== undefined) { try { config.queue = queueInput(fields.queue); } catch (error) { throw new ApiError(400, (error as Error).message); } }
   if (fields.builtins !== undefined) {
     if (!Array.isArray(fields.builtins) || fields.builtins.length > BUILTINS.length || new Set(fields.builtins).size !== fields.builtins.length || fields.builtins.some(x => typeof x !== "string" || !BUILTINS.includes(x))) throw new BadRequest("Unsupported or repeated builtin");
     config.builtins = fields.builtins as string[];

@@ -180,7 +180,8 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
         case "create": {
           const madeAt = sim.env.elapsed;
           void client(op, op.node, "/v1/agents", { name: `agent-${op.agent}`, ...(op.ttlSeconds ? { ttlSeconds: op.ttlSeconds } : {}), ...(plan.endUsers ? { subject: END_USER } : {}),
-            ...(op.spawner ? { builtins: ["agents"], delegate: { instructions: true }, mcpServers: [{ name: "app", url: "http://tools.sim/mcp", auth: { type: "runtime" } }] } : {}) }, { "Idempotency-Key": `agent-${op.agent}` })
+            ...(op.spawner ? { builtins: ["agents"], delegate: { instructions: true }, mcpServers: [{ name: "app", url: "http://tools.sim/mcp", auth: { type: "runtime" } }] } : {}),
+            ...(op.batch ? { queue: { mode: "batch", ...op.batch } } : {}) }, { "Idempotency-Key": `agent-${op.agent}` })
             .then(answer => {
               if (answer?.status !== 201 && answer?.status !== 200) return;
               agents.set(op.agent, answer.json.id);
@@ -400,6 +401,8 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
         const messages: any[] = (await sim.call(live()[0], `/v1/agents/${parent}/history`)).json?.messages ?? [];
         const seen = new Map<string, number>();
         for (const message of messages) if (message.role === "user" && message.requestId) seen.set(message.requestId, (seen.get(message.requestId) ?? 0) + 1);
+        // A notification can carry other children's endings (`landNotice` batch): each counts as landed by that message.
+        for (const message of messages) for (const carried of (message.role === "user" && Array.isArray(message.metadata?.batch) ? message.metadata.batch : [])) if (carried?.requestId) seen.set(carried.requestId, (seen.get(carried.requestId) ?? 0) + 1);
         for (const [request, times] of seen) if (times > 1) failures.push(`I21: ${parent}'s message of request ${request} is in its history ${times} times`);
         const { rows } = await sim.db.query("select request_id from agent_children where parent = $1 and landed_by = 'notice'", [parent]);
         for (const row of rows) if (seen.get(`child_${row.request_id}`) !== 1) failures.push(`I21: ${parent}'s notification of ${row.request_id} landed, but is ${seen.get(`child_${row.request_id}`) ?? 0} times in its history`);
@@ -407,19 +410,38 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
     }
     // Every entry commits in the order of its ID (ordinals.ts): the journal and Pi write through one Session.
     for (const log of sim.env.logs) if (log.line.includes('"history_ordinals_unplaced"') && log.line.includes('"reason":"late"')) failures.push(`an entry committed after one with a later ID: ${log.line}`);
-    // I15: what a run that succeeded said is kept: its prompt, and its answer after it, are in its agent's history.
+    // I15: what a run that succeeded said is kept: its prompt, and its answer after it, are in its agent's history. A
+    // prompt that ran in another's turn (batchedInto, I24) succeeded as that turn did, which answers its last prompt.
     const histories = new Map<number, string[]>();
+    const runOfId = new Map([...runs].map(([run, { id }]) => [id, run]));
     for (const [run, record] of records) {
-      if (record.outcome?.error !== undefined || record.outcome?.result?.error !== undefined || record.outcome?.result?.stopped) continue;
+      const lead = record.batchedInto ? records.get(runOfId.get(record.batchedInto) ?? -1) : record;
+      if (!lead || lead.outcome?.error !== undefined || lead.outcome?.result?.error !== undefined || lead.outcome?.result?.stopped) continue;
       const agent = runs.get(run)!.agent;
       if (!histories.has(agent)) {
         const messages: any[] = (await sim.call(live()[0], `/v1/agents/${agents.get(agent)}/history`)).json?.messages ?? [];
         histories.set(agent, messages.map(message => `${message.role}:${JSON.stringify(message.content)}`));
       }
       const said = histories.get(agent)!;
+      const turn = [runOfId.get(lead.id), ...(lead.batch ?? []).map((id: string) => runOfId.get(id))].filter(value => value !== undefined);
       const asked = said.findIndex(line => line.startsWith("user:") && RUN.exec(line)?.[1] === String(run));
       if (asked < 0) failures.push(`I15: run-${run} succeeded, but its prompt is not in agent-${agent}'s history`);
-      else if (!said.slice(asked + 1).some(line => line.startsWith("assistant:") && line.includes(`done ${run}`))) failures.push(`I15: run-${run} succeeded, but its answer is not in agent-${agent}'s history`);
+      else if (!said.slice(asked + 1).some(line => line.startsWith("assistant:") && turn.some(other => line.includes(`done ${other}`)))) failures.push(`I15: run-${run} succeeded, but its answer is not in agent-${agent}'s history`);
+    }
+    // I24: on an agent whose queue batches, a prompt is in its history once at most, and a batch's prompts are there
+    // together, in the order they arrived (its lead's first): each merged request ran once, in its lead's turn.
+    for (const [index, agentId] of agents) {
+      if (!plan.steps.some(step => step.op.op === "create" && step.op.agent === index && step.op.batch) || goneAgents.has(index)) continue;
+      const messages: any[] = (await sim.call(live()[0], `/v1/agents/${agentId}/history`)).json?.messages ?? [];
+      const users = messages.filter(message => message.role === "user" && typeof message.requestId === "string").map(message => message.requestId as string);
+      for (const id of new Set(users)) if (users.filter(other => other === id).length > 1) failures.push(`I24: agent-${index}'s prompt ${id} is in its history ${users.filter(other => other === id).length} times`);
+      for (const record of records.values()) {
+        if (!record.batch?.length || runs.get(runOfId.get(record.id) ?? -1)?.agent !== index) continue;
+        const at = users.indexOf(record.id);
+        if (at < 0) continue;
+        const together = users.slice(at, at + 1 + record.batch.length);
+        if (JSON.stringify(together) !== JSON.stringify([record.id, ...record.batch])) failures.push(`I24: agent-${index}'s batch ${[record.id, ...record.batch].join(", ")} is in its history as ${together.join(", ")}`);
+      }
     }
     // The outcome stays what it was.
     await sim.advance(5_000);
@@ -530,8 +552,12 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
       // A run that failed may never have entered its agent's history (its prompt not stored when the agent was given up
       // after a fault, say): the fork must hold it exactly when its source does.
       const source = await runsIn(agents.get(agent)!);
-      for (const [run, record] of records) {
+      const runOfRequest = new Map([...runs].map(([run, { id: request }]) => [request, run]));
+      for (const [run, taken] of records) {
         if (runs.get(run)!.agent !== agent) continue;
+        // A prompt that ran in another's turn (batchedInto, I24) completed as the turn took it: it is settled history,
+        // which a fork holds, once that turn ends.
+        const record = taken.batchedInto ? records.get(runOfRequest.get(taken.batchedInto) ?? -1) ?? taken : taken;
         // endedAt is the owner node's clock: allow for the most any node's is off.
         const endedAt = Number(record.endedAt) - sim.env.start + clockSlack;
         const inHistory = (record.outcome?.error === undefined && record.outcome?.result?.error === undefined) || source.has(run);

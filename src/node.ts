@@ -918,7 +918,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       const { revision, spec } = await definitions.read(tenant, id);
       const config = sessionConfig({ model: spec.model, systemPrompt: spec.systemPrompt, thinkingLevel: spec.thinkingLevel }, spec.model === undefined ? await defaultModelFor(tenant) : model, systemPrompt, tenants.modelEndpoints(tenant), await modelProviders.resolvable(tenant));
       // A definition that names no model leaves its agents' as they are: the runtime's default is for agents being made.
-      return { id, revision, ...(spec.description ? { description: spec.description } : {}), config: { ...(spec.model !== undefined ? { model: await withOpenRouterDetails(config.model) } : {}), systemPrompt: config.systemPrompt, thinkingLevel: config.thinkingLevel ?? "off", fileTools: spec.fileTools !== false, codeMode: spec.codeMode !== false, runLimits: spec.runLimits ?? null, maxOutputTokens: spec.maxOutputTokens ?? null, temperature: spec.temperature ?? null, dataCollection: spec.dataCollection ?? null, language: spec.language ?? null }, sources: sources(spec) };
+      return { id, revision, ...(spec.description ? { description: spec.description } : {}), config: { ...(spec.model !== undefined ? { model: await withOpenRouterDetails(config.model) } : {}), systemPrompt: config.systemPrompt, thinkingLevel: config.thinkingLevel ?? "off", fileTools: spec.fileTools !== false, codeMode: spec.codeMode !== false, runLimits: spec.runLimits ?? null, maxOutputTokens: spec.maxOutputTokens ?? null, temperature: spec.temperature ?? null, dataCollection: spec.dataCollection ?? null, language: spec.language ?? null, queue: spec.queue ?? null }, sources: sources(spec) };
     },
     sources: toolSources,
     inputs,

@@ -18,6 +18,7 @@ import { hostExecutionRequest, waitHostExecution } from "./host-execution.ts";
 import { type RuntimeNotice, type NoticeDelivery } from "./delegation-notifications.ts";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { type RuntimeLimit } from "./run-limits.ts";
+
 import { enqueueTerminalEvents } from "./event-log.ts";
 import { fileOutputs } from "./file-output.ts";
 import { inputWebhook } from "./run-webhooks.ts";
@@ -168,14 +169,16 @@ export async function runningRequestImpl(this: AgentRuntime): Promise<{ owner: s
 export async function projectMessageImpl(this: AgentRuntime,
   id: string,
   message: Message,
-  ended: boolean) {
+  ended: boolean,
+  member?: string) {
     if (message.role === "system") return;
     if (await isUnbilledLimitMessage(this.ctx.storage, message)) return;
     if (ended) this.historyIndex.changed();
     message = attachmentMessage(message);
     if (message.role === "user") {
-      const record = await this.ctx.storage.get<RequestRecord>(reqKey(id));
-      if (ended)
+      // A batch's other prompts (`member`) are messages of their own in the lead's turn, which opened with the lead's.
+      const record = await this.ctx.storage.get<RequestRecord>(reqKey(member ?? id));
+      if (ended && !member)
         await this.emit({
           type: "event",
           requestId: id,
@@ -183,7 +186,7 @@ export async function projectMessageImpl(this: AgentRuntime,
         });
       message = {
         ...message,
-        requestId: id,
+        requestId: member ?? id,
         ...(record?.metadata ? { metadata: record.metadata } : {}),
         ...(record?.params?.from ? { from: record.params.from } : {}),
       } as Message;
@@ -258,7 +261,16 @@ export async function onViewImpl(this: AgentRuntime,
         const record = await this.ctx.storage.get<RequestRecord>(reqKey(data.requestId));
         if (record) await this.steeringOwner(record, data.logicalOwner);
       }
-      if (entry.kind === "camel.prompt") {
+      // A follow-up Pi placed with the run's first input, on an agent whose queue batches (batch-queue.ts): part of that
+      // input's turn, whose stream carries its message. Its request ends with the run, as Pi settles it.
+      // Read from the transcript (Pi's run that placed it), so a restart mid-batch reads it the same.
+      const batch = entry.kind === "camel.prompt" ? await this.batchQueue.batchOf((entry.data as { requestId: string }).requestId) : [];
+      const lead = batch[0], member = lead !== undefined && lead !== (entry.data as { requestId: string }).requestId ? (entry.data as { requestId: string }).requestId : undefined;
+      if (member && lead) {
+        const record = await this.ctx.storage.get<RequestRecord>(reqKey(member));
+        if (record && record.state !== "completed" && !record.batchedInto) await this.ctx.storage.put(reqKey(member), { ...record, batchedInto: lead });
+        await this.emit({ type: "event", requestId: member, event: { type: "batch_taken", batchedInto: lead } });
+      } else if (entry.kind === "camel.prompt") {
         const original = (entry.data as { requestId: string }).requestId;
         this.active =
           (await this.ctx.storage.get<string>(`resume-for:${original}`)) ??
@@ -302,10 +314,13 @@ export async function onViewImpl(this: AgentRuntime,
       }
       if (this.active)
         for (const message of entry.model ?? [])
-          await this.projectMessage(this.active, message, true);
+          await this.projectMessage(this.active, message, true, member);
       this.lastEntry = Number(entry.id);
     }
     const id = await this.requestForInputs(live?.run?.inputs ?? []);
+    // No follow-ups waiting in Pi's inbox: prompts held for a batch can go now.
+    const inbox = view.docs["pi.inbox"] as { items?: { mode: string }[] } | undefined;
+    if (!inbox?.items?.some(item => item.mode === "followUp") && (await this.ctx.storage.list({ prefix: "batch-hold:", limit: 1 })).size) this.batchQueue.kick();
     this.partial = (live?.generation?.message as AssistantMessage) ?? null;
     if (id) {
       this.active = id;
@@ -469,6 +484,8 @@ export async function settleImpl(this: AgentRuntime,
       await this.flushBilling(true);
       return record;
     }
+    // Held for a batch (batch-queue.ts): Pi has nothing of it to wait on until a release gives it.
+    if (record.batchHeld) return this.batchQueue.settleHeld(record);
     if (!record.accepted) return record;
     if (record.method === "execute") {
       const signal = waitMs ? AbortSignal.timeout(waitMs) : undefined;
@@ -612,6 +629,15 @@ export async function settleImpl(this: AgentRuntime,
         ...(usage.toolCalls?.length ? { toolCalls: usage.toolCalls } : {}),
         ...(usage.toolErrors?.length ? { toolErrors: usage.toolErrors } : {}),
       });
+      // A prompt Pi placed with others on an agent whose queue batches (batch-queue.ts): Pi settled it with the turn's
+      // answer. The turn's first input leads it and lists the others; each other carries the answer, names the first,
+      // and has none of the turn's usage, charged once on the first.
+      const batch = record.method === "prompt" ? await this.batchQueue.batchOf(record.piId ?? id) : [];
+      const batchedInto = batch.length && batch[0] !== id ? batch[0] : undefined;
+      if (batchedInto && "result" in outcome && outcome.result) {
+        const { usage: _usage, toolCalls: _calls, toolErrors: _errors, files: _files, presented: _presented, ...answer } = outcome.result as Record<string, unknown>;
+        outcome.result = { ...answer, batchedInto } as never;
+      }
       let changed = false;
       const terminal = await this.ctx.storage.transaction(async (tx) => {
         const latest = await tx.get<RequestRecord>(reqKey(id));
@@ -623,6 +649,7 @@ export async function settleImpl(this: AgentRuntime,
           state: "completed",
           endedAt: await tx.get<number>(`turn-ended:${id}`) ?? Date.now(),
           outcome,
+          ...(batchedInto ? { batchedInto } : batch.length ? { batch: batch.slice(1) } : {}),
           status:
             !limit &&
             runCompleted &&
@@ -664,9 +691,11 @@ export async function settleImpl(this: AgentRuntime,
       });
       // Receipt and terminal state commit together. A lost PG acknowledgement
       // only replays this immutable receipt; money remains one PG transaction.
-      if (changed && stored) await recordAgentActivity(this.env, stored.tenantId, stored.id, terminal);
+      // A batch's follow-up is its first input's turn, counted once there.
+      if (changed && stored && !batchedInto) await recordAgentActivity(this.env, stored.tenantId, stored.id, terminal);
       await this.flushBilling();
-      if (changed) {
+      if (changed && batchedInto) await this.flushTerminalEvents();
+      if (changed && !batchedInto) {
         const conf = await this.ctx.storage.get<Config>("configuration");
         if (conf) await journeyRunEnded(this.env, conf.tenantId, { completed: terminal.status === 'completed', at: terminal.endedAt });
         metric(

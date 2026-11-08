@@ -36,6 +36,12 @@ export type RequestRecord = {
   steeredInto?: string;
   /** Accepted while its logical turn was live, which may span native Pi runs. */
   steerCommitted?: true;
+  /** Held for the next turn of an agent whose queue batches (batch-queue.ts): its hold's key, until a release gives it to Pi. */
+  batchHeld?: string;
+  /** A held prompt that ran in another's turn, with the prompts waiting beside it: that prompt's request. */
+  batchedInto?: string;
+  /** A held prompt whose turn took the prompts after it too (each batchedInto it), in order. */
+  batch?: string[];
   metadata?: unknown;
   actor?: string;
   usageBaseline?: Record<string, number>;

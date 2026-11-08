@@ -3,7 +3,8 @@ import type { Db } from "./db.ts";
 import type { RunLimits, ToolDefinition } from "./protocol.ts";
 import type { RequestRecord } from "../shared/client-protocol.ts";
 import { errorText } from "./protocol.ts";
-import { configurationUpdate, modelSettingsRefusal, resolveModel, runLimitsInput, type CustomProviders } from "./session-config.ts";
+import { configurationUpdate, modelSettingsRefusal, queueSettingInput, resolveModel, runLimitsInput, type CustomProviders } from "./session-config.ts";
+import type { QueueSetting } from "../shared/queue-mode.ts";
 import { HttpError } from "./http.ts";
 import { jsonWithinLimit } from "./limits.ts";
 import type { Accounts } from "./accounts.ts";
@@ -40,6 +41,8 @@ export interface DefinitionSpec {
   limits?: { ttlSeconds?: number | null; idleTtlSeconds?: number | null };
   /** The most one run of its agents may take (model responses, seconds), within the runtime's maximums. */
   runLimits?: RunLimits;
+  /** What its agents do with prompts that wait while a turn runs: `{mode: "batch", windowMs?}` runs them as one turn (shared/queue-mode.ts). */
+  queue?: QueueSetting;
   mounts?: unknown[];
   /** Remote MCP servers whose tools the runtime calls; credentials sealed. */
   mcpServers?: McpServerSpec[];
@@ -78,9 +81,9 @@ export interface ApplyResult { agent: string; requestId: string; status: "update
 /** Agent parameters from a definition, as `createAgent` takes them. */
 export type AgentParams = Record<string, unknown> & { tools?: ToolDefinition[] };
 
-const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "limits", "runLimits", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "decide", "applyOnUpdate"] as const;
+const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "limits", "runLimits", "queue", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "decide", "applyOnUpdate"] as const;
 /** Configuration an agent made from a definition may set as its own, which applying the definition leaves. */
-export const OVERRIDES = ["model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "runLimits"] as const;
+export const OVERRIDES = ["model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "runLimits", "queue"] as const;
 const PROVISION_FIELDS = ["name", "type", "ttlSeconds", "idleTtlSeconds", "mounts", "tools", "initialMessages", "systemPromptAppend"];
 /** Definitions a self-serve tenant may have; a tenant of the tenants file has its own limit (`maxDefinitions` option). */
 export const MAX_DEFINITIONS = 200;
@@ -263,7 +266,7 @@ export class Definitions {
    * The parameters to create an agent from `params.definition`: the definition's, with
    * the per-agent fields given alongside it (name, type, ttlSeconds, mounts, its attached
    * server's tools, initialMessages). `model`, `thinkingLevel`, `maxOutputTokens`, `temperature`, `language`, `fileTools`, `codeMode`
-   * and `runLimits` given here are the agent's own (`overrides`): applying the definition later leaves them. `systemPromptAppend` follows
+   * `runLimits` and `queue` given here are the agent's own (`overrides`): applying the definition later leaves them. `systemPromptAppend` follows
    * the definition's prompt, whatever revision it takes. `provision` identifies the request for
    * idempotency, whatever the definition's revision.
    */
@@ -334,6 +337,7 @@ export class Definitions {
     if (spec.decide !== undefined) decideInput(spec.decide);
     if (spec.applyOnUpdate === false) delete spec.applyOnUpdate;
     if (spec.runLimits !== undefined && !runLimitsInput(spec.runLimits)) delete spec.runLimits;
+    if (spec.queue !== undefined) { const queue = queueSettingInput(spec.queue); if (queue) spec.queue = queue; else delete spec.queue; }
     if (spec.mounts !== undefined && (!Array.isArray(spec.mounts) || spec.mounts.length > 16)) throw new HttpError(400, "mounts must be an array of at most 16");
     if (spec.builtins !== undefined) builtinsInput(spec.builtins);
     if (spec.webSearch !== undefined) {

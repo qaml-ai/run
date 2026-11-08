@@ -12,6 +12,7 @@ with the [Quickstart](../quickstart.md) and [Concepts](../concepts.md) instead.
 - [Self-hosting](self-host.md): the image, Docker Compose, storage, networking
 - [Persistence](persistence.md): transcripts, history chunks, journals, retries, idle unload, limits per node and tenant
 - [Backups and restore](backup-restore.md): what is kept and for how long, the restore drill, restoring production
+- [Batching queued prompts](batching.md): how an agent whose queue batches runs a burst as one turn, on Node and Workers, exactly once
 - [Journal checkpoint reclaim](journal-reclaim.md): size and remove superseded context copies in idle sessions
 - [Pi durable sessions](pi-durable.md): the execution engine, importing legacy sessions, storage, recovery and billing
 - [Vendored Pi](pi-vendoring.md): Pi built from a commit into `vendor/pi/`; bumping it; versions that cannot be rolled back

@@ -211,6 +211,8 @@ export const WebhookEvents = {
     replyIndex: z.number().optional().openapi({ description: "The final assistant message's index in the agent's history" }),
     messageCount: z.number().optional().openapi({ description: "Messages in the agent's history after it" }),
     steeredInto: z.string().optional().openapi({ description: "A prompt sent with whileRunning: steer that a running turn took: that turn's request" }),
+    batchedInto: z.string().optional().openapi({ description: "A prompt that ran in another prompt's turn (its agent's queue batches): that turn's request, whose own event has the usage" }),
+    batch: z.array(z.string()).optional().openapi({ description: "The prompts this run's turn also took (each batchedInto it), in arrival order" }),
   }), "A run ended without an error"),
   "run.failed": envelope("run.failed", z.object({
     ...runFacts, usage: runUsage, servedModel, error: z.string(), code: z.string().optional().openapi({ description: "The failure's name, where it has one: cancelled (a stop cancelled it before it began), aborted, model_stream_stalled, turn_limit, spend_limit (a spend limit or the account's credit: limit says which), end_user_credit (the end user's credit: reason, bucket and endUser say why, which and whose), output_missing... The same whether the limit refused the run as it started or stopped it mid-way. Branch on code, never on error, whose words may change" }),
@@ -519,6 +521,12 @@ const InlineMcpServerInput = z.looseObject({
 const workspaceId = z.string().nullable().optional().openapi({ description: "Workspace for spend attribution. New agents inherit their definition workspace when omitted. null leaves them unassigned. Later moves keep earlier usage in its original workspace." });
 export const Workspace = z.object({ id: z.string(), name: z.string(), archived: z.boolean(), createdAt: z.number(), updatedAt: z.number() }).openapi("Workspace");
 
+/** An agent's `queue` (shared/queue-mode.ts). */
+export const QueueSettingInput = z.strictObject({
+  mode: z.enum(["each", "batch"]),
+  windowMs: z.number().int().min(0).max(2_000).optional().openapi({ description: "With batch: how long a prompt that reaches an idle agent waits for others to join its turn (ms, at most 2000). Default 0" }),
+}).openapi("QueueSetting", { description: "What it does with prompts that arrive while a turn runs. {mode: \"each\"} (the default): each runs as a turn of its own, in order. {mode: \"batch\"}: the prompts waiting when a turn ends run together as the next turn, each its own user message in arrival order, so a burst of events costs one turn instead of one each. Each merged prompt's request ends with that turn, with its answer (reply...) and batchedInto naming the turn's first request, which has the usage. A prompt joins only with prompts like it: not a sub-agent's notification or message nor a delegate call or other prompt of the runtime's, none with an output schema, a spendLimit or runLimits of its own, and all for the same actor and bucket; the first that does not fit runs after the batch. windowMs (0 to 2000): a prompt reaching an idle agent waits this long first, so a burst sent at once merges too. Steers waiting for a boundary are taken all at once there. A sub-agent never batches. See Batching in the concepts guide" });
+
 export const AgentInput = z.object({
   workspaceId,
   mcp: z.object({ tools: z.array(z.unknown()) }).optional().openapi({ description: "The application's attached MCP server: its tools/list, whose tools the agent calls back through the application's connection. The SDKs send it" }),
@@ -555,6 +563,7 @@ export const AgentInput = z.object({
   spendLimit: SpendLimitInput.optional(),
   bucket: z.string().optional().openapi({ description: "With end-user credits on (/v1/end-user-settings): the bucket of its subject's credit its runs spend from (its daily allowance first, then their balance). Default \"default\"" }),
   runLimits: RunLimits.optional().openapi({ description: "The most one run may take (model responses, seconds); an agent from a definition gets the definition's unless this is given" }),
+  queue: QueueSettingInput.nullable().optional().openapi({ description: "What it does with prompts that arrive while a turn runs (QueueSetting): {mode: \"batch\"} merges them into one turn. On an upsert of an existing agent, leaving it out keeps the one it has; an agent from a definition gets the definition's unless this is given" }),
   modelHeaders: ModelHeaders.optional(),
   prompt: PromptInput.optional().openapi({ description: "A first prompt, as POST /v1/agents/{id}/prompt takes it, sent once the agent is made: it runs as soon as the agent has started, so a new conversation needs one call. Give it a requestId: a retry of the create (same Idempotency-Key) with the same requestId makes no second agent and sends no second prompt" }),
 }).strict().openapi("AgentInput");
@@ -604,6 +613,8 @@ export const RequestRecord = z.object({
   handoffs: z.array(z.object({ reason: z.enum(["retire", "drain", "memory"]), at: z.number() })).optional().openapi({ description: "Times a node leaving the cluster (retire: a newer deploy replaced it; drain: it was stopped; memory: sustained memory pressure) handed this run's turn off, and the next owner went on with it where it was. Not resumes" }),
   steeredInto: z.string().optional().openapi({ description: "A prompt with whileRunning: steer that a running turn took: that turn's request. This request completes as the turn takes the message; the turn's request has the turn's outcome (reply, output...)" }),
   steer: z.enum(["accepted", "queued"]).optional().openapi({ description: "A prompt with whileRunning: steer, as it was accepted: accepted, the running turn reads it after its current step; queued, no turn could take it, so it runs as a turn of its own" }),
+  batchedInto: z.string().optional().openapi({ description: "A prompt to an agent whose queue batches (QueueSetting) that ran in another prompt's turn, with the prompts waiting beside it: that prompt's request, whose outcome is the turn's (reply, usage...). This request ends with the turn, with the turn's answer (reply...) and batchedInto in its result, without the turn's usage; a batch_taken event marks its message going in" }),
+  batch: z.array(z.string()).optional().openapi({ description: "A prompt whose turn also took the prompts waiting behind it (each batchedInto this one): their requests, in arrival order" }),
   abortedAt: z.number().optional().openapi({ description: "When the agent was stopped while this run was going: it ends as aborted, and is never resumed elsewhere" }),
   outcome: Outcome.optional().openapi({ description: "result.code names a run's failure where it has a name: cancelled (a stop cancelled it before it began), aborted (stopped while it ran), model_stream_stalled (its model stopped answering, past every retry), turn_limit, context_too_large (its stored Pi context range exceeds the runtime byte limit), spend_limit, agent_loop_limit (a sub-agent's notification landed without a turn: its chain reached its wake cap), output_missing, model_key_missing, model_key_invalid. result.stopped is input_required when the turn waits on human input, listed in result.inputs. A run's result also has reply, replyIndex, files, toolErrors and toolCalls: every tool call it made (the first 100), as {tool, toolCallId?, innerCallId?, ok, code?, agentId?} (agentId: the child a delegate or spawn_agent call ran), without arguments or results. result.output is a structured answer, for a prompt sent with output. result.usage.subagentCostUsd is what its children spent, result.usage.imageCostUsd what its generate_image calls spent, and result.usage.decisionCostUsd what its decide calls spent. result.servedModel is the model that made its last response (provider/model-id); result.modelError, when a model call failed it, says how: {errorClass, providerStatus?, retryable, model} (ModelFailure)" }),
   error: z.string().optional().openapi({ description: "An ended request's error, from its outcome: the runtime's (outcome.error) or the model's (outcome.result.error). Absent when it succeeded" }),
@@ -783,6 +794,7 @@ export const AgentDetail = AgentSummary.extend({
   temperature: Temperature.nullable().openapi({ description: "Its model's sampling temperature, as set; null: the provider's default" }),
   dataCollection: DataCollection.nullable().openapi({ description: "Its OpenRouter calls' data policy, as set; null: OpenRouter's default" }),
   language: Language.nullable().openapi({ description: "Its primary language, its own or its definition's; null: none" }),
+  queue: QueueSettingInput.nullable().openapi({ description: "What it does with prompts that arrive while a turn runs (QueueSetting), its own or its definition's; null: one turn each" }),
   forkedFrom: ForkedFrom.optional().openapi({ description: "For a fork (POST /v1/agents/{id}/fork): the agent and message it was forked from" }),
   ...Activity.shape,
   cursor: z.number(),
@@ -1054,6 +1066,7 @@ const definitionFields = {
   codeMode: z.boolean().openapi({ description: "false: its agents get no code mode and call every tool directly (AgentInput.codeMode)" }),
   limits: DefinitionLimits,
   runLimits: RunLimits,
+  queue: QueueSettingInput.openapi({ description: "What its agents do with prompts that arrive while a turn runs (QueueSetting); an agent given its own keeps it when the definition is applied" }),
   mounts: z.array(MountInput).max(16).openapi({ description: "Volumes for each agent's file tools, beside its own workspace at /workspace unless they include {workspace: false}" }),
   builtins: z.array(Builtin).max(12).openapi({ description: "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); x_search searches X posts through Grok with handle and date filters, using the tenant's xAI key or the platform's and charging its reported total cost; schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer; generate_image makes or edits an image (OpenAI's gpt-image-2.5-flare on the tenant's OpenAI key, else the platform's, billed per token) and saves it to the workspace; decide answers typed questions (noul, choice, score) about a state with a decision model (TypeSafe's Jev through OpenRouter), one state or a batch of up to 100, from code as tools.decide" }),
   decide: z.boolean().openapi({ description: "false: its agents get no decide tool, which every agent has by default (except one with no code mode and no other tools); true: they get it even then" }),
@@ -1114,6 +1127,7 @@ export const ConfigureInput = z.object({
   spendLimit: SpendLimitInput.nullable().optional().openapi({ description: "A new budget from now, applied at once, ahead of queued runs; null removes it" }),
   bucket: z.string().nullable().optional().openapi({ description: "The bucket of its subject's credit its runs spend from, applied at once; null: \"default\"" }),
   runLimits: RunLimits.nullable().optional().openapi({ description: "Replaces the agent's run limits from its next run; null removes them (the runtime's apply). Set here on an agent from a definition, they stay when the definition is applied" }),
+  queue: QueueSettingInput.nullable().optional().openapi({ description: "Replaces what it does with prompts that arrive while a turn runs (QueueSetting), from the next turn's start; null: one turn each. Set here on an agent from a definition, it stays when the definition is applied" }),
   modelHeaders: ModelHeaders.nullable().optional().openapi({ description: "Replaces the agent's model headers; null or {} removes them" }),
   builtins: z.array(Builtin).max(12).optional().openapi({ description: "Replaces the agent's builtins; [] removes them. Not for an agent made from a definition, whose builtins are its definition's" }),
   decide: z.boolean().nullable().optional().openapi({ description: "false: no decide tool; true: the tool even with no code mode and no other tools; null: back to the default. Not for an agent made from a definition" }),

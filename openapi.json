@@ -219,6 +219,17 @@
               "steeredInto": {
                 "type": "string",
                 "description": "A prompt sent with whileRunning: steer that a running turn took: that turn's request"
+              },
+              "batchedInto": {
+                "type": "string",
+                "description": "A prompt that ran in another prompt's turn (its agent's queue batches): that turn's request, whose own event has the usage"
+              },
+              "batch": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The prompts this run's turn also took (each batchedInto it), in arrival order"
               }
             },
             "required": [
@@ -3831,6 +3842,17 @@
             ],
             "description": "A prompt with whileRunning: steer, as it was accepted: accepted, the running turn reads it after its current step; queued, no turn could take it, so it runs as a turn of its own"
           },
+          "batchedInto": {
+            "type": "string",
+            "description": "A prompt to an agent whose queue batches (QueueSetting) that ran in another prompt's turn, with the prompts waiting beside it: that prompt's request, whose outcome is the turn's (reply, usage...). This request ends with the turn, with the turn's answer (reply...) and batchedInto in its result, without the turn's usage; a batch_taken event marks its message going in"
+          },
+          "batch": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "A prompt whose turn also took the prompts waiting behind it (each batchedInto this one): their requests, in arrival order"
+          },
           "abortedAt": {
             "type": "number",
             "description": "When the agent was stopped while this run was going: it ends as aborted, and is never resumed elsewhere"
@@ -4072,6 +4094,32 @@
           },
           "runLimits": {
             "$ref": "#/components/schemas/RunLimits"
+          },
+          "queue": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "each",
+                  "batch"
+                ]
+              },
+              "windowMs": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 2000,
+                "description": "With batch: how long a prompt that reaches an idle agent waits for others to join its turn (ms, at most 2000). Default 0"
+              }
+            },
+            "required": [
+              "mode"
+            ],
+            "additionalProperties": false,
+            "description": "What it does with prompts that arrive while a turn runs (QueueSetting): {mode: \"batch\"} merges them into one turn. On an upsert of an existing agent, leaving it out keeps the one it has; an agent from a definition gets the definition's unless this is given"
           },
           "modelHeaders": {
             "$ref": "#/components/schemas/ModelHeaders"
@@ -4829,6 +4877,9 @@
               "language": {
                 "$ref": "#/components/schemas/Language"
               },
+              "queue": {
+                "$ref": "#/components/schemas/QueueSetting"
+              },
               "forkedFrom": {
                 "$ref": "#/components/schemas/ForkedFrom"
               },
@@ -4890,6 +4941,7 @@
               "temperature",
               "dataCollection",
               "language",
+              "queue",
               "busy",
               "activeRun",
               "queuedRuns",
@@ -5201,6 +5253,32 @@
         "maxLength": 35,
         "description": "Its primary language, its own or its definition's; null: none",
         "example": "es-ES"
+      },
+      "QueueSetting": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "each",
+              "batch"
+            ]
+          },
+          "windowMs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2000,
+            "description": "With batch: how long a prompt that reaches an idle agent waits for others to join its turn (ms, at most 2000). Default 0"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "additionalProperties": false,
+        "description": "What it does with prompts that arrive while a turn runs (QueueSetting), its own or its definition's; null: one turn each"
       },
       "ForkedFrom": {
         "type": "object",
@@ -5842,6 +5920,32 @@
             },
             "additionalProperties": false,
             "description": "Replaces the agent's run limits from its next run; null removes them (the runtime's apply). Set here on an agent from a definition, they stay when the definition is applied"
+          },
+          "queue": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "each",
+                  "batch"
+                ]
+              },
+              "windowMs": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 2000,
+                "description": "With batch: how long a prompt that reaches an idle agent waits for others to join its turn (ms, at most 2000). Default 0"
+              }
+            },
+            "required": [
+              "mode"
+            ],
+            "additionalProperties": false,
+            "description": "Replaces what it does with prompts that arrive while a turn runs (QueueSetting), from the next turn's start; null: one turn each. Set here on an agent from a definition, it stays when the definition is applied"
           },
           "modelHeaders": {
             "type": [
@@ -9669,6 +9773,16 @@
               }
             ]
           },
+          "queue": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/QueueSetting"
+              },
+              {
+                "description": "What its agents do with prompts that arrive while a turn runs (QueueSetting); an agent given its own keeps it when the definition is applied"
+              }
+            ]
+          },
           "mounts": {
             "type": "array",
             "items": {
@@ -10052,6 +10166,16 @@
               },
               {
                 "description": "The most one run may take, how long its model requests may go quiet, and how much context each carries. At maxResponses or maxSeconds, the turn ends before its next model request, after the tool calls of the response that reached it, with stopped \"turn_limit\" and code turn_limit; send another message to continue. Values above the runtime's maximums count as those. A model request that stalls (firstTokenSeconds, idleSeconds) is retried like other transient provider errors; when retries run out the run fails with code model_stream_stalled"
+              }
+            ]
+          },
+          "queue": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/QueueSetting"
+              },
+              {
+                "description": "What its agents do with prompts that arrive while a turn runs (QueueSetting); an agent given its own keeps it when the definition is applied"
               }
             ]
           },
@@ -10629,6 +10753,16 @@
                   "null"
                 ],
                 "description": "The most one run may take, how long its model requests may go quiet, and how much context each carries. At maxResponses or maxSeconds, the turn ends before its next model request, after the tool calls of the response that reached it, with stopped \"turn_limit\" and code turn_limit; send another message to continue. Values above the runtime's maximums count as those. A model request that stalls (firstTokenSeconds, idleSeconds) is retried like other transient provider errors; when retries run out the run fails with code model_stream_stalled"
+              }
+            ]
+          },
+          "queue": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/QueueSetting"
+              },
+              {
+                "description": "What its agents do with prompts that arrive while a turn runs (QueueSetting); an agent given its own keeps it when the definition is applied"
               }
             ]
           },

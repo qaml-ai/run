@@ -79,6 +79,42 @@ A `Run` has:
 | `files` | files the run wrote |
 | `usage` | what its model calls used, where the runtime reports it; `subagentCostUsd`, what its sub-agents spent; `imageCostUsd`, what its `generate_image` calls cost; `decisionCostUsd`, what its `decide` calls cost |
 
+### Batching
+
+An agent that hears from many places at once (a Slack or GitHub lead, an inbox)
+can take a burst as one turn instead of one turn per message, each re-reading the
+whole context. Set `queue: { mode: "batch" }` on the agent (or its definition):
+the prompts waiting when a turn ends run together as the next turn, each its own
+user message, in the order they arrived.
+
+```ts
+const lead = await agents.upsert("triage", { instructions, queue: { mode: "batch", windowMs: 500 } });
+```
+
+- The first waiting prompt's request runs the turn and has its usage, with `batch`
+  listing the requests it took with it. Each of the others ends with the turn too,
+  with the turn's answer (`reply`…) and `batchedInto` naming that first request; a
+  `batch_taken` event marks its message going in, and its webhook is a
+  `run.completed` with `batchedInto`.
+- The turn is one run: its model calls, active time and limits are counted and
+  charged once, to its first prompt's run.
+- A prompt joins only prompts like it: none that is a sub-agent's notification or
+  message, a delegate call's or another prompt of the runtime's, has an `output`
+  schema, a `spendLimit` or `runLimits` of its own, or acts for another `actor` or
+  spends from another `bucket`. The first that does not fit starts the turn after
+  the batch, so order is kept.
+- `windowMs` (0 to 2000, default 0): a prompt that reaches an idle agent waits that
+  long before its turn starts, so a burst sent at once merges too (on the Workers
+  runtime the burst's first prompt still runs alone, and the rest as one turn
+  after it).
+- Steers (`whileRunning: "steer"`) waiting for a step's end are all read at it,
+  rather than one per step.
+- A retry of a merged request, by its id, answers with its record; nothing runs
+  twice. A stop (`abort`) cancels the prompts still waiting, as for any queue.
+- A sub-agent never batches: its parent sends it one turn at a time.
+
+Without `queue`, or with `{ mode: "each" }`, each prompt is a turn of its own.
+
 ### Independent questions
 
 Every run of an agent sees its history; compaction keeps what the model reads

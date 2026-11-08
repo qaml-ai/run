@@ -10,6 +10,7 @@ export type CallContext = {
   delegates?: number;
 };
 import type { CommitEffect } from "../shared/append-log.ts";
+import type { QueueSetting } from "../shared/queue-mode.ts";
 
 export interface ToolDefinition extends PublicToolDefinition {
   callers?: readonly ("model" | "tools")[];
@@ -140,6 +141,8 @@ export interface AgentConfig {
   language?: string | null;
   /** The most one run may take, set by the tenant: model responses and seconds. The runtime's maximums apply over them (client-sessions.ts). */
   runLimits?: RunLimits | null;
+  /** What it does with prompts that wait while a turn runs (shared/queue-mode.ts): `batch` runs them together as one turn. Null or absent: one turn each. */
+  queue?: QueueSetting | null;
   /** Headers the tenant set for every model call of this agent (non-secret, never auth headers). */
   modelHeaders?: Record<string, string> | null;
   /** Host policy for retrying transient provider errors. */

@@ -40,6 +40,8 @@ export async function configImpl(this: AgentRuntime) {
     const config = await this.ctx.storage.get<Config>("configuration");
     if (!config)
       throw Object.assign(new Error("Agent not found"), { status: 404 });
+    // Pi reads its queue modes synchronously (agent-tools.ts `settings`): an agent whose queue batches takes all at a boundary.
+    this.batching = config.config.queue?.mode === "batch" && config.config.type !== "subagent";
     if (config.expiresAt && config.expiresAt <= Date.now())
       throw Object.assign(new Error("Agent expired"), { status: 410 });
     return config;
@@ -122,6 +124,7 @@ export async function armImpl(this: AgentRuntime,
       pendingEvents ? Date.now() + 1000 : Infinity,
       records.some(record => record.method === 'configure' && record.state !== 'completed') ? Date.now() + 1000 : Infinity,
       await this.promptPreparations.deadline(),
+      await this.batchQueue.deadline(config),
       await this.ctx.storage.get<number>("human-input-deadline") ?? Infinity,
       deleted || (config.expiresAt && config.expiresAt <= Date.now()) ? Infinity : await this.limits.deadline(),
       ...this.ctx.getWebSockets().filter(socket => socket.readyState === 1).map(socket => (socket.deserializeAttachment() as EventSubscription)?.browser?.exp ?? Infinity),
@@ -197,6 +200,7 @@ export async function restorePendingImpl(this: AgentRuntime) {
     )
       this.ctx.waitUntil(this.flushBilling());
     this.ctx.waitUntil(this.flushTerminalEvents());
+    this.batchQueue.kick();
     await timed(this, "arm", () => this.arm());
     // A cold-start watchdog still performs the complete recovery pass. Its
     // waiters and maintenance schedule have only just been restored.
@@ -269,6 +273,7 @@ export async function wakeImpl(this: AgentRuntime) {
     if (await this.limits.check(Date.now(), false)) await this.harness.session().abort();
     await this.delegation.recover();
     await this.notifications.drain();
+    this.batchQueue.kick();
     for (const record of await this.records()) {
       if (record.accepted && record.state !== "completed")
         this.track(record.id);

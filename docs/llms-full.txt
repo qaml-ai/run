@@ -298,6 +298,42 @@ A `Run` has:
 | `files` | files the run wrote |
 | `usage` | what its model calls used, where the runtime reports it; `subagentCostUsd`, what its sub-agents spent; `imageCostUsd`, what its `generate_image` calls cost; `decisionCostUsd`, what its `decide` calls cost |
 
+### Batching
+
+An agent that hears from many places at once (a Slack or GitHub lead, an inbox)
+can take a burst as one turn instead of one turn per message, each re-reading the
+whole context. Set `queue: { mode: "batch" }` on the agent (or its definition):
+the prompts waiting when a turn ends run together as the next turn, each its own
+user message, in the order they arrived.
+
+```ts
+const lead = await agents.upsert("triage", { instructions, queue: { mode: "batch", windowMs: 500 } });
+```
+
+- The first waiting prompt's request runs the turn and has its usage, with `batch`
+  listing the requests it took with it. Each of the others ends with the turn too,
+  with the turn's answer (`reply`…) and `batchedInto` naming that first request; a
+  `batch_taken` event marks its message going in, and its webhook is a
+  `run.completed` with `batchedInto`.
+- The turn is one run: its model calls, active time and limits are counted and
+  charged once, to its first prompt's run.
+- A prompt joins only prompts like it: none that is a sub-agent's notification or
+  message, a delegate call's or another prompt of the runtime's, has an `output`
+  schema, a `spendLimit` or `runLimits` of its own, or acts for another `actor` or
+  spends from another `bucket`. The first that does not fit starts the turn after
+  the batch, so order is kept.
+- `windowMs` (0 to 2000, default 0): a prompt that reaches an idle agent waits that
+  long before its turn starts, so a burst sent at once merges too (on the Workers
+  runtime the burst's first prompt still runs alone, and the rest as one turn
+  after it).
+- Steers (`whileRunning: "steer"`) waiting for a step's end are all read at it,
+  rather than one per step.
+- A retry of a merged request, by its id, answers with its record; nothing runs
+  twice. A stop (`abort`) cancels the prompts still waiting, as for any queue.
+- A sub-agent never batches: its parent sends it one turn at a time.
+
+Without `queue`, or with `{ mode: "each" }`, each prompt is a turn of its own.
+
 ### Independent questions
 
 Every run of an agent sees its history; compaction keeps what the model reads
@@ -5289,7 +5325,7 @@ Every event is an envelope:
 | Type | When | `data` |
 | --- | --- | --- |
 | `run.started` | A run (`method`: `prompt`, `continue`, `resume`, `execute`) began | `agentId`, `requestId`, `method`, `actor`, `metadata`; `resumes` when a node resumed a turn whose node was lost |
-| `run.completed` | It ended without an error | as above, and `usage`; `stopped` (`input_required` with `inputIds`, `spend_limit` or `turn_limit`) if it stopped early; `replyIndex` and `messageCount`; `steeredInto` for a message a running turn took |
+| `run.completed` | It ended without an error | as above, and `usage`; `stopped` (`input_required` with `inputIds`, `spend_limit` or `turn_limit`) if it stopped early; `replyIndex` and `messageCount`; `steeredInto` for a message a running turn took; `batchedInto` for a prompt that ran in another prompt's turn (an agent whose queue batches), and `batch` on that prompt's run |
 | `run.failed` | It ended with an error, the runtime's or the model's | as above, and `usage`, `error`, `code` where the error has a name (`cancelled`: a stop cancelled it before it began; `aborted`; `model_stream_stalled`; `turn_limit`…), and `uncertain` when a restart cut it short |
 | `input.requested` | The agent asks a person for input (the run waits) | `agentId`, `requestId`, `inputId`, `toolCallId`, `kind`, `expiresAt` |
 | `input.resolved` | An input settled | `agentId`, `requestId`, `inputId`, `state` |
@@ -5992,7 +6028,7 @@ If the tunnel's address changes, save the provider again with the new
 
 A definition is a reusable agent configuration: name, model, system prompt,
 thinking level, tool sources (built-ins, remote MCP servers and OpenAPI specs),
-limits (`ttlSeconds`, or `idleTtlSeconds`: a lifetime from each agent's latest run), run limits (`runLimits`, see [Run limits](https://run.camelai.com/docs/guides/models-and-keys.md#run-limits)) and mounts. Manage them with the SDKs
+limits (`ttlSeconds`, or `idleTtlSeconds`: a lifetime from each agent's latest run), run limits (`runLimits`, see [Run limits](https://run.camelai.com/docs/guides/models-and-keys.md#run-limits)), its queue (`queue`, see [Batching](https://run.camelai.com/docs/concepts.md#batching)) and mounts. Manage them with the SDKs
 (`agents.runtime.upsertDefinition`, `createDefinition`, `updateDefinition`,
 `definition(s)`, `deleteDefinition`; `upsert_definition` and so on in Python),
 `/v1/definitions`, or the console's Definitions page, and make agents from one.
@@ -6052,7 +6088,7 @@ leaves alone:
  "systemPromptAppend": "Thread thr_123 in workspace ws_9."}
 ```
 
-- `model`, `thinkingLevel`, `maxOutputTokens`, `temperature`, `language` and `runLimits` given
+- `model`, `thinkingLevel`, `maxOutputTokens`, `temperature`, `language`, `runLimits` and `queue` given
   at creation, or later through `PATCH /v1/agents/:id/configuration`, and
   `fileTools` given at creation, are the agent's own: an apply changes every other
   field and keeps them. `null` set through configuration is the agent's own too.
@@ -6104,7 +6140,7 @@ an `error`. On the console's Channels page, **Model & prompt** opens a channel's
 definition with apply selected.
 
 `PATCH /v1/agents/:id/configuration` changes one agent's `model`,
-`systemPrompt`, `systemPromptAppend`, `thinkingLevel`, `maxOutputTokens`, `temperature`, `language`, `keyScope`, `spendLimit` or `modelHeaders` without touching its definition or history:
+`systemPrompt`, `systemPromptAppend`, `thinkingLevel`, `maxOutputTokens`, `temperature`, `language`, `queue`, `keyScope`, `spendLimit` or `modelHeaders` without touching its definition or history:
 
 ```http
 PATCH /v1/agents/client_…/configuration
@@ -9375,7 +9411,8 @@ See [Multi-agent](https://run.camelai.com/docs/guides/multi-agent.md). The `suba
 | `auto_retry_start` | `attempt`, `maxAttempts`, `delayMs`, `errorMessage` | a transient provider failure (overload, rate limit, 5xx, dropped stream) is being retried; the failed response was retracted |
 | `auto_retry_end` | `success`, `attempt`, `finalError?` | retrying ended |
 | `model_stream_stalled` | `phase` (`first_token`, `idle`), `ms`, `provider`, `model` | the model's stream went quiet (nothing before its first token for `runLimits.firstTokenSeconds`, or nothing mid-response for `idleSeconds`), so the runtime ended the request; it is retried like any transient failure, and when retries run out the run fails with code `model_stream_stalled`. Provider keep-alives do not count as an answer |
-| `steer_taken` | `steeredInto` | a prompt sent with `whileRunning: "steer"` (its id is the frame's `requestId`) was read by the running turn `steeredInto`: the model has it, and its request has completed |
+| `steer_taken` | `steeredInto` | a prompt sent with `whileRunning: "steer"` (its id is the frame's `requestId`) was read by the running turn `steeredInto`: the model has it; its request ends with the turn, with the turn's answer |
+| `batch_taken` | `batchedInto` | a prompt to an agent whose queue batches (`queue: {mode: "batch"}`; its id is the frame's `requestId`) ran in the turn of the prompt `batchedInto`, with the prompts that waited beside it: the model has it, and its request has completed |
 | `run_cancelled` | `reason` (`stopped`) | a run queued behind the running one was cancelled by a stop (`POST /v1/agents/:id/abort`) before it began; its `response` follows, with code `cancelled` |
 | `compaction_start` | `reason`, `background?` | the conversation is being summarized to fit the model's context. With `background: true` it is made between or alongside runs, outside any run's request (`requestId` is empty), and nothing waits for it |
 | `compaction_end` | `reason`, `background?`, and `skipped`, or `tokensBefore`, `summarizedMessages`, `keptMessages`, or `error` | summarizing ended |
@@ -9409,7 +9446,10 @@ An `execute` request's result is `{output: string[], truncated}` (plus `files`,
 `presented`, `toolErrors`, `toolCalls`, `sourceErrors` as above). A steered prompt's request
 completes as soon as the running turn reads its message, with `{steeredInto}` as its result and on
 its record: the turn's own request has the turn's outcome. Its 202 says how it was taken at once
-(`steer`: `accepted` by the running turn, or `queued` as a turn of its own).
+(`steer`: `accepted` by the running turn, or `queued` as a turn of its own). On an agent whose queue
+batches, a prompt that ran in another prompt's turn ends with that turn, with its answer and
+`batchedInto` (naming the turn's first request) in its result and on its record; that request's record
+lists the batch (`batch`) and has the usage.
 
 The SDKs turn this into a typed `Run`: `status` (`completed`, `input_required`,
 `failed`), `text`, `output`, `inputs`, `error: {code, message, uncertain?}`, `files`,
@@ -9425,7 +9465,7 @@ dedupe by `id`. See [Webhooks](https://run.camelai.com/docs/guides/webhooks.md).
 | Type | `data` |
 | --- | --- |
 | `run.started` | `agentId`, `requestId`, `method` (`prompt`, `continue`, `resume`, `execute`), `actor?`, `metadata?`, `resumes?` |
-| `run.completed` | the above, `usage` (`{responses, input, output, cacheRead, cacheWrite, costUsd}` or null), `stopped?`, `inputIds?`, `replyIndex?`, `messageCount?`, `steeredInto?` |
+| `run.completed` | the above, `usage` (`{responses, input, output, cacheRead, cacheWrite, costUsd}` or null), `stopped?`, `inputIds?`, `replyIndex?`, `messageCount?`, `steeredInto?`, `batchedInto?` (a prompt that ran in that request's turn), `batch?` (the prompts this run's turn took too) |
 | `run.failed` | the above, `usage`, `error`, `code?` (the outcome's code: `cancelled`, `aborted`, `model_stream_stalled`, `turn_limit`, `spend_limit`, `end_user_credit`…), `limit?` (with `spend_limit` or `end_user_credit`: which limit), `reason?`, `bucket?`, `endUser?` (with `end_user_credit`: why, which bucket, whose; see [credit reasons](https://run.camelai.com/docs/reference/errors.md#end-user-credit-reasons)), `uncertain?`, `steeredInto?`. A run refused as it came to start in the queue carries them as one stopped mid-way does |
 | `input.requested` | `agentId`, `requestId`, `inputId`, `toolCallId`, `kind`, `expiresAt` |
 | `input.resolved` | `agentId`, `requestId`, `inputId`, `state` |

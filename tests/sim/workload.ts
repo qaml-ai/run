@@ -4,7 +4,8 @@ import type { BuggifyPlan } from "./hooks.ts";
 /** One thing the workload does: a client call, or a fault. Agents and runs are numbered; their ids come at run time. */
 export type Op =
   /** `ttlSeconds`: the agent expires that long after it is made, and is purged (I18). */
-  | { op: "create"; agent: number; node: string; ttlSeconds?: number; spawner?: boolean }
+  /** `batch`: the agent's queue batches (queue: {mode: "batch", windowMs?}): prompts that wait run together (I24). */
+  | { op: "create"; agent: number; node: string; ttlSeconds?: number; spawner?: boolean; batch?: { windowMs?: number } }
   /** A client deletes agent N, or volume N: its data is purged shortly after (I18). */
   | { op: "deleteAgent"; agent: number; node: string }
   | { op: "deleteVolume"; volume: number; node: string }
@@ -220,6 +221,23 @@ export function generatePlan(seed: string, options: { steps?: number; durationMs
       for (const step of steps) if (step.op.op === "prompt" && step.op.agent === 0 && multi.float() < 0.6) step.op.spawn = true;
       extra.env = { AGENT_CHILD_SWEEP_MS: "2000", AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "10.0.0.0/8" };
     }
+  }
+  // Agents whose queue batches, for some seeds, from a stream of their own, each with bursts of prompts that arrive
+  // together (a few ms apart): the prompts waiting when a turn ends run as one turn, whatever the faults (I24).
+  const batching = prng(`${seed}:batching`);
+  if (batching.float() < 0.4) {
+    for (const step of steps) if (step.op.op === "create" && batching.float() < 0.6) step.op.batch = batching.float() < 0.5 ? {} : { windowMs: [200, 2_000][batching.int(2)] };
+    const batched = steps.flatMap(step => step.op.op === "create" && step.op.batch ? [step.op.agent] : []);
+    for (let bursts = batched.length ? 1 + batching.int(4) : 0; bursts > 0; bursts--) {
+      const agent = batched[batching.int(batched.length)], at = 1_000 + batching.int(Math.floor(durationMs * 0.7));
+      for (let index = 0, size = 2 + batching.int(4); index < size; index++) {
+        const when = at + index * batching.int(30), prompt = run++;
+        steps.push({ at: when, op: { op: "prompt", agent, run: prompt, node: nodes[batching.int(nodes.length)] } });
+        // A retry of a prompt that may be merged into another's turn: the same request, never a second message (I14).
+        if (batching.float() < 0.3) steps.push({ at: when + batching.int(3_000), op: { op: "retry", agent, run: prompt, node: nodes[batching.int(nodes.length)] } });
+      }
+    }
+    steps.sort((a, b) => a.at - b.at);
   }
   // One end user paying for every agent, for some seeds, from a stream of its own: concurrent calls across nodes share their credit.
   const paying = prng(`${seed}:end-users`);

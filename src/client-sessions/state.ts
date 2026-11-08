@@ -263,6 +263,8 @@ export type Session = {
    * and the wait_agent calls to tell when one comes: a wait answers at once, so the model reads the message.
    */
   agentMessages?: Map<string, string>;
+  /** Prompts of the running turn's batch whose messages it has taken (`batchTaken`): they end with the turn, carrying its answer. */
+  batchLanded?: Set<string>;
   messageWaiters?: Set<(name: string) => void>;
   /** spawn_agent calls in progress: the agents tools a response calls beside them wait for them (`afterSpawns`). */
   spawnsStarting?: Set<Promise<unknown>>;
@@ -405,7 +407,7 @@ export interface ClientSessionOptions {
   progressWaitMs?: number;
 }
 /** A definition resolved for an agent: its revision, agent configuration, client tools and tool sources. */
-export type DefinitionConfig = { id: string; revision: number; config: Partial<Pick<AgentConfig, "model">> & Pick<AgentConfig, "systemPrompt" | "thinkingLevel" | "fileTools" | "codeMode" | "runLimits" | "maxOutputTokens" | "temperature" | "dataCollection" | "language">; sources?: Sources; description?: string };
+export type DefinitionConfig = { id: string; revision: number; config: Partial<Pick<AgentConfig, "model">> & Pick<AgentConfig, "systemPrompt" | "thinkingLevel" | "fileTools" | "codeMode" | "runLimits" | "maxOutputTokens" | "temperature" | "dataCollection" | "language" | "queue">; sources?: Sources; description?: string };
 /** One model response's usage; `kind` separates compaction summaries from the agent's turns. */
 /**
  * A model response's usage, a web tool's call (`searches`: web searches, `renders`: pages web_fetch had

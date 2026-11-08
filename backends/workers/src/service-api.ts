@@ -60,7 +60,7 @@ export async function handleServiceRequest(
     mounts: config.mounts ?? [], keyScope: null, bucket: null, modelHeaders: null,
     builtins: config.builtins ?? [], delegate: config.delegate ?? null,
     mcpServers: [], decide: null, spendLimit: null, runLimits: null,
-    maxOutputTokens: null, temperature: null, dataCollection: null, language: null,
+    maxOutputTokens: null, temperature: null, dataCollection: null, language: null, queue: null,
     cursor: state.cursor, requests: state.requests,
     running: state.requests.some(record => record.state === "running"),
   });

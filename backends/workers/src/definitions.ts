@@ -13,8 +13,8 @@ import { computerSettingsInput } from "./computers/egress.ts";
 import { sourceUrl } from "./tool-sources.ts";
 
 export type Definition = { id: string; tenant: string; name: string; revision: number; spec: AgentConfiguration & { description?: string; applyOnUpdate?: boolean; limits?: { ttlSeconds?: number | null; idleTtlSeconds?: number | null }; webSearch?: { providers: string[] }; /** The channel this definition was made for (deleted with it). */ channel?: string }; createdAt: number; updatedAt: number };
-const OVERRIDES = ["model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "runLimits"] as const;
-const DEFINED = ["systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "runLimits", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "decide", "computer"] as const;
+const OVERRIDES = ["model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "runLimits", "queue"] as const;
+const DEFINED = ["systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "runLimits", "queue", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "decide", "computer"] as const;
 /** A later agent configuration becomes its own choice when a new definition revision is applied. */
 export function configurationOverrides(config: AgentConfiguration, params: object): AgentConfiguration {
   return { ...config, ...params, ...(config.definition ? { definitionOverrides:[...new Set([...(config.definitionOverrides ?? []), ...OVERRIDES.filter(field=>Object.hasOwn(params,field))])] } : {}) } as AgentConfiguration;
@@ -77,7 +77,7 @@ export function withoutWorkflow<T extends { builtins?: string[] }>(spec: T): T {
 const view = ({ tenant, spec: { channel: _channel, ...spec }, ...definition }: Definition) => ({ ...definition, ...spec, toolSources: sourceDefinitionViews(spec as never), ...(spec.mcpServers ? { mcpServers: spec.mcpServers.map(x => sourceView(x as RemoteSource)) } : {}), ...(spec.openApi ? { openApi: spec.openApi.map(x => sourceView(x as RemoteSource)) } : {}) });
 export function visibleConfiguration(config: AgentConfiguration) {
   const { definitionOverrides, definitionRevision, ...visible } = withoutOnExpire(withoutWorkflow(config));
-  return { ...visible, keyScope: config.keyScope ?? null, modelHeaders: config.modelHeaders ?? null, decide: config.decide ?? null, language: config.language ?? null, runLimits: config.runLimits ?? null, tools: config.mcp?.tools ?? [], mcp: config.mcp ?? { tools: [] }, mcpServers: (config.mcpServers ?? []).map(source => sourceView(source as RemoteSource)), openApi: (config.openApi ?? []).map(source => sourceView(source as RemoteSource)) };
+  return { ...visible, keyScope: config.keyScope ?? null, modelHeaders: config.modelHeaders ?? null, decide: config.decide ?? null, language: config.language ?? null, runLimits: config.runLimits ?? null, queue: config.queue ?? null, tools: config.mcp?.tools ?? [], mcp: config.mcp ?? { tools: [] }, mcpServers: (config.mcpServers ?? []).map(source => sourceView(source as RemoteSource)), openApi: (config.openApi ?? []).map(source => sourceView(source as RemoteSource)) };
 }
 export async function resolveDefinition(env: ControlEnv, tenant: string, ref: string): Promise<Definition> {
   const id = /^def_[a-f0-9]{20}$/.test(ref) ? ref : `def_${(await digest(`${tenant}:${ref}`)).slice(0, 20)}`;
@@ -142,7 +142,7 @@ export async function definitionRoutes(request: Request, env: ControlEnv, auth: 
   if ((request.method !== "POST" || ref) && (request.method !== "PATCH" || !ref)) throw new ApiError(405, "Method not allowed");
   const given = await body(request, 1024 * 1024);
   rejectWorkflow(given);
-  const input = object(given, ["name", "revision", "description", "model", "systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "limits", "runLimits", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "decide", "computer", "applyOnUpdate", "apply"]);
+  const input = object(given, ["name", "revision", "description", "model", "systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "limits", "runLimits", "queue", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "decide", "computer", "applyOnUpdate", "apply"]);
   if (input.apply !== undefined && input.apply !== "all") throw new ApiError(400, "apply must be all");
   const key = request.headers.get("Idempotency-Key");
   if (key !== null && !/^[A-Za-z0-9_-]{1,80}$/.test(key)) throw new ApiError(400, "Invalid Idempotency-Key");

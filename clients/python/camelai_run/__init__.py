@@ -1379,12 +1379,12 @@ class Voice:
 
 def _provisioning(tools, *, workspace_id=_DEFAULT, definition=None, name=None, type=None, system_prompt=None, model=None, thinking_level=None, mounts=None, remount=None,
                   subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, system_prompt_append=None, file_tools=None, builtins=None,
-                  delegate=None, prompt=None, code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, bucket=None):
+                  delegate=None, prompt=None, code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, bucket=None, queue=None):
     """A create request's body: the tools as the attached MCP server's tools/list, and the fields given."""
     optional = {"definition": definition, "name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level,
                 "mounts": mounts, "remount": remount, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit, "runLimits": run_limits, "modelHeaders": model_headers,
                 "systemPromptAppend": system_prompt_append, "fileTools": file_tools, "codeMode": code_mode, "builtins": builtins, "delegate": delegate, "mcpServers": mcp_servers, "prompt": prompt,
-                "initialMessages": initial_messages, "importMessages": import_messages, "maxOutputTokens": max_output_tokens, "temperature": temperature, "dataCollection": data_collection, "language": language, "bucket": bucket}
+                "initialMessages": initial_messages, "importMessages": import_messages, "maxOutputTokens": max_output_tokens, "temperature": temperature, "dataCollection": data_collection, "language": language, "bucket": bucket, "queue": queue}
     if workspace_id is not _DEFAULT:
         optional["workspaceId"] = workspace_id
     return _with_multi_agent({"mcp": {"tools": [item.mcp_tool() for item in tools]}, **{key: value for key, value in optional.items() if value is not None or key == "workspaceId"}})
@@ -1393,6 +1393,16 @@ def _provisioning(tools, *, workspace_id=_DEFAULT, definition=None, name=None, t
 def _definition_fields(fields):
     """A definition's fields by their REST names, or the Python spelling of them (run_limits=, system_prompt=...)."""
     return {re.sub(r"_([a-z])", lambda match: match.group(1).upper(), key): value for key, value in fields.items()}
+
+
+def _turn_of(result, while_running=None):
+    """The request whose turn answered for a prompt that completed as another turn took it: a steer's (steeredInto), or a
+    batched prompt's (batchedInto). None for a prompt that ran its own turn."""
+    if not isinstance(result, dict) or "reply" in result:
+        return None
+    if while_running == "steer" and isinstance(result.get("steeredInto"), str):
+        return result["steeredInto"]
+    return result["batchedInto"] if isinstance(result.get("batchedInto"), str) else None
 
 
 def _with_multi_agent(fields):
@@ -2178,9 +2188,11 @@ class AgentClient(_AgentCalls):
         result = await self._message("prompt", text, from_=from_, files=files, metadata=metadata, idempotency_key=idempotency_key,
                                      extra=_prompt_extra(actor, while_running, allow_disconnected, spend_limit, output, history, run_limits),
                                      **options)
-        # A steered message's request completes as the running turn takes it, naming the turn: its outcome is the turn's.
-        if while_running == "steer" and isinstance(result, dict) and isinstance(result.get("steeredInto"), str) and "reply" not in result:
-            return await self.wait_for_request(result["steeredInto"], timeout=options.get("timeout"))
+        # A steered message's request completes as the running turn takes it, naming the turn: its outcome is the turn's. So
+        # does a prompt that ran in another's turn, on an agent whose queue batches (batchedInto).
+        into = _turn_of(result, while_running)
+        if into:
+            return await self.wait_for_request(into, timeout=options.get("timeout"))
         return result
 
     async def steer_message(self, text, *, actor=None, from_=None, files=None, metadata=None, idempotency_key=None, allow_disconnected=False):
@@ -2943,7 +2955,8 @@ class Agents:
     async def upsert(self, key, *, workspace_id=_DEFAULT, model=None, instructions=None, tools=None, definition=None, thinking_level=None, subject=None, context=None,
                      key_scope=None, spend_limit=None, run_limits=None, model_headers=None, mounts=None, remount=None, name=None, instructions_append=None, file_tools=None,
                      builtins=None, delegate=None, subagents=False, on_event=None, on_input=None, on_error=None, attach=None, takeover=False, connection=None,
-                     code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, bucket=None):
+                     code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, bucket=None,
+                     queue=None):
         """The agent for `key` (your name for it: "support-triage", or "user-123"), made now if there is none, and set
         to this configuration if it differs. The same key is the same agent, with its history and files, until
         agent.delete(); any number of processes may upsert it. `tools` (@tool functions) run in this process, which
@@ -2963,13 +2976,15 @@ class Agents:
         format (Anthropic Messages, OpenAI Responses or Chat Completions), which the runtime converts (not both).
         `max_output_tokens` caps each model response (within the model's maximum); `temperature` (0 to 2) sets sampling, for a
         model and thinking level that take one (a 400 otherwise). `bucket`, with end-user credits on (agents.end_users), is the bucket
-        of its subject's credit its runs spend from (default "default")."""
+        of its subject's credit its runs spend from (default "default"). `queue` ({"mode": "batch", "windowMs"?}) runs the
+        prompts that wait while a turn runs together as its next turn (see Batching in the concepts guide)."""
         tools = list(tools or [])
         session = await self.runtime.upsert_agent(key, workspace_id=workspace_id, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
                                                   subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits,
                                                   model_headers=model_headers, mounts=mounts, remount=remount, name=name, system_prompt_append=instructions_append, file_tools=file_tools, builtins=builtins,
                                                   delegate=delegate, code_mode=code_mode, initial_messages=initial_messages, import_messages=import_messages,
-                                                  max_output_tokens=max_output_tokens, temperature=temperature, data_collection=data_collection, language=language, mcp_servers=mcp_servers, bucket=bucket)
+                                                  max_output_tokens=max_output_tokens, temperature=temperature, data_collection=data_collection, language=language, mcp_servers=mcp_servers, bucket=bucket,
+                                                  queue=queue)
         # The upsert declared these tools already (between the agent's turns, if it runs).
         agent = await self.agent(session, tools=tools, on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover, subagents=subagents,
                                  connection=connection, _sync=False)
