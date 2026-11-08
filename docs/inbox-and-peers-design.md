@@ -206,16 +206,13 @@ Answers wait 5 seconds (the undo window), then go in batches of up to 100. An it
   - A grant to a lead reaches none of the lead's sub-agents.
   - Sub-agents never batch.
 
-## Open questions for the CTO
+## Decisions (CTO, 2026-11-08)
 
-1. When an item expires, should its recommendation apply as the answer? That would be opt-in per item, and never for
-   approvals.
-2. Always-on agents: should blocking inputs expire after 24 h by default, or should their prompts steer them to
-   `request_decision`?
-3. A sender acting for an end user messages a peer. Whose bucket pays: the recipient's (proposed) or the sender's?
-4. Should apps (for example a "PR ready" item from camelCode's server) post items directly, with
-   `POST /v1/inbox/items`?
-5. Should v1 include a Slack digest of `urgent` items?
+1. **Expiry:** an item may apply its recommendation as the answer when it expires, if the asking agent opts in on that item. Approvals never do.
+2. **Always-on agents** use the new non-blocking `request_decision`, which new prompts never cancel. `ask_user` keeps its in-turn semantics.
+3. **Peer billing:** a peer message's turn bills the recipient's bucket.
+4. **Apps post items directly** with `POST /v1/inbox/items`. Answers go back to the app by webhook. This adds a slice.
+5. **No Slack digest in v1.**
 
 ## Implementation slices
 
@@ -237,3 +234,4 @@ Each slice is one PR. A slice that touches both backends adds a contract test (`
 | 12 | `send_message` to peers | Delivery |
 | 13 | Admission: hop cap, wake root, `batchable` | Delivery, batching |
 | 14 | Events, usage, `GET /v1/agents/:id/peers`, docs | Observability |
+| 15 | `POST /v1/inbox/items` for apps, with answer webhooks | Decision 4 |
