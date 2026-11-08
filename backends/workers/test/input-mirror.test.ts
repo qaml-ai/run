@@ -95,6 +95,7 @@ test('sweep leases 100 old pending Workers rows and rotates past unchanged rows'
 
 test('sweep withdraws missing inputs and gone agents, preserves concurrent updates and retries outages', async () => {
   const { db, url } = await testDatabase();
+  await db.query("insert into agents(id,tenant,header,revision,name,type,model,revoked) values('gone','t','{}',1,'','agent','test',true)");
   await transaction(db, sql => upsertInputMirrors(sql, [
     input({ agent: 'gone', id: 'gone' }), input({ id: 'missing' }), input({ id: 'raced' }), input({ agent: 'offline', id: 'offline' }),
   ]));
@@ -123,4 +124,35 @@ test('the oldest pending sweep can use its partial index', async () => {
   });
   assert.match(plan, /Index Scan using agent_inputs_pending_updated_at/);
   assert.doesNotMatch(plan, /Sort/);
+});
+
+
+test('a DO refusal retires only directory-confirmed gone agents and the versions selected by the sweep', async () => {
+  const { db, url } = await testDatabase();
+  const cases = [
+    { agent: 'live404', status: 404, revoked: false, expires: null },
+    { agent: 'live410', status: 410, revoked: false, expires: null },
+    { agent: 'absent', status: 404, revoked: false, expires: null },
+    { agent: 'deleted', status: 404, revoked: true, expires: null },
+    { agent: 'expired', status: 410, revoked: false, expires: 1 },
+    { agent: 'raced', status: 410, revoked: true, expires: null },
+  ];
+  for (const entry of cases) {
+    if (entry.agent !== 'absent') await db.query(`insert into agents(id,tenant,header,revision,name,type,model,revoked,expires_at)
+      values($1,'t','{}',1,'','agent','test',$2,$3)`, [entry.agent, entry.revoked, entry.expires]);
+  }
+  await transaction(db, sql => upsertInputMirrors(sql, cases.map(entry => input({ agent: entry.agent }))));
+  await db.query("update agent_inputs set updated_at=now()-interval '2 hours'");
+  const env = { HYPERDRIVE: { connectionString: url }, AGENTS: { getByName: (agent: string) => ({ fetch: async () => {
+    if (agent === 'raced') await transaction(db, sql => upsertInputMirrors(sql, [input({ agent, version: 2 })]));
+    return new Response(null, { status: cases.find(entry => entry.agent === agent)!.status });
+  } }) } } as unknown as Env;
+  await assert.rejects(sweepInputMirrors(env), /could not refresh/);
+  const rows = (await db.query('select agent, state, version from agent_inputs')).rows;
+  for (const entry of cases) {
+    const gone = ['deleted', 'expired'].includes(entry.agent);
+    assert.deepEqual(rows.find(row => row.agent === entry.agent), {
+      agent: entry.agent, state: gone ? 'withdrawn' : 'pending', version: gone || entry.agent === 'raced' ? 2 : 1,
+    });
+  }
 });

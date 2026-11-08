@@ -73,8 +73,8 @@ export async function sweepInputMirrors(env: Env) {
         body: JSON.stringify({ tenant: group.tenant, ids: group.ids }),
       }));
       if (response.status === 404 || response.status === 410) {
-        await withdrawInputMirrors(env, agent, group.tenant);
-        return;
+        if (await withdrawInputMirrors(env, agent, group.tenant, group.rows, true)) return;
+        throw new Error("Input mirror authority unavailable; directory does not confirm removal");
       }
       if (!response.ok) throw new Error(`Input mirror refresh failed (${response.status})`);
       const result = await response.json() as { missing?: string[] };
@@ -87,13 +87,21 @@ export async function sweepInputMirrors(env: Env) {
 }
 
 /** Missing authority is terminal; a stale sweep must not overwrite a newer mirror. */
-async function withdrawInputMirrors(env: Env, agent: string, tenant: string, expected?: { id: string; version: number }[]) {
-  await transaction(env, async sql => {
+async function withdrawInputMirrors(env: Env, agent: string, tenant: string, expected: { id: string; version: number }[], requireGone = false) {
+  return transaction(env, async sql => {
+    if (requireGone) {
+      // The directory is the authority for agent lifetime. Lock it against renewal
+      // while retiring only the versions this sweep actually read.
+      const gone = await sql.query(`select id from agents where id=$1 and tenant=$2
+        and (revoked or expires_at <= $3) for share`, [agent, tenant, Date.now()]);
+      if (!gone.rowCount) return false;
+    }
     const result = await sql.query(`update agent_inputs set state='withdrawn', version=version+1, updated_at=now(), claimed_until=null
       where agent=$1 and tenant=$2 and state='pending' and input ? 'workersInputId'
-      and ($3::jsonb is null or exists (select 1 from jsonb_to_recordset($3::jsonb) as r(id text, version integer)
-        where r.id=agent_inputs.id and r.version=agent_inputs.version)) returning id`,
-      [agent, tenant, expected ? JSON.stringify(expected) : null]);
+      and exists (select 1 from jsonb_to_recordset($3::jsonb) as r(id text, version integer)
+        where r.id=agent_inputs.id and r.version=agent_inputs.version) returning id`,
+      [agent, tenant, JSON.stringify(expected)]);
     if (result.rowCount) await sql.query("select pg_notify('inbox', $1)", [tenant]);
+    return true;
   });
 }

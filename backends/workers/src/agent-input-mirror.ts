@@ -5,7 +5,7 @@ import { reqKey, type RequestRecord } from "./agent-types.ts";
 import { stageInputMirror, type InputMirror } from "./input-mirror.ts";
 
 /** Read the authority before staging an event or repairing the index. */
-export async function readInputMirrors(runtime: AgentRuntime, ids?: string[]): Promise<InputMirror[]> {
+async function readInputMirrorState(runtime: AgentRuntime, ids?: string[]) {
   const conf = await runtime.config();
   const pi = await runtime.harness.pi();
   const doc = await pi.snapshot(HumanInputs, BACKGROUND_CONTEXT);
@@ -13,7 +13,10 @@ export async function readInputMirrors(runtime: AgentRuntime, ids?: string[]): P
   for (const [id, saved] of Object.entries(doc?.requests ?? {})) {
     let item = saved;
     if (ids && !ids.includes(id)) continue;
-    const requestId = item.requestId ?? await runtime.ctx.storage.get<string>(`input-owner:${id}`) ?? "";
+    const requestId = item.requestId || await runtime.ctx.storage.get<string>(`input-owner:${id}`);
+    // A newly committed Pi input may not have reached onHuman yet. Do not freeze
+    // an empty owner, or report this retained input as missing to the sweep.
+    if (!requestId) continue;
     const record = await runtime.ctx.storage.get<RequestRecord>(reqKey(requestId));
     // Startup may land even before onHuman bound the freshly committed request.
     if (!item.policyBound) {
@@ -30,15 +33,19 @@ export async function readInputMirrors(runtime: AgentRuntime, ids?: string[]): P
       audience: item.inboxResponders ?? [...new Set([...item.responders?.audience ?? [], ...conf.config.humanInput?.approvers ?? []])],
       lineage: [...ancestry?.chain ?? [], conf.id], subagent: conf.config.type === "subagent" });
   }
-  return rows;
+  return { rows, missing: ids?.filter(id => !Object.hasOwn(doc?.requests ?? {}, id)) ?? [] };
+}
+
+export async function readInputMirrors(runtime: AgentRuntime, ids?: string[]): Promise<InputMirror[]> {
+  return (await readInputMirrorState(runtime, ids)).rows;
 }
 
 export async function restageInputMirrors(runtime: AgentRuntime, ids?: string[]) {
-  const rows = await readInputMirrors(runtime, ids);
+  const { rows, missing } = await readInputMirrorState(runtime, ids);
   await runtime.ctx.storage.transaction(async tx => {
     for (const row of rows) await stageInputMirror(tx, row);
   });
-  return ids?.filter(id => !rows.some(row => row.id === id)) ?? [];
+  return missing;
 }
 
 export async function repairInputMirrors(runtime: AgentRuntime, ids?: string[]) {
