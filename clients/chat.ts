@@ -34,6 +34,7 @@ export interface ToolProgress { progress?: number; total?: number; message?: str
 /** A tool call: its arguments (partial while `input_streaming`), and its result once there is one. */
 export interface ToolPart {
   type: "tool"; id: string; name: string;
+  startedAt?: number; endedAt?: number;
   args: Record<string, unknown>;
   state: ToolState;
   /**
@@ -377,7 +378,7 @@ export function projectMessages(input: ProjectInput, memo: ProjectMemo = new Map
             }
             const subagent = input.subagents?.get(callId);
             parts.push(remember(`${id}:${callId}`, [block, result, pending, progress, writing, subagent], () => {
-              const part = toolAt(callId, name, args, result, pending, progress, writing);
+              const part = { ...toolAt(callId, name, args, result, pending, progress, writing), startedAt: assistant.timestamp, endedAt: result?.timestamp };
               return subagent ? { ...part, subagent } : part;
             }));
           }

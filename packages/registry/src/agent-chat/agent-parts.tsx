@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useEffect, useState, type FormEvent } from "react";
+import { memo, useCallback, useEffect, useState, useId, type ReactNode, type FormEvent } from "react";
 import { useAgent, useToolRendererFor, type ChatInput, type FilePart, type InputAnswer, type InputValue, type ToolPart, type ToolRenderers } from "@camelai/run-react";
 import { Button } from "@/components/ui/button";
 import { AgentMarkdown } from "./agent-markdown";
@@ -21,20 +21,20 @@ export const AgentTool = memo(function AgentTool({ part, tools }: { part: ToolPa
     return <Renderer part={part} name={part.name} args={part.args} state={part.state} result={part.result} progress={part.progress} input={part.input} answer={answer} />;
   }
   if (part.input) return <AgentInputCard input={part.input} />;
-  if (part.subagent) return <details className="rounded-lg border p-3 text-sm" data-status={part.subagent.status ?? "running"}>
-    <summary className="cursor-pointer">{part.subagent.name} · {part.subagent.status ?? "working"}</summary>
-    {part.subagent.progress && <p className="mt-2">{part.subagent.progress}</p>}
+  if (part.subagent) return <AgentWorker name={part.subagent.name} status={part.subagent.status ?? "running"} progress={part.subagent.progress} startedAt={part.startedAt} endedAt={part.endedAt}>
     {part.subagent.messages.filter(message => message.role === "assistant").map((message, index) => <AgentMarkdown key={index} text={message.content.filter(part => part.type === "text").map(part => part.text).join("\n")} />)}
     {part.result && <AgentMarkdown text={part.result.text} />}
     {part.subagent.error && <p className="text-destructive">{part.subagent.error}</p>}
-  </details>;
+  </AgentWorker>;
   const name = localName(part.name);
   const label = part.state === "done" ? `Used ${name}` : part.state === "error" ? `${name} failed` : `Running ${name}…`;
   return (
     <details className="group rounded-md border text-sm">
       <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-muted-foreground [&::-webkit-details-marker]:hidden">
         <span aria-hidden="true" className={cn("size-2 rounded-full", part.state === "done" ? "bg-green-500" : part.state === "error" ? "bg-destructive" : "animate-pulse bg-muted-foreground")} />
-        <span>{label}</span>
+        <span aria-live="polite">{label}</span>
+        <span className="truncate text-xs">{clip(Object.entries(part.args).map(([key, value]) => `${key}: ${typeof value === "string" ? value : pretty(value)}`).join(" · "), 100)}</span>
+        <Elapsed startedAt={part.startedAt} endedAt={part.endedAt} running={part.state === "running" || part.state === "input_streaming"} />
         {part.progress?.message && <span className="truncate text-xs">{part.progress.message}</span>}
       </summary>
       <div className="space-y-2 px-3 pb-3">
@@ -44,6 +44,25 @@ export const AgentTool = memo(function AgentTool({ part, tools }: { part: ToolPa
     </details>
   );
 });
+
+/** Shared worker card for relayed events and the console's children directory. */
+export function AgentWorker({ name, status, progress, startedAt, endedAt, children }: { name: string; status: string; progress?: string; startedAt?: number; endedAt?: number; children?: ReactNode }) {
+  return <details className="rounded-lg border p-3 text-sm" data-status={status}>
+    <summary className="cursor-pointer"><span className="inline-flex items-center gap-2">
+      {status === "running" && <span aria-hidden="true" className="size-3 animate-spin rounded-full border-2 border-current border-t-transparent" />}
+      <span aria-live="polite">{name} · {status === "running" ? "working" : status.replaceAll("_", " ")}</span>
+      <Elapsed startedAt={startedAt} endedAt={endedAt} running={status === "running"} />
+    </span>{progress && <span aria-live="polite" className="mt-1 block text-xs text-muted-foreground">{progress}</span>}</summary>
+    <div className="mt-2 space-y-2">{children}</div>
+  </details>;
+}
+function Elapsed({ startedAt, endedAt, running }: { startedAt?: number; endedAt?: number; running: boolean }) {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => { if (!running || !startedAt) return; const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, [running, startedAt]);
+  if (!startedAt || (!running && !endedAt)) return null;
+  const seconds = Math.max(0, Math.floor(((endedAt ?? now) - startedAt) / 1000));
+  return <span className="text-xs text-muted-foreground">{seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`}</span>;
+}
 
 interface Question { question: string; header?: string; options?: { label: string; description?: string }[]; multiSelect?: boolean; allowOther?: boolean }
 
@@ -55,15 +74,16 @@ export const AgentInputCard = memo(function AgentInputCard({ input }: { input: C
 
 /** The same input card for account-wide inboxes, with the host supplying its answer route. */
 export function AgentInputView({ input, onAnswer: answer }: { input: ChatInput; onAnswer: (value: InputValue | InputAnswer) => void }) {
+  const instance = useId();
   const busy = input.answering;
   return (
-    <div id={`input-${input.id}`} className="space-y-3 rounded-lg border p-4 text-sm" aria-busy={busy || undefined}>
+    <div id={`input-${input.id}-${instance}`} data-input-id={input.id} className="space-y-3 rounded-lg border p-4 text-sm" aria-busy={busy || undefined}>
       {input.kind === "approval" && (
         <>
           <p className="font-medium">{input.message}</p>
           {(input.detail.argumentsPreview ?? input.detail.arguments) && <pre className="max-h-48 overflow-auto rounded bg-muted p-2 font-mono text-xs">{clip(input.detail.argumentsPreview ?? JSON.stringify(input.detail.arguments, null, 2), 2000)}</pre>}
           <div className="flex gap-2">
-            <Button size="sm" disabled={busy} onClick={() => answer(true)}>Approve</Button>
+            <Button data-input-action="approve" size="sm" disabled={busy} onClick={() => answer(true)}>Approve</Button>
             <Button size="sm" variant="outline" disabled={busy} onClick={() => answer(false)}>Deny</Button>
           </div>
         </>
