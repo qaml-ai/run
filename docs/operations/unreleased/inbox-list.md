@@ -1,3 +1,5 @@
+### A decision inbox for everything waiting on a person; /v1/inputs returns its page
+
 The decision inbox is available at `GET /v1/inbox` on both backends. It reads
 `agent_inputs` with filters, keyset pagination and counts by priority and lead.
 `GET /v1/inputs` now returns the same page (`items`, `cursor`, `counts`), lists
