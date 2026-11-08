@@ -246,7 +246,8 @@ export async function fetchRequestImpl(this: AgentRuntime,
           return json(incoming);
         });
         this.admission = mutation.catch(() => {});
-        return mutation;
+        // Awaited, so a failed apply answers here (the directory's retry applies it again) rather than rejecting the stub's fetch.
+        return await mutation;
       }
       if (request.method === "DELETE" && path === "/") {
         const deletion = this.admission.then(async () => {

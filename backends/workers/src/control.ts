@@ -186,7 +186,9 @@ export class Directory {
     if (fields.model === undefined && previousConfig?.model) config.model = previousConfig.model;
     if (fields.language === undefined && previousConfig?.language !== undefined) config.language = previousConfig.language;
     const resolvedModel = await validateAgentModel(this.env, this.tenantId, config, { reference: previousConfig?.model, model: previousEntry?.resolvedModel, defaultModel: fields.model === undefined });
-    if (queueConfiguration && previousEntry) {
+    // An agent whose first configuration never applied (initialized false: the apply failed) is still being
+    // created: a retry applies it as a creation, since there is no configuration on the agent to queue a change on.
+    if (queueConfiguration && previousEntry?.initialized) {
       for (const field of ['subject', 'context', 'definition'] as const)
         if (canonical(config[field] ?? null) !== canonical(previousEntry.config[field] ?? null))
           throw new ApiError(409, `An agent's ${field} cannot change`);
@@ -308,7 +310,16 @@ export class Directory {
             runtimeOrigin,
           }),
         }),
-      );
+      ).catch(() => undefined);
+      // The new revision is committed above (uninitialized): an agent that threw or failed applying it is a retry
+      // away, as DELETE's cleanup is, so it answers 503 rather than a refusal. Another upsert applies it again.
+      if (!response || response.status >= 500)
+        return {
+          failed: true,
+          status: 503,
+          error: "Agent configuration saved; applying it failed, retry",
+          code: "CONFIGURATION_PENDING",
+        };
       if (!response.ok) {
         const refused = await response.json() as { error?: string };
         return {
