@@ -19,6 +19,7 @@ import { outputInput } from "./tool-policy.ts";
 import { importedHistory, validateUserMessages } from "./history.ts";
 import { convertToLlm, createCompactionSummaryMessage } from "./pi-harness/messages.ts";
 import { canonical } from "../shared/durable-json.ts";
+import { joins } from "../shared/queue-mode.ts";
 import type { CommitEffect } from "../shared/append-log.ts";
 import { fileStorage, type Storage } from "../shared/storage.ts";
 import { FRAME_BYTES, outcomeEnding, type ClientEvent, type Outcome, type RequestMethod, type RequestRecord, type TurnSnapshot } from "../shared/client-protocol.ts";
@@ -453,7 +454,7 @@ export class ClientSessions {
     const outcome = record.outcome ?? { error: "No outcome was recorded" };
     const result = (outcome.result ?? {}) as { stopped?: string; inputs?: { id: string }[]; replyIndex?: number; messages?: number; code?: unknown; limit?: unknown; reason?: unknown; bucket?: unknown; endUser?: unknown; servedModel?: string; modelError?: object };
     const { error } = outcomeEnding(outcome);
-    const ended = { ...base, ...(record.steeredInto ? { steeredInto: record.steeredInto } : {}), usage: usage ?? null, ...(result.servedModel ? { servedModel: result.servedModel } : {}) };
+    const ended = { ...base, ...(record.steeredInto ? { steeredInto: record.steeredInto } : {}), ...(record.batchedInto ? { batchedInto: record.batchedInto } : {}), ...(record.batch ? { batch: record.batch } : {}), usage: usage ?? null, ...(result.servedModel ? { servedModel: result.servedModel } : {}) };
     const key = `run.ended:${agentId}:${record.id}`;
     // Its code, where the run's outcome has one: `cancelled` (a stop cancelled it before it began), `aborted`, `model_stream_stalled`...
     // And how its model call failed, where it did (errorClass, providerStatus, retryable, model).
@@ -954,11 +955,13 @@ export class ClientSessions {
     const now = Date.now();
     const run = runningRun(session);
     if (run && run.abortedAt === undefined) this.upsertRequest(session, { ...run, abortedAt: now });
+    // The prompts of the running turn's batch are the turn's, which may have their messages already: stopped with it.
+    for (const record of [...session.running.values()]) if (run && record.batchedInto === run.id && record.abortedAt === undefined) this.upsertRequest(session, { ...record, abortedAt: now });
     const cancelled: RequestRecord[] = [];
     let kept = false;
     if (queued === "cancel") {
       for (const record of [...session.running.values()]) {
-        if (record.began || !CANCELLABLE.includes(record.method)) continue;
+        if (record.began || !CANCELLABLE.includes(record.method) || (run && record.batchedInto === run.id)) continue;
         // A sub-agent's notification (or message to its parent) is the runtime's, sent once: it is not cancelled, but
         // lands without a turn, so what the sub-agent said stays in history.
         const notice = (record.params as { notice?: { metadata?: { to?: string } } } | undefined)?.notice;
@@ -1660,7 +1663,7 @@ export class ClientSessions {
     if (body.method === "configure") rejectWorkflow(body.params);
     const applying = body.method === "configure" && body.params.definition !== undefined;
     // Which keys an agent calls models with, and how much it may spend, are the tenant's to choose, never the agent's own.
-    for (const key of ["keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "dataCollection", "builtins", "delegate", "mcpServers", "decide", "mounts", ...UPSERT_KEYS]) if (body.method === "configure" && !trusted && Object.hasOwn(body.params, key)) throw new HttpError(403, `Only the tenant can change an agent's ${key}`);
+    for (const key of ["keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "dataCollection", "queue", "builtins", "delegate", "mcpServers", "decide", "mounts", ...UPSERT_KEYS]) if (body.method === "configure" && !trusted && Object.hasOwn(body.params, key)) throw new HttpError(403, `Only the tenant can change an agent's ${key}`);
     const spendLimit = body.method === "configure" && Object.hasOwn(body.params, "spendLimit") ? spend.spendInput(body.params.spendLimit) : undefined;
     // Which of its end user's buckets the agent's runs spend from: the tenant's to say, applied at once, as a spend limit is.
     const agentBucket = body.method === "configure" && Object.hasOwn(body.params, "bucket") ? body.params.bucket === null ? null : bucketInput(body.params.bucket) : undefined;
@@ -2012,7 +2015,9 @@ export class ClientSessions {
           if (event?.type === "turn_start") session.step = "model";
           else if (event?.type === "tool_execution_start") session.step = "tool";
           this.publish(session, { type: "event", requestId: record.id, event });
-          if (taken && taken !== record.id && session.running.get(taken)?.method === "prompt") this.steerTaken(session, taken, record.id);
+          // A prompt of this turn's batch (`batchOf`) is taken as its message is: the model has it.
+          if (taken && taken !== record.id && session.running.get(taken)?.batchedInto === record.id) this.batchTaken(session, taken, record.id);
+          else if (taken && taken !== record.id && session.running.get(taken)?.method === "prompt") this.steerTaken(session, taken, record.id);
         } : undefined);
     } finally { session.retries = undefined; }
   }
@@ -2125,8 +2130,28 @@ export class ClientSessions {
   private async run(session: Session, record: RequestRecord, params: unknown) {
     let value: Outcome;
     let continued: Pick<RequestRecord, "handedOff" | "carried"> | undefined;
+    let batch: RequestRecord[] = [];
     try {
       if (QUEUED_METHODS.includes(record.method) && (this.closed || this.draining || session.fault || session.handedBack || session.requests.get(record.id)?.state !== "running")) return;
+      // A prompt of a batch whose turn was stopped before it began here (a stop after its node was lost): it ends aborted,
+      // as its turn did, and never runs after the stop.
+      const stopped = session.requests.get(record.id)!;
+      if (stopped.abortedAt !== undefined && stopped.began === undefined && RUN_METHODS.includes(record.method)) {
+        reachable("a batch's prompt a stop reached before it began ended aborted");
+        const { params: _queued, ...ended } = stopped;
+        const outcome: Outcome = { result: { error: "The run was aborted", code: "aborted" } };
+        this.upsertRequest(session, { ...ended, state: "completed", outcome, endedAt: Date.now(), ...(session.announcing ? { announce: true as const } : {}) });
+        await this.commit(session, true).catch(() => {});
+        this.publish(session, { type: "response", id: record.id, outcome });
+        return;
+      }
+      // A prompt that reached an idle agent whose queue batches with a window waits out the window, so those sent with it join its turn.
+      const window = this.batchWindow(session, record, params);
+      if (window > 0) {
+        sometimes(true, "a prompt waited out its agent's batch window");
+        await clock().sleep(window);
+        if (this.closed || this.draining || session.fault || session.handedBack || session.requests.get(record.id)?.state !== "running") return;
+      }
       // Configuration keeps its params when it begins: the next owner replays one that was interrupted.
       if (record.method === "configure") record = this.upsertRequest(session, { ...record, began: Date.now() });
       // The run's start, tried again on a transient refusal (`startStep`): nothing of the run has happened yet (no begin
@@ -2188,7 +2213,11 @@ export class ClientSessions {
         const notice = record.method === "prompt" && (queuedParams as { notice?: unknown } | undefined)?.notice !== undefined ? queuedParams : undefined;
         // A turn a leaving node handed off goes on as it was: not a resume, and its time limit counts from its first begin.
         continued = session.resuming.has(record.id) && handedOff ? { handedOff, carried } : undefined;
+        // The prompts waiting behind it that join its turn (`batchOf`), marked in the same commit as its begin, after it.
+        batch = record.method === "prompt" && !session.resuming.has(record.id) ? this.batchOf(session, session.requests.get(record.id)!) : [];
         record = this.upsertRequest(session, { ...rest, ...notice ? { notice } : {}, began: continued && rest.began ? rest.began : Date.now(), ...(session.resuming.has(record.id) && !continued ? { resumes: (rest.resumes ?? 0) + 1 } : {}) });
+        for (const member of batch) this.upsertRequest(session, { ...member, batchedInto: record.id });
+        if (batch.length) params = { ...params as object, batch: batch.map(member => member.params) };
         // Code has no effect outside its sandbox until it calls a tool, and every tool call
         // makes this record durable first (`beforeEffect`; the application's tools do it when
         // their call is recorded, which is appended after it). So an execution needs no commit of its
@@ -2287,13 +2316,23 @@ export class ClientSessions {
       catch (error) { this.fail(session, error, "transcript"); return; }
       if (this.closed || session.fault || session.leaving || session.requests.get(record.id)?.state !== "running") return;
     }
-    const { params: _params, notice: _notice, landOnly: _landOnly, ...finished } = record;
+    const { params: _params, notice: _notice, landOnly: _landOnly, batchedInto: into, ...finished } = record;
+    // A prompt of a batch whose turn a lost node left (`batchedInto`): its message in history already (the agent found it,
+    // `taken`), it completes naming that turn; otherwise it ran as a turn of its own.
+    if (into && (value.result as { taken?: boolean } | undefined)?.taken) {
+      reachable("a batch's prompt whose turn a lost node left found its message taken already");
+      const turn = session.requests.get(into);
+      value = this.batchOutcome(turn?.state === "completed" ? turn.outcome : undefined, into);
+    }
+    // The prompts of this turn's batch: those it took end with it, carrying its answer; those it never did go on as runs of their own.
+    const members = record.method === "prompt" ? this.batchEnded(session, record, batch.length > 0, value) : [];
+    const taken = members.map(member => member.id);
     // Until the response is published, a drain or release must not close the stream and drop it.
     session.settling++;
     try {
       const run = RUN_METHODS.includes(record.method);
       const announcing = run && !!session.announcing;
-      const completed = this.upsertRequest(session, { ...finished, state: "completed", outcome: value, endedAt: Date.now(), ...(announcing ? { announce: true as const } : {}) });
+      const completed = this.upsertRequest(session, { ...finished, ...(into && (value.result as { batchedInto?: string } | undefined)?.batchedInto ? { batchedInto: into } : {}), ...(taken.length ? { batch: taken } : {}), state: "completed", outcome: value, endedAt: Date.now(), ...(announcing ? { announce: true as const } : {}) });
       if (run) this.countBilling(session, completed);
       session.runLimits?.delete(record.id);
       session.runCaps?.delete(record.id);
@@ -2321,6 +2360,7 @@ export class ClientSessions {
       }
       session.lastActive = Date.now();
       this.publish(session, { type: "response", id: record.id, outcome: value });
+      for (const member of members) this.publish(session, { type: "response", id: member.id, outcome: member.outcome! });
       if (run && session.header.run && record.id === runIdOf(session.header.id)) void this.runEnded(session);
     } finally { session.settling--; }
     await this.fold(session);
@@ -2337,6 +2377,85 @@ export class ClientSessions {
     try { await this.writeHeader(session); }
     catch (error) { console.error(JSON.stringify({ type: "run_retention_failed", agent: session.header.id, error: safeError(error) })); }
     await this.supervisor.stop(session.header.id).catch(() => {});
+  }
+
+  /**
+   * How long a prompt waits before its turn starts, so that a burst reaching an idle agent whose queue batches with a
+   * window (`queue.windowMs`) merges: until that long after it arrived. Zero for anything else, and for a prompt that
+   * waited that long in the queue already.
+   */
+  private batchWindow(session: Session, record: RequestRecord, params: unknown) {
+    const windowMs = session.header.config.queue?.mode === "batch" ? session.header.config.queue.windowMs ?? 0 : 0;
+    if (!windowMs || record.method !== "prompt" || session.header.parent || session.resuming.has(record.id)) return 0;
+    if (!joins({ ...record, params }, { ...record, params })) return 0;
+    return Math.max(0, (record.startedAt ?? 0) + windowMs - Date.now());
+  }
+
+  /**
+   * The prompts that join `lead`'s turn as it begins, on an agent whose queue batches (`queue: {mode: "batch"}`): those
+   * queued behind it, in arrival order, up to the first that cannot join it (`joins`: a notification, a prompt with an
+   * output schema or limits of its own, another actor or bucket) or is not a prompt waiting to begin. A sub-agent's runs
+   * are its parent's to send, one turn each, so it never batches.
+   */
+  private batchOf(session: Session, lead: RequestRecord): RequestRecord[] {
+    // A prompt of an earlier batch whose turn a lost node left runs alone: the agent may have its message already.
+    if (session.header.config.queue?.mode !== "batch" || session.header.parent || lead.batchedInto || !joins(lead, lead)) return [];
+    const order = (record: RequestRecord) => record.startedAt ?? 0;
+    const behind = [...session.running.values()].filter(record => record.id !== lead.id && order(record) >= order(lead)).sort((a, b) => order(a) - order(b));
+    const batch: RequestRecord[] = [];
+    for (const record of behind) {
+      if (record.method !== "prompt" || record.params === undefined || record.began !== undefined || record.abortedAt !== undefined || record.batchedInto || session.resuming.has(record.id) || !joins(lead, record)) break;
+      batch.push(record);
+    }
+    sometimes(batch.length > 0, "a turn took the prompts queued behind it as one batch");
+    return batch;
+  }
+
+  /**
+   * A prompt of the batch of `lead`'s turn (`batchOf`) whose message the turn has taken: the model has it. Its request
+   * ends with the turn, carrying the turn's answer (`batchEnded`); a `batch_taken` event says so now.
+   */
+  private batchTaken(session: Session, id: string, lead: string) {
+    (session.batchLanded ??= new Set()).add(id);
+    this.publish(session, { type: "event", requestId: id, event: { type: "batch_taken", batchedInto: lead } });
+  }
+
+  /** A batch's prompt's outcome: its turn's, without the turn's usage (charged once, on the turn's own request), naming the turn. */
+  private batchOutcome(turn: Outcome | undefined, lead: string): Outcome {
+    const result = turn?.result && typeof turn.result === "object" ? turn.result as Record<string, unknown> : undefined;
+    // A turn that failed fails its batch's prompts the same way; their records name it (`batchedInto`).
+    if (!result) return turn ?? { result: { batchedInto: lead } };
+    const { usage: _usage, files: _files, presented: _presented, toolCalls: _calls, toolErrors: _errors, sourceErrors: _sources, ...answer } = result;
+    return { result: { ...answer, batchedInto: lead } };
+  }
+
+  /**
+   * As `lead`'s turn ends: the prompts of its batch it took (`batch`, in order), and, when this node claimed them
+   * (`claimed`), those it never did (it ended or was stopped before their messages went in), which go back to the queue
+   * as runs of their own, or end aborted with a stopped turn.
+   */
+  private batchEnded(session: Session, lead: RequestRecord, claimed: boolean, turn: Outcome) {
+    const taken: RequestRecord[] = [], landed = session.batchLanded;
+    session.batchLanded = undefined;
+    const members = [...session.requests.values()].filter(member => member.batchedInto === lead.id && member.state === "running").sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0));
+    for (const member of members) {
+      const { params: _params, ...rest } = member;
+      if (landed?.has(member.id)) {
+        taken.push(this.upsertRequest(session, { ...rest, state: "completed", outcome: this.batchOutcome(turn, lead.id), endedAt: Date.now(), ...(session.announcing ? { announce: true as const } : {}) }));
+        continue;
+      }
+      // A turn resumed here from a lost node's: a member still open runs on, and finds its message if it landed.
+      if (!claimed) continue;
+      const { batchedInto: _lead, ...queued } = member;
+      if (member.abortedAt === undefined) { this.upsertRequest(session, queued); continue; }
+      reachable("a stop ended a batch's turn before it took one of the batch's prompts, which ended aborted");
+      const { params: _queued, ...ended } = queued;
+      const outcome: Outcome = { result: { error: "The run was aborted", code: "aborted" } };
+      this.upsertRequest(session, { ...ended, state: "completed", outcome, endedAt: Date.now(), ...(session.announcing ? { announce: true as const } : {}) });
+      this.publish(session, { type: "response", id: member.id, outcome });
+    }
+    sometimes(claimed && taken.length < members.length, "a batch's turn ended without taking every prompt of its batch");
+    return taken;
   }
 
   /**

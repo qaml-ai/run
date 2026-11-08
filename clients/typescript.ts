@@ -447,6 +447,13 @@ export interface CreateAgentOptions extends AgentOptions {
   dataCollection?: "deny";
   /** Its primary language, a BCP 47 tag ("en", "es-ES", "pt-BR", "zh-Hant"): it replies in it by default, and in the person's language when they clearly write in another. Default: none. */
   language?: string;
+  /**
+   * What it does with prompts that arrive while a turn runs. `{ mode: "batch" }`: those waiting when a turn ends run
+   * together as the next turn, each its own message in order (one turn for a burst of events); each merged prompt's request
+   * completes naming the turn's (`batchedInto`). `windowMs` (up to 2000): a prompt reaching an idle agent waits that long
+   * for others. Default: one turn per prompt.
+   */
+  queue?: QueueSetting;
   initialMessages?: Message[];
   /** History in another API's format (Anthropic Messages, OpenAI Responses or Chat Completions), converted to Pi messages by the runtime (`toPiMessages`); not with initialMessages. */
   importMessages?: ImportMessages;
@@ -531,6 +538,13 @@ export interface DefinitionInput {
   dataCollection?: "deny";
   /** Its primary language, a BCP 47 tag ("en", "es-ES", "pt-BR", "zh-Hant"): it replies in it by default, and in the person's language when they clearly write in another. Default: none. */
   language?: string;
+  /**
+   * What it does with prompts that arrive while a turn runs. `{ mode: "batch" }`: those waiting when a turn ends run
+   * together as the next turn, each its own message in order (one turn for a burst of events); each merged prompt's request
+   * completes naming the turn's (`batchedInto`). `windowMs` (up to 2000): a prompt reaching an idle agent waits that long
+   * for others. Default: one turn per prompt.
+   */
+  queue?: QueueSetting;
   /** false: its agents get no file tools but present_file. */
   fileTools?: boolean;
   /** false: its agents get no codemode, and call every tool directly. */
@@ -675,8 +689,8 @@ export type WebhookEvent = { id: string; created: number } & (
   | { type: "end_user.credit.granted" | "end_user.credit.refunded" | "end_user.credit.adjusted" | "end_user.credit.spent" | "end_user.credit.expired"; data: EndUserEntryEvent }
   | { type: "end_user.allowance.low"; data: { endUser: string; bucket: string; day: string; allowance: number; allowanceSpent: number; percent: number } }
   | { type: "run.started"; data: RunFacts & { resumes?: number } }
-  | { type: "run.completed"; data: RunFacts & { usage: RunUsage | null; servedModel?: string; stopped?: "input_required" | "spend_limit" | "turn_limit"; inputIds?: string[]; replyIndex?: number; messageCount?: number; steeredInto?: string } }
-  | { type: "run.failed"; data: RunFacts & Partial<ModelFailure> & { usage: RunUsage | null; servedModel?: string; error: string; code?: string; uncertain?: boolean; steeredInto?: string } }
+  | { type: "run.completed"; data: RunFacts & { usage: RunUsage | null; servedModel?: string; stopped?: "input_required" | "spend_limit" | "turn_limit"; inputIds?: string[]; replyIndex?: number; messageCount?: number; steeredInto?: string; batchedInto?: string; batch?: string[] } }
+  | { type: "run.failed"; data: RunFacts & Partial<ModelFailure> & { usage: RunUsage | null; servedModel?: string; error: string; code?: string; uncertain?: boolean; steeredInto?: string; batchedInto?: string; batch?: string[] } }
   | { type: "input.requested"; data: { agentId: string; requestId: string; inputId: string; toolCallId: string; kind: AgentInput["kind"]; expiresAt: number } }
   | { type: "input.resolved"; data: { agentId: string; requestId: string; inputId: string; state: Exclude<AgentInput["state"], "pending"> } }
   | { type: "usage.recorded"; data: {
@@ -777,6 +791,8 @@ export interface Schedule { calendar?: CalendarSchedule; email?: ScheduleEmail; 
  * its current step; `taken`, it has read it already, in the turn `steeredInto` names; `queued`, no turn was running, so it
  * runs as a turn of its own (the request `id`).
  */
+/** An agent's `queue` (`CreateAgentOptions.queue`): `{ mode: "batch" }` merges the prompts that wait while a turn runs into its next turn. */
+export interface QueueSetting { mode: "each" | "batch"; windowMs?: number }
 export interface SteerReceipt { id: string; status: "accepted" | "taken" | "queued"; steeredInto?: string }
 export function steerReceipt(record: RequestRecord): SteerReceipt {
   if (record.steeredInto) return { id: record.id, status: "taken", steeredInto: record.steeredInto };
@@ -1071,7 +1087,7 @@ const AGENT_KEY = /^[A-Za-z0-9_-]{1,80}$/;
 const REQUEST_ID = AGENT_KEY;
 /** A create request's fields, from the options given. */
 function provisioning(options: CreateAgentOptions) {
-  const fields = ["workspaceId", "subject", "context", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "definition", "mounts", "remount", "model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "decide", "delegate", "mcpServers", "prompt"] as const;
+  const fields = ["workspaceId", "subject", "context", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "definition", "mounts", "remount", "model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "queue", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "decide", "delegate", "mcpServers", "prompt"] as const;
   return withMultiAgent(Object.fromEntries(fields.filter(field => options[field] !== undefined).map(field => [field, options[field]])));
 }
 /** `delegate` settings bring their builtin: given the settings without delegate or agents, delegate is added. */
@@ -2484,8 +2500,11 @@ export class AgentClient {
    */
   async prompt(text: string, options?: RunRequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; whileRunning?: "queue" | "steer"; spendLimit?: { usd: number }; runLimits?: { maxResponses?: number; maxSeconds?: number }; output?: { schema: Record<string, unknown> }; /** @deprecated Ignored: every run sees the agent's history. For a run without it, use `createRun` (POST /v1/runs). */ history?: "full" | "none" }) {
     const result = await this.message("prompt", text, options, { ...(options?.actor ? { actor: options.actor } : {}), ...(options?.whileRunning === "steer" ? { whileRunning: "steer" } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}), ...(options?.spendLimit ? { spendLimit: options.spendLimit } : {}), ...(options?.runLimits ? { runLimits: options.runLimits } : {}), ...(options?.output ? { output: options.output } : {}), ...(options?.history === "none" ? { history: "none" } : {}) });
-    // A steered message's request completes as the running turn takes it, naming the turn: its outcome is the turn's.
-    const into = options?.whileRunning === "steer" && isRecord(result) && typeof result.steeredInto === "string" && !("reply" in result) ? result.steeredInto : undefined;
+    // A steered message's request completes as the running turn takes it, naming the turn: its outcome is the turn's. So
+    // does a prompt that ran in another's turn, on an agent whose queue batches (`batchedInto`).
+    const into = !isRecord(result) || "reply" in result ? undefined
+      : options?.whileRunning === "steer" && typeof result.steeredInto === "string" ? result.steeredInto
+      : typeof result.batchedInto === "string" ? result.batchedInto : undefined;
     return into ? this.waitForRequest(into, { ...(options?.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}), ...(options?.signal ? { signal: options.signal } : {}) }) : result;
   }
 

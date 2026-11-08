@@ -8,7 +8,7 @@ const SENT = "webhook-sent:";
 const RUN_METHODS = new Set(["prompt", "execute", "continue", "steer", "resume"]);
 type Run = {
   id: string; method: string; state: string; actor?: string; metadata?: unknown;
-  resumes?: number; steeredInto?: string; outcome?: { result?: unknown; error?: string; uncertain?: boolean };
+  resumes?: number; steeredInto?: string; batchedInto?: string; batch?: string[]; outcome?: { result?: unknown; error?: string; uncertain?: boolean };
 };
 type Owner = { id: string; tenantId: string };
 
@@ -23,6 +23,7 @@ export function runWebhook(owner: Owner, record: Run, messageCount?: number): We
   const result = (outcome.result ?? {}) as Record<string, any>;
   const { error } = outcomeEnding(outcome as Outcome);
   const ended = { ...base, ...(record.steeredInto ? { steeredInto: record.steeredInto } : {}),
+    ...(record.batchedInto ? { batchedInto: record.batchedInto } : {}), ...(record.batch ? { batch: record.batch } : {}),
     usage: result.usage ?? null, ...(result.servedModel ? { servedModel: result.servedModel } : {}) };
   const key = `run.ended:${owner.id}:${record.id}`;
   if (error !== undefined) {

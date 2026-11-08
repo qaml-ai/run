@@ -186,6 +186,8 @@ export class Directory {
     const previousEntry = await this.get(id), previousConfig = previousEntry?.config;
     if (fields.model === undefined && previousConfig?.model) config.model = previousConfig.model;
     if (fields.language === undefined && previousConfig?.language !== undefined) config.language = previousConfig.language;
+    // An upsert that leaves its queue out keeps the one the agent has, as for its language.
+    if (fields.queue === undefined && previousConfig?.queue !== undefined) config.queue = previousConfig.queue;
     const resolvedModel = await validateAgentModel(this.env, this.tenantId, config, { reference: previousConfig?.model, model: previousEntry?.resolvedModel, defaultModel: fields.model === undefined });
     // An agent whose first configuration never applied (initialized false: the apply failed) is still being
     // created: a retry applies it as a creation, since there is no configuration on the agent to queue a change on.
@@ -202,6 +204,7 @@ export class Directory {
       // Resolve omitted fields when this target reaches the head of the queue.
       if (fields.model === undefined) delete target.model;
       if (fields.language === undefined) delete target.language;
+      if (fields.queue === undefined) delete target.queue;
       const response = await this.env.AGENTS.getByName(id).fetch(new Request('https://agent/upsert', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ id: crypto.randomUUID(), method: 'configure', params: {

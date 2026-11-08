@@ -29,7 +29,7 @@ from . import (
     _AgentCalls, _DEFAULT, _PartReader, _RuntimeCalls, _Session, _TRANSCRIPTION_TIMEOUT, _UPLOAD_TIMEOUT, _answer_for, _attachment, _bearer,
     _check_request_id, _env, _error, _file_claims, _file_token, _http_sync, _issuer_of, _message_params, _origin, _outcome_run, _output_request,
     _prompt_extra, _public_key_sync, _require_tenant, _retry_after, _run_frame, _sender, _sse_frames,
-    _stateless_run, _steer_receipt, _token_header, _tool_server_answer, _tool_table, _tool_server_response, _unauthorized,
+    _stateless_run, _steer_receipt, _token_header, _tool_server_answer, _tool_table, _tool_server_response, _turn_of, _unauthorized,
     _unique_name, _verified,
 )
 from . import AgentFiles as _AsyncFiles, RunInput as _AsyncInput, Runs as _AsyncRuns, TestRuntime as _AsyncTestRuntime
@@ -277,9 +277,11 @@ class AgentClient(_AgentCalls):
         params = self._prompt_params(request_id, text, actor=actor, from_=from_, files=files, metadata=metadata, while_running=while_running,
                                      allow_disconnected=allow_disconnected, spend_limit=spend_limit, output=output, history=history)
         result = self.request("prompt", params, idempotency_key=request_id, timeout=timeout)
-        # A steered message's request completes as the running turn takes it, naming the turn: its outcome is the turn's.
-        if while_running == "steer" and isinstance(result, dict) and isinstance(result.get("steeredInto"), str) and "reply" not in result:
-            return self.wait_for_request(result["steeredInto"], timeout=timeout)
+        # A steered message's request completes as the running turn takes it, naming the turn: its outcome is the turn's. So
+        # does a prompt that ran in another's turn, on an agent whose queue batches (batchedInto).
+        into = _turn_of(result, while_running)
+        if into:
+            return self.wait_for_request(into, timeout=timeout)
         return result
 
     def steer_message(self, text, *, actor=None, from_=None, files=None, metadata=None, idempotency_key=None, allow_disconnected=False):
@@ -494,9 +496,10 @@ class Agent:
 
     def _settled(self, request_id, outcome, output, throw_on_error, timeout=None):
         result = outcome.get("result")
-        # A steered message's request completes as the running turn takes it: the run is that turn's.
-        if isinstance(result, dict) and isinstance(result.get("steeredInto"), str) and "reply" not in result:
-            request_id = result["steeredInto"]
+        # A steered message's request completes as the running turn takes it: the run is that turn's. So does a batched one's.
+        into = _turn_of(result, "steer")
+        if into:
+            request_id = into
             outcome = self.client._outcome(request_id, timeout=timeout)
         run = _outcome_run(request_id, outcome, output, lambda input: RunInput(self, input, output))
         if run.error and throw_on_error:
@@ -712,7 +715,8 @@ class Agents:
 
     def upsert(self, key, *, model=None, instructions=None, tools=None, definition=None, thinking_level=None, subject=None, context=None,
                key_scope=None, spend_limit=None, run_limits=None, model_headers=None, mounts=None, remount=None, name=None, instructions_append=None, file_tools=None,
-               builtins=None, delegate=None, code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, bucket=None):
+               builtins=None, delegate=None, code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, bucket=None,
+               queue=None):
         """The agent for `key`, made now if there is none, and set to this configuration if it differs (see
         camelai_run.Agents.upsert). `tools` are declared, never served here: a process with the async SDK serves them
         (Agents().get(key, tools=...)). Tools for serverless or many workers: serve_tools and a definition. An upsert
@@ -726,7 +730,8 @@ class Agents:
                                             subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits,
                                             model_headers=model_headers, mounts=mounts, remount=remount, name=name, system_prompt_append=instructions_append, file_tools=file_tools,
                                             builtins=builtins, delegate=delegate, code_mode=code_mode, initial_messages=initial_messages, import_messages=import_messages,
-                                            max_output_tokens=max_output_tokens, temperature=temperature, data_collection=data_collection, language=language, mcp_servers=mcp_servers, bucket=bucket)
+                                            max_output_tokens=max_output_tokens, temperature=temperature, data_collection=data_collection, language=language, mcp_servers=mcp_servers, bucket=bucket,
+                                            queue=queue)
         agent = self.agent(session, tools=tools)
         agent.config_hash = session.get("configHash")
         return agent

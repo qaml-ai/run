@@ -13,7 +13,7 @@ import {
   AgentClient, AgentError, AgentRuntime, RunError, toolServer,
   type AgentFiles, type Builtin, type DelegateSettings, type InlineMcpServer, type RecordedMessage, type AgentInput, type ChildAgent, type AgentOptions, type Attachment, type CreateAgentOptions, type HistoryPage, type InputAnswer,
   type ContextReset, type ForkedFrom, type ForkOptions, type MountInput, type RunResult, type RunUsage, type RuntimeOptions, type Sender, type SessionCredentials, type ToolError, type RunToolCall, type ToolServer, type Tools, type AgentFile, type SteerReceipt,
-  type RunFrame, type RunInputPart, type RunRequest, type StatelessRun, type CreditReason,
+  type RunFrame, type RunInputPart, type RunRequest, type StatelessRun, type CreditReason, type QueueSetting,
 } from "./typescript.ts";
 import type { AgentEvent, ModelFailure, ThinkingLevel } from "./types.ts";
 import type { Static, TSchema } from "typebox";
@@ -88,6 +88,13 @@ export interface AgentConfig {
   dataCollection?: "deny";
   /** Its primary language, a BCP 47 tag ("en", "es-ES", "pt-BR", "zh-Hant"): it replies in it by default, and in the person's language when they clearly write in another. Default: none. */
   language?: string;
+  /**
+   * What it does with prompts that arrive while a turn runs. `{ mode: "batch" }`: those waiting when a turn ends run
+   * together as the next turn, each its own message in order (one turn for a burst of events); each merged prompt's request
+   * completes naming the turn's (`batchedInto`). `windowMs` (up to 2000): a prompt reaching an idle agent waits that long
+   * for others. Default: one turn per prompt.
+   */
+  queue?: QueueSetting;
   /** Who the agent acts for (a user id in your app): `identity.subject` in its tool calls. Set when it is made. */
   subject?: string;
   /** Claims your tools need (org, workspace…): `identity.context` in its tool calls. Set when it is made. */

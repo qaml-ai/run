@@ -466,6 +466,10 @@ export function createHarness(this: AgentRuntime): PiHarness {
             onWake,
             settings: () => ({
               afterFailedRun: "withdraw",
+              // An agent whose queue batches takes every steer waiting at a tool round's end, not one per round, and
+              // starts its next run with every follow-up waiting (batch-queue.ts keeps only joinable ones there).
+              steeringMode: this.batching ? "all" : "one-at-a-time",
+              followUpMode: this.batching ? "all" : "one-at-a-time",
               compaction: this.modelCompaction?.(0),
               retry: { enabled: this.retryModelFailure, maxRetries: 2, baseDelayMs: 500 },
             }),

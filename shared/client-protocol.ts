@@ -60,6 +60,13 @@ export type RequestRecord = {
    * current step; `queued`, no turn could take it, so it runs as a turn of its own.
    */
   steer?: "accepted" | "queued";
+  /**
+   * A prompt of an agent whose queue batches (`queue: {mode: "batch"}`) that ran in another prompt's turn, with the
+   * prompts that waited beside it: that prompt's request, whose outcome is the turn's. It completes as the turn takes it.
+   */
+  batchedInto?: string;
+  /** A prompt whose turn took the prompts that waited behind it as well (`batchedInto` each): their requests, in order. */
+  batch?: string[];
   /** The runtime's own: a sub-agent's notification or message (its text and notice), kept once it begins so a next owner can land it. */
   notice?: unknown;
   /** The runtime's own: the notification's turn was refused (a spend limit, the wake cap) as it landed, so no owner asks the model. */

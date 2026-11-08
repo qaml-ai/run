@@ -18,6 +18,7 @@ export async function requestView<
     agentSpendAt: _agentSpendAt,
     accepted: _accepted,
     admitted: _admitted,
+    batchHeld: _batchHeld,
     fingerprint,
     ...visible
   } = record as T & Record<string, unknown>;

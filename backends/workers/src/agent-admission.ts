@@ -623,6 +623,14 @@ export async function admitImpl(this: AgentRuntime,
     if (request.method === "continue")
       await this.harness.continue({ operationId: id });
     else {
+      // Legacy steers held for the next prompt (`held-steer:`) go in with it, once: a marker names the prompt they went in
+      // with before its commit, so one that committed and was lost before they were removed is not appended twice.
+      const taking = await this.ctx.storage.get<{ request: string; keys: string[] }>('held-steer-taking');
+      if (taking) {
+        const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
+        if (await root.commit(async tx => !!(await tx.submissionByRequest(root.id, taking.request)), BACKGROUND_CONTEXT)) await this.ctx.storage.delete(taking.keys);
+        await this.ctx.storage.delete('held-steer-taking');
+      }
       const held = !pending ? await this.ctx.storage.list<{ id: string; prompt: typeof prompt; startedAt: number }>({ prefix: 'held-steer:' }) : new Map();
       const submission = {
         operationId: id,
@@ -639,6 +647,17 @@ export async function admitImpl(this: AgentRuntime,
           } as never,
         },
       };
+      // A steer the running turn takes and an agent's message join a turn already going; anything else may be held for
+      // a batch, so Pi's inbox only holds prompts that may share a turn (batch-queue.ts).
+      const holding = running || notice?.metadata.kind === 'message' ? false
+        : await this.batchQueue.holds(conf, { id, ...(record.actor ? { actor: record.actor } : {}), bucket: effectiveBucket, params }, notice !== undefined);
+      if (holding) {
+        const accepted = await this.batchQueue.hold(record, prompt, submission, holding === "window");
+        if (requestedBucket !== undefined) await this.ctx.storage.put("run-bucket", requestedBucket);
+        await this.arm();
+        return accepted;
+      }
+      if (held.size) await this.ctx.storage.put('held-steer-taking', { request: id, keys: [...held.keys()] });
       if (notice?.metadata.kind === 'message') {
         const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
         const input = { requestId: id, content: prompt, entry: submission.entry, candidate, held: [...held.values()],
@@ -649,13 +668,22 @@ export async function admitImpl(this: AgentRuntime,
         if (!admitted.submitted) {
           const refusal = await messageWake();
           if (refusal) return landWithoutTurn(refusal);
+          // A turn of its own is a follow-up: held while follow-ups wait that it may not join (batch-queue.ts).
+          if (await this.batchQueue.holds(conf, { id, params }, true)) {
+            if (held.size) await this.ctx.storage.delete('held-steer-taking');
+            const owned = await this.batchQueue.hold(record, prompt, { operationId: id, whenBusy: "followUp",
+              entry: { kind: "camel.prompt", data: { ...(submission.entry.data as Record<string, unknown>), logicalOwner: null } } }, false);
+            await this.steeringOwner(owned, null);
+            await this.arm();
+            return (await this.ctx.storage.get<RequestRecord>(reqKey(id))) ?? owned;
+          }
           admitted = await admitAgentMessage(root, input, 'own');
         }
         if (admitted.submitted && admitted.owner !== undefined) {
           const latest = (await this.ctx.storage.get<RequestRecord>(reqKey(id))) ?? record;
           await this.steeringOwner(latest, admitted.owner);
         }
-        if (held.size) await this.ctx.storage.delete([...held.keys()]);
+        if (held.size) await this.ctx.storage.delete([...held.keys(), 'held-steer-taking']);
       } else if (!held.size) await this.harness.submit(prompt, submission);
       else {
         const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
@@ -665,7 +693,7 @@ export async function admitImpl(this: AgentRuntime,
           for (const value of [...held.values()].sort((a, b) => a.startedAt - b.startedAt))
             await tx.appendEntry(root.id, { kind: 'camel.steer', data: { requestId: value.id }, model: [{ role: 'user', content: value.prompt, timestamp: Date.now() }] });
         }, BACKGROUND_CONTEXT);
-        await this.ctx.storage.delete([...held.keys()]);
+        await this.ctx.storage.delete([...held.keys(), 'held-steer-taking']);
       }
     }
     const accepted = await this.ctx.storage.transaction(async (tx) => {

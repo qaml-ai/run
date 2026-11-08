@@ -10,6 +10,8 @@ import type { AgentRuntime } from "./agent-runtime.ts";
 export async function abortRequestsImpl(this: AgentRuntime,
   queued: 'cancel' | 'keep' = 'cancel',
   keepChildren = false) {
+    // Prompts held for a batch are cancelled with the queue; kept, they go once the turn ends.
+    const heldCancelled = queued === 'cancel' ? await this.batchQueue.cancelAll() : [];
     if (queued === 'cancel') {
       await this.promptPreparations.cancel();
       const held = await this.ctx.storage.list({ prefix: 'held-steer:' });
@@ -74,7 +76,8 @@ export async function abortRequestsImpl(this: AgentRuntime,
       await this.emit({ type: "response", id, outcome: record.outcome });
     }
     this.configurationQueue.kick();
-    return { aborted: true, cancelled };
+    if (queued === 'keep') this.batchQueue.kick();
+    return { aborted: true, cancelled: [...heldCancelled, ...cancelled] };
   }
 
 export async function resumeKeptQueueImpl(this: AgentRuntime) {

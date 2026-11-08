@@ -244,6 +244,8 @@ export class DurableAgent {
    * would withdraw it and keep its request id.
    */
   private queued: AgentMessage[] = [];
+  /** Every waiting steer goes in at one boundary, not one per boundary (`submitSteer`): set for an agent whose queue batches. */
+  batchSteers = false;
   /** Steers only for the run they were given in (`steer(message, true)`): dropped when it ends without taking them. */
   private runOnly = new WeakSet<AgentMessage>();
   private originalInputs = new Map<number, { native: Message; message: AgentMessage }>();
@@ -1162,10 +1164,18 @@ export class DurableAgent {
   dropRunSteers() { this.queued = this.queued.filter(message => !this.runOnly.has(message)); }
   clearSteeringQueue() { this.queued = []; }
   hasQueuedMessages() { return this.queued.length > 0; }
-  /** The next steer as Pi input (`whenBusy: "steer"`): placed at the running round's boundary, or starting a run. */
+  /**
+   * The next steer as Pi input (`whenBusy: "steer"`): placed at the running round's boundary, or starting a run. With
+   * `batchSteers` (an agent whose queue batches), every steer waiting goes in together: the others as writes ahead of the
+   * last, which Pi places at the same boundary (writes first, in order), so the model reads them all in one response.
+   */
   private async submitSteer() {
-    const message = this.queued.shift();
-    if (message) await this.submitMessage(message, "steer", (message as { requestId?: string }).requestId);
+    const messages = this.batchSteers ? this.queued.splice(0) : this.queued.splice(0, 1), requests = new Set<string>();
+    for (const [index, message] of messages.entries()) {
+      const requestId = (message as { requestId?: string }).requestId;
+      await this.submitMessage(message, index < messages.length - 1 ? "write" : "steer", requestId && !requests.has(requestId) ? requestId : undefined);
+      if (requestId) requests.add(requestId);
+    }
   }
   abort() { if (this.controller) { this.errorMessage ??= "Agent run aborted"; this.controller.abort(); void this.conversation.abort(context).catch(() => {}); } }
   close(timeoutMs = 5_000): Promise<void> {
