@@ -1,3 +1,5 @@
+import { readInputMirrors } from "./agent-input-mirror.ts";
+import { stageInputMirror } from "./input-mirror.ts";
 import { visibleReplay } from "./event-visibility.ts";
 import { BrowserTokens } from "./browser-tokens.ts";
 import { subscribedEvent, type EventSubscription } from "./event-socket.ts";
@@ -16,6 +18,9 @@ export async function emitImpl(this: AgentRuntime,
   event: unknown,
   delivery?: TerminalDelivery,
   webhook?: WebhookEvent) {
+    const inputEvent = (event as any).event;
+    const mirrors = ["input_required", "input_resolved"].includes(inputEvent?.type)
+      ? await readInputMirrors(this, [inputEvent.input?.id ?? inputEvent.id]) : [];
     let committed: { owner?: Config; record?: RequestRecord } = {};
     const work = this.serial.then(async () => {
       const cursor = await this.ctx.storage.transaction(async (tx) => {
@@ -30,8 +35,11 @@ export async function emitImpl(this: AgentRuntime,
           (value.type === "response" || value.event?.type === "agent_start")
           ? runWebhook(owner, value.type === "response" ? record : { ...record, state: "running" }, this.nextMessage)
           : owner && value.event?.type === "input_required"
-            ? inputWebhook(owner, value.requestId, value.event.input) : undefined);
+            ? inputWebhook(owner, value.requestId, value.event.input)
+            : owner && value.event?.type === "input_resolved"
+              ? inputWebhook(owner, value.requestId, value.event, true) : undefined);
         if (announcement) await stageWebhook(tx, announcement);
+        for (const row of mirrors) await stageInputMirror(tx, row);
         committed = { owner, record };
         const live = { cursor: next, events: [], turn: await tx.get<LiveTurn>("live-turn"), partial: this.partial };
         if (value.type === "event" && value.event?.type === "agent_start" && live.turn?.requestId !== value.requestId)
@@ -72,7 +80,7 @@ export async function emitImpl(this: AgentRuntime,
     this.serial = work.catch(() => {});
     await work;
     const value = event as any;
-    if (webhook || value.type === "response" || ["agent_start", "input_required"].includes(value.event?.type))
+    if (webhook || value.type === "response" || ["agent_start", "input_required", "input_resolved"].includes(value.event?.type))
       this.ctx.waitUntil(this.dbProfile.run("webhooks", () => this.webhooks.flush()));
   }
 

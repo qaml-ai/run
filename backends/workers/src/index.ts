@@ -1,3 +1,4 @@
+import { sweepInputMirrors } from "./input-mirror.ts";
 import { HttpError as CoreHttpError } from "../../../src/core/http-error.ts";
 import { serveToolFile } from './tool-files.ts';
 import { withMoneyMetrics } from "./money-metrics.ts";
@@ -563,6 +564,7 @@ const worker = {
         env.TEST_MODEL !== "1"
       )
         throw new ApiError(404, "Not found");
+      if (tail === "/_input-mirror") throw new ApiError(404, "Not found");
       const lifecycle = !browser
         ? await agentLifecycleRoutes(request, env, entry, tail, auth?.kind !== "oauth")
         : undefined;
@@ -639,6 +641,7 @@ const worker = {
   async scheduled(_controller: ScheduledController, env: Env) {
     return withMoneyMetrics(env, async () => {
     try {
+      if (_controller.cron === "* * * * *") return sweepInputMirrors(env);
       await maintenance(env);
       await moneyMaintenance(env);
       await publishScheduleEmails(env);
