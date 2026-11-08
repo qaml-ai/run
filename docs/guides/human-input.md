@@ -115,8 +115,8 @@ Inputs outlive your process: answer later from anywhere.
 
 - `agent.pendingInputs()` (Python `pending_inputs()`) lists an agent's waiting
   inputs, each with `answer()`.
-- `agents.runtime.inbox("pending")` lists the inputs waiting across all your
-  agents, for an approvals queue.
+- `agents.runtime.inbox()` returns a page (`items`, `cursor`, `counts`) of pending inputs across your
+  agents. Pass the cursor to read the next page; use each item's `inputId` to answer through its agent.
 - Over REST: `GET /v1/agents/:id/inputs?state=pending`, and `POST
   /v1/agents/:id/inputs/:inputId {action: "accept" | "decline" | "cancel",
   content?, from?}`. A question's `content` is `{answers: {"<question>":

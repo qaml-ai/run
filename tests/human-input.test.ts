@@ -376,7 +376,7 @@ test("inputs from parallel calls are one suspension: answered together, all or n
   const agent = await asker(r);
   const inputs = (await r.prompt(agent, "Ask me twice")).outcome.result.inputs.sort((a: any, b: any) => a.message.localeCompare(b.message));
   assert.deepEqual(inputs.map((input: any) => input.message), ["First?", "Second?"]);
-  assert.deepEqual((await r.call("/v1/inputs?state=pending")).json.map((input: any) => input.id).sort(), inputs.map((input: any) => input.id).sort());
+  assert.deepEqual((await r.call("/v1/inbox")).json.items.map((input: any) => input.inputId).sort(), inputs.map((input: any) => input.id).sort());
 
   const answers = (second: string) => ({ answers: [
     { id: inputs[0].id, action: "accept", content: { answers: { "First?": "A" } } },
@@ -390,7 +390,7 @@ test("inputs from parallel calls are one suspension: answered together, all or n
   assert.equal((await r.call(`/v1/agents/${agent}/inputs`, { body: answers("B") })).status, 200, "a retry is safe");
   const resumed = await until(async () => { const record = (await r.call(`/v1/agents/${agent}/requests/${answered.json.requests[0].id}`)).json; return record.state === "completed" && record; }, "the resume");
   assert.equal(resumed.outcome.result.reply, "A+B");
-  assert.deepEqual((await r.call("/v1/inputs?state=pending")).json, []);
+  assert.deepEqual((await r.call("/v1/inbox")).json.items, []);
 });
 
 test("an application answers with onInput, from its SDK", async t => {

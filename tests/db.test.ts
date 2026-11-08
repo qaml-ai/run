@@ -31,6 +31,19 @@ test("migrations apply once: running them again does nothing", async () => {
   assert.deepEqual((await db.query("select name from schema_migrations order by name")).rows.map(row => row.name), MIGRATIONS);
 });
 
+test("the inbox ordering migration replaces only the old inbox index", async () => {
+  const { db } = await testDatabase({ migrate: false });
+  await migrateBefore(db, "119");
+  // Slice 3 owns migration 118. Also exercise its index before that branch is merged.
+  await db.query("create index if not exists agent_inputs_pending_updated_at on agent_inputs (updated_at) where state='pending'");
+  await migrate(db);
+  const names = (await db.query("select indexname from pg_indexes where schemaname=current_schema() and tablename='agent_inputs'")).rows.map(row => row.indexname);
+  assert.ok(names.includes("agent_inputs_inbox_order"));
+  assert.ok(names.includes("agent_inputs_pending_updated_at"));
+  assert.ok(names.includes("agent_inputs_responders"));
+  assert.ok(!names.includes("agent_inputs_inbox"));
+});
+
 test("a concurrent migration builds its index outside a transaction, in order between the others, and once", async () => {
   const { db } = await testDatabase({ migrate: false });
   const directory = mkdtempSync(join(tmpdir(), "migrations-"));

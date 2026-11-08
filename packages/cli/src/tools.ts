@@ -179,7 +179,7 @@ export function tools(api: () => Api, options: { local?: LocalFiles } = {}): Too
 
   tool("list_inputs", "List pending inputs", "Questions, approvals and forms waiting on a person: one agent's, or every agent's. Changes nothing.", { agent: agent.optional() }, async ({ agent }) => {
     const client = api();
-    return agent ? client.get(`/v1/agents/${enc(await client.agentId(agent))}/inputs?state=pending`) : client.get("/v1/inputs?state=pending");
+    return agent ? client.get(`/v1/agents/${enc(await client.agentId(agent))}/inputs?state=pending`) : client.get("/v1/inbox");
   }, read);
   tool("answer_input", "Answer input",
     "Answer an input and wait for the run it resumes. An approval takes true or false; a question the chosen label or your own words (several questions: {\"<question>\": \"<answer>\"}); a form its fields; \"decline\" declines. Only answer with what the person decided: an answer cannot be taken back, and an approval lets the agent go ahead with what it asked to do.",

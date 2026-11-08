@@ -6168,7 +6168,8 @@
               "declined",
               "cancelled",
               "expired",
-              "superseded"
+              "superseded",
+              "withdrawn"
             ],
             "description": "expired: no one answered by expiresAt, so the runtime answered for the person (answer.by.system \"expired\"; an approval is not given) and the agent went on without them"
           },
@@ -6342,6 +6343,125 @@
         },
         "required": [
           "answers"
+        ]
+      },
+      "InboxPage": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Input"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "inputId": {
+                      "type": "string",
+                      "description": "Use this id with the per-agent input answer route; id identifies the inbox row"
+                    },
+                    "priority": {
+                      "type": "string",
+                      "enum": [
+                        "urgent",
+                        "high",
+                        "normal",
+                        "low"
+                      ]
+                    },
+                    "blocking": {
+                      "type": "boolean"
+                    },
+                    "subject": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "root": {
+                      "type": "string"
+                    },
+                    "lineage": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "key": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "version": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "inputId",
+                    "priority",
+                    "blocking",
+                    "subject",
+                    "root",
+                    "lineage",
+                    "key",
+                    "version"
+                  ]
+                }
+              ]
+            }
+          },
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "counts": {
+            "type": "object",
+            "properties": {
+              "priority": {
+                "type": "object",
+                "properties": {
+                  "urgent": {
+                    "type": "number"
+                  },
+                  "high": {
+                    "type": "number"
+                  },
+                  "normal": {
+                    "type": "number"
+                  },
+                  "low": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "urgent",
+                  "high",
+                  "normal",
+                  "low"
+                ]
+              },
+              "lead": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "number"
+                }
+              }
+            },
+            "required": [
+              "priority",
+              "lead"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "cursor",
+          "counts"
         ]
       },
       "Schedule": {
@@ -17156,36 +17276,185 @@
         }
       }
     },
-    "/v1/inputs": {
+    "/v1/inbox": {
       "get": {
         "parameters": [
           {
             "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "for",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "subject",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "root",
+            "in": "query"
+          },
+          {
+            "schema": {
               "type": "string",
               "enum": [
-                "pending",
-                "answered",
-                "declined",
-                "cancelled",
-                "expired",
-                "superseded"
+                "urgent",
+                "high",
+                "normal",
+                "low"
               ]
             },
             "required": false,
-            "name": "state",
+            "name": "priority",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "question",
+                "approval",
+                "form",
+                "url"
+              ]
+            },
+            "required": false,
+            "name": "kind",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "required": false,
+            "name": "limit",
             "in": "query"
           }
         ],
         "responses": {
           "200": {
-            "description": "The tenant's human inputs across its agents, newest first: what waits on someone",
+            "description": "Pending inputs in priority order, with filtered counts before pagination",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/Input"
-                  }
+                  "$ref": "#/components/schemas/InboxPage"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/inputs": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "for",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "subject",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "root",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "urgent",
+                "high",
+                "normal",
+                "low"
+              ]
+            },
+            "required": false,
+            "name": "priority",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "question",
+                "approval",
+                "form",
+                "url"
+              ]
+            },
+            "required": false,
+            "name": "kind",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Pending inputs in priority order, with filtered counts before pagination",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxPage"
                 }
               }
             }
