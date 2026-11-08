@@ -769,9 +769,11 @@ class _RuntimeCalls:
         body = {key: value for key, value in {"ttlSeconds": ttl_seconds, "scopes": scopes, "events": events, "redact": redact, "subject": subject}.items() if value is not None}
         return self._rest("POST", f"/v1/agents/{_path(agent_id)}/browser-tokens", body, retry=False)
 
-    def inbox(self, *, state=None):
-        """Inputs waiting on someone across all the tenant's agents (state="pending", say), newest first."""
-        return self._rest("GET", "/v1/inputs" + (f"?state={state}" if state else ""))
+    def inbox(self, *, for_=None, subject=None, root=None, priority=None, kind=None, cursor=None, limit=None):
+        """A page of pending inputs in priority order: {items, cursor, counts}. inputId addresses the per-agent answer route."""
+        query = urlencode({key: value for key, value in {"for": for_, "subject": subject, "root": root,
+            "priority": priority, "kind": kind, "cursor": cursor, "limit": limit}.items() if value is not None})
+        return self._rest("GET", "/v1/inbox" + (f"?{query}" if query else ""))
 
     def tool_sources(self, agent_id, *, schemas=False, refresh=False):
         """Every source of an agent's tools (its application, file tools, built-ins, MCP servers, OpenAPI

@@ -1,5 +1,6 @@
+import { pendingInputMirrors, upsertInputMirrors } from "./input-mirror.ts";
 import { outcomeEnding, type Outcome } from "../../../shared/client-protocol.ts";
-import { withSql, type PostgresEnv } from "./postgres.ts";
+import { transaction, type PostgresEnv } from "./postgres.ts";
 import { enqueueEvents, webhookEvent, type WebhookEvent } from "./webhook-policy.ts";
 import { publishPending, type WebhookEnv } from "./webhooks.ts";
 
@@ -45,7 +46,7 @@ export function runWebhook(owner: Owner, record: Run, messageCount?: number): We
 /** The terminal-event recovery path shares the durable outbox's exact projection and key. */
 export async function enqueueRunWebhook(env: PostgresEnv, tenant: string, agentId: string, record: Omit<Run, "state">) {
   const event = runWebhook({ id: agentId, tenantId: tenant }, { ...record, state: "completed" });
-  if (event) await withSql(env, sql => enqueueEvents(sql, [event]));
+  if (event) await transaction(env, sql => enqueueEvents(sql, [event]));
 }
 
 export function inputWebhook(owner: Owner, requestId: string, input: {
@@ -73,10 +74,18 @@ export class AgentWebhooks {
   flush(): Promise<void> {
     const next = this.pending.then(async () => {
       const entries = await this.storage.list<WebhookEvent>({ prefix: PENDING, limit: 100 });
-      if (!entries.size) return;
+      const mirrors = await pendingInputMirrors(this.storage);
+      if (!entries.size && !mirrors.size) return;
       try {
-        await withSql(this.env, sql => enqueueEvents(sql, [...entries.values()]));
+        await transaction(this.env, async sql => {
+          await upsertInputMirrors(sql, [...mirrors.values()]);
+          await enqueueEvents(sql, [...entries.values()]);
+        });
         await this.storage.transaction(async tx => {
+          for (const [key, row] of mirrors) {
+            const current = await tx.get<typeof row>(key);
+            if (current?.version === row.version) await tx.delete(key);
+          }
           for (const [key, event] of entries) {
             await tx.put(`${SENT}${event.id}`, true);
             await tx.delete(key);

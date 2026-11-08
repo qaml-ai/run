@@ -11,6 +11,7 @@ import { scriptOf } from "./codemode-run.ts";
 import { endScript, waitsOnPerson } from "../codemode/sandbox.ts";
 
 export type HumanInput = {
+  version?: number; inboxResponders?: string[];
   question: string; answer?: string; toolCallId?: string;
   kind?: "question" | "approval" | "form" | "url";
   detail?: Record<string, any>; createdAt?: number; expiresAt?: number;
@@ -95,7 +96,7 @@ export async function waitForHuman(input: HumanInput, api: ToolExecutionApi, con
 
 export function humanInputView(id: string, item: HumanInput, agent: string, requestId = "") {
   return {
-    id, agent, requestId, toolCallId: item.toolCallId ?? id,
+    id, agent, requestId, version: item.version ?? (item.answer === undefined ? 1 : 2), toolCallId: item.toolCallId ?? id,
     kind: item.kind ?? "question", message: item.question,
     detail: item.detail ?? {}, state: item.state ?? (item.answer === undefined ? "pending" : "answered"),
     responders: item.responders ?? {},
@@ -109,7 +110,7 @@ export function humanInputView(id: string, item: HumanInput, agent: string, requ
 /** Bind policy once, before publishing the input or accepting an answer. */
 export function bindHumanInput(item: HumanInput, requestId: string, actor: string | undefined, settings: HumanInputSettings | undefined, agentExpiresAt: number | null): HumanInput {
   if (item.policyBound) return item;
-  return { ...item, requestId, responders: actor ? { audience: [actor] } : {},
+  return { ...item, requestId, inboxResponders: [...new Set([...(actor ? [actor] : []), ...settings?.approvers ?? []])], responders: actor ? { audience: [actor] } : {},
     expiresAt: expiresAt(settings, agentExpiresAt, item.createdAt), policyBound: true };
 }
 
@@ -155,7 +156,7 @@ export function systemHumanAnswer(system: NonNullable<Responder["system"]>, now 
 
 export function cancelledHumanInput(item: HumanInput, now = Date.now()): HumanInput {
   if (item.answer !== undefined) return item;
-  return { ...item, ...systemHumanAnswer("aborted", now) };
+  return { ...item, version: (item.version ?? 1) + 1, ...systemHumanAnswer("aborted", now) };
 }
 
 /** A continued call starts again in the resume stream, with its original arguments. */

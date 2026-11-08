@@ -186,8 +186,9 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
       }
       case "inputs": {
         const client = api();
-        const inputs: any[] = args[0] ? await client.get(`/v1/agents/${enc(await client.agentId(args[0]))}/inputs?state=pending`) : await client.get("/v1/inputs?state=pending");
-        print(inputs, () => inputs.length ? inputs.map(input => `${input.id}  ${input.agent}  ${input.kind}: ${input.message ?? JSON.stringify(input.detail).slice(0, 200)}`).join("\n") : "Nothing is waiting");
+        const result = args[0] ? await client.get(`/v1/agents/${enc(await client.agentId(args[0]))}/inputs?state=pending`) : await client.get("/v1/inbox");
+        const inputs: any[] = Array.isArray(result) ? result : result.items;
+        print(result, () => inputs.length ? inputs.map(input => `${input.inputId ?? input.id}  ${input.agent}  ${input.kind}: ${input.message ?? JSON.stringify(input.detail).slice(0, 200)}`).join("\n") : "Nothing is waiting");
         return 0;
       }
       case "answer": {

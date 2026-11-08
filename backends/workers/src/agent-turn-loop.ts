@@ -84,9 +84,11 @@ export async function markBeganImpl(this: AgentRuntime,
   }
 
 export async function observeImpl(this: AgentRuntime) {
+    // Startup may itself observe restored host requests. An outside caller must
+    // not cache a promise waiting for that startup, or both wait on each other.
+    const pi = await this.harness.pi();
     return (this.observer ??= (async () => {
       const watch = await this.harness.session().watch();
-      const pi = await this.harness.pi();
       const root = await pi.root(BACKGROUND_CONTEXT);
       await this.historyIndex.sync(root);
       this.nextMessage = this.historyIndex.total();
@@ -368,7 +370,7 @@ export async function onHumanImpl(this: AgentRuntime,
           const doc = await tx.doc(HumanInputs);
           for (const [key, input] of bound) {
             const current = doc.requests[key];
-            if (current && !current.policyBound) Object.assign(current, { requestId: input.requestId, responders: input.responders, expiresAt: input.expiresAt, policyBound: true });
+            if (current && !current.policyBound) Object.assign(current, { requestId: input.requestId, responders: input.responders, inboxResponders: input.inboxResponders, expiresAt: input.expiresAt, policyBound: true });
           }
         }, BACKGROUND_CONTEXT);
       }
@@ -837,7 +839,7 @@ export async function answerHumanInputsImpl(this: AgentRuntime,
         }
         for (const entry of checked) {
           const current = doc.requests[entry.id];
-          if (current.answer === undefined) Object.assign(current, entry.answer);
+          if (current.answer === undefined) Object.assign(current, entry.answer, { version: (current.version ?? 1) + 1 });
           inputs.push(humanInputView(entry.id, JSON.parse(JSON.stringify(current)), conf!.id, entry.owner));
         }
       }, BACKGROUND_CONTEXT);
@@ -872,7 +874,9 @@ export async function dueHumanInputsImpl(this: AgentRuntime, at: number) {
     await root.commit(async tx => {
       const doc = await tx.doc(HumanInputs);
       for (const input of Object.values(doc.requests)) if (input.answer === undefined) {
-        input.expiresAt = Math.min(input.expiresAt ?? at, at);
+        const deadline = Math.min(input.expiresAt ?? at, at);
+        if (deadline !== input.expiresAt) input.version = (input.version ?? 1) + 1;
+        input.expiresAt = deadline;
         due++;
       }
     }, BACKGROUND_CONTEXT);

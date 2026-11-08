@@ -165,4 +165,4 @@ while run.status == "input_required":
 
 Everything in a tool before an ask runs again when the user answers.
 `agent.pending_inputs()` lists what an agent waits on, and
-`agents.runtime.inbox(state="pending")` what all your agents do.
+`agents.runtime.inbox()` returns pending inputs as a page with `items`, `cursor` and `counts`.
