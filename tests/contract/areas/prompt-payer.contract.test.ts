@@ -161,6 +161,7 @@ contractTest('credits', 'tests/prompt-payer.test.ts', 'a follow-up queued before
   for (const [user, expected] of [['guest', steered ? ['before'] : ['before', 'late']], ['other', ['next']]] as const) {
     const entries = (await r.call(`/v1/end-users/${user}/ledger`)).json.entries.filter((e: any) => e.kind === 'usage');
     assert.deepEqual([...new Set(entries.map((e: any) => e.metadata.requestId))].sort(), [...expected].sort(), JSON.stringify(entries));
+    assert.equal(entries.reduce((sum: number, entry: any) => sum + entry.raw, 0), user === 'guest' ? 20_000 : 10_000, 'each payer owns its model calls');
     assert.equal((await r.call(`/v1/end-users/${user}`)).json.held, 0);
   }
 }, { timeout: 180_000, env: payerEnv });
