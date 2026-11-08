@@ -121,6 +121,8 @@ test("model and run errors are sorted into a few classes", () => {
   assert.equal(errorClass("502 Bad Gateway"), "provider_5xx");
   assert.equal(errorClass("fetch failed: ECONNRESET"), "network");
   assert.equal(errorClass("The runtime restarted during this request"), "runtime_restart");
+  // Workers resetting an object whose startup ran past 30 s: its "too long" once counted as a context overflow.
+  assert.equal(errorClass("A call to blockConcurrencyWhile() in a Durable Object waited for too long. The call was canceled and the Durable Object was reset."), "startup_reset");
   for (const error of ["Compaction failed: Summarization failed: Network connection lost", "Summarization failed: 429", "Compaction failed: context window exceeded"])
     assert.equal(errorClass(error), "compaction");
   assert.equal(errorClass("something else"), "other");

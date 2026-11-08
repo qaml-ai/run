@@ -283,7 +283,8 @@ images or file references. Contents are never logged. Details are serialized onc
 result for this measurement; image payload sizes need no serialization.
 
 `ErrorClass` is one of rate_limit, overloaded, context_overflow, auth, billing, refusal, timeout,
-stream_stalled, provider_5xx, network, runtime_restart, image_limit (a provider refusing a request's image
+stream_stalled, provider_5xx, network, runtime_restart, startup_reset (Workers resetting an agent whose startup
+ran past 30 s), image_limit (a provider refusing a request's image
 content, e.g. OpenRouter's 413 past 30 MB), exception, other (none for a success). A run's
 `error.errorClass` is the same classification in the API's fewer classes (`src/model-errors.ts`). A failed
 tool call also logs `tool_failed` with the tool's name, the tenant and the error's class
