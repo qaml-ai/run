@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { registerHooks } from 'node:module';
 import { InboxDoc } from '@earendil-works/pi-durable';
-import { BatchQueue } from '../src/batch-queue.ts';
+
+// Successful queue releases do not call the Workers-only admission service.
+registerHooks({ resolve(specifier, context, next) {
+  if (specifier === './control.ts' && context.parentURL === new URL('../src/batch-queue.ts', import.meta.url).href) {
+    return { url: 'data:text/javascript,export function releaseTurn() { throw new Error("unexpected cancellation"); }', shortCircuit: true };
+  }
+  return next(specifier, context);
+} });
+const { BatchQueue } = await import('../src/batch-queue.ts');
 
 function fixture() {
   let items: { mode: string }[] = [], run: object | undefined = {};

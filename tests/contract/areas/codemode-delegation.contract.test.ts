@@ -49,7 +49,7 @@ contractTest("delegation", "tests/codemode-delegation.test.ts:10", "code fans ou
   const rows = await childRows(r, made.json.id);
   assert.equal(rows.length, 3);
   assert.ok(rows.every(row => row.tool_call_id === "code"));
-});
+}, { timeout: 90_000 }); // Includes the file's cold Workers fixture startup.
 
 contractTest("delegation", "tests/codemode-delegation.test.ts:38", "a script returning without awaiting a delegate stops that child", async (t)=>{
   const started = Promise.withResolvers<void>();
