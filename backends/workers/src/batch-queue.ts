@@ -3,7 +3,7 @@ import { InboxDoc, LiveDoc } from "@earendil-works/pi-durable";
 import { answers } from "./batch-runs.ts";
 import { batchable, joins } from "../../../shared/queue-mode.ts";
 import { releaseTurn } from "./control.ts";
-import { RequestRecord, reqKey, type Config } from "./agent-types.ts";
+import { reqKey, type RequestRecord, type Config } from "./agent-types.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
 
 const HOLD = "batch-hold:";
