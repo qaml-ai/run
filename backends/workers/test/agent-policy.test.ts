@@ -137,15 +137,15 @@ test('a sub-agent\'s turn signed into no chain (a notification\'s) delegates fro
 });
 test('new child inherits the parent computer before submission, once across replay', async () => {
   const f = fixture(), inherited: string[][] = [], fetch = f.host.fetch;
-  // A fresh child (no computer argument): the parent's connection is copied, with no fork.
+  // A fresh child: the parent's connection is copied, with no fork.
   f.host.inheritComputer = async (parent, child, computer) => { assert.equal(computer, undefined); inherited.push([parent, child]); };
   f.host.fetch = async (id, request) => {
     if (request.method === 'POST') assert.deepEqual(inherited, [['parent', id]]);
     return fetch(id, request);
   };
-  await f.delegation.start({ instructions: 'helper', task: 'help' }, 'inherit', signal());
+  await f.delegation.start({ instructions: 'helper', task: 'help', computer: 'fresh' }, 'inherit', signal());
   await Promise.all(f.tasks);
-  await f.delegation.start({ instructions: 'helper', task: 'help' }, 'inherit', signal());
+  await f.delegation.start({ instructions: 'helper', task: 'help', computer: 'fresh' }, 'inherit', signal());
   assert.deepEqual(inherited, [['parent', 'child-1']]);
 });
 test('delegation to an existing agent preserves its computer connection', async () => {
