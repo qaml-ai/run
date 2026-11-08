@@ -465,7 +465,7 @@ test("computer egress: git clone and push through the runtime's credential gatew
     const body = JSON.parse(raw), text = JSON.stringify(body.messages);
     const delta = text.includes("FORK_CHILD") || body.messages.at(-1).role === "tool" || text.includes("agent_notification")
       ? { role: "assistant", content: "done" }
-      : { role: "assistant", tool_calls: [{ index: 0, id: "spawn-1", type: "function", function: { name: "spawn_agent", arguments: JSON.stringify({ instructions: "FORK_CHILD", task: "Work in a fork", name: "worker" }) } }] };
+      : { role: "assistant", tool_calls: [{ index: 0, id: "spawn-1", type: "function", function: { name: "spawn_agent", arguments: JSON.stringify({ instructions: "FORK_CHILD", task: "Work in a fork", name: "worker", computer: "fresh" }) } }] };
     response.writeHead(200, { "content-type": "text/event-stream" });
     response.write(`data: ${JSON.stringify({ id: "m", object: "chat.completion.chunk", choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`);
     response.end(`data: ${JSON.stringify({ id: "m", object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" in delta ? "tool_calls" : "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0 } })}\n\ndata: [DONE]\n\n`);
