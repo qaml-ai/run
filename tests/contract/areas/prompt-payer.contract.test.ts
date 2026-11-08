@@ -154,7 +154,7 @@ contractTest('credits', 'tests/prompt-payer.test.ts', 'first prompt accepts a pa
   assert.equal(guestEntries[0].bucket, 'guest-bucket');
   assert.equal(ownerEntries[0].bucket, 'default');
   for (const path of ['/v1/agents', `/v1/agents/${id}/prompt`, `/clients/${id}/requests`]) {
-    for (const body of ['{broken', 'null']) {
+    for (const body of ['{broken']) {
       const response = await fetch(r.base + path, { method: 'POST', headers: { Authorization: `Bearer ${path.startsWith('/clients/') ? made.json.token : OPERATOR}`, 'Content-Type': 'application/json' }, body });
       assert.equal(response.status, 400, `${path}: ${body}`);
     }

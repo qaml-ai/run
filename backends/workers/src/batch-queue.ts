@@ -32,7 +32,8 @@ type Member = { id?: string; actor?: string; bucket?: string; params?: unknown }
  * A window (`queue.windowMs`) holds a joinable prompt that reaches an idle agent that long, and those arriving with it.
  */
 export class BatchQueue {
-  constructor(private readonly runtime: AgentRuntime) {}
+  private readonly runtime: AgentRuntime;
+  constructor(runtime: AgentRuntime) { this.runtime = runtime; }
 
   private get storage() { return this.runtime.ctx.storage; }
 

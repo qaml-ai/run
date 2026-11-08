@@ -11,6 +11,7 @@ function fixture() {
     list: async ({ prefix }: { prefix: string }) => new Map([...values].filter(([key]) => key.startsWith(prefix))),
     delete: async (key: string) => values.delete(key),
     put: async (key: string, value: unknown) => { values.set(key, value); },
+    transaction: async (fn: (tx: any) => Promise<unknown>) => fn(storage),
   };
   const pi = { root: async () => ({ id: 'root' }), snapshot: async (doc: unknown) => doc === InboxDoc ? { items } : { run } };
   const runtime = { ctx: { storage }, harness: { pi: async () => pi, submit: async (...args: unknown[]) => { sent.push(args); } },
