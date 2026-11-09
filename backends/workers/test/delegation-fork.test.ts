@@ -5,7 +5,7 @@ import { Delegation, type ChildComputerFork, type DelegatedChild, type Delegatio
 // computer: "fork": the parent's snapshot is taken while the child is made (both take seconds on Cloudflare), and a
 // fork that cannot be taken still fails the call with nothing kept.
 
-function world(fork: () => Promise<ChildComputerFork>, options: { definition?: Record<string, unknown> } = {}) {
+function world(fork: () => Promise<ChildComputerFork>, options: { definition?: Record<string, unknown>; existing?: boolean; parent?: Record<string, unknown> } = {}) {
   const values = new Map<string, unknown>();
   let transaction = Promise.resolve<unknown>(undefined);
   const storage = {
@@ -22,10 +22,10 @@ function world(fork: () => Promise<ChildComputerFork>, options: { definition?: R
   const order: string[] = [], removed: string[] = [], inherited: unknown[] = [], created: Record<string, any>[] = [];
   const host: DelegationHost = {
     storage: storage as unknown as DurableObjectStorage, secret: 'test-only-delegation-secret',
-    context: async () => ({ id: 'parent', config: { model: 'test/echo', computer: { hosts: ['example.com'] }, delegate: { instructions: true, agents: [{ name: 'worker', definition: 'worker' }], maxDepth: 2, maxParallel: 2 } }, run: { id: 'parent-run' } }),
+    context: async () => ({ id: 'parent', config: { model: 'test/echo', computer: { hosts: ['example.com'] }, ...options.parent, delegate: { instructions: true, agents: [{ name: 'worker', definition: 'worker' }], maxDepth: 2, maxParallel: 2 } }, run: { id: 'parent-run' } }),
     create: async (config, key) => { created.push(config as Record<string, any>); order.push('create'); return { id: `agent-${key}` }; },
     remove: async id => { removed.push(id); },
-    target: async () => { if (!options.definition) throw new Error('unexpected target'); return { config: options.definition as never }; },
+    target: async () => { if (!options.definition) throw new Error('unexpected target'); return { config: options.definition as never, ...(options.existing ? {id: "existing-worker"} : {}) }; },
     forkComputer: async () => { order.push('fork started'); const value = await fork(); order.push('fork taken'); return value; },
     inheritComputer: async (_parent, _child, computer) => { inherited.push(computer); },
     fetch: async (_id, request) => {
@@ -101,4 +101,19 @@ test('an explicit fresh gives an instructions child the parent\'s computer setti
   await start(none, { agent: 'worker', computer: 'none' });
   assert.equal('computer' in none.created[0], false);
   assert.deepEqual(none.inherited, ['none']);
+});
+
+for (const existing of [false, true]) test(`${existing ? 'existing' : 'definition'} delegation keeps the target's own credentials`, async () => {
+  const definition = {
+    definition:'def_worker',model:'test/echo',networking:{type:'unrestricted'},
+    mcpServers:[{name:'private',url:'https://mcp.example.com',sealed:{ciphertext:'stored-credential'}}],
+    computer:{secrets:[{type:'vault',name:'OWN_TOKEN'}],egress:[{host:'github.com',auth:{type:'github-app',app:'worker-app'}}]},
+  };
+  const original = structuredClone(definition);
+  const w = world(async()=>snapshot,{definition,existing,parent:{networking:{type:'limited',allowedHosts:[]}}});
+  const child = await start(w,{agent:'worker'});
+  assert.equal(child.status,'running');
+  if (existing) { assert.equal(child.id,'existing-worker'); assert.deepEqual(w.created,[]); }
+  else for (const key of ['networking','mcpServers','computer']) assert.deepEqual(w.created[0][key],definition[key as keyof typeof definition]);
+  assert.deepEqual(definition,original);
 });

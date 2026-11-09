@@ -377,7 +377,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
         });
         registry.install({
           name: "camel.computers",
-          tools: attachedComputerTools(
+          tools: conf.config.networking?.type === "limited" ? [] : attachedComputerTools(
             this.env,
             () => this.config(),
             (run) =>
@@ -422,6 +422,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
               requestId: run.id === "background" ? undefined : run.id,
               spendLimit: (params?.spendLimit as { usd?: number } | undefined)
                 ?.usd,
+              networking: conf.config.networking,
               builtins: conf.config.builtins,
               webSearch: conf.config.webSearch,
               keyScope: conf.config.keyScope,
@@ -474,7 +475,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
         });
         registry.install({
           name: "camel.linux",
-          tools: await shareSql(this.env, sql => computerDisabled(sql, conf.tenantId, conf.id)) ? [] : [computerTool(this.env, this.ctx.id.toString(), async () => computerSetup(this.env, await this.config()), conf.config.computer, async () => { const owner = await shareSql(this.env, sql => computerOwner(sql, conf.tenantId, conf.id)); return { id: this.env.AGENTS.idFromName(owner).toString(), shared: owner !== conf.id }; })],
+          tools: await shareSql(this.env, sql => computerDisabled(sql, conf.tenantId, conf.id)) ? [] : [computerTool(this.env, this.ctx.id.toString(), async () => computerSetup(this.env, await this.config()), { ...conf.config.computer, networking: conf.config.networking }, async () => { const owner = await shareSql(this.env, sql => computerOwner(sql, conf.tenantId, conf.id)); return { id: this.env.AGENTS.idFromName(owner).toString(), shared: owner !== conf.id }; })],
         });
         const sandbox = new SessionCodemodeSandbox({ remote: this.sandboxRemote });
         registry.install({

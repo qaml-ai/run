@@ -69,3 +69,16 @@ test('legacy MCP refusal closes its unused endpoint wait without an unhandled re
   await assert.rejects(legacyMcpRequest('https://mcp.test/sse', { jsonrpc: '2.0', id: '1', method: 'initialize' }, {}, async () => new Response(null, { status: 503 }), new AbortController().signal, false, () => {}), /HTTP 503/);
   await new Promise(resolve => setTimeout(resolve, 0));
 });
+
+test('source redirects are checked against limited networking before a second request',async t=>{
+  const {fetchSource}=await import('../src/tool-sources.ts');
+  const {networkAllows}=await import('../../../src/core/vault.ts');
+  let requests=0;
+  const server=createServer((_req,res)=>{requests++;res.writeHead(302,{location:'https://blocked.example.com/mcp'}).end();});
+  server.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>{server.closeAllConnections();server.close();});
+  const url=`http://127.0.0.1:${(server.address() as any).port}/mcp`;
+  const networking={type:'limited' as const,allowedHosts:['127.0.0.1'],allowPackageManagers:false,allowMcpServers:false};
+  const checkNetwork=(target:URL)=>{if(!networkAllows(networking,target))throw new Error('Network destination is not allowed');};
+  for(const headers of [{},{authorization:'fixture-secret'}]) await assert.rejects(fetchSource(env,url,{headers},1024,undefined,{checkNetwork}),/Network destination is not allowed/);
+  assert.equal(requests,2);
+});

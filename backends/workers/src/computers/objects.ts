@@ -3,6 +3,7 @@ import { keyServices } from "../security-services.ts";
 import { reserveComputer, releaseComputer, computerToolError } from "../../../../src/core/computer-limit.ts";
 import { SHARED_COMPUTER_STOPPED, SHARED_COMPUTER_CONTROL } from "../../../../src/core/computer-share.ts";
 import { transaction, withSql } from "../postgres.ts";
+import { secretPlaceholder } from "../../../../src/core/vault.ts";
 import { DurableObject } from "cloudflare:workers";
 import {
   ContainerProvider,
@@ -14,7 +15,7 @@ import {
   type ComputerSnapshot,
   type ProviderMeter,
 } from "./provider.ts";
-import { COMPUTER_LIMITS, type ComputerSetup } from "./egress.ts";
+import { COMPUTER_LIMITS, computerNetworkKey, type ComputerSetup } from "./egress.ts";
 import type { NativeForkAnswer, NativeForkOrigin, NativeForkedFrom } from "./native-fork.ts";
 import type { EgressProps } from "./egress-gateway.ts";
 import { ComputerMeter, type ComputerPayer } from "./meter.ts";
@@ -47,14 +48,16 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
   private active = new Set<Promise<unknown>>();
   private network(setup?: OperateSetup): ComputerNetwork {
     const idleMs = (setup?.settings.idleSeconds ?? COMPUTER_LIMITS.idleSeconds.default) * 1000;
-    const grants = setup?.settings.egress ?? [], instance = setup?.settings.instance, idle = setup?.settings.idle;
+    const grants = [...(setup?.settings.egress ?? []), ...(setup?.settings.networking?.type === "limited" || setup?.settings.secrets?.length ? [{ host: "*" }] : [])], instance = setup?.settings.instance, idle = setup?.settings.idle;
     // The key names what a running container was started with; another key replaces it (ContainerProvider.ready).
     if (!grants.length) return { key: instance ? JSON.stringify([[], null, instance]) : "", egress: [], idleMs, ...idle ? { idle } : {} };
     const gateway = (this.ctx as unknown as { exports: { ComputerEgress: EgressBinding } }).exports.ComputerEgress;
     return {
       // The identity is part of the key: a gateway's props carry it, so a new one needs new intercepts.
-      key: JSON.stringify([grants, setup!.identity.claims, instance ?? null]),
-      egress: grants.map(grant => ({ grant, gateway: gateway({ props: { grant, identity: setup!.identity } }) })),
+      key: computerNetworkKey(grants, setup!.identity.claims, setup!.settings),
+      limited: setup!.settings.networking?.type === "limited",
+      secrets: Object.fromEntries((setup!.settings.secrets ?? []).map(ref => [ref.name, secretPlaceholder(ref.name)])),
+      egress: (grants.some(g => g.host === "*") ? [{host:"*"}] : grants).map(grant => ({ grant, gateway: gateway({ props: { grant, grants, identity: setup!.identity, secrets: setup!.settings.secrets, networking: setup!.settings.networking, mcpHosts: setup!.settings.mcpHosts } }) })),
       idleMs,
       ...idle ? { idle } : {},
     };

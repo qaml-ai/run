@@ -19,7 +19,7 @@ export type ComputerRequest =
  * with other grants is replaced, so a definition change takes effect on the next operation.
  */
 export type ComputerNetwork = {
-  key: string; egress: { grant: EgressGrant; gateway: Fetcher }[]; idleMs: number;
+  key: string; limited?: boolean; secrets?: Record<string, string>; egress: { grant: EgressGrant; gateway: Fetcher }[]; idleMs: number;
   /** What idling out does (a definition's `computer.idle`): "stop" (the default) loses the disk; "sleep" saves it first. */
   idle?: "stop" | "sleep";
 };
@@ -293,8 +293,8 @@ export class ContainerProvider implements ComputerProvider {
     this.container.start({
       ...from,
       instance: this.spec.instance,
-      enableInternet: true,
-      ...(egress.length ? { env: EGRESS_ENV } : {}),
+      enableInternet: !this.network.limited,
+      ...(egress.length ? { env: { ...EGRESS_ENV, ...this.network.secrets } } : {}),
     } as ContainerStartupOptions);
     await this.container.setInactivityTimeout(this.containerTimeout);
     for (const { grant, gateway } of egress)
@@ -456,7 +456,7 @@ export class ContainerProvider implements ComputerProvider {
     const process = await this.container.exec(argv, {
       cwd: "/workspace",
       // exec does not inherit start()'s env: each process gets what trusting the egress CA needs (EGRESS_ENV).
-      ...(this.network.egress.length ? { env: EGRESS_ENV } : {}),
+      ...(this.network.egress.length ? { env: { ...EGRESS_ENV, ...this.network.secrets } } : {}),
       signal,
       stdin: stdin === undefined ? undefined : "pipe",
       stdout: "pipe",

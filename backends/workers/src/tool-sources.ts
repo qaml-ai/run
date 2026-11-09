@@ -1,3 +1,5 @@
+import { vaultAuth, maskResponse, type VaultAuth, type Networking, networkAllows } from "../../../src/core/vault.ts";
+import { workerVault } from "./vault.ts";
 import { TOOL_FILE_LIMITS } from '../../../src/limits.ts';
 import { acceptFiles, resolveFiles, takesFiles, hasFileArgument } from './tool-file-schema.ts';
 import { savedContent } from './tool-content.ts';
@@ -7,6 +9,7 @@ import { textual } from './file-policy.ts';
 import { legacyMcpRequest } from "./legacy-mcp.ts";
 import { pacedProgress, progressEvent, silenceDeadline, type Progress, type ToolProgressEvent } from "./mcp-progress.ts";
 import { Outbound } from "./security-outbound.ts";
+import { PublicOutbound } from "./public-outbound.ts";
 import { ownAudience, mcpToolName } from "./source-input-policy.ts";
 import { gateToolCall, type JudgeInput, type Judged } from "./tool-judge.ts";
 import { approvalFor } from "./tool-call-policy.ts";
@@ -34,7 +37,7 @@ type Approval = { default?: "never" | "always" | "destructive" | "judged"; tools
 type Sealed = { iv: string; ciphertext: string; tag: string };
 export type RemoteSource = {
   name: string; url?: string; baseUrl?: string; spec?: string; operations?: Operation[];
-  headerNames?: string[]; auth?: { type: "bearer" | "runtime" } | ExchangeAuth | GitHubAppAuth; sealed?: Sealed; audience?: string;
+  headerNames?: string[]; auth?: { type: "bearer" | "runtime" } | ExchangeAuth | GitHubAppAuth | VaultAuth; sealed?: Sealed; audience?: string;
   allowTools?: string[]; denyTools?: string[]; timeoutMs?: number;
   exposure?: "direct" | "codemode" | "both"; approval?: Approval; fileArguments?: "on" | "off";
   discovery?: { tools?: ToolDefinition[]; error?: string };
@@ -58,13 +61,24 @@ export function sourceUrl(value: unknown, env: Pick<Env, "TEST_MODE" | "AGENT_OU
   catch (error) { throw bad(error instanceof Error ? error.message : String(error)); }
 }
 
-export async function fetchSource(env: Pick<Env, "TEST_MODE">, url: string | URL, init: RequestInit, max = MAX_BYTES, complete?: (text: string) => boolean) {
+export async function fetchSource(env: Pick<Env, "TEST_MODE">, url: string | URL, init: RequestInit, max = MAX_BYTES, complete?: (text: string) => boolean, options: { vault?: boolean; checkNetwork?: (url: URL) => void } = {}) {
   let current = sourceUrl(String(url), env);
+  options.checkNetwork?.(current);
   await outbound(env).reachable(current);
   for (let count = 0; count < 6; count++) {
-    const response = await fetch(current, { ...init, redirect: "manual" });
+    options.checkNetwork?.(current);
+    let response = await fetch(current, { ...init, redirect: "manual" });
+    if (response.status >= 300 && response.status < 400 && response.headers.has("location")) {
+      options.checkNetwork?.(sourceUrl(new URL(response.headers.get("location")!, current).href, env));
+    }
+    const authorization = new Headers(init.headers).get("authorization");
+    if (authorization) {
+      if (response.status >= 300 && response.status < 400) { await response.body?.cancel(); throw bad("Authenticated source redirects are not allowed"); }
+      if (options.vault) response = await maskResponse(response, [authorization, authorization.replace(/^Bearer /i, "")]);
+    }
     if (response.status >= 300 && response.status < 400 && response.headers.has("location")) {
       const next = sourceUrl(new URL(response.headers.get("location")!, current).href, env);
+      options.checkNetwork?.(next);
       await response.body?.cancel();
       if (next.origin !== current.origin) throw bad("Source redirects may not change origin");
       current = await outbound(env).reachable(next);
@@ -138,7 +152,7 @@ export async function prepareSources(env: Env, tenant: string, definition: strin
     const value = raw as Record<string, any>, name = value.name;
     if (typeof name !== "string" || name.length > 32 || !NAME.test(name) || used.has(name)) throw bad("Source names must be unique, 1–32 letters and digits with single underscores");
     used.add(name);
-    if (!definition && (value.headers !== undefined || value.auth !== undefined && (value.auth?.type !== "runtime" || Object.keys(value.auth).length !== 1))) throw bad("An agent's or run's own MCP servers carry no credentials; put credentials in a definition");
+    if (!definition && (value.headers !== undefined || value.auth !== undefined && value.auth?.type !== "vault" && (value.auth?.type !== "runtime" || Object.keys(value.auth).length !== 1))) throw bad("An agent's or run's own MCP servers carry no credentials; put credentials in a definition");
     if (value.fileArguments !== undefined && !['on', 'off'].includes(value.fileArguments)) throw bad('fileArguments must be "on" or "off"');
     if (!definition && value.fileArguments !== undefined) throw bad('fileArguments belongs in a definition');
     const kept = previous.find(x => x.name === name);
@@ -155,7 +169,8 @@ export async function prepareSources(env: Env, tenant: string, definition: strin
       }
     }
     if (value.auth !== undefined) {
-      if (value.auth?.type !== "runtime" && value.auth?.type !== "exchange" && value.auth?.type !== "github-app" && (value.auth?.type !== "bearer" || typeof value.auth.token !== "string" || !/^[\x21-\x7e]{1,8192}$/.test(value.auth.token))) throw bad("Source auth must be runtime, exchange, github-app, or a bearer credential in a definition");
+      if (value.auth?.type !== "runtime" && value.auth?.type !== "exchange" && value.auth?.type !== "github-app" && value.auth?.type !== "vault" && (value.auth?.type !== "bearer" || typeof value.auth.token !== "string" || !/^[\x21-\x7e]{1,8192}$/.test(value.auth.token))) throw bad("Source auth must be runtime, exchange, github-app, or a bearer credential in a definition");
+      if (value.auth?.type === "vault") vaultAuth(value.auth);
       if (value.auth?.type === "github-app") githubAuth(value.auth, "auth");
       if (value.auth?.type === "runtime" && Object.keys(value.auth).length !== 1) throw bad("Runtime auth takes no credentials");
       if (value.auth?.type === "exchange") {
@@ -179,6 +194,7 @@ export async function prepareSources(env: Env, tenant: string, definition: strin
       ...(value.denyTools !== undefined ? { denyTools: names(value.denyTools, "denyTools") } : {}),
       ...(value.auth?.type === "runtime" ? { auth: { type: "runtime" as const } } : {}),
       ...(value.auth?.type === "exchange" ? { auth: { type: "exchange" as const, url: sourceUrl(value.auth.url, env).href, ...(value.auth.audience ? { audience: value.auth.audience } : {}) } } : {}),
+      ...(value.auth?.type === "vault" ? { auth: vaultAuth(value.auth) } : {}),
       ...(value.auth?.type === "github-app" ? { auth: githubAuth(value.auth, "auth") } : {}),
     };
     if (value.approval !== undefined) {
@@ -231,7 +247,7 @@ export async function prepareSources(env: Env, tenant: string, definition: strin
 export function sourceView(source: RemoteSource) {
   // The allowlist also protects callers reading an older, unvalidated record.
   const { name, url, baseUrl, spec, headerNames, audience, allowTools, denyTools, timeoutMs, exposure, approval, operations } = source;
-  const auth = source.auth?.type === "runtime" || source.auth?.type === "bearer" ? { type: source.auth.type }
+  const auth = source.auth?.type === "vault" ? vaultAuth(source.auth) : source.auth?.type === "runtime" || source.auth?.type === "bearer" ? { type: source.auth.type }
     : source.auth?.type === "exchange" ? { type: "exchange", url: source.auth.url, ...(source.auth.audience ? { audience: source.auth.audience } : {}) }
     : source.auth?.type === "github-app" ? githubAppAuthInput(source.auth, "auth")
     : undefined;
@@ -308,9 +324,11 @@ class RemoteMcp {
   private runtimeHeaders: (api?: ToolExecutionApi, approval?: ToolInputReply["approval"]) => Promise<Record<string, string>>;
   private refused?: () => void;
   private identity?: SourceIdentity;
-  constructor(env: Env, source: RemoteSource, headers: Record<string, string>, runtimeHeaders: (api?: ToolExecutionApi, approval?: ToolInputReply["approval"]) => Promise<Record<string, string>>, refused?: () => void, identity?: SourceIdentity) {
+  private checkNetwork?: (url: URL) => void;
+  constructor(env: Env, source: RemoteSource, headers: Record<string, string>, runtimeHeaders: (api?: ToolExecutionApi, approval?: ToolInputReply["approval"]) => Promise<Record<string, string>>, refused?: () => void, identity?: SourceIdentity, checkNetwork?: (url: URL) => void) {
     this.env = env; this.source = source; this.headers = headers; this.runtimeHeaders = runtimeHeaders;
     this.refused = refused; this.identity = identity;
+    this.checkNetwork = checkNetwork;
   }
   private async rpc(method: string, params: unknown, notification = false, signal?: AbortSignal, api?: ToolExecutionApi, approval?: ToolInputReply["approval"], onProgress?: (progress: Progress) => void): Promise<any> {
     const id = crypto.randomUUID();
@@ -324,7 +342,9 @@ class RemoteMcp {
     };
     const request = { jsonrpc: "2.0", ...(notification ? {} : { id }), method, params: method === "tools/call" ? { ...params as object, _meta: { ...(params as { _meta?: object })._meta, progressToken: id } } : params };
     const legacy = async () => {
+      if (this.source.auth?.type === "vault") throw new Error("Vault credentials require streamable HTTP MCP");
       const response = await legacyMcpRequest(this.source.url!, request, { ...this.headers, ...await this.runtimeHeaders(api, approval) }, async (url, init) => {
+        this.checkNetwork?.(new URL(url));
         await outbound(this.env).reachable(url);
         const result = await fetch(url, { ...init, redirect: "manual" });
         if (result.status >= 300 && result.status < 400) { await result.body?.cancel(); throw new Error("Legacy MCP redirects are not allowed"); }
@@ -341,7 +361,7 @@ class RemoteMcp {
     result = await fetchSource(this.env, this.source.url!, {
       method: "POST", headers: { ...this.headers, ...await this.runtimeHeaders(api, approval), Accept: "application/json, text/event-stream", "Content-Type": "application/json", ...(this.session ? { "Mcp-Session-Id": this.session, "MCP-Protocol-Version": "2025-06-18" } : {}) },
       body: JSON.stringify(request), signal: deadline.signal,
-    }, MAX_BYTES, notification ? undefined : complete);
+    }, MAX_BYTES, notification ? undefined : complete, {vault:this.source.auth?.type === "vault",checkNetwork:this.checkNetwork});
     if (attempt === 0 && this.refused && [401, 403].includes(result.response.status)) { this.refused(); continue; }
     break;
     }
@@ -407,7 +427,7 @@ export async function discoverSources(env: Env, tenant: string, definition: stri
     const identity = async () => ({ issuer: origin, claims: { tenant, agent: definition, definition, sub: definition } });
     const exchange = source.auth?.type === "exchange" ? credentialExchange(env as IdentityEnv, { name: source.name, url: source.url!, auth: source.auth }, identity, (url, init, max) => fetchSource(env, url, init, max)) : undefined;
     const github = source.auth?.type === "github-app" ? githubAppHeaders(env as unknown as GitHubAppsEnv, tenant, source.auth, `MCP server ${source.name}`, source.url!) : undefined;
-    const runtimeHeaders = async (): Promise<Record<string, string>> => exchange ? exchange.headers() : github ? github.headers() : source.auth?.type === "runtime" ? { Authorization: `Bearer ${await signRuntimeIdentity(env as IdentityEnv, origin, source.audience ?? source.url!, (await identity()).claims)}` } : {};
+    const runtimeHeaders = async (): Promise<Record<string, string>> => source.auth?.type === "vault" ? { Authorization: `Bearer ${await (await workerVault(env)).open(tenant, vaultAuth(source.auth), new URL(source.url!), "header")}` } : exchange ? exchange.headers() : github ? github.headers() : source.auth?.type === "runtime" ? { Authorization: `Bearer ${await signRuntimeIdentity(env as IdentityEnv, origin, source.audience ?? source.url!, (await identity()).claims)}` } : {};
     const headers = await unseal(env, aad(tenant, definition, "mcpServers", source.name), source.sealed);
     try {
       const client = new RemoteMcp(env, { ...source, timeoutMs: Math.min(source.timeoutMs ?? 20_000, 20_000) }, headers, runtimeHeaders, exchange?.refused ?? github?.refused);
@@ -437,14 +457,26 @@ export type SourceApproval = (input: { name: string; args: unknown; kind: "appro
 export type SourceIdentity = (api?: ToolExecutionApi) => Promise<{ issuer: string; claims: RuntimeIdentity; call?: ToolCallSite; elicit?: boolean; intent?: string; toolFiles?: (name: string, refuse?: string) => ToolFiles; progress?: (event: ToolProgressEvent) => Promise<void>; spawn?: ToolSpawn }>;
 
 /** Resolve only this agent's configured sources; credentials never enter model context. */
-export async function sourceTools(env: Env, tenant: string, definition: string | undefined, config: { mcpServers?: RemoteSource[]; openApi?: RemoteSource[] }, approve?: SourceApproval, identity?: SourceIdentity, report?: (failures: SourceFailure[]) => void, judge?: (input: JudgeInput, api: ToolExecutionApi, context: Context) => Promise<Judged>): Promise<ToolRegistration[]> {
+export async function sourceTools(env: Env, tenant: string, definition: string | undefined, config: { mcpServers?: RemoteSource[]; openApi?: RemoteSource[]; networking?: Networking }, approve?: SourceApproval, identity?: SourceIdentity, report?: (failures: SourceFailure[]) => void, judge?: (input: JudgeInput, api: ToolExecutionApi, context: Context) => Promise<Judged>): Promise<ToolRegistration[]> {
   const result: ToolRegistration[] = [];
   const failures: SourceFailure[] = [];
+  const mcpHosts = (config.mcpServers ?? []).map(s => new URL(s.url!).hostname);
+  const checkNetwork = (url: URL) => {
+    if (config.networking && !networkAllows(config.networking, url, mcpHosts)) throw new Error("Network destination is not allowed");
+  };
+  const split = (value?: string) => value?.split(",").map(s => s.trim()).filter(Boolean);
+  const downloads = new PublicOutbound({ networking: config.networking, mcpHosts,
+    allowHttp: env.TEST_MODE === "1" && env.AGENT_OUTBOUND_ALLOW_HTTP !== "false",
+    allow: env.TEST_MODE === "1" ? split(env.AGENT_OUTBOUND_ALLOW_CIDRS ?? "127.0.0.1/32,::1/128") : [], block: split(env.AGENT_OUTBOUND_BLOCK_CIDRS) });
   for (const kind of ["mcpServers", "openApi"] as const) for (const source of config[kind] ?? []) {
+    if (config.networking && !networkAllows(config.networking, new URL((source.url ?? source.baseUrl)!), (config.mcpServers ?? []).map(s => new URL(s.url!).hostname))) {
+      failures.push({ kind: kind === "mcpServers" ? "mcp" : "openapi", source: source.name, message: "Network destination is not allowed" }); continue;
+    }
     const headers = await unseal(env, aad(tenant, definition ?? "", kind, source.name), source.sealed);
     const exchange = source.auth?.type === "exchange" && identity && env.HYPERDRIVE ? credentialExchange(env as IdentityEnv, { name: source.name, url: source.url!, auth: source.auth }, identity, (url, init, max) => fetchSource(env, url, init, max)) : undefined;
     const github = source.auth?.type === "github-app" ? githubAppHeaders(env as unknown as GitHubAppsEnv, tenant, source.auth, `${kind === "mcpServers" ? "MCP server" : "OpenAPI source"} ${source.name}`, (source.url ?? source.baseUrl)!) : undefined;
     const runtimeHeaders = async (api?: ToolExecutionApi, approval?: ToolInputReply["approval"]): Promise<Record<string, string>> => {
+      if (source.auth?.type === "vault") return { Authorization: `Bearer ${await (await workerVault(env)).open(tenant, vaultAuth(source.auth), new URL((source.url ?? source.baseUrl)!), "header")}` };
       if (exchange) return exchange.headers(api);
       if (github) return github.headers();
       if (source.auth?.type === "exchange") throw new Error("Runtime identity is not configured for credential exchange");
@@ -472,7 +504,7 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
       return { reply: {} };
     };
     if (kind === "mcpServers") {
-      const client = new RemoteMcp(env, source, headers, runtimeHeaders, exchange?.refused ?? github?.refused, identity);
+      const client = new RemoteMcp(env, source, headers, runtimeHeaders, exchange?.refused ?? github?.refused, identity, checkNetwork);
       // An unavailable server cannot prevent loading or using the agent's other tools.
       let listed: ToolDefinition[];
       try { listed = await client.list(); } catch (error) { failures.push({ kind: "mcp", source: source.name, message: sourceError(error, headers, source.url) }); continue; }
@@ -488,7 +520,7 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
           const resolved = await resolveFiles(args, tool.inputSchema ?? tool.parameters, files, undefined, sent);
           const meta = Object.keys(sent.values).length ? { 'camelrun/files': sent.values } : undefined;
           const answer = api ? await withToolInputs(reply => client.call(name, resolved, context?.abortSignal, api, reply, meta), api, context, { name: `${source.name}__${name}`, args }, approval.reply) : await client.call(name, resolved, context?.abortSignal);
-          return savedContent(answer, files, takesFiles(source) ? url => outbound(env).fetch(url, { timeoutMs: 20_000, maxBytes: TOOL_FILE_LIMITS.responseBytes, maxRedirects: 5, signal: context?.abortSignal }) : undefined);
+          return savedContent(answer, files, takesFiles(source) ? url => downloads.fetch(url, { timeoutMs: 20_000, maxBytes: TOOL_FILE_LIMITS.responseBytes, maxRedirects: 5, signal: context?.abortSignal }) : undefined);
         }, source.auth?.type === "runtime" ? async (...args) => {
           const spawn = (await identity?.(args[2]))?.spawn;
           if (!spawn) throw new Error("Sub-agents are not enabled on this runtime");
@@ -536,8 +568,11 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
             } else { body = typeof args.body === 'string' ? args.body : JSON.stringify(args.body); sent['Content-Type'] = operation.bodyType?.includes('*') ? 'application/octet-stream' : operation.bodyType ?? 'application/octet-stream'; }
           }
         }
+        if (config.networking && !networkAllows(config.networking, url, (config.mcpServers ?? []).map(s => new URL(s.url!).hostname))) throw new Error("Network destination is not allowed");
+        if (source.auth?.type === "vault" && url.origin !== new URL(source.baseUrl!).origin) throw new Error("Authenticated source requests cannot change origin");
         await outbound(env).reachable(url);
-        const response = await fetchWithoutRedirects(network().fetch, url, { method: operation.method, headers: sent, body, signal: AbortSignal.any([AbortSignal.timeout(source.timeoutMs ?? 30_000), ...(context?.abortSignal ? [context.abortSignal] : [])]) });
+        let response = await fetchWithoutRedirects(network().fetch, url, { method: operation.method, headers: sent, body, signal: AbortSignal.any([AbortSignal.timeout(source.timeoutMs ?? 30_000), ...(context?.abortSignal ? [context.abortSignal] : [])]) });
+        if (source.auth?.type === "vault") response = await maskResponse(response, [sent.Authorization.replace(/^Bearer /, "")]);
         // A token the API turned away is not used again: the next call mints another.
         if (github && response.status === 401) github.refused();
         const contentType = response.headers.get('content-type')?.split(';')[0] ?? '';

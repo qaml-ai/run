@@ -695,6 +695,7 @@ test("computer egress with a GitHub App: a git push gets a token the runtime min
   await api("/v1/definitions", { body: { name: "Bad", computer: { egress: [{ host: "registry.npmjs.org", auth: { type: "github-app", app: "code" } }] } } }, [400]);
   const definition = await api("/v1/definitions", { body: {
     name: "Coder", codeMode: false, fileTools: false,
+    networking: { type: "limited", allowedHosts: ["github.com"] },
     computer: { idleSeconds: 600, egress: [{ host: "github.com", auth: { type: "github-app", app: "code", repositories: ["acme/app"], permissions: { contents: "write", metadata: "read" } } }] },
   } });
   assert.deepEqual(definition.computer.egress[0], { host: "github.com", auth: { type: "github-app", app: "code", repositories: ["acme/app"], permissions: { contents: "write", metadata: "read" } }, scheme: "basic" });
@@ -702,6 +703,14 @@ test("computer egress with a GitHub App: a git push gets a token the runtime min
 
   const pushed = await sh(agent.id, "git clone -q https://github.com/acme/app.git /workspace/app && cd /workspace/app && git switch -qc camel/badge && echo badge >> README.md && git -c user.name=camel -c user.email=c@c commit -qam badge && git push -q origin camel/badge");
   assert.equal(pushed.exitCode, 0, JSON.stringify(pushed));
+  // The wildcard gateway selects the GitHub grant, but blocks every other destination.
+  const blocked = await sh(agent.id, "curl -sS --max-time 20 -o /dev/null -w '%{http_code}' https://example.com");
+  assert.equal(blocked.exitCode, 0, JSON.stringify(blocked));
+  assert.equal(blocked.stdout.trim(), "403");
+  const fork = await api(`/v1/agents/${agent.id}/fork`, { body: {} });
+  const forkBlocked = await sh(fork.id, "curl -sS --max-time 20 -o /dev/null -w '%{http_code}' https://example.com");
+  assert.equal(forkBlocked.exitCode, 0, JSON.stringify(forkBlocked));
+  assert.equal(forkBlocked.stdout.trim(), "403");
   assert.equal((await run("git", ["--git-dir", join(repos, "acme/app.git"), "log", "--format=%s", "-1", "camel/badge"])).stdout.trim(), "badge");
   assert.ok(git.seen.some(request => request.path.endsWith("/git-receive-pack") && request.reached));
   // One token, for this repository with these permissions, minted by the App for acme's installation.

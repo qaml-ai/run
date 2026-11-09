@@ -33,7 +33,7 @@ export async function computerSetup(env: ControlEnv & { AGENT_PUBLIC_URL?: strin
     if (!entry || entry.deleted || (entry.expiresAt != null && entry.expiresAt <= Date.now())) throw new HttpError(409, SHARED_COMPUTER_STOPPED, "COMPUTER_STOPPED");
     conf = { ...conf, id: owner, config: entry.config as Config["config"] };
   }
-  const settings = (conf.config.computer ?? {}) as ComputerSettings;
+  const settings = { ...(conf.config.computer ?? {}), networking: conf.config.networking, mcpHosts: (conf.config.mcpServers ?? []).map(s => new URL(String(s.url)).hostname) } as ComputerSettings;
   const issuer = env.AGENT_PUBLIC_URL || conf.runtimeOrigin || "";
   if (settings.egress?.some(grant => grant.auth) && !issuer) throw new Error("Runtime public URL is not configured");
   const claims = {
