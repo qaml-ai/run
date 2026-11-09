@@ -17,7 +17,7 @@ import { withMoneyMetrics } from "./money-metrics.ts";
 import { type Message } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { BadRequest, object, body } from "./validation.ts";
-import { computerParameters } from "./computers/tool.ts";
+import { computerRequestParameters } from "./computers/tool.ts";
 import { compile } from "@earendil-works/pi-schema";
 import { humanInputView, HumanInputs } from "./human.ts";
 import { answerList } from "./input-policy.ts";
@@ -723,7 +723,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
       }
       if (path === "/computer" && request.method === "POST") {
         const inputBody = await body(request, 1100 * 1024);
-        if (!compile(computerParameters).check(inputBody))
+        if (!compile(computerRequestParameters).check(inputBody))
           throw new BadRequest("Invalid computer request");
         const { provider, ...input } = inputBody;
         const namespace = this.env.COMPUTER_CONTAINERS;
