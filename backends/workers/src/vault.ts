@@ -1,4 +1,4 @@
-import { Vault, type SecretInput } from "../../../src/core/vault.ts";
+import { Vault, decodeVaultPath, type SecretInput } from "../../../src/core/vault.ts";
 import { keyServices, type SecurityEnv } from "./security-services.ts";
 import { withSql, type PostgresEnv } from "./postgres.ts";
 import { HttpError } from "./errors.ts";
@@ -6,13 +6,13 @@ export async function workerVault(env: Omit<SecurityEnv, "HYPERDRIVE"> & Partial
   if (!env.HYPERDRIVE) throw new HttpError(503, "Vault database is unavailable");
   const configured = env as SecurityEnv & PostgresEnv;
   const { accounts } = await keyServices(configured);
-  return new Vault({ query: (text, values) => withSql(configured, sql => sql.query(text, values)) as never }, { canStore: accounts.canStoreKeys, seal: (ctx,text) => accounts.seal(ctx,text), unseal: (ctx,sealed) => accounts.unseal(ctx,sealed) });
+  return new Vault({ query: (text, values) => withSql(configured, sql => sql.query(text, values)) as never }, { reservedNames: Object.keys(env), canStore: accounts.canStoreKeys, seal: (ctx,text) => accounts.seal(ctx,text), unseal: (ctx,sealed) => accounts.unseal(ctx,sealed) });
 }
 export async function vaultRoutes(request: Request, env: SecurityEnv & PostgresEnv, auth: { tenantId: string; kind: string }) {
   const match = /^\/v1\/(?:workspaces\/([^/]+)\/)?secrets(?:\/([^/]+))?$/.exec(new URL(request.url).pathname);
   if (!match) return undefined;
   if (auth.kind === "oauth") throw new HttpError(403, "Use an API token or the console for vault secrets");
-  const workspace = decodeURIComponent(match[1] ?? ""), name = decodeURIComponent(match[2] ?? ""), vault = await workerVault(env);
+  const workspace = decodeVaultPath(match[1] ?? ""), name = decodeVaultPath(match[2] ?? ""), vault = await workerVault(env);
   try {
     let result: unknown;
     if (request.method === "GET" && !name) result = await vault.list(auth.tenantId, workspace);

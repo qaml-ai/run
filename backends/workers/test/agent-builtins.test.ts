@@ -120,3 +120,23 @@ test('JavaScript shells use source renderer and meter once', async () => {
   assert.equal(result.text, 'Rendered page content');
   assert.equal(usages.length, 1);
 });
+
+test('limited networking checks web_fetch targets and redirects but permits search and rendering providers',async()=>{
+  const networking={type:'limited' as const,allowedHosts:['allowed.example.com'],allowPackageManagers:false,allowMcpServers:false};
+  const providerCalls:string[]=[],targetCalls:string[]=[];
+  const target=new PublicOutbound({networking,resolve:async()=>['93.184.216.34'],transport:async url=>{
+    targetCalls.push(String(url));
+    return String(url).endsWith('/redirect') ? new Response(null,{status:302,headers:{location:'https://blocked.example.com'}}) : new Response('<html><div id="root"></div></html>',{headers:{'content-type':'text/html'}});
+  }});
+  const tools=await agentBuiltins({} as never,context(['web_search','web_fetch'],{networking,webSearch:{providers:['brave']}}),{
+    outbound:target,providerOutbound:outbound(async url=>{providerCalls.push(String(url));return String(url).includes('firecrawl')?Response.json({data:{markdown:'Rendered content'}}):Response.json({web:{results:[]}});}),
+    key:async()=>({key:'fixture',platform:true}),admit:async()=>{},record:async()=>{},
+  });
+  const search=tools.find(t=>t.name==='web_search')!, page=tools.find(t=>t.name==='web_fetch')!;
+  assert.equal(value(await invoke(search,{query:'hello'})).provider,'brave');
+  assert.equal(value(await invoke(page,{url:'https://allowed.example.com'})).rendered,true);
+  const before=providerCalls.length;
+  toolError(await invoke(page,{url:'https://blocked.example.com'}),/Network destination is not allowed/);
+  toolError(await invoke(page,{url:'https://allowed.example.com/redirect'}),/Network destination is not allowed/);
+  assert.equal(providerCalls.length,before);assert.equal(targetCalls.length,2);
+});

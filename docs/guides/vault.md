@@ -19,13 +19,16 @@ API token's tenant. OAuth tokens cannot manage the vault.
 `allowedHosts` takes exact public DNS names or `*.example.com`. A wildcard matches
 subdomains, not the apex. Public suffixes (including private suffixes such as
 `github.io`), IP literals, private names, ports and URL syntax are refused.
+Reserved environment variable names are refused, including `PATH`, `HOME`,
+`SSL_CERT_FILE`, `NODE_OPTIONS`, `LD_*` and names already set by the runtime.
 An empty list grants no egress. The outbound address guard also checks DNS.
 
 The default `locations` is `["header"]`. Opt into `"query"` or `"body"` only for
-an API that requires it. Secret values contain 4–8192 single-line characters.
+an API that requires it. Secret values contain 8–8192 single-line characters.
 The gateway substitutes placeholders only in attached references, rechecks the
-destination, sends with redirects disabled, and masks values in response bytes
-and headers. Secret values never enter the computer's environment or disk.
+destination, sends with redirects disabled, and masks values in textual responses
+and their headers. Binary responses pass through unchanged. Secret values never
+enter the computer's environment or disk.
 
 ## MCP and OpenAPI
 
@@ -44,7 +47,9 @@ request. Vault-backed MCP requires streamable HTTP; legacy SSE is refused.
 Attach references in the definition's `computer.secrets`. Processes receive a
 variable for each name, containing `camel-vault-NAME-placeholder`. Use that
 variable in headers, or in query parameters or bodies explicitly permitted by
-its policy. `computer.egress` can also set `auth` to a vault reference; that
+its policy. Body substitution also requires `inBody: true` on the attached
+reference; otherwise request bodies stream unchanged. Only body substitution
+requests have an 8 MiB cap. `computer.egress` can also set `auth` to a vault reference; that
 host's requests then receive the bearer credential automatically.
 
 ```json
@@ -61,7 +66,11 @@ through the gateway, which enforces `allowedHosts`. Other ports and plain HTTP
 are blocked. `allowPackageManagers` adds npm, Yarn, PyPI and crates.io registry
 and download hosts; it does not permit arbitrary package install scripts to
 access the internet. `allowMcpServers` additionally permits configured MCP hosts.
-Web tools and remote tool sources check the network policy too.
+Web targets and remote tool sources check the network policy too. Host-managed
+search and rendering provider endpoints are exempt; the page requested by
+`web_fetch` is still checked. Children inherit the parent's restrictions and can
+use only vault secrets granted to the parent. Existing delegation targets that
+exceed those restrictions are refused.
 
 Node's Sprites backend cannot enforce this computer boundary. It refuses
 `networking.type: "limited"`; use Workers for limited computers. Node supports
@@ -69,4 +78,19 @@ the vault API and vault-backed remote tool credentials, but has no native
 computer credential gateway or `computer.secrets` support.
 
 Existing GitHub-App and exchange references remain accepted on computer egress.
-They use the same forwarding and response masking boundary as vault credentials.
+They use the same forwarding boundary. Only vault credentials are response-masked;
+GitHub App git traffic and binary responses pass through unchanged.
+
+## Verify a deployed pilot
+
+Use an existing Container agent with a GitHub App grant, limited networking and
+access to a private repository. This script reads configuration, runs
+`git ls-remote` and checks that an unlisted host receives 403. It creates no
+agents, changes no configuration and writes no repository files. Known production
+origins are refused; supply only a pilot URL.
+
+```sh
+CAMELAI_API_KEY=... node --experimental-strip-types scripts/verify-egress.mjs \
+  --pilot https://your-pilot.example.com --agent AGENT_ID \
+  --repo https://github.com/owner/private-repo.git --blocked-host example.com
+```

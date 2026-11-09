@@ -19,7 +19,7 @@ import type { WebhookEnv } from './webhooks.ts';
 
 export type BuiltinScope = { networking?: Networking; tenant: string; agent: string; requestId?: string; spendLimit?: number; callId?: string; startedAt?: number; builtins?: string[]; webSearch?: { providers: string[] }; keyScope?: string; identity?: { subject?: string; context?: Record<string, unknown> }; actor?: string; bucket?: string; files?: WebFiles };
 export type BuiltinEnv = ProviderKeyEnv & KeyEnv & WebhookEnv & { TEST_MODEL?: string; AGENT_OUTBOUND_ALLOW_HTTP?: string; AGENT_OUTBOUND_ALLOW_CIDRS?: string; AGENT_OUTBOUND_BLOCK_CIDRS?: string; AGENT_EXA_SEARCH_URL?: string; AGENT_BRAVE_SEARCH_URL?: string; AGENT_PARALLEL_SEARCH_URL?: string; AGENT_WEB_SEARCH_PROVIDERS?: string; AGENT_XAI_RESPONSES_URL?: string; AGENT_X_SEARCH_URL?: string; AGENT_FIRECRAWL_SCRAPE_URL?: string };
-export type BuiltinHost = { outbound?: Outbound; key?: (scope: BuiltinScope, provider: string) => Promise<{ key: string; platform: boolean } | undefined>; admit?: (scope: BuiltinScope, platform: boolean) => Promise<void>; record?: (scope: BuiltinScope, usage: UsageRecord) => Promise<void>; schedules?: ScheduleToolsHost };
+export type BuiltinHost = { outbound?: Outbound; providerOutbound?: Outbound; key?: (scope: BuiltinScope, provider: string) => Promise<{ key: string; platform: boolean } | undefined>; admit?: (scope: BuiltinScope, platform: boolean) => Promise<void>; record?: (scope: BuiltinScope, usage: UsageRecord) => Promise<void>; schedules?: ScheduleToolsHost };
 
 /** Register only enabled web capabilities; source policy owns validation, routing and budgets. */
 export async function agentBuiltins(env: BuiltinEnv, context: (api?: ToolExecutionApi) => Promise<BuiltinScope>, host: BuiltinHost = {}): Promise<ToolRegistration[]> {
@@ -27,6 +27,7 @@ export async function agentBuiltins(env: BuiltinEnv, context: (api?: ToolExecuti
   const testMode = env.TEST_MODEL === '1' && env.TEST_MODE === '1';
   const cidrs = (value?: string) => value?.split(',').map(value => value.trim()).filter(Boolean);
   const outbound = host.outbound ?? new PublicOutbound({ networking: initial.networking, allowHttp: testMode && env.AGENT_OUTBOUND_ALLOW_HTTP === 'true', allow: testMode ? cidrs(env.AGENT_OUTBOUND_ALLOW_CIDRS) ?? [] : [], block: cidrs(env.AGENT_OUTBOUND_BLOCK_CIDRS) });
+  const providerOutbound = host.providerOutbound ?? host.outbound ?? new PublicOutbound({ allowHttp: testMode && env.AGENT_OUTBOUND_ALLOW_HTTP === 'true', allow: testMode ? cidrs(env.AGENT_OUTBOUND_ALLOW_CIDRS) ?? [] : [], block: cidrs(env.AGENT_OUTBOUND_BLOCK_CIDRS) });
   const settings = testMode ? env : { AGENT_WEB_SEARCH_PROVIDERS: env.AGENT_WEB_SEARCH_PROVIDERS };
   const providers = searchProvidersFromEnvironment(settings as never);
   const pricingEnv = Object.fromEntries(Object.entries(env).filter(([, value]) => typeof value === 'string')) as NodeJS.ProcessEnv;
@@ -46,13 +47,13 @@ export async function agentBuiltins(env: BuiltinEnv, context: (api?: ToolExecuti
       const signal = call.abortSignal ?? new AbortController().signal;
       try {
         if (definition.name === 'web_fetch') {
-          const render = new WebRender({ outbound, key, price: pricing.webRender, ...(testMode && env.AGENT_FIRECRAWL_SCRAPE_URL ? { endpoint: env.AGENT_FIRECRAWL_SCRAPE_URL } : {}), onRender: record });
+          const render = new WebRender({ outbound: providerOutbound, targetOutbound: outbound, key, price: pricing.webRender, ...(testMode && env.AGENT_FIRECRAWL_SCRAPE_URL ? { endpoint: env.AGENT_FIRECRAWL_SCRAPE_URL } : {}), onRender: record });
           const result = await webFetch({ outbound, render }, scope, String(args.url), args.maxCharacters as number ?? 20_000, signal);
           return toolResult(result);
         }
         const value = definition.name === 'web_search'
-          ? await new WebSearch({ outbound, ...providers, key, price: provider => pricing.webSearch[provider], onSearch: record }).search({ ...scope, providers: scope.webSearch?.providers }, args, signal)
-          : await new XSearch({ outbound, key, ...(testMode && (env.AGENT_XAI_RESPONSES_URL ?? env.AGENT_X_SEARCH_URL) ? { endpoint: env.AGENT_XAI_RESPONSES_URL ?? env.AGENT_X_SEARCH_URL } : {}), onSearch: record }).search(scope, args, signal);
+          ? await new WebSearch({ outbound: providerOutbound, ...providers, key, price: provider => pricing.webSearch[provider], onSearch: record }).search({ ...scope, providers: scope.webSearch?.providers }, args, signal)
+          : await new XSearch({ outbound: providerOutbound, key, ...(testMode && (env.AGENT_XAI_RESPONSES_URL ?? env.AGENT_X_SEARCH_URL) ? { endpoint: env.AGENT_XAI_RESPONSES_URL ?? env.AGENT_X_SEARCH_URL } : {}), onSearch: record }).search(scope, args, signal);
         return toolResult({ content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value });
       } catch (error) {
         if (signal.aborted) throw error;

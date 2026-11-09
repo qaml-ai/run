@@ -470,7 +470,7 @@ const githubAppAuthFields = {
 // Loose: the runtime checks the rest itself (core/github-apps.ts), with the same messages on every backend.
 const GitHubAppAuth = z.looseObject({ type: z.literal("github-app"), ...githubAppAuthFields, app: z.string() })
   .openapi("GitHubAppAuth", { description: "An installation token the runtime mints itself from one of the tenant's GitHub Apps, scoped to the repositories and permissions given, sent as Authorization: Bearer and kept in memory until five minutes before it expires. Nothing is stored; see the GitHub Apps guide" });
-const VaultAuth = z.object({ type: z.literal("vault"), name: z.string(), workspace: z.string().optional() }).openapi("VaultAuth");
+const VaultAuth = z.object({ type: z.literal("vault"), name: z.string(), workspace: z.string().optional(), inBody: z.boolean().optional() }).openapi("VaultAuth");
 const Networking = z.object({ type: z.enum(["unrestricted", "limited"]), allowedHosts: z.array(z.string()).optional(), allowPackageManagers: z.boolean().optional(), allowMcpServers: z.boolean().optional() }).openapi("Networking");
 const Computer = z.object({ secrets: z.array(VaultAuth).optional(), egress: z.array(z.object({ host: z.string(), auth: z.union([VaultAuth, GitHubAppAuth, z.object({ type: z.literal("exchange"), url: z.string(), audience: z.string().optional() })]).optional(), scheme: z.enum(["bearer", "basic"]).optional() })).optional(), idleSeconds: z.number().optional(), idle: z.enum(["stop", "sleep"]).optional(), instance: z.string().optional() });
 const SourceAuthInput = z.union([

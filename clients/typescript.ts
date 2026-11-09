@@ -513,7 +513,7 @@ export interface DelegateSettings {
  * (MCP servers) a short-lived credential the runtime fetches from `url`, an endpoint of yours: it is asked with an
  * identity token (aud `audience`, else `url`) and answers `{ token, expiresAt | expiresIn }`. See docs/guides/tools.md.
  */
-export type VaultAuth = { type: "vault"; name: string; workspace?: string };
+export type VaultAuth = { type: "vault"; name: string; workspace?: string; inBody?: boolean };
 export type Networking = { type: "unrestricted" | "limited"; allowedHosts?: string[]; allowPackageManagers?: boolean; allowMcpServers?: boolean };
 export type SecretInput = { value?: string; allowedHosts?: string[]; locations?: ("header" | "query" | "body")[] };
 export type SourceAuth = VaultAuth | { type: "bearer"; token: string } | { type: "runtime" } | { type: "exchange"; url: string; audience?: string };

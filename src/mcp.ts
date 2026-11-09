@@ -73,11 +73,12 @@ export class McpConnections {
   /** Requests to the server's own origin carry its credentials; anything else goes without them. */
   private fetcher(server: McpServer): FetchLike {
     const send = async (url: string | URL, init?: RequestInit) => {
-      if (server.token && new URL(url).origin !== new URL(server.url).origin) throw new Error("Authenticated MCP requests cannot change origin");
-      const token = await server.token?.();
+      const own = new URL(url).origin === new URL(server.url).origin;
+      if (server.vault && !own) throw new Error("Authenticated MCP requests cannot change origin");
+      const token = own ? await server.token?.() : undefined;
       let response: Response;
       try { response = await this.outbound.fetch(url, {
-        ...init, secrets: token === undefined ? server.headers : { ...server.headers, Authorization: `Bearer ${token}` },
+        ...init, secrets: !own ? {} : token === undefined ? server.headers : { ...server.headers, Authorization: `Bearer ${token}` },
         // Each MCP request has its own timeout, and a server answering in JSON sends its headers only with a
         // tool's answer: this only bounds a response that never starts. Closing the connection aborts it.
         timeoutMs: MAX_TIMEOUT_MS, maxBytes: 8 * 1024 * 1024,
@@ -85,7 +86,7 @@ export class McpConnections {
         stream: true,
       });
       } catch (error) { if (server.vault) throw new Error("Vault MCP request failed"); throw error; }
-      return { token, response: token ? await maskResponse(response, [token]) : response };
+      return { token, response: server.vault && token ? await maskResponse(response, [token]) : response };
     };
     const unauthorized = (response: Response) => response.status === 401 || response.status === 403;
     return async (url, init) => {

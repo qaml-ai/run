@@ -9,6 +9,7 @@ import type { FileBindings } from "./files.ts";
 import { provisionDefinition, visibleConfiguration, withoutOnExpire } from "./definitions.ts";
 import { canonical } from "../../../shared/durable-json.ts";
 import { runInput } from "./run-input.ts";
+import { childSecurity } from "./child-config.ts";
 import { inheritHistoryPins } from "./history-pins.ts";
 import { bridgeEvents, bridgeOptions, wantsEventStream } from "./sse-bridge.ts";
 
@@ -138,6 +139,7 @@ export async function agentLifecycleRoutes(request: Request, env: ControlEnv & F
     if (input.name !== undefined && typeof input.name !== "string") throw new ApiError(400, "name must be text");
     const workspace = await forkWorkspaceMounts(entry.config.mounts, entry.id, targetId);
     const config = { ...withoutOnExpire(entry.config), ...settings, name: input.name as string | undefined ?? (entry.config.name ? `${entry.config.name} (fork)`.slice(0, 120) : undefined), mounts: workspace.mounts, initialMessages, idleTtlSeconds: null, ttlSeconds: input.ttlSeconds === undefined ? (suppliedKey ? null : 86400) : input.ttlSeconds };
+    Object.assign(config, childSecurity(entry.config, config));
     configuration(config, env.MODEL);
     const fingerprint = await digest(canonical(JSON.parse(JSON.stringify({ sourceId: entry.id, atMessage: at, config }))));
     const ttl = env.TEST_MODE === "1" && request.headers.get("x-camel-test-fork-short-ttl") === "1" ? 1000 : 86400_000;

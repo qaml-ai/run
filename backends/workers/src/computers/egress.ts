@@ -157,7 +157,7 @@ export type EgressDeps = {
   /** The credential for an authenticated grant, from the exchange cache. */
   networking?: Networking;
   mcpHosts?: string[];
-  vault?: { service: Vault; tenant: string; refs: VaultAuth[] };
+  vault?: { service: Vault | (() => Promise<Vault>); tenant: string; refs: VaultAuth[] };
   credential(grant: EgressGrant & { auth: EgressAuth }): Promise<{ token: string; refused(): void }>;
   /** Sends the upstream request (the Worker's fetch, after the runtime's outbound checks). */
   send(request: Request): Promise<Response>;
@@ -174,7 +174,7 @@ export async function forwardEgress(request: Request, grant: EgressGrant, deps: 
   let secretValues: string[] = [];
   if (deps.vault) {
     try { const filled = await vaultRequest(request, deps.vault.refs, deps.vault.service, deps.vault.tenant); request = filled.request; secretValues = filled.values; }
-    catch { return Response.json({ error: "Vault request refused" }, { status: 403 }); }
+    catch (error) { const status = (error as {status?:number}).status; return Response.json({ error: status === 413 ? "Vault request body exceeds 8 MiB" : status === 400 ? "Malformed vault request" : "Vault request refused" }, { status: status === 413 ? 413 : status === 400 ? 400 : 403 }); }
   }
   const incoming = new URL(request.url);
   if (deps.networking && !networkAllows(deps.networking, incoming, deps.mcpHosts)) return Response.json({ error: "Network destination is not allowed" }, { status: 403 });
@@ -191,7 +191,7 @@ export async function forwardEgress(request: Request, grant: EgressGrant, deps: 
       headers.delete("authorization");
       try { credential = await deps.credential(grant as EgressGrant & { auth: EgressAuth }); }
       catch (error) { return { response: Response.json({ error: `camelRun egress credential for ${grant.host}: ${(error as Error).message}` }, { status: 502 }) }; }
-      secretValues.push(credential.token);
+      if (grant.auth.type === "vault") secretValues.push(credential.token);
       headers.set("authorization", authorization(grant, credential.token));
     }
     const response = await deps.send(new Request(target, { method: request.method, headers, body, redirect: "manual", ...(body ? { duplex: "half" } : {}) } as RequestInit));
@@ -207,4 +207,12 @@ export async function forwardEgress(request: Request, grant: EgressGrant, deps: 
     if (!body) { await response.body?.cancel(); try { ({ response } = await send()); } catch { return Response.json({ error: "Egress request failed" }, { status: 502 }); } }
   }
   return secretValues.length ? maskResponse(response, secretValues) : response;
+}
+
+/** A wildcard intercept dispatches exact grants first, independent of platform registration order. */
+export const selectEgressGrant = (hostname: string, fallback: EgressGrant, grants: EgressGrant[] = []) => grants.find(g => g.host === hostname) ?? fallback;
+export function computerNetworkKey(grants: EgressGrant[], claims: unknown, settings: ComputerSettings) {
+  const hosts = settings.mcpHosts?.length ? [...new Set(settings.mcpHosts)].sort() : undefined;
+  const extra = settings.secrets?.length || settings.networking || hosts;
+  return JSON.stringify([grants, claims, settings.instance ?? null, ...(extra ? [settings.secrets?.length ? settings.secrets : null, settings.networking ?? null, hosts ?? null] : [])]);
 }

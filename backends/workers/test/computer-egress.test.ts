@@ -276,3 +276,39 @@ test("limited gateway checks the destination even for an authenticated grant and
   assert.equal(sent,1); assert.equal(response.status,302);
   assert.equal(await response.text(),"[hidden]"); assert.equal(response.headers.get("location"),"https://evil.com/?key=[hidden]");
 });
+
+test('GitHub packfiles and header-only request streams bypass the vault and masking',async()=>{
+  const bytes=new Uint8Array([80,65,67,75,0,255,0,1]);
+  const pack=new Response(bytes,{headers:{'content-type':'application/x-git-upload-pack-result',etag:'"pack"','content-length':String(bytes.length)}});
+  let touched=0;
+  const body=new Uint8Array(8*1024*1024+1);
+  const response=await forwardEgress(new Request('https://github.com/repo.git/git-upload-pack',{method:'POST',body}),{host:'github.com',auth:{type:'github-app',app:'code'}},{
+    vault:{service:async()=>{touched++;throw Error('no vault');},tenant:'t',refs:[]},
+    credential:async()=>({token:'ghs_no_mask_for_git',refused(){}}),send:async request=>{assert.equal((await request.arrayBuffer()).byteLength,body.length);return pack;}
+  });
+  assert.equal(response,pack);assert.equal(touched,0);assert.deepEqual(new Uint8Array(await response.arrayBuffer()),bytes);assert.equal(response.headers.get('etag'),'"pack"');
+});
+
+test('body opt-in returns 413 and malformed encoding returns 400, without an upstream request',async()=>{
+  let sends=0;
+  const deps={vault:{service:async()=>{throw Error('unused');},tenant:'t',refs:[{type:'vault' as const,name:'TOKEN',inBody:true}]},credential:async()=>({token:'unused-long-token',refused(){}}),send:async()=>{sends++;return new Response('unexpected');}};
+  const oversized=await forwardEgress(new Request('https://example.com',{method:'POST',body:new Uint8Array(8*1024*1024+1)}),{host:'*'},deps);
+  assert.equal(oversized.status,413);assert.match(await oversized.text(),/Vault request body exceeds 8 MiB/);
+  const malformed=await forwardEgress(new Request('https://example.com/%zz'),{host:'*'},deps);
+  assert.equal(malformed.status,400);assert.equal(sends,0);
+});
+
+test('exact dispatch wins over the wildcard and an empty MCP host list preserves the network key',async()=>{
+  const {selectEgressGrant,computerNetworkKey}=await import('../src/computers/egress.ts');
+  const exact={host:'github.com',auth:{type:'github-app' as const,app:'code'}},fallback={host:'*'};
+  for(const grants of [[exact,fallback],[fallback,exact]]) assert.equal(selectEgressGrant('github.com',fallback,grants),exact);
+  assert.equal(selectEgressGrant('evil.com',fallback,[exact]),fallback);
+  const key=computerNetworkKey([exact],{tenant:'t'},{egress:[exact]});
+  assert.equal(key,JSON.stringify([[exact],{tenant:'t'},null]));
+  assert.equal(computerNetworkKey([exact],{tenant:'t'},{egress:[exact],mcpHosts:[]}),key);
+  const {calls,box,store}=container();
+  await operate(new ContainerProvider(box as never,store,undefined,Date.now,{key,egress:[],idleMs:60000}),{op:'exec',argv:['true']});
+  calls.length=0;
+  await operate(new ContainerProvider(box as never,store,undefined,Date.now,{key:computerNetworkKey([exact],{tenant:'t'},{mcpHosts:[]}),egress:[],idleMs:60000}),{op:'exec',argv:['true']});
+  assert.equal(calls.some(c=>c[0]==='start'||c[0]==='destroy'),false);
+});

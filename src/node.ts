@@ -486,7 +486,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   }, 30000);
   computerTimer.unref();
   // Tenants' GitHub Apps: egress grants and tool sources with auth "github-app" get installation tokens minted from them.
-  const vault = new Vault(db, { canStore: accounts.canStoreKeys, seal: (ctx, text) => accounts.seal(ctx, text), unseal: (ctx, sealed) => accounts.unseal(ctx, sealed) });
+  const vault = new Vault(db, { reservedNames: Object.keys(process.env), canStore: accounts.canStoreKeys, seal: (ctx, text) => accounts.seal(ctx, text), unseal: (ctx, sealed) => accounts.unseal(ctx, sealed) });
   const githubApps = nodeGitHubApps({ db, accounts, apiUrl: config.channelApis.github });
   const toolSources = new ToolSources({ computers, accounts, mcp, outbound, signer, search, render, xSearch, get scheduler() { return scheduler; }, get volumes() { return volumes; }, fileUrls, get links() { return links; }, githubApps, vault });
   // Tenants' own OpenAI-compatible model providers.

@@ -61,18 +61,24 @@ export function sourceUrl(value: unknown, env: Pick<Env, "TEST_MODE" | "AGENT_OU
   catch (error) { throw bad(error instanceof Error ? error.message : String(error)); }
 }
 
-export async function fetchSource(env: Pick<Env, "TEST_MODE">, url: string | URL, init: RequestInit, max = MAX_BYTES, complete?: (text: string) => boolean) {
+export async function fetchSource(env: Pick<Env, "TEST_MODE">, url: string | URL, init: RequestInit, max = MAX_BYTES, complete?: (text: string) => boolean, options: { vault?: boolean; checkNetwork?: (url: URL) => void } = {}) {
   let current = sourceUrl(String(url), env);
+  options.checkNetwork?.(current);
   await outbound(env).reachable(current);
   for (let count = 0; count < 6; count++) {
+    options.checkNetwork?.(current);
     let response = await fetch(current, { ...init, redirect: "manual" });
+    if (response.status >= 300 && response.status < 400 && response.headers.has("location")) {
+      options.checkNetwork?.(sourceUrl(new URL(response.headers.get("location")!, current).href, env));
+    }
     const authorization = new Headers(init.headers).get("authorization");
     if (authorization) {
       if (response.status >= 300 && response.status < 400) { await response.body?.cancel(); throw bad("Authenticated source redirects are not allowed"); }
-      response = await maskResponse(response, [authorization, authorization.replace(/^Bearer /i, "")]);
+      if (options.vault) response = await maskResponse(response, [authorization, authorization.replace(/^Bearer /i, "")]);
     }
     if (response.status >= 300 && response.status < 400 && response.headers.has("location")) {
       const next = sourceUrl(new URL(response.headers.get("location")!, current).href, env);
+      options.checkNetwork?.(next);
       await response.body?.cancel();
       if (next.origin !== current.origin) throw bad("Source redirects may not change origin");
       current = await outbound(env).reachable(next);
@@ -355,7 +361,7 @@ class RemoteMcp {
     result = await fetchSource(this.env, this.source.url!, {
       method: "POST", headers: { ...this.headers, ...await this.runtimeHeaders(api, approval), Accept: "application/json, text/event-stream", "Content-Type": "application/json", ...(this.session ? { "Mcp-Session-Id": this.session, "MCP-Protocol-Version": "2025-06-18" } : {}) },
       body: JSON.stringify(request), signal: deadline.signal,
-    }, MAX_BYTES, notification ? undefined : complete);
+    }, MAX_BYTES, notification ? undefined : complete, {vault:this.source.auth?.type === "vault",checkNetwork:this.checkNetwork});
     if (attempt === 0 && this.refused && [401, 403].includes(result.response.status)) { this.refused(); continue; }
     break;
     }

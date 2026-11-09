@@ -4470,6 +4470,9 @@
           },
           "workspace": {
             "type": "string"
+          },
+          "inBody": {
+            "type": "boolean"
           }
         },
         "required": [

@@ -118,3 +118,27 @@ test('workerd child reports progress and messages its signed parent without endi
   assert.ok(child.tools.some((tool: any) => tool.function.name === 'report_progress'));
   assert.ok(child.tools.some((tool: any) => tool.function.name === 'send_message'));
 });
+
+test('inline children and API forks retain the web_fetch network boundary', {timeout:90_000}, async t=>{
+  const {call,fixture}=await setup(t,body=>{
+    if(lastUser(body).includes('CHILD_NETWORK')) return body.messages.at(-1).role==='tool'
+      ? {role:'assistant',content:'checked'} : toolCall('web_fetch',{url:'https://blocked.example.com'},'fetch-blocked');
+    return body.messages.at(-1).role==='tool' ? {role:'assistant',content:'complete'}
+      : toolCall('delegate',{instructions:'Check the network',task:'CHILD_NETWORK'},'delegate-network');
+  });
+  const policy={type:'limited',allowedHosts:['api.stripe.com'],allowPackageManagers:false,allowMcpServers:false};
+  const agent=await call('/v1/agents',{codeMode:false,fileTools:false,builtins:['delegate','web_fetch'],delegate:{instructions:true},networking:policy});
+  const run=await call(`/v1/agents/${agent.id}/prompt`,{text:'start'});
+  await until(async()=>(await call(`/v1/agents/${agent.id}/requests/${run.id}`)).state==='completed','parent completed',30_000);
+  const rows=await fixture.db.query("select id from agents where header->'config'->>'type' = 'subagent'");
+  assert.equal(rows.rows.length,1);
+  const child=rows.rows[0].id;
+  assert.deepEqual((await call(`/v1/agents/${child}/configuration`)).networking,policy);
+  assert.match(JSON.stringify(await call(`/v1/agents/${child}/history`)),/Network destination is not allowed/);
+  const fork=await call(`/v1/agents/${agent.id}/fork`,{});
+  assert.deepEqual((await call(`/v1/agents/${fork.id}/configuration`)).networking,policy);
+  const forkRun=await call(`/v1/agents/${fork.id}/prompt`,{text:'CHILD_NETWORK'});
+  await until(async()=>(await call(`/v1/agents/${fork.id}/requests/${forkRun.id}`)).state==='completed','fork completed',30_000);
+  const history=await call(`/v1/agents/${fork.id}/history`);
+  assert.match(JSON.stringify(history.messages.slice(-3)),/Network destination is not allowed/);
+});
