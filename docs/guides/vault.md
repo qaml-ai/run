@@ -17,10 +17,14 @@ secrets use `/v1/workspaces/{workspace}/secrets` instead. Both scopes belong to 
 API token's tenant. OAuth tokens cannot manage the vault.
 
 `allowedHosts` takes exact public DNS names or `*.example.com`. A wildcard matches
-subdomains, not the apex. Public suffixes (including private suffixes such as
-`github.io`), IP literals, private names, ports and URL syntax are refused.
+subdomains, not the apex. Exact hosts in the private section of the Public Suffix
+List are allowed, including `httpbin.org`, `postman-echo.com`, `herokuapp.com` and
+`foo.herokuapp.com`. ICANN public suffixes such as `com` and `co.uk` are refused.
+Wildcards cannot cover an entire ICANN or private suffix: `*.com` and
+`*.herokuapp.com` are refused, while `*.foo.herokuapp.com` is allowed. IP literals,
+private names, ports and URL syntax are refused.
 Reserved environment variable names are refused, including `PATH`, `HOME`,
-`SSL_CERT_FILE`, `NODE_OPTIONS`, `LD_*` and names already set by the runtime.
+`SSL_CERT_FILE`, `NODE_OPTIONS`, `LD_*` and the gateway's TLS environment variables.
 An empty list grants no egress. The outbound address guard also checks DNS.
 
 The default `locations` is `["header"]`. Opt into `"query"` or `"body"` only for
@@ -85,14 +89,36 @@ GitHub App git traffic and binary responses pass through unchanged.
 
 ## Verify a deployed pilot
 
-Use an existing Container agent with a GitHub App grant, limited networking and
-access to a private repository. This script reads configuration, runs
-`git ls-remote` and checks that an unlisted host receives 403. It creates no
-agents, changes no configuration and writes no repository files. Known production
-origins are refused; supply only a pilot URL.
+Run only against a pilot. The script refuses known production origins. Supply an
+API key for the pilot tenant and an existing Container agent with:
+
+- Limited networking that allows `github.com` and the vault echo host, and blocks
+  the hostname passed to `--blocked-host`.
+- A GitHub App egress grant for `github.com`, with `contents:write` access to
+  `qaml-ai/camelcode-scratch`.
+- An attached vault secret whose policy allows the echo host and header injection.
+- The `agents` builtin and `delegate.instructions: true`, so it can spawn an
+  inline child.
+
+The HTTPS echo endpoint must return the injected Authorization header in its
+response body. The script checks that the response contains `[hidden]` and no
+vault placeholder.
 
 ```sh
 CAMELAI_API_KEY=... node --experimental-strip-types scripts/verify-egress.mjs \
   --pilot https://your-pilot.example.com --agent AGENT_ID \
-  --repo https://github.com/owner/private-repo.git --blocked-host example.com
+  --vault-name TEST_TOKEN --vault-url https://httpbin.org/headers \
+  --blocked-host example.com
 ```
+
+`--pilot`, `--agent`, `--vault-name` and `--vault-url` are required.
+`--blocked-host` defaults to `example.com`. The repository is fixed to
+`qaml-ai/camelcode-scratch`; there is no `--repo` flag.
+
+The script checks the parent, an agent fork restored from the parent's computer
+snapshot, and a fresh inline child created through a model request. Each runs a
+clone, creates an empty commit on a unique scratch branch, pushes it, verifies the
+remote ref, and deletes that branch. Each also checks vault substitution and a
+403 response from the blocked host. Cleanup deletes the two created agents and
+removes the temporary checkout directories. The existing parent's configuration
+is unchanged; its prompt history includes the request to spawn the inline child.

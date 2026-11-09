@@ -14,11 +14,32 @@ function vault() {
   } } as any, { canStore:true, seal: (ctx,text) => ({iv:ctx,tag:"",ciphertext:btoa(text)}), unseal: (ctx,v) => { assert.equal(ctx,v.iv); return atob(v.ciphertext); } });
 }
 test("vault host rules reject suffixes, private literals and private DNS; wildcards are label bounded", () => {
-  for (const host of ["com","co.uk","*.co.uk","github.io","*.pages.dev","127.0.0.1","0177.0.0.1","[::1]","metadata.internal","x.local","x.example","foo.com:443"]) assert.throws(() => hostRules([host]), { name: "Error" }, host);
-  assert.deepEqual(hostRules(["API.Stripe.com","*.example.com"]), ["api.stripe.com","*.example.com"]);
+  for (const host of ["com","co.uk","*.com","*.co.uk","*.github.io","*.pages.dev","*.herokuapp.com","*.httpbin.org","*.postman-echo.com","127.0.0.1","0177.0.0.1","[::1]","metadata.internal","x.local","x.example","foo.com:443"]) assert.throws(() => hostRules([host]), { name: "Error" }, host);
+  const exact = ["httpbin.org", "postman-echo.com", "herokuapp.com", "foo.herokuapp.com", "github.io"];
+  assert.deepEqual(hostRules(["API.Stripe.com","*.example.com", ...exact, "*.foo.herokuapp.com"]), ["api.stripe.com","*.example.com", ...exact, "*.foo.herokuapp.com"]);
   assert.ok(hostMatches("a.example.com","*.example.com"));
   assert.ok(!hostMatches("example.com","*.example.com"));
   assert.ok(!hostMatches("evil-example.com","*.example.com"));
+  assert.ok(!hostMatches("other.herokuapp.com", "foo.herokuapp.com"));
+  assert.ok(hostMatches("child.foo.herokuapp.com", "*.foo.herokuapp.com"));
+  assert.ok(!hostMatches("other.herokuapp.com", "*.foo.herokuapp.com"));
+});
+test("exact private-suffix hosts support host-bound secrets and limited networking", async () => {
+  const v = vault(), ref = { type: "vault" as const, name: "TOKEN" };
+  const hosts = ["httpbin.org", "postman-echo.com", "foo.herokuapp.com"];
+  await v.put("a", ref.name, { value: "private-host-secret", allowedHosts: hosts }, "", true);
+  const policy = networkingInput({ type: "limited", allowedHosts: hosts });
+  for (const host of hosts) {
+    const url = new URL(`https://${host}/echo`);
+    assert.ok(networkAllows(policy, url), host);
+    const { request } = await vaultRequest(new Request(url, { headers: { authorization: secretPlaceholder(ref.name) } }), [ref], v, "a");
+    assert.equal(request.headers.get("authorization"), "private-host-secret");
+  }
+  for (const host of ["other.herokuapp.com", "sub.httpbin.org", "other.com"]) {
+    const url = new URL(`https://${host}/`);
+    assert.ok(!networkAllows(policy, url), host);
+    await assert.rejects(v.open("a", ref, url, "header"), /not allowed/);
+  }
 });
 test("vault is scope isolated, write-only, rotatable and revocable at each request", async () => {
   const v = vault(); const ref = {type:"vault" as const,name:"TOKEN"};
