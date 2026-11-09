@@ -107,8 +107,14 @@ export async function fakeGitHubApp(t: { after(fn: () => Promise<void> | void): 
       return res.writeHead(204).end();
     }
     if (!issued) return answer({ message: "Bad credentials" }, 401);
+    const repoView = (owner: string, name: string) => ({ id: 42, name, full_name: `${owner}/${name}`, private: true, html_url: `https://github.com/${owner}/${name}`, default_branch: "main", temp_clone_token: "must-not-return" });
+    if (path === "/installation/repositories") {
+      const query = new URL(req.url!, "http://local").searchParams;
+      const size = Number(query.get("per_page") ?? 100), page = Number(query.get("page") ?? 1);
+      return answer({ total_count: issued.repositories.length, repositories: issued.repositories.slice((page - 1) * size, page * size).map(name => repoView(issued.account, name)) });
+    }
     const repo = /^\/repos\/([^/]+)\/([^/]+)$/.exec(path);
-    if (repo && req.method === "GET") return reaches(issued, repo[1]!, repo[2]!) ? answer({ full_name: `${repo[1]}/${repo[2]}`, private: true }) : answer({ message: "Not Found" }, 404);
+    if (repo && req.method === "GET") return reaches(issued, repo[1]!, repo[2]!) ? answer(repoView(repo[1]!, repo[2]!)) : answer({ message: "Not Found" }, 404);
     answer({ message: "Not Found" }, 404);
   });
   server.listen(0, "127.0.0.1");

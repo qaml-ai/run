@@ -23,6 +23,7 @@ import { resolveAgentKey } from "./agent-key.ts";
 import { prepareCreateAdmission } from "./admission.ts";
 import { reserveAgentCreation } from "./agent-capacity.ts";
 import type { RateLimitState } from "./admission.ts";
+import { recordUsageDetails } from "../../../shared/usage-details.ts";
 import { applyUsageRows } from "./accounts.ts";
 import { applyWorkspaceUsage, Workspaces } from "./workspaces.ts";
 import { activeCharge } from "../../../src/pricing.ts";
@@ -184,6 +185,7 @@ export class Directory {
     if (owner && owner.tenant!==this.tenantId) throw new ApiError(403,'Agent belongs to another account','FORBIDDEN');
     if (owner?.revoked) throw new ApiError(410,'Agent is deleted','AGENT_GONE');
     const previousEntry = await this.get(id), previousConfig = previousEntry?.config;
+    if (fields.metadata === undefined && previousConfig?.metadata !== undefined) config.metadata = previousConfig.metadata;
     if (fields.model === undefined && previousConfig?.model) config.model = previousConfig.model;
     if (fields.language === undefined && previousConfig?.language !== undefined) config.language = previousConfig.language;
     // An upsert that leaves its queue out keeps the one the agent has, as for its language.
@@ -205,6 +207,7 @@ export class Directory {
       if (fields.model === undefined) delete target.model;
       if (fields.language === undefined) delete target.language;
       if (fields.queue === undefined) delete target.queue;
+      if (fields.metadata === undefined) delete target.metadata;
       const response = await this.env.AGENTS.getByName(id).fetch(new Request('https://agent/upsert', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ id: crypto.randomUUID(), method: 'configure', params: {
@@ -255,6 +258,7 @@ export class Directory {
       if (requested===undefined && old?.config.mounts) config.mounts=old.config.mounts;
       if(old?.config.mounts&&requested!==undefined&&mountIdentity(old.config.mounts)!==mountIdentity(config.mounts)&&(input as {remount?:boolean}).remount!==true)
         throw new ApiError(409,`An existing agent's mounts cannot change; delete it (DELETE /v1/agents/${id}) or use another idempotency key, or send remount: true to change its mounts`);
+      if (fields.metadata === undefined && old?.config.metadata !== undefined) config.metadata = old.config.metadata;
       const configHash=await digest(canonical(config));
       const sameModel = JSON.stringify(old?.resolvedModel) === JSON.stringify(resolvedModel);
       if (admitCreate)
@@ -513,6 +517,7 @@ export async function settleTurn(
         responses: receipt.responses ?? 1, input: receipt.inputTokens ?? 0, output: receipt.outputTokens ?? 0, cacheRead: 0, cacheWrite: 0,
         cost: receipt.costMicros / 1_000_000, platformResponses: receipt.responses ?? 1, platformCost: receipt.costMicros / 1_000_000 };
       await applyUsageRows(sql, [totals]);
+      await recordUsageDetails(sql, [{ ...totals, agent: receipt.agentId, endUser: receipt.subject ?? null, timestamp: receipt.startedAt ?? Date.now() }]);
       await applyWorkspaceUsage(sql, [{ ...totals, agent: receipt.agentId, timestamp: receipt.startedAt ?? Date.now() }]);
       if (receipt.subject) await settleUsage(sql, { tenant: receipt.tenantId, endUser: receipt.subject, bucket: receipt.bucket ?? "default",
         day: totals.day, raw: receipt.costMicros, key, metadata: { requestId: receipt.requestId, agent: receipt.agentId } }, Date.now(), endUser);
