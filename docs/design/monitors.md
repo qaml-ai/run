@@ -90,19 +90,24 @@ time per node, never in the agent's host process: no session is loaded, no journ
 
 **Workers.** The minute cron (`* * * * *`, already there) sends one `{kind: "monitors"}` message to the existing queue
 when any monitor is due (one indexed `select 1`). The queue consumer, a stateless Worker invocation, runs `scan()`:
-claims in Postgres through Hyperdrive, and runs each check's QuickJS VM in the code-mode Worker's sandbox object
-`monitor:<tenant>` (the same separately deployed `CodemodeSandbox` class agents use, so a busy script never blocks the
-consumer; it is not the agent's object and holds no storage). `tools.fetch` runs in the consumer. The agent's Durable
-Object gets a request only on a fire (`POST /requests`), on `monitor_start/stop/list` (it is already awake: it is in a
-turn), and never for the HTTP API (routes go to Postgres).
+it claims in Postgres through Hyperdrive and keeps the host role of each check (`RemoteCodemodeSandbox`: the deadline,
+`tools.fetch` through the outbound guard). The check's QuickJS VM runs in another stateless invocation: a
+`WorkerEntrypoint` (`MonitorSandbox`) on the separately deployed code-mode Worker, reached over a service binding
+(`MONITOR_SANDBOX`), serving Pi's portable engine (`serveCodemodeRemote`) with the same remote-side bounds agents'
+scripts get. No Durable Object is involved in a check: not the agent's, and not the per-agent `CodemodeSandbox` object
+that agents' own scripts use (whose tool calls bridge back into the agent's object). Both invocations bill CPU, not
+wall time, so awaiting a slow fetch costs nothing. A script that computes cannot block the consumer (it is in another
+isolate) and is cut by the interrupt budget. The agent's Durable Object gets a request only on a fire
+(`POST /requests`) and on `monitor_start/stop/list` (it is awake then: it is in a turn); the HTTP API's routes go to
+Postgres. Tests assert a non-firing check leaves the agent's object untouched.
 
 **Cost, roughly.** A monitor at 60 s is 1,440 checks a day; at 5 minutes, 288.
 
 | | Workers | Node |
 | --- | --- | --- |
-| Per check | 1 claim + 1 update in Postgres, about 5 ms Worker CPU, one sandbox-object request held for the check's wall time (typically 0.1 to 0.5 s of a 128 MB object: about 0.03 to 0.06 GB-s), the fetches | 1 claim + 1 update, one v8-exec process for the check (about 20 MB, tens of ms CPU), the fetches |
-| Per check, list price | about $0.000001 (request $0.15/M, duration $12.50/M GB-s, CPU $0.02/M ms) | no metered unit; capacity is 4 checks at a time a node, about 500 a minute at 0.5 s each |
-| A 60 s monitor, a day | about $0.0015 | – |
+| Per check | 1 claim + 1 update in Postgres, about 5 to 20 ms CPU over the two invocations (the consumer and the VM), no duration charge, no Durable Object request, the fetches (subrequests, free) | 1 claim + 1 update, one v8-exec process for the check (about 20 MB, tens of ms CPU), the fetches |
+| Per check, list price | about $0.0000005 (CPU $0.02/M ms; the queue message is one a minute for all monitors) | no metered unit; capacity is 4 checks at a time a node, about 500 a minute at 0.5 s each |
+| A 60 s monitor, a day | about $0.0007 | – |
 | Agent DO wakes while nothing fires | 0 | 0 sessions loaded |
 | Model tokens while nothing fires | 0 | 0 |
 
@@ -141,8 +146,8 @@ whose monitor is its own and stops with the wait, and so with the sub-agent. See
 
 - **What a check can do:** compute, and `tools.fetch({url, method?: "GET" | "POST", headers?, body?})` at most 5
   times. Nothing else is in its sandbox: no model call, no `delegate`, no computer, no files, no other tool, no
-  `store`. It is the same sandbox as code mode (v8-exec process with seccomp on Node, a QuickJS VM in a separate Worker
-  on Workers), with its own, tighter CPU and wall limits.
+  `store`. It is the same sandbox as code mode (v8-exec process with seccomp on Node, a QuickJS VM in a stateless invocation of
+  the separate code-mode Worker on Workers), with its own, tighter CPU and wall limits.
 - **SSRF:** every fetch goes through the backend's existing outbound guard (`Outbound` on Node, `PublicOutbound` on
   Workers): public addresses only, checked at connect time, redirects re-checked, a deadline and a byte cap. The
   agent's `networking` policy applies at check time: a `limited` agent's checks reach only its `allowedHosts`.
@@ -153,8 +158,8 @@ whose monitor is its own and stops with the wait, and so with the sub-agent. See
   `auth`) can be used, read at check time, so detaching or deleting a secret takes effect on the next check.
 - **Prompt injection:** the fired `value` is wrapped as data (`<monitor_event>` with `<`, `>` and backticks escaped)
   under a line saying it is not instructions, as webhook triggers do; approvals in the turn are declined.
-- **Tenancy:** every query is by tenant and agent; the Workers sandbox object is per tenant; checks of one tenant
-  cannot see another's state.
+- **Tenancy:** every query is by tenant and agent; each check gets its own VM, created for it and disposed after
+  (nothing is shared between checks); checks of one tenant cannot see another's state.
 
 ## Migration and rolling deploys
 
