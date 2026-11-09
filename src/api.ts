@@ -1,3 +1,4 @@
+import { readScheduleRuns } from './core/schedule-runs.ts';
 import { SharedAgents, ShareLinkInput, MemberInput, ShareLink, CreatedShareLink, Member } from './shared-agents.ts';
 import { inboxQuery, readInbox, InboxQueryError } from '../shared/inbox.ts';
 import { rejectWorkflow } from "./builtins.ts";
@@ -161,7 +162,7 @@ const OAUTH_ROUTES = [
   /^GET \/v1\/(?:me|models|providers|inputs|usage|billing|billing\/ledger)$/,
   /^(?:GET|POST) \/v1\/agents$/,
   /^(?:GET|DELETE) \/v1\/agents\/[^/]+$/,
-  /^(?:GET|POST|PUT|PATCH|DELETE) \/v1\/agents\/[^/]+\/(?:abort|configuration|context\/reset|events|fork|history|inputs|inputs\/[^/]+|mounts|prompt|requests\/[^/]+|schedules|schedules\/[^/]+|schedule-deliveries|state|uploads\/[^/]+\/[^/]+)$/,
+  /^(?:GET|POST|PUT|PATCH|DELETE) \/v1\/agents\/[^/]+\/(?:abort|configuration|context\/reset|events|fork|history|inputs|inputs\/[^/]+|mounts|prompt|requests\/[^/]+|schedules|schedules\/[^/]+|schedules\/[^/]+\/run|schedule-deliveries|state|uploads\/[^/]+\/[^/]+)$/,
   /^(?:GET|POST|PATCH|DELETE) \/v1\/definitions(?:\/[^/]+(?:\/agents)?)?$/,
   /^POST \/v1\/(?:transcriptions|images|speech)$/,
   /^(?:POST \/v1\/runs|(?:GET|DELETE) \/v1\/runs\/[^/]+|GET \/v1\/runs\/[^/]+\/(?:events|messages)|POST \/v1\/runs\/[^/]+\/abort)$/,
@@ -844,9 +845,8 @@ export function api(context: ApiContext) {
     });
   }
 
-  route(createRoute({ method: "get", path: "/v1/agents/{id}/schedule-deliveries", request: { params: agentId }, responses: { 200: reply("The latest 100 scheduled email deliveries", z.array(z.object({ id: z.string(), state: z.string(), email: z.record(z.string(), z.unknown()), createdAt: z.number(), sentAt: z.number().nullable(), messageId: z.string().nullable(), error: z.string().nullable() }))) } }), async c => {
-    const { rows } = await accounts.db.query('select id,state,email,created_at as "createdAt",sent_at as "sentAt",message_id as "messageId",error from schedule_deliveries where tenant=$1 and agent=$2 order by created_at desc limit 100', [c.var.principal.tenant,c.req.param("id")]);
-    return json(c,200,rows);
+  route(createRoute({ method: "get", path: "/v1/agents/{id}/schedule-deliveries", request: { params: agentId }, responses: { 200: reply("The latest 100 scheduled runs and their email delivery", z.array(z.object({id:z.string(),schedule:z.string(),agent:z.string().nullable(),createdAt:z.number(),error:z.string().nullable(),state:z.string().nullable(),email:z.record(z.string(),z.unknown()).nullable(),sentAt:z.number().nullable(),messageId:z.string().nullable(),runId:z.string(),cost:z.number(),endedAt:z.number().nullable(),emailState:z.string().nullable(),emailError:z.string().nullable()}))) } }), async c => {
+    return json(c,200,await readScheduleRuns(accounts.db,c.var.principal.tenant,c.req.param("id")!));
   });
   const scheduler = () => {
     if (!context.scheduler) throw new HttpError(404, "Unknown agent route");
@@ -860,6 +860,7 @@ export function api(context: ApiContext) {
     try { input = scheduleInput(await readJson(c.req.raw.body, 64 * 1024, {})); } catch (error) { throw new HttpError(400, errorText(error)); }
     return json(c, 201, await schedules.create({ agent: c.req.param("id")!, tenant: c.var.principal.tenant, ...input }));
   });
+  route(createRoute({ method: "post", path: "/v1/agents/{id}/schedules/{scheduleId}/run", request: { params: agentId.extend({scheduleId:z.string()}) }, responses: {202:reply("The scheduled run",z.object({agent:z.string(),requestId:z.string(),record:z.unknown()}))} }), async c => json(c,202,await scheduler().runNow(c.req.param("id")!,c.req.param("scheduleId")!)));
   route(createRoute({ method: "delete", path: "/v1/agents/{id}/schedules/{scheduleId}", request: { params: agentId.extend({ scheduleId: z.string() }) }, responses: { 200: reply("The schedule is deleted", schema.Deleted) } }), async c => {
     if (!await scheduler().remove(c.req.param("id")!, c.req.param("scheduleId")!)) throw new HttpError(404, "Unknown schedule");
     return json(c, 200, { deleted: true });

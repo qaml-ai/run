@@ -23,6 +23,7 @@ are current: prefer them to your training data.
 - [Computers](https://run.camelai.com/docs/guides/computers.md): native Linux computers, remote browsers and Cloudflare Tunnel; sessions, provider credentials, forking a computer into sub-agents and workspace compute usage
 - [Tools](https://run.camelai.com/docs/guides/tools.md): writing tools; attached and served tools; identity tokens; MCP, OpenAPI and built-in sources
 - [Human input](https://run.camelai.com/docs/guides/human-input.md): approvals, questions and forms; answering them and resuming the run
+- [Scheduled agents and email reports](https://run.camelai.com/docs/guides/schedules.md): cron and calendar schedules, fresh sessions, per-run spend limits, run now and email reports
 - [Stateless runs](https://run.camelai.com/docs/guides/stateless-runs.md): one call, configuration and input in and result out, nothing carried over and no agent kept (POST /v1/runs, agents.run): runs or agents, following, idempotency, durability, limits
 - [Structured output](https://run.camelai.com/docs/guides/structured-output.md): a run's answer as an object in your schema: zod, TypeBox, pydantic or JSON Schema
 - [Frontend guide](https://run.camelai.com/docs/frontend.md): a streaming chat with each user's agent in your app: `npm create @camelai/run-app`, or one server route and one React component in an app you have

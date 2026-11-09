@@ -148,6 +148,7 @@ const settled = (state: string) => state !== "running";
  */
 export class ClientSessions {
   readonly sessions = new Map<string, Session>();
+  private readonly endedRequests = new WeakMap<Session, Map<string, RequestRecord>>();
   private readonly loading = new Map<string, Promise<Session | undefined>>();
   /** Concurrent deletes must wait for the same cancellation before any caller stops the host. */
   private readonly removing = new Map<string, Promise<void>>();
@@ -415,6 +416,8 @@ export class ClientSessions {
     if (queued.length || resumed.length) session.sweepResetAt = Date.now() + RESUME_HELD_MS;
     events.loaded(this.eventContext, session);
     for (const record of ended) {
+      this.endedRequests.get(session)?.delete(record.id);
+      this.hook("requestEnded", session, record);
       this.publish(session, { type: "response", id: record.id, outcome: record.outcome! });
       if (RUN_METHODS.includes(record.method)) {
         this.hook("runEnded", session, record);
@@ -547,6 +550,11 @@ export class ClientSessions {
     return next;
   }
   private upsertRequest(session: Session, record: RequestRecord) {
+    if (record.state === "completed" && this.options.hooks?.requestEnded) {
+      let ended = this.endedRequests.get(session);
+      if (!ended) this.endedRequests.set(session, ended = new Map());
+      ended.set(record.id, record);
+    }
     this.track(session, record);
     session.log.append({ t: "request", record });
     return record;
@@ -555,8 +563,13 @@ export class ClientSessions {
   /** Write appended journal records. Durable flushes gate acknowledgements and side effects. */
   private async commit(session: Session, durable: boolean) {
     if (session.fault) throw session.fault;
+    const ended = durable ? [...(this.endedRequests.get(session) ?? [])] : [];
     try { await session.log.flush(durable); }
     catch (error) { this.fail(session, error, "journal"); throw session.fault; }
+    for (const [id, record] of ended) if (this.endedRequests.get(session)?.get(id) === record) {
+      this.endedRequests.get(session)!.delete(id);
+      this.hook("requestEnded", session, record);
+    }
   }
   private commitLater(session: Session) { void this.commit(session, false).catch(() => {}); }
 
@@ -1587,6 +1600,7 @@ export class ClientSessions {
       try { input = scheduleInput(await readJson(body(c), 64 * 1024)); } catch (error) { throw new HttpError(400, errorText(error)); }
       try { return json(c, 201, await scheduler.create({ agent: c.var.session.header.id, tenant, ...input }, c.var.session.claim)); } catch (error) { if (error instanceof LostClaim || error instanceof HttpError) throw error; throw new HttpError(400, errorText(error)); }
     });
+    app.post(`${agent}/schedules/:schedule/run`, async c => json(c,202,await this.scheduler().runNow(c.var.session.header.id,c.req.param("schedule"))));
     app.delete(`${agent}/schedules/:schedule`, async c => {
       if (!await this.scheduler().remove(c.var.session.header.id, c.req.param("schedule"), c.var.session.claim)) throw new HttpError(404, "Unknown schedule");
       return json(c, 200, { deleted: true });
@@ -1773,7 +1787,8 @@ export class ClientSessions {
     if (rawActor !== undefined && !isRun) throw new HttpError(400, "actor is only for runs (prompt, continue, execute)");
     const isMessage = ["prompt", "steer"].includes(body.method);
     if (params.from !== undefined && !isMessage) throw new HttpError(400, "from is only for messages (prompt, steer)");
-    if (params.metadata !== undefined && !isMessage && body.method !== "configure") throw new HttpError(400, "metadata is only for messages (prompt, steer) or tenant configuration");
+    const acceptsRequestMetadata = isMessage || body.method === "execute";
+    if (params.metadata !== undefined && !acceptsRequestMetadata && body.method !== "configure") throw new HttpError(400, "metadata is only for messages, execute or tenant configuration");
     if (params.images !== undefined) throw new HttpError(400, "Attach images as files: files: [{ name, data (base64), contentType }]");
     if (params.whileRunning !== undefined && (body.method !== "prompt" || !["queue", "steer"].includes(params.whileRunning))) throw new HttpError(400, "whileRunning is queue or steer, for a prompt");
     // A run's own budget: it only ever lowers what the run may spend, so whoever may run the agent may set it.
@@ -1797,7 +1812,7 @@ export class ClientSessions {
     try {
       if (params.output !== undefined) params.output = outputInput(params.output);
       if (params.from !== undefined) params.from = senderInput(params.from);
-      const chain = delegation.delegation(this.delegationContext, session.header.id, body.id, isMessage ? params.metadata : undefined).chain;
+      const chain = delegation.delegation(this.delegationContext, session.header.id, body.id, acceptsRequestMetadata ? params.metadata : undefined).chain;
       membershipAgent = chain[0] ?? session.header.id;
       if (MODEL_RUNS.includes(body.method)) sharedAgent = await this.options.sharedAgents?.get(membershipAgent, session.header.tenant) ?? null;
       const shared = sharedAgent;
@@ -1806,7 +1821,7 @@ export class ClientSessions {
         if (member !== "owner" && !sender) throw new HttpError(403, "Unknown shared agent member");
         if (sender) { params.from = sender; params.actor = sender.id; }
       }
-      if (isMessage && params.metadata !== undefined) params.metadata = metadataInput(params.metadata);
+      if (acceptsRequestMetadata && params.metadata !== undefined) params.metadata = metadataInput(params.metadata);
       // The sender acts, unless the application names someone else.
       actor = member && params.from?.role ? params.from.id : actorInput(rawActor) ?? (isRun ? params.from?.id : undefined);
       // A signed child turn inherits the initiating member from the root's live membership.
@@ -1926,7 +1941,7 @@ export class ClientSessions {
       const record = this.upsertRequest(session, {
         startedAt: Date.now(), ...(body.method === "prompt" && typeof body.params.text === "string" ? { prompt: body.params.text } : {}),
         ...(body.method === "execute" && typeof body.params.code === "string" ? { code: body.params.code } : {}),
-        id: body.id, method: body.method, fingerprint, state: "running", ...(queued ? { params } : {}), sharedAgent, ...(params.from ? { sender: params.from } : {}), ...(actor ? { actor } : {}), ...(endUser ? { endUser } : {}), ...(bucket ? { bucket } : {}), ...(isMessage && params.metadata ? { metadata: params.metadata } : {}),
+        id: body.id, method: body.method, fingerprint, state: "running", ...(queued ? { params } : {}), sharedAgent, ...(params.from ? { sender: params.from } : {}), ...(actor ? { actor } : {}), ...(endUser ? { endUser } : {}), ...(bucket ? { bucket } : {}), ...(acceptsRequestMetadata && params.metadata ? { metadata: params.metadata } : {}),
         ...(body.method === "resume" ? { suspension: params.suspension } : {}),
       });
       // Recovery sorts by arrival time, with log order breaking ties. Keep the released holds behind their trigger.
@@ -2067,6 +2082,10 @@ export class ClientSessions {
     if (params?.spendLimit !== undefined) {
       const { spendLimit, ...rest } = params;
       (session.runLimits ??= new Map()).set(record.id, spendLimit.usd);
+      params = rest;
+    }
+    if (method === "execute" && params?.metadata !== undefined) {
+      const { metadata: _metadata, ...rest } = params;
       params = rest;
     }
     // So are its own run limits (turnLimit, overrun).
@@ -2704,7 +2723,7 @@ export class ClientSessions {
     if (!ownership.holds(session.claim)) throw new HttpError(503, "This node lost ownership of the agent; retry");
   }
 
-  private hook(name: "runStarted" | "runEnded", session: Session, record: RequestRecord) {
+  private hook(name: "runStarted" | "runEnded" | "requestEnded", session: Session, record: RequestRecord) {
     try { this.options.hooks?.[name]?.({ id: session.header.id, tenant: session.header.tenant, claim: session.claim }, record); }
     catch (error) { console.error(JSON.stringify({ type: "session_hook_failed", hook: name, error: safeError(error) })); }
     if (name === "runEnded" && !session.header.run) void this.recordActivity(session.header.id, record);

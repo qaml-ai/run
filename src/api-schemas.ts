@@ -885,6 +885,10 @@ const Calendar = z.object({ time: z.string().openapi({ description: "Local HH:MM
 const ScheduleEmail = z.object({ to: z.email(), subject: z.string().min(1).max(200), format: z.enum(["text", "markdown", "html"]).optional().describe("Reply format; defaults to markdown. HTML is sent as supplied, with a generated plain-text alternative.") }).openapi("ScheduleEmail");
 // Documentation only: scheduleInput and Scheduler.create validate schedules.
 export const ScheduleInput = z.object({
+  mounts: z.array(MountInput).max(16).optional(),
+  cron: z.object({expression:z.string(),timeZone:z.string()}).optional(),
+  sessionMode: z.enum(["continue","fresh"]).optional(),
+  spendLimit: z.object({usd:z.number().min(0).max(1000000)}).optional(),
   calendar: Calendar.optional(),
   email: ScheduleEmail.optional().openapi({ description: "Email the successful run's final reply. Owner-configured only; failed runs are not sent." }),
   text: z.string().optional().openapi({ description: "Prompt to deliver; give exactly one of text or code" }),
@@ -896,6 +900,10 @@ export const ScheduleInput = z.object({
 }).openapi("ScheduleInput");
 
 export const Schedule = z.object({
+  mounts: z.array(MountInput).max(16).optional(),
+  cron: z.object({expression:z.string(),timeZone:z.string()}).optional(),
+  sessionMode: z.enum(["continue","fresh"]).optional(),
+  spendLimit: z.object({usd:z.number().min(0).max(1000000)}).optional(),
   calendar: Calendar.optional(),
   email: ScheduleEmail.optional(),
   id: z.string(),

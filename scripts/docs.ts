@@ -22,6 +22,7 @@ export const PAGES: { section: string; path: string; about: string }[] = [
   { section: "Guides", path: "guides/computers.md", about: "native Linux computers, remote browsers and Cloudflare Tunnel; sessions, provider credentials, forking a computer into sub-agents and workspace compute usage" },
   { section: "Guides", path: "guides/tools.md", about: "writing tools; attached and served tools; identity tokens; MCP, OpenAPI and built-in sources" },
   { section: "Guides", path: "guides/human-input.md", about: "approvals, questions and forms; answering them and resuming the run" },
+  { section: "Guides", path: "guides/schedules.md", about: "cron and calendar schedules, fresh sessions, per-run spend limits, run now and email reports" },
   { section: "Guides", path: "guides/stateless-runs.md", about: "one call, configuration and input in and result out, nothing carried over and no agent kept (POST /v1/runs, agents.run): runs or agents, following, idempotency, durability, limits" },
   { section: "Guides", path: "guides/structured-output.md", about: "a run's answer as an object in your schema: zod, TypeBox, pydantic or JSON Schema" },
   { section: "Guides", path: "frontend.md", about: "a streaming chat with each user's agent in your app: `npm create @camelai/run-app`, or one server route and one React component in an app you have" },

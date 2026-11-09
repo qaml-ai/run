@@ -801,7 +801,7 @@ export interface AgentFile { path: string; version: number; size: number; update
  */
 export interface CalendarSchedule { time: string; timeZone: string; daysOfWeek?: number[] }
 export interface ScheduleEmail { to: string; subject: string; format?: "text" | "markdown" | "html" }
-export interface Schedule { calendar?: CalendarSchedule; email?: ScheduleEmail; id: string; agent: string; text?: string; code?: string; /** @deprecated Never set: every wake-up sees the agent's history. */ history?: "none"; dueAt: number; everySeconds?: number; createdAt: number; failures?: number; lastError?: string; lastErrorAt?: number }
+export interface Schedule { mounts?: MountInput[]; cron?: {expression:string; timeZone:string}; sessionMode?: "continue" | "fresh"; spendLimit?: {usd:number}; calendar?: CalendarSchedule; email?: ScheduleEmail; id: string; agent: string; text?: string; code?: string; /** @deprecated Never set: every wake-up sees the agent's history. */ history?: "none"; dueAt: number; everySeconds?: number; createdAt: number; failures?: number; lastError?: string; lastErrorAt?: number }
 /**
  * A steered message as the runtime took it (`steerMessage`, `agent.steer`): `accepted`, the running turn reads it after
  * its current step; `taken`, it has read it already, in the turn `steeredInto` names; `queued`, no turn was running, so it
@@ -2697,13 +2697,14 @@ export class AgentClient {
   }
   /**
    * Wake this agent later: with `text` it gets a prompt, with `code` it runs sandboxed
-   * code against your tools. `everySeconds` (at least 60) repeats it. Every wake-up sees the agent's history (`history`
-   * is deprecated and ignored).
+   * code against your tools. `everySeconds` (at least 60) repeats it. Use sessionMode: "fresh" to start from the definition for each run.
+   * `history` is deprecated and ignored.
    */
-  schedule(input: { text?: string; code?: string; /** @deprecated Ignored: every wake-up sees the agent's history. */ history?: "full" | "none"; at?: string | Date; inSeconds?: number; everySeconds?: number; calendar?: CalendarSchedule; email?: ScheduleEmail }): Promise<Schedule> {
+  schedule(input: { text?: string; code?: string; /** @deprecated Ignored: every wake-up sees the agent's history. */ history?: "full" | "none"; at?: string | Date; inSeconds?: number; everySeconds?: number; mounts?: MountInput[]; cron?: {expression:string; timeZone:string}; sessionMode?: "continue" | "fresh"; spendLimit?: {usd:number}; calendar?: CalendarSchedule; email?: ScheduleEmail }): Promise<Schedule> {
     return this.http("/schedules", "POST", { ...input, ...(input.at instanceof Date ? { at: input.at.toISOString() } : {}) }, false);
   }
   schedules(): Promise<Schedule[]> { return this.http("/schedules"); }
+  runSchedule(id: string): Promise<{agent:string; requestId:string; record:unknown}> { return this.http(`/schedules/${encodeURIComponent(id)}/run`, "POST", {}, false); }
   unschedule(id: string) { return this.http(`/schedules/${encodeURIComponent(id)}`, "DELETE", undefined, false); }
   /** The agent's process (when loaded) and whether it is busy: `busy`, `activeRun`, `queuedRuns`, as GET /v1/agents/{id} and its state say too. */
   status() { return this.request("status"); }
