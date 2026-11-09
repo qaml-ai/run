@@ -290,3 +290,7 @@ weekday schedule. Omit `--session-mode` to continue the same agent. Existing
 `camelrun schedules run <agent> <scheduleId>` runs it immediately without moving
 the next occurrence. See [Schedules](../guides/schedules.md) for retention and
 run history.
+
+## Provision several resources
+
+Use `POST /v1/apply` or `runtime.apply(manifest)` to create keyed volumes, definitions, and agents together. `camelrun apply file.json --dry-run` validates without saving. References are objects such as `{"$ref":"volumes.project"}`. Existing agents must be unchanged; reconfigure them through the existing configuration API. See [Provision an application](apply.md) for the transaction boundary.

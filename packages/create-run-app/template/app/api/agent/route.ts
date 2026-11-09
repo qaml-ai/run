@@ -15,6 +15,8 @@ const handler = async () => {
     url: e.CAMELRUN_URL || e.CAMELAI_BASE_URL || e.CAMELAI_URL,
     authorize,
     agent: {
+      // Tenant-owned JSON, returned in agent lists; never sent to the model.
+      // metadata: { type: "support-chat" },
       // No model: the agent gets your account's default. To choose one, set AGENT_MODEL to a model your account can
       // use (`npx -y @camelai/camelrun models --available`).
       ...(e.AGENT_MODEL ? { model: e.AGENT_MODEL } : {}),

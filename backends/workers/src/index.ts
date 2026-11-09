@@ -1,5 +1,6 @@
 import { handleHook, hookPath } from "../../../src/core/trigger-ingress.ts";
 import { workerTriggers, triggerRoutes } from "./triggers.ts";
+import { apply } from './apply.ts';
 import { pruneScheduleRuns } from '../../../src/core/schedule-runs.ts';
 import { SharedAgents, ShareLinkInput, MemberInput } from '../../../src/shared-agents.ts';
 import { database } from './postgres.ts';
@@ -123,6 +124,7 @@ function summary(entry: DirectoryEntry) {
     ...(entry.parentAgentId ? { parentAgentId: entry.parentAgentId, parentRunId: entry.parentRunId } : {}),
     id: entry.id,
     key: entry.key,
+    metadata: entry.config.metadata ?? {},
     name: entry.config.name ?? "",
     type: entry.config.type ?? "agent",
     model: entry.config.model,
@@ -326,6 +328,10 @@ const worker = {
       if (auth) {
         const computers = await handleComputerRequest(request, env, auth);
         if (computers) return computers;
+        if (match?.[1] === "v1/agents" && match[3] === "/usage") {
+          const usage = await moneyRoutes(request, env, auth, ctx);
+          if (usage) return usage;
+        }
       }
       if (auth) {
         const trigger = await triggerRoutes(request,env,auth.tenantId);
@@ -357,6 +363,7 @@ const worker = {
           const response = await decisionRoute(request, decisions);
           if (response) { ctx.waitUntil(sendMoneyWebhooks(env)); return response; }
         }
+        if (path === "/v1/apply" && request.method === "POST") return apply(request, env, auth);
         const control = await controlRoutes(request, env, auth);
         if (control) return control;
         if ((path === "/v1/inputs" || path === "/v1/inbox") && request.method === "GET") {
@@ -572,7 +579,7 @@ const worker = {
         if (!auth) scopedConfiguration(params);
         rejectWorkflow(params);
         if (auth) {
-          const allowed = new Set(["model", "systemPrompt", "systemPromptAppend", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "queue", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "builtins", "decide", "delegate", "mcpServers"]);
+          const allowed = new Set(["metadata", "model", "systemPrompt", "systemPromptAppend", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "queue", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "builtins", "decide", "delegate", "mcpServers"]);
           const unknown = Object.keys(params).find(field => !allowed.has(field));
           if (unknown) throw new BadRequest(`Unsupported field: ${unknown}`);
         }

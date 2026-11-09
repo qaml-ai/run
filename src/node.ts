@@ -2,6 +2,8 @@ import { freshAutomationRun, type FreshRunProvisioner } from './core/fresh-runs.
 import { handleHook, hookPath } from "./core/trigger-ingress.ts";
 import { transaction as triggerTransaction } from "./db.ts";
 import { Triggers } from "./triggers.ts";
+import { applying, prepareApply } from "../shared/apply-scope.ts";
+import { pruneUsageDetails } from "../shared/usage-details.ts";
 import { recordScheduleRun, reserveFreshScheduleRun, scheduleRunMetadata, scheduleRunSource, pruneScheduleRuns } from './core/schedule-runs.ts';
 import { SharedAgents } from "./shared-agents.ts";
 import { withOpenRouterDetails } from "./openrouter-model.ts";
@@ -34,7 +36,7 @@ import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts
 import type { LogTail, Storage, StorageMeter } from "../shared/storage.ts";
 import { StorageUsage } from "./storage-usage.ts";
 import { postgresTail, sweepTails } from "./log-tail.ts";
-import { databaseFromEnvironment, listenFromEnvironment, migrate, transaction, type Db } from "./db.ts";
+import { applyDatabase, databaseFromEnvironment, listenFromEnvironment, migrate, transaction, type Db } from "./db.ts";
 import { MemoryRetirement } from "./memory-retirement.ts";
 import { network, REAL_CLOCK, REAL_NETWORK, REAL_RANDOM, runFor, type Clock, type Network, type Random } from "./node-context.ts";
 import { Ownership, probeNode } from "./ownership.ts";
@@ -218,7 +220,7 @@ export async function nodeDeps(config: NodeConfig): Promise<NodeDeps> {
   const v8 = new V8Exec(config.v8);
   const codeSandbox = Object.assign((options: Parameters<CodeSandboxes>[0]) => new PiV8Sandbox({ ...options, pool: v8 }), { close: () => v8.close() });
   const sandbox = await checkSandbox({ sandboxes: codeSandbox, required: config.sandboxRequired });
-  const db = await databaseFromEnvironment(env);
+  const db = applyDatabase(await databaseFromEnvironment(env));
   const address = await taskAddress(env);
   return {
     tenants, secrets, db, sharedAgents: new SharedAgents(db), listen: handlers => listenFromEnvironment(handlers, env), sandbox, address, codeSandbox, readCgroupMemory: cgroupMemory,
@@ -568,7 +570,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   async function provisionAgent(tenant: string, params: any, key: string | undefined, steps: Steps, outcome: { agent?: string; upsert: boolean }, parent?: { payer?: string; agentId: string; runId: string; toolCallId: string; depth: number; computer?: "none" | { seed: string } }, admit?: (unchanged: boolean) => Promise<unknown>, run?: RunSettings & { ttlMs: number }) {
     rejectWorkflow(params ?? {});
     // The application's tools are its attached MCP server's: the tools/list it declares.
-    const { mcp: _mcp, subject: _subject, context: _context, keyScope, spendLimit: limit, bucket: givenBucket, modelHeaders: headers, builtins: asked, delegate: delegating, mcpServers: servers, decide: deciding, remount, ...rest } = params ?? {};
+    const { mcp: _mcp, subject: _subject, context: _context, keyScope, spendLimit: limit, bucket: givenBucket, modelHeaders: headers, builtins: asked, delegate: delegating, mcpServers: servers, decide: deciding, remount, metadata: _metadata, ...rest } = params ?? {};
     if (remount !== undefined && typeof remount !== "boolean") throw new HttpError(400, "remount must be true or false");
     // The application's tools as it declared them, whose hash its connections are told (`toolsHash`).
     const mcpTools = params?.mcp?.tools;
@@ -598,12 +600,12 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     // Its definition and the tenant's own providers are read at once.
     const [made, custom] = await Promise.all([
       params?.definition !== undefined ? steps.time("definition", definitions.provision(tenant, params)) : undefined,
-      steps.time("providers", modelProviders.resolvable(tenant, keyScope)),
+      steps.time("providers", prepareApply(`providers:${JSON.stringify([tenant, keyScope])}`, () => modelProviders.resolvable(tenant, keyScope))),
     ]);
     if (made) params = made.params;
-    const fallback = inherited ?? (params.model === undefined ? await steps.time("providers", defaultModelFor(tenant, keyScope)) : model);
+    const fallback = inherited ?? (params.model === undefined ? await steps.time("providers", prepareApply(`default-model:${JSON.stringify([tenant, keyScope])}`, () => defaultModelFor(tenant, keyScope))) : model);
     const config = { ...sessionConfig(params, fallback, systemPrompt, tenants.modelEndpoints(tenant), custom), ...(modelHeaders ? { modelHeaders } : {}) };
-    config.model = await withOpenRouterDetails(config.model);
+    config.model = await prepareApply(`model-details:${JSON.stringify(config.model)}`, () => withOpenRouterDetails(config.model));
     const ttl = params.ttlSeconds;
     validTtl(ttl);
     // An idle lifetime instead: the agent lives this long from its latest run.
@@ -615,14 +617,15 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     // An agent made with a key is one the application comes back to: it lives until deleted, unless it says otherwise.
     // One made without is a scratch agent nothing can find again once its id is lost: it lives a day, unless it says.
     const lifetime = run ? run.ttlMs : ttl === undefined ? (key !== undefined ? null : undefined) : ttl === null ? null : ttl * 1000;
-    const { reconfigure, ...made_ } = await clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type }, tenant, lifetime, params.mounts,
+    const { reconfigure, ...made_ } = await clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type, application: _metadata }, tenant, lifetime, params.mounts,
       made && { definition: made.ref, provision: made.provision, overrides: made.overrides, sources: made.sources }, identity,
       { keyScope, spendLimit, ...(params.model === undefined && !inherited ? { defaultModel: true } : {}), ...(bucket ? { bucket } : {}), builtins, delegate, mcpServers, ...(decide !== undefined ? { decide } : {}), ...(remount ? { remount } : {}), ...(idle && !run ? { idleTtlMs: idle * 1000 } : {}), ...(parent ? { parent } : {}), ...(run ? { run: { retentionMs: run.retentionMs, fingerprint: run.fingerprint } } : {}), ...(mcpTools !== undefined ? { toolsHash: createHash("sha256").update(JSON.stringify(mcpTools)).digest("hex") } : {}), ...(admit ? { admit } : {}) }, steps);
     outcome.agent = made_.id;
     outcome.upsert = !!reconfigure;
-    const warnings = await warningsFor(tenant, made ? made.sources : builtins && { builtins });
+    const warningSources = made ? made.sources : builtins && { builtins };
+    const warnings = await prepareApply(`agent-warnings:${JSON.stringify([tenant, warningSources])}`, () => warningsFor(tenant, warningSources));
     if (warnings.length) made_.warnings = warnings;
-    if (!reconfigure) return made_;
+    if (!reconfigure || applying()) return made_;
     // The key's agent exists: bring it to this configuration between its turns. Every upsert queues its own request, so
     // the last one sent wins; one whose configuration the agent has already changes nothing when it runs.
     const reconfigured = await steps.time("configure", submitAnywhere(made_.id, tenant, { id: `upsert-${randomUUID()}`, method: "configure", params: reconfigure as Record<string, unknown> }));
@@ -1352,7 +1355,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
     await rateLimits.run(tenant);
   };
-  app.route("/", api({ triggers, computers, accounts, endUsers, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return modelReference(chosen); }, keyScopes, webhooks, scheduler, accountDeletions, githubApps, ...(config.idempotencyLockMs !== undefined ? { idempotencyLockMs: config.idempotencyLockMs } : {}), channels, volumes, definitions, links, fileUrls, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: config.verifyKeys,
+  app.route("/", api({ triggers, applyDb: db, computers, accounts, endUsers, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return modelReference(chosen); }, keyScopes, webhooks, scheduler, accountDeletions, githubApps, ...(config.idempotencyLockMs !== undefined ? { idempotencyLockMs: config.idempotencyLockMs } : {}), channels, volumes, definitions, links, fileUrls, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: config.verifyKeys,
     rateLimits, clientAddress: c => requestClient(c).address, runRetentionSeconds, requestAnywhere, ...(voice ? { voice } : {}),
     transcriptions: {
       transcriber, outbound: outbound.withoutOrigins(),
@@ -1538,7 +1541,10 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   const sweepTimer = setInterval(() => void sweepTails(db).catch(error => console.error(JSON.stringify({ type: "tail_sweep_failed", error: errorText(error) }))), 60 * 60_000);
   sweepTimer.unref();
   // Deleted and expired agents' data, purged by whichever nodes get to it first.
-  const purgeTimer = setInterval(() => void clients.sweep(), config.purgeMs);
+  const purgeTimer = setInterval(() => {
+    void clients.sweep();
+    void pruneUsageDetails(db).catch(error => console.error(JSON.stringify({ type: "usage_retention_failed", error: safeError(error) })));
+  }, config.purgeMs);
   purgeTimer.unref();
   // Chunks nothing refers to any more, and deleted volumes' objects, collected a tenant at a time by whichever node is free.
   // Off unless AGENT_GC_ENABLED; with AGENT_GC_DRY_RUN it only logs what it would delete. What it needs (pins, which chunks

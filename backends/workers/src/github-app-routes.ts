@@ -26,22 +26,33 @@ async function body(request: Request): Promise<Record<string, unknown>> {
 
 /** `/v1/github-apps` and below, for an authenticated tenant; undefined for other paths. */
 export async function githubAppRoutes(request: Request, env: Env, auth: { tenantId: string; kind: string }): Promise<Response | undefined> {
-  const match = /^\/v1\/github-apps(?:\/([^/]+))?$/.exec(new URL(request.url).pathname);
+  const match = /^\/v1\/github-apps(?:\/([^/]+))?(?:\/(repositories)(?:\/([^/]+)\/([^/]+))?)?$/.exec(new URL(request.url).pathname);
   if (!match) return undefined;
-  const [, ref] = match, method = request.method;
+  const [, ref, repositories, owner, name] = match, method = request.method;
   const route = !ref ? method === "GET" || method === "POST" : ref === "manifest" ? method === "POST" : ["GET", "PATCH", "DELETE"].includes(method);
   if (!route) return undefined;
   // An App says where its tokens may go (hosts): an OAuth client acting for the tenant neither reads nor changes one.
   if (auth.kind === "oauth") throw new HttpError(403, "An OAuth access token works with agents only: use an API token or the console");
   const tenant = auth.tenantId;
   try {
+    let app: string | undefined, repositoryOwner: string | undefined, repositoryName: string | undefined;
+    try {
+      app = ref === undefined ? undefined : decodeURIComponent(ref);
+      repositoryOwner = owner === undefined ? undefined : decodeURIComponent(owner);
+      repositoryName = name === undefined ? undefined : decodeURIComponent(name);
+    } catch { throw new HttpError(400, "Invalid path encoding"); }
     const apps = await workerGitHubApps(env as unknown as GitHubAppsEnv);
+    if (repositories) {
+      if (method !== "GET") return undefined;
+      const url = new URL(request.url);
+      return reply(repositoryOwner ? await apps.repository(tenant, app!, repositoryOwner, repositoryName!)
+        : await apps.repositories(tenant, app!, url.searchParams.get("cursor") ?? undefined, url.searchParams.has("perPage") ? Number(url.searchParams.get("perPage")) : 100));
+    }
     if (!ref) return method === "GET" ? reply(await apps.list(tenant)) : reply(await apps.create(tenant, await body(request)), 201);
     if (ref === "manifest") return reply(await apps.fromManifest(tenant, await body(request)), 201);
-    const app = decodeURIComponent(ref);
-    if (method === "GET") return reply(await apps.get(tenant, app));
-    if (method === "PATCH") return reply(await apps.update(tenant, app, await body(request)));
-    await apps.remove(tenant, app);
+    if (method === "GET") return reply(await apps.get(tenant, app!));
+    if (method === "PATCH") return reply(await apps.update(tenant, app!, await body(request)));
+    await apps.remove(tenant, app!);
     return reply({ deleted: true });
   } catch (error) { return answerable(error); }
 }

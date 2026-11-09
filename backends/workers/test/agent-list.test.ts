@@ -1,6 +1,35 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { liveStates } from '../src/agent-list.ts';
+import { listAgents, liveStates } from '../src/agent-list.ts';
+import type { ControlEnv, Directory, DirectoryEntry } from '../src/control.ts';
+import { testDatabase } from './billing-database.ts';
+
+test('unfiltered lists retain directory agents without a Postgres row; metadata filters require an indexed match', async () => {
+  const { db, url } = await testDatabase();
+  const entries = ['indexed', 'directory-only'].map(id => ({
+    id, key: id, config: { name: id, type: 'agent', metadata: { type: 'project' } }, expiresAt: null,
+  })) as DirectoryEntry[];
+  await db.query("insert into agents(id,tenant,header,revision,name,type,model) values($1,'alice',$2,1,$1,'agent','test')",
+    ['indexed', JSON.stringify({ config: entries[0].config })]);
+  const env = { HYPERDRIVE: { connectionString: url }, AGENTS: { getByName: () => ({
+    fetch: async () => Response.json({ running: false, connected: false }),
+  }) } } as unknown as ControlEnv;
+  const directory = { list: async () => entries } as unknown as Directory;
+  const summary = (entry: DirectoryEntry) => ({ ...entry, ...entry.config });
+  const list = async (query = '') => {
+    const response = await listAgents(new Request(`https://runtime.test/v1/agents${query}`), env, 'alice', directory, summary);
+    assert.equal(response.status, 200);
+    return await response.json() as Record<string, unknown>[];
+  };
+  const all = await list();
+  assert.deepEqual(all.map(agent => agent.id), ['indexed', 'directory-only']);
+  assert.deepEqual(all[1].metadata, { type: 'project' });
+  assert.equal(all[1].lastActiveAt, null);
+  assert.equal(all[1].lastError, null);
+  assert.equal(all[1].workspaceId, null);
+  assert.deepEqual((await list('?metadata.type=project')).map(agent => agent.id), ['indexed']);
+  assert.deepEqual(await list('?metadata.type=missing'), []);
+});
 
 test('liveStates: in order, width at a time, and an agent whose state fetch throws or errors is null rather than failing the list', async () => {
   const entries = Array.from({ length: 5 }, (_, index) => ({ id: `agent_${index}` }));

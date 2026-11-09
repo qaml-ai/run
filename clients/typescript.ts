@@ -1,3 +1,5 @@
+export type { ApplyManifest, ApplyResult as ManifestApplyResult, ApplyReference } from "../shared/apply.ts";
+import type { ApplyManifest, ApplyResult as ManifestApplyResult } from "../shared/apply.ts";
 import type { AgentEvent, Message, ModelFailure, PresentedFile, ThinkingLevel } from "./types.ts";
 import type { Run } from "./agents.ts";
 import { Type, type TSchema, type Static } from "typebox";
@@ -407,6 +409,8 @@ export interface InputDetail {
 export interface InputAnswer { action: "accept" | "decline" | "cancel"; content?: unknown; from?: Sender; actor?: string }
 export type { ThinkingLevel };
 export interface CreateAgentOptions extends AgentOptions {
+  /** Tenant-owned JSON, at most 16 KB. Omitted on upsert preserves it. */
+  metadata?: Record<string, unknown>;
   /** Account workspace for spend attribution; null leaves it unassigned. */
   workspaceId?: string | null;
   idempotencyKey?: string;
@@ -612,7 +616,10 @@ export interface ProviderSummary {
   custom?: { type: CustomProviderType; baseUrl: string; auth: "x-api-key" | "bearer"; headers?: string[]; models: CustomModel[] };
 }
 /** An agent as GET /v1/agents lists it. */
+export interface GitHubRepository { id: number; name: string; fullName: string; private: boolean; htmlUrl: string; defaultBranch: string | null }
+
 export interface AgentSummary {
+  metadata: Record<string, unknown>;
   id: string; key: string | null; name: string; type: string; model: string; connected: boolean; running: boolean; expiresAt: number | null; resume: { failures: number; after: number } | null;
   /** A hash of its configuration: equal hashes, equal configurations (an upsert of it changes nothing, and is not counted as a create). */
   configHash: string;
@@ -1098,7 +1105,7 @@ const AGENT_KEY = /^[A-Za-z0-9_-]{1,80}$/;
 const REQUEST_ID = AGENT_KEY;
 /** A create request's fields, from the options given. */
 function provisioning(options: CreateAgentOptions) {
-  const fields = ["workspaceId", "subject", "context", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "definition", "mounts", "remount", "model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "queue", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "decide", "delegate", "mcpServers", "prompt"] as const;
+  const fields = ["metadata", "workspaceId", "subject", "context", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "definition", "mounts", "remount", "model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "queue", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "decide", "delegate", "mcpServers", "prompt"] as const;
   return withMultiAgent(Object.fromEntries(fields.filter(field => options[field] !== undefined).map(field => [field, options[field]])));
 }
 /** `delegate` settings bring their builtin: given the settings without delegate or agents, delegate is added. */
@@ -1672,6 +1679,14 @@ export class Voice {
 }
 
 /** Trusted-backend SDK. Only createAgent needs the operator key. */
+export type UsageOptions = { days?: number; groupBy?: ("agent" | "definition" | "endUser" | "model" | "day")[]; rollup?: boolean; limit?: number; cursor?: string; workspaceId?: string };
+export interface GroupedUsage {
+  since: number; groupBy: string[]; rollup: boolean; next?: string;
+  totals: Record<string, number>;
+  groups: (Record<string, string | number | null>)[];
+}
+export interface LogTruncation { truncated: true; originalBytes: number; preview: string }
+export interface RunLog { run: StatelessRun | LogTruncation; durationMs: number | null; events: { index: number; type: "message"; at: number | null; message: unknown; truncated?: boolean }[]; next?: string; truncated?: boolean }
 export class AgentRuntime {
   readonly options: RuntimeOptions;
   private readonly transport: Transport;
@@ -1725,6 +1740,8 @@ export class AgentRuntime {
     try { await client.connect(); return client; }
     catch (error) { await client.close(); throw error; }
   }
+  /** Provision keyed resources in one transaction. Use dryRun to preview without writes. */
+  apply(manifest: ApplyManifest): Promise<ManifestApplyResult> { return this.transport.json("/v1/apply", this.operator(), "POST", manifest, true); }
   private operator() {
     if (!this.options.apiKey) throw new AgentError("Set apiKey to manage definitions, volumes and mounts");
     return this.options.apiKey;
@@ -1738,7 +1755,20 @@ export class AgentRuntime {
   /** Every provider: the built-in ones with your keys' status, and your own (`custom`). */
   providers(): Promise<ProviderSummary[]> { return this.transport.json("/v1/providers", this.operator()); }
   /** The tenant's agents, each with the key it was made with (null for one made without) and its name. */
-  listAgents(): Promise<AgentSummary[]> { return this.transport.json("/v1/agents", this.operator()); }
+  listAgents(options: { metadata?: Record<string, string> } = {}): Promise<AgentSummary[]> {
+    const query = new URLSearchParams(Object.entries(options.metadata ?? {}).map(([key, value]) => [`metadata.${key}`, value]));
+    return this.transport.json(`/v1/agents${query.size ? `?${query}` : ""}`, this.operator());
+  }
+  setAgentMetadata(id: string, metadata: Record<string, unknown>): Promise<RequestRecord> {
+    return this.transport.json(`/v1/agents/${encodeURIComponent(id)}/configuration`, this.operator(), "PATCH", { metadata });
+  }
+  githubRepositories(app: string, options: { cursor?: string; perPage?: number } = {}): Promise<{ items: GitHubRepository[]; nextCursor: string | null }> {
+    const query = new URLSearchParams(Object.entries(options).map(([key, value]) => [key, String(value)]));
+    return this.transport.json(`/v1/github-apps/${encodeURIComponent(app)}/repositories?${query}`, this.operator());
+  }
+  githubRepository(app: string, owner: string, name: string): Promise<GitHubRepository> {
+    return this.transport.json(`/v1/github-apps/${encodeURIComponent(app)}/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`, this.operator());
+  }
   /**
    * A new volume. With `key`, the tenant's volume for that key: made the first time, the same one (`existing: true`)
    * every time after, for as long as it lives. With `idempotencyKey`, a retry within a day gets the same answer.
@@ -1857,6 +1887,19 @@ export class AgentRuntime {
   /** Delete a run now, before its retention ends (a running one stops). */
   deleteRun(id: string): Promise<{ deleted: true }> { return this.transport.json(`/v1/runs/${encodeURIComponent(id)}`, this.operator(), "DELETE", undefined, true); }
   /** A run's messages: its input, the model's turns and tool results. */
+  usage(options: UsageOptions = {}): Promise<GroupedUsage> { return this.readUsage("/v1/usage", options); }
+  agentUsage(id: string, options: UsageOptions = {}): Promise<GroupedUsage> { return this.readUsage(`/v1/agents/${encodeURIComponent(id)}/usage`, options); }
+  private readUsage(path: string, options: UsageOptions): Promise<GroupedUsage> {
+    const query = new URLSearchParams({ groupBy: (options.groupBy ?? ["agent"]).join(",") });
+    if (options.days !== undefined) query.set("days", String(options.days));
+    if (options.rollup !== undefined) query.set("rollup", String(options.rollup));
+    for (const key of ["limit", "cursor", "workspaceId"] as const) if (options[key] !== undefined) query.set(key, String(options[key]));
+    return this.transport.json(`${path}?${query}`, this.operator());
+  }
+  runLog(id: string, options: { limit?: number; cursor?: string } = {}): Promise<RunLog> {
+    const query = new URLSearchParams(Object.entries(options).map(([k,v]) => [k,String(v)]));
+    return this.transport.json(`/v1/runs/${encodeURIComponent(id)}/log?${query}`, this.operator());
+  }
   runMessages(id: string): Promise<AgentHistory> { return this.transport.json(`/v1/runs/${encodeURIComponent(id)}/messages`, this.operator()); }
   /**
    * A run's event stream, to its end (its `response` frame): reconnecting with Last-Event-ID where the connection drops,

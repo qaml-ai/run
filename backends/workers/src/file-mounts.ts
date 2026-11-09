@@ -1,3 +1,4 @@
+import { applying } from "../../../shared/apply-scope.ts";
 import { digest, FileError } from "./volume.ts";
 import {
   normalizePath,
@@ -59,6 +60,7 @@ export async function createVolume(
       existing: !inserted.rowCount,
     };
   });
+  if (applying()) return { id, name: result.name, createdAt: result.createdAt, seq: 0, files: 0, bytes: 0, ...(result.existing ? { existing: true } : {}) };
   const info = await env.VOLUMES.getByName(`${tenant}:${id}`).initialize(
     tenant,
     id,

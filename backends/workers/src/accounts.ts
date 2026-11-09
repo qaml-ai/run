@@ -1,5 +1,6 @@
 // Generated from src/accounts.ts; only host imports are replaced.
 // Run node backends/workers/scripts/reuse-security.mjs --check to check source drift.
+import { recordUsageDetails } from "../../../shared/usage-details.ts";
 import { applyWorkspaceUsage, type AttributedUsage } from "./workspaces.ts";
 import type { AnthropicFederation } from "./security-host.ts";
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
@@ -469,7 +470,7 @@ export class Accounts {
       platformResponses: message.platform && !lease ? 1 : 0, platformCost: message.platform ? fundedCost : 0,
     };
     add(totals, increment);
-    if (agent) target.attributed.push({ tenant, agent, timestamp: message.timestamp ?? Date.now(), day, model: JSON.parse(key)[2], ...increment });
+    target.attributed.push({ tenant, agent, requestId: message.requestId, endUser: message.identity?.subject ?? null, timestamp: message.timestamp ?? Date.now(), day, model: JSON.parse(key)[2], ...increment });
     target.usage.set(key, totals);
     if (message.platform) {
       const charge = this.charge(tenant, target);
@@ -622,6 +623,7 @@ export class Accounts {
       await lockBalances(sql, billed.map(charge => charge.tenant));
       await applyUsageRows(sql, rows);
       await applyWorkspaceUsage(sql, attributed);
+      await recordUsageDetails(sql, attributed);
       await accrueUsage(sql, billed);
       // Only tenants with an endpoint that selects usage keep their events.
       await enqueueEvents(sql, events);

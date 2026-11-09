@@ -1,5 +1,8 @@
 import { handleHook } from "./core/trigger-ingress.ts";
 import { TriggerInput, type Triggers } from "./triggers.ts";
+import { applyRoutes } from "./apply-api.ts";
+import type { Db } from "./db.ts";
+import { groupedUsage, usageOptions, usageDays, ownsUsageAgent } from "../shared/usage-details.ts";
 import { readScheduleRuns } from './core/schedule-runs.ts';
 import { SharedAgents, ShareLinkInput, MemberInput, ShareLink, CreatedShareLink, Member } from './shared-agents.ts';
 import { inboxQuery, readInbox, InboxQueryError } from '../shared/inbox.ts';
@@ -33,6 +36,7 @@ import { limitRefused } from "./limit-hits.ts";
 import { AGENT_PAGE_MAX } from "./client-sessions/configuration.ts";
 import type { Channels } from "./channels.ts";
 import { channelRoutes } from "./channels-api.ts";
+import { metadataFilters } from "../shared/agent-metadata.ts";
 import type { GitHubApps } from "./core/github-apps.ts";
 import { githubAppRoutes } from "./github-apps-api.ts";
 import { validTtl, type Definitions } from "./definitions.ts";
@@ -74,6 +78,7 @@ import { legacyCoverage, LegacyCoverageCursorError, legacyLogLister } from "./le
  * below are the OpenAPI document served at /v1/openapi.json.
  */
 export interface ApiContext {
+  applyDb?: Db;
   computers?: Computers;
   accounts: Accounts;
   billingAlerts?: { service: BillingAlerts; emailEnabled: boolean };
@@ -358,8 +363,8 @@ export function api(context: ApiContext) {
     await next();
   });
   app.use("/v1/agents/:id/*", async (c, next) => {
-    // credentials takes a key as well as an id, and looks it up within the tenant itself.
-    if (!c.req.path.endsWith("/credentials") && !await clients.owns(c.req.param("id")!, c.var.principal.tenant, true)) throw new HttpError(404, "Unknown agent");
+    // Credentials and retained usage perform their own tenant-scoped ownership checks.
+    if (!/^\/v1\/agents\/[^/]+\/(?:credentials|usage)$/.test(c.req.path) && !await clients.owns(c.req.param("id")!, c.var.principal.tenant, true)) throw new HttpError(404, "Unknown agent");
     await next();
   });
   // Idempotency-Key on every POST: an agent's is its own key (create or upsert), and a prompt's its request's id.
@@ -592,6 +597,7 @@ export function api(context: ApiContext) {
     request: { query: z.object({
       limit: z.string().optional().openapi({ description: `A page of at most this many (1–${AGENT_PAGE_MAX}), by id; the X-Next-Cursor header then holds the next page's cursor while there are more. Without limit or cursor, every agent that matches, as always` }),
       cursor: z.string().optional().openapi({ description: "The previous page's X-Next-Cursor" }),
+      "metadata.type": z.string().optional().openapi({ description: "Exact match on a top-level metadata string. Any metadata.<key> is supported; multiple filters are ANDed." }),
       workspaceId: z.string().optional().openapi({ description: "Only agents in this workspace, or unassigned for agents in none" }),
       status: z.enum(["running", "failed", "expiring"]).optional().openapi({ description: "running: loaded on a node now; failed: a run failed in the last 24 hours (lastError); expiring: has an expiresAt" }),
       subAgents: z.enum(["only", "exclude"]).optional().openapi({ description: "Only sub-agents (those with a parentAgentId), or none of them" }),
@@ -608,7 +614,9 @@ export function api(context: ApiContext) {
       return value as T | undefined;
     };
     if (query.q !== undefined && query.q.length > 200) throw new HttpError(400, "q must be at most 200 characters");
-    const page = await clients.page(c.var.principal.tenant, {
+    let metadata: Record<string, string>;
+    try { metadata = metadataFilters(new URL(c.req.url).searchParams); } catch (error) { throw new HttpError(400, (error as Error).message); }
+    const page = await clients.page(c.var.principal.tenant, { metadata,
       // A cursor without a limit pages at the largest size.
       limit: limit ?? (query.cursor !== undefined ? AGENT_PAGE_MAX : undefined), cursor: query.cursor, workspaceId: query.workspaceId || undefined, q: query.q,
       status: oneOf("status", ["running", "failed", "expiring"] as const), subAgents: oneOf("subAgents", ["only", "exclude"] as const),
@@ -938,13 +946,34 @@ export function api(context: ApiContext) {
     return json(c, 200, { revoked: true, left: await left(c.var.principal.tenant, `token:${id}`) });
   });
 
-  route(createRoute({
-    method: "get", path: "/v1/usage", request: { query: z.object({ days: z.string().optional().openapi({ description: "1–365, default 30" }), workspaceId: z.string().optional().openapi({ description: "Filter by workspace id, or unassigned. Omit for the account total." }) }) },
-    responses: { 200: reply("Token usage per UTC day and model", schema.Usage) },
+  route(createRoute({ method: "get", path: "/v1/agents/{id}/usage",
+    request: { params: z.object({ id: z.string() }), query: schema.GroupedUsageQuery },
+    responses: { 200: reply("Agent usage", schema.GroupedUsage) },
   }), async c => {
-    const days = Math.min(365, Math.max(1, Number(c.req.query("days") ?? 30) || 30));
+    const tenant = c.var.principal.tenant, id = c.req.param("id")!;
+    if (!await ownsUsageAgent(accounts.db, tenant, id)) throw new HttpError(404, "Unknown agent");
+    let options;
+    try { options = usageOptions(new URL(c.req.url).searchParams); } catch (error) { throw new HttpError(400, (error as Error).message); }
+    const days = usageDays(new URL(c.req.url).searchParams);
+    const workspace = c.req.query("workspaceId");
+    if (workspace && workspace !== "unassigned") await new Workspaces(accounts.db).get(tenant, workspace);
+    await accounts.flushUsage();
+    return json(c, 200, await groupedUsage(accounts.db, tenant, Date.now() - days * 86400000, options, id, c.req.query("workspaceId")));
+  });
+
+  route(createRoute({
+    method: "get", path: "/v1/usage", request: { query: z.object({ ...schema.GroupedUsageQuery.shape, workspaceId: z.string().optional().openapi({ description: "Filter by workspace id, or unassigned. Omit for the account total." }) }) },
+    responses: { 200: reply("Token usage per UTC day and model, or requested dimensions", z.union([schema.Usage, schema.GroupedUsage])) },
+  }), async c => {
+    const days = usageDays(new URL(c.req.url).searchParams);
     const workspace = c.req.query("workspaceId");
     if (workspace && workspace !== "unassigned") await new Workspaces(accounts.db).get(c.var.principal.tenant, workspace);
+    if (c.req.query("groupBy") !== undefined || c.req.query("rollup") !== undefined) {
+      let options;
+      try { options = usageOptions(new URL(c.req.url).searchParams); } catch (error) { throw new HttpError(400, (error as Error).message); }
+      await accounts.flushUsage();
+      return json(c, 200, await groupedUsage(accounts.db, c.var.principal.tenant, Date.now() - days * 86_400_000, options, undefined, workspace));
+    }
     return json(c, 200, await accounts.usage(c.var.principal.tenant, Date.now() - days * 86_400_000, workspace));
   });
 
@@ -1418,6 +1447,7 @@ export function api(context: ApiContext) {
   route(createRoute({method:"get",path:"/v1/agents/{id}/triggers/{triggerId}/deliveries",request:{params:triggerPath},responses:{200:reply("Deliveries",z.array(z.unknown()))}}),async c=>json(c,200,await triggers().deliveries(c.var.principal.tenant,c.req.param("id")!,c.req.param("triggerId")!)));
 
   githubAppRoutes(route, () => context.githubApps);
+  applyRoutes(route, context);
   definitionRoutes(route, () => context);
   workspaceRoutes(route, () => accounts.db);
   computerRoutes(route, () => context.computers, operatorOnly);

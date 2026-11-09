@@ -14,6 +14,7 @@ model-written code in a sandbox, and wakes agents when there is work.
    - [Incoming webhook triggers](guides/triggers.md)
    - [Scheduled agents and email reports](guides/schedules.md)
    - [Workspaces](guides/workspaces.md): group agents and definitions and see model and tool spend by project
+   - [Application metadata](guides/agents.md): project data in agent lists and indexed filtering
    - [Projects](guides/projects.md): an agent builds a bot, site or report; your app checks and publishes versions
    - [Computers](guides/computers.md): native Linux computers, remote browsers and Cloudflare Tunnel; forking a computer into sub-agents
    - [Tools](guides/tools.md): writing tools, attached and served tools, identity, MCP and OpenAPI sources, built-ins
@@ -38,6 +39,7 @@ model-written code in a sandbox, and wakes agents when there is work.
    - [Exporting your data](guides/export.md): the account export, and moving to a self-hosted runtime
 4. **[Production checklist](production.md)**
 5. **Reference**
+   - [Provision an application](reference/apply.md): volumes, definitions and agents in one transaction
    - [Events](reference/events.md): every event on an agent's stream, and a run's outcome
    - [Limits](reference/limits.md)
    - [Errors](reference/errors.md)

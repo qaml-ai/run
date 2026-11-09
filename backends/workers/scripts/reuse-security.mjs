@@ -9,6 +9,7 @@ for (const name of ["accounts.ts", "tenants.ts", "key-scopes.ts", "model-provide
   let text = await source(name);
   text = text.replaceAll('"./db.ts"', '"./postgres.ts"').replaceAll('"./http.ts"', '"./errors.ts"');
   if (name === "accounts.ts") text = text
+    .replace('"../shared/usage-details.ts"', '"../../../shared/usage-details.ts"')
     .replace('"./anthropic-federation.ts"', '"./security-host.ts"')
     .replace('"./client-sessions/state.ts"', '"./money-host.ts"')
     .replace('"./azure-openai.ts"', '"./security-host.ts"')
@@ -91,6 +92,7 @@ outputs.set("admission-errors.ts", generated("http.ts", [
 ].join("\n\n")));
 outputs.set("postgres-policy.ts", generated("db.ts", [
   'import type { Db, Sql } from "./postgres.ts";',
+  'import { applyScope } from "../../../shared/apply-scope.ts";',
   'import { clock } from "./money-host.ts";',
   '// Host diagnostics and jitter; the transaction and error policy below are from src/.',
   'const random = () => ({ float: Math.random });',
