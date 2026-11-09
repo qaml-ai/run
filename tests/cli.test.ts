@@ -228,3 +228,26 @@ test("a manifest's delegate settings bring their builtin", () => {
   const manifest = parseManifest({ key: "lead", builtins: ["web_search"], delegate: { agents: ["researcher"] } }, "lead.yaml");
   assert.deepEqual(manifest.definition.builtins, ["web_search", "delegate"]);
 });
+
+test('the CLI previews and applies a provisioning file', async t => {
+  const r = await runtime(t, () => ({ role: 'assistant', content: 'ok' }));
+  const dir = mkdtempSync(join(tmpdir(), 'camelrun-apply-'));
+  const file = join(dir, 'project.json');
+  writeFileSync(file, JSON.stringify({ volumes: { project: { name: 'Project' } } }));
+  const run = cli(r.base, dir);
+  const preview = await run('apply', file, '--dry-run');
+  assert.equal(preview.code, 0, preview.err);
+  assert.equal(preview.json.dryRun, true);
+  const applied = await run('apply', file);
+  assert.equal(applied.code, 0, applied.err);
+  assert.equal(applied.json.dryRun, false);
+  assert.deepEqual(applied.json.volumes, preview.json.volumes);
+});
+
+test("missing credentials errors name the canonical CAMELRUN_API_KEY", async () => {
+  const env = { CAMELRUN_CONFIG: join(mkdtempSync(join(tmpdir(), "camelrun-missing-")), "none.json") };
+  assert.throws(() => resolve({}, env), /set CAMELRUN_API_KEY/);
+  const errors: string[] = [];
+  assert.equal(await main(["login"], { out: () => {}, err: text => errors.push(text), tty: false, cwd: tmpdir(), env }), 1);
+  assert.match(errors.join("\n"), /set CAMELRUN_API_KEY/);
+});

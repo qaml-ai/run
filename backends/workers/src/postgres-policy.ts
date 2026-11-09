@@ -2,6 +2,8 @@
 // Run node backends/workers/scripts/reuse-security.mjs --check to check source drift.
 import type { Db, Sql } from "./postgres.ts";
 
+import { applyScope } from "../../../shared/apply-scope.ts";
+
 import { clock } from "./money-host.ts";
 
 // Host diagnostics and jitter; the transaction and error policy below are from src/.
@@ -38,6 +40,8 @@ export function databaseUnavailable(error: unknown): boolean {
 }
 
 export async function transaction<T>(db: Db, work: (sql: Sql) => Promise<T>, options: { rerun?: boolean } = {}): Promise<T> {
+  const scoped = applyScope.getStore();
+  if (scoped) return work(scoped.sql);
   if (options.rerun === false) return transactionOnce(db, work);
   for (let attempt = 1; ; attempt++) {
     try { return await transactionOnce(db, work); }

@@ -1,3 +1,5 @@
+import { flushScheduleOutcomes } from './schedule-outcomes.ts';
+import { HttpError } from "./errors.ts";
 import { expireDecisions } from "./inbox-decisions.ts";
 import { restageInputMirrors } from "./agent-input-mirror.ts";
 import { inputAdmissionDeadline } from "./input-admission.ts";
@@ -8,7 +10,7 @@ import { withMoneyMetrics } from "./money-metrics.ts";
 import { BadRequest } from "./validation.ts";
 import { calendarPrompt } from "../../../src/calendar.ts";
 import { ComputerService } from "./computers/service.ts";
-import { newSchedule, queueScheduleEmail, publishScheduleEmails, type StoredSchedule as Schedule } from "./schedules.ts";
+import { newSchedule, deliverScheduledRun, type StoredSchedule as Schedule } from "./schedules.ts";
 import { nextOccurrence, retryable, RETRY_DELAYS_MS } from "./schedule-policy.ts";
 import { metric, errorClass } from "./observability.ts";
 import { TERMINAL_EVENTS_PREFIX } from "./event-log.ts";
@@ -74,6 +76,7 @@ export async function createScheduleImpl(this: AgentRuntime,
     // A wake-up would start a turn its parent did not send: a sub-agent the runtime made has none (its builtin's either).
     if (conf.config.type === "subagent" && await childParent(this.env, conf.tenantId, conf.id)) throw viaParent(conf.id);
     const schedule = await newSchedule(this.env, conf.tenantId, conf.id, raw);
+    if (schedule.sessionMode === "fresh" && !conf.config.definition) throw new HttpError(400, "Fresh schedules require an agent definition");
     await this.ctx.storage.put(`schedule:${schedule.id}`, schedule);
     await this.arm();
     return schedule;
@@ -124,6 +127,7 @@ export async function armImpl(this: AgentRuntime,
       ...[...schedules.values()].map((item) => item.retryAt ?? item.dueAt),
       inputAdmissionDeadline(records),
       retry ?? Infinity,
+      (await this.ctx.storage.list({prefix:"schedule-outcome:",limit:1})).size ? Date.now()+60_000 : Infinity,
       pendingBilling ? Date.now() + 5000 : Infinity,
       pendingEvents ? Date.now() + 1000 : Infinity,
       records.some(record => record.method === 'configure' && record.state !== 'completed') ? Date.now() + 1000 : Infinity,
@@ -242,6 +246,7 @@ export async function wakeImpl(this: AgentRuntime) {
     if (await this.ctx.storage.get("deleted")) {
       await this.flushBilling();
       await this.flushTerminalEvents();
+    this.ctx.waitUntil(flushScheduleOutcomes(this));
       return;
     }
     for (const socket of this.ctx.getWebSockets()) {
@@ -277,6 +282,7 @@ export async function wakeImpl(this: AgentRuntime) {
     await restageInputMirrors(this);
     await this.flushBilling();
     await this.flushTerminalEvents();
+    this.ctx.waitUntil(flushScheduleOutcomes(this));
     const expire = this.admission.then(() => this.closeHumanInputs("expired"));
     this.admission = expire.catch(() => {});
     await expire;
@@ -310,28 +316,11 @@ export async function wakeImpl(this: AgentRuntime) {
       if ((schedule.retryAt ?? schedule.dueAt) > now) continue;
       try {
         const occurrence = `schedule-${schedule.id}-${schedule.dueAt}`;
-        await queueScheduleEmail(this.env, schedule, occurrence);
-        await this.submit({
-          id: occurrence,
-          method: schedule.code === undefined ? "prompt" : "execute",
-          params:
-            schedule.code === undefined
-              ? {
-                  text: schedule.calendar
-                    ? calendarPrompt(
-                        schedule.text!,
-                        schedule.calendar,
-                        schedule.dueAt,
-                      )
-                    : schedule.text,
-                  allowDisconnected: true,
-                }
-              : { code: schedule.code, allowDisconnected: true },
-        });
-        if (schedule.email) await publishScheduleEmails(this.env);
-        if (schedule.calendar || schedule.everySeconds) {
+        await deliverScheduledRun(this.env, schedule, occurrence, input=>this.submit(input), work=>this.ctx.waitUntil(work));
+        if (schedule.cron || schedule.calendar || schedule.everySeconds) {
           delete schedule.retryAt;
           schedule.failures = 0;
+          schedule.attempts = 0;
           delete schedule.lastError;
           schedule.dueAt = nextOccurrence(schedule);
           await this.ctx.storage.put(key, schedule);
@@ -343,7 +332,7 @@ export async function wakeImpl(this: AgentRuntime) {
           ? RETRY_DELAYS_MS[attempt - 1]
           : undefined;
         const next =
-          schedule.calendar || schedule.everySeconds
+          schedule.cron || schedule.calendar || schedule.everySeconds
             ? nextOccurrence(schedule)
             : undefined;
           schedule.lastError = scheduleError(error);

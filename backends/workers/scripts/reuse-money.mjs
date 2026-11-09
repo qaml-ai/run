@@ -6,7 +6,8 @@ const modules = ['credit-holds', 'workspaces', 'model-attempts', 'model-attempt'
 for (const name of modules) {
   const source = name === 'money-tokens' ? 'pi-harness/tokens' : name;
   let text = await readFile(new URL(`src/${source}.ts`, root), 'utf8');
-  text = text.replaceAll('"./db.ts"', '"./postgres.ts"')
+  text = text.replaceAll('"../shared/usage-details.ts"', '"../../../shared/usage-details.ts"')
+    .replaceAll('"./db.ts"', '"./postgres.ts"')
     .replaceAll('"./http.ts"', '"./errors.ts"')
     .replaceAll('"./node-context.ts"', '"./money-host.ts"')
     .replaceAll('"./limit-hits.ts"', '"./money-host.ts"')

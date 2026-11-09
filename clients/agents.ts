@@ -22,9 +22,9 @@ const INSPECT = Symbol.for("nodejs.util.inspect.custom");
 const env = (name: string): string | undefined => (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.[name] || undefined;
 
 export interface AgentsOptions {
-  /** Your API key (the console's). Default: the CAMELAI_API_KEY environment variable. */
+  /** Your API key (the console's). Default: CAMELRUN_API_KEY, with CAMELAI_API_KEY as fallback. */
   apiKey?: string;
-  /** The runtime's origin. Default: CAMELAI_BASE_URL, else https://run.camelai.com. */
+  /** The runtime's origin. Default: CAMELRUN_URL, then CAMELAI_BASE_URL, else https://run.camelai.com. */
   url?: string;
   fetch?: typeof globalThis.fetch;
   /** Opens a local file to attach by its path; the Node entry sets it. */
@@ -41,6 +41,8 @@ export interface AgentsOptions {
 export interface AgentConfig {
   humanInput?: import("./typescript.ts").HumanInputSettings;
   definitionRevision?: number;
+  /** Tenant-owned application JSON (16 KB), never sent to the model. */
+  metadata?: Record<string, unknown>;
   /** Account workspace for spend attribution. */
   workspaceId?: string | null;
   /** A model from the catalog (GET /v1/models) as "provider/model-id", e.g. "anthropic/claude-sonnet-5-5". */
@@ -306,6 +308,8 @@ export class Agents {
   /** Stateless runs: `create`, `get`, `stream`, `abort`, `delete`, `messages`; `agents.run` is the one-call form. */
   readonly runs: Runs;
   /** Speech to text on its own: `create({ file | url })`. Audio attached to a message is transcribed without it. */
+  usage(options: import("./typescript.ts").UsageOptions = {}) { return this.runtime.usage(options); }
+  agentUsage(id: string, options: import("./typescript.ts").UsageOptions = {}) { return this.runtime.agentUsage(id, options); }
   get transcriptions() { return this.runtime.transcriptions; }
   /** Images on their own: `generate(prompt)`, `edit(prompt, images)`. Agents make them with the `generate_image` builtin. */
   get images() { return this.runtime.images; }
@@ -318,9 +322,9 @@ export class Agents {
   private readonly connection: "eager" | "lazy";
   constructor(options: AgentsOptions = {}) {
     this.connection = options.connection ?? "lazy";
-    const apiKey = options.apiKey ?? env("CAMELAI_API_KEY") ?? env("AGENT_RUNTIME_TOKEN");
+    const apiKey = options.apiKey ?? env("CAMELRUN_API_KEY") ?? env("CAMELAI_API_KEY") ?? env("AGENT_RUNTIME_TOKEN");
     this.runtime = new AgentRuntime({
-      ...options, url: options.url ?? env("CAMELAI_BASE_URL") ?? env("AGENT_URL"), ...(apiKey ? { apiKey } : {}),
+      ...options, url: options.url ?? env("CAMELRUN_URL") ?? env("CAMELAI_BASE_URL") ?? env("CAMELAI_URL") ?? env("AGENT_URL"), ...(apiKey ? { apiKey } : {}),
     });
     this.runs = new Runs(this.runtime);
   }
@@ -445,6 +449,7 @@ export class Runs {
   /** Delete a run's result, events and messages now, before its retention ends. */
   delete(id: string) { return this.runtime.deleteRun(id); }
   /** A run's messages: its input, the model's turns and tool results. */
+  log(id: string, options: { limit?: number; cursor?: string } = {}) { return this.runtime.runLog(id, options); }
   async messages(id: string): Promise<RecordedMessage[]> { return (await this.runtime.runMessages(id)).messages; }
   /** A run's raw event stream, to its end; see `stream` for one already read into text, tool calls and the result. */
   events(id: string, options: { lastEventId?: number; signal?: AbortSignal } = {}): AsyncGenerator<RunFrame> { return this.runtime.runEvents(id, options); }

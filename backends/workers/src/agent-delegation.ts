@@ -10,7 +10,8 @@ import { resolveDefinition, provisionDefinition } from "./definitions.ts";
 import { DelegationNotifications, type RuntimeNotice, type NoticeRequest, type WakeDecision } from "./delegation-notifications.ts";
 import type { ChildProgressReport } from "./delegation.ts";
 import { runSpend } from "./agent-spend.ts";
-import { withSql } from "./postgres.ts";
+import { withSql, database } from "./postgres.ts";
+import { Workspaces } from "./workspaces.ts";
 import { Config, RequestRecord, canonical, reqKey } from "./agent-types.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
 
@@ -123,6 +124,11 @@ export function createDelegation(this: AgentRuntime): Delegation {
       if ("failed" in entry)
         throw Object.assign(new Error(entry.error), { status: entry.status });
       if (parent) await recordChildParent(this.env, conf.tenantId, entry.id, parent.agent, parent.run, parent.place);
+      if (parent && !entry.existingAgent && config.workspaceId === undefined) {
+        const workspaces = new Workspaces(database(this.env));
+        const inherited = await workspaces.current(conf.tenantId, "agent", parent.agent);
+        if (inherited?.workspace) await workspaces.assign(conf.tenantId, "agent", entry.id, inherited.workspace, false, true);
+      }
       return entry;
     },
     made: async () => {

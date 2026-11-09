@@ -3573,6 +3573,11 @@
       "AgentSummary": {
         "type": "object",
         "properties": {
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Tenant-owned JSON object, at most 16384 UTF-8 bytes. Replaced whole when supplied; omitted preserves it. Not sent to the model. List filtering: ?metadata.type=camelcode-project matches top-level strings exactly."
+          },
           "id": {
             "type": "string"
           },
@@ -3671,6 +3676,7 @@
           }
         },
         "required": [
+          "metadata",
           "id",
           "key",
           "name",
@@ -3952,6 +3958,11 @@
               }
             },
             "additionalProperties": false
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Tenant-owned JSON object, at most 16384 UTF-8 bytes. Replaced whole when supplied; omitted preserves it. Not sent to the model. List filtering: ?metadata.type=camelcode-project matches top-level strings exactly."
           },
           "workspaceId": {
             "type": [
@@ -5851,6 +5862,11 @@
       "ConfigureInput": {
         "type": "object",
         "properties": {
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Tenant-owned JSON object, at most 16384 UTF-8 bytes. Replaced whole when supplied; omitted preserves it. Not sent to the model. List filtering: ?metadata.type=camelcode-project matches top-level strings exactly."
+          },
           "requestId": {
             "type": "string",
             "minLength": 1
@@ -6526,7 +6542,7 @@
                     },
                     "inputId": {
                       "type": "string",
-                      "description": "Use this id with the per-agent input answer route; id identifies the inbox row"
+                      "description": "Compatibility alias of id. Both identify the answerable input on agent; use (agent, id) as the row key"
                     },
                     "subject": {
                       "type": [
@@ -6612,6 +6628,48 @@
       "Schedule": {
         "type": "object",
         "properties": {
+          "mounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MountInput"
+            },
+            "maxItems": 16
+          },
+          "cron": {
+            "type": "object",
+            "properties": {
+              "expression": {
+                "type": "string"
+              },
+              "timeZone": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "expression",
+              "timeZone"
+            ]
+          },
+          "sessionMode": {
+            "type": "string",
+            "enum": [
+              "continue",
+              "fresh"
+            ]
+          },
+          "spendLimit": {
+            "type": "object",
+            "properties": {
+              "usd": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000
+              }
+            },
+            "required": [
+              "usd"
+            ]
+          },
           "calendar": {
             "$ref": "#/components/schemas/CalendarSchedule"
           },
@@ -6719,6 +6777,48 @@
       "ScheduleInput": {
         "type": "object",
         "properties": {
+          "mounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MountInput"
+            },
+            "maxItems": 16
+          },
+          "cron": {
+            "type": "object",
+            "properties": {
+              "expression": {
+                "type": "string"
+              },
+              "timeZone": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "expression",
+              "timeZone"
+            ]
+          },
+          "sessionMode": {
+            "type": "string",
+            "enum": [
+              "continue",
+              "fresh"
+            ]
+          },
+          "spendLimit": {
+            "type": "object",
+            "properties": {
+              "usd": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000
+              }
+            },
+            "required": [
+              "usd"
+            ]
+          },
           "calendar": {
             "$ref": "#/components/schemas/CalendarSchedule"
           },
@@ -6923,6 +7023,151 @@
         "required": [
           "revoked",
           "left"
+        ]
+      },
+      "GroupedUsage": {
+        "type": "object",
+        "properties": {
+          "since": {
+            "type": "number"
+          },
+          "groupBy": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "agent",
+                "definition",
+                "endUser",
+                "model",
+                "day"
+              ]
+            }
+          },
+          "rollup": {
+            "type": "boolean"
+          },
+          "totals": {
+            "type": "object",
+            "properties": {
+              "responses": {
+                "type": "number"
+              },
+              "input": {
+                "type": "number"
+              },
+              "output": {
+                "type": "number"
+              },
+              "cacheRead": {
+                "type": "number"
+              },
+              "cacheWrite": {
+                "type": "number"
+              },
+              "cost": {
+                "type": "number",
+                "description": "Usage cost in USD: model calls use provider-reported cost or a catalog estimate, excluding model credit funding; tool-ranking costs already include their funding"
+              },
+              "platformResponses": {
+                "type": "number",
+                "description": "Responses that ran on a key that is not the tenant's own"
+              },
+              "platformCost": {
+                "type": "number",
+                "description": "Cost in USD on platform keys, including configured provider credit funding costs; prepaid tenants pay it from credit"
+              }
+            },
+            "required": [
+              "responses",
+              "input",
+              "output",
+              "cacheRead",
+              "cacheWrite",
+              "cost",
+              "platformResponses",
+              "platformCost"
+            ]
+          },
+          "next": {
+            "type": "string"
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "responses": {
+                  "type": "number"
+                },
+                "input": {
+                  "type": "number"
+                },
+                "output": {
+                  "type": "number"
+                },
+                "cacheRead": {
+                  "type": "number"
+                },
+                "cacheWrite": {
+                  "type": "number"
+                },
+                "cost": {
+                  "type": "number",
+                  "description": "Usage cost in USD: model calls use provider-reported cost or a catalog estimate, excluding model credit funding; tool-ranking costs already include their funding"
+                },
+                "platformResponses": {
+                  "type": "number",
+                  "description": "Responses that ran on a key that is not the tenant's own"
+                },
+                "platformCost": {
+                  "type": "number",
+                  "description": "Cost in USD on platform keys, including configured provider credit funding costs; prepaid tenants pay it from credit"
+                },
+                "agent": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "definition": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "endUser": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "model": {
+                  "type": "string"
+                },
+                "day": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "responses",
+                "input",
+                "output",
+                "cacheRead",
+                "cacheWrite",
+                "cost",
+                "platformResponses",
+                "platformCost"
+              ]
+            }
+          }
+        },
+        "required": [
+          "since",
+          "groupBy",
+          "rollup",
+          "totals",
+          "groups"
         ]
       },
       "Usage": {
@@ -9804,6 +10049,61 @@
           "deliveredAt"
         ]
       },
+      "GitHubRepositories": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GitHubRepository"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor"
+        ]
+      },
+      "GitHubRepository": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "number"
+          },
+          "name": {
+            "type": "string"
+          },
+          "fullName": {
+            "type": "string"
+          },
+          "private": {
+            "type": "boolean"
+          },
+          "htmlUrl": {
+            "type": "string"
+          },
+          "defaultBranch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "fullName",
+          "private",
+          "htmlUrl",
+          "defaultBranch"
+        ]
+      },
       "GitHubApp": {
         "type": "object",
         "properties": {
@@ -9957,6 +10257,18 @@
           }
         },
         "additionalProperties": false
+      },
+      "VolumeInput": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string",
+            "description": "Your name for the volume (1–200 letters, digits and ._:-): the first create with a key makes it, every later one answers with it (existing: true), for as long as it lives. A deleted one's key makes no other"
+          }
+        }
       },
       "Definition": {
         "type": "object",
@@ -11803,6 +12115,89 @@
             ],
             "additionalProperties": false
           }
+        ]
+      },
+      "RunLog": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Run"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "truncated": {
+                    "type": "boolean",
+                    "enum": [
+                      true
+                    ]
+                  },
+                  "originalBytes": {
+                    "type": "number"
+                  },
+                  "preview": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "truncated",
+                  "originalBytes",
+                  "preview"
+                ]
+              }
+            ]
+          },
+          "durationMs": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "index": {
+                  "type": "number"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "message"
+                  ]
+                },
+                "at": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "message": {},
+                "truncated": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "index",
+                "type",
+                "at"
+              ]
+            }
+          },
+          "next": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "run",
+          "durationMs",
+          "events"
         ]
       },
       "EndUserSettings": {
@@ -14018,18 +14413,6 @@
             ]
           }
         ]
-      },
-      "VolumeInput": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "key": {
-            "type": "string",
-            "description": "Your name for the volume (1–200 letters, digits and ._:-): the first create with a key makes it, every later one answers with it (existing: true), for as long as it lives. A deleted one's key makes no other"
-          }
-        }
       },
       "Snapshot": {
         "type": "object",
@@ -16548,6 +16931,16 @@
           {
             "schema": {
               "type": "string",
+              "description": "Exact match on a top-level metadata string. Any metadata.<key> is supported; multiple filters are ANDed."
+            },
+            "required": false,
+            "description": "Exact match on a top-level metadata string. Any metadata.<key> is supported; multiple filters are ANDed.",
+            "name": "metadata.type",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
               "description": "Only agents in this workspace, or unassigned for agents in none"
             },
             "required": false,
@@ -18160,7 +18553,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The latest 100 scheduled email deliveries",
+            "description": "The latest 100 scheduled runs and their email delivery",
             "content": {
               "application/json": {
                 "schema": {
@@ -18171,15 +18564,36 @@
                       "id": {
                         "type": "string"
                       },
-                      "state": {
+                      "schedule": {
                         "type": "string"
                       },
-                      "email": {
-                        "type": "object",
-                        "additionalProperties": {}
+                      "agent": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
                       },
                       "createdAt": {
                         "type": "number"
+                      },
+                      "error": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "state": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "email": {
+                        "type": [
+                          "object",
+                          "null"
+                        ],
+                        "additionalProperties": {}
                       },
                       "sentAt": {
                         "type": [
@@ -18193,7 +18607,25 @@
                           "null"
                         ]
                       },
-                      "error": {
+                      "runId": {
+                        "type": "string"
+                      },
+                      "cost": {
+                        "type": "number"
+                      },
+                      "endedAt": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "emailState": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "emailError": {
                         "type": [
                           "string",
                           "null"
@@ -18202,12 +18634,19 @@
                     },
                     "required": [
                       "id",
+                      "schedule",
+                      "agent",
+                      "createdAt",
+                      "error",
                       "state",
                       "email",
-                      "createdAt",
                       "sentAt",
                       "messageId",
-                      "error"
+                      "runId",
+                      "cost",
+                      "endedAt",
+                      "emailState",
+                      "emailError"
                     ]
                   }
                 }
@@ -18303,6 +18742,74 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Schedule"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/schedules/{scheduleId}/run": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "scheduleId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "The scheduled run",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "agent": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    },
+                    "record": {}
+                  },
+                  "required": [
+                    "agent",
+                    "requestId"
+                  ]
                 }
               }
             }
@@ -18577,17 +19084,139 @@
         }
       }
     },
+    "/v1/agents/{id}/usage": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "days",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "groupBy",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            },
+            "required": false,
+            "name": "rollup",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "workspaceId",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Agent usage",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupedUsage"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/usage": {
       "get": {
         "parameters": [
           {
             "schema": {
-              "type": "string",
-              "description": "1–365, default 30"
+              "type": "string"
             },
             "required": false,
-            "description": "1–365, default 30",
             "name": "days",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "groupBy",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            },
+            "required": false,
+            "name": "rollup",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "cursor",
             "in": "query"
           },
           {
@@ -18603,11 +19232,18 @@
         ],
         "responses": {
           "200": {
-            "description": "Token usage per UTC day and model",
+            "description": "Token usage per UTC day and model, or requested dimensions",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Usage"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Usage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/GroupedUsage"
+                    }
+                  ]
                 }
               }
             }
@@ -21698,6 +22334,114 @@
         }
       }
     },
+    "/v1/github-apps/{app}/repositories": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The App's id (gha_…) or name"
+            },
+            "required": true,
+            "description": "The App's id (gha_…) or name",
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "perPage",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of installation repositories; follow nextCursor until null, including empty pages",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubRepositories"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/github-apps/{app}/repositories/{owner}/{name}": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The App's id (gha_…) or name"
+            },
+            "required": true,
+            "description": "The App's id (gha_…) or name",
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "owner",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "name",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Repository the installation can access; 404 if unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubRepository"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/github-apps": {
       "get": {
         "responses": {
@@ -21933,6 +22677,133 @@
                   },
                   "required": [
                     "deleted"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/apply": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "volumes": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "$ref": "#/components/schemas/VolumeInput"
+                    }
+                  },
+                  "definitions": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "object",
+                      "additionalProperties": {}
+                    }
+                  },
+                  "agents": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "object",
+                      "additionalProperties": {}
+                    }
+                  },
+                  "dryRun": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Atomic provisioning result or dry-run diff",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "dryRun": {
+                      "type": "boolean"
+                    },
+                    "volumes": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "definitions": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "agents": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "changes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "resource": {
+                            "type": "string"
+                          },
+                          "action": {
+                            "type": "string",
+                            "enum": [
+                              "create",
+                              "update",
+                              "unchanged"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "resource",
+                          "action"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "dryRun",
+                    "volumes",
+                    "definitions",
+                    "agents",
+                    "changes"
                   ]
                 }
               }
@@ -24399,6 +25270,60 @@
               "text/event-stream": {
                 "schema": {
                   "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{id}/log": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The run's id (run_…)"
+            },
+            "required": true,
+            "description": "The run's id (run_…)",
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Durable run log with messages, tool calls, errors, usage and timing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunLog"
                 }
               }
             }

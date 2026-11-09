@@ -532,8 +532,11 @@ export const QueueSettingInput = z.strictObject({
   windowMs: z.number().int().min(0).max(2_000).optional().openapi({ description: "With batch: how long a prompt that reaches an idle agent waits for others to join its turn (ms, at most 2000). Default 0" }),
 }).openapi("QueueSetting", { description: "What it does with prompts that arrive while a turn runs. {mode: \"each\"} (the default): each runs as a turn of its own, in order. {mode: \"batch\"}: the prompts waiting when a turn ends run together as the next turn, each its own user message in arrival order, so a burst of events costs one turn instead of one each. Each merged prompt's request ends with that turn, with its answer (reply...) and batchedInto naming the turn's first request, which has the usage. A prompt joins only with prompts like it: not a sub-agent's notification or message nor a delegate call or other prompt of the runtime's, none with an output schema, a spendLimit or runLimits of its own, and all for the same actor, bucket and endUser; the first that does not fit runs after the batch. windowMs (0 to 2000): a prompt reaching an idle agent waits this long first, so a burst sent at once merges too. Steers accepted by the same turn are taken all at once at its next boundary. A sub-agent never batches. See Batching in the concepts guide" });
 
+const ApplicationMetadata = z.record(z.string(), z.unknown()).openapi({ description: "Tenant-owned JSON object, at most 16384 UTF-8 bytes. Replaced whole when supplied; omitted preserves it. Not sent to the model. List filtering: ?metadata.type=camelcode-project matches top-level strings exactly." });
+
 export const AgentInput = z.object({
   humanInput: z.strictObject({ unattended: z.literal("decline").optional(), expiresInSeconds: z.number().int().min(60).max(2592000).optional(), approvers: z.array(z.string()).max(100).optional() }).optional(),
+  metadata: ApplicationMetadata.optional(),
   workspaceId,
   mcp: z.object({ tools: z.array(z.unknown()) }).optional().openapi({ description: "The application's attached MCP server: its tools/list, whose tools the agent calls back through the application's connection. The SDKs send it" }),
   definitionRevision: z.number().int().positive().optional(),
@@ -576,7 +579,11 @@ export const AgentInput = z.object({
 }).strict().openapi("AgentInput");
 
 
+export const GitHubRepository = z.object({ id: z.number(), name: z.string(), fullName: z.string(), private: z.boolean(), htmlUrl: z.string(), defaultBranch: z.string().nullable() }).openapi("GitHubRepository");
+export const GitHubRepositories = z.object({ items: z.array(GitHubRepository), nextCursor: z.string().nullable() }).openapi("GitHubRepositories");
+
 export const AgentSummary = z.object({
+  metadata: ApplicationMetadata,
   id: z.string(),
   key: z.string().nullable().openapi({ description: "The key it was made with (an upsert's, or POST /v1/agents' Idempotency-Key); null for one made without" }),
   name: z.string().openapi({ description: "Its name; its id when it was given none" }),
@@ -741,7 +748,7 @@ export const InboxQuery = z.object({
   cursor: z.string().optional(), limit: z.coerce.number().int().min(1).max(100).optional(),
 });
 export const InboxPage = z.object({
-  items: z.array(Input.extend({ inputId: z.string().openapi({ description: "Use this id with the per-agent input answer route; id identifies the inbox row" }), priority: z.enum(["urgent", "high", "normal", "low"]), blocking: z.boolean(),
+  items: z.array(Input.extend({ inputId: z.string().openapi({ description: "Compatibility alias of id. Both identify the answerable input on agent; use (agent, id) as the row key" }), priority: z.enum(["urgent", "high", "normal", "low"]), blocking: z.boolean(),
     subject: z.string().nullable(), root: z.string(), lineage: z.array(z.string()), key: z.string().nullable(), version: z.number().int() })),
   cursor: z.string().nullable(), counts: z.object({ priority: z.object({ urgent: z.number(), high: z.number(), normal: z.number(), low: z.number() }), lead: z.record(z.string(), z.number()) }),
 }).openapi("InboxPage");
@@ -867,6 +874,13 @@ export const BrowserToken = z.object({
   expiresAt: z.number(), agentId: z.string(), url: z.string().optional().openapi({ description: "Where the browser reaches the runtime" }),
 }).openapi("BrowserToken");
 
+export const RunLogQuery = z.object({ cursor: z.string().optional(), limit: z.string().optional() });
+const LogTruncation = z.object({ truncated: z.literal(true), originalBytes: z.number(), preview: z.string() });
+export const RunLog = z.object({
+  run: z.union([Run, LogTruncation]), durationMs: z.number().nullable(),
+  events: z.array(z.object({ index: z.number(), type: z.literal("message"), at: z.number().nullable(), message: z.unknown(), truncated: z.boolean().optional() })),
+  next: z.string().optional(), truncated: z.boolean().optional(),
+}).openapi("RunLog");
 export const History = z.looseObject({ messages: z.array(z.unknown()) }).openapi("History");
 export const HistoryPage = z.object({
   entries: z.array(z.object({ index: z.number().openapi({ description: "The message's index in the agent's history" }), message: z.unknown() })).openapi({ description: "Messages, oldest first; whole turns unless a size bound splits them" }),
@@ -886,6 +900,10 @@ const Calendar = z.object({ time: z.string().openapi({ description: "Local HH:MM
 const ScheduleEmail = z.object({ to: z.email(), subject: z.string().min(1).max(200), format: z.enum(["text", "markdown", "html"]).optional().describe("Reply format; defaults to markdown. HTML is sent as supplied, with a generated plain-text alternative.") }).openapi("ScheduleEmail");
 // Documentation only: scheduleInput and Scheduler.create validate schedules.
 export const ScheduleInput = z.object({
+  mounts: z.array(MountInput).max(16).optional(),
+  cron: z.object({expression:z.string(),timeZone:z.string()}).optional(),
+  sessionMode: z.enum(["continue","fresh"]).optional(),
+  spendLimit: z.object({usd:z.number().min(0).max(1000000)}).optional(),
   calendar: Calendar.optional(),
   email: ScheduleEmail.optional().openapi({ description: "Email the successful run's final reply. Owner-configured only; failed runs are not sent." }),
   text: z.string().optional().openapi({ description: "Prompt to deliver; give exactly one of text or code" }),
@@ -897,6 +915,10 @@ export const ScheduleInput = z.object({
 }).openapi("ScheduleInput");
 
 export const Schedule = z.object({
+  mounts: z.array(MountInput).max(16).optional(),
+  cron: z.object({expression:z.string(),timeZone:z.string()}).optional(),
+  sessionMode: z.enum(["continue","fresh"]).optional(),
+  spendLimit: z.object({usd:z.number().min(0).max(1000000)}).optional(),
   calendar: Calendar.optional(),
   email: ScheduleEmail.optional(),
   id: z.string(),
@@ -1038,6 +1060,11 @@ export const Images = z.object({
   costUsd: z.number().openapi({ description: "What it cost at the runtime's price: charged to prepaid credit when it ran on the platform's key" }),
 }).openapi("Images");
 
+export const GroupedUsageQuery = z.object({ days: z.string().optional(), groupBy: z.string().optional(), rollup: z.enum(["true", "false"]).optional(), limit: z.string().optional(), cursor: z.string().optional(), workspaceId: z.string().optional() });
+export const GroupedUsage = z.object({
+  since: z.number(), groupBy: z.array(z.enum(["agent", "definition", "endUser", "model", "day"])), rollup: z.boolean(), totals: Totals, next: z.string().optional(),
+  groups: z.array(Totals.extend({ agent: z.string().nullable().optional(), definition: z.string().nullable().optional(), endUser: z.string().nullable().optional(), model: z.string().optional(), day: z.string().optional() })),
+}).openapi("GroupedUsage");
 export const Usage = z.object({
   since: z.number(),
   totals: Totals,
@@ -1140,6 +1167,7 @@ export const DefinitionUpdated = Definition.extend({
 export const DefinitionAgent = z.object({ id: z.string(), revision: z.number() }).openapi("DefinitionAgent");
 
 export const ConfigureInput = z.object({
+  metadata: ApplicationMetadata.optional(),
   requestId: z.string().min(1).optional(),
   model: z.string().optional().openapi({ description: "Model id from GET /v1/models" }),
   systemPrompt: z.string().min(1).max(32_000).optional(),

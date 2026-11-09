@@ -318,6 +318,48 @@ export class GitHubApps {
     return held;
   }
 
+
+  /** Pages across the App's installations, then each installation's repositories. */
+  async repositories(tenant: string, ref: string, cursor?: string, perPage = 100) {
+    if (!Number.isInteger(perPage) || perPage < 1 || perPage > 100) throw bad("perPage must be an integer from 1 to 100");
+    let installationPage = 1, index = 0, page = 1;
+    if (cursor !== undefined) {
+      if (!/^\d+:\d+:\d+$/.test(cursor)) throw bad("Invalid repository cursor");
+      [installationPage, index, page] = cursor.split(":").map(Number) as [number, number, number];
+      if (![installationPage, index + 1, page].every(n => Number.isSafeInteger(n) && n >= 1 && n <= 1_000_000) || index >= 100) throw bad("Invalid repository cursor");
+    }
+    const app = await this.read(tenant, ref);
+    if (!app) throw new GitHubAppError(404, "Unknown GitHub App");
+    const jwt = await this.jwt(app.appId, this.secrets(app).privateKey);
+    const installations = await this.call("List App installations", "GET", `/app/installations?per_page=100&page=${installationPage}`, jwt) as unknown;
+    if (!Array.isArray(installations)) throw new GitHubAppError(502, "GitHub gave an invalid installation list");
+    const installation = installations[index];
+    if (!installation) return { items: [], nextCursor: null };
+    const advance = () => index + 1 < installations.length ? `${installationPage}:${index + 1}:1` : installations.length === 100 ? `${installationPage + 1}:0:1` : null;
+    if (installation.suspended_at) return { items: [], nextCursor: advance() };
+    if (!Number.isSafeInteger(installation.id)) throw new GitHubAppError(502, "GitHub gave an invalid installation");
+    const auth = await this.token(tenant, { type: "github-app", app: ref, installation: installation.id, permissions: { metadata: "read" } }, this.base);
+    const result = await this.call("List installation repositories", "GET", `/installation/repositories?per_page=${perPage}&page=${page}`, auth.token);
+    if (!Array.isArray(result.repositories)) throw new GitHubAppError(502, "GitHub gave an invalid repository list");
+    return { items: result.repositories.map(repo => this.repositoryView(repo)),
+      nextCursor: result.repositories.length === perPage ? `${installationPage}:${index}:${page + 1}` : advance() };
+  }
+
+  /** Checks the App installation's access, not merely a repository's public visibility. */
+  async repository(tenant: string, ref: string, owner: string, name: string) {
+    if (!REPOSITORY.test(`${owner}/${name}`)) throw bad("Repository must be owner/name");
+    const auth = await this.token(tenant, { type: "github-app", app: ref, repositories: [`${owner}/${name}`], permissions: { metadata: "read" } }, this.base);
+    const result = await this.call("Get installation repository", "GET", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`, auth.token);
+    return this.repositoryView(result);
+  }
+
+  private repositoryView(repo: Record<string, any>) {
+    if (!repo || !Number.isSafeInteger(repo.id) || typeof repo.name !== "string" || typeof repo.full_name !== "string" || typeof repo.private !== "boolean" || typeof repo.html_url !== "string")
+      throw new GitHubAppError(502, "GitHub gave invalid repository metadata");
+    return { id: repo.id as number, name: repo.name as string, fullName: repo.full_name as string,
+      private: repo.private === true, htmlUrl: repo.html_url as string, defaultBranch: (repo.default_branch ?? null) as string | null };
+  }
+
   // Tokens --------------------------------------------------------------------------------------------------------
 
   /**

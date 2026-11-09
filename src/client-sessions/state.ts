@@ -439,6 +439,8 @@ export type ProviderKey = { key: string; platform: boolean };
 export type AgentRef = { id: string; tenant: string; claim?: Claim };
 /** Runtime features layered on agents (channels): they observe runs and may answer tools themselves. */
 export interface SessionHooks {
+  /** After any request outcome is durable, including queued cancellation and batched requests. */
+  requestEnded?(agent: AgentRef, record: RequestRecord): void;
   runStarted?(agent: AgentRef, record: RequestRecord): void;
   /** After the run's outcome is durable, on the node that ran it. */
   runEnded?(agent: AgentRef, record: RequestRecord): void;
