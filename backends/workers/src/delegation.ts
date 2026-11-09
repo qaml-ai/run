@@ -120,7 +120,7 @@ export class Delegation {
   private fallback?: ReturnType<typeof setTimeout>;
   private sweepRunning = false;
   private readonly completions = new Map<string, Promise<void>>();
-  readonly measurements = { relayStreams: 0, fallbackSweeps: 0, fallbackRequests: 0, pushedEvents: 0, pushedCompletions: 0, maxFallbackConcurrent: 0 };
+  readonly measurements = { relayStreams: 0, fallbackSweeps: 0, fallbackRequests: 0, pushedEvents: 0, pushedCompletions: 0, recoveredCompletions: 0, maxFallbackConcurrent: 0 };
   private signalChange(key: string) {
     for (const name of [key, '*']) {
       for (const wake of this.changed.get(name) ?? []) wake();
@@ -163,7 +163,7 @@ export class Delegation {
             const response = await this.host.fetch(child.id, new Request(`https://agent/requests/${child.requestId}`));
             const record: ChildRun = response.ok ? await response.json() : { state: 'completed', status: 'failed', error: 'The sub-agent was deleted before it answered' };
             if (!response.ok && ![404, 410].includes(response.status)) continue;
-            if (record.state === 'completed') await this.complete(child, record);
+            if (record.state === 'completed') await this.complete(child, record, 'recovery');
           } catch { /* The next sweep retries a lost callback or unavailable child. */ } finally { active--; }
         }
       }));
@@ -178,8 +178,7 @@ export class Delegation {
     if (event.event.type === 'event' && child.status === 'running') await this.host.emit({ type: 'event', requestId: child.parentRequestId, event: { type: 'subagent_event', toolCallId: child.toolCallId, agentId: child.id, requestId: child.requestId, event: event.event.event } });
     this.signalChange('*');
     if (event.record?.state === 'completed') {
-      if (child.status === 'running') this.measurements.pushedCompletions++;
-      await this.complete(child, event.record);
+      await this.complete(child, event.record, 'push');
     }
     return { accepted: true };
   }
@@ -450,7 +449,7 @@ export class Delegation {
       if (child.background && child.status === 'input_required') await this.resumePaused(child);
     } catch { this.following.add(child.key); this.scheduleFallback(); }
   }
-  private async complete(child: DelegatedChild, record: ChildRun) {
+  private async complete(child: DelegatedChild, record: ChildRun, source: 'push' | 'recovery') {
     const finished = await this.host.storage.transaction(async tx => {
       const current = await tx.get<DelegatedChild>(prefix + child.key) ?? child;
       if (current.status !== 'running') return { child: current, changed: false };
@@ -461,6 +460,8 @@ export class Delegation {
       if (!value.background) value = await this.settleInTransaction(tx, value, value.parentRequestId);
       return { child: value, changed: !folded };
     });
+    // Count the transaction winner: a late push may arrive after recovery already completed this child.
+    if (finished.changed) this.measurements[source === 'push' ? 'pushedCompletions' : 'recoveredCompletions']++;
     if (finished.changed && !child.background && child.made && child.id && finished.child.status !== 'input_required') this.host.waitUntil(this.host.releaseComputer?.(child.id).catch(() => {}) ?? Promise.resolve());
     if (finished.changed) await this.host.emit({ type: 'event', requestId: child.parentRequestId, event: { type: 'subagent_end', toolCallId: child.toolCallId, agentId: child.id, requestId: child.requestId, name: child.name, status: finished.child.status, ...(child.background ? { background: true } : {}), ...(finished.child.error ? { error: finished.child.error } : {}) } });
     this.signalChange(child.key);
