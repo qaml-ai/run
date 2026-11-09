@@ -1,7 +1,13 @@
+import { freshAutomationRun } from '../../../src/core/fresh-runs.ts';
+import { workerFreshRunHost } from './fresh-runs.ts';
+import { readScheduleRuns, recordScheduleRun, reserveFreshScheduleRun, scheduleRunMetadata } from '../../../src/core/schedule-runs.ts';
+import { calendarPrompt } from '../../../src/calendar.ts';
+import { Directory } from './control.ts';
+import { provisionDefinition } from './definitions.ts';
 import { scheduleInput, MIN_REPEAT_SECONDS, type Schedule, type ScheduleEmail } from './schedule-policy.ts';
 import { HttpError } from './errors.ts';
 import { digest } from './api-contract.ts';
-import { withSql } from './postgres.ts';
+import { withSql, transaction } from './postgres.ts';
 import { markdownEmail } from '../../../src/markdown-email.ts';
 import { readableText } from '../../../src/html-text.ts';
 import { failure, metric } from './observability.ts';
@@ -39,10 +45,10 @@ export async function newSchedule(env:ScheduleEnv,tenant:string,agent:string,raw
     if(!await canScheduleEmail(env,tenant,input.email.to))throw new HttpError(403,'Use your sign-in email or a verified billing recipient for scheduled reports');
   }
   const {history,...rest}=input;
-  return {id:crypto.randomUUID(),agent,tenant,...rest,dueAt:Math.round(input.dueAt),createdAt:Date.now()};
+  return {id:crypto.randomUUID(),agent,tenant,sessionMode:"continue",...rest,dueAt:Math.round(input.dueAt),createdAt:Date.now()};
 }
 export async function scheduleDeliveries(env:ScheduleEnv,tenant:string,agent:string) {
- return (await withSql(env,sql=>sql.query('select id,state,email,created_at as "createdAt",sent_at as "sentAt",message_id as "messageId",error from schedule_deliveries where tenant=$1 and agent=$2 order by created_at desc limit 100',[tenant,agent]))).rows;
+ return withSql(env,sql=>readScheduleRuns(sql,tenant,agent));
 }
 export async function queueScheduleEmail(env:ScheduleEnv,schedule:StoredSchedule,id:string) {
  if(!schedule.email)return;
@@ -111,5 +117,38 @@ export async function deliverScheduleEmail(env:ScheduleEnv,id:string) {
   const failed=gone||attempts>=5;
   await withSql(env,sql=>sql.query('update schedule_deliveries set attempts=$3,state=$4,error=$5,next_at=$6,lease=null,lease_until=null where id=$1 and lease=$2',[id,lease,attempts,failed?'failed':'waiting',gone?'Agent no longer exists':'Delivery failed',now+Math.min(3600000,60000*2**(attempts-1))]));
   return failed;
+ }
+}
+
+export async function deliverScheduledRun(env: any, schedule: StoredSchedule, id: string,
+ submitLocal: (request:any)=>Promise<any>, background:(work:Promise<unknown>)=>void) {
+ const source={tenant:schedule.tenant,agent:schedule.agent,schedule:schedule.id,createdAt:Date.now()};
+ const report=(agent:string|null,record:any)=>withSql(env,sql=>recordScheduleRun(sql,source,agent,record)).catch(error=>failure(env,'schedule_outcome_failed',error));
+ let agent=schedule.agent;
+ try {
+  if(schedule.sessionMode==='fresh') {
+   const host=await workerFreshRunHost(env);
+   agent=await freshAutomationRun({
+    reserve:()=>transaction(env,sql=>reserveFreshScheduleRun(sql,source,id)),
+    precheck:()=>host.precheck(schedule.tenant),
+    definition:()=>host.definition(schedule.tenant,schedule.agent),
+    upsert:(input,key)=>host.upsert(schedule.tenant,{...input,...(schedule.mounts?{mounts:schedule.mounts}:{})},key),
+    record:async agent=>{await withSql(env,sql=>sql.query('update schedule_runs set run_agent=$2 where id=$1',[id,agent]));},
+   },`schedule-${(await digest(id)).slice(0,40)}`);
+  }
+  const input={id,method:schedule.code===undefined?'prompt':'execute',params:{...(schedule.code===undefined?{text:schedule.calendar?calendarPrompt(schedule.text!,schedule.calendar,schedule.dueAt):schedule.text}:{code:schedule.code}),metadata:scheduleRunMetadata(source),allowDisconnected:true,...(schedule.spendLimit?{spendLimit:schedule.spendLimit}:{})}};
+  let record:any;
+  if(schedule.sessionMode!=='fresh') record=await submitLocal(input);
+  else {
+   const response=await env.AGENTS.getByName(agent).fetch(new Request('https://agent/requests',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(input)}));
+   record=await response.json();
+   if(!response.ok)throw new HttpError(response.status,record.error??'Delivery failed');
+  }
+  background(report(agent,record));
+  if(schedule.email)background(queueScheduleEmail(env,{...schedule,agent},id).then(()=>publishScheduleEmails(env)).catch(error=>failure(env,'schedule_mail_queue_failed',error)));
+  return {agent,requestId:id,record};
+ } catch(error) {
+  background(report(null,{id,state:'completed',endedAt:Date.now(),outcome:{error:error instanceof Error?error.message:String(error)}}));
+  throw error;
  }
 }

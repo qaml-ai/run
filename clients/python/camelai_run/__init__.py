@@ -770,10 +770,14 @@ class _RuntimeCalls:
         return self._rest("POST", f"/v1/agents/{_path(agent_id)}/browser-tokens", body, retry=False)
 
     def inbox(self, *, for_=None, subject=None, root=None, priority=None, kind=None, cursor=None, limit=None):
-        """A page of pending inputs in priority order: {items, cursor, counts}. inputId addresses the per-agent answer route."""
+        """A page of pending inputs in priority order: {items, cursor, counts}. id addresses the per-agent answer route; inputId is its compatibility alias."""
         query = urlencode({key: value for key, value in {"for": for_, "subject": subject, "root": root,
             "priority": priority, "kind": kind, "cursor": cursor, "limit": limit}.items() if value is not None})
         return self._rest("GET", "/v1/inbox" + (f"?{query}" if query else ""))
+
+    def answer_inbox(self, item, answer):
+        """Answer a page item using its public id and agent."""
+        return self._rest("POST", f"/v1/agents/{_path(item['agent'])}/inputs/{_path(item['id'])}", answer, retry=False)
 
     def tool_sources(self, agent_id, *, schemas=False, refresh=False):
         """Every source of an agent's tools (its application, file tools, built-ins, MCP servers, OpenAPI
@@ -873,8 +877,8 @@ class AgentRuntime(_RuntimeCalls):
     else https://run.camelai.com; `api_key` to CAMELAI_API_KEY."""
 
     def __init__(self, url=None, api_key=None):
-        self.base = _origin(url or _env("CAMELAI_BASE_URL", "AGENT_URL") or DEFAULT_URL)
-        self.api_key = api_key or _env("CAMELAI_API_KEY", "AGENT_RUNTIME_TOKEN")
+        self.base = _origin(url or _env("CAMELRUN_URL", "CAMELAI_BASE_URL", "CAMELAI_URL", "AGENT_URL") or DEFAULT_URL)
+        self.api_key = api_key or _env("CAMELRUN_API_KEY", "CAMELAI_API_KEY", "AGENT_RUNTIME_TOKEN")
         self.http = httpx.AsyncClient(timeout=10, follow_redirects=False)
         self.agents = []
         # Speech to text on its own: create.
@@ -1669,9 +1673,9 @@ class _AgentCalls:
     def set_metadata(self, *, name, type):
         return self._http("/metadata", "POST", {"name": name, "type": type})
 
-    def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None, history=None, calendar=None, email=None):
+    def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None, history=None, calendar=None, email=None, cron=None, session_mode=None, spend_limit=None, mounts=None):
         """Wake this agent later with a prompt (text) or sandboxed code; every_seconds (>= 60) repeats it. history is deprecated and ignored: every wake-up sees the agent's history."""
-        body = {key: value for key, value in {"text": text, "code": code, "history": history, "at": at, "inSeconds": in_seconds, "everySeconds": every_seconds, "calendar": calendar, "email": email}.items() if value is not None}
+        body = {key: value for key, value in {"text": text, "code": code, "history": history, "at": at, "inSeconds": in_seconds, "everySeconds": every_seconds, "calendar": calendar, "email": email, "cron": cron, "sessionMode": session_mode, "spendLimit": spend_limit, "mounts": mounts}.items() if value is not None}
         return self._http("/schedules", "POST", body, retry=False)
 
     def create_trigger(self, **input):
@@ -1691,6 +1695,9 @@ class _AgentCalls:
 
     def schedules(self):
         return self._http("/schedules")
+
+    def run_schedule(self, schedule_id):
+        return self._http(f"/schedules/{quote(schedule_id, safe='')}/run", "POST", {}, retry=False)
 
     def unschedule(self, schedule_id):
         return self._http(f"/schedules/{quote(schedule_id, safe='')}", "DELETE", None, retry=False)
@@ -2802,9 +2809,9 @@ class Agent:
             raise AgentError("reset_context needs the Agents this agent came from (agents.upsert, get or agent)")
         return await self._agents.runtime.reset_context(self.id, summary=summary, keep_messages=keep_messages)
 
-    async def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None, history=None, calendar=None, email=None):
+    async def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None, history=None, calendar=None, email=None, cron=None, session_mode=None, spend_limit=None, mounts=None):
         """Wake the agent later with a message (text), or run code; every_seconds (at least 60) repeats it. history is deprecated and ignored."""
-        return await self.client.schedule(text=text, code=code, at=at, in_seconds=in_seconds, every_seconds=every_seconds, history=history, calendar=calendar, email=email)
+        return await self.client.schedule(text=text, code=code, at=at, in_seconds=in_seconds, every_seconds=every_seconds, history=history, calendar=calendar, email=email, cron=cron, session_mode=session_mode, spend_limit=spend_limit, mounts=mounts)
 
     async def create_trigger(self, **input):
         return await self.client.create_trigger(**input)
@@ -2823,6 +2830,9 @@ class Agent:
 
     async def schedules(self):
         return await self.client.schedules()
+
+    async def run_schedule(self, schedule_id):
+        return await self.client.run_schedule(schedule_id)
 
     async def unschedule(self, schedule_id):
         return await self.client.unschedule(schedule_id)

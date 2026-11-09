@@ -1,5 +1,6 @@
 import { handleHook, hookPath } from "../../../src/core/trigger-ingress.ts";
 import { workerTriggers, triggerRoutes } from "./triggers.ts";
+import { pruneScheduleRuns } from '../../../src/core/schedule-runs.ts';
 import { SharedAgents, ShareLinkInput, MemberInput } from '../../../src/shared-agents.ts';
 import { database } from './postgres.ts';
 import { inboxQuery, readInbox, InboxQueryError } from '../../../shared/inbox.ts';
@@ -697,6 +698,7 @@ const worker = {
     try { await (await workerTriggers(env)).scan(); }
     catch(error) { failure(env,"trigger_scan_failed",error); }
     try {
+      await withSql(env,sql=>pruneScheduleRuns(sql)).catch(error=>failure(env,"schedule_retention_failed",error));
       if (_controller.cron === "* * * * *") { await sweepInputMirrors(env); return; }
       await maintenance(env);
       await moneyMaintenance(env);

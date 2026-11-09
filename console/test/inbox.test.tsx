@@ -3,9 +3,9 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 import { InboxPage } from "../web/pages/inbox";
 import { answerInbox, inboxCount, type InboxItem } from "../web/lib/inbox";
-const item = { id: "row", inputId: "runtime-input", agent: "agent-a", kind: "approval", message: "Allow deploy?", detail: {}, priority: "high", blocking: true, subject: "Release", state: "pending" } as InboxItem;
+const item = { id: "runtime-input", inputId: "runtime-input", agent: "agent-a", kind: "approval", message: "Allow deploy?", detail: {}, priority: "high", blocking: true, subject: "Release", state: "pending" } as InboxItem;
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
-it("answers using the runtime input id rather than the inbox row id", async () => {
+it("answers using the public inbox id", async () => {
   const fetcher = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => Response.json({}));
   vi.stubGlobal("fetch", fetcher);
   await answerInbox(item, true);

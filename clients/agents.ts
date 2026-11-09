@@ -22,9 +22,9 @@ const INSPECT = Symbol.for("nodejs.util.inspect.custom");
 const env = (name: string): string | undefined => (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.[name] || undefined;
 
 export interface AgentsOptions {
-  /** Your API key (the console's). Default: the CAMELAI_API_KEY environment variable. */
+  /** Your API key (the console's). Default: CAMELRUN_API_KEY, with CAMELAI_API_KEY as fallback. */
   apiKey?: string;
-  /** The runtime's origin. Default: CAMELAI_BASE_URL, else https://run.camelai.com. */
+  /** The runtime's origin. Default: CAMELRUN_URL, then CAMELAI_BASE_URL, else https://run.camelai.com. */
   url?: string;
   fetch?: typeof globalThis.fetch;
   /** Opens a local file to attach by its path; the Node entry sets it. */
@@ -314,9 +314,9 @@ export class Agents {
   private readonly connection: "eager" | "lazy";
   constructor(options: AgentsOptions = {}) {
     this.connection = options.connection ?? "lazy";
-    const apiKey = options.apiKey ?? env("CAMELAI_API_KEY") ?? env("AGENT_RUNTIME_TOKEN");
+    const apiKey = options.apiKey ?? env("CAMELRUN_API_KEY") ?? env("CAMELAI_API_KEY") ?? env("AGENT_RUNTIME_TOKEN");
     this.runtime = new AgentRuntime({
-      ...options, url: options.url ?? env("CAMELAI_BASE_URL") ?? env("AGENT_URL"), ...(apiKey ? { apiKey } : {}),
+      ...options, url: options.url ?? env("CAMELRUN_URL") ?? env("CAMELAI_BASE_URL") ?? env("CAMELAI_URL") ?? env("AGENT_URL"), ...(apiKey ? { apiKey } : {}),
     });
     this.runs = new Runs(this.runtime);
   }

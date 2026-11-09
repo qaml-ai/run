@@ -1,3 +1,4 @@
+import { HttpError } from "./errors.ts";
 import { inputView } from "./decision-inputs.ts";
 import { decisionInputs, answerDecisions } from "./inbox-decisions.ts";
 import { repairInputMirrors } from "./agent-input-mirror.ts";
@@ -18,7 +19,7 @@ import { humanInputView, HumanInputs } from "./human.ts";
 import { answerList } from "./input-policy.ts";
 import { handleAgentFileRequest, handleAgentFilesRoute } from "./files.ts";
 import { ComputerService } from "./computers/service.ts";
-import { scheduleDeliveries, type StoredSchedule as Schedule } from "./schedules.ts";
+import { deliverScheduledRun, scheduleDeliveries, type StoredSchedule as Schedule } from "./schedules.ts";
 import { keyServices } from "./security-services.ts";
 import { admissionHeaders, admissionError, errorFields, errorHeaders } from "./admission.ts";
 import { requestView } from "./request-view.ts";
@@ -437,6 +438,11 @@ export async function fetchRequestImpl(this: AgentRuntime,
         ]);
       if (path === "/schedules" && request.method === "POST")
         return json(await this.createSchedule(await body(request)), 201);
+      if (/^\/schedules\/[^/]+\/run$/.test(path) && request.method === "POST") {
+        const schedule=await this.ctx.storage.get<Schedule>(`schedule:${decodeURIComponent(path.split('/')[2])}`);
+        if(!schedule) throw new HttpError(404,'Unknown schedule');
+        return json(await deliverScheduledRun(this.env,schedule,`schedule-run-${crypto.randomUUID()}`,input=>this.submit(input),work=>this.ctx.waitUntil(work)),202);
+      }
       if (path.startsWith("/schedules/") && request.method === "DELETE") {
         const deleted = await this.ctx.storage.delete(
           `schedule:${decodeURIComponent(path.slice(11))}`,

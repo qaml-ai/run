@@ -601,9 +601,9 @@ class Agent:
             raise AgentError("reset_context needs the Agents this agent came from (agents.upsert, get or agent)")
         return self._agents.runtime.reset_context(self.id, summary=summary, keep_messages=keep_messages)
 
-    def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None):
+    def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None, calendar=None, email=None, cron=None, session_mode=None, spend_limit=None, mounts=None):
         """Wake the agent later with a message (text), or run code; every_seconds (at least 60) repeats it."""
-        return self.client.schedule(text=text, code=code, at=at, in_seconds=in_seconds, every_seconds=every_seconds)
+        return self.client.schedule(text=text, code=code, at=at, in_seconds=in_seconds, every_seconds=every_seconds, calendar=calendar, email=email, cron=cron, session_mode=session_mode, spend_limit=spend_limit, mounts=mounts)
 
     def create_trigger(self, **input):
         return self.client.create_trigger(**input)
@@ -622,6 +622,9 @@ class Agent:
 
     def schedules(self):
         return self.client.schedules()
+
+    def run_schedule(self, schedule_id):
+        return self.client.run_schedule(schedule_id)
 
     def unschedule(self, schedule_id):
         return self.client.unschedule(schedule_id)

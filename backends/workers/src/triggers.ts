@@ -3,33 +3,13 @@ import { database, transaction } from './postgres.ts';
 import { keyServices } from './security-services.ts';
 import { workerChannels } from './channels.ts';
 import { Directory } from './control.ts';
-import { provisionDefinition } from './definitions.ts';
-import { accountServices } from './account-services.ts';
+import { workerFreshRunHost } from './fresh-runs.ts';
 import { HttpError } from './errors.ts';
 import type { Env } from './agent-types.ts';
 export async function workerTriggers(env:Env) {
  const {accounts}=await keyServices(env);
  return new Triggers({db:database(env), transaction:work=>transaction(env,work),keys:accounts,
-  fresh: {
-   async precheck(tenant) {
-    const service=accountServices(env,accounts,env.AGENT_PUBLIC_URL||'https://localhost');
-    await service.limits.runsLeft(tenant);
-    const refusal=await accounts.runLimit(tenant);
-    if(refusal)throw typeof refusal==='string'?new HttpError(402,refusal):refusal;
-    const limit=await accounts.billing.busyLimit(tenant);
-    if(Number((await env.TENANTS.getByName(tenant).status()).active)>=Math.min(limit.limit,Number(env.TENANT_MAX_ACTIVE??Number.MAX_SAFE_INTEGER)))throw new HttpError(429,'Tenant concurrency limit');
-   },
-   async definition(tenant,agent) {
-    const source=await new Directory(env,tenant).get(agent);
-    if(!source?.config.definition)throw new HttpError(400,'Fresh triggers require an agent definition');
-    return source.config.definition;
-   },
-   async upsert(tenant,input,key) {
-    const entry=await new Directory(env,tenant).upsert(await provisionDefinition(env,tenant,input),key,env.AGENT_PUBLIC_URL||'https://localhost');
-    if('failed' in entry)throw new HttpError(entry.status,entry.error);
-    return entry.id;
-   }
-  },
+  fresh: await workerFreshRunHost(env),
   upload:async(agent,tenant,id,text)=>(await workerChannels(env)).uploadTrigger(agent,tenant,id,text),
   async submit(agent,tenant,request){
    if(!await new Directory(env,tenant).get(agent))throw new HttpError(404,'Unknown agent');

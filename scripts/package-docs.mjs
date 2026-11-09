@@ -14,7 +14,7 @@ const [out] = process.argv.slice(2);
 if (!out) { console.error("Usage: node scripts/package-docs.mjs <directory>"); process.exit(1); }
 const docs = new URL("../docs/", import.meta.url);
 mkdirSync(out, { recursive: true });
-for (const [page, name] of [["SKILL.md", "SKILL.md"], ["reference/sdk.md", "sdk.md"]]) {
+for (const [page, name] of [["SKILL.md", "SKILL.md"], ["reference/sdk.md", "sdk.md"], ["frontend.md", "frontend.md"]]) {
   const text = readFileSync(new URL(page, docs), "utf8")
     .replace(/\]\((?!https?:|#|mailto:)([^)\s]+)\)/g, (_, link) => {
       const path = posix.normalize(posix.join(posix.dirname(page), link));

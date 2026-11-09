@@ -133,6 +133,8 @@ test("the SDK packages ship this version's skill and SDK reference, with links t
   execFileSync(process.execPath, [fileURLToPath(new URL("../scripts/package-docs.mjs", import.meta.url)), out]);
   const skill = await readFile(join(out, "SKILL.md"), "utf8");
   assert.equal(skill, await readFile(new URL("../docs/SKILL.md", import.meta.url), "utf8"));
+  const frontend = await readFile(join(out, "frontend.md"), "utf8");
+  assert.match(frontend, /existingAgent/);
   const sdk = await readFile(join(out, "sdk.md"), "utf8");
   assert.match(sdk, /\]\(https:\/\/run\.camelai\.com\/docs\/guides\/tools\.md\)/);
   assert.match(sdk, /\]\(https:\/\/github\.com\/qaml-ai\/run\/blob\/main\/examples\//);

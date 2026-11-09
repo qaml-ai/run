@@ -8,7 +8,7 @@ import { useApi } from "@/lib/api";
 import { answerInbox, inboxCount, type InboxItem, type InboxPage as Page } from "@/lib/inbox";
 import { Link, navigate } from "@/lib/router";
 
-export const inputLink = (item: InboxItem) => `agents/${encodeURIComponent(item.agent)}?input=${encodeURIComponent(item.inputId)}`;
+export const inputLink = (item: InboxItem) => `agents/${encodeURIComponent(item.agent)}?input=${encodeURIComponent(item.id)}`;
 export function InboxPage() {
   const [shortcuts, setShortcuts] = useState(false);
   const [priority, setPriority] = useState("");
@@ -48,7 +48,7 @@ export function InboxPage() {
     <ErrorAlert error={page.error} />
     {!page.data && !page.error && <p role="status">Loading inbox…</p>}
     {page.data && !items.length && <p className="py-12 text-center text-muted-foreground">Nothing waiting on you here.</p>}
-    <div className="space-y-4">{items.map((item, index) => <article tabIndex={0} ref={element => { cards.current[index] = element; }} key={item.id} onFocus={() => setSelected(index)} className={`rounded-xl border p-3 outline-none focus-visible:ring-2 ${index === selected ? "border-primary" : ""}`}>
+    <div className="space-y-4">{items.map((item, index) => <article tabIndex={0} ref={element => { cards.current[index] = element; }} key={JSON.stringify([item.agent, item.id])} onFocus={() => setSelected(index)} className={`rounded-xl border p-3 outline-none focus-visible:ring-2 ${index === selected ? "border-primary" : ""}`}>
       <div className="mb-3 flex flex-wrap justify-between gap-2 text-sm"><Link className="underline" to={inputLink(item)}>{item.subject ?? item.agent}</Link><span>{item.priority} · {item.kind}{item.blocking ? " · blocking" : ""}</span></div>
       <InboxCard item={item} onAnswered={() => void page.reload()} />
     </article>)}</div>

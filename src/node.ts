@@ -1,6 +1,8 @@
+import { freshAutomationRun, type FreshRunProvisioner } from './core/fresh-runs.ts';
 import { handleHook, hookPath } from "./core/trigger-ingress.ts";
 import { transaction as triggerTransaction } from "./db.ts";
 import { Triggers } from "./triggers.ts";
+import { recordScheduleRun, reserveFreshScheduleRun, scheduleRunMetadata, scheduleRunSource, pruneScheduleRuns } from './core/schedule-runs.ts';
 import { SharedAgents } from "./shared-agents.ts";
 import { withOpenRouterDetails } from "./openrouter-model.ts";
 import { modelReference } from "./virtual-models.ts";
@@ -32,7 +34,7 @@ import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts
 import type { LogTail, Storage, StorageMeter } from "../shared/storage.ts";
 import { StorageUsage } from "./storage-usage.ts";
 import { postgresTail, sweepTails } from "./log-tail.ts";
-import { databaseFromEnvironment, listenFromEnvironment, migrate, type Db } from "./db.ts";
+import { databaseFromEnvironment, listenFromEnvironment, migrate, transaction, type Db } from "./db.ts";
 import { MemoryRetirement } from "./memory-retirement.ts";
 import { network, REAL_CLOCK, REAL_NETWORK, REAL_RANDOM, runFor, type Clock, type Network, type Random } from "./node-context.ts";
 import { Ownership, probeNode } from "./ownership.ts";
@@ -915,10 +917,13 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     get scheduler() { return scheduler; },
     // Channels' hooks, and where journey events are on, each run's end (src/journey.ts): the day's activity, and an account's first run.
     get hooks() {
-      return !journey ? channels.hooks : { ...channels.hooks, runEnded: (agent, record) => {
+      return { ...channels.hooks, requestEnded: (agent, record) => {
+        const source = scheduleRunSource(agent.tenant, record);
+        if (source) void recordScheduleRun(db, source, agent.id, record).catch(error => console.error(JSON.stringify({type:"schedule_outcome_failed",error:safeError(error)})));
+      }, runEnded: (agent, record) => {
         channels.hooks.runEnded?.(agent, record);
         const ending = outcomeEnding(record.outcome);
-        void journey.runEnded(agent.tenant, { completed: ending.error === undefined && !ending.stopped, at: record.endedAt });
+        void journey?.runEnded(agent.tenant, { completed: ending.error === undefined && !ending.stopped, at: record.endedAt });
       } } satisfies SessionHooks;
     },
     definitionFor: async (tenant, id) => {
@@ -1033,15 +1038,47 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     if (!allowed) return false;
     return !(await db.query("select 1 from billing_email_suppressions where email_hash=$1", [createHash("sha256").update(email).digest("hex")])).rowCount;
   };
+  const freshRunHost: FreshRunProvisioner = {
+      async precheck(tenant) {
+        await rateLimits.runsLeft(tenant);
+        const busy = await busyAgents.check(tenant); if (busy) throw busy;
+        const refused = await accounts.runLimit(tenant);
+        if (refused) throw typeof refused === "string" ? new HttpError(402,refused) : refused;
+      },
+      async definition(tenant,agent) {
+        const header = (await db.query('select header from agents where id=$1 and tenant=$2', [agent,tenant])).rows[0]?.header;
+        if (!header?.definition) throw new HttpError(400, 'Fresh runs require an agent definition');
+        return header.definition.id;
+      },
+      upsert: async (tenant,input,key) => (await createAgent(tenant,input,key)).id,
+    };
   let triggers: Triggers | undefined;
   const scheduler = new Scheduler({
     db, node, emailEnabled: !!scheduleMailConfig, canEmail: canScheduleEmail,
     deliver: async (schedule, requestId) => {
-      // Schedules run unattended: without the application, its tools' calls fail as not connected.
-      const request = schedule.code !== undefined ? { method: "execute", params: { code: schedule.code, allowDisconnected: true } } : { method: "prompt", params: { text: schedule.calendar ? calendarPrompt(schedule.text!, schedule.calendar, schedule.dueAt) : schedule.text!, allowDisconnected: true } };
-      await submitAnywhere(schedule.agent, schedule.tenant, { id: requestId, ...request });
+      const source = {tenant:schedule.tenant,agent:schedule.agent,schedule:schedule.id,createdAt:Date.now()};
+      const report = (agent: string | null, record: unknown) => recordScheduleRun(db,source,agent,record).catch(error => console.error(JSON.stringify({type:"schedule_outcome_failed",error:safeError(error)})));
+      let agent = schedule.agent;
+      try {
+        if (schedule.sessionMode === "fresh") {
+          agent = await freshAutomationRun({
+            reserve: () => transaction(db, sql => reserveFreshScheduleRun(sql,source,requestId)),
+            precheck: () => freshRunHost.precheck(schedule.tenant),
+            definition: () => freshRunHost.definition(schedule.tenant,schedule.agent),
+            upsert: (input,key) => freshRunHost.upsert(schedule.tenant,{...input,...(schedule.mounts?{mounts:schedule.mounts}:{})},key),
+            record: async id => { await db.query('update schedule_runs set run_agent=$2 where id=$1',[requestId,id]); },
+          },`schedule-${createHash("sha256").update(requestId).digest("hex").slice(0,40)}`);
+        }
+        const params = {...(schedule.code !== undefined ? {code:schedule.code} : {text:schedule.calendar ? calendarPrompt(schedule.text!,schedule.calendar,schedule.dueAt) : schedule.text!}), metadata:scheduleRunMetadata(source), allowDisconnected:true, ...(schedule.spendLimit ? {spendLimit:schedule.spendLimit} : {})};
+        const record = await submitAnywhere(agent, schedule.tenant, {id:requestId, method:schedule.code !== undefined ? "execute" : "prompt", params});
+        void report(agent,record);
+        return {agent, requestId, record};
+      } catch(error) {
+        void report(null,{id:requestId,state:'completed',endedAt:Date.now(),outcome:{error:error instanceof Error ? error.message : String(error)}});
+        throw error;
+      }
     },
-    also: async now => { await clients.expireInputs(now); await triggers?.scan(); },
+    also: async now => { await clients.expireInputs(now); await triggers?.scan(); await pruneScheduleRuns(db,now).catch(error => console.error(JSON.stringify({type:"schedule_retention_failed",error:safeError(error)}))); },
   });
   scheduler.start(config.schedulerIntervalMs);
   const scheduleMailer = scheduleMailConfig ? new ScheduleMailer({ db, mail: scheduleMailConfig, canEmail: canScheduleEmail, request: (agent, tenant, id, signal) => requestAnywhere(agent, tenant, id, 0, signal) }) : undefined;
@@ -1087,20 +1124,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   channels.start(config.schedulerIntervalMs);
   triggers = new Triggers({
     db, transaction: work => triggerTransaction(db, work), keys: accounts,
-    fresh: {
-      async precheck(tenant) {
-        await rateLimits.runsLeft(tenant);
-        const busy = await busyAgents.check(tenant); if (busy) throw busy;
-        const refused = await accounts.runLimit(tenant);
-        if (refused) throw typeof refused === "string" ? new HttpError(402,refused) : refused;
-      },
-      async definition(tenant,agent) {
-        const header = (await db.query('select header from agents where id=$1 and tenant=$2', [agent,tenant])).rows[0]?.header;
-        if (!header?.definition) throw new HttpError(400, 'Fresh triggers require an agent definition');
-        return header.definition.id;
-      },
-      upsert: async (tenant,input,key) => (await createAgent(tenant,input,key)).id,
-    },
+    fresh: freshRunHost,
     upload: (agent,tenant,id,text) => channels.uploadTrigger(agent,tenant,id,text),
     submit: submitAnywhere,
   });

@@ -53,7 +53,8 @@ Stateless runs (a configuration and a message in, the result out; nothing carrie
   answer <agent> <inputId> <value> true/false, text, JSON, or "decline"
   triggers list|add|delete|rotate|deliveries <agent> [triggerId] [--input JSON]
   schedules list <agent>
-  schedules add <agent> --text t (--in s | --at iso) [--every s]
+  schedules add <agent> --text t (--in s | --at iso | --cron expr --time-zone zone) [--every s]
+  schedules run <agent> <scheduleId>
   schedules delete <agent> <scheduleId>
 
 Definitions (a definition is its key or its id, def_…)
@@ -68,7 +69,7 @@ MCP
 
 Options
   --json                           Print JSON (the default when stdout is not a terminal)
-  --api-key <key>, --url <url>     Instead of CAMELAI_API_KEY / CAMELAI_BASE_URL / the saved login
+  --api-key <key>, --url <url>     Instead of CAMELRUN_API_KEY / CAMELRUN_URL / the saved login
 
 Docs: https://run.camelai.com/llms.txt`;
 
@@ -80,6 +81,7 @@ const OPTIONS = {
   wait: { type: "string" }, "no-wait": { type: "boolean" }, from: { type: "string" }, "end-user": { type: "string" }, steer: { type: "boolean" }, "allow-disconnected": { type: "boolean" }, "request-id": { type: "string" },
   limit: { type: "string" }, key: { type: "string" }, text: { type: "string" }, in: { type: "string" }, at: { type: "string" }, every: { type: "string" }, history: { type: "string" },
   input: { type: "string" },
+  cron: { type: "string" }, "time-zone": { type: "string" }, "session-mode": { type: "string" }, "spend-limit": { type: "string" },
   stateless: { type: "boolean" }, summary: { type: "string" }, keep: { type: "string" },
 } as const;
 
@@ -214,14 +216,14 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
 }
 
 async function login(flags: Flags, io: Io, print: (value: unknown, human?: () => string) => void) {
-  let apiKey = flags["api-key"] || io.env.CAMELAI_API_KEY;
+  let apiKey = flags["api-key"] || io.env.CAMELRUN_API_KEY || io.env.CAMELAI_API_KEY;
   if (!apiKey) {
-    if (!process.stdin.isTTY) throw new UsageError("Pass --api-key art_… (or set CAMELAI_API_KEY). Create one at https://run.camelai.com/console/tokens. Coding agents: read https://run.camelai.com/SKILL.md");
+    if (!process.stdin.isTTY) throw new UsageError("Pass --api-key art_… (or set CAMELRUN_API_KEY). Create one at https://run.camelai.com/console/tokens. Coding agents: read https://run.camelai.com/SKILL.md");
     const prompt = createInterface({ input: process.stdin, output: process.stderr });
     apiKey = (await prompt.question("API key (create one at https://run.camelai.com/console/tokens): ")).trim();
     prompt.close();
   }
-  const url = flags.url || io.env.CAMELAI_BASE_URL || io.env.CAMELAI_URL || DEFAULT_URL;
+  const url = flags.url || io.env.CAMELRUN_URL || io.env.CAMELAI_BASE_URL || io.env.CAMELAI_URL || DEFAULT_URL;
   const me = await new Api({ apiKey, url }).me();
   const path = save({ apiKey, url }, io.env);
   print({ tenant: me.tenant, url, saved: path }, () => `Logged in as ${me.login ?? me.tenant} on ${url} (key saved to ${path})`);
@@ -311,7 +313,7 @@ async function definitions(args: string[], flags: Flags, api: () => Api, print: 
 
 async function schedules(args: string[], flags: Flags, api: () => Api, print: (value: unknown, human?: () => string) => void, warn: (text: string) => void) {
   const [sub, agent, scheduleId] = args;
-  if (!agent) throw new UsageError("Usage: camelrun schedules list|add|delete <agent> …");
+  if (!agent) throw new UsageError("Usage: camelrun schedules list|add|run|delete <agent> …");
   const client = api();
   const id = await client.agentId(agent);
   switch (sub) {
@@ -321,12 +323,17 @@ async function schedules(args: string[], flags: Flags, api: () => Api, print: (v
       return 0;
     }
     case "add": {
-      if (!flags.text || (!flags.in && !flags.at)) throw new UsageError("Usage: camelrun schedules add <agent> --text t (--in seconds | --at iso) [--every seconds]");
+      if (!flags.text || (!flags.in && !flags.at && !flags.cron)) throw new UsageError("Usage: camelrun schedules add <agent> --text t (--in seconds | --at iso | --cron expr --time-zone zone) [--every seconds]");
       // Deprecated and ignored: every wake-up sees the agent's history.
       if (flags.history !== undefined) warn("Warning: --history is deprecated and ignored: every wake-up sees the agent's history.");
-      const body = { text: flags.text, ...(flags.in ? { inSeconds: Number(flags.in) } : { at: flags.at }), ...(flags.every ? { everySeconds: Number(flags.every) } : {}) };
+      const body = { text: flags.text, ...(flags.cron ? {cron:{expression:flags.cron,timeZone:flags["time-zone"] ?? "UTC"}} : {}), ...(flags["session-mode"] ? {sessionMode:flags["session-mode"]} : {}), ...(flags["spend-limit"] ? {spendLimit:{usd:Number(flags["spend-limit"])}} : {}), ...(flags.in ? { inSeconds: Number(flags.in) } : { at: flags.at }), ...(flags.every ? { everySeconds: Number(flags.every) } : {}) };
       const created = await client.call("POST", `/v1/agents/${enc(id)}/schedules`, body);
       print(created, () => `${created.id}: due ${new Date(created.dueAt).toISOString()}`);
+      return 0;
+    }
+    case "run": {
+      if (!scheduleId) throw new UsageError("Give a schedule id");
+      print(await client.call("POST", `/v1/agents/${enc(id)}/schedules/${enc(scheduleId)}/run`, {}));
       return 0;
     }
     case "delete": {

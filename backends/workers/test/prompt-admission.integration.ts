@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { startFixture } from "./fixture.ts";
 
@@ -15,7 +16,10 @@ test("an audio prompt consumes one run admission and a rejected prompt never cal
   }).listen(0, "127.0.0.1");
   await once(provider, "listening");
   t.after(() => new Promise<void>(resolve => provider.close(() => resolve())));
-  const f = await startFixture({ vars: { PLATFORM_OPENAI_KEY: "synthetic-only-key", MEDIA_BASE_URL: `http://127.0.0.1:${(provider.address() as any).port}` } });
+  const f = await startFixture({
+    entrypoint: fileURLToPath(new URL("./prompt-admission-entry.ts", import.meta.url)),
+    vars: { PLATFORM_OPENAI_KEY: "synthetic-only-key", MEDIA_BASE_URL: `http://127.0.0.1:${(provider.address() as any).port}` },
+  });
   t.after(() => f.stop());
   await f.db.query("update tenants set limits=$1", [JSON.stringify({ runsPerMinute: 1 })]);
   const call = async (path: string, input?: unknown) => {

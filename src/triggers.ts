@@ -4,7 +4,7 @@ import type { Sql } from "./db.ts";
 import { HttpError } from "./core/http-error.ts";
 import { randomHex, sha256Hex, sameText, toHex, toBase64, utf8 } from "./core/channels/crypto.ts";
 import { checkHookLength, MAX_HOOK_BYTES } from "./core/trigger-ingress.ts";
-import { freshAutomationRun } from "./core/fresh-runs.ts";
+import { freshAutomationRun, FRESH_RUN_TTL_MS, MAX_FRESH_RUN_AGENTS, type FreshRunProvisioner } from "./core/fresh-runs.ts";
 import { lookup } from "./core/channels/webhook.ts";
 
 const header = z.string().regex(/^[a-zA-Z0-9-]{1,100}$/);
@@ -23,11 +23,7 @@ export interface TriggerHost {
  db:Db;
  transaction<T>(work:(sql:Sql)=>Promise<T>):Promise<T>;
  keys:{seal(context:string,text:string):any;unseal(context:string,value:any):string};
- fresh: {
-  precheck(tenant:string):Promise<void>;
-  definition(tenant:string,agent:string):Promise<string>;
-  upsert(tenant:string,input:{definition:string;ttlSeconds:number},key:string):Promise<string>;
- };
+ fresh: FreshRunProvisioner;
  /** Apply the runtime's unattended policy before every submission; shared with fresh and continuing runs. */
  prepareRun?(agent:string,tenant:string,policy:{humanInput:{unattended:"decline"}}):Promise<void>;
  now?:()=>number;
@@ -123,8 +119,8 @@ export class Triggers {
     if(prior)return prior.agent as string|null;
     const live=(await sql.query(`select count(*) as n from trigger_run_agents r where trigger_id=$1 and expires_at>$2
       and (agent is null or exists(select 1 from agents a where a.id=r.agent and not a.revoked and (a.expires_at is null or a.expires_at>$2)))`,[row.id,now])).rows[0];
-    if(Number(live.n)>=200)throw new HttpError(429,'This trigger already has 200 live run agents');
-    await sql.query('insert into trigger_run_agents(id,trigger_id,expires_at) values($1,$2,$3) on conflict(id) do update set expires_at=$3',[d.id,row.id,now+604800000]);
+    if(Number(live.n)>=MAX_FRESH_RUN_AGENTS)throw new HttpError(429,'This trigger already has 200 live run agents');
+    await sql.query('insert into trigger_run_agents(id,trigger_id,expires_at) values($1,$2,$3) on conflict(id) do update set expires_at=$3',[d.id,row.id,now+FRESH_RUN_TTL_MS]);
     return null;
    }),
    precheck:()=>this.host.fresh.precheck(row.tenant),

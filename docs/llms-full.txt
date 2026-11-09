@@ -2357,6 +2357,122 @@ anything else is a new message. See [Channels](https://run.camelai.com/docs/guid
 
 ---
 
+<!-- https://run.camelai.com/docs/guides/schedules.md -->
+
+# Scheduled agents and email reports
+
+Open an agent in the console and select **Schedules**. Enter its task, choose
+Daily or Weekdays, set the local time and IANA time zone, and optionally add an
+email recipient and subject. The agent needs no application process to stay
+connected when it uses built-in tools. Its instructions and saved files are
+available at every wake-up; each run is recorded in its history.
+
+For example, `POST /v1/agents/{id}/schedules`:
+
+```json
+{
+  "text": "Research today's developments, save the report, and return the complete report with source links.",
+  "calendar": {
+    "time": "08:00",
+    "timeZone": "America/Chicago",
+    "daysOfWeek": [1, 2, 3, 4, 5]
+  },
+  "email": { "to": "reader@example.com", "subject": "Daily research", "format": "markdown" }
+}
+```
+
+Omit `daysOfWeek` to run daily. Sunday is 0 and Saturday is 6. Calendar schedules
+keep their local time through daylight saving changes. Each calendar wake-up includes
+its scheduled UTC time and local edition date, so report dates do not depend on
+what the model infers from search results. A missing local time is
+skipped; a repeated local time runs once. Missed occurrences are skipped after
+recovery. Calendar cannot be combined with `at`, `inSeconds`, or `everySeconds`;
+those existing one-off and interval options continue to work.
+
+Email delivery sends the successful run's complete final reply. Choose `email.format`
+to match what the agent returns:
+
+- `markdown` (default): basic HTML formatting for headings, lists, tables and source
+  links, with the original Markdown as the plain-text alternative. Raw HTML is
+  escaped and images remain links.
+- `html`: sends the agent's HTML unchanged, including its own styling or template,
+  and generates a plain-text alternative. The platform adds no layout or branding.
+- `text`: sends only plain text, without HTML or Markdown conversion.
+
+The format is also selectable in the console. Custom templates belong in the
+agent's instructions or saved files; the platform does not require a particular
+report layout. Have the agent
+include its report in that reply, not just a saved-file path. Failed or empty
+runs are not emailed. Delivery state is visible in the Schedules tab and at
+`GET /v1/agents/{id}/schedule-deliveries`. Delivery waits durably for the run to
+finish and retries transient mail errors. SES delivery is at least once: a lost
+send acknowledgement can cause a duplicate. The email recipient is configured
+by the owner through the API or console, not by the agent's scheduling tool.
+Use your sign-in email or a verified recipient from Billing → email alerts.
+Operator-configured tenants can use other recipients. Suppressed addresses are
+refused, and recipient eligibility is checked again before each delivery.
+
+On self-hosted runtimes, scheduled email uses the SES account-mail configuration
+(`AGENT_ACCOUNT_EMAIL_FROM`, with provider `ses`, and its region and configuration
+set). Without it, schedules with email are refused. Existing schedules without
+email are unaffected. TypeScript accepts `calendar` and `email` in `schedule()`;
+Python accepts the same dictionaries. The MCP `add_schedule` tool accepts both fields. The schedule builtin also accepts
+`calendar` for the agent's own wake-ups.
+
+### Cron, fresh sessions, and run now
+
+Use `cron: {"expression":"0 9 * * 1-5","timeZone":"America/Chicago"}`
+for weekday mornings. Cron has five numeric fields: minute, hour, day of month,
+month, weekday (Sunday 0 or 7). Lists, ranges and positive steps are supported.
+When both day fields are restricted, either can match. Do not combine cron with
+calendar, at, inSeconds, or everySeconds. Missing DST minutes are skipped;
+repeated DST minutes fire twice. Existing calendar schedules still fire once
+in a repeated hour. Missed occurrences are skipped after delivery.
+
+`sessionMode` defaults to `continue`, including on existing schedules. With
+`fresh`, the owner must have a definition. Each occurrence creates a separate
+agent from the definition's current revision, including its configured tool
+credentials and mounts. Optional schedule `mounts` override the definition's
+mounts for fresh runs. Definition changes apply to later runs. The run's agent
+appears in the agent list and expires seven days after creation; its history is
+available through its normal agent routes until then. Deleting a schedule does
+not delete previously created run agents.
+
+`spendLimit: {"usd": 1}` caps each occurrence using the runtime's existing
+per-request spend enforcement. It applies to both session modes; reaching it
+returns the existing spend-limit outcome. Account and agent limits also apply.
+
+`POST /v1/agents/{agent}/schedules/{schedule}/run` starts an occurrence immediately
+and returns HTTP 202 with `{agent, requestId, record}`. It does not change the
+next scheduled time. Every call starts a new occurrence. Read the request at
+`GET /v1/agents/{agent}/requests/{requestId}`. The schedule owner's
+`GET /v1/agents/{agent}/schedule-deliveries` lists the latest 100 occurrences,
+with their run agent, stored outcome and cost, and optional email
+state. History may expire before the delivery metadata.
+
+The agent-local `schedule` builtin continues its own session; fresh mode is
+configured through the owner API, SDK, CLI, or MCP `add_schedule`.
+
+TypeScript: `agent.runSchedule(id)`. Python: `agent.run_schedule(id)`.
+CLI: `camelrun schedules add <agent> --text 'Report' --cron '0 9 * * 1-5'
+--time-zone America/Chicago --session-mode fresh --spend-limit 1`, then
+`camelrun schedules run <agent> <scheduleId>`.
+
+Fresh schedules must be at least five minutes apart: `everySeconds` must be 300
+or more, and cron expressions cannot select minutes less than five minutes apart.
+Each schedule can have at most 200 unexpired run agents. A trigger above that cap
+fails with `This schedule already has 200 live run agents; delete or wait for a run agent to expire`.
+Run agents expire after seven days. Delivery summaries for all session modes are
+removed after 30 days, in batches of at most 500 rows.
+
+`GET /v1/agents/{id}/schedule-deliveries` returns stored run summaries: `runId`,
+`agent`, `state`, `error`, `cost` (USD), `createdAt`, and `endedAt`. Email status is
+separate in `emailState` and `emailError`. It no longer embeds the full `record`.
+Use the run's agent and request ID to read its history while the agent is retained.
+Code schedules cannot set `spendLimit`.
+
+---
+
 <!-- https://run.camelai.com/docs/guides/stateless-runs.md -->
 
 # Stateless runs
@@ -2677,15 +2793,14 @@ its questions and approvals are answered in place.
 ## Start a new app
 
 ```sh
-export CAMELAI_API_KEY=art_...   # https://run.camelai.com/console/tokens
+export CAMELRUN_API_KEY=art_...   # https://run.camelai.com/console/tokens
 npm create @camelai/run-app my-app
 cd my-app && npm run dev
 ```
 
-It writes the key from `CAMELAI_API_KEY` to the app's `.env.local`.
+It writes the key from `CAMELRUN_API_KEY` to the app's `.env.local`.
 
-A Next.js app with the chat, its route, a tool drawn by its own component, and a demo sign-in to
-replace with yours. Examples with Vite (React, Vue, Svelte, Solid), the read proxy and the AI SDK are in
+A Next.js app with the chat, its route, a tool drawn by its own component, and GitHub/OIDC sign-in recipes to configure. Examples with Vite (React, Vue, Svelte, Solid), the read proxy and the AI SDK are in
 [examples/frontend](https://github.com/qaml-ai/run/blob/main/examples/frontend). Get an API key in the [console](https://run.camelai.com/console).
 
 ## Add it to an app you have
@@ -2705,7 +2820,7 @@ and answers. Your API key never leaves the server.
 import { createAgentHandler } from "@camelai/run/server";
 
 export const POST = createAgentHandler({
-  // CAMELAI_API_KEY from the environment, or apiKey: "…"
+  // CAMELRUN_API_KEY from the environment, or apiKey: "…"
   authorize: async request => {
     const user = await getUser(request);          // your session check
     return user ? { userId: user.id, name: user.name } : null;   // null: 401
@@ -2742,7 +2857,7 @@ app.post("/api/agent", nodeListener(handler));    // before any body parser for 
 | `allowedOrigins` | Other origins whose pages may call the route (with CORS). |
 | `linkAnyMountedPath` | `true`: file links for any path in the agent's mounts, so the boundary is what the agent can read. Default: only files it presented, or in its own workspace volume. |
 | `proxy` | `true`: browsers read their agent through this route too, and only ever talk to your origin (see [Reading through your route](https://run.camelai.com/docs/frontend.md#reading-through-your-route-proxy)). Default `false`. |
-| `apiKey`, `url` | Default `CAMELAI_API_KEY`, and `CAMELAI_BASE_URL` or https://run.camelai.com. |
+| `apiKey`, `url` | Default `CAMELRUN_API_KEY`, and `CAMELRUN_URL` or https://run.camelai.com. |
 
 ### 2. The UI
 
@@ -3071,11 +3186,36 @@ with the store and the hooks where `fetch` streams (Expo's `expo/fetch`), or wit
 - **401 from the route**: `authorize` returned null: the user is not signed in, or the cookie did not
   reach the route (`credentials`).
 - **"Could not reach the runtime … CORS"** in the browser: the runtime allows any origin only for
-  browser tokens on its read routes; check the route's `browserToken.url` (or `CAMELAI_BASE_URL`).
+  browser tokens on its read routes; check the route's `browserToken.url` (or `CAMELRUN_URL`).
 - **Tool calls fail with "not connected"**: the process that serves the route's tools is not
   running (serverless); use `serveTools` and a definition.
 - **Two server instances**: tools served from the route belong to one process at a time; run one
   instance, or serve tools over HTTP.
+
+## Opening an existing agent
+
+`createAgentHandler({ authorize, existingAgent: "id-or-key" })` obtains credentials without creating,
+reconfiguring or attaching tools. A function can resolve the id from the verified user and thread.
+The authorization hook must check that user can access the selected agent. Passing `agent: {...}`
+explicitly opts into upsert; omitting both modes throws. Existing callers that pass `agent` keep working.
+
+The starter includes GitHub organization-gated OAuth and generic OIDC, signed eight-hour sessions,
+and a closed setup page until configured. Generate with `--cloudflare` for OpenNext, runtime bindings
+and a webpack production build with the generated directory as the standalone root.
+`CAMELRUN_API_KEY` and `CAMELRUN_URL` are canonical; `CAMELAI_API_KEY`, `CAMELAI_BASE_URL` and
+`CAMELAI_URL` remain fallback names. Explicit options take precedence.
+
+## Inbox list
+
+`runtime.inbox({ for, subject, root, priority, kind, cursor, limit })` returns `{items, cursor, counts}`.
+Each item's `id` is answerable on its `agent`; `inputId` is a compatibility alias for the same value.
+Use `runtime.answerInbox(item, {action: "accept", content: value})` on your server. The priority-ordered
+page and next cursor come from the runtime; do not sort pages independently.
+
+`InboxList` from `@camelai/run-react/ui` takes a `page`, a `load(filters)` callback, an
+`answer(item, value)` callback and `renderItem(item, answer)`. Route load and answer through your own
+authenticated server; never put the tenant API key in the browser. Remount the list with a new React
+`key` when filters change. `AgentChat` accepts `subagents` directly; `watch.subagents` also works.
 
 ---
 
@@ -8195,7 +8335,8 @@ what changed without keeping a manifest. It is opaque: compare it, never parse i
 | `agent.send(text, options)`, `agent.wait(id)` | `await send(text, …)`, `await wait(id)` | send a message without waiting: resolves once the runtime has taken it, with `{id, state}` (`POST …/prompt`'s 202); `wait(id)` is its `Run` later, from this process or another. For work queues and webhooks that should not hold a connection for the whole run |
 | `agent.steer(text, options)` | `steer(text, …)` | hand the running turn a message (else start one), answered as soon as the runtime has it: `{id, status: "accepted" \| "taken" \| "queued", steeredInto?}`. `wait: true` (`wait=True`) resolves with the run that took it instead, as `run(text, { whileRunning: "steer" })` |
 | `agent.configure({ model, instructions, thinkingLevel, tools, maxOutputTokens, temperature, language })` | `configure(…)` | change it between runs; `null` (`None`) removes `maxOutputTokens`, `temperature` or `language` |
-| `agent.schedule({ text, inSeconds, at, everySeconds, calendar, email })` | `schedule(…)` | wake it later; `schedules()`, `unschedule(id)` |
+| `agent.schedule({ text, inSeconds, at, everySeconds, calendar, cron, sessionMode, spendLimit, mounts, email })` | `schedule(…)` | wake it later; `schedules()`, `unschedule(id)`; [schedule options](https://run.camelai.com/docs/guides/schedules.md) |
+| `agent.runSchedule(id)` | `run_schedule(id)` | run a schedule now; returns its agent, requestId and request record |
 | `agent.files` | `agent.files` | `list`, `download`, `upload`, `link` by the paths the agent sees |
 | `agent.abort({ queued })` | `abort(queued=)` | stop the agent: its running turn, and the runs queued behind it (each fails with code `cancelled`); `queued: "keep"` stops the running turn only. Resolves with `{aborted, cancelled}` |
 | `agent.resetContext({ summary, keepMessages })` | `reset_context(summary=, keep_messages=)` | replace what the model is sent with its system message, a summary and its last `keepMessages` messages (0 to 20), without loading the old context: how an agent whose runs fail with `context_too_large` runs again ([Long conversations](https://run.camelai.com/docs/concepts.md#long-conversations)). History and files stay. Resolves with `{reset, keptMessages, before, after}`; also `runtime.resetContext(agentId, …)` |
@@ -8445,6 +8586,7 @@ available and stable for code that needs the wire's shape: `agents.runtime`,
 | `runtime.upsertDefinition(key, input)`, `createDefinition`, `updateDefinition`, `definition(s)`, `deleteDefinition` | `upsert_definition(key, …)`, `create_definition`, … | definitions; the same key is the same definition |
 | `runtime.createVolume`, `volume(id)`, `mounts`, `setMounts` | `create_volume`, `volume(id)`, … | volumes and mounts |
 | `runtime.projects.create({ key, template })`, `project.mount`, `project.publish`, `publishTool` | `camelai_run.projects`: `Projects(runtime).create(key, template=)`, `mount`, `publish`, `publish_tool` | [projects](https://run.camelai.com/docs/guides/projects.md): an agent builds in a keyed volume; your code checks and publishes snapshots |
+| `runtime.answerInbox(item, answer)` | `answer_inbox(item, answer)` | answer the item on its agent using its public id |
 | `runtime.inbox(options)`, `toolSources(agentId)` | `inbox(for_=, subject=, root=, priority=, kind=, cursor=, limit=)`, `tool_sources(agent_id)` | pending input page (`items`, `cursor`, `counts`); an agent's tools |
 | | `set_scope_key(scope, provider, api_key=, base_url=, headers=, region=)`, `key_scope(scope)`, `delete_scope_key(scope, provider)`, `delete_key_scope(scope)` | a key scope's provider keys (`/v1/key-scopes`): agents made with `key_scope=` use them first; see [Models and keys](https://run.camelai.com/docs/guides/models-and-keys.md) |
 | | `set_scope_provider(scope, name, base_url=, models=, …)`, `scope_providers(scope)`, `delete_scope_provider(scope, name)` | a key scope's own providers, as `set_provider`'s |
@@ -9300,6 +9442,16 @@ coding agent a key of its own, or connect it with OAuth, so you can revoke it
 alone.
 
 See [incoming webhook triggers](https://run.camelai.com/docs/guides/triggers.md) for the trigger management API and commands.
+## Scheduled runs
+
+`camelrun schedules add <agent> --text 'Report' --cron '0 9 * * 1-5'
+--time-zone America/Chicago --session-mode fresh --spend-limit 1` creates a
+weekday schedule. Omit `--session-mode` to continue the same agent. Existing
+`--in`, `--at` and `--every` timing flags still work.
+
+`camelrun schedules run <agent> <scheduleId>` runs it immediately without moving
+the next occurrence. See [Schedules](https://run.camelai.com/docs/guides/schedules.md) for retention and
+run history.
 
 ---
 
@@ -9984,8 +10136,8 @@ state: items may settle between requests.
 `GET /v1/inputs` is an alias of `/v1/inbox` with the same filters and page
 response. Both list only pending, unexpired inputs; `state` is no longer a
 filter. For one agent's settled inputs, use `GET /v1/agents/:id/inputs?state=...`.
-Inbox `id` identifies the globally unique index row. Use `inputId` with the
-per-agent answer route; on Workers these IDs can differ.
+Inbox `id` is the answerable input id on its `agent`; `inputId` is a compatibility
+alias with the same value. Use the pair `(agent, id)` as a list key.
 
 ---
 
