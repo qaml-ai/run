@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { setTimeout as delay } from 'node:timers/promises';
 import { startFixture } from './fixture.ts';
 
 test('a trigger scan outage does not skip ordinary maintenance or money maintenance', {timeout:120000}, async t => {
@@ -12,6 +13,9 @@ test('a trigger scan outage does not skip ordinary maintenance or money maintena
   await runtime.worker.scheduled();
   assert.equal(Number((await runtime.db.query("select count(*) as n from account_email_links where sha256='expired-test'")).rows[0].n),0,'ordinary maintenance ran');
   assert.equal(Number((await runtime.db.query("select count(*) as n from rate_limits where key='expired-trigger-test'")).rows[0].n),0,'money maintenance ran');
-  assert.ok(runtime.worker.logs().includes('trigger_scan_failed'));
+  // Console output travels through the Wrangler child after the HTTP response.
+  const deadline=Date.now()+5000;
+  while(!runtime.worker.logs().includes('trigger_scan_failed')&&Date.now()<deadline)await delay(20);
+  assert.ok(runtime.worker.logs().includes('trigger_scan_failed'),'the scan failure was reported');
  } finally { await runtime.db.query('alter table unavailable_trigger_run_agents rename to trigger_run_agents'); }
 });
