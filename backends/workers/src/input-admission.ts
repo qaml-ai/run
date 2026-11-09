@@ -46,6 +46,9 @@ export async function releaseInputPrompts(runtime: AgentRuntime) {
       changed = true;
     }
   }
-  if (changed) await runtime.arm();
-  if (completed) await runtime.flushTerminalEvents();
+  try {
+    if (completed) await runtime.flushTerminalEvents();
+  } finally {
+    if (changed) await runtime.arm();
+  }
 }

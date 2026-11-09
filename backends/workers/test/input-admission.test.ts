@@ -44,7 +44,10 @@ function fixture() {
         values.delete(key);
       }
     },
-    arm: async () => { deadlines.push(inputAdmissionDeadline(await records())); },
+    arm: async () => {
+      const pendingEvents = [...values.keys()].some(key => key.startsWith("terminal-events:"));
+      deadlines.push(Math.min(inputAdmissionDeadline(await records()), pendingEvents ? Date.now() + 1000 : Infinity));
+    },
   };
   function hold(id: string, extra: Partial<RequestRecord> = {}) {
     values.set(`request:${id}`, { id, method: "prompt", params: { text: id }, fingerprint: id, startedAt: Date.now(), state: "queued", heldForInput: true, ...extra });
