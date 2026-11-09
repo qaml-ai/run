@@ -1,3 +1,6 @@
+/** User runs a stop or member removal may cancel before they begin. A resume closes a suspended turn and is the runtime's. */
+export const CANCELLABLE_METHODS: readonly string[] = ["prompt", "continue", "execute"];
+
 /**
  * An agent's `queue`: what it does with the prompts that wait while a turn runs. Unset (or `{mode: "each"}`): each runs
  * as a turn of its own, in order. `{mode: "batch"}`: those that can share a turn (`batchable`) run together as the next

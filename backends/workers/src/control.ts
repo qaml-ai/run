@@ -365,6 +365,7 @@ export class Directory {
   async remove(id: string): Promise<boolean | DirectoryFailure> {
     const entry = await this.get(id);
     if (!entry || (entry.deleted && !entry.cleanupPending)) return false;
+    await withSql(this.env, sql => sql.query('update agent_members set removed_at=coalesce(removed_at,$2), revision=revision+1 where agent=$1', [entry.id, Date.now()]));
     entry.deleted = true;
     entry.cleanupPending = true;
     await withSql(this.env, (sql) =>

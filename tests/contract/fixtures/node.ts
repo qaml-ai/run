@@ -1,3 +1,4 @@
+import { sharedAgentsQuery } from './shared-agent-state.ts';
 import { seedInbox } from './inbox.ts';
 import { createHash, randomBytes } from "node:crypto";
 import { seedOpsAccount } from "./ops-seed.ts";
@@ -262,6 +263,7 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
     },
     async updateLegacyUsageWebhook(url) { await db.query("update usage_webhooks set url=$1 where tenant='alice'", [url]); },
     seedJourneyAccount: input => seedJourneyAccount(db, input),
+    sharedAgentsQuery: sharedAgentsQuery(db),
     inputIndex: async (agent: string) => (await db.query("select state, version, priority, priority_rank, blocking, responders from agent_inputs where agent=$1 order by created_at, id", [agent])).rows,
     channelQuery: channelQuery(db),
     async deliverEmail(raw, receipt = {}) {

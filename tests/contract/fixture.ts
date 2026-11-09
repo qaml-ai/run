@@ -55,9 +55,11 @@ export interface ContractFixture {
   setRejectRunEvents(enabled: boolean): Promise<void>;
   updateLegacyUsageWebhook(url: string): Promise<void>;
   seedJourneyAccount(input: { login: string; githubId: number; startingGrant: number; accountRef?: string }): Promise<{ tenant: string; token: string }>;
-  /** Channel cases only: a query on the channel tables (fixtures/channel-state.ts), which both backends share. */
+  /** Shared-agent cases only: queries on the membership tables, shared by both backends. */
+  sharedAgentsQuery(text: string, values?: unknown[]): Promise<{ rows: any[]; rowCount: number | null }>;
   /** Inbox storage contract: only the asking agent's index columns, on either backend. */
   inputIndex(agent: string): Promise<{ state: string; version: number; priority: string; priority_rank: number; blocking: boolean; responders: string[] }[]>;
+  /** Channel cases only: a query on the channel tables (fixtures/channel-state.ts), which both backends share. */
   channelQuery(text: string, values?: unknown[]): Promise<{ rows: any[]; rowCount: number | null }>;
   /**
    * Email channel cases only (env AGENT_EMAIL_DOMAIN): a raw message as the backend's mail ingress receives it, with

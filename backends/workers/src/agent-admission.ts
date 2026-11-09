@@ -1,3 +1,4 @@
+import { requireActiveMember } from "../../../src/shared-agents.ts";
 import { keyServices } from "./security-services.ts";
 import { EndUserCredits } from "./end-user-credits.ts";
 import { billingRunStop } from "./billing-run-stop.ts";
@@ -264,6 +265,10 @@ export async function admitImpl(this: AgentRuntime,
       if (old) return old.accepted || old.state === "completed" ? this.replayedRequest(old) : this.startHostRequest(old);
       if (await this.ctx.storage.get(`cancelled-request:${id}`))
         throw Object.assign(new Error("Request cancelled"), { status: 409, code: "aborted" });
+      if (typeof actor === "string" && actor.startsWith("member:")) {
+        const conf = await this.config();
+        await withSql(this.env, sql => requireActiveMember(sql, conf.tenantId, conf.id, actor));
+      }
       await this.requireApplication(allowDisconnected);
       await refreshIdleLifetime(this.env, this.ctx.storage, await this.config());
       const record: RequestRecord = {
@@ -271,6 +276,7 @@ export async function admitImpl(this: AgentRuntime,
         method: "execute",
         fingerprint,
         params: { ...params, ...(actor ? { actor } : {}) },
+        ...(actor ? { actor: String(actor) } : {}),
         accepted: false,
         state: "queued",
         startedAt: Date.now(),
@@ -444,6 +450,12 @@ export async function admitImpl(this: AgentRuntime,
     if (!old && request.method !== "steer" && (await this.records()).filter(record => record.state !== "completed").length >= MAX_OPEN_REQUESTS)
       throw Object.assign(new Error("Too many requests queued for this agent"), { status: 429 });
     const conf = await this.config();
+    const actor = params.actor ?? (params.from as { id?: string } | undefined)?.id;
+    const checkMember = async () => {
+      if (!notice && typeof actor === "string" && actor.startsWith("member:"))
+        await withSql(this.env, sql => requireActiveMember(sql, conf.tenantId, conf.id, actor));
+    };
+    await checkMember();
     if (params.endUser !== undefined) {
       if (request.method !== "prompt") throw new BadRequest("endUser is for a prompt");
       const { accounts } = await keyServices(this.env);
@@ -520,6 +532,7 @@ export async function admitImpl(this: AgentRuntime,
       throw new BadRequest("Give the agent some text, or audio to transcribe");
     if (!noTurn && await this.ctx.storage.get(`cancelled-request:${id}`))
       throw Object.assign(new Error("Request cancelled"), { status: 409, code: "aborted" });
+    await checkMember();
     if (files) params.files = attachmentFiles(files);
     } catch (error) {
       if (preparing) await this.promptPreparations.fail(id);

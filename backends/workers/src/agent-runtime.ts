@@ -38,7 +38,7 @@ import { BatchQueue } from "./batch-queue.ts";
 import type { WebhookEvent } from "./webhook-policy.ts";
 import { Config, RequestRecord, Env } from "./agent-types.ts";
 import { currentRunImpl, recordsImpl, markBeganImpl, observeImpl, requestForInputsImpl, runningRequestImpl, projectMessageImpl, reconcileSteeringImpl, steeringOwnerImpl, onViewImpl, onHumanImpl, trackImpl, settleImpl, submitImpl, answerHumanInputsImpl, closeHumanInputsImpl, dueHumanInputsImpl } from "./agent-turn-loop.ts";
-import { abortRequestsImpl, resumeKeptQueueImpl, cancelRequestImpl, resumeCancellationImpl, restoreCancellationsImpl, abortExecutionsImpl, markCancelledRequestsImpl, cancelHostIntentImpl, cancelHumanInputsImpl, startHostRequestImpl, restoreHostAdmissionsImpl } from "./agent-cancellation.ts";
+import { removeMemberImpl, abortRequestsImpl, resumeKeptQueueImpl, cancelRequestImpl, resumeCancellationImpl, restoreCancellationsImpl, abortExecutionsImpl, markCancelledRequestsImpl, cancelHostIntentImpl, cancelHumanInputsImpl, startHostRequestImpl, restoreHostAdmissionsImpl } from "./agent-cancellation.ts";
 import { releaseConfigurationWaitersImpl, configureRequestImpl, acceptConfigurationRequestImpl, applyConfigurationRequestImpl, requireApplicationImpl, admitImpl, createConfigurationQueue } from "./agent-admission.ts";
 import { imageToolsImpl, sourceIdentityImpl, fileRequestIdImpl } from "./agent-attachments.ts";
 import { computerNamesImpl, refreshComputerToolsImpl, enabledToolsImpl, createDecisions, createModels, createHarness } from "./agent-tools.ts";
@@ -353,6 +353,10 @@ export class AgentRuntime extends AgentContext {
 
   resumeKeptQueue() {
     return resumeKeptQueueImpl.call(this);
+  }
+
+  removeMember(member: string) {
+    return removeMemberImpl.call(this, member);
   }
 
   cancelRequest(id: string) {

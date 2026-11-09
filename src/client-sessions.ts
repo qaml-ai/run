@@ -1,3 +1,4 @@
+import { requireActiveMember } from "./shared-agents.ts";
 import { rejectWorkflow } from "./builtins.ts";
 import { currentModel, modelReference } from "./virtual-models.ts";
 import type { Message } from "@earendil-works/pi-ai";
@@ -19,7 +20,7 @@ import { outputInput } from "./tool-policy.ts";
 import { importedHistory, validateUserMessages } from "./history.ts";
 import { convertToLlm, createCompactionSummaryMessage } from "./pi-harness/messages.ts";
 import { canonical } from "../shared/durable-json.ts";
-import { joins } from "../shared/queue-mode.ts";
+import { joins, CANCELLABLE_METHODS as CANCELLABLE } from "../shared/queue-mode.ts";
 import type { CommitEffect } from "../shared/append-log.ts";
 import { fileStorage, type Storage } from "../shared/storage.ts";
 import { FRAME_BYTES, outcomeEnding, type ClientEvent, type Outcome, type RequestMethod, type RequestRecord, type TurnSnapshot } from "../shared/client-protocol.ts";
@@ -63,8 +64,6 @@ const RUN_OVERRUN_MS = 60_000;
  * idempotent assignment) until it settles.
  */
 const QUEUED_METHODS = [...RUN_METHODS, "configure"];
-/** Queued runs a stop cancels (`stop`): what callers asked for. A `resume` closes a suspended turn, and is the runtime's. */
-const CANCELLABLE = ["prompt", "continue", "execute"];
 /** How long a steer waits for a turn that has begun to open, before it queues as a turn of its own. */
 const STEER_OPEN_WAIT_MS = 5_000;
 const CANCELLED = "Cancelled: the agent was stopped before this run began";
@@ -1406,6 +1405,28 @@ export class ClientSessions {
     return [...requests.values()].map(visible);
   }
 
+  /** S4 guest routes must check membership; admission rechecks it after preparation. S5 tags guest streams. */
+  async removeMember(id: string, tenant: string, member: string) {
+    if (!await this.owns(id, tenant)) return;
+    const session = await this.load(id);
+    if (!session) return;
+    await session.starting?.catch(() => {});
+    events.endMember(session, member);
+    const announcing = await (this.options.runEvents?.(session.header.tenant) ?? false);
+    const cancelled: RequestRecord[] = [];
+    for (const record of [...session.running.values()]) {
+      if (record.began || !CANCELLABLE.includes(record.method) || record.actor !== `member:${member}` || (record.batchedInto && session.running.get(record.batchedInto)?.began)) continue;
+      const { params: _params, ...rest } = record;
+      cancelled.push(this.upsertRequest(session, { ...rest, state: 'completed', endedAt: Date.now(), outcome: { result: { error: CANCELLED, code: 'cancelled' } }, ...(announcing ? { announce: true as const } : {}) }));
+    }
+    if (cancelled.length) { await this.releaseBusy(session); await this.commit(session, true); }
+    for (const record of cancelled) {
+      this.publish(session, { type: 'event', requestId: record.id, event: { type: 'run_cancelled', reason: 'stopped' } });
+      this.publish(session, { type: 'response', id: record.id, outcome: record.outcome! });
+    }
+    if (announcing && cancelled.length) void this.announce(session, cancelled);
+  }
+
   /** Abort the running turn of a tenant's agent. Returns false when the agent is not theirs. */
   /**
    * Stop a tenant's agent (`stop`): its running turn, and unless `queued` is "keep", the runs queued behind it. Returns
@@ -1782,6 +1803,7 @@ export class ClientSessions {
         endUser = session.requests.get(params.suspension)?.endUser;
       }
     } catch (error) { throw new HttpError(400, errorText(error)); }
+    if (actor?.startsWith("member:") && params.notice === undefined && (CANCELLABLE.includes(body.method) || body.method === "steer")) await requireActiveMember(this.db, session.header.tenant, session.header.id, actor);
     // A child's notification (`notice`) is the runtime's alone. Its child's run was counted and checked already, and it is
     // never refused at a limit: it lands without a turn instead (`landNotice`).
     const notice = params.notice !== undefined;
@@ -1860,6 +1882,12 @@ export class ClientSessions {
         // A retry of the same id may have been taken while this waited.
         const again = existing();
         if (again) return taken(again);
+      }
+      if (actor?.startsWith("member:") && params.notice === undefined && (CANCELLABLE.includes(body.method) || body.method === "steer")) {
+        await requireActiveMember(this.db, session.header.tenant, session.header.id, actor);
+        // Another submission of this ID may have committed during the membership lookup.
+        const raced = existing();
+        if (raced) return taken(raced);
       }
       const later: RequestRecord[] = [];
       if (body.method === "prompt") {
@@ -2670,6 +2698,7 @@ export class ClientSessions {
     const session = await this.load(id);
     // A revocation whose write may not have landed is written again.
     if (!session || (session.header.revoked && !session.unsettled)) return;
+    await this.db.query('update agent_members set removed_at=coalesce(removed_at,$2), revision=revision+1 where agent=$1', [id, Date.now()]);
     session.header.revoked = true;
     await this.writeHeader(session);
     // Stop the model while the host and its usage listener are still alive. Killing the host first drops

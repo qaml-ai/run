@@ -1,3 +1,4 @@
+import { SharedAgents, ShareLinkInput, MemberInput, ShareLink, CreatedShareLink, Member } from './shared-agents.ts';
 import { inboxQuery, readInbox, InboxQueryError } from '../shared/inbox.ts';
 import { rejectWorkflow } from "./builtins.ts";
 import { computerRoutes } from "./computers/api.ts";
@@ -355,8 +356,37 @@ export function api(context: ApiContext) {
     db: () => clients.db, tenant: c => c.var.principal.tenant, lockMs: context.idempotencyLockMs,
     skip: path => path === "/v1/agents" || path === "/v1/definitions" || path === "/v1/runs" || path === "/v1/transcriptions" || path === "/v1/images" || path === "/v1/speech" || path === "/v1/decisions" || /^\/v1\/agents\/[^/]+\/(?:prompt|fork)$/.test(path),
     // Answers with a secret shown once: API tokens (a new tenant's too), signing secrets, browser tokens, signed links.
-    secret: path => /^\/v1\/(?:tokens|tenants|webhooks|webhooks\/[^/]+\/secret|usage-webhook\/secret|agents\/[^/]+\/(?:browser-tokens|links|credentials\/rotate)|volumes\/[^/]+\/links)$/.test(path),
+    secret: path => /^\/v1\/(?:tokens|tenants|webhooks|webhooks\/[^/]+\/secret|usage-webhook\/secret|agents\/[^/]+\/(?:browser-tokens|links|share-links|credentials\/rotate)|volumes\/[^/]+\/links)$/.test(path),
   }));
+
+  const shared = () => new SharedAgents(clients.db);
+  const ownerShare = (c: Context<Env>) => {
+    if (c.var.principal.via !== 'token' && c.var.principal.via !== 'console' && c.var.principal.via !== 'operator') throw new HttpError(403, 'An owner API key or console session is required');
+  };
+  route(createRoute({ method: 'post', path: '/v1/agents/{id}/share-links', request: { params: agentId, body: content(ShareLinkInput) }, responses: { 201: reply('The link, with its secret shown once', CreatedShareLink) } }), async c => {
+    ownerShare(c);
+    return json(c, 201, await shared().create(c.var.principal.tenant, c.req.param('id')!, parse(ShareLinkInput, await readJson(c.req.raw.body, 4096, {})), origin(context)));
+  });
+  route(createRoute({ method: 'get', path: '/v1/agents/{id}/share-links', request: { params: agentId }, responses: { 200: reply('Live and revoked links, without secrets', z.array(ShareLink)) } }), async c => {
+    ownerShare(c); return json(c, 200, await shared().links(c.var.principal.tenant, c.req.param('id')!));
+  });
+  route(createRoute({ method: 'delete', path: '/v1/agents/{id}/share-links/{link}', request: { params: agentId.extend({ link: z.string() }) }, responses: { 200: reply('Link revoked; members stay', schema.Deleted) } }), async c => {
+    ownerShare(c); await shared().revoke(c.var.principal.tenant, c.req.param('id')!, c.req.param('link')!); return json(c, 200, { deleted: true });
+  });
+  route(createRoute({ method: 'get', path: '/v1/agents/{id}/members', request: { params: agentId }, responses: { 200: reply('Members and today’s spend in USD', z.array(Member)) } }), async c => {
+    ownerShare(c); return json(c, 200, await shared().members(c.var.principal.tenant, c.req.param('id')!));
+  });
+  route(createRoute({ method: 'patch', path: '/v1/agents/{id}/members/{member}', request: { params: agentId.extend({ member: z.string() }), body: content(MemberInput) }, responses: { 200: reply('Updated member', Member) } }), async c => {
+    ownerShare(c); const tenant = c.var.principal.tenant, agent = c.req.param('id')!, member = c.req.param('member')!;
+    await shared().change(tenant, agent, member, parse(MemberInput, await readJson(c.req.raw.body, 4096)));
+    return json(c, 200, (await shared().members(tenant, agent)).find(m => m.id === member));
+  });
+  route(createRoute({ method: 'delete', path: '/v1/agents/{id}/members/{member}', request: { params: agentId.extend({ member: z.string() }) }, responses: { 200: reply('Member removed', schema.Deleted) } }), async c => {
+    ownerShare(c); const tenant = c.var.principal.tenant, agent = c.req.param('id')!, member = c.req.param('member')!;
+    await shared().change(tenant, agent, member, 'remove');
+    await clients.removeMember(agent, tenant, member);
+    return json(c, 200, { deleted: true });
+  });
 
   route(createRoute({ method: "get", path: "/v1/me", responses: { 200: reply("The caller", schema.Me) } }), async c => {
     const principal = c.var.principal;
