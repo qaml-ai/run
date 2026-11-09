@@ -770,10 +770,14 @@ class _RuntimeCalls:
         return self._rest("POST", f"/v1/agents/{_path(agent_id)}/browser-tokens", body, retry=False)
 
     def inbox(self, *, for_=None, subject=None, root=None, priority=None, kind=None, cursor=None, limit=None):
-        """A page of pending inputs in priority order: {items, cursor, counts}. inputId addresses the per-agent answer route."""
+        """A page of pending inputs in priority order: {items, cursor, counts}. id addresses the per-agent answer route; inputId is its compatibility alias."""
         query = urlencode({key: value for key, value in {"for": for_, "subject": subject, "root": root,
             "priority": priority, "kind": kind, "cursor": cursor, "limit": limit}.items() if value is not None})
         return self._rest("GET", "/v1/inbox" + (f"?{query}" if query else ""))
+
+    def answer_inbox(self, item, answer):
+        """Answer a page item using its public id and agent."""
+        return self._rest("POST", f"/v1/agents/{_path(item['agent'])}/inputs/{_path(item['id'])}", answer, retry=False)
 
     def tool_sources(self, agent_id, *, schemas=False, refresh=False):
         """Every source of an agent's tools (its application, file tools, built-ins, MCP servers, OpenAPI
@@ -873,8 +877,8 @@ class AgentRuntime(_RuntimeCalls):
     else https://run.camelai.com; `api_key` to CAMELAI_API_KEY."""
 
     def __init__(self, url=None, api_key=None):
-        self.base = _origin(url or _env("CAMELAI_BASE_URL", "AGENT_URL") or DEFAULT_URL)
-        self.api_key = api_key or _env("CAMELAI_API_KEY", "AGENT_RUNTIME_TOKEN")
+        self.base = _origin(url or _env("CAMELRUN_URL", "CAMELAI_BASE_URL", "CAMELAI_URL", "AGENT_URL") or DEFAULT_URL)
+        self.api_key = api_key or _env("CAMELRUN_API_KEY", "CAMELAI_API_KEY", "AGENT_RUNTIME_TOKEN")
         self.http = httpx.AsyncClient(timeout=10, follow_redirects=False)
         self.agents = []
         # Speech to text on its own: create.

@@ -211,14 +211,14 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
 }
 
 async function login(flags: Flags, io: Io, print: (value: unknown, human?: () => string) => void) {
-  let apiKey = flags["api-key"] || io.env.CAMELAI_API_KEY;
+  let apiKey = flags["api-key"] || io.env.CAMELRUN_API_KEY || io.env.CAMELAI_API_KEY;
   if (!apiKey) {
     if (!process.stdin.isTTY) throw new UsageError("Pass --api-key art_… (or set CAMELAI_API_KEY). Create one at https://run.camelai.com/console/tokens. Coding agents: read https://run.camelai.com/SKILL.md");
     const prompt = createInterface({ input: process.stdin, output: process.stderr });
     apiKey = (await prompt.question("API key (create one at https://run.camelai.com/console/tokens): ")).trim();
     prompt.close();
   }
-  const url = flags.url || io.env.CAMELAI_BASE_URL || io.env.CAMELAI_URL || DEFAULT_URL;
+  const url = flags.url || io.env.CAMELRUN_URL || io.env.CAMELAI_BASE_URL || io.env.CAMELAI_URL || DEFAULT_URL;
   const me = await new Api({ apiKey, url }).me();
   const path = save({ apiKey, url }, io.env);
   print({ tenant: me.tenant, url, saved: path }, () => `Logged in as ${me.login ?? me.tenant} on ${url} (key saved to ${path})`);

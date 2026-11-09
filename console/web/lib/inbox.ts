@@ -6,6 +6,6 @@ export const inboxCount = (page?: InboxPage) => Object.values(page?.counts?.prio
 /** Single boundary to replace when the batch inbox answer endpoint ships. */
 export async function answerInbox(item: InboxItem, value: InputValue | InputAnswer) {
   const answer = typeof value === "object" && value !== null && "action" in value ? value : answerValue(item, value as InputValue);
-  await api(`/v1/agents/${encodeURIComponent(item.agent)}/inputs/${encodeURIComponent(item.inputId)}`, { body: answer });
+  await api(`/v1/agents/${encodeURIComponent(item.agent)}/inputs/${encodeURIComponent(item.id)}`, { body: answer });
   window.dispatchEvent(new Event("inbox-changed"));
 }

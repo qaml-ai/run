@@ -306,3 +306,23 @@ test("browserToken.scopes chooses what the handler's tokens read, e.g. without e
   assert.equal((await read("history")).status, 200);
   assert.equal((await read("state")).status, 403, "state is not among its scopes");
 });
+
+test("existing mode reads credentials by id or key and never creates or updates", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "hello" }));
+  const created = await r.call('/v1/agents', { body: { systemPrompt: 'Keep this', name: 'Existing' }, headers: { 'Idempotency-Key': 'keep_existing' } });
+  assert.equal(created.status, 201, created.text);
+  for (const id of [created.json.id, 'keep_existing']) {
+    const calls: { method: string; path: string }[] = [];
+    const handler = createAgentHandler({ apiKey: OPERATOR, url: r.base, existingAgent: () => id,
+      authorize: () => ({ userId: 'alice' }), fetch: (url, init) => {
+        calls.push({ method: init?.method ?? 'GET', path: new URL(String(url)).pathname });
+        return fetch(url, init);
+      } });
+    t.after(() => handler.close());
+    assert.equal((await post(handler, { action: 'token' })).status, 200);
+    assert.equal((await post(handler, { action: 'send', text: 'hello', clientId: 'existing_send_123' })).status, 200);
+    assert.ok(calls.some(c => c.method === 'GET' && c.path.endsWith('/credentials')));
+    assert.ok(!calls.some(c => c.method !== 'GET' && (c.path === '/v1/agents' || c.method === 'PATCH' || c.method === 'PUT')));
+  }
+  assert.throws(() => createAgentHandler({ authorize: () => null }), /existingAgent/);
+});

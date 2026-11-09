@@ -55,20 +55,20 @@ export interface SendEvent<A extends AgentAuth = AgentAuth> {
 }
 
 export interface AgentHandlerOptions<A extends AgentAuth = AgentAuth> {
-  /** Your API key. Default: the CAMELAI_API_KEY environment variable. */
+  /** Your API key. Default: CAMELRUN_API_KEY, with CAMELAI_API_KEY as fallback. */
   apiKey?: string;
-  /** The runtime's origin. Default: CAMELAI_BASE_URL, else https://run.camelai.com. */
+  /** The runtime's origin. Default: CAMELRUN_URL, then CAMELAI_BASE_URL, else https://run.camelai.com. */
   url?: string;
   /**
    * Your own session check, on every request. Return the user (and optionally which agent), or null to
    * refuse it (401). `thread` is the browser's name for a conversation: untrusted, and never an agent id.
    */
   authorize(request: Request, context: { thread: string | null; action: HandlerAction }): A | null | Promise<A | null>;
-  /**
-   * How the user's agent is made (on first use), and set again when this changes. A function gets the
-   * user; keep what it returns stable (build tools once, not per call): a setup that differs from the
-   * last reconfigures the agent, and one with tools reattaches them.
-   */
+  /** Open an existing agent by id or key, without creating, reconfiguring or attaching tools.
+   * Resolve only agents the authorized user may access. Mutually exclusive with agent. */
+  existingAgent?: string | ((auth: A, context: { thread: string | null }) => string | Promise<string>);
+  /** Explicitly opt into creating and reconfiguring an agent. A function receives the verified user.
+   * Keep its setup stable; changed setups reconfigure the agent and reattach local tools. */
   agent?: AgentSetup | ((auth: A, context: { thread: string | null }) => AgentSetup | Promise<AgentSetup>);
   /**
    * Before each message is sent: return `{ text?, metadata? }` to change it or label it (metadata is yours,
@@ -190,8 +190,10 @@ function fingerprintOf(setup: AgentSetup): string {
 }
 
 export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: AgentHandlerOptions<A>): AgentHandler {
-  const apiKey = options.apiKey ?? env("CAMELAI_API_KEY") ?? env("AGENT_RUNTIME_TOKEN");
-  const url = (options.url ?? env("CAMELAI_BASE_URL") ?? env("AGENT_URL") ?? DEFAULT_URL).replace(/\/+$/, "");
+  if (options.existingAgent !== undefined && options.agent !== undefined) throw new TypeError("Choose existingAgent or agent, not both");
+  if (options.existingAgent === undefined && options.agent === undefined) throw new TypeError("Pass existingAgent to open an agent, or agent to opt into upsert");
+  const apiKey = options.apiKey ?? env("CAMELRUN_API_KEY") ?? env("CAMELAI_API_KEY") ?? env("AGENT_RUNTIME_TOKEN");
+  const url = (options.url ?? env("CAMELRUN_URL") ?? env("CAMELAI_BASE_URL") ?? env("CAMELAI_URL") ?? env("AGENT_URL") ?? DEFAULT_URL).replace(/\/+$/, "");
   const doFetch = options.fetch ?? globalThis.fetch.bind(globalThis);
   let agents: Agents | undefined;
   const runtime = () => {
@@ -255,6 +257,16 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
 
   /** The user's agent: upserted once per process (and again when its setup changes). */
   async function agentFor(auth: A, thread: string | null, refresh = false): Promise<Cached> {
+    if (options.existingAgent !== undefined) {
+      const id = typeof options.existingAgent === "function" ? await options.existingAgent(auth, { thread }) : options.existingAgent;
+      if (typeof id !== "string" || !KEY.test(id)) fail(500, "invalid_agent_key", "existingAgent must return an agent id or key");
+      // Never attach tools, create, or update. Credentials also resolve a stable key to its id.
+      const session = await runtime().runtime.agentCredentials(id).catch(error => {
+        if (error instanceof AgentError) return fail(error.status >= 400 && error.status < 500 ? error.status : 502, error.code ?? codeFor(error.status), error.message);
+        throw error;
+      });
+      return { id: session.id, token: session.token, fingerprint: "existing", used: Date.now(), presented: new Set(), scanned: -1 };
+    }
     const key = auth.agentKey ?? await agentKeyFor(auth.userId, thread);
     if (!KEY.test(key)) fail(500, "invalid_agent_key", "authorize returned an agentKey that is not 1 to 80 letters, digits, _ and -");
     const setup = typeof options.agent === "function" ? await options.agent(auth, { thread }) : options.agent ?? {};
