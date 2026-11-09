@@ -35,12 +35,13 @@ const STOP_CHILDREN_MS = 10_000;
 /** What each definition target is for, as its definition describes it, for the tools' descriptions. */
 export async function targetDescriptions(ctx: DelegationContext, tenant: string, targets: AgentTarget[]) {
   const found = new Map<string, string>();
+  const key = (target: AgentTarget) => `${definitionId(tenant, target.definition!)}:${target.revision ?? "latest"}`;
   await Promise.all(targets.filter(target => target.definition !== undefined && !target.description).map(async target => {
     const id = definitionId(tenant, target.definition!);
-    const description = await ctx.options.definitionFor?.(tenant, id).then(definition => definition.description, () => undefined);
-    if (description) found.set(id, description);
+    const description = await ctx.options.definitionFor?.(tenant, id, target.revision).then(definition => definition.description, () => undefined);
+    if (description) found.set(key(target), description);
   }));
-  return (target: AgentTarget) => target.definition !== undefined ? found.get(definitionId(tenant, target.definition)) : undefined;
+  return (target: AgentTarget) => target.definition !== undefined ? found.get(key(target)) : undefined;
 }
 
 /**
@@ -222,7 +223,7 @@ export async function makeChild(ctx: DelegationContext, session: Session, run: R
   const { provider, id: modelId } = header.config.model;
   const named = Object.hasOwn(ctx.options.modelEndpoints?.(tenant) ?? {}, provider) || Object.hasOwn(await ctx.options.customProviders?.(tenant, header.keyScope) ?? {}, provider);
   return (await ctx.options.createAgent!(tenant, {
-    ...target?.definition !== undefined ? { definition: definitionId(tenant, target.definition) } : {
+    ...target?.definition !== undefined ? { definition: definitionId(tenant, target.definition), ...(target.revision !== undefined ? { definitionRevision: target.revision } : {}) } : {
       model: named ? `${provider}/${modelId}` : header.config.model, systemPrompt: SUBAGENT_PROMPT, ...web.length ? { builtins: web } : {},
       ...childMounts(header.mounts),
     },
@@ -242,7 +243,7 @@ export async function makeChild(ctx: DelegationContext, session: Session, run: R
  */
 export function childMounts(mounts: Mount[] | undefined) {
   if (!mounts?.length) return {};
-  return { mounts: [...mounts.map(({ volumeId, path, mode, subpath }) => ({ volumeId, path, mode, ...subpath ? { subpath } : {} })), { workspace: false }] };
+  return { mounts: [...mounts.map(({ volumeId, path, mode, subpath, instructions }) => ({ volumeId, path, mode, ...(instructions !== undefined ? { instructions } : {}), ...subpath ? { subpath } : {} })), { workspace: false }] };
 }
 
 /** A child's prompt: its task, and its place in the chain, signed for its agent and request so only the runtime places a run in one. */

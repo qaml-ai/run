@@ -211,7 +211,7 @@ parent's limits cover them:
 | Limit | |
 | --- | --- |
 | Depth | A sub-agent's sub-agents count. Delegation stops at `maxDepth` (default 2: a parent, its children and theirs; at most 5). Past it, the call fails and the model does the work itself. Only the runtime places a run in a chain: its child runs' `delegation*` metadata is signed (`delegationSignature`), and a prompt of yours that sends those keys starts a chain of its own. A sub-agent's turn that a notification or message started is where the sub-agent was made: its depth, limit and chain's first agent hold there too |
-| Fan-out | `maxParallel` calls in flight per run (default 4, at most 16) |
+| Fan-out | `maxParallel` calls in flight per run (default 4, at most 64) |
 | Busy agents | A running sub-agent takes one of your account's busy slots. At the limit, the call fails with `BUSY_AGENT_LIMIT` |
 | Spend | Your account's spend limits apply to sub-agents too. A parent's own spend limits (the agent's, and the run's `spendLimit`) bound its sub-agents: each gets what the parent has left as its run's spend limit (shared evenly among sub-agents running at once), and what it spent counts against the parent's. `run.usage.subagentCostUsd` says how much that was |
 | Run rate and run limits | A sub-agent's run counts against your account's run rate. Its definition's `runLimits` apply to it |
@@ -642,3 +642,7 @@ parent's task.
 | Shared state between nodes | The task text, and a shared [volume](files.md#volumes) |
 | `recursion_limit` | `delegate.maxDepth` and the run's `runLimits` |
 | Checkpointed subgraph state | Each sub-agent's own history, read by its id (`run.toolCalls[i].agentId`) |
+
+A definition target can pin a revision: `{ name: "reviewer", definition: "review", revision: 3 }`. New children use that saved revision even after the definition changes. Revisions available before this feature start with the revision current at migration; older revisions cannot be recovered. Deleting the definition deletes its revisions. Rotating or removing a credential purges its sealed value from old revisions; a pin does not preserve retired credentials.
+
+On Workers, child events and completion are pushed to the parent Durable Object. A single recovery sweep runs every five seconds for missed notifications, with at most six child reads in flight. Waiting does not open a relay stream or polling timer for each child. The concurrency ceiling is 64 on both backends; configured capacity and spend limits still apply.

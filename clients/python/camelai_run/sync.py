@@ -457,14 +457,14 @@ class RunStream:
             follow.close()
         self._run = agent._settled(self.id, outcome, output, False)
         yield StreamPart("done", run=self._run)
-        if self._run.error and self._throw:
+        if self._run.status != "paused" and self._run.error and self._throw:
             raise RunError(self._run)
 
     def result(self):
         if self._run is None:
             for _ in self:
                 pass
-        if self._run.error and self._throw:
+        if self._run.status != "paused" and self._run.error and self._throw:
             raise RunError(self._run)
         return self._run
 
@@ -512,7 +512,7 @@ class Agent:
             request_id = into
             outcome = self.client._outcome(request_id, timeout=timeout)
         run = _outcome_run(request_id, outcome, output, lambda input: RunInput(self, input, output))
-        if run.error and throw_on_error:
+        if run.status != "paused" and run.error and throw_on_error:
             raise RunError(run)
         return run
 
@@ -663,7 +663,7 @@ class StatelessRunStream:
             yield from reader.read(data.get("event") or {} if data.get("type") == "event" else {})
         run = _stateless_run(self._runtime.wait_for_run(self.id), self._output, False)
         yield StreamPart("done", run=run)
-        if run.error and self._throw:
+        if run.status != "paused" and run.error and self._throw:
             raise RunError(run)
 
 

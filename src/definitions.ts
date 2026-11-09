@@ -89,7 +89,7 @@ export type AgentParams = Record<string, unknown> & { tools?: ToolDefinition[] }
 const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "computerLimit", "limits", "runLimits", "queue", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "decide", "applyOnUpdate", "networking"] as const;
 /** Configuration an agent made from a definition may set as its own, which applying the definition leaves. */
 export const OVERRIDES = ["model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "computerLimit", "runLimits", "queue", "networking"] as const;
-const PROVISION_FIELDS = ["name", "type", "ttlSeconds", "idleTtlSeconds", "mounts", "tools", "initialMessages", "systemPromptAppend"];
+const PROVISION_FIELDS = ["definitionRevision", "humanInput", "name", "type", "ttlSeconds", "idleTtlSeconds", "mounts", "tools", "initialMessages", "systemPromptAppend"];
 /** Definitions a self-serve tenant may have; a tenant of the tenants file has its own limit (`maxDefinitions` option). */
 export const MAX_DEFINITIONS = 200;
 const validId = (id: string) => /^def_[a-f0-9]{20}$/.test(id);
@@ -131,8 +131,8 @@ export class Definitions {
   private row(row: any): Definition {
     return { id: row.id, tenant: row.tenant, name: row.name, revision: row.revision, spec: withoutOnExpire(withoutWorkflow(row.spec)), createdAt: row.created_at, updatedAt: row.updated_at };
   }
-  async read(tenant: string, id: string): Promise<Definition> {
-    const row = validId(id) ? (await this.db.query("select * from definitions where id = $1 and tenant = $2", [id, tenant])).rows[0] : undefined;
+  async read(tenant: string, id: string, revision?: number): Promise<Definition> {
+    const row = validId(id) ? (await this.db.query(revision === undefined ? "select * from definitions where id = $1 and tenant = $2" : "select * from definition_revisions where id = $1 and tenant = $2 and revision = $3", revision === undefined ? [id, tenant] : [id, tenant, revision])).rows[0] : undefined;
     if (!row) throw new HttpError(404, `Unknown definition ${id}`);
     return this.row(row);
   }
@@ -278,7 +278,7 @@ export class Definitions {
   async provision(tenant: string, params: any): Promise<{ params: AgentParams; ref: DefinitionRef; provision: unknown; overrides: string[]; sources?: Sources }> {
     if (typeof params.definition !== "string") throw new HttpError(400, "definition must be a definition id");
     if (params.systemPrompt !== undefined) throw new HttpError(400, "systemPrompt comes from the definition; add to it with systemPromptAppend, or change the definition");
-    const definition = await this.read(tenant, params.definition);
+    const definition = await this.read(tenant, params.definition, params.definitionRevision);
     const { spec } = definition;
     validTtl(params.ttlSeconds);
     // A lifetime given with the agent replaces the definition's, whichever kind each is.

@@ -1,3 +1,4 @@
+import { humanInputSettings, type HumanInputSettings } from "../inputs.ts";
 import { applying } from "../../shared/apply-scope.ts";
 import { withOpenRouterDetails } from "../openrouter-model.ts";
 import { currentModel, modelReference } from "../virtual-models.ts";
@@ -69,7 +70,7 @@ export async function resolveApiKey(ctx: ConfigurationContext, session: Session,
  * apply when an agent is made.
  */
 function reconfiguration(header: SessionHeader, definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools" | "apiKey">, metadata: AgentMetadata,
-  mounts: unknown, origin: { definition: DefinitionRef } | undefined, identity: AgentIdentity | undefined, provisionHash: string, own: Pick<Sources, "builtins" | "delegate" | "mcpServers" | "decide"> = {}, remount = false, keepModel = false) {
+  mounts: unknown, origin: { definition: DefinitionRef } | undefined, identity: AgentIdentity | undefined, provisionHash: string, own: Pick<Sources, "builtins" | "delegate" | "mcpServers" | "decide" | "humanInput"> = {}, remount = false, keepModel = false) {
   const differs = (a: unknown, b: unknown) => canonical(a ?? null) !== canonical(b ?? null);
   const remounted = mounts !== undefined && differs((header.mounts ?? []).map(({ volumeId, path, mode }) => ({ volumeId, path, mode })), (VolumeService.resolved(header.id, mounts as unknown[]) as { volumeId: string; path: string; mode?: string }[]).map(({ volumeId, path, mode }) => ({ volumeId, path, mode: mode ?? "rw" })));
   const fixed = [
@@ -91,7 +92,7 @@ function reconfiguration(header: SessionHeader, definitions: ToolDefinition[], c
     // Its queue likewise: an upsert that leaves it out keeps the one set by PATCH .../configuration.
     ...config.queue !== undefined ? { queue: config.queue } : {},
     // Only a definition's own fields are the agent's: the rest follow its definition.
-    ...origin ? {} : { systemPrompt: config.systemPrompt ?? null, modelHeaders: config.modelHeaders ?? null, tools: definitions, builtins: own.builtins ?? [], delegate: own.delegate ?? null, mcpServers: own.mcpServers ?? [], decide: own.decide ?? null },
+    ...origin ? {} : { systemPrompt: config.systemPrompt ?? null, modelHeaders: config.modelHeaders ?? null, tools: definitions, builtins: own.builtins ?? [], delegate: own.delegate ?? null, humanInput: own.humanInput ?? {}, mcpServers: own.mcpServers ?? [], decide: own.decide ?? null },
   };
 }
 
@@ -112,6 +113,7 @@ function upsertChanges(header: SessionHeader, target: Record<string, any>) {
   for (const key of ["maxOutputTokens", "temperature", "dataCollection", "language", "queue"] as const) if (key in target && differs(current[key], target[key])) changes[key] = target[key] as never;
   if (target.tools !== undefined && differs(header.definitions, target.tools)) changes.tools = target.tools;
   if (target.builtins !== undefined && differs(header.sources?.builtins ?? [], target.builtins)) changes.builtins = target.builtins;
+  if (target.humanInput !== undefined && differs(header.sources?.humanInput ?? {}, target.humanInput)) changes.humanInput = target.humanInput;
   if (target.delegate !== undefined && differs(header.sources?.delegate, target.delegate)) changes.delegate = target.delegate;
   if (target.decide !== undefined && (target.decide ?? null) !== (header.sources?.decide ?? null)) changes.decide = target.decide;
   if (target.mcpServers !== undefined && differs(header.sources?.mcpServers ?? [], target.mcpServers)) changes.mcpServers = target.mcpServers;
@@ -135,7 +137,7 @@ export function agentId(tenant: string, key: string) {
  * (`origin.definition`), and `origin.provision` stands for its configuration in the
  * idempotency check, so a retry after the definition changed returns the same agent.
  */
-export async function create(ctx: ConfigurationContext, definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; bucket?: string; toolsHash?: string; remount?: boolean; defaultModel?: boolean; idleTtlMs?: number; builtins?: string[]; delegate?: DelegateSettings; mcpServers?: McpServerSpec[]; decide?: boolean; parent?: SessionHeader["parent"]; fork?: { id: string; from: ForkedFrom; messages: AgentMessage[]; turns: number[]; model: Message[] }; admit?: (unchanged: boolean) => Promise<unknown>; run?: RunSettings } = {}, steps = new Steps()): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
+export async function create(ctx: ConfigurationContext, definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { humanInput?: HumanInputSettings; keyScope?: string; spendLimit?: number; bucket?: string; toolsHash?: string; remount?: boolean; defaultModel?: boolean; idleTtlMs?: number; builtins?: string[]; delegate?: DelegateSettings; mcpServers?: McpServerSpec[]; decide?: boolean; parent?: SessionHeader["parent"]; fork?: { id: string; from: ForkedFrom; messages: AgentMessage[]; turns: number[]; model: Message[] }; admit?: (unchanged: boolean) => Promise<unknown>; run?: RunSettings } = {}, steps = new Steps()): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
   const applicationProvided = metadata?.application !== undefined;
   try { metadata = agentMetadata(metadata); } catch (error) { throw new HttpError(400, (error as Error).message); }
   validateDefinitions(definitions);
@@ -156,7 +158,7 @@ export async function create(ctx: ConfigurationContext, definitions: ToolDefinit
   if (access.fork && access.fork.id !== id) throw new HttpError(503, "The fork's key changed agents while it was made; retry");
   const { apiKey: _key, ...safeConfig } = config;
   // Its own MCP servers are checked as they are given (ToolSources.inline), or copied from a checked agent (a fork).
-  const own = { ...(access.builtins?.length ? { builtins: access.builtins } : {}), ...(access.delegate ? { delegate: access.delegate } : {}), ...(access.mcpServers?.length ? { mcpServers: access.mcpServers } : {}), ...(access.decide !== undefined ? { decide: access.decide } : {}) };
+  const own = { ...(access.humanInput ? { humanInput: access.humanInput } : {}), ...(access.builtins?.length ? { builtins: access.builtins } : {}), ...(access.delegate ? { delegate: access.delegate } : {}), ...(access.mcpServers?.length ? { mcpServers: access.mcpServers } : {}), ...(access.decide !== undefined ? { decide: access.decide } : {}) };
   const known = ctx.sessions.get(id)?.header ?? existing?.value;
   // Atomic provisioning may omit a previously assigned subject on an unchanged retry.
   if (applying() && identity?.subject === undefined && known?.identity?.subject !== undefined)
@@ -421,7 +423,7 @@ export async function inspect(ctx: ConfigurationContext, id: string, tenant: str
   return { ...metadata, ...(definition ? { definition } : {}), tools: session.header.definitions, systemPrompt: session.header.config.systemPrompt ?? "",
     ...(session.header.config.systemPromptAppend ? { systemPromptAppend: session.header.config.systemPromptAppend } : {}),
     ...(session.header.config.fileTools === false ? { fileTools: false } : {}), ...(session.header.config.codeMode === false ? { codeMode: false } : {}), mounts: session.header.mounts ?? [], keyScope: session.header.keyScope ?? null, bucket: session.header.bucket ?? null, modelHeaders: session.header.config.modelHeaders ?? null,
-    builtins: session.header.sources?.builtins ?? [], delegate: session.header.sources?.delegate ?? null, mcpServers: (session.header.sources?.mcpServers ?? []).map(mcpServerView), decide: session.header.sources?.decide ?? null,
+    humanInput: session.header.sources?.humanInput ?? null, builtins: session.header.sources?.builtins ?? [], delegate: session.header.sources?.delegate ?? null, mcpServers: (session.header.sources?.mcpServers ?? []).map(mcpServerView), decide: session.header.sources?.decide ?? null,
     ...(session.header.parent ? { parentAgentId: session.header.parent.agentId, parentRunId: session.header.parent.runId } : {}),
     spendLimit: await ctx.spendOf(session).then(spend => spend && { usd: spend.usd, spent: spend.spent }), runLimits: session.header.config.runLimits ?? null, ...(session.header.config.computerLimit !== undefined ? { computerLimit: session.header.config.computerLimit } : {}),
     maxOutputTokens: session.header.config.maxOutputTokens ?? null, temperature: session.header.config.temperature ?? null, dataCollection: session.header.config.dataCollection ?? null, language: session.header.config.language ?? null,
@@ -488,10 +490,10 @@ export async function configure(ctx: ConfigurationContext, session: Session, par
   // The hash of the tools as the application declared them: given by an upsert, else of a configure's own mcp.tools.
   const toolsHash = declared ?? (asked.mcp?.tools !== undefined ? hash(JSON.stringify(asked.mcp.tools)) : undefined);
   const { mounts, ...wanted } = asked;
-  const { builtins, delegate, mcpServers, decide, ...given } = provisionHash !== undefined ? upsertChanges(session.header, wanted) : wanted;
+  const { builtins, delegate, humanInput, mcpServers, decide, ...given } = provisionHash !== undefined ? upsertChanges(session.header, wanted) : wanted;
   // The agent's own builtins, their settings and MCP servers (an agent from a definition has the definition's): its sources, with the tools they offer.
-  const reSourced = builtins !== undefined || delegate !== undefined || mcpServers !== undefined || decide !== undefined;
-  const sources = reSourced ? ownSources(session.header.sources, { builtins, delegate, mcpServers, decide }, inlineServers(ctx, session.header.tenant)) : session.header.sources;
+  const reSourced = humanInput !== undefined || builtins !== undefined || delegate !== undefined || mcpServers !== undefined || decide !== undefined;
+  const sources = reSourced ? ownSources(session.header.sources, { builtins, delegate, humanInput, mcpServers, decide }, inlineServers(ctx, session.header.tenant)) : session.header.sources;
   // An upsert with remount: true sets its mounts here, between turns; the agent's next start describes them.
   if (mounts !== undefined) await sessionTools.remount(ctx.toolsContext, session, mounts);
   const changed = (application !== undefined && canonical(application) !== canonical(session.header.metadata?.application ?? {})) || provisionHash === undefined || reSourced || mounts !== undefined || Object.keys(given).length > 0 || (name !== undefined && name !== (session.header.metadata?.name ?? null)) || (type !== undefined && type !== (session.header.metadata?.type ?? null));
@@ -541,7 +543,7 @@ export async function configure(ctx: ConfigurationContext, session: Session, par
  * leaves out stays, the delegate settings go with their builtin (delegateSettings), and its MCP servers are checked by
  * `inline` (ToolSources.inline: no credentials).
  */
-export function ownSources(current: Sources | undefined, given: { builtins?: unknown; delegate?: unknown; mcpServers?: unknown; decide?: unknown }, inline: (input: unknown) => McpServerSpec[]): Sources | undefined {
+export function ownSources(current: Sources | undefined, given: { humanInput?: unknown; builtins?: unknown; delegate?: unknown; mcpServers?: unknown; decide?: unknown }, inline: (input: unknown) => McpServerSpec[]): Sources | undefined {
   const builtins = given.builtins !== undefined ? builtinsInput(given.builtins) as string[] : current?.builtins ?? [];
   // Kept when builtins change: settings of a builtin still given, or limits alone (which need none).
   const kept = current?.delegate && (startsChildren(builtins) || limitsOnly(current.delegate)) ? current.delegate : undefined;
@@ -549,7 +551,7 @@ export function ownSources(current: Sources | undefined, given: { builtins?: unk
   const mcpServers = given.mcpServers !== undefined ? inline(given.mcpServers) : current?.mcpServers ?? [];
   const decide = given.decide !== undefined ? decideInput(given.decide, true) : current?.decide ?? null;
   const { builtins: _builtins, delegate: _delegate, mcpServers: _servers, decide: _decide, ...rest } = current ?? {};
-  const next: Sources = { ...rest, ...(builtins.length ? { builtins } : {}), ...(delegate ? { delegate } : {}), ...(mcpServers.length ? { mcpServers } : {}), ...(decide !== null ? { decide } : {}) };
+  const next: Sources = { ...rest, ...(given.humanInput !== undefined ? { humanInput: humanInputSettings(given.humanInput) } : {}), ...(builtins.length ? { builtins } : {}), ...(delegate ? { delegate } : {}), ...(mcpServers.length ? { mcpServers } : {}), ...(decide !== null ? { decide } : {}) };
   return Object.keys(next).length ? next : undefined;
 }
 

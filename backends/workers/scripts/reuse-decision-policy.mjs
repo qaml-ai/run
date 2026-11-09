@@ -53,7 +53,7 @@ const childPolicy = header + `export type DelegateResponse = { run: string; mess
 export type Session = { childHeld?: Map<string, { usd: number; holders: number }>; delegateResponse?: DelegateResponse; delegating?: { active: number } };
 type SpendContext = { left?: number };
 const budgetLeft = async (ctx: SpendContext, _session: Session, _run: string) => ctx.left;
-type Mount = { volumeId: string; path: string; mode: 'ro' | 'rw'; subpath?: string; notify?: boolean };
+type Mount = { volumeId: string; path: string; mode: 'ro' | 'rw'; subpath?: string; notify?: boolean; instructions?: string };
 ` + spend.slice(spend.indexOf('/**\n * The spend limit a delegate'), spend.indexOf('/**\n * A background child\'s spend')) +
   children.slice(children.indexOf('/**\n * What a child of the model\'s own'), children.indexOf('/** A child\'s prompt:'));
 const childPath = new URL('delegation-policy.ts', output);

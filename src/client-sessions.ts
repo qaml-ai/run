@@ -853,7 +853,7 @@ export class ClientSessions {
       // Lost or given up while it got ready (its node fenced, or is leaving): it starts nothing. A host started now would
       // serve an owner that is gone, and whoever loads the agent next would find it and take it for theirs, still starting.
       if (session.fault || session.leaving) throw session.fault ?? new Error("Agent stopped");
-      const result = await steps.time("init", this.supervisor.start(session.header.id, { ...session.header.config, sharedAgent: runningRun(session)?.sharedAgent ?? undefined, model: withCatalogPrices(currentModel(session.header.config.model)), apiKey, mounts: [...VolumeService.markWorkspace(session.header.id, session.header.mounts ?? []).map(({ path, mode, workspace }) => ({ path, mode, ...workspace ? { workspace } : {} })), ...computer ? [{ path: "/computer", mode: "rw" as const, computer: true }] : []], ...(this.options.retry ? { retry: this.options.retry } : {}), ...(fallback ? { contentFilterFallback: fallback } : {}), ...(this.options.streamTimeouts ? { streamTimeouts: this.options.streamTimeouts } : {}), contextRangeMaxBytes: this.options.contextRangeMaxBytes, ...(session.resuming.size ? { resume: true } : {}), tenant: session.header.tenant, codeLimits: { cpuMs, maxTimeoutMs } }, {
+      const result = await steps.time("init", this.supervisor.start(session.header.id, { ...session.header.config, sharedAgent: runningRun(session)?.sharedAgent ?? undefined, model: withCatalogPrices(currentModel(session.header.config.model)), apiKey, mounts: [...VolumeService.markWorkspace(session.header.id, session.header.mounts ?? []).map(({ path, mode, workspace, instructions }) => ({ path, mode, ...(instructions !== undefined ? { instructions } : {}), ...workspace ? { workspace } : {} })), ...computer ? [{ path: "/computer", mode: "rw" as const, computer: true }] : []], ...(this.options.retry ? { retry: this.options.retry } : {}), ...(fallback ? { contentFilterFallback: fallback } : {}), ...(this.options.streamTimeouts ? { streamTimeouts: this.options.streamTimeouts } : {}), contextRangeMaxBytes: this.options.contextRangeMaxBytes, ...(session.resuming.size ? { resume: true } : {}), tenant: session.header.tenant, codeLimits: { cpuMs, maxTimeoutMs } }, {
         definitions,
         codeSlot: async signal => this.codeGate.acquire(session.header.tenant, (await spend.codeLimits(this.spendContext, session.header.tenant)).concurrent, signal),
         runLimit: async () => {
@@ -1057,7 +1057,7 @@ export class ClientSessions {
    * (`origin.definition`), and `origin.provision` stands for its configuration in the
    * idempotency check, so a retry after the definition changed returns the same agent.
    */
-  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; bucket?: string; toolsHash?: string; remount?: boolean; idleTtlMs?: number; builtins?: string[]; delegate?: DelegateSettings; mcpServers?: McpServerSpec[]; parent?: SessionHeader["parent"]; fork?: { id: string; from: ForkedFrom; messages: AgentMessage[]; turns: number[]; model: Message[] }; admit?: (unchanged: boolean) => Promise<unknown>; run?: RunSettings } = {}, steps = new Steps()): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> { return configuration.create(this.configurationContext, definitions, config, given, metadata, tenant, ttlMs, mounts, origin, identity, access, steps); }
+  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { humanInput?: import("./inputs.ts").HumanInputSettings; keyScope?: string; spendLimit?: number; bucket?: string; toolsHash?: string; remount?: boolean; idleTtlMs?: number; builtins?: string[]; delegate?: DelegateSettings; mcpServers?: McpServerSpec[]; parent?: SessionHeader["parent"]; fork?: { id: string; from: ForkedFrom; messages: AgentMessage[]; turns: number[]; model: Message[] }; admit?: (unchanged: boolean) => Promise<unknown>; run?: RunSettings } = {}, steps = new Steps()): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> { return configuration.create(this.configurationContext, definitions, config, given, metadata, tenant, ttlMs, mounts, origin, identity, access, steps); }
 
   /**
    * A new token for a tenant's agent: the old one stops working at once, here and on every node (they check the header
@@ -1133,7 +1133,7 @@ export class ClientSessions {
     const name = input.name ?? (source.metadata?.name && `${source.metadata.name} (fork)`.slice(0, 120));
     const created = await this.create(source.definitions, config as Omit<AgentConfig, "id" | "directory" | "tools">, key, { ...source.metadata, ...(name ? { name } : {}) }, tenant, input.ttlMs, mounts,
       source.definition && { definition: source.definition, provision: { fork: source.provisionHash }, overrides: source.overrides, sources: source.sources }, identity,
-      { keyScope: source.keyScope, ...(spend ? { spendLimit: Number(spend.usd) } : {}), toolsHash: source.toolsHash, ...source.definition ? {} : { builtins: source.sources?.builtins, delegate: source.sources?.delegate, mcpServers: source.sources?.mcpServers, ...(source.sources?.decide !== undefined ? { decide: source.sources.decide } : {}) }, fork: { id: made.id, from, messages: cut.messages, turns: cut.turns, model: cut.model } }, steps);
+      { keyScope: source.keyScope, ...(spend ? { spendLimit: Number(spend.usd) } : {}), toolsHash: source.toolsHash, ...source.definition ? {} : { builtins: source.sources?.builtins, humanInput: source.sources?.humanInput, delegate: source.sources?.delegate, mcpServers: source.sources?.mcpServers, ...(source.sources?.decide !== undefined ? { decide: source.sources.decide } : {}) }, fork: { id: made.id, from, messages: cut.messages, turns: cut.turns, model: cut.model } }, steps);
     // Made meanwhile by a retry: whatever it holds is the fork.
     if (created.reconfigure) return answer(this.sessions.get(created.id)?.header ?? (await this.readHeader(created.id))!.value);
     return { id: created.id, token: created.token, expiresAt: created.expiresAt, forkedFrom: from };
@@ -1712,7 +1712,7 @@ export class ClientSessions {
     if (Object.hasOwn(body.params, "sharedAgent")) throw new HttpError(400, "sharedAgent is runtime-only");
     const applying = body.method === "configure" && body.params.definition !== undefined;
     // Which keys an agent calls models with, and how much it may spend, are the tenant's to choose, never the agent's own.
-    for (const key of ["keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "dataCollection", "queue", "builtins", "delegate", "mcpServers", "decide", "mounts", "networking", ...UPSERT_KEYS]) if (body.method === "configure" && !trusted && Object.hasOwn(body.params, key)) throw new HttpError(403, `Only the tenant can change an agent's ${key}`);
+    for (const key of ["keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "dataCollection", "queue", "humanInput", "builtins", "delegate", "mcpServers", "decide", "mounts", "networking", ...UPSERT_KEYS]) if (body.method === "configure" && !trusted && Object.hasOwn(body.params, key)) throw new HttpError(403, `Only the tenant can change an agent's ${key}`);
     const spendLimit = body.method === "configure" && Object.hasOwn(body.params, "spendLimit") ? spend.spendInput(body.params.spendLimit) : undefined;
     // Which of its end user's buckets the agent's runs spend from: the tenant's to say, applied at once, as a spend limit is.
     const agentBucket = body.method === "configure" && Object.hasOwn(body.params, "bucket") ? body.params.bucket === null ? null : bucketInput(body.params.bucket) : undefined;
@@ -1723,16 +1723,16 @@ export class ClientSessions {
     if (applying && (!trusted || !this.options.definitionFor || Object.keys(body.params).length !== 1 || typeof body.params.definition?.id !== "string")) throw new HttpError(400, "Apply a definition with PATCH /v1/definitions/<id> and apply: \"all\"");
     try {
       if (body.method === "configure" && !applying) {
-        const { spendLimit: _limit, bucket: _bucket, provisionHash: _hash, name: _name, type: _type, metadata: _metadata, toolsHash: _tools, mounts: _mounts, builtins, delegate, mcpServers, decide, ...update } = body.params;
+        const { spendLimit: _limit, bucket: _bucket, provisionHash: _hash, name: _name, type: _type, metadata: _metadata, toolsHash: _tools, mounts: _mounts, builtins, delegate, humanInput, mcpServers, decide, ...update } = body.params;
         if (_metadata !== undefined) applicationMetadata(_metadata);
         const checked = configurationUpdate(update, this.options.modelEndpoints?.(session.header.tenant), await this.options.customProviders?.(session.header.tenant, configuration.scopeAfter(session.header, update)));
         // A model, thinking level, maxOutputTokens or temperature that leaves the agent asking its model for what it refuses is refused now.
         const refusal = configurationRefusal(session.header.config, checked);
         if (refusal) throw new Error(refusal);
-        const own = builtins !== undefined || delegate !== undefined || mcpServers !== undefined || decide !== undefined;
+        const own = humanInput !== undefined || builtins !== undefined || delegate !== undefined || mcpServers !== undefined || decide !== undefined;
         if (own && session.header.definition) throw new HttpError(400, `This agent's ${mcpServers !== undefined ? "MCP servers" : "builtins"} come from its definition; change them there`);
         // An upsert gives the whole of them, which `execute` checks as it applies them; a change of some is checked now.
-        if (own && body.params.provisionHash === undefined) configuration.ownSources(session.header.sources, { builtins, delegate, mcpServers, decide }, configuration.inlineServers(this.configurationContext, session.header.tenant));
+        if (own && body.params.provisionHash === undefined) configuration.ownSources(session.header.sources, { builtins, delegate, humanInput, mcpServers, decide }, configuration.inlineServers(this.configurationContext, session.header.tenant));
       }
       // Assistant and tool-result history is runtime-owned; callers may only add user input.
       if (["prompt", "steer"].includes(body.method) && body.params.message !== undefined) validateUserMessages(Array.isArray(body.params.message) ? body.params.message : [body.params.message]);
@@ -2433,6 +2433,7 @@ export class ClientSessions {
       // the session's own would, and the turn goes on from storage, not from this host's memory.
       if (errorText(error).startsWith(PERSISTENCE_FAILED)) this.fail(session, error, "transcript");
     }
+    if ((value.result as { stopped?: string } | undefined)?.stopped === "spend_limit") value = { result: { ...value.result as object, status: "paused", stoppedReason: "budget_reached" } };
     if (RUN_METHODS.includes(record.method)) session.outputs = undefined;
     spend.reportActive(this.spendContext, session, false);
     session.beginning = undefined;

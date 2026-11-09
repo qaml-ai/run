@@ -25,6 +25,7 @@ export class LocalWorker {
   readonly url: string;
   private child?: ChildProcess;
   private output = "";
+  logLimit = 16_000;
   private port: number;
   private inspectorPort = 0;
   private storage: string;
@@ -103,7 +104,7 @@ export class LocalWorker {
     });
     let output = "";
     const save = (data: Buffer) => {
-      output = (output + data.toString()).slice(-16_000);
+      output = (output + data.toString()).slice(-this.logLimit);
       this.output = output;
     };
     child.stdout!.on("data", save);
@@ -196,43 +197,30 @@ export class LocalWorker {
     if (!response.ok) throw new Error(`Local scheduled handler failed: ${response.status}`);
     await response.arrayBuffer();
   }
-  async heap() {
-    const targets = (await (
-      await fetch(`http://127.0.0.1:${this.inspectorPort}/json/list`)
-    ).json()) as { webSocketDebuggerUrl: string }[];
-    const socket = new WebSocket(
-      targets[0].webSocketDebuggerUrl.replace(
-        /ws:\/\/[^/]+/,
-        `ws://127.0.0.1:${this.inspectorPort}`,
-      ),
-    );
-    await new Promise<void>((resolve, reject) => {
-      socket.onopen = () => resolve();
-      socket.onerror = reject;
-    });
+  /** One inspector connection avoids retaining a new debugger session per sample. */
+  async heapSampler() {
+    const targets = await (await fetch(`http://127.0.0.1:${this.inspectorPort}/json/list`)).json() as { webSocketDebuggerUrl: string }[];
+    const socket = new WebSocket(targets[0].webSocketDebuggerUrl.replace(/ws:\/\/[^/]+/, `ws://127.0.0.1:${this.inspectorPort}`));
+    await new Promise<void>((resolve, reject) => { socket.onopen = () => resolve(); socket.onerror = reject; });
     let next = 0;
-    const call = (method: string) =>
-      new Promise<Record<string, number>>((resolve, reject) => {
+    return {
+      read: () => new Promise<Record<string, number>>((resolve, reject) => {
         const id = ++next;
-        const timer = setTimeout(
-          () => reject(new Error(`Inspector timeout: ${method}`)),
-          5000,
-        );
-        socket.onmessage = (event) => {
+        const timer = setTimeout(() => reject(new Error('Inspector timeout: Runtime.getHeapUsage')), 30_000);
+        socket.onmessage = event => {
           const message = JSON.parse(String(event.data));
           if (message.id !== id) return;
           clearTimeout(timer);
-          if (message.error) reject(new Error(JSON.stringify(message.error)));
-          else resolve(message.result);
+          if (message.error) reject(new Error(JSON.stringify(message.error))); else resolve(message.result);
         };
-        socket.send(JSON.stringify({ id, method }));
-      });
-    try {
-      await call("Runtime.enable");
-      return await call("Runtime.getHeapUsage");
-    } finally {
-      socket.close();
-    }
+        socket.send(JSON.stringify({ id, method: 'Runtime.getHeapUsage' }));
+      }),
+      close: () => socket.close(),
+    };
+  }
+  async heap() {
+    const sampler = await this.heapSampler();
+    try { return await sampler.read(); } finally { sampler.close(); }
   }
   logs() {
     return this.output;
