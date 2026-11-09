@@ -1,4 +1,4 @@
-import { allowedInCheck, checkRequest, MONITOR_LIMITS, TOOL_CALLS_ERROR } from "../../../shared/monitors.ts";
+import { allowedInCheck, checkRequest } from "../../../shared/monitors.ts";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
@@ -115,12 +115,8 @@ export async function startHostExecution(pi: Harness, root: Conversation, reques
     if (saved.task !== undefined) return saved.task as TaskId<ToolTaskResult>;
     const conversation = await tx.createConversation({ ownership: { kind: "ownerless" } });
     (await tx.doc(HostExecutionRequest, conversation.id)).requestId = requestId;
-    // A monitor's check: without the tools a check may not use, and a few calls at most (shared/monitors.ts).
-    let calls = 0;
-    const callable = !checkRequest(requestId) ? agent.callable : agent.callable.filter(entry => allowedInCheck(entry.name)).map(entry => ({ ...entry, execute: ((...args: Parameters<typeof entry.execute>) => {
-      if (++calls > MONITOR_LIMITS.toolCalls) throw new Error(TOOL_CALLS_ERROR);
-      return entry.execute(...args);
-    }) as typeof entry.execute }));
+    // A monitor's check: without the tools a check may not use (shared/monitors.ts; its script counts its own calls).
+    const callable = !checkRequest(requestId) ? agent.callable : agent.callable.filter(entry => allowedInCheck(entry.name));
     await configure(tx, conversation.id, { extensions: agent.extensions, tools: [...callable, tool], modelTools: [tool] });
     const callId = `execute:${requestId}`;
     const assistant = await tx.appendEntry(AssistantEntry, conversation.id, { model: [{

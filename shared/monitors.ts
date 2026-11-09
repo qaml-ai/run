@@ -72,9 +72,24 @@ export const newMonitor = (input: MonitorInput, now = Date.now()): Monitor => ({
 const DENIED = /^(?:delegate|spawn_agent|send_message|wait_agent|interrupt_agent|list_agents|report_progress|ask_user|ask_human|request_decision|decide|generate_image|write|edit|multi_edit|apply_patch|cp|mv|rm|mkdir|delete|move|copy|present_file|file_import|file_link|schedule|list_schedules|cancel_schedule|monitor_start|monitor_stop|monitor_list|computer|computer_.*|browser_.*|bash|exec|shell|execute)$/;
 export const allowedInCheck = (tool: string) => !DENIED.test(tool);
 
-/** The check as the request that runs it: `state` in scope, its return value wrapped so the result is told from printing. */
+/**
+ * The check as the request that runs it: `state` in scope, its return value wrapped so the result is told from printing,
+ * and its `tools` counting calls (the cap both backends share; Node's host counts them too).
+ */
 export function checkCode(code: string, state: unknown) {
-  return `const state = ${JSON.stringify(state ?? null)};\nconst __check = await (async () => {\n${code}\n})();\nreturn { __monitor: __check === undefined ? null : __check };`;
+  return `const state = ${JSON.stringify(state ?? null)};
+let __calls = 0;
+const __counted = new Proxy(tools, { get(target, name) {
+  const member = target[name];
+  return typeof member !== "function" ? member : (...args) => {
+    if (++__calls > ${MONITOR_LIMITS.toolCalls}) throw new Error(${JSON.stringify(`A monitor's check makes at most ${MONITOR_LIMITS.toolCalls} tool calls`)});
+    return member(...args);
+  };
+} });
+const __check = await (async (tools) => {
+${code}
+})(__counted);
+return { __monitor: __check === undefined ? null : __check };`;
 }
 /**
  * The key of the check an occurrence sends: the one still in flight if there is one (its request is sent again under
