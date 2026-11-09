@@ -1,4 +1,4 @@
-import { contractTest, OTHER_OPERATOR, lastUser, toolCall, toolResults, until } from '../support.ts';
+import { contractTest, OTHER_OPERATOR, lastUser, sleep, toolCall, toolResults, until } from '../support.ts';
 import type { ContractFixture } from '../fixture.ts';
 import assert from "node:assert/strict";
 
@@ -70,6 +70,12 @@ contractTest("monitors", "tests/monitors.test.ts:3", "a failing check is counted
   assert.equal(failed.consecutiveErrors, 1);
   assert.match(failed.lastError, /boom/);
   assert.ok(failed.nextCheckAt >= before + 600_000, "the next check waits twice the interval");
+  // No retry spiral: the failed check is not run again before its backoff, even when its occurrence comes due.
+  await f.setScheduleDueAt(agent, broken, 1000);
+  await sleep(3000);
+  const later = (await f.call(`${path}/${broken}`)).json;
+  assert.equal(later.checks, 1, "a failed check is not retried at once");
+  assert.ok(later.nextCheckAt >= before + 600_000);
   // Not an object with fire: an error too. And the agent's schedule and monitor tools are not in a check's sandbox.
   const shape = (await f.call(path, { body: { name: "shape", code: "return 5;" } })).json.id;
   assert.match((await settled(f, agent, shape, 1)).lastError, /must return \{ fire: boolean/);
