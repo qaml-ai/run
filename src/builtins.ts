@@ -226,7 +226,7 @@ async function builtinValue(services: BuiltinServices, context: BuiltinContext, 
 }
 
 const view = (schedule: Schedule) => ({
-  id: schedule.id, cron: schedule.cron, sessionMode: schedule.sessionMode, spendLimit: schedule.spendLimit, ...(schedule.calendar ? { calendar: schedule.calendar } : {}), ...(schedule.text !== undefined ? { text: schedule.text } : { code: schedule.code }), dueAt: new Date(schedule.dueAt).toISOString(),
+  id: schedule.id, ...(schedule.cron ? { cron: schedule.cron } : {}), ...(schedule.sessionMode ? { sessionMode: schedule.sessionMode } : {}), ...(schedule.spendLimit ? { spendLimit: schedule.spendLimit } : {}), ...(schedule.calendar ? { calendar: schedule.calendar } : {}), ...(schedule.text !== undefined ? { text: schedule.text } : { code: schedule.code }), dueAt: new Date(schedule.dueAt).toISOString(),
   ...(schedule.everySeconds ? { everySeconds: schedule.everySeconds } : {}),
   ...(schedule.failures ? { failures: schedule.failures } : {}), ...(schedule.lastError !== undefined ? { lastError: schedule.lastError } : {}),
 });

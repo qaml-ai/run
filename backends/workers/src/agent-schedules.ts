@@ -29,7 +29,7 @@ const definitions = [
 /** The tool result matches src/builtins.ts; the HTTP schedule view keeps epoch milliseconds. */
 function view(schedule: Schedule) {
   return {
-    id: schedule.id, cron: schedule.cron, sessionMode: schedule.sessionMode, spendLimit: schedule.spendLimit, ...(schedule.calendar ? { calendar: schedule.calendar } : {}),
+    id: schedule.id, ...(schedule.cron ? { cron: schedule.cron } : {}), ...(schedule.sessionMode ? { sessionMode: schedule.sessionMode } : {}), ...(schedule.spendLimit ? { spendLimit: schedule.spendLimit } : {}), ...(schedule.calendar ? { calendar: schedule.calendar } : {}),
     ...(schedule.text !== undefined ? { text: schedule.text } : { code: schedule.code }),
     dueAt: new Date(schedule.dueAt).toISOString(),
     ...(schedule.everySeconds ? { everySeconds: schedule.everySeconds } : {}),
