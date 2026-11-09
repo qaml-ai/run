@@ -107,17 +107,17 @@ contractTest('apply', 'tests/apply.test.ts:7', 'refuses prompts history and auto
 
 contractTest('apply', 'tests/apply.test.ts:8', 'concurrent applies share ids and preserve a stored subject when omitted', async t => {
   const r = await createContractFixture(t);
-  const subject = { agents: { lead: { subject: 'user-1', name: 'Lead' } } };
+  const subject = { agents: { person: { subject: 'user-1', name: 'Lead' } } };
   const made = await r.call('/v1/apply', { body: subject });
   assert.equal(made.status, 200, made.text);
-  const before = await r.call(`/v1/agents/${made.json.agents.lead}/credentials`);
-  const together = await Promise.all(Array.from({ length: 3 }, () => r.call('/v1/apply', { body: { agents: { lead: { name: 'Lead' } } } })));
+  const before = await r.call(`/v1/agents/${made.json.agents.person}/credentials`);
+  const together = await Promise.all(Array.from({ length: 3 }, () => r.call('/v1/apply', { body: { agents: { person: { name: 'Lead' } } } })));
   for (const result of together) {
     assert.equal(result.status, 200, result.text);
     assert.deepEqual(result.json.agents, made.json.agents);
     assert.equal(result.json.changes[0].action, 'unchanged');
   }
-  assert.equal((await r.call(`/v1/agents/${made.json.agents.lead}/credentials`)).json.configHash, before.json.configHash);
+  assert.equal((await r.call(`/v1/agents/${made.json.agents.person}/credentials`)).json.configHash, before.json.configHash);
   const fresh = await Promise.all(Array.from({ length: 2 }, () => r.call('/v1/apply', { body: manifest })));
   for (const result of fresh) assert.equal(result.status, 200, result.text);
   assert.deepEqual(fresh[0].json.agents, fresh[1].json.agents);
