@@ -43,3 +43,59 @@ test("a calendar wake-up tells the model its fixed local edition date",async t=>
  await until(()=>r.model.bodies.some(body=>lastUser(body).includes("local edition date is 2000-01-01 in America/Chicago")),"the dated calendar prompt");
  assert.ok(r.model.bodies.some(body=>lastUser(body).includes("2000-01-02T04:30:00.000Z")));
 });
+
+test( "cron run-now preserves timing and fresh runs isolate history", async t=>{
+ const r=await runtime(t,()=>({role:"assistant",content:"done"}));
+ const definition=(await r.call('/v1/definitions',{body:{name:'Scheduled worker',systemPrompt:'Reply briefly.'}})).json.id;
+ const agent=(await r.call('/v1/agents',{body:{definition}})).json.id;
+ const path=`/v1/agents/${agent}/schedules`;
+ await r.call(`/v1/agents/${agent}/prompt`,{body:{text:'PARENT_HISTORY_MARKER',allowDisconnected:true}});
+ await until(()=>r.model.bodies.length>0,'parent history');
+ const created=await r.call(path,{body:{text:'Run now',cron:{expression:'0 9 * * 1-5',timeZone:'America/Chicago'},sessionMode:'fresh',spendLimit:{usd:1}}});
+ assert.equal(created.status,201,JSON.stringify(created.json));
+ const schedule=created.json;
+ const first=await r.call(`${path}/${schedule.id}/run`,{body:{}});
+ assert.equal(first.status,202,JSON.stringify(first.json));
+ assert.notEqual(first.json.agent,agent);
+ const second=await r.call(`${path}/${schedule.id}/run`,{body:{}});
+ assert.equal(second.status,202,JSON.stringify(second.json));
+ assert.notEqual(first.json.agent,second.json.agent);
+ await until(()=>r.model.bodies.length>=3,'fresh model calls');
+ assert.ok(r.model.bodies.slice(1).every(body=>!JSON.stringify(body).includes('PARENT_HISTORY_MARKER')));
+ assert.equal((await r.call(path)).json[0].dueAt,schedule.dueAt);
+ await until(async()=>{
+  const deliveries=(await r.call(`/v1/agents/${agent}/schedule-deliveries`)).json;
+  return deliveries.length===2 && deliveries.every((d:any)=>d.state==='completed');
+ },'scheduled runs complete');
+ assert.notEqual((await r.call(`${path}/${schedule.id}/run`,{body:{},token:OTHER_OPERATOR})).status,202);
+ assert.equal((await r.call(`${path}/invalid/run`,{body:{}})).status,404);
+ assert.equal((await r.call(path,{body:{text:'x',cron:{expression:'* * * * * *',timeZone:'UTC'}}})).status,400);
+});
+
+test('continue schedules submit without the outcome table and code outcomes are recorded',async t=>{
+ const r=await runtime(t,()=>({role:'assistant',content:'done'}));
+ const agent=(await r.call('/v1/agents',{body:{}})).json.id,path=`/v1/agents/${agent}/schedules`;
+ const schedule=(await r.call(path,{body:{text:'Run without reporting table',inSeconds:3600}})).json;
+ await r.db.query('alter table schedule_runs rename to schedule_runs_pending_migration');
+ try {assert.equal((await r.call(`${path}/${schedule.id}/run`,{body:{}})).status,202);}
+ finally {await r.db.query('alter table schedule_runs_pending_migration rename to schedule_runs');}
+ const code=(await r.call(path,{body:{code:'console.log(42)',inSeconds:3600}})).json;
+ const run=await r.call(`${path}/${code.id}/run`,{body:{}});
+ assert.equal(run.status,202,JSON.stringify(run.json));
+ await until(async()=> (await r.call(`/v1/agents/${agent}/schedule-deliveries`)).json.some((row:any)=>row.runId===run.json.requestId&&row.endedAt&&row.state==='completed'),'code outcome');
+});
+
+test('cancelled queued schedules retain their outcome',async t=>{
+ const r=await runtime(t,()=>({role:'assistant',content:'done',delayMs:5000}));
+ const agent=(await r.call('/v1/agents',{body:{}})).json.id,path=`/v1/agents/${agent}/schedules`;
+ await r.call(`/v1/agents/${agent}/prompt`,{body:{text:'Hold the agent',allowDisconnected:true}});
+ await until(()=>r.model.bodies.length===1,'the active model call');
+ const schedule=(await r.call(path,{body:{text:'Queued report',inSeconds:3600}})).json;
+ const cancelled=(await r.call(`${path}/${schedule.id}/run`,{body:{}})).json;
+ await r.call(`/v1/agents/${agent}/abort`,{body:{queued:'cancel'}});
+ await until(async()=>{
+  const rows=(await r.call(`/v1/agents/${agent}/schedule-deliveries`)).json;
+  return rows.some((row:any)=>row.runId===cancelled.requestId && row.state==='failed' && row.endedAt);
+ },'cancelled schedule outcome');
+ assert.equal(r.model.bodies.length,1,'the queued schedule never began');
+});

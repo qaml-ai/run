@@ -191,9 +191,13 @@ export function tools(api: () => Api, options: { local?: LocalFiles } = {}): Too
     const client = api();
     return client.get(`/v1/agents/${enc(await client.agentId(agent))}/schedules`);
   }, read);
-  tool("add_schedule", "Add schedule", "Wake an agent later with a message: once (inSeconds or at), or repeatedly (everySeconds, at least 60; or calendar for a local time and weekdays). Optionally email the successful final report to a verified recipient. Each wake-up is a run that uses the account's model credit.", {
+  tool("add_schedule", "Add schedule", "Wake an agent later with a message: once (inSeconds or at), or repeatedly (everySeconds, at least 60; or calendar for a local time and weekdays). Optionally email the successful final report to a verified recipient. Each wake-up is a run that uses the account's model credit. Or cron: a 5-field cron expression with timeZone (IANA), in place of calendar.", {
     agent, text: z.string(),
-    calendar: z.object({ time: z.string().describe("Local HH:MM"), timeZone: z.string().describe("IANA zone, e.g. America/Chicago"), daysOfWeek: z.array(z.number().int().min(0).max(6)).optional().describe("Sunday 0 through Saturday 6; omit for daily") }).optional().describe("Cannot combine with other timing fields"),
+    mounts: z.array(z.union([z.object({volumeId:z.string(),path:z.string(),mode:z.enum(["ro","rw"]),subpath:z.string().optional(),notify:z.boolean().optional()}),z.object({workspace:z.boolean(),path:z.string().optional()})])).max(16).optional(),
+    cron: z.object({expression:z.string(),timeZone:z.string().describe("IANA time zone for cron and calendar times.")}).optional().describe('A 5-field cron expression, e.g. "0 9 * * 1-5".'),
+    sessionMode: z.enum(["continue","fresh"]).optional(),
+    spendLimit: z.object({usd:z.number().min(0).max(1000000)}).optional(),
+    calendar: z.object({ time: z.string().describe("Local HH:MM"), timeZone: z.string().describe("IANA time zone for cron and calendar times."), daysOfWeek: z.array(z.number().int().min(0).max(6)).optional().describe("Sunday 0 through Saturday 6; omit for daily") }).optional().describe("Cannot combine with other timing fields"),
     email: z.object({ to: z.email(), subject: z.string().min(1).max(200), format: z.enum(["text", "markdown", "html"]).optional().describe("Reply format; defaults to markdown. HTML is sent as supplied, with a generated plain-text alternative.") }).optional().describe("Email the final report to your sign-in email or a verified billing recipient"),
     inSeconds: z.number().optional(), at: z.string().optional().describe("ISO time"), everySeconds: z.number().int().min(60).optional(),
   }, async ({ agent, ...schedule }) => {

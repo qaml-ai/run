@@ -57,3 +57,55 @@ set). Without it, schedules with email are refused. Existing schedules without
 email are unaffected. TypeScript accepts `calendar` and `email` in `schedule()`;
 Python accepts the same dictionaries. The MCP `add_schedule` tool accepts both fields. The schedule builtin also accepts
 `calendar` for the agent's own wake-ups.
+
+### Cron, fresh sessions, and run now
+
+Use `cron: {"expression":"0 9 * * 1-5","timeZone":"America/Chicago"}`
+for weekday mornings. Cron has five numeric fields: minute, hour, day of month,
+month, weekday (Sunday 0 or 7). Lists, ranges and positive steps are supported.
+When both day fields are restricted, either can match. Do not combine cron with
+calendar, at, inSeconds, or everySeconds. Missing DST minutes are skipped;
+repeated DST minutes fire twice. Existing calendar schedules still fire once
+in a repeated hour. Missed occurrences are skipped after delivery.
+
+`sessionMode` defaults to `continue`, including on existing schedules. With
+`fresh`, the owner must have a definition. Each occurrence creates a separate
+agent from the definition's current revision, including its configured tool
+credentials and mounts. Optional schedule `mounts` override the definition's
+mounts for fresh runs. Definition changes apply to later runs. The run's agent
+appears in the agent list and expires seven days after creation; its history is
+available through its normal agent routes until then. Deleting a schedule does
+not delete previously created run agents.
+
+`spendLimit: {"usd": 1}` caps each occurrence using the runtime's existing
+per-request spend enforcement. It applies to both session modes; reaching it
+returns the existing spend-limit outcome. Account and agent limits also apply.
+
+`POST /v1/agents/{agent}/schedules/{schedule}/run` starts an occurrence immediately
+and returns HTTP 202 with `{agent, requestId, record}`. It does not change the
+next scheduled time. Every call starts a new occurrence. Read the request at
+`GET /v1/agents/{agent}/requests/{requestId}`. The schedule owner's
+`GET /v1/agents/{agent}/schedule-deliveries` lists the latest 100 occurrences,
+with their run agent, stored outcome and cost, and optional email
+state. History may expire before the delivery metadata.
+
+The agent-local `schedule` builtin continues its own session; fresh mode is
+configured through the owner API, SDK, CLI, or MCP `add_schedule`.
+
+TypeScript: `agent.runSchedule(id)`. Python: `agent.run_schedule(id)`.
+CLI: `camelrun schedules add <agent> --text 'Report' --cron '0 9 * * 1-5'
+--time-zone America/Chicago --session-mode fresh --spend-limit 1`, then
+`camelrun schedules run <agent> <scheduleId>`.
+
+Fresh schedules must be at least five minutes apart: `everySeconds` must be 300
+or more, and cron expressions cannot select minutes less than five minutes apart.
+Each schedule can have at most 200 unexpired run agents. A trigger above that cap
+fails with `This schedule already has 200 live run agents; delete or wait for a run agent to expire`.
+Run agents expire after seven days. Delivery summaries for all session modes are
+removed after 30 days, in batches of at most 500 rows.
+
+`GET /v1/agents/{id}/schedule-deliveries` returns stored run summaries: `runId`,
+`agent`, `state`, `error`, `cost` (USD), `createdAt`, and `endedAt`. Email status is
+separate in `emailState` and `emailError`. It no longer embeds the full `record`.
+Use the run's agent and request ID to read its history while the agent is retained.
+Code schedules cannot set `spendLimit`.
