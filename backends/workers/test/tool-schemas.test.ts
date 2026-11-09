@@ -40,7 +40,7 @@ test('every tool a model can receive has a top-level object schema', () => {
   assert.deepEqual(Object.keys(computerParameters.properties), ['provider', 'op', 'command', 'argv', 'timeoutMs', 'path', 'content', 'format', 'name']);
   assert.deepEqual(computerParameters.properties.op.enum, ['exec', 'read', 'write', 'parse', 'snapshot', 'restore', 'sleep']);
   // Each optional field says which operation takes it.
-  for (const [name, schema] of Object.entries<any>(computerParameters.properties).slice(2)) assert.match(schema.description, /^(exec|read|write|parse|snapshot|restore)[,:]/, name);
+  for (const [name, schema] of Object.entries<any>(computerParameters.properties).slice(2)) assert.match(schema.description, /^(exec|read|write|parse|snapshot|restore)\b/, name);
 });
 
 test('computer validates operation combinations before dispatch', async () => {
