@@ -4,7 +4,7 @@ Add groupBy=agent to GET /v1/usage for per-agent usage. Combine agent,
 definition, endUser, model, and day with commas. rollup=true attributes
 children to their root agent. GET /v1/agents/{id}/usage filters one agent;
 with rollup it includes that root's descendants. Costs are USD. Platform cost
-includes funding costs. Attribution starts with migration 124; older account
+includes funding costs. Attribution starts with migration 127; older account
 totals remain available through the unchanged default usage response.
 Workspace filters still apply. Definitions are attributed to the agent making
 the call; rollup changes only the agent dimension. Unknown dimensions are null.
@@ -23,7 +23,7 @@ agents.runs.log(id); pass agent=id to filter usage.
 CLI: camelrun usage --by agent,model --rollup and camelrun run-log <runId>.
 
 
-Migration 125 aggregates repeated usage into one row per day and attribution
+Migration 127 aggregates repeated usage into one row per day and attribution
 tuple. Details are retained for 400 UTC days, excluded when expired, and removed
 in batches during maintenance. Grouped reports take limit (1 to 500, default
 100) and cursor (the prior page's next). Totals cover every filtered group.

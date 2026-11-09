@@ -1,3 +1,9 @@
+-- One migration for the unreleased attribution schema and its daily aggregates.
+-- Attribution is retained with accounting, independently of agent retention.
+create table if not exists usage_details (
+  tenant text not null, agent text, root_agent text, definition text, end_user text, workspace text,
+  occurred_at bigint not null, day date not null, model text not null, totals jsonb not null
+);
 -- Replace per-call details with one aggregate per attribution tuple, including null dimensions.
 -- Keep attribution on existing model attempts before removing their per-call lookup data.
 update model_attempts m set context = coalesce(m.context, '{}'::jsonb) || jsonb_build_object('usageAttribution',

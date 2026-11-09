@@ -56,13 +56,16 @@ test("null dimensions aggregate, pagination is complete, totals cover all pages,
 test("migration folds old call rows and preserves attribution for later corrections", async () => {
   const { db } = await testDatabase();
   await db.query("drop table usage_details");
-  await db.query(readFileSync(new URL("../migrations/124_usage_details.sql", import.meta.url), "utf8"));
+  await db.query(`create table usage_details (
+    tenant text not null, agent text, root_agent text, definition text, end_user text, workspace text,
+    occurred_at bigint not null, day date not null, model text not null, totals jsonb not null
+  )`);
   const row = base();
   await db.query(`insert into model_attempts (id,tenant,agent,provider,model,kind,platform,catalog_priced,prepaid,started_at,updated_at,next_check_at)
     values ('00000000-0000-4000-8000-000000000001','alice','child','p','p/m','response',false,false,false,$1,$1,$1)`, [row.timestamp]);
   for (let i = 0; i < 2; i++) await db.query(`insert into usage_details (tenant,agent,root_agent,definition,occurred_at,day,model,totals)
     values ('alice','child','root','original',$1,$2,'p/m',$3)`, [row.timestamp, row.day, JSON.stringify(row)]);
-  await db.query(readFileSync(new URL("../migrations/125_usage_details_daily.sql", import.meta.url), "utf8"));
+  await db.query(readFileSync(new URL("../migrations/127_usage_details.sql", import.meta.url), "utf8"));
   const rows = (await db.query("select * from usage_details")).rows;
   assert.equal(rows.length, 1);
   assert.equal(rows[0].totals.responses, 2);
