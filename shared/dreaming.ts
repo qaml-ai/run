@@ -48,7 +48,7 @@ export function redactDream(value: unknown): any {
     .replace(/\bBearer\s+[^\s"']+/gi, 'Bearer [redacted]')
     .replace(/\b([\w-]*(?:password|secret|token|authorization|api[ _-]?key|credential)[\w-]*)["']?\s*[:=][^\r\n]*/gi, '$1=[redacted]')
     .replace(/\b(password|secret|token)\s+(?:is|was)\s+[^\r\n]*/gi, '$1 is [redacted]')
-    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi, '$1[redacted]@');
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/?#]*@/gi, '$1[redacted]@');
 }
 
 function opaqueSecret(token: string) {

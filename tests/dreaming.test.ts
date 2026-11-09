@@ -74,6 +74,7 @@ test('dream redaction removes credential fields, bearer tokens and private keys'
 
 test('paths and low-entropy words survive while opaque credentials and every URL userinfo scheme are redacted',()=>{
   assert.equal(redactDream('projects/customer-onboarding-flow.md'),'projects/customer-onboarding-flow.md');
+  assert.equal(redactDream('postgres://alice:p@ss@db/name'),'postgres://[redacted]@db/name');
   assert.equal(redactDream('customer-onboarding-flow-with-weekly-updates'),'customer-onboarding-flow-with-weekly-updates');
   for(const scheme of ['postgres','redis','mongodb+srv','amqp','custom.thing']) {
     const text=redactDream(`${scheme}://alice:short%20secret@host/db`);
