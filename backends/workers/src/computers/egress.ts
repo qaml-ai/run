@@ -1,4 +1,4 @@
-import { vaultAuth, vaultRequest, maskResponse, type Vault, type VaultAuth, type Networking, networkAllows } from "../../../../src/core/vault.ts";
+import { vaultAuth, vaultRequest, maskResponse, type Vault, type VaultAuth, type Networking, networkAllows, decodeVaultPath } from "../../../../src/core/vault.ts";
 // A native computer starts with enableInternet: true: every host is reachable
 // directly. Its definition may grant HTTPS egress to named hosts: the
 // Container's traffic to each host is intercepted
@@ -36,26 +36,10 @@ export const COMPUTER_LIMITS = {
   idleSeconds: { min: 10, max: 3600, default: 60 },
   execMs: 600_000,
 };
-/** Where the Container runtime puts the CA that signs intercepted HTTPS. */
-export const CONTAINER_CA = "/etc/cloudflare/certs/cloudflare-containers-ca.crt";
-/** Trusts that CA for every TLS client in the image: OpenSSL (git, curl, python) through the system bundle, Node through NODE_EXTRA_CA_CERTS. */
+export { CONTAINER_CA, EGRESS_ENV } from "../../../../src/core/egress-env.ts";
+import { CONTAINER_CA } from "../../../../src/core/egress-env.ts";
+/** Trust the interception CA for clients using the system bundle. */
 export const TRUST_COMMAND = `cp ${CONTAINER_CA} /usr/local/share/ca-certificates/cloudflare-containers-ca.crt && update-ca-certificates >/dev/null`;
-/** The system bundle, which holds the interception CA once TRUST_COMMAND ran. */
-const SYSTEM_BUNDLE = "/etc/ssl/certs/ca-certificates.crt";
-/**
- * The environment of every process on a machine with grants. Clients with their own CA store need to be pointed at
- * the interception CA: Node (npm, fetch) through NODE_EXTRA_CA_CERTS, and Python's requests and pip, which bundle
- * certifi, through REQUESTS_CA_BUNDLE and PIP_CERT. Without these, `npm install` behind the gateway failed with
- * SELF_SIGNED_CERT_IN_CHAIN. git never prompts for a credential the gateway supplies. Set both at start() and on each
- * exec: exec does not inherit start()'s env.
- */
-export const EGRESS_ENV: Record<string, string> = {
-  NODE_EXTRA_CA_CERTS: CONTAINER_CA,
-  GIT_TERMINAL_PROMPT: "0",
-  SSL_CERT_FILE: SYSTEM_BUNDLE,
-  REQUESTS_CA_BUNDLE: SYSTEM_BUNDLE,
-  PIP_CERT: SYSTEM_BUNDLE,
-};
 const HOST = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$/;
 const RESERVED = /(^|\.)(localhost|local|internal|localdomain|home|lan|test|invalid|example)$/;
 const bad = (message: string) => new HttpError(400, message);
@@ -172,8 +156,10 @@ export type EgressDeps = {
  */
 export async function forwardEgress(request: Request, grant: EgressGrant, deps: EgressDeps): Promise<Response> {
   let secretValues: string[] = [];
-  if (deps.vault) {
-    try { const filled = await vaultRequest(request, deps.vault.refs, deps.vault.service, deps.vault.tenant); request = filled.request; secretValues = filled.values; }
+  if (deps.vault || grant.auth?.type === "vault") {
+    try {
+      if (grant.auth?.type === "vault") { const url = new URL(request.url); decodeVaultPath(url.pathname); decodeVaultPath(url.search); }
+      if (deps.vault) { const filled = await vaultRequest(request, deps.vault.refs, deps.vault.service, deps.vault.tenant); request = filled.request; secretValues = filled.values; } }
     catch (error) { const status = (error as {status?:number}).status; return Response.json({ error: status === 413 ? "Vault request body exceeds 8 MiB" : status === 400 ? "Malformed vault request" : "Vault request refused" }, { status: status === 413 ? 413 : status === 400 ? 400 : 403 }); }
   }
   const incoming = new URL(request.url);
@@ -206,7 +192,7 @@ export async function forwardEgress(request: Request, grant: EgressGrant, deps: 
     credential.refused();
     if (!body) { await response.body?.cancel(); try { ({ response } = await send()); } catch { return Response.json({ error: "Egress request failed" }, { status: 502 }); } }
   }
-  return secretValues.length ? maskResponse(response, secretValues) : response;
+  return secretValues.length && grant.auth?.type !== "github-app" ? maskResponse(response, secretValues, incoming) : response;
 }
 
 /** A wildcard intercept dispatches exact grants first, independent of platform registration order. */

@@ -1,3 +1,4 @@
+import { RESERVED_SECRET_NAMES } from "./egress-env.ts";
 import { parse } from "tldts";
 import type { Sql } from "./host.ts";
 import { HttpError } from "./http-error.ts";
@@ -8,9 +9,9 @@ export type SecretPolicy = { allowedHosts: string[]; locations: ("header" | "que
 export type SecretInput = { value?: string; allowedHosts?: string[]; locations?: SecretPolicy["locations"] };
 export type Networking = { type: "unrestricted" | "limited"; allowedHosts: string[]; allowPackageManagers: boolean; allowMcpServers: boolean };
 const bad = (text: string) => new HttpError(400, text);
-export function secretName(value: unknown, reserved: string[] = []): string {
+export function secretName(value: unknown): string {
   if (typeof value !== "string" || !/^[A-Z][A-Z0-9_]{0,63}$/.test(value)) throw bad("Secret names use 1–64 uppercase letters, digits and underscores");
-  if (/^(?:PATH|HOME|SSL_CERT_FILE|NODE_OPTIONS)$/.test(value) || value.startsWith("LD_") || reserved.includes(value) || ["NODE_EXTRA_CA_CERTS", "GIT_TERMINAL_PROMPT", "REQUESTS_CA_BUNDLE", "PIP_CERT"].includes(value)) throw bad("Secret name is reserved by the runtime");
+  if (RESERVED_SECRET_NAMES.has(value) || value.startsWith("LD_")) throw bad("Secret name is reserved by the runtime");
   return value;
 }
 export function hostRules(value: unknown): string[] {
@@ -38,7 +39,7 @@ export function networkingInput(value: unknown): Networking {
   return { type: v.type, allowedHosts: hostRules(v.allowedHosts ?? []), allowPackageManagers: v.allowPackageManagers ?? false, allowMcpServers: v.allowMcpServers ?? false };
 }
 export const secretPlaceholder = (name: string) => `camel-vault-${secretName(name)}-placeholder`;
-type Keys = { reservedNames?: string[]; canStore: boolean; seal(context: string, text: string): Sealed; unseal(context: string, sealed: Sealed): string };
+type Keys = { canStore: boolean; seal(context: string, text: string): Sealed; unseal(context: string, sealed: Sealed): string };
 /** No decrypted values or policy decisions are cached. Scope and tenant are authenticated storage keys. */
 export class Vault {
   readonly sql: Sql;
@@ -53,7 +54,7 @@ export class Vault {
     return (await this.sql.query("select name from vault_secrets where tenant=$1 and workspace=$2 order by name", [tenant, this.scope(workspace)])).rows.map(r => r.name);
   }
   async put(tenant: string, name: string, input: SecretInput, workspace = "", create = false) {
-    secretName(name, this.keys.reservedNames); this.scope(workspace);
+    secretName(name); this.scope(workspace);
     if (!input || typeof input !== "object" || Object.keys(input).some(k => !["value", "allowedHosts", "locations"].includes(k))) throw bad("Secret is {value, allowedHosts, locations?}");
     if (!this.keys.canStore) throw new HttpError(503, "This runtime has no secrets key");
     const old = (await this.sql.query("select policy, sealed from vault_secrets where tenant=$1 and workspace=$2 and name=$3", [tenant, workspace, name])).rows[0];
@@ -73,7 +74,7 @@ export class Vault {
     if (!result.rowCount) throw new HttpError(404, "Secret not found");
   }
   async open(tenant: string, ref: VaultAuth, url: URL, location: SecretPolicy["locations"][number]) {
-    const workspace = this.scope(ref.workspace), name = secretName(ref.name, this.keys.reservedNames);
+    const workspace = this.scope(ref.workspace), name = secretName(ref.name);
     const row = (await this.sql.query("select policy,sealed from vault_secrets where tenant=$1 and workspace=$2 and name=$3", [tenant,workspace,name])).rows[0];
     if (!row) throw new HttpError(404, "Secret not found");
     const policy = row.policy as SecretPolicy;
@@ -83,53 +84,43 @@ export class Vault {
 }
 
 /** The gateway is the only caller. Redact bytes as well as text, including encoded echoes. */
-export async function maskResponse(response: Response, values: string[]): Promise<Response> {
+export async function maskResponse(response: Response, values: string[], url?: URL): Promise<Response> {
   values = values.filter(value => value.length >= 8);
   const contentType = response.headers.get("content-type") ?? "";
-  if (!/^(?:text\/|application\/(?:[a-z0-9.-]+\+)?(?:json|xml)(?:;|$)|application\/x-www-form-urlencoded(?:;|$))/i.test(contentType)) return response;
-  if (!values.length) return response;
+  const binary = /^(?:image\/|audio\/|video\/|font\/|application\/(?:x-git-|pdf(?:;|$)|zip(?:;|$)|gzip(?:;|$)|wasm(?:;|$)))/i.test(contentType);
+  const git = url && /\/(?:git-upload-pack|git-receive-pack|info\/refs|objects\/(?:pack\/|[0-9a-f]{2}\/))/.test(url.pathname);
+  if (!values.length || binary || git) return response;
   const encoder = new TextEncoder();
   const base64 = (v: string) => btoa(Array.from(encoder.encode(v), c => String.fromCharCode(c)).join(""));
   const forms = [...new Set(values.flatMap(v => [v, JSON.stringify(v).slice(1, -1), encodeURIComponent(v), base64(v), base64(`x-access-token:${v}`)]))].sort((a,b) => b.length-a.length);
   const needles = forms.map(v => encoder.encode(v));
   const replacement = encoder.encode("[hidden]");
   let pending = new Uint8Array(0);
-  let changed = false;
   const filter = (chunk: Uint8Array, final: boolean) => {
     const input = new Uint8Array(pending.length + chunk.length); input.set(pending); input.set(chunk,pending.length);
     const output: number[] = []; let i=0;
     while (i < input.length) {
       if (!final && needles.some(n => n.length > input.length-i && input.subarray(i).every((v,j) => n[j] === v))) break;
       const match = needles.find(n => n.every((v,j) => input[i+j] === v));
-      if (match) { changed = true; output.push(...replacement); i+=match.length; }
+      if (match) { output.push(...replacement); i+=match.length; }
       else output.push(input[i++]!);
     }
     pending = input.slice(i); return new Uint8Array(output);
   };
   const hide = (s: string) => forms.reduce((s,v) => s.split(v).join("[hidden]"), s);
   const headers = new Headers(); response.headers.forEach((v,k) => headers.set(k, hide(v)));
-  const headerChanged = [...response.headers].some(([k,v]) => headers.get(k) !== v) || hide(response.statusText) !== response.statusText;
-  // Validators and fixed lengths can only be preserved after knowing whether text changed.
-  if (response.headers.has("content-length") || response.headers.has("etag")) {
-    const bodyless = response.body === null;
-    const original = new Uint8Array(await response.arrayBuffer());
-    const filtered = filter(original, true);
-    if (!changed && !headerChanged) return new Response(bodyless ? null : original, {status:response.status,statusText:response.statusText,headers:response.headers});
-    for (const key of ["content-length", "content-encoding", "etag", "content-md5"]) headers.delete(key);
-    return new Response(bodyless ? null : filtered, {status:response.status,statusText:hide(response.statusText),headers});
-  }
   const stream = response.body?.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) { controller.enqueue(filter(chunk, false)); },
     flush(controller) { controller.enqueue(filter(new Uint8Array(0), true)); },
   }));
-  if (headerChanged) for (const key of ["content-length", "etag", "content-md5"]) headers.delete(key);
-  headers.delete("content-encoding");
+  // Headers must be committed before streaming; a later chunk can still contain a secret.
+  // Bodyless responses keep their validators when only the headers were inspected.
+  if (response.body) for (const key of ["content-length", "content-encoding", "etag", "content-md5"]) headers.delete(key);
   return new Response(stream ?? null, { status: response.status, statusText: hide(response.statusText), headers });
 }
 
 /** Substitute only attached placeholders and only in the configured locations. */
 export async function vaultRequest(request: Request, refs: VaultAuth[], vault: Vault | (() => Promise<Vault>), tenant: string) {
-  decodeVaultPath(new URL(request.url).pathname); decodeVaultPath(new URL(request.url).search);
   if (!refs.some(ref => ref.inBody) && !request.url.includes("camel-vault-") && ![...request.headers.values()].some(v => v.includes("camel-vault-"))) return { request, values: [] as string[] };
   const url = new URL(request.url), headers = new Headers(request.headers);
   let rawBody: Uint8Array | undefined;
@@ -145,6 +136,7 @@ export async function vaultRequest(request: Request, refs: VaultAuth[], vault: V
   }
   let query = url.search, body = rawBody ? new TextDecoder().decode(rawBody) : undefined;
   const replaceBody = body?.includes("camel-vault-") ?? false;
+  if (replaceBody || request.url.includes("camel-vault-") || [...headers.values()].some(v => v.includes("camel-vault-"))) { decodeVaultPath(url.pathname); decodeVaultPath(url.search); }
   const values: string[] = [];
   if (url.pathname.includes("camel-vault-") || url.host.includes("camel-vault-")) throw new HttpError(403, "Secrets cannot be used in the host or path");
   for (const ref of refs) {

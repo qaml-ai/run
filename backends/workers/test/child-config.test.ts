@@ -21,13 +21,14 @@ test('child tool identity stays the owner when the run has another payer', () =>
   assert.equal(childConfig({ subject: 'owner' }, undefined, { endUser: 'guest', bucket: 'bot:7' }).subject, 'owner');
 });
 
-test('inline and forked children cannot widen network policy or acquire another vault credential',async()=>{
-  const {childSecurity}=await import('../src/child-config.ts');
+test('inline children retain the parent network policy and credentials',async()=>{
   const {PublicOutbound}=await import('../src/public-outbound.ts');
   const {forwardEgress}=await import('../src/computers/egress.ts');
   const parent={networking:{type:'limited',allowedHosts:['api.stripe.com'],allowPackageManagers:false,allowMcpServers:false},computer:{secrets:[{type:'vault',name:'TOKEN'}]}};
-  const wider={networking:{type:'unrestricted'},computer:{secrets:[{type:'vault',name:'OTHER'}]},mcpServers:[{name:'steal',url:'https://api.stripe.com',auth:{type:'vault',name:'OTHER'}}]};
-  for(const config of [childConfig(parent),{...wider,...childSecurity(parent,wider)}]) {
+  const config = childConfig(parent);
+  assert.deepEqual(config.computer, parent.computer);
+  assert.deepEqual(config.networking, parent.networking);
+  {
     let sent=0;
     const policy=new PublicOutbound({networking:config.networking as any,transport:async()=>{sent++;return new Response('bad');}});
     await assert.rejects(policy.fetch('https://evil.com'),/Network destination is not allowed/);
@@ -42,23 +43,13 @@ test('inline and forked children cannot widen network policy or acquire another 
   }
 });
 
-test('existing delegation targets cannot bypass a parent boundary',async()=>{
-  const {assertChildSecurity}=await import('../src/child-config.ts');
-  const parent={networking:{type:'limited',allowedHosts:['*.example.com'],allowPackageManagers:false,allowMcpServers:false}};
-  assert.throws(()=>assertChildSecurity(parent,{}),/exceeds/);
-  assert.throws(()=>assertChildSecurity(parent,{networking:{...parent.networking,allowedHosts:['evil.com']}}),/exceeds/);
-  assert.throws(()=>assertChildSecurity(parent,{...parent,computer:{secrets:[{type:'vault',name:'OTHER'}]}}),/exceeds/);
-  assert.doesNotThrow(()=>assertChildSecurity(parent,{networking:{...parent.networking,allowedHosts:['api.example.com']}}));
-});
-
-
-test('runtime and vault auth cannot smuggle a target definition’s static credentials into a child',async()=>{
-  const {childSecurity}=await import('../src/child-config.ts');
-  const parent={computer:{secrets:[{type:'vault',name:'TOKEN'}]}};
-  const target={mcpServers:[
-    {name:'runtime',url:'https://example.com',auth:{type:'runtime'},sealed:{ciphertext:'other'}},
-    {name:'vault',url:'https://example.com',auth:{type:'vault',name:'TOKEN'},headers:{'x-api-key':'other-secret'}},
-    {name:'identity',url:'https://example.com',auth:{type:'runtime'}},
-  ]};
-  assert.deepEqual(childSecurity(parent,target).mcpServers,[target.mcpServers[2]]);
+test('definition children keep their own network, vault, stored MCP credentials and GitHub grant', () => {
+  const target = {
+    definition: 'def_worker', model: 'test/echo',
+    networking: { type: 'unrestricted' },
+    computer: { secrets: [{type:'vault',name:'OWN_TOKEN'}], egress: [{host:'github.com',auth:{type:'github-app',app:'worker-app'}}] },
+    mcpServers: [{name:'own',url:'https://mcp.example.com',sealed:{ciphertext:'stored-credential'}}],
+    openApi: [{name:'own-api',baseUrl:'https://api.example.com',headers:{authorization:'stored-header'}}],
+  };
+  assert.deepEqual(childConfig({networking:{type:'limited',allowedHosts:[]},computer:{secrets:[]}},target), target);
 });

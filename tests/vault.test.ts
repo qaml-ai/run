@@ -76,7 +76,7 @@ test('reserved environment names, short values and malformed encoding are refuse
   const {secretName,decodeVaultPath} = await import('../src/core/vault.ts');
   for (const name of ['PATH','HOME','SSL_CERT_FILE','NODE_OPTIONS','LD_PRELOAD','LD_ANYTHING','NODE_EXTRA_CA_CERTS']) assert.throws(()=>secretName(name),/reserved/);
   process.env.VAULT_OCCUPIED_TEST='present';
-  try { assert.throws(()=>secretName('VAULT_OCCUPIED_TEST',Object.keys(process.env)),/reserved/); } finally {delete process.env.VAULT_OCCUPIED_TEST;}
+  try { assert.equal(secretName('VAULT_OCCUPIED_TEST'),'VAULT_OCCUPIED_TEST'); } finally {delete process.env.VAULT_OCCUPIED_TEST;}
   await assert.rejects(vault().put('a','TOKEN',{value:'short',allowedHosts:[]},'',true),/8–8192/);
   assert.throws(()=>decodeVaultPath('%zz'),(e:any)=>e.status===400);
   const short = new Response('tiny',{headers:{etag:'"original"'}});
@@ -102,7 +102,7 @@ test('request bodies stream without a cap unless the attached reference opts int
   assert.equal(await body.request.text(),'body-secret');
 });
 
-test('binary responses bypass masking and unchanged text keeps validators',async()=>{
+test('binary responses bypass masking and vault text streams without validators',async()=>{
   const bytes=new Uint8Array([0,255,1,2,3]);
   const pack=new Response(bytes,{headers:{'content-type':'application/x-git-upload-pack-result',etag:'"pack"','content-length':'5'}});
   assert.equal(await maskResponse(pack,['long-secret']),pack);
@@ -110,7 +110,7 @@ test('binary responses bypass masking and unchanged text keeps validators',async
   assert.equal(empty.status,204);assert.equal(empty.body,null);assert.equal(empty.headers.get('etag'),'empty');
   const original=new Response('public text',{headers:{'content-type':'text/plain',etag:'"text"','content-length':'11'}});
   const unchanged=await maskResponse(original,['long-secret']);
-  assert.equal(unchanged.headers.get('etag'),'"text"');assert.equal(unchanged.headers.get('content-length'),'11');assert.equal(await unchanged.text(),'public text');
+  assert.equal(unchanged.headers.get('etag'),null);assert.equal(unchanged.headers.get('content-length'),null);assert.equal(await unchanged.text(),'public text');
   const changed=await maskResponse(new Response('long-secret',{headers:{'content-type':'text/plain',etag:'"text"','content-length':'11'}}),['long-secret']);
   assert.equal(changed.headers.get('etag'),null);assert.equal(changed.headers.get('content-length'),null);assert.equal(await changed.text(),'[hidden]');
 });
@@ -130,13 +130,34 @@ test('MCP cross-origin token requests drop credentials; vault requests refuse th
 });
 
 
-test('runtime binding names and invalid body opt-in are refused before storage',async()=>{
-  const v=vault(); const restricted=new Vault(v.sql,{...v.keys,reservedNames:['RUNTIME_BINDING']});
-  await assert.rejects(restricted.put('a','RUNTIME_BINDING',{value:'long-value',allowedHosts:[]},'',true),/reserved/);
+test('gateway reserved names and invalid body opt-in are refused before storage',async()=>{
+  const v=vault(); const restricted=vault();
+  await assert.rejects(restricted.put('a','PIP_CERT',{value:'long-value',allowedHosts:[]},'',true),/reserved/);
   assert.deepEqual(await restricted.list('a'),[]);
   const {vaultAuth}=await import('../src/core/vault.ts');
   assert.throws(()=>vaultAuth({type:'vault',name:'TOKEN',inBody:'yes'}),/inBody must be boolean/);
-  await assert.rejects(vaultRequest(new Request('https://example.com/?key=%zz'),[],v,'a'),(e:any)=>e.status===400);
+  const malformed=new Request('https://example.com/?q=100%');
+  assert.equal((await vaultRequest(malformed,[],v,'a')).request,malformed);
+  await assert.rejects(vaultRequest(new Request('https://example.com/?q=100%',{headers:{authorization:secretPlaceholder('TOKEN')}}),[{type:'vault',name:'TOKEN'}],v,'a'),(e:any)=>e.status===400);
   await v.put('a','TOKEN',{value:'long-value',allowedHosts:['example.com']},'',true);
   await assert.rejects(vaultRequest(new Request('https://example.com',{method:'POST',body:secretPlaceholder('TOKEN')}),[{type:'vault',name:'TOKEN',inBody:true}],v,'a'),/not allowed/);
+});
+
+test('vault echoes are masked without a content type, in octet streams and JavaScript',async()=>{
+  for (const type of [undefined,'application/octet-stream','application/javascript','text/javascript']) {
+    const response=new Response(new TextEncoder().encode('secret-value'),{headers:type?{'content-type':type}:{}});
+    assert.equal(await (await maskResponse(response,['secret-value'])).text(),'[hidden]');
+  }
+  const pack=new Response(new TextEncoder().encode('secret-value'),{headers:{'content-type':'application/octet-stream'}});
+  assert.equal(await maskResponse(pack,['secret-value'],new URL('https://github.com/owner/repo.git/git-upload-pack')),pack);
+});
+
+test('vault response with fixed length and ETag streams before a late secret arrives',async()=>{
+  let finish!:()=>void;
+  const stream=new ReadableStream<Uint8Array>({start(c){c.enqueue(new TextEncoder().encode('first chunk'));finish=()=>{c.enqueue(new TextEncoder().encode('long-secret'));c.close();};}});
+  const result=await maskResponse(new Response(stream,{headers:{etag:'original','content-length':'22','content-type':'text/plain'}}),['long-secret']);
+  const reader=result.body!.getReader();
+  assert.equal(new TextDecoder().decode((await reader.read()).value),'first chunk');
+  finish();let tail='';for(;;){const part=await reader.read();if(part.done)break;tail+=new TextDecoder().decode(part.value);}
+  assert.equal(tail,'[hidden]');assert.equal(result.headers.get('etag'),null);assert.equal(result.headers.get('content-length'),null);
 });

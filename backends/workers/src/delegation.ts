@@ -4,7 +4,7 @@ import { digest } from './api-contract.ts';
 import { modelOutputSchema, MULTI_AGENT_LIMITS, PARENT_KEYS, roleAndTask, delegateTool, agentsTools, agentMessage, agentUpdates, REPORT_PROGRESS, SEND_MESSAGE, type DelegateSettings } from './multi-agent-policy.ts';
 import type { ToolDefinition } from './policy-host.ts';
 import type { NoticeRequest, RuntimeNotice } from './delegation-notifications.ts';
-import { childConfig, assertChildSecurity } from './child-config.ts';
+import { childConfig } from './child-config.ts';
 import { holdBudget, type DelegateResponse, type Session as BudgetSession } from './delegation-policy.ts';
 import { toolCallSite } from './tool-call-context.ts';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
@@ -280,7 +280,6 @@ export class Delegation {
           if (resolved?.id && place.chain.includes(resolved.id)) throw new HttpError(400, 'This agent is already working on the delegation chain');
           // Left out, a definition that declares its own computer keeps it; every other child starts with none.
           choice = computerChoice(args.computer, !resolved?.id && !!resolved?.config?.computer);
-          if (resolved?.id) assertChildSecurity(config, resolved.config);
           const childConf: Configuration = childConfig(config, resolved?.config, run.params);
           // No computer: no native computer settings either (egress grants and their credentials stay the parent's).
           if (choice === 'none') delete childConf.computer;

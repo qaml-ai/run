@@ -26,8 +26,10 @@ An empty list grants no egress. The outbound address guard also checks DNS.
 The default `locations` is `["header"]`. Opt into `"query"` or `"body"` only for
 an API that requires it. Secret values contain 8–8192 single-line characters.
 The gateway substitutes placeholders only in attached references, rechecks the
-destination, sends with redirects disabled, and masks values in textual responses
-and their headers. Binary responses pass through unchanged. Secret values never
+destination, sends with redirects disabled, and masks values in responses
+and their headers, including missing content types, octet streams and JavaScript.
+Known binary formats and git endpoints pass through unchanged. GitHub App grants
+are not vault-masked. Vault-masked bodies stream without length or ETag headers. Secret values never
 enter the computer's environment or disk.
 
 ## MCP and OpenAPI
@@ -68,9 +70,9 @@ and download hosts; it does not permit arbitrary package install scripts to
 access the internet. `allowMcpServers` additionally permits configured MCP hosts.
 Web targets and remote tool sources check the network policy too. Host-managed
 search and rendering provider endpoints are exempt; the page requested by
-`web_fetch` is still checked. Children inherit the parent's restrictions and can
-use only vault secrets granted to the parent. Existing delegation targets that
-exceed those restrictions are refused.
+`web_fetch` is still checked. Inline children inherit the parent's network policy and computer secrets and grants.
+Definition children and delegation to existing agents use their own definition's
+network policy, credentials, sources and grants.
 
 Node's Sprites backend cannot enforce this computer boundary. It refuses
 `networking.type: "limited"`; use Workers for limited computers. Node supports
