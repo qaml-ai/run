@@ -704,6 +704,10 @@ class _RuntimeCalls:
         """Delete a run now, before its retention ends (a running one stops)."""
         return self._rest("DELETE", f"/v1/runs/{_path(run_id)}")
 
+    def run_log(self, run_id, *, limit=None, cursor=None):
+        query = urlencode({k: v for k, v in {"limit": limit, "cursor": cursor}.items() if v is not None})
+        return self._rest("GET", f"/v1/runs/{_path(run_id)}/log" + ("?" + query if query else ""))
+
     def run_messages(self, run_id):
         """A run's messages: its input, the model's turns and tool results."""
         return self._rest("GET", f"/v1/runs/{_path(run_id)}/messages", then=lambda value: value["messages"])
@@ -849,11 +853,17 @@ class _RuntimeCalls:
         """The scope's own providers, never their keys or header values."""
         return self._rest("GET", f"/v1/key-scopes/{_path(scope)}/model-providers")
 
-    def usage(self, *, days=None):
-        """Token usage and cost per UTC day and model over the last `days` (1 to 365, default 30): {"since", "totals",
-        "days": [{"day", "model", "kind", "responses", "input", "output", "cacheRead", "cacheWrite", "cost", ...}]}.
-        Per user or per key scope: the usage.recorded webhook."""
-        return self._rest("GET", "/v1/usage" + (f"?days={int(days)}" if days is not None else ""))
+    def usage(self, *, days=None, group_by=None, rollup=False, agent=None, limit=None, cursor=None, workspace_id=None):
+        """Daily account totals by default; group_by selects attribution dimensions."""
+        query = {}
+        if days is not None:
+            query["days"] = int(days)
+        if group_by is not None or agent is not None or rollup:
+            query["groupBy"] = ",".join(group_by or ["agent"])
+            query["rollup"] = str(rollup).lower()
+        query.update({k: v for k, v in {"limit": limit, "cursor": cursor, "workspaceId": workspace_id}.items() if v is not None})
+        path = f"/v1/agents/{_path(agent)}/usage" if agent else "/v1/usage"
+        return self._rest("GET", path + ("?" + urlencode(query) if query else ""))
 
     # API tokens: the tenant's keys to this API. A token's secret is returned only when it is made.
     def tokens(self):
@@ -2946,6 +2956,9 @@ class Runs:
         """Delete a run's result, events and messages now, before its retention ends."""
         return await self.runtime.delete_run(run_id)
 
+    async def log(self, run_id, **options):
+        return await self.runtime.run_log(run_id, **options)
+
     async def messages(self, run_id):
         return await self.runtime.run_messages(run_id)
 
@@ -2994,6 +3007,9 @@ class Agents:
         self.voices = self.runtime.voices
         self._open = set()
         self.connection = connection
+
+    async def usage(self, **options):
+        return await self.runtime.usage(**options)
 
     async def run(self, input, **options):
         """A stateless run: a configuration and `input` in, its result (a Run) out, nothing carried over and no agent kept.

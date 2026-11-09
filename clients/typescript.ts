@@ -1677,6 +1677,14 @@ export class Voice {
 }
 
 /** Trusted-backend SDK. Only createAgent needs the operator key. */
+export type UsageOptions = { days?: number; groupBy?: ("agent" | "definition" | "endUser" | "model" | "day")[]; rollup?: boolean; limit?: number; cursor?: string; workspaceId?: string };
+export interface GroupedUsage {
+  since: number; groupBy: string[]; rollup: boolean; next?: string;
+  totals: Record<string, number>;
+  groups: (Record<string, string | number | null>)[];
+}
+export interface LogTruncation { truncated: true; originalBytes: number; preview: string }
+export interface RunLog { run: StatelessRun | LogTruncation; durationMs: number | null; events: { index: number; type: "message"; at: number | null; message: unknown; truncated?: boolean }[]; next?: string; truncated?: boolean }
 export class AgentRuntime {
   readonly options: RuntimeOptions;
   private readonly transport: Transport;
@@ -1875,6 +1883,19 @@ export class AgentRuntime {
   /** Delete a run now, before its retention ends (a running one stops). */
   deleteRun(id: string): Promise<{ deleted: true }> { return this.transport.json(`/v1/runs/${encodeURIComponent(id)}`, this.operator(), "DELETE", undefined, true); }
   /** A run's messages: its input, the model's turns and tool results. */
+  usage(options: UsageOptions = {}): Promise<GroupedUsage> { return this.readUsage("/v1/usage", options); }
+  agentUsage(id: string, options: UsageOptions = {}): Promise<GroupedUsage> { return this.readUsage(`/v1/agents/${encodeURIComponent(id)}/usage`, options); }
+  private readUsage(path: string, options: UsageOptions): Promise<GroupedUsage> {
+    const query = new URLSearchParams({ groupBy: (options.groupBy ?? ["agent"]).join(",") });
+    if (options.days !== undefined) query.set("days", String(options.days));
+    if (options.rollup !== undefined) query.set("rollup", String(options.rollup));
+    for (const key of ["limit", "cursor", "workspaceId"] as const) if (options[key] !== undefined) query.set(key, String(options[key]));
+    return this.transport.json(`${path}?${query}`, this.operator());
+  }
+  runLog(id: string, options: { limit?: number; cursor?: string } = {}): Promise<RunLog> {
+    const query = new URLSearchParams(Object.entries(options).map(([k,v]) => [k,String(v)]));
+    return this.transport.json(`/v1/runs/${encodeURIComponent(id)}/log?${query}`, this.operator());
+  }
   runMessages(id: string): Promise<AgentHistory> { return this.transport.json(`/v1/runs/${encodeURIComponent(id)}/messages`, this.operator()); }
   /**
    * A run's event stream, to its end (its `response` frame): reconnecting with Last-Event-ID where the connection drops,
