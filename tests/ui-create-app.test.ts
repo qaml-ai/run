@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { stripTypeScriptTypes } from "node:module";
+import { transformSync } from "esbuild";
 import { runInNewContext } from "node:vm";
 import { agentKeyFor } from "../clients/handler.ts";
 import { execFileSync } from "node:child_process";
@@ -76,13 +76,11 @@ test("both generated routes share pending initialization; Cloudflare keeps users
       "@camelai/run/server": { agentKeyFor, createAgentHandler: (value: unknown) => { creates++; options = value; return async () => new Response("ok"); } },
       "@camelai/run": { tool: (value: unknown) => value, schema: { Object: () => ({}), String: () => ({}) } },
     };
-    const compiled = stripTypeScriptTypes(source)
-      .replace(/^import \{([^}]+)\} from "([^"]+)";$/gm, 'const {$1} = require("$2");')
-      .replace("export async function POST", "exports.POST = async function POST");
-    const exports: any = {};
-    runInNewContext(compiled, { exports, require: (name: string) => mocks[name], Response });
-    const first = exports.POST(new Request("https://app.example"));
-    const second = exports.POST(new Request("https://app.example"));
+    const compiled = transformSync(source, { loader: "ts", format: "cjs", target: "es2022" }).code;
+    const module = { exports: {} as any };
+    runInNewContext(compiled, { module, exports: module.exports, require: (name: string) => mocks[name], Response });
+    const first = module.exports.POST(new Request("https://app.example"));
+    const second = module.exports.POST(new Request("https://app.example"));
     assert.equal(reads, 1, "concurrent cold requests share the environment/handler promise");
     resolveEnv({ AGENT_DEFINITION: "def_example", AGENT_ID: "ignored_shared_agent" });
     await Promise.all([first, second]);

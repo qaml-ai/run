@@ -348,8 +348,12 @@ test("existing mode separates selected agents and retries failed credential look
   t.after(() => handler.close());
   assert.equal((await post(handler, { action: "token" })).status, 404);
   for (let i = 0; i < 2; i++) {
-    assert.equal((await post(handler, { action: "token" })).json.agentId, ids.alice);
-    assert.equal((await post(handler, { action: "token" }, { cookie: "cookie-bob" })).json.agentId, ids.bob);
+    const alice = await post(handler, { action: "token" });
+    assert.equal(alice.status, 200, JSON.stringify(alice.json));
+    assert.equal(alice.json.agentId, ids.alice);
+    const bob = await post(handler, { action: "token" }, { cookie: "cookie-bob" });
+    assert.equal(bob.status, 200, JSON.stringify(bob.json));
+    assert.equal(bob.json.agentId, ids.bob);
   }
   assert.equal(credentials.length, 3, "one failed lookup, then one cached lookup for each selected agent");
 });
