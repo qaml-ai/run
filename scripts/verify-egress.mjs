@@ -81,12 +81,14 @@ export async function verifyPilot(values, { transport = fetch, key = process.env
     assert.deepEqual(config.computer?.egress, parent.computer?.egress, `${role} changed grants`);
     const result = await api(`/experimental/agents/${id}/computer`, { provider: 'container', op: 'exec', argv: ['bash', '-lc', auditCommand({ branch: `${tag}-${role}`, vaultName, vaultUrl: vaultUrl.href, blocked: blocked.href })], timeoutMs: 600_000 });
     assert(result.exitCode === 0 && result.stdout?.includes('vault-egress-ok'), `${role}: clone/push, vault echo, blocked host, or cleanup failed`);
+    if (role === 'fork') assert(result.computer?.restoredFrom === 'fork', 'Worker did not restore the parent computer snapshot');
     results.push({ role, clonePush: true, vaultSubstitution: true, blockedHost403: true });
   };
   try {
     await audit(values.agent, 'parent');
     const fork = await api(`/v1/agents/${values.agent}/fork`, { name: `${tag}-fork`, ttlSeconds: 3600 });
     created.add(fork.id);
+    await api(`/v1/agents/${values.agent}/computer/fork`, { agents: [fork.id] });
     await audit(fork.id, 'fork');
     const name = `${tag}-inline`;
     const request = await api(`/v1/agents/${values.agent}/prompt`, { text: inlinePrompt(name) });

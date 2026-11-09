@@ -16,7 +16,8 @@ test('pilot verification audits the parent, fork and real inline child and clean
     const path=new URL(input).pathname;
     if(init.method==='DELETE'){deleted.push(path);return new Response(null,{status:204});}
     if(path.endsWith('/configuration')) return Response.json(path.includes('/inline/')?{...parent,definition:undefined}:parent);
-    if(path.endsWith('/computer')){const body=JSON.parse(init.body);audits.push(path);assert.match(body.argv[2],/git clone/);assert.match(body.argv[2],/git.*push/);assert.match(body.argv[2],/403/);assert.match(body.argv[2],/\[hidden\]/);return Response.json({exitCode:0,stdout:'vault-egress-ok\n'});}
+    if(path.endsWith('/computer')){const body=JSON.parse(init.body);audits.push(path);assert.match(body.argv[2],/git clone/);assert.match(body.argv[2],/git.*push/);assert.match(body.argv[2],/403/);assert.match(body.argv[2],/\[hidden\]/);return Response.json({exitCode:0,stdout:'vault-egress-ok\n',computer:{restoredFrom:path.includes('/fork/')?'fork':undefined}});}
+    if(path.endsWith('/computer/fork')){assert.deepEqual(JSON.parse(init.body),{agents:['fork']});return Response.json({native:{agents:['fork']}});}
     if(path.endsWith('/fork'))return Response.json({id:'fork'});
     if(path.endsWith('/prompt')){prompts.push(JSON.parse(init.body).text);return Response.json({id:'request'});}
     if(path.endsWith('/children'))return Response.json({children:[{agentId:'inline',name:prompts[0].match(/name "([^"]+)"/)![1]}]});
@@ -35,6 +36,7 @@ test('pilot verification stops when a fork widens the policy',async()=>{
   const transport=async(input:any,init:any)=>{
     const path=new URL(input).pathname;
     if(init.method==='DELETE'){deleted=true;return new Response(null,{status:204});}
+    if(path.endsWith('/computer/fork')) return Response.json({native:{agents:['fork']}});
     if(path.endsWith('/fork')) return Response.json({id:'fork'});
     if(path.endsWith('/computer')){audited++;return Response.json({exitCode:0,stdout:'vault-egress-ok'});}
     return Response.json(path.includes('/fork/')?{...parent,networking:{type:'unrestricted'}}:parent);
