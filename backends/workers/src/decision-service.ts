@@ -1,3 +1,5 @@
+import { recordUsageDetails } from '../../../shared/usage-details.ts';
+import { applyWorkspaceUsage } from './workspaces.ts';
 import { DecisionRuntime, type DecisionContext } from './decision-runtime.ts';
 import { resolveProviderKey, type ProviderKeyEnv } from './model-credentials.ts';
 import { transaction, withSql } from './postgres.ts';
@@ -46,6 +48,12 @@ export async function recordDecision(env: DecisionEnv, context: DecisionContext,
     await sql.query(`insert into usage(tenant,day,model,responses,input,output,cost,platform_responses,platform_cost) values($1,$2,$3,$4,$5,$6,$7,$8,$9)
       on conflict(tenant,day,model) do update set responses=usage.responses+excluded.responses,input=usage.input+excluded.input,output=usage.output+excluded.output,cost=usage.cost+excluded.cost,platform_responses=usage.platform_responses+excluded.platform_responses,platform_cost=usage.platform_cost+excluded.platform_cost`,
       [context.tenant, new Date(now).toISOString().slice(0, 10), `decision:${usage.provider}/${usage.model}`, usage.decisions ?? 0, usage.usage.input, usage.usage.output, usage.usage.cost.total, usage.platform ? 1 : 0, charge / 1_000_000]);
+    const attributed = { tenant: context.tenant, agent: agentId, requestId, endUser: context.identity?.subject ?? null,
+      timestamp: now, day: new Date(now).toISOString().slice(0, 10), model: `decision:${usage.provider}/${usage.model}`,
+      responses: usage.decisions ?? 0, input: usage.usage.input, output: usage.usage.output, cacheRead: 0, cacheWrite: 0,
+      cost: usage.usage.cost.total, platformResponses: usage.platform ? 1 : 0, platformCost: charge / 1_000_000 };
+    await recordUsageDetails(sql, [attributed]);
+    await applyWorkspaceUsage(sql, [attributed]);
     await enqueueEvents(sql, [webhookEvent('usage.recorded', context.tenant, { agentId: agentId || null, requestId: requestId ?? null, subject: context.identity?.subject ?? null, actor: context.actor ?? null, context: context.identity?.context ?? null, keyScope: context.keyScope ?? null, provider: usage.provider, model: usage.model, kind: 'decision', input: usage.usage.input, output: usage.usage.output, cacheRead: 0, cacheWrite: 0, decisions: usage.decisions ?? 0, cost: { usd: usage.usage.cost.total, source: 'catalog' }, at: now })]);
   });
 }
