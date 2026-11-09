@@ -148,6 +148,7 @@ const settled = (state: string) => state !== "running";
  */
 export class ClientSessions {
   readonly sessions = new Map<string, Session>();
+  private readonly endedRequests = new WeakMap<Session, Map<string, RequestRecord>>();
   private readonly loading = new Map<string, Promise<Session | undefined>>();
   /** Concurrent deletes must wait for the same cancellation before any caller stops the host. */
   private readonly removing = new Map<string, Promise<void>>();
@@ -415,6 +416,8 @@ export class ClientSessions {
     if (queued.length || resumed.length) session.sweepResetAt = Date.now() + RESUME_HELD_MS;
     events.loaded(this.eventContext, session);
     for (const record of ended) {
+      this.endedRequests.get(session)?.delete(record.id);
+      this.hook("requestEnded", session, record);
       this.publish(session, { type: "response", id: record.id, outcome: record.outcome! });
       if (RUN_METHODS.includes(record.method)) {
         this.hook("runEnded", session, record);
@@ -547,6 +550,11 @@ export class ClientSessions {
     return next;
   }
   private upsertRequest(session: Session, record: RequestRecord) {
+    if (record.state === "completed" && this.options.hooks?.requestEnded) {
+      let ended = this.endedRequests.get(session);
+      if (!ended) this.endedRequests.set(session, ended = new Map());
+      ended.set(record.id, record);
+    }
     this.track(session, record);
     session.log.append({ t: "request", record });
     return record;
@@ -555,8 +563,13 @@ export class ClientSessions {
   /** Write appended journal records. Durable flushes gate acknowledgements and side effects. */
   private async commit(session: Session, durable: boolean) {
     if (session.fault) throw session.fault;
+    const ended = durable ? [...(this.endedRequests.get(session) ?? [])] : [];
     try { await session.log.flush(durable); }
     catch (error) { this.fail(session, error, "journal"); throw session.fault; }
+    for (const [id, record] of ended) if (this.endedRequests.get(session)?.get(id) === record) {
+      this.endedRequests.get(session)!.delete(id);
+      this.hook("requestEnded", session, record);
+    }
   }
   private commitLater(session: Session) { void this.commit(session, false).catch(() => {}); }
 
@@ -2708,7 +2721,7 @@ export class ClientSessions {
     if (!ownership.holds(session.claim)) throw new HttpError(503, "This node lost ownership of the agent; retry");
   }
 
-  private hook(name: "runStarted" | "runEnded", session: Session, record: RequestRecord) {
+  private hook(name: "runStarted" | "runEnded" | "requestEnded", session: Session, record: RequestRecord) {
     try { this.options.hooks?.[name]?.({ id: session.header.id, tenant: session.header.tenant, claim: session.claim }, record); }
     catch (error) { console.error(JSON.stringify({ type: "session_hook_failed", hook: name, error: safeError(error) })); }
     if (name === "runEnded" && !session.header.run) void this.recordActivity(session.header.id, record);

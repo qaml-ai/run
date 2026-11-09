@@ -84,3 +84,22 @@ test('continue schedules submit without the outcome table and code outcomes are 
  assert.equal(run.status,202,JSON.stringify(run.json));
  await until(async()=> (await r.call(`/v1/agents/${agent}/schedule-deliveries`)).json.some((row:any)=>row.runId===run.json.requestId&&row.endedAt&&row.state==='completed'),'code outcome');
 });
+
+test('batched and cancelled schedules retain their outcomes',async t=>{
+ const r=await runtime(t,()=>({role:'assistant',content:'done'}));
+ const agent=(await r.call('/v1/agents',{body:{queue:{mode:'batch',windowMs:2000}}})).json.id,path=`/v1/agents/${agent}/schedules`;
+ const schedule=(await r.call(path,{body:{text:'Report',inSeconds:3600}})).json;
+ const first=(await r.call(`${path}/${schedule.id}/run`,{body:{}})).json;
+ const second=(await r.call(`${path}/${schedule.id}/run`,{body:{}})).json;
+ await until(async()=>{
+  const rows=(await r.call(`/v1/agents/${agent}/schedule-deliveries`)).json;
+  return rows.length===2 && rows.every((row:any)=>row.state==='completed');
+ },'batched schedule outcomes');
+ assert.equal((await r.call(`/v1/agents/${agent}/requests/${second.requestId}`)).json.batchedInto,first.requestId);
+ const cancelled=(await r.call(`${path}/${schedule.id}/run`,{body:{}})).json;
+ await r.call(`/v1/agents/${agent}/abort`,{body:{queued:'cancel'}});
+ await until(async()=>{
+  const rows=(await r.call(`/v1/agents/${agent}/schedule-deliveries`)).json;
+  return rows.some((row:any)=>row.runId===cancelled.requestId && row.state==='failed' && row.endedAt);
+ },'cancelled schedule outcome');
+});

@@ -913,10 +913,11 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     get scheduler() { return scheduler; },
     // Channels' hooks, and where journey events are on, each run's end (src/journey.ts): the day's activity, and an account's first run.
     get hooks() {
-      return { ...channels.hooks, runEnded: (agent, record) => {
-        channels.hooks.runEnded?.(agent, record);
+      return { ...channels.hooks, requestEnded: (agent, record) => {
         const source = scheduleRunSource(agent.tenant, record);
         if (source) void recordScheduleRun(db, source, agent.id, record).catch(error => console.error(JSON.stringify({type:"schedule_outcome_failed",error:safeError(error)})));
+      }, runEnded: (agent, record) => {
+        channels.hooks.runEnded?.(agent, record);
         const ending = outcomeEnding(record.outcome);
         void journey?.runEnded(agent.tenant, { completed: ending.error === undefined && !ending.stopped, at: record.endedAt });
       } } satisfies SessionHooks;
