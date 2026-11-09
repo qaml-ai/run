@@ -32,8 +32,8 @@ contractTest('computers', 'tests/tool-schemas.test.ts', 'every runtime tool sent
     'read', 'write', 'edit', 'final_output', 'codemode', 'computer_exec', 'computer_start', 'computer_status',
     'computer_stop', 'computer_read_file', 'computer_write_file', 'browser_navigate', 'browser_read',
     'browser_click', 'browser_fill', 'browser_evaluate']) assert.ok(seen.has(name), `Missing coverage: ${name}`);
-  // The Workers backend offers its native computer tool whether or not containers are configured.
-  if (process.env.CONTRACT_BACKEND === 'workers') assert.ok(seen.has('computer'), 'Missing coverage: computer');
+  // The Workers native `computer` tool is offered only where containers are configured, which this fixture has not:
+  // backends/workers/test/tool-schemas.test.ts checks its schema.
   // Credential-gated tools retain coverage even when this fixture has no provider keys.
   for (const tool of [...builtinDefinitions(Object.keys(BUILTINS)), GENERATE_IMAGE, DECIDE])
     assertToolSchema(tool.name, tool.parameters);
