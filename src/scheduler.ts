@@ -8,6 +8,7 @@ import { HttpError } from "./http.ts";
 import { viaParent } from "./multi-agent.ts";
 import { underClaim, type Claim } from "./ownership.ts";
 import { transaction } from "./db.ts";
+import { safeError } from "./metrics.ts";
 import { beforeCheck, checkRequest, checkRequestId, checkResult, monitorInput, newMonitor, settleCheck, wakeRetryable, MONITOR_CAP_ERROR, MONITOR_LIMITS, type Monitor, type MonitorWake } from "../shared/monitors.ts";
 
 /**
@@ -232,7 +233,7 @@ export class Scheduler {
       } catch (error) {
         const status = (error as { status?: number }).status;
         if (status === 404 || status === 410) { gone = true; break; }
-        console.error(JSON.stringify({ type: "monitor_wake_failed", schedule: row.id, agent: row.agent, tenant: row.tenant, status, error: error instanceof Error ? error.message : String(error) }));
+        console.error(JSON.stringify({ type: "monitor_wake_failed", schedule: row.id, agent: row.agent, tenant: row.tenant, status, error: safeError(error) }));
         if (!wakeRetryable(status) || (wake.attempts ?? 0) + 1 >= MONITOR_LIMITS.wakeAttempts) done.add(wake.id); else failed.add(wake.id);
       }
     }
@@ -274,7 +275,7 @@ export class Scheduler {
       catch (error) {
         const status = (error as { status?: number }).status;
         if (status === 404 || status === 410) { await this.db.query("delete from schedules where id = $1 and claimed_by = $2", [due.id, claim]); return; }
-        console.error(JSON.stringify({ type: "monitor_check_not_sent", schedule: due.id, agent: due.agent, tenant: due.tenant, status, error: error instanceof Error ? error.message : String(error) }));
+        console.error(JSON.stringify({ type: "monitor_check_not_sent", schedule: due.id, agent: due.agent, tenant: due.tenant, status, error: safeError(error) }));
         // Not sent: nothing is in flight, and the next occurrence tries again.
         await this.db.query("update schedules set monitor = monitor - 'pending' where id = $1 and monitor->'pending'->>'key' = $2", [due.id, String(due.dueAt)]);
       }
