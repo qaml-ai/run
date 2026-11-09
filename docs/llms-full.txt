@@ -6661,6 +6661,9 @@ stop or replace it; a child's `computer_start` or `computer_stop` is refused.
 Give each child its own directory or git worktree. Never switch branches in a
 checkout another agent is using. If the parent's machine stops, the child must
 finish and report back; only the parent can restart it.
+A child's first use starts the parent's machine if it has never been started, and
+resumes it after idle suspension. An explicit stop, deletion or expired lease
+refuses the child's call; the child should finish and report back.
 Children's computer activity counts toward the parent's idle policy. The machine
 is billed to its owner as before; sharing creates no new machine or charge.
 
