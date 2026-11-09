@@ -74,6 +74,6 @@ test('a batched notification hydrates a spilled sibling that has no outbox entry
   const notices = new DelegationNotifications({ storage: f.storage, submit: async (...args) => { sent.push(args); }, admitWake: async () => ({ allowed: true, hour: 0 }), retry: async () => {} });
   await notices.deliver({ ...sibling, id: 'other', key: 'other', requestId: 'other', task: 'other task', outcome: { result: { reply: 'other answer' } } });
   assert.equal(sent.length, 1);
-  assert.match(sent[0][0].params.text, /spilled sibling answer/);
-  assert.match(sent[0][0].params.text, /sibling task/);
+  assert.equal(sent[0][1].metadata.batch[0].text, 'spilled sibling answer');
+  assert.equal(sent[0][1].metadata.batch[0].costUsd, 0.25);
 });

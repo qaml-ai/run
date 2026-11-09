@@ -754,22 +754,22 @@ export class Delegation {
         // is not steered into the turn, so this wait, not a steer, takes its ending.
         this.waiting++;
         try {
-            while (Date.now() < deadline) {
-              signal.throwIfAborted();
-              const latest = (await this.children()).filter(child => selected.some(old => old.key === child.key));
-              if (latest.some(child => child.status !== 'running' && !child.landedBy) || latest.every(child => child.status !== 'running')) break;
-              for (const notice of (await this.host.storage.list<{ request: { id: string }; notice: RuntimeNotice }>({ prefix: 'delegation-notice:' })).values()) {
-                if (notice.notice.metadata.kind !== 'message') continue;
-                const record = await this.host.storage.get<{ state: string; accepted?: boolean }>(`request:${notice.request.id}`);
-                // Admission writes the request before Pi queues its steering input. A wait may
-                // return only after that input is durable, so the next step sees the message.
-                if (record?.accepted && record.state !== 'completed') messaged.add(notice.notice.source.name);
-              }
-              if (messaged.size) break;
-              if (args.untilProgress && Date.now() >= earliestProgress) for (const child of latest) if (child.progress && child.progress.sequence > (child.progressShown ?? 0)) updated.add(child.name);
-              if (updated.size) break;
-              await this.waitChange('*', AbortSignal.any([signal, AbortSignal.timeout(Math.min(CHILD_FALLBACK_MS, Math.max(1, deadline - Date.now())))] )).catch(error => { if (signal.aborted) throw error; });
+          while (Date.now() < deadline) {
+            signal.throwIfAborted();
+            const latest = (await this.children()).filter(child => selected.some(old => old.key === child.key));
+            if (latest.some(child => child.status !== 'running' && !child.landedBy) || latest.every(child => child.status !== 'running')) break;
+            for (const notice of (await this.host.storage.list<{ request: { id: string }; notice: RuntimeNotice }>({ prefix: 'delegation-notice:' })).values()) {
+              if (notice.notice.metadata.kind !== 'message') continue;
+              const record = await this.host.storage.get<{ state: string; accepted?: boolean }>(`request:${notice.request.id}`);
+              // Admission writes the request before Pi queues its steering input. A wait may
+              // return only after that input is durable, so the next step sees the message.
+              if (record?.accepted && record.state !== 'completed') messaged.add(notice.notice.source.name);
             }
+            if (messaged.size) break;
+            if (args.untilProgress && Date.now() >= earliestProgress) for (const child of latest) if (child.progress && child.progress.sequence > (child.progressShown ?? 0)) updated.add(child.name);
+            if (updated.size) break;
+            await this.waitChange('*', AbortSignal.any([signal, AbortSignal.timeout(Math.min(CHILD_FALLBACK_MS, Math.max(1, deadline - Date.now())))] )).catch(error => { if (signal.aborted) throw error; });
+          }
           const { run } = await this.host.context(api);
           const answers = await this.host.storage.transaction(async tx => {
             const answers: (ReturnType<Delegation['answer']> | { agentId: string; name: string; status: string; note: string })[] = [];
