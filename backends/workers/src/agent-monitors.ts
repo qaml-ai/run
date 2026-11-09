@@ -171,8 +171,11 @@ export async function monitorDue(runtime: AgentRuntime, schedule: Schedule, now 
     if (record?.id && record.state === 'completed' && await runtime.ctx.storage.transaction(tx => stageMonitorSettle(tx, record as { id: string }))) await flushMonitors(runtime);
   } catch (error) {
     failure(runtime.env, 'monitor_check_not_sent', error);
-    // Not sent: nothing is in flight, and the next occurrence tries again.
-    await runtime.ctx.storage.transaction(async tx => {
+    // Refused for good (the account is out of credit, a spend limit): a failed check, which backs off and in the end
+    // stops the monitor. Not sent otherwise: nothing is in flight, and the next occurrence tries again.
+    const refused = !wakeRetryable((error as { status?: number }).status);
+    if (refused && await runtime.ctx.storage.transaction(tx => stageMonitorSettle(tx, { id: checkRequestId(schedule.id, due), state: 'refused' }))) await flushMonitors(runtime);
+    if (!refused) await runtime.ctx.storage.transaction(async tx => {
       const current = await tx.get<Schedule>(key(schedule.id));
       if (current?.monitor?.pending?.key !== due) return;
       const { pending: _pending, ...monitor } = current.monitor;

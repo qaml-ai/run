@@ -1,4 +1,4 @@
-import { contractTest, OTHER_OPERATOR, lastUser, sleep, toolCall, toolResults, until } from '../support.ts';
+import { contractTest, OTHER_OPERATOR, lastUser, listen, sleep, toolCall, toolResults, until } from '../support.ts';
 import type { ContractFixture } from '../fixture.ts';
 import assert from "node:assert/strict";
 
@@ -139,3 +139,33 @@ contractTest("monitors", "tests/monitors.test.ts:5", "many checks leave no pile 
   assert.equal((await f.call(`/v1/agents/${agent}/monitors/${id}/checks`)).json.length, 20);
   assert.equal(f.model.bodies.length, 0);
 }, { timeout: 300_000 });
+
+contractTest("monitors", "tests/monitors.test.ts:6", "approvals are declined in a check and in the turn a fire starts: nobody is there", async (t, f) => {
+  let calls = 0;
+  const server = await listen(t, async (req, res) => {
+    if (req.method !== 'POST') { res.writeHead(405); res.end(); return; }
+    const parts: Buffer[] = [];
+    for await (const part of req) parts.push(Buffer.from(part));
+    const body = JSON.parse(Buffer.concat(parts).toString());
+    const reply = (result: unknown) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ jsonrpc: '2.0', id: body.id, result })); };
+    if (body.method === 'initialize') return reply({ protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'test', version: '1' } });
+    if (body.method === 'notifications/initialized') { res.writeHead(202); return res.end(); }
+    if (body.method === 'tools/list') return reply({ tools: [{ name: 'deploy', inputSchema: { type: 'object', properties: {} } }] });
+    calls++;
+    return reply({ content: [{ type: 'text', text: 'ran' }] });
+  });
+  // The fired turn asks for the gated tool; the agent has no unattended setting of its own.
+  f.setModel(body => !toolResults(body).length ? toolCall('test__deploy', {}) : { role: 'assistant', content: toolResults(body).at(-1) });
+  const definition = await f.call('/v1/definitions', { body: { name: 'Gated', mcpServers: [{ name: 'test', url: server + '/mcp', approval: { default: 'always' } }] } });
+  assert.equal(definition.status, 201, definition.text);
+  const agent = (await f.call('/v1/agents', { body: { definition: definition.json.id } })).json.id;
+  const path = `/v1/agents/${agent}/monitors`;
+  const inCheck = (await f.call(path, { body: { name: "gated", mode: "repeat", everySeconds: 3600, code: "let said = 'ran'; try { await tools.test__deploy({}); } catch (error) { said = String(error.message ?? error); } return { fire: false, state: said, nextSeconds: 3600 };" } })).json.id;
+  await settled(f, agent, inCheck, 1);
+  assert.equal(calls, 0, "the gated tool did not run in the check");
+  assert.equal(f.model.bodies.length, 0);
+  assert.equal((await f.call(`/v1/agents/${agent}/inputs`)).json?.inputs?.filter((input: any) => input.state === "pending").length ?? 0, 0, "nothing waits on a person");
+  await f.call(path, { body: { name: "fires", code: "return { fire: true, value: 1 };" } });
+  await until(() => f.model.bodies.some(body => toolResults(body).some(text => /unattended/.test(text))), "the declined approval in the fired turn");
+  assert.equal(calls, 0, "the gated tool did not run in the fired turn");
+}, { env: { AGENT_OUTBOUND_ALLOW_HTTP: 'true', AGENT_OUTBOUND_ALLOW_CIDRS: '127.0.0.1/32' }, timeout: 120_000 });

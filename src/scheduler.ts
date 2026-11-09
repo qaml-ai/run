@@ -285,8 +285,10 @@ export class Scheduler {
         const status = (error as { status?: number }).status;
         if (status === 404 || status === 410) { await this.db.query("delete from schedules where id = $1 and claimed_by = $2", [due.id, claim]); return; }
         console.error(JSON.stringify({ type: "monitor_check_not_sent", schedule: due.id, agent: due.agent, tenant: due.tenant, status, error: safeError(error) }));
-        // Not sent: nothing is in flight, and the next occurrence tries again.
-        await this.db.query("update schedules set monitor = monitor - 'pending' where id = $1 and monitor->'pending'->>'key' = $2", [due.id, String(key)]);
+        // Refused for good (the account is out of credit, a spend limit): a failed check, which backs off and in the end stops the monitor.
+        if (!wakeRetryable(status)) await this.settleMonitor({ id: due.agent, tenant: due.tenant }, { id: checkRequestId(due.id, key), state: "refused" });
+        // Not sent otherwise: nothing is in flight, and the next occurrence tries again.
+        else await this.db.query("update schedules set monitor = monitor - 'pending' where id = $1 and monitor->'pending'->>'key' = $2", [due.id, String(key)]);
       }
     }
     await this.db.query("update schedules set due_at = $3, claimed_by = null, claimed_until = null, attempts = 0 where id = $1 and due_at = $2 and claimed_by = $4", [due.id, due.dueAt, nextOccurrence(due), claim]);
