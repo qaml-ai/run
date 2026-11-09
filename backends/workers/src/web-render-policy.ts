@@ -43,7 +43,7 @@ export class WebRender {
    * the outbound guard refuses, or Firecrawl failing. The URL is checked with the guard first (scheme,
    * and every address its host resolves to), so Firecrawl is never asked for a page the runtime could not fetch.
    */
-  async render(context: { tenant: string; agent: string }, url: string, signal: AbortSignal): Promise<{ title?: string; markdown: string } | undefined> {
+  async render(context: { tenant: string; agent: string; requestId?: string }, url: string, signal: AbortSignal): Promise<{ title?: string; markdown: string } | undefined> {
     const { outbound } = this.options;
     try { await (this.options.targetOutbound ?? outbound).reachable(url); } catch { return undefined; }
     // A key refused (spent credit) leaves the page unrendered, as having none does.
@@ -63,7 +63,7 @@ export class WebRender {
       const body = await response.json() as { data?: { markdown?: unknown; metadata?: { title?: unknown } } };
       const markdown = typeof body?.data?.markdown === "string" ? body.data.markdown.trim() : "";
       if (!markdown) return undefined;
-      this.options.onRender?.(context.tenant, context.agent, { provider: "firecrawl", model: "web_fetch", usage: { cost: { total: this.options.price / MICROS } }, platform: key.platform, renders: 1 });
+      this.options.onRender?.(context.tenant, context.agent, { ...(context.requestId ? { requestId: context.requestId } : {}), provider: "firecrawl", model: "web_fetch", usage: { cost: { total: this.options.price / MICROS } }, platform: key.platform, renders: 1 });
       const title = body.data?.metadata?.title;
       return { ...(typeof title === "string" && title ? { title } : {}), markdown };
     } catch (error) {

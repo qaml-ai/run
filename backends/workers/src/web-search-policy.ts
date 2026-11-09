@@ -251,7 +251,7 @@ export class WebSearch {
    * a 429 or 5xx, a key the provider refuses (401, 402, 403) or an answer that is not JSON moves on to
    * the next; any other 4xx is the request's fault, which another provider would not fix, and ends the search.
    */
-  async search(context: { tenant: string; agent: string; providers?: string[] }, args: Record<string, unknown>, signal: AbortSignal) {
+  async search(context: { tenant: string; agent: string; requestId?: string; providers?: string[] }, args: Record<string, unknown>, signal: AbortSignal) {
     const query = typeof args.query === "string" ? args.query.trim() : "";
     if (!query) throw new Error("web_search needs a query");
     const count = Math.min(SEARCH.maxCount, Math.max(1, Math.trunc(Number(args.count ?? SEARCH.count)) || SEARCH.count));
@@ -263,7 +263,7 @@ export class WebSearch {
       attempt: async (id, key) => {
         const results = await this.attempt(this.options.providers[id], { query: query.slice(0, SEARCH.query), count, ...(freshness ? { freshness } : {}) }, key.key, signal);
         // Only a search the API answered is charged, at its provider's price; its links are the web's, fetched (if at all) through web_fetch's guard.
-        this.options.onSearch?.(context.tenant, context.agent, { provider: id, model: "web_search", usage: { cost: { total: this.options.price(id) / MICROS } }, platform: key.platform, searches: 1 });
+        this.options.onSearch?.(context.tenant, context.agent, { ...(context.requestId ? { requestId: context.requestId } : {}), provider: id, model: "web_search", usage: { cost: { total: this.options.price(id) / MICROS } }, platform: key.platform, searches: 1 });
         return results;
       },
       exhausted: (failures, unkeyed) => new Error(failures.length ? `Web search failed: ${failures.join("; ")}` : webSearchUnavailable(unkeyed)),
