@@ -1,52 +1,62 @@
-# Dreaming implementation status
+# Dreaming review
 
-This branch is incomplete. It adds the conversation-tree transcript API on Node
-and Workers, SDK methods, and a draft code-mode workflow. It does not enable a
-nightly consolidation job.
+Implemented on Node and Workers. Migration: `124_dreaming.sql` (renumber on merge
+if another branch reserves 124). No push, PR, or production writes.
 
-## Implemented
+- Paginated `GET /v1/agents/{id}/sessions` reads time-filtered retained transcripts
+  with message indexes, including created and named delegate descendants.
+- `GET`/`PUT /v1/agents/{id}/dreaming` and `POST .../dreaming/run` expose opt-in
+  nightly configuration, manual starts, status, and the latest 20 summaries.
+  Full audit results remain in `agent_dreaming_runs`.
+- The shared scheduler persists its window, coordinator request and claim. Failed
+  inputs, budget exhaustion, malformed output and publication errors retain the
+  lower watermark. Each analyzer failure is isolated and collected before the
+  workflow fails; partial analyses never publish.
+- Definitions disable file tools, code mode, builtins, decision tools and computer
+  inheritance for model workers. The coordinator uses only `tools.delegate`.
+  Aggregate spend uses the existing parent/child budget machinery. Node SDK
+  execution now supplies stable request-scoped tool identities for delegation.
+- Publication validates paths, frontmatter and local links, creates a pinned
+  snapshot, then atomically restores it. Consumer agent mounts must be read-only.
+- TypeScript and both Python runtimes expose the additive methods. CLI, registry
+  and create-run-app have no callers to migrate. OpenAPI and product docs include
+  the routes.
 
-- `GET /v1/agents/{id}/sessions`: tenant-scoped, time-filtered, paginated retained
-  transcripts from the agent and descendants. It preserves message indexes.
-- `AgentRuntime.sessions` in TypeScript and both Python clients.
-- A draft workflow builder in `shared/dreaming-workflow.ts`. It awaits analyzers
-  in bounded groups and calls one organizer only if every input succeeded.
-  Transcript text is serialized as data. The workflow requests no computer.
-- An output validator for relative Markdown paths, unique paths, frontmatter,
-  `_index.md`, and file/count bounds. The draft does not write files.
+## Review boundaries
 
-No migration is added. No production writes, push, or PR are part of this branch.
+The first window starts at configuration time. The transcript API is a live
+message view, not a run-status ledger; dreaming defers busy source agents.
+Retain source history until it is consolidated. Limits are 200 input pages,
+240,000 bytes of workflow input, 100,000 characters of organizer input/output,
+and 100 files of 16,000 characters each. Oversized jobs fail without moving the
+window; automatic durable splitting is not implemented.
 
-## Still required before built-in dreaming can ship
+Secret filtering removes credential fields, recognizable credential patterns and
+long opaque strings before model input and publication. It cannot prove that
+arbitrary prose contains no undisclosed secret. This boundary needs Claude's
+review against the requirement that secrets never be copied. Model instructions
+are not a substitute for redaction. High-entropy filtering can also remove useful
+identifiers. Factual correctness remains model-dependent.
 
-- Durable per-agent or per-volume configuration, nightly scheduling, run-now,
-  fenced claims, and durable execution/recovery state on both backends.
-- Provisioned definitions that enforce no shell, web, or network tools; model
-  selection and an aggregate spend budget enforced by the runtime.
-- Secret filtering before model input and memory publication. The prompts alone
-  do not provide this guarantee.
-- Closed-run selection; the transcript API is a live message view and does not
-  return run status. Worker delegation to existing named agents also needs a
-  durable traversal source beyond created-child lineage.
-- Read-only consumer mounts, atomic memory publication and recovery, preserving
-  the input watermark after any failure, and durable change summaries.
-- End-to-end tests of those behaviors, including restarts, overlapping claims,
-  budget exhaustion, secret exclusion, and failed inputs.
-
-The workflow builder must not be treated as an enabled or security-complete
-feature. Its caller must provide redacted inputs, restricted definitions, and a
-budget. It imposes explicit input limits and rejects oversized jobs; durable
-batching is still needed.
+Snapshots stay pinned for review/recovery and use the existing snapshot capacity.
+Tenant file APIs still allow manual memory maintenance. Claim renewal precedes
+publication; there is no transactional fence spanning Postgres and object storage.
+A storage request stalled past the five-minute lease is a remaining concurrency
+edge to review. In-flight model requests can overshoot a spend threshold, as with
+existing runtime budgets. No TTL caches were added.
 
 ## Compatibility
 
-Existing history, children, schedule, and delegation routes are unchanged.
-The new endpoint requires tenant credentials; it does not broaden agent or
-browser tokens. No changes are required in camel-bots. Its existing history
-callers were checked in `src/app/camelrun.ts`, `src/ops/prompt-categories.ts`, and
-`src/api/builder.ts`; they keep their existing route and response format.
-No existing CLI, registry, or create-run-app caller changes are required by this
-additive API.
+Checked camel-bots `src/` for all touched routes and SDK methods. Existing history
+callers in `src/app/camelrun.ts`, `src/ops/prompt-categories.ts`, and
+`src/api/builder.ts` retain their response shape. Builder's `PUT .../mounts`
+caller remains compatible: the new read-only restriction applies only to volumes
+explicitly enrolled in this new feature. No camelRun SDK execute caller was found;
+local functions named execute are unrelated. No camel-bots change is required.
+
+## Validation
+
+Validation results are recorded in the final report after the sprite runs finish.
 
 ## Draft model-facing strings, verbatim
 

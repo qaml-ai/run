@@ -528,14 +528,19 @@ export function createAgentHost(hostIO: HostIO) {
    * `maxOutputCharacters` in all.
    */
   async function execute(params: unknown, signal: AbortSignal) {
-    const { code, timeoutMs, maxOutputCharacters = SANDBOX_LIMITS.outputCharacters } = codeRequest(params);
+    const { requestId, ...input } = params as Record<string, unknown>;
+    const { code, timeoutMs, maxOutputCharacters = SANDBOX_LIMITS.outputCharacters } = codeRequest(input);
     const longest = Math.min(config.codeLimits?.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs, SANDBOX_LIMITS.maxTimeoutMs);
     if (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || timeoutMs < 1)) throw new Error(`timeoutMs must be 1..${longest}`);
     if (!Number.isInteger(maxOutputCharacters) || maxOutputCharacters < 1 || maxOutputCharacters > SANDBOX_LIMITS.maxOutputCharacters) throw new Error(`maxOutputCharacters must be 1..${SANDBOX_LIMITS.maxOutputCharacters}`);
+    // An SDK script has no model tool call. Give its effects a stable request-scoped identity,
+    // including parallel delegates, so retries find the same child rather than creating another.
+    let callIndex = 0;
     const tools = config.tools.filter(callableFromCode).map((tool): CodemodeTool => ({
       name: tool.name, description: tool.description, inputSchema: tool.parameters,
       execute: async args => {
-        const value = await io.tool(tool.name, args as Record<string, unknown>);
+        const identity = requestId ? { toolCallId: `execute:${requestId}`, innerCallId: `c${++callIndex}` } : undefined;
+        const value = await io.tool(tool.name, args as Record<string, unknown>, identity, signal);
         return tool.resultFormat === "content" ? scriptValue(value) : value;
       },
     }));

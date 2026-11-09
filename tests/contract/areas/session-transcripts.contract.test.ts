@@ -42,3 +42,25 @@ contractTest('history', 'tests/session-transcripts.test.ts:1', 'session pages in
   assert.ok(pages.some(page => page.agentId && page.agentId !== agent && page.entries.length));
   assert.ok((await collect(false)).every(page => page.agentId === null || page.agentId === agent));
 });
+
+contractTest('history', 'docs/guides/session-transcripts.md', 'named delegate conversations appear in the source tree', async (_t, f) => {
+  f.setModel(body => {
+    const text = JSON.stringify(body.messages);
+    if (text.includes('NAMED_CHILD')) return {content:'named child evidence'};
+    if (body.messages.at(-1)?.role === 'tool') return {content:'done'};
+    return toolCall('delegate',{agent:'helper',task:'NAMED_CHILD'},'named_delegate');
+  });
+  const child=(await f.call('/v1/agents',{headers:{'Idempotency-Key':'named-child'},body:{}})).json.id;
+  const root=(await f.call('/v1/agents',{body:{builtins:['delegate'],delegate:{agents:[{name:'helper',agent:'named-child'}]}}})).json.id;
+  const from=Date.now()-1000;
+  await f.prompt(root,'start');
+  const to=Date.now()+1000;
+  let cursor: string | undefined, found=false;
+  do {
+    const page=await f.call(`/v1/agents/${root}/sessions?from=${from}&to=${to}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
+    assert.equal(page.status,200,page.text);
+    if(page.json.agentId===child && page.json.entries.length) found=true;
+    cursor=page.json.next ?? undefined;
+  } while(cursor);
+  assert.ok(found);
+});

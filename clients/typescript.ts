@@ -795,6 +795,23 @@ export interface AgentFile { path: string; version: number; size: number; update
  */
 export interface CalendarSchedule { time: string; timeZone: string; daysOfWeek?: number[] }
 export interface ScheduleEmail { to: string; subject: string; format?: "text" | "markdown" | "html" }
+export interface DreamingConfig {
+  enabled: boolean;
+  volumeId: string;
+  schedule: { time: string; timeZone: string };
+  analyzerModel: string;
+  organizerModel: string;
+  budgetUsd: number;
+  instructions: string;
+}
+export interface DreamingStatus {
+  config: DreamingConfig;
+  since: number;
+  dueAt: number;
+  running: boolean;
+  lastResult: { status: string; from: number; to: number; summary?: string; error?: string } | null;
+  results: NonNullable<DreamingStatus["lastResult"]>[];
+}
 export interface Schedule { calendar?: CalendarSchedule; email?: ScheduleEmail; id: string; agent: string; text?: string; code?: string; /** @deprecated Never set: every wake-up sees the agent's history. */ history?: "none"; dueAt: number; everySeconds?: number; createdAt: number; failures?: number; lastError?: string; lastErrorAt?: number }
 /**
  * A steered message as the runtime took it (`steerMessage`, `agent.steer`): `accepted`, the running turn reads it after
@@ -1811,6 +1828,9 @@ export class AgentRuntime {
     const query = new URLSearchParams(Object.entries(options).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)]));
     return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/sessions?${query}`, this.operator());
   }
+  dreaming(agentId: string): Promise<DreamingStatus | null> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/dreaming`, this.operator()); }
+  configureDreaming(agentId: string, config: DreamingConfig): Promise<DreamingStatus> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/dreaming`, this.operator(), "PUT", config, false); }
+  dreamNow(agentId: string): Promise<{queued: boolean}> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/dreaming/run`, this.operator(), "POST", {}, false); }
   /**
    * A token a browser reads one agent with (`@camelai/run/watch`): mint one per user, after your
    * own access checks. It reads only that agent's events, state, history and inputs (or `scopes`), for

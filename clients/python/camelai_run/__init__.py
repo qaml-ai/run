@@ -599,6 +599,15 @@ class _RuntimeCalls:
     """The operator API's calls that are one request each, shared by the async AgentRuntime and the synchronous one
     (camelai_run.sync): each returns what self._rest returns, an awaitable here and the answer there."""
 
+    def dreaming(self, agent_id):
+        return self._rest("GET", "/v1/agents/" + quote(agent_id, safe="") + "/dreaming")
+
+    def configure_dreaming(self, agent_id, config):
+        return self._rest("PUT", "/v1/agents/" + quote(agent_id, safe="") + "/dreaming", config, retry=False)
+
+    def dream_now(self, agent_id):
+        return self._rest("POST", "/v1/agents/" + quote(agent_id, safe="") + "/dreaming/run", {}, retry=False)
+
     def sessions(self, agent_id, *, from_ms, to_ms, cursor=None, limit=100, children=True):
         """A tenant-authenticated page of a conversation tree in [from_ms,to_ms). Follow next until null."""
         query = {"from": from_ms, "to": to_ms, "limit": limit, "children": str(children).lower()}

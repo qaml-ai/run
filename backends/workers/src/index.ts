@@ -1,3 +1,4 @@
+import { workerDreaming } from "./dreaming.ts";
 import { SharedAgents, ShareLinkInput, MemberInput } from '../../../src/shared-agents.ts';
 import { database } from './postgres.ts';
 import { inboxQuery, readInbox, InboxQueryError } from '../../../shared/inbox.ts';
@@ -599,8 +600,10 @@ const worker = {
       )
         throw new ApiError(404, "Not found");
       if (tail === "/_input-mirror") throw new ApiError(404, "Not found");
+      if (["/sessions", "/dreaming", "/dreaming/run"].includes(tail) && (!auth || match[1] !== "v1/agents"))
+        throw new ApiError(403, "A tenant key is required", "FORBIDDEN");
       const lifecycle = !browser
-        ? await agentLifecycleRoutes(request, env, entry, tail, auth?.kind !== "oauth")
+        ? await agentLifecycleRoutes(request, env, entry, tail, auth?.kind !== "oauth", work => ctx.waitUntil(work))
         : undefined;
       if (lifecycle) return lifecycle;
       if (request.method === "POST" && ["/prompt", "/requests"].includes(tail)) {
@@ -683,7 +686,7 @@ const worker = {
   async scheduled(_controller: ScheduledController, env: Env) {
     return withMoneyMetrics(env, async () => {
     try {
-      if (_controller.cron === "* * * * *") { await sweepInputMirrors(env); return; }
+      if (_controller.cron === "* * * * *") { await sweepInputMirrors(env); await workerDreaming(env).scan(); return; }
       await maintenance(env);
       await moneyMaintenance(env);
       await publishScheduleEmails(env);

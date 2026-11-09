@@ -1,3 +1,5 @@
+import { transcriptDescendants } from "./session-transcripts.ts";
+import { workerDreaming } from "./dreaming.ts";
 import { sessionTranscripts } from "../../../shared/session-transcripts.ts";
 import { Directory, type AuthContext, type ControlEnv, type DirectoryEntry, type DirectoryFailure } from "./control.ts";
 import { agentToken, ApiError, configuration, digest } from "./api-contract.ts";
@@ -105,11 +107,21 @@ export async function statelessRoutes(request: Request, env: ControlEnv, auth: A
   throw new ApiError(405, "Method not allowed");
 }
 
-export async function agentLifecycleRoutes(request: Request, env: ControlEnv & FileBindings, entry: DirectoryEntry, tail: string, includeToken = true): Promise<Response | undefined> {
+export async function agentLifecycleRoutes(request: Request, env: ControlEnv & FileBindings, entry: DirectoryEntry, tail: string, includeToken = true, background?: (work: Promise<unknown>) => void): Promise<Response | undefined> {
+  if (tail === "/dreaming" || tail === "/dreaming/run") {
+    const service=workerDreaming(env);
+    if(tail === "/dreaming" && request.method === "GET") return json(await service.get(entry.tenantId,entry.id));
+    if(tail === "/dreaming" && request.method === "PUT") return json(await service.configure(entry.tenantId,entry.id,await body(request)));
+    if(tail === "/dreaming/run" && request.method === "POST") {
+      const queued=await service.now(entry.tenantId,entry.id);
+      background?.((async()=>{for(let i=0;i<15;i++){await service.scan();await new Promise(resolve=>setTimeout(resolve,1000));}})());
+      return json(queued,202);
+    }
+  }
   if (tail === "/sessions" && request.method === "GET") {
     const q = new URL(request.url).searchParams;
     if (q.has("children") && !["true", "false"].includes(q.get("children")!)) throw new ApiError(400, "Invalid children");
-    try { return json(await sessionTranscripts({ query: (sql, values) => withSql(env, db => db.query(sql, values)), page: async (id, after, limit) => payload(await call(env, id, `/history?after=${after}&limit=${limit}&maxBytes=1000000`)) }, entry.tenantId, entry.id, { from: Number(q.get("from") ?? NaN), to: Number(q.get("to") ?? NaN), cursor: q.get("cursor") ?? undefined, limit: q.has("limit") ? Number(q.get("limit")) : undefined, children: q.get("children") !== "false" })); }
+    try { return json(await sessionTranscripts({ descendants: (tenant, root) => transcriptDescendants(env, tenant, root), query: (sql, values) => withSql(env, db => db.query(sql, values)), page: async (id, after, limit) => payload(await call(env, id, `/history?after=${after}&limit=${limit}&maxBytes=1000000`)) }, entry.tenantId, entry.id, { from: Number(q.get("from") ?? NaN), to: Number(q.get("to") ?? NaN), cursor: q.get("cursor") ?? undefined, limit: q.has("limit") ? Number(q.get("limit")) : undefined, children: q.get("children") !== "false" })); }
     catch (error) { if ((error as any).status === 400) throw new ApiError(400, (error as Error).message); throw error; }
   }
   if (tail === "/export" && request.method === "GET") return json({ config: visibleConfiguration(entry.config), ...(await payload(await call(env, entry.id, "/history"))) });

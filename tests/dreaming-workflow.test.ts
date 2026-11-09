@@ -13,7 +13,7 @@ test('dreams isolate input failures, await every analyzer, and never organize a 
   });
   assert.equal(calls, 2);
   assert.equal(result.status, 'failed');
-  assert.deepEqual(result.failures, [{input: 0, failed: true}]);
+  assert.deepEqual(result.failures, [{input: 0, failed: true, error: 'provider failed'}]);
 });
 
 test('dream inputs stay data; organizer follows complete analyzers with computer disabled', async () => {
@@ -29,4 +29,13 @@ test('dream inputs stay data; organizer follows complete analyzers with computer
     assert.throws(() => dreamFiles({...result, files: [...result.files, {path, text: 'bad'}]}));
   }
   assert.throws(() => dreamFiles({status: 'failed'}));
+});
+
+test('published memories require valid frontmatter, index coverage and resolvable local links',()=>{
+  const file=(path:string,body:string)=>({path,text:`---\ntitle: Note\n---\n${body}`});
+  assert.throws(()=>dreamFiles({status:'completed',summary:'x',files:[file('_index.md','index'),file('note.md','note')]}),/linked/);
+  assert.throws(()=>dreamFiles({status:'completed',summary:'x',files:[file('_index.md','[note](missing.md)')]}),/target/);
+  assert.throws(()=>dreamFiles({status:'completed',summary:'x',files:[{path:'_index.md',text:'---\n- scalar\n---\ntext'}]}),/mapping/);
+  const accepted=dreamFiles({status:'completed',summary:'x',files:[file('_index.md','[note](note.md)'),file('note.md','[index](_index.md)')]});
+  assert.equal(Object.keys(accepted.files).length,2);
 });
