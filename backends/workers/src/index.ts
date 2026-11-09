@@ -1,3 +1,4 @@
+import { handleHook, hookPath } from "../../../src/core/trigger-ingress.ts";
 import { workerTriggers, triggerRoutes } from "./triggers.ts";
 import { SharedAgents, ShareLinkInput, MemberInput } from '../../../src/shared-agents.ts';
 import { database } from './postgres.ts';
@@ -189,6 +190,12 @@ function httpFailure(error: unknown, env: Env): Response {
 
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    if(request.method==='POST'&&hookPath(new URL(request.url).pathname)) {
+      try {
+        const result=await handleHook(request,request.headers.get('cf-connecting-ip')??'unknown',()=>workerTriggers(env));
+        return Response.json(result.body,{status:result.code,headers:{'Cache-Control':'no-store'}});
+      } catch(error) { return httpFailure(error,env); }
+    }
     const recovery = resumeWebhookDeliveries(env);
     if (recovery) ctx.waitUntil(recovery.catch(error => failure(env, "webhook_recovery_failed", error)));
     try {
@@ -234,11 +241,6 @@ const worker = {
           experimental: true,
         });
       // Channels' webhooks come before any authentication: each delivery proves itself.
-      if(/^\/v1\/hooks\/[^/]+$/.test(path)&&request.method==='POST') {
-        const service=await workerTriggers(env), result=await service.receive(path.split('/').pop()!,request);
-        ctx.waitUntil(service.scan());
-        return Response.json(result.body,{status:result.code,headers:{'Cache-Control':'no-store'}});
-      }
       const delivery = await channelWebhook(request, env, ctx);
       if (delivery) return delivery;
       const publicResponse = await publicRoutes(request, env);
@@ -692,9 +694,10 @@ const worker = {
   },
   async scheduled(_controller: ScheduledController, env: Env) {
     return withMoneyMetrics(env, async () => {
+    try { await (await workerTriggers(env)).scan(); }
+    catch(error) { failure(env,"trigger_scan_failed",error); }
     try {
       if (_controller.cron === "* * * * *") { await sweepInputMirrors(env); return; }
-      await (await workerTriggers(env)).scan();
       await maintenance(env);
       await moneyMaintenance(env);
       await publishScheduleEmails(env);

@@ -2773,4 +2773,4 @@ export interface TriggerInput {
  headers?:string[]; deliveryIdHeader?:string; filter?:{path:string;equals:string|number|boolean|null}; rateLimit?:number;
 }
 export interface Trigger extends TriggerInput {id:string;agent:string}
-export interface TriggerDelivery {id:string;status:"queued"|"submitted"|"failed"|"rejected"|"filtered"|"duplicate"|"limited";verified:boolean;deduped:boolean;runId:string|null;agentId:string|null;error:string|null;createdAt:number}
+export interface TriggerDelivery {id:string;status:"queued"|"submitted"|"failed"|"rejected"|"filtered"|"duplicate"|"limited";verified:boolean;deduped:boolean;runId:string|null;agentId:string|null;error:string|null;createdAt:number;attempts?:number;nextAt?:number;count?:number}

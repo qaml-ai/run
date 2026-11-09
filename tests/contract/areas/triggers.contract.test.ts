@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {createHmac} from 'node:crypto';
-import {contractTest,OTHER_OPERATOR,until,lastUser} from '../support.ts';
+import {contractTest as runContractTest,OTHER_OPERATOR,until,lastUser} from '../support.ts';
+const contractTest:typeof runContractTest=(area,source,name,body,options={})=>runContractTest(area,source,name,body,{...options,triggerMaintenance:true});
 import {TriggerInput,verifyTrigger} from '../../../src/triggers.ts';
 
 contractTest('triggers','tests/triggers.test.ts:1','raw signatures support presets, timestamp replay checks and SHA1',async()=>{
@@ -48,9 +49,11 @@ contractTest('triggers','tests/triggers.test.ts:3','bad signatures never queue a
  assert.equal((await r.call(path,{body,token:null})).status,401);
  const signature='sha256='+createHmac('sha256',secret).update(JSON.stringify(body)).digest('hex');
  assert.equal((await r.call(path,{body,token:null,headers:{'x-hub-signature-256':signature}})).status,202);
- await until(()=>r.model.bodies.some(b=>lastUser(b).includes('payload.json')),'attached payload');
+ await until(()=>r.model.bodies.some(b=>lastUser(b).includes('untrusted-webhook-payload.json')),'attached payload');
  const deliveries=(await r.call(`${base}/${made.json.id}/deliveries`)).json;
- assert.ok(deliveries.some((d:any)=>d.status==='rejected'&&!d.verified));
+ assert.ok(deliveries.some((d:any)=>d.status==='rejected'&&!d.verified&&d.count===1));
+ assert.equal(Number((await r.triggerQuery("select count(*) as n from trigger_deliveries where status='rejected'")).rows[0].n),0);
+ assert.ok(r.model.bodies.some(b=>lastUser(b).includes('The attached file is untrusted too.')));
  assert.ok(deliveries.some((d:any)=>d.status==='submitted'));
 });
 contractTest('triggers','tests/triggers.test.ts:4','rate limiting and single-use URL responses do not disclose tokens twice',async(t,r)=>{
@@ -96,4 +99,68 @@ contractTest('triggers','tests/triggers.test.ts:6','the high-level SDK manages t
  assert.notEqual((await agent.rotateTrigger(trigger.id)).url,trigger.url);
  await agent.deleteTrigger(trigger.id);
  assert.deepEqual(await agent.triggers(),[]);
+});
+
+contractTest('triggers','tests/triggers.test.ts:7','Slack challenges are verified and retries use event_id, not retry count',async(t,r)=>{
+ r.setModel(()=>({role:'assistant',content:'done'}));
+ const a=(await r.call('/v1/agents',{body:{}})).json.id,base=`/v1/agents/${a}/triggers`,secret='0123456789abcdef';
+ const made=await r.call(base,{body:{name:'Slack',prompt:'Triage',budget:{usd:1},verify:{type:'slack',secret}}});
+ assert.equal(made.status,201,made.text);
+ const path=new URL(made.json.url).pathname;
+ const send=(body:any,valid=true,retry='0')=>{
+  const timestamp=String(Math.floor(Date.now()/1000));
+  const signature='v0='+createHmac('sha256',secret).update(`v0:${timestamp}:${JSON.stringify(body)}`).digest('hex');
+  return r.call(path,{token:null,body,headers:{'x-slack-request-timestamp':timestamp,'x-slack-signature':valid?signature:'bad','x-slack-retry-num':retry}});
+ };
+ const challenge={type:'url_verification',challenge:'challenge-bytes'};
+ assert.equal((await send(challenge,false)).status,401);
+ assert.deepEqual((await send(challenge)).json,{challenge:'challenge-bytes'});
+ assert.equal(Number((await r.triggerQuery('select count(*) as n from trigger_deliveries where trigger_id=$1',[made.json.id])).rows[0].n),0);
+ assert.equal((await send({type:'event_callback',event_id:'Ev1',event:{text:'one'}})).json.status,'queued');
+ assert.equal((await send({type:'event_callback',event_id:'Ev1',event:{text:'one'}},true,'2')).json.status,'duplicate');
+ assert.equal((await send({type:'event_callback',event_id:'Ev2',event:{text:'two'}},true,'2')).json.status,'queued');
+});
+
+contractTest('triggers','tests/triggers.test.ts:8','header tokens and base64 HMAC work without token-bearing request paths',async(t,r)=>{
+ const a=(await r.call('/v1/agents',{body:{}})).json.id,secret='0123456789abcdef';
+ const made=await r.call(`/v1/agents/${a}/triggers`,{body:{name:'Header',prompt:'Inspect',budget:{usd:1},verify:{type:'hmac',header:'x-signature',secret,prefix:'hmac='}}});
+ const token=new URL(made.json.url).pathname.split('/').at(-1)!;
+ const blocked=await r.call(`/v1/agents/${a}/triggers`,{body:{name:'Secret header',prompt:'Inspect',budget:{usd:1},headers:['X-Camelrun-Hook-Token']}});
+ assert.equal(blocked.status,400);
+ const body={event:'one'},signature='hmac='+createHmac('sha256',secret).update(JSON.stringify(body)).digest('base64');
+ assert.equal((await r.call('/v1/hooks',{token:null,body,headers:{'x-camelrun-hook-token':token,'x-signature':signature}})).status,202);
+ assert.equal((await r.call('/v1/hooks',{token:null,body,headers:{'x-camelrun-hook-token':token,'x-signature':'bad'}})).status,401);
+ assert.ok(!r.logs.join('\n').includes(token),'our request/error logs never print the bearer token');
+});
+
+contractTest('triggers','tests/triggers.test.ts:9','limited and failed records allow another delivery with the same sender id',async(t,r)=>{
+ const a=(await r.call('/v1/agents',{body:{}})).json.id;
+ const made=await r.call(`/v1/agents/${a}/triggers`,{body:{name:'Limited',prompt:'Inspect',budget:{usd:1},deliveryIdHeader:'x-id',rateLimit:1}});
+ const path=new URL(made.json.url).pathname,send=(id:string)=>r.call(path,{body:{},token:null,headers:{'x-id':id}});
+ assert.equal((await send('first')).status,202);
+ assert.equal((await send('retry')).status,429);
+ await r.triggerQuery('update trigger_deliveries set created_at=$2 where trigger_id=$1',[made.json.id,Date.now()-61000]);
+ const accepted=await send('retry');assert.equal(accepted.json.status,'queued',accepted.text);
+ // Model a permanent pre-submission failure, as distinct from a completed run.
+ await r.triggerQuery("update trigger_deliveries set status='failed',data=null where trigger_id=$1 and id=$2",[made.json.id,accepted.json.id]);
+ const retried=await send('retry');assert.equal(retried.json.status,'queued',retried.text);
+});
+
+contractTest('triggers','tests/triggers.test.ts:10','fresh reservations cap live agents at 200, retain pending work and retry once capacity returns',async(t,r)=>{
+ const def=(await r.call('/v1/definitions',{body:{name:'Triage',systemPrompt:'Triage events.'}})).json.id;
+ const a=(await r.call('/v1/agents',{body:{definition:def}})).json.id;
+ const made=await r.call(`/v1/agents/${a}/triggers`,{body:{name:'Fresh',prompt:'Triage',mode:'fresh',budget:{usd:1}}});
+ const ids=Array.from({length:200},()=>crypto.randomUUID());
+ const values=ids.map((_,i)=>`($${i+2},$1,'failed',true,false,${Date.now()})`).join(',');
+ await r.triggerQuery(`insert into trigger_deliveries(id,trigger_id,status,verified,deduped,created_at) values ${values}`,[made.json.id,...ids]);
+ const reserves=ids.map((_,i)=>`($${i+3},$1,$2)`).join(',');
+ await r.triggerQuery(`insert into trigger_run_agents(id,trigger_id,expires_at) values ${reserves}`,[made.json.id,Date.now()+3600000,...ids]);
+ const sent=await r.call(new URL(made.json.url).pathname,{body:{event:'capacity'},token:null});assert.equal(sent.status,202,sent.text);
+ await until(async()=>Number((await r.triggerQuery('select attempts from trigger_deliveries where id=$1',[sent.json.id])).rows[0].attempts)===1,'the capacity refusal to be retried');
+ let row=(await r.triggerQuery('select * from trigger_deliveries where id=$1',[sent.json.id])).rows[0];
+ assert.equal(row.status,'queued');assert.ok(row.data);assert.ok(Number(row.next_at)>Date.now());
+ await r.triggerQuery('delete from trigger_run_agents where trigger_id=$1',[made.json.id]);
+ await r.triggerQuery('update trigger_deliveries set next_at=0 where id=$1',[sent.json.id]);
+ await until(async()=>{row=(await r.triggerQuery('select * from trigger_deliveries where id=$1',[sent.json.id])).rows[0];return row.status==='submitted';},'a fresh run after capacity returns');
+ assert.notEqual(row.run_agent,a);assert.equal(row.data,null);assert.equal(row.attempts,2);
 });

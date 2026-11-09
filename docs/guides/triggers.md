@@ -25,22 +25,34 @@ POST `/v1/agents/{id}/triggers` accepts the same JSON. The URL has a random
 256-bit token, stored only as a hash. POST to that URL without an API token.
 Keep it secret even when signatures are enabled. POST
 `/v1/agents/{id}/triggers/{triggerId}/rotate` returns a new URL and immediately
-invalidates the old one. DELETE `/v1/agents/{id}/triggers/{triggerId}` disables it.
+invalidates the old one.
+
+Our application logs do not record hook paths or tokens. Platform request logs
+(such as a proxy, load balancer, or hosting provider) may include the URL. If the
+sender supports custom headers, use the token-less URL `/v1/hooks` and put the
+token in `X-Camelrun-Hook-Token`. Extract it from the one-time URL's final path
+segment, or use **Copy header token** in the console. Configure platform logs to
+redact that header too. Token rotation invalidates both forms.
+
+DELETE `/v1/agents/{id}/triggers/{triggerId}` disables it.
 
 The `prompt` supplies the instructions. The runtime appends selected headers and
 payload inside an explicitly untrusted data block, escaping its delimiters.
-Bodies over 16,000 characters are uploaded as `payload.json` and attached to the
-prompt. Bodies over 1 MiB receive 413. Only selected headers enter the prompt;
-authorization and cookie headers cannot be selected. No payload is included in
+Bodies over 16,000 characters are uploaded as `untrusted-webhook-payload.json`
+and attached to the prompt. The prompt identifies the attached file as untrusted too. Bodies over 1 MiB receive 413. Only selected headers enter the prompt;
+`Authorization`, `Cookie`, and `X-Camelrun-Hook-Token` cannot be selected. No payload is included in
 the delivery log. Pending work retains its payload until submission or failure;
 after submission the run retains its own prompt and attachment.
 
 `mode: "continue"` prompts this agent. `mode: "fresh"` creates an agent from the
 source agent's definition for each event, with a seven-day lifetime. Fresh mode
 requires that the source was created from a definition. `budget: {usd: number}`
-is required and becomes the prompt's spend limit. Human approval behavior still
-uses the agent configuration; automatic decline for unattended triggers is not
-yet implemented.
+is required and becomes the prompt's spend limit. A trigger has at most 200 live
+fresh run agents, including reservations being provisioned. Tenant run and agent
+limits are checked before provisioning. The shared fresh-run adapter owns this
+admission path. Human approval behavior still uses the agent configuration until
+the unattended-policy integration is available; the trigger submission hook
+requests `humanInput.unattended: "decline"` when that adapter is installed.
 
 Verification operates on raw request bytes:
 
@@ -52,23 +64,39 @@ Verification operates on raw request bytes:
   `prefix` defaults to empty. Optional `timestampHeader` signs `timestamp.rawBody`.
 
 Timestamped signatures default to a 300-second tolerance, adjustable with
-`toleranceSeconds` (1–3600). Signing secrets are sealed with the runtime secrets
+`toleranceSeconds` (1–3600). Generic HMAC accepts hexadecimal or standard base64 signatures with the configured
+prefix. Signing secrets are sealed with the runtime secrets
 key and never returned. Signatures use constant-time comparison.
 
 `filter: {path, equals}` compares a dotted JSON path before queueing work. Ignored
 events return 202. `deliveryIdHeader` deduplicates verified deliveries for 24
-hours; the default is `X-GitHub-Delivery`, or the event's `id` for Stripe. Services
+hours against queued or submitted work; filtered, rate-limited, and permanently
+failed submissions never suppress a sender's retry. The default is
+`X-GitHub-Delivery`, the event's `id` for Stripe, or `event_id` for Slack.
+Slack `url_verification` challenges return the signed challenge without starting
+a run. `X-Slack-Retry-Num` is never used as an event identity. Services
 without delivery IDs can run more than once if they retry. `rateLimit` defaults
 to 60 accepted events per trigger per minute (maximum 600); excess receives 429.
-Bad signatures receive 401 and never start work.
+Bad signatures receive 401 and never start work or create delivery rows. The
+view includes an aggregate rejection counter instead. Ingress counters apply to
+all attempts, including bad signatures: at most 600 per token and 1,200 per client
+IP each minute on the receiving Node process or Workers isolate. Counters have a
+bounded number of entries; a full counter table refuses new sources until a new
+minute. The durable per-trigger work rate limit still applies across receivers.
+An excessive `Content-Length` is rejected before any database access.
 
 Accepted events return 202 after durable queueing. Submission happens in the
-background. GET `/v1/agents/{id}/triggers/{triggerId}/deliveries` returns the latest
+background, never in the POST handler. GET `/v1/agents/{id}/triggers/{triggerId}/deliveries` returns the latest
 100 records from the last 24 hours, with `status`, `verified`, `deduped`,
 `runId` (the prompt request id), `agentId`, and a scrubbed `error`. `submitted` means the
 runtime accepted the prompt, not that the model completed it. Queued work is
 reclaimed after a worker crash; a deterministic request id prevents resubmission
-from running the prompt twice. A submission failure is recorded as `failed`.
+from running the prompt twice. Transient submission errors retry internally up to five attempts, with delays of
+30 seconds, one minute, two minutes, and five minutes. Payloads stay queued during
+backoff and are discarded only after acceptance or terminal failure. Permanent
+errors fail immediately; exhausted retries are recorded as `failed`. `attempts`
+and `nextAt` expose retry progress. Workers maintenance dispatches up to four
+submissions concurrently and scans separately from other maintenance jobs.
 
 The TypeScript agent exposes `createTrigger`, `triggers`, `deleteTrigger`,
 `rotateTrigger`, and `triggerDeliveries`. Python exposes `create_trigger`,

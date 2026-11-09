@@ -16,6 +16,8 @@ it('creates a signed trigger and shows its one-time URL until dismissed',async()
  fireEvent.click(screen.getByRole('button',{name:'Create trigger'}));
  await waitFor(()=>expect(writes).toEqual([{name:'Support',prompt:'Triage this event',mode:'continue',budget:{usd:1},verify:{type:'github',secret:'a-test-signing-secret'}}]));
  expect(await screen.findByDisplayValue('https://example.test/v1/hooks/opaque')).toBeTruthy();
+ expect(screen.getByRole('button',{name:'Copy header token'})).toBeTruthy();
+ expect(screen.getByText(/Platform request logs may include/)).toBeTruthy();
  fireEvent.click(screen.getByRole('button',{name:'Dismiss'}));
  expect(screen.queryByDisplayValue('https://example.test/v1/hooks/opaque')).toBeNull();
  expect((screen.getByLabelText('Signing secret') as HTMLInputElement).value).toBe('');

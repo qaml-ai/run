@@ -1,3 +1,4 @@
+import { handleHook } from "./core/trigger-ingress.ts";
 import { TriggerInput, type Triggers } from "./triggers.ts";
 import { SharedAgents, ShareLinkInput, MemberInput, ShareLink, CreatedShareLink, Member } from './shared-agents.ts';
 import { inboxQuery, readInbox, InboxQueryError } from '../shared/inbox.ts';
@@ -330,11 +331,13 @@ export function api(context: ApiContext) {
     await context.billingAlerts?.service.unsubscribe(c.req.param("token"));
     return c.body(null, 204);
   });
-  route(createRoute({method:"post",path:"/v1/hooks/{token}",security:[],request:{params:z.object({token:z.string()})},responses:{202:reply("Delivery accepted",z.unknown())}}), async c => {
-    if (!context.triggers) throw new HttpError(404,"Unknown hook");
-    const result=await context.triggers.receive(c.req.param("token")!,c.req.raw);
-    return json(c,result.code,result.body);
-  });
+  for(const path of ["/v1/hooks/{token}","/v1/hooks"] as const) {
+    route(createRoute({method:"post",path,security:[],...(path.endsWith("}")?{request:{params:z.object({token:z.string()})}}:{}),responses:{200:reply("Verified challenge",z.unknown()),202:reply("Delivery accepted",z.unknown())}}), async c => {
+      if (!context.triggers) throw new HttpError(404,"Unknown hook");
+      const result=await handleHook(c.req.raw,context.clientAddress?.(c)??"unknown",async()=>context.triggers!);
+      return json(c,result.code,result.body);
+    });
+  }
   app.use("/v1/*", async (c, next) => {
     const principal = await authenticate(c, context);
     c.set("principal", principal);

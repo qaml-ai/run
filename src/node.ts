@@ -1,3 +1,4 @@
+import { handleHook, hookPath } from "./core/trigger-ingress.ts";
 import { transaction as triggerTransaction } from "./db.ts";
 import { Triggers } from "./triggers.ts";
 import { SharedAgents } from "./shared-agents.ts";
@@ -1086,10 +1087,19 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   channels.start(config.schedulerIntervalMs);
   triggers = new Triggers({
     db, transaction: work => triggerTransaction(db, work), keys: accounts,
-    async fresh(tenant, agent, key) {
-      const header = (await db.query('select header from agents where id=$1 and tenant=$2', [agent,tenant])).rows[0]?.header;
-      if (!header?.definition) throw new HttpError(400, 'Fresh triggers require an agent definition');
-      return (await createAgent(tenant, {definition:header.definition.id, ttlSeconds:604800}, key)).id;
+    fresh: {
+      async precheck(tenant) {
+        await rateLimits.runsLeft(tenant);
+        const busy = await busyAgents.check(tenant); if (busy) throw busy;
+        const refused = await accounts.runLimit(tenant);
+        if (refused) throw typeof refused === "string" ? new HttpError(402,refused) : refused;
+      },
+      async definition(tenant,agent) {
+        const header = (await db.query('select header from agents where id=$1 and tenant=$2', [agent,tenant])).rows[0]?.header;
+        if (!header?.definition) throw new HttpError(400, 'Fresh triggers require an agent definition');
+        return header.definition.id;
+      },
+      upsert: async (tenant,input,key) => (await createAgent(tenant,input,key)).id,
     },
     upload: (agent,tenant,id,text) => channels.uploadTrigger(agent,tenant,id,text),
     submit: submitAnywhere,
@@ -1103,6 +1113,12 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   accountDeletions.start(config.schedulerIntervalMs);
 
   const app = new Hono<Env>();
+  // Before authentication, tenant lookups, forwarding, and request logging.
+  app.use(async (c,next) => {
+    if(c.req.method!=="POST"||!hookPath(c.req.path))return next();
+    const result=await handleHook(c.req.raw,requestClient(c).address??"unknown",async()=>triggers!);
+    return c.body(JSON.stringify(result.body),result.code as ContentfulStatusCode,{"Content-Type":"application/json","Cache-Control":"no-store"});
+  });
   // The team's admin site, behind Cloudflare Access on a path of the public hostname (/ops) or a hostname of its own
   // (src/admin-site.ts): answered before anything else. Staff are told apart by the same domains journey events use.
   const adminSiteOptions = adminSiteFromEnvironment(env, {
