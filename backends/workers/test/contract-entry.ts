@@ -1,7 +1,7 @@
 /** Local-only fixture adapter. It is never referenced by a deployment config. */
 import application from "../src/index.ts";
 import { CamelAgent as RuntimeAgent } from "../src/agent.ts";
-import { ARM_AGENT, DUE_HUMAN_INPUTS } from "../src/agent-internals.ts";
+import { ARM_AGENT, DUE_HUMAN_INPUTS, testAgentRuntimes } from "../src/agent-internals.ts";
 import type { Env } from "../src/agent.ts";
 import type { DelegatedChild } from "../src/delegation.ts";
 import { databaseUnavailable, withSql } from "../src/postgres.ts";
@@ -98,6 +98,20 @@ export class CamelAgent extends RuntimeAgent {
   }
 
   async fetch(request: Request) {
+    if (new URL(request.url).pathname === "/__test/shared-state") {
+      const runtime = testAgentRuntimes.get(this)!;
+      return Response.json({ held: (await runtime.records()).filter(record => record.heldForInput && record.state !== "completed").length,
+        deadline: runtime.maintenance?.at ?? null, generation: runtime.maintenanceGeneration });
+    }
+    if (new URL(request.url).pathname === "/__test/shared-prompt" && request.method === "POST") {
+      const { member, ...params } = await request.json() as Record<string, unknown>;
+      try {
+        const record = await testAgentRuntimes.get(this)!.submit({ id: crypto.randomUUID(), method: "prompt", params }, undefined, undefined, undefined, String(member));
+        return Response.json({ id: record.id, state: record.state }, { status: 202 });
+      } catch (error) {
+        return Response.json({ error: String((error as Error).message) }, { status: (error as { status?: number }).status ?? 500 });
+      }
+    }
     const configuration = fixtureConfiguration(this.env);
     // A disconnected request must not interrupt the fixture's tenant reload
     // before the real runtime receives its aborted signal.
@@ -168,6 +182,14 @@ export default {
     }
     if (new URL(request.url).pathname === "/__test/image-resize-failures")
       return Response.json({ count: await env.BUCKET.head(resizeFailureKey) ? 1 : 0 });
+    const sharedState = /^\/__test\/shared-state\/([^/]+)$/.exec(new URL(request.url).pathname);
+    if (sharedState) return env.AGENTS.getByName(sharedState[1]).fetch(new Request("https://fixture/__test/shared-state"));
+    const sharedMatch = /^\/__test\/shared\/([^/]+)\/([^/]+)$/.exec(new URL(request.url).pathname);
+    if (sharedMatch && request.method === "POST") {
+      return env.AGENTS.getByName(sharedMatch[1]).fetch(new Request("https://fixture/__test/shared-prompt", {
+        method: "POST", body: JSON.stringify({ ...await request.json() as object, member: sharedMatch[2] }),
+      }));
+    }
     if (new URL(request.url).pathname === "/healthz") return application.fetch(request, env, context);
     const configuration = configuredEnvironment(env);
     context.waitUntil(configuration.then(() => {}, () => {}));

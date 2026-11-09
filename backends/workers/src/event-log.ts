@@ -34,7 +34,9 @@ export async function acknowledgeTerminalEvent(
 
 /** Durable replay for run streams: a subscriber joins first, then replays through a fixed cursor. */
 export class DurableEventLog {
-  constructor(private readonly sql: SqlStorage) {
+  private readonly sql: SqlStorage;
+  constructor(sql: SqlStorage) {
+    this.sql = sql;
     sql.exec("CREATE TABLE IF NOT EXISTS camel_events (cursor INTEGER PRIMARY KEY, request_id TEXT, body TEXT NOT NULL)");
     sql.exec("CREATE INDEX IF NOT EXISTS camel_events_request ON camel_events(request_id,cursor)");
   }

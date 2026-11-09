@@ -4,6 +4,7 @@ import { type Message, type AssistantMessage } from "@earendil-works/pi-ai";
 import { type ConversationView, type LiveState, LiveDoc } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { body } from "./validation.ts";
+import { supersedesInput } from "../../../src/shared-agents.ts";
 import { answerHuman, bindHumanInput, sameHumanAnswer, systemHumanAnswer, humanInputView, HumanInputs, resumedHumanTools, type HumanInput } from "./human.ts";
 import { settledAlready } from "./input-policy.ts";
 import { releaseTurn } from "./control.ts";
@@ -363,7 +364,8 @@ export async function onHumanImpl(this: AgentRuntime,
       const conf = await this.config();
       const record = await this.ctx.storage.get<RequestRecord>(reqKey(id));
       const actor = record?.params?.actor as string | undefined ?? (record?.params?.from as { id?: string } | undefined)?.id;
-      const bound = entries.map(([key, input]) => [key, bindHumanInput(input, id, actor, conf.config.humanInput, conf.expiresAt ?? null)] as const);
+      const shared = record?.sharedAgent ?? undefined;
+      const bound = entries.map(([key, input]) => [key, bindHumanInput(input, id, actor, conf.config.humanInput, conf.expiresAt ?? null, record?.params?.from as import("./sender.ts").Sender | undefined, shared)] as const);
       deadlines.push(...bound.flatMap(([, input]) => input.expiresAt === undefined ? [] : [input.expiresAt]));
       if (bound.some(([, input], index) => input !== entries[index][1])) {
         const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
@@ -371,7 +373,7 @@ export async function onHumanImpl(this: AgentRuntime,
           const doc = await tx.doc(HumanInputs);
           for (const [key, input] of bound) {
             const current = doc.requests[key];
-            if (current && !current.policyBound) Object.assign(current, { requestId: input.requestId, responders: input.responders, inboxResponders: input.inboxResponders, expiresAt: input.expiresAt, policyBound: true });
+            if (current && !current.policyBound) Object.assign(current, { requestId: input.requestId, responders: input.responders, inboxResponders: input.inboxResponders, ...(input.fixedResponders ? { fixedResponders: true as const } : {}), expiresAt: input.expiresAt, policyBound: true });
           }
         }, BACKGROUND_CONTEXT);
       }
@@ -448,7 +450,10 @@ export async function onHumanImpl(this: AgentRuntime,
       }
     }
     if (deadlines.length) await this.ctx.storage.put("human-input-deadline", Math.min(...deadlines));
-    else await this.ctx.storage.delete("human-input-deadline");
+    else {
+      await this.ctx.storage.delete("human-input-deadline");
+      this.kickInputPrompts();
+    }
     await this.arm();
   }
 
@@ -735,7 +740,7 @@ export async function submitImpl(this: AgentRuntime,
   input: unknown,
   notice?: RuntimeNotice,
   delivery?: NoticeDelivery,
-  acceptedFingerprint?: string) {
+  acceptedFingerprint?: string, member?: string) {
     // Configuration acceptance joins admission; its application runs separately
     // so the directory's /configuration round trip can acquire admission later.
     if (
@@ -745,7 +750,7 @@ export async function submitImpl(this: AgentRuntime,
     )
       return this.configureRequest(input);
     const result = this.admission.then(() =>
-      this.admit(input, notice, delivery, acceptedFingerprint),
+      this.admit(input, notice, delivery, acceptedFingerprint, member),
     );
     this.admission = result.catch(() => {});
     return result;
@@ -781,11 +786,13 @@ export async function answerHumanInputsImpl(this: AgentRuntime,
       for (const entry of answers) {
         const pending = snapshot?.requests[entry.id];
         if (!pending) throw Object.assign(new Error(`Unknown input ${entry.id}`), { status: 404 });
+        // Failed policy binding must not turn a guest approval into an input anyone can answer.
+        if (!system && !pending.policyBound) throw Object.assign(new Error("The input is not ready"), { status: 409 });
         const owner = pending.requestId ?? await this.ctx.storage.get<string>(`input-owner:${entry.id}`) ?? this.active;
         const view = humanInputView(entry.id, pending, conf.id, owner);
         if (!system && owner && await this.ctx.storage.get(`cancelled-request:${owner}`))
           throw Object.assign(new Error("This input is cancelled"), { status: 409, input: view });
-        checked.push({ ...entry, pending, owner, answer: system ? (system === "expired" ? (() => { const answerDetail = expiryAnswer({ kind: pending.kind ?? "question", detail: pending.detail ?? {} }); return { answer: JSON.stringify(answerDetail.content ?? { action: "cancel" }), state: "expired" as const, answerDetail }; })() : systemHumanAnswer(system)) : answerHuman(pending, entry.body, via, conf.config.humanInput?.approvers as string[] | undefined) });
+        checked.push({ ...entry, pending, owner, answer: system ? (system === "expired" ? (() => { const answerDetail = expiryAnswer({ kind: pending.kind ?? "question", detail: pending.detail ?? {} }); return { answer: JSON.stringify(answerDetail.content ?? { action: "cancel" }), state: "expired" as const, answerDetail }; })() : systemHumanAnswer(system)) : answerHuman(pending, entry.body, via, pending.fixedResponders ? [] : conf.config.humanInput?.approvers as string[] | undefined) });
       }
       const fresh = checked.every(entry => entry.pending.answer === undefined);
       if (!fresh && !checked.every(entry => sameHumanAnswer(entry.pending, entry.answer)))
@@ -853,6 +860,7 @@ export async function answerHumanInputsImpl(this: AgentRuntime,
           inputWebhook(conf, entry.owner ?? "", { id: entry.id, state: entry.answer.state }, true));
       for (const request of requests) this.track(request.id);
       if (requests.length) await this.arm();
+      this.kickInputPrompts();
       return { status: fresh ? 202 : 200, inputs, requests };
     } catch (error) {
       for (const resume of created) {
@@ -890,13 +898,15 @@ export async function dueHumanInputsImpl(this: AgentRuntime, at: number) {
   }
 
 export async function closeHumanInputsImpl(this: AgentRuntime,
-  system: "expired" | "superseded") {
+  system: "expired" | "superseded", sender?: string, shared = false) {
     const pi = await this.harness.pi();
     const doc = await pi.snapshot(HumanInputs, BACKGROUND_CONTEXT);
     const answers = Object.entries(doc?.requests ?? {}).filter(([, input]) => input.answer === undefined &&
       (system === "expired" ? input.expiresAt !== undefined && input.expiresAt <= Date.now() : input.requestId !== undefined));
+    const conf = await this.config();
     const selected: Array<{ id: string; body: { action: string } }> = [];
     for (const [id, input] of answers) {
+      if (system === "superseded" && !supersedesInput({ kind: input.kind ?? "question", responders: input.responders ?? {} }, shared, sender)) continue;
       const owner = input.requestId ?? await this.ctx.storage.get<string>(`input-owner:${id}`);
       const record = owner ? await this.ctx.storage.get<RequestRecord>(reqKey(owner)) : undefined;
       // A user message supersedes the model's questions, not independent host scripts.

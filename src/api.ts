@@ -773,7 +773,7 @@ export function api(context: ApiContext) {
     const body = parse(schema.PromptInput, await readJson(c.req.raw.body, 6 * 1024 * 1024, {}));
     if (body.endUser !== undefined && !["operator", "token"].includes(c.var.principal.via)) throw new HttpError(403, "Only a tenant key can choose a run payer");
     const record = await clients.submit(c.req.param("id")!, c.var.principal.tenant, promptRequest(body, c.req.header("idempotency-key")),
-      rate => { for (const [name, value] of Object.entries(rateLimitHeaders(rate))) c.header(name, value); });
+      rate => { for (const [name, value] of Object.entries(rateLimitHeaders(rate))) c.header(name, value); }, personal(c.var.principal) ? "owner" : undefined);
     return json(c, 202, record);
   });
   route(createRoute({

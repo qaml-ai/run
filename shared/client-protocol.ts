@@ -18,6 +18,10 @@ export function outcomeEnding(outcome: Outcome | undefined): { error?: string; s
 export interface SessionCredentials { id: string; token: string; expiresAt: number | null }
 export type RequestMethod = "prompt" | "execute" | "status" | "abort" | "continue" | "steer" | "configure" | "resume";
 export type RequestRecord = {
+  /** Runtime-authored sender retained after queued parameters are discarded. */
+  sender?: import("../src/sender.ts").Sender;
+  heldForInput?: true;
+  sharedAgent?: import("../src/shared-agents.ts").SharedAgent | null;
   id: string; startedAt?: number; endedAt?: number; prompt?: string; code?: string; fingerprint: string; method: RequestMethod;
   /** "running" covers queued runs too: a run has begun once `began` is set. */
   state: "running" | "completed"; outcome?: Outcome;

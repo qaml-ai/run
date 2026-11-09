@@ -38,6 +38,7 @@ export interface Input {
 }
 /** What is stored beyond what callers see: how the call is retried once answered. */
 type Stored = Pick<Input, "message" | "detail" | "responders"> & {
+  fixedResponders?: true;
   /** The call's name and a hash of its arguments: a retry must be the same call. */
   tool: string; argumentsHash: string;
   delivery?: { id: string; inputs: string[] };
@@ -337,18 +338,17 @@ export class Inputs {
     /** The asking agent's chain (delegation.position): its root, and the chain from that root to it. */
     rootAgent?: string; lineage?: string[];
   },
-    requests: { key?: string; kind: InputKind; message: string; detail: Record<string, unknown> }[], claim?: Claim): Promise<InputRow[]> {
+    requests: { key?: string; kind: InputKind; message: string; detail: Record<string, unknown>; audience?: string[] }[], claim?: Claim): Promise<InputRow[]> {
     const createdAt = Date.now();
     // Who may answer, as the row holds it: the audience plus the approvers, frozen now (a later change to the definition
     // does not widen or narrow an item that was already asked).
-    const responders = [...new Set([...base.responders.audience ?? [], ...base.approvers ?? []])];
     const lineage = base.lineage ?? (base.rootAgent === undefined ? undefined : [base.rootAgent]);
     const rootAgent = base.rootAgent ?? lineage?.[0];
     const rows = requests.map(request => {
       const id = `inp_${randomBytes(16).toString("hex")}`;
       const requestState = base.requestState === undefined ? undefined : this.sealer ? this.sealer.seal(`input:${base.agent}:${base.toolCallId}`, base.requestState) : base.requestState;
       const stored: Stored = {
-        message: request.message, detail: request.detail, responders: base.responders, tool: base.tool, argumentsHash: base.argumentsHash,
+        message: request.message, detail: request.detail, responders: request.audience ? { audience: request.audience } : base.responders, ...(request.audience ? { fixedResponders: true as const } : {}), tool: base.tool, argumentsHash: base.argumentsHash,
         ...(request.key !== undefined ? { key: request.key } : {}), ...(requestState !== undefined ? { requestState } : {}),
       };
       return row({ id, agent: base.agent, tenant: base.tenant, request_id: base.requestId, tool_call_id: base.toolCallId, kind: request.kind, state: "pending", input: stored, created_at: createdAt, expires_at: base.expiresAt });
@@ -372,7 +372,7 @@ export class Inputs {
           priority, priority_rank, blocking, responders, root_agent, lineage, item_key, subject)
           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $15, $12, $13, $14, $16, $17)`,
           [input.id, input.agent, input.tenant, input.requestId, input.toolCallId, input.kind, JSON.stringify(input.stored), input.createdAt, input.expiresAt,
-            priority, PRIORITY_RANK[priority], responders, rootAgent ?? null, lineage ?? null, base.blocking ?? true, base.itemKey ?? null, base.subject ?? null]);
+            priority, PRIORITY_RANK[priority], [...new Set([...input.stored.responders.audience ?? [], ...(input.stored.fixedResponders ? [] : base.approvers ?? [])])], rootAgent ?? null, lineage ?? null, base.blocking ?? true, base.itemKey ?? null, base.subject ?? null]);
       }
       await enqueueEvents(sql, rows.map(input => inputEvent("input.requested", input)));
       // Heard by the inbox watchers of every node, in this transaction: a listener sees it once, at commit.

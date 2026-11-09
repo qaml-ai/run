@@ -1,3 +1,4 @@
+import { inputAudience, supersedesInput } from "../shared-agents.ts";
 import { createHash } from "node:crypto";
 import { errorText } from "../protocol.ts";
 import { canonical } from "../../shared/durable-json.ts";
@@ -78,11 +79,13 @@ export async function suspend(ctx: InputContext, session: Session, call: ToolCal
   });
   // The chain from the root agent to this one, the asking agent last: who the item is for, and what a person filters by.
   const lineage = [...delegation.position(ctx.delegation, session, request).chain, header.id];
+  const shared = request.sharedAgent ?? undefined;
+  if (shared || request.sender?.role === "guest") requests = requests.map(entry => ({ ...entry, audience: inputAudience(entry.kind, request.actor, request.sender, shared, header.sources?.humanInput?.approvers) }));
   const rows = await inputs.create({
     agent: header.id, tenant: header.tenant, requestId: request.id, toolCallId,
     responders: request.actor ? { audience: [request.actor] } : {}, expiresAt: expiresAt(decision ? { expiresInSeconds: 7 * 86400 } : header.sources?.humanInput, header.expiresAt),
     blocking: !decision, ...(decision && typeof call.args.key === "string" ? { itemKey: call.args.key } : {}), subject: header.identity?.subject,
-    approvers: header.sources?.humanInput?.approvers, rootAgent: lineage[0], lineage,
+    approvers: shared ? undefined : header.sources?.humanInput?.approvers, rootAgent: lineage[0], lineage,
     tool: call.name, argumentsHash: hashed, ...(typeof result.requestState === "string" ? { requestState: result.requestState } : {}),
   }, requests, session.claim);
   for (const row of rows) ctx.publish(session, { type: "event", requestId: request.id, event: { type: "input_required", input: inputView(row) } });
@@ -91,15 +94,16 @@ export async function suspend(ctx: InputContext, session: Session, call: ToolCal
 }
 
 /**
- * Settle every input the agent waits on, as the runtime: a new message supersedes them (the agent
- * closes their calls itself when it takes the message), and an abort cancels them, closing the
- * turn with a `resume` run that does not call the model.
+ * Settle the inputs a new sender may supersede, or every input on abort. The agent closes
+ * superseded calls when it takes the message; an abort closes the turn with a `resume` run
+ * that does not call the model.
  */
-export async function cancelInputs(ctx: InputContext, session: Session, reason: "aborted" | "superseded") {
+export async function cancelInputs(ctx: InputContext, session: Session, reason: "aborted" | "superseded", sender?: string, shared = false) {
   const inputs = ctx.options.inputs;
   if (!inputs) return;
   const settled: InputRow[] = [];
   for (const input of (await inputs.pending(session.header.id)).filter(input => input.blocking !== false)) {
+    if (reason === "superseded" && !supersedesInput(input, shared, sender)) continue;
     const done = await inputs.settle(input.id, { action: "cancel", by: { system: reason }, at: Date.now() }, reason === "aborted" ? "cancelled" : "superseded");
     if (done) settled.push(done);
   }
@@ -143,7 +147,7 @@ export async function answer(ctx: InputContext, id: string, tenant: string, answ
     let by: Responder;
     try { by = { via, ...(body?.from !== undefined ? { from: senderInput(body.from) } : {}), ...(body?.actor !== undefined ? { actor: actorInput(body.actor) } : {}) }; }
     catch (error) { throw new HttpError(400, errorText(error)); }
-    if (!mayAnswer(input, by, header.sources?.humanInput?.approvers)) throw new HttpError(403, "This person may not answer this input");
+    if (!mayAnswer(input, by, input.stored.fixedResponders ? [] : header.sources?.humanInput?.approvers)) throw new HttpError(403, "This person may not answer this input");
     checked.push({ input, answer: { ...answerInput(input, body), by, at: Date.now() } });
   }
   const settled = checked.every(({ input }) => input.state === "pending") ? await inputs.settleAll(checked.map(({ input, answer }) => ({ id: input.id, answer }))) : undefined;

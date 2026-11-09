@@ -151,3 +151,14 @@ test("an item the runtime closes itself (expired, superseded) changes too: a new
     await listened.close();
   }
 });
+
+
+test("a shared approval keeps its fixed audience in the inbox index", async () => {
+  const { db } = await testDatabase();
+  const [input] = await new Inputs({ db }).create({
+    agent: "shared", tenant: "alice", requestId: "r", toolCallId: "call", expiresAt: Date.now() + 60_000,
+    responders: { audience: ["guest"] }, approvers: ["guest", "ops"], tool: "remove", argumentsHash: "h",
+  }, [{ kind: "approval", message: "Remove?", detail: {}, audience: ["owner", "ops"] }]);
+  assert.deepEqual(input.responders.audience, ["owner", "ops"]);
+  assert.deepEqual((await row(db, input.id)).responders, ["owner", "ops"]);
+});

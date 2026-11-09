@@ -1,4 +1,4 @@
-import { requireActiveMember } from "./shared-agents.ts";
+import { requireActiveMember, sharedPromptInput } from "./shared-agents.ts";
 import { rejectWorkflow } from "./builtins.ts";
 import { currentModel, modelReference } from "./virtual-models.ts";
 import type { Message } from "@earendil-works/pi-ai";
@@ -840,7 +840,7 @@ export class ClientSessions {
       // Lost or given up while it got ready (its node fenced, or is leaving): it starts nothing. A host started now would
       // serve an owner that is gone, and whoever loads the agent next would find it and take it for theirs, still starting.
       if (session.fault || session.leaving) throw session.fault ?? new Error("Agent stopped");
-      const result = await steps.time("init", this.supervisor.start(session.header.id, { ...session.header.config, model: withCatalogPrices(currentModel(session.header.config.model)), apiKey, mounts: [...VolumeService.markWorkspace(session.header.id, session.header.mounts ?? []).map(({ path, mode, workspace }) => ({ path, mode, ...workspace ? { workspace } : {} })), ...computer ? [{ path: "/computer", mode: "rw" as const, computer: true }] : []], ...(this.options.retry ? { retry: this.options.retry } : {}), ...(fallback ? { contentFilterFallback: fallback } : {}), ...(this.options.streamTimeouts ? { streamTimeouts: this.options.streamTimeouts } : {}), contextRangeMaxBytes: this.options.contextRangeMaxBytes, ...(session.resuming.size ? { resume: true } : {}), tenant: session.header.tenant, codeLimits: { cpuMs, maxTimeoutMs } }, {
+      const result = await steps.time("init", this.supervisor.start(session.header.id, { ...session.header.config, sharedAgent: runningRun(session)?.sharedAgent ?? undefined, model: withCatalogPrices(currentModel(session.header.config.model)), apiKey, mounts: [...VolumeService.markWorkspace(session.header.id, session.header.mounts ?? []).map(({ path, mode, workspace }) => ({ path, mode, ...workspace ? { workspace } : {} })), ...computer ? [{ path: "/computer", mode: "rw" as const, computer: true }] : []], ...(this.options.retry ? { retry: this.options.retry } : {}), ...(fallback ? { contentFilterFallback: fallback } : {}), ...(this.options.streamTimeouts ? { streamTimeouts: this.options.streamTimeouts } : {}), contextRangeMaxBytes: this.options.contextRangeMaxBytes, ...(session.resuming.size ? { resume: true } : {}), tenant: session.header.tenant, codeLimits: { cpuMs, maxTimeoutMs } }, {
         definitions,
         codeSlot: async signal => this.codeGate.acquire(session.header.tenant, (await spend.codeLimits(this.spendContext, session.header.tenant)).concurrent, signal),
         runLimit: async () => {
@@ -1677,7 +1677,7 @@ export class ClientSessions {
    * Accept an idempotent request: 200 with the existing record for a retried ID,
    * or 202 once the new record is durable and the work has started.
    */
-  private async accept(session: Session, body: any, trusted = false): Promise<{ status: 200 | 202; record: RequestRecord; rate?: RateLimitState }> {
+  private async accept(session: Session, body: any, trusted = false, member?: string): Promise<{ status: 200 | 202; record: RequestRecord; rate?: RateLimitState }> {
     if (!validId(body?.id) || !REQUEST_METHODS.includes(body.method) || !body.params || typeof body.params !== "object" || Array.isArray(body.params)) throw new HttpError(400, "Invalid request");
     // An idle raw steer is held for the next prompt. Active steers use payer-aware prompt admission.
     const rawSteer = body.method === "steer";
@@ -1695,6 +1695,7 @@ export class ClientSessions {
     if (body.method === "resume" && (!trusted || Object.keys(body.params).length !== 1 || !validId(body.params.suspension))) throw new HttpError(400, "Answer the agent's inputs to resume its turn");
     // Applying a definition reads the tenant's definitions, so only the tenant may ask for it, not the agent's own token.
     if (body.method === "configure") rejectWorkflow(body.params);
+    if (Object.hasOwn(body.params, "sharedAgent")) throw new HttpError(400, "sharedAgent is runtime-only");
     const applying = body.method === "configure" && body.params.definition !== undefined;
     // Which keys an agent calls models with, and how much it may spend, are the tenant's to choose, never the agent's own.
     for (const key of ["keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "dataCollection", "queue", "builtins", "delegate", "mcpServers", "decide", "mounts", ...UPSERT_KEYS]) if (body.method === "configure" && !trusted && Object.hasOwn(body.params, key)) throw new HttpError(403, `Only the tenant can change an agent's ${key}`);
@@ -1762,6 +1763,8 @@ export class ClientSessions {
     if (isRun) await this.stillUsed(session);
     // Who is acting in a run is recorded apart from what the agent is asked to do.
     let actor: string | undefined;
+    let sharedAgent: import("./shared-agents.ts").SharedAgent | null = null;
+    let membershipAgent = session.header.id;
     let { actor: rawActor, bucket: rawBucket, ...params } = body.params;
     if (spendLimit !== undefined) delete params.spendLimit;
     let endUser = params.endUser as string | undefined;
@@ -1793,17 +1796,34 @@ export class ClientSessions {
     try {
       if (params.output !== undefined) params.output = outputInput(params.output);
       if (params.from !== undefined) params.from = senderInput(params.from);
+      const chain = delegation.delegation(this.delegationContext, session.header.id, body.id, params.metadata).chain;
+      membershipAgent = chain[0] ?? session.header.id;
+      if (MODEL_RUNS.includes(body.method)) sharedAgent = await this.options.sharedAgents?.get(membershipAgent, session.header.tenant) ?? null;
+      const shared = sharedAgent;
+      if (member && body.method === "prompt") {
+        const sender = member === "owner" ? (!params.from ? shared?.owner : undefined) : shared?.members.find(entry => entry.id === member);
+        if (member !== "owner" && !sender) throw new HttpError(403, "Unknown shared agent member");
+        if (sender) { params.from = sender; params.actor = sender.id; }
+      }
       if (params.metadata !== undefined) params.metadata = metadataInput(params.metadata);
       // The sender acts, unless the application names someone else.
-      actor = actorInput(rawActor) ?? (isRun ? params.from?.id : undefined);
+      actor = member && params.from?.role ? params.from.id : actorInput(rawActor) ?? (isRun ? params.from?.id : undefined);
+      // A signed child turn inherits the initiating member from the root's live membership.
+      if (chain.length && actor) {
+        const sender = shared?.members.find(entry => entry.id === actor);
+        if (actor.startsWith("member:") && !sender) throw new HttpError(403, "Unknown shared agent member");
+        if (sender) params.from = sender;
+      }
       // A resumed turn acts for whoever the suspended one did, and spends from the same bucket.
       if (body.method === "resume") {
         actor = session.requests.get(params.suspension)?.actor;
+        params.from = session.requests.get(params.suspension)?.sender;
+        sharedAgent = session.requests.get(params.suspension)?.sharedAgent ?? null;
         bucket = session.requests.get(params.suspension)?.bucket;
         endUser = session.requests.get(params.suspension)?.endUser;
       }
     } catch (error) { throw new HttpError(400, errorText(error)); }
-    if (actor?.startsWith("member:") && params.notice === undefined && (CANCELLABLE.includes(body.method) || body.method === "steer")) await requireActiveMember(this.db, session.header.tenant, session.header.id, actor);
+    if (actor?.startsWith("member:") && params.notice === undefined && (CANCELLABLE.includes(body.method) || body.method === "steer")) await requireActiveMember(this.db, session.header.tenant, membershipAgent, actor);
     // A child's notification (`notice`) is the runtime's alone. Its child's run was counted and checked already, and it is
     // never refused at a limit: it lands without a turn instead (`landNotice`).
     const notice = params.notice !== undefined;
@@ -1884,7 +1904,7 @@ export class ClientSessions {
         if (again) return taken(again);
       }
       if (actor?.startsWith("member:") && params.notice === undefined && (CANCELLABLE.includes(body.method) || body.method === "steer")) {
-        await requireActiveMember(this.db, session.header.tenant, session.header.id, actor);
+        await requireActiveMember(this.db, session.header.tenant, membershipAgent, actor);
         // Another submission of this ID may have committed during the membership lookup.
         const raced = existing();
         if (raced) return taken(raced);
@@ -1905,7 +1925,7 @@ export class ClientSessions {
       const record = this.upsertRequest(session, {
         startedAt: Date.now(), ...(body.method === "prompt" && typeof body.params.text === "string" ? { prompt: body.params.text } : {}),
         ...(body.method === "execute" && typeof body.params.code === "string" ? { code: body.params.code } : {}),
-        id: body.id, method: body.method, fingerprint, state: "running", ...(queued ? { params } : {}), ...(actor ? { actor } : {}), ...(endUser ? { endUser } : {}), ...(bucket ? { bucket } : {}), ...(params.metadata ? { metadata: params.metadata } : {}),
+        id: body.id, method: body.method, fingerprint, state: "running", ...(queued ? { params } : {}), sharedAgent, ...(params.from ? { sender: params.from } : {}), ...(actor ? { actor } : {}), ...(endUser ? { endUser } : {}), ...(bucket ? { bucket } : {}), ...(params.metadata ? { metadata: params.metadata } : {}),
         ...(body.method === "resume" ? { suspension: params.suspension } : {}),
       });
       // Recovery sorts by arrival time, with log order breaking ties. Keep the released holds behind their trigger.
@@ -2011,13 +2031,17 @@ export class ClientSessions {
   }
 
   /** Submit a request to a tenant's agent on the tenant's behalf (REST API and console); `rate` hears where a run left the tenant's rate limit. */
-  async submit(id: string, tenant: string, body: { id: string; method: string; params: Record<string, unknown> }, rate?: (state: RateLimitState) => void) {
+  async submit(id: string, tenant: string, body: { id: string; method: string; params: Record<string, unknown> }, rate?: (state: RateLimitState) => void, member?: string) {
     if (await this.owns(id, tenant)) await this.roomFor(id);
     const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;
     if (!session) throw new HttpError(404, "Unknown agent");
     if (session.fault) throw session.fault;
     session.lastActive = Date.now();
-    const accepted = await this.accept(session, body, true);
+    if (member && member !== "owner") {
+      if (body.method !== "prompt") throw new HttpError(400, "A shared member can only prompt");
+      sharedPromptInput(body.params);
+    }
+    const accepted = await this.accept(session, body, true, member);
     if (accepted.rate) rate?.(accepted.rate);
     return accepted.record;
   }
@@ -2027,6 +2051,7 @@ export class ClientSessions {
     // An agent still starting answers nothing yet: wait for it (should it fail, it is not running).
     await session.starting?.catch(() => {});
     const live = this.supervisor.agents.has(id);
+    if ((MODEL_RUNS.includes(record.method) || record.method === "resume") && live && this.options.sharedAgents) await this.supervisor.request(id, "configure", { sharedAgent: record.sharedAgent ?? null });
     // Whether the agent is busy comes from its run records (`activityOf`), as every other view of it says: not from its process.
     if (record.method === "status") return live ? { ...await this.supervisor.request(id, "status", {}), running: true, ...activityOf(session.running.values()) } : { running: false, ...activityOf(session.running.values()) };
     // Aborting a suspended turn cancels its inputs: the turn is closed without the model. Its children are aborted too.
@@ -2172,6 +2197,13 @@ export class ClientSessions {
     session.runs = session.runs.then(async () => {
       try { await this.run(session, record, params); }
       finally {
+        if (this.options.inputs && !session.fault && !(await this.options.inputs.pending(session.header.id)).some(input => input.blocking !== false)) {
+          for (const held of session.requests.values()) if (held.heldForInput && held.state === "running") {
+            const { heldForInput: _, ...ready } = held;
+            this.upsertRequest(session, ready);
+            this.enqueue(session, ready, held.params);
+          }
+        }
         // Its host closed for good (a turn suspended on a call from code): the next run loads the agent again.
         if (session.unload) {
           session.unload = false;
@@ -2207,6 +2239,15 @@ export class ClientSessions {
     let batch: RequestRecord[] = [];
     try {
       if (QUEUED_METHODS.includes(record.method) && (this.closed || this.draining || session.fault || session.handedBack || session.requests.get(record.id)?.state !== "running")) return;
+      // A new model turn closes suspended calls. Keep it queued while another person must still answer.
+      if (record.method === "prompt" && this.options.inputs && record.sharedAgent) {
+        await humanInput.cancelInputs(this.inputsContext, session, "superseded", record.sender?.id ?? record.actor, !!record.sharedAgent);
+        if ((await this.options.inputs.pending(session.header.id)).some(input => input.blocking !== false)) {
+          this.upsertRequest(session, { ...record, params, heldForInput: true });
+          await this.commit(session, true);
+          return;
+        }
+      }
       // A prompt of a batch whose turn was stopped before it began here (a stop after its node was lost): it ends aborted,
       // as its turn did, and never runs after the stop.
       const stopped = session.requests.get(record.id)!;
@@ -2322,7 +2363,7 @@ export class ClientSessions {
         if (continued) this.takeOver(session, record, continued);
       }
       // A new message supersedes inputs still waiting: the agent closes their calls before it reads it.
-      if (record.method === "prompt" && !await this.startStep(session, record, () => humanInput.cancelInputs(this.inputsContext, session, "superseded").then(() => true))) return;
+      if (record.method === "prompt" && !await this.startStep(session, record, () => humanInput.cancelInputs(this.inputsContext, session, "superseded", record.sender?.id ?? record.actor, !!record.sharedAgent).then(() => true))) return;
       // A child's notification lands once, charged to this run; at a cap it lands without a turn.
       const landing = record.method === "prompt" && (params as { notice?: unknown } | undefined)?.notice !== undefined && !session.resuming.has(record.id) ? await childSessions.landing(this.childrenContext, session, record, params) : undefined;
       // Given up while its landing waited: the run stays as it is, for whoever has the agent next.

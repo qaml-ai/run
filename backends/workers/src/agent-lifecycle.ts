@@ -1,5 +1,6 @@
 import { expireDecisions } from "./inbox-decisions.ts";
 import { restageInputMirrors } from "./agent-input-mirror.ts";
+import { inputAdmissionDeadline } from "./input-admission.ts";
 import { MULTI_AGENT_LIMITS, viaParent } from "./multi-agent-policy.ts";
 import { childParent } from "./child-parent.ts";
 import { type EventSubscription } from "./event-socket.ts";
@@ -104,7 +105,7 @@ export async function armImpl(this: AgentRuntime,
     const pendingRuns = records.filter(record => record.accepted && record.state !== "completed");
     const children = await this.delegation.children();
     const childKeys = new Set(children.map(child => child.key));
-    const recovering = records.some(record => record.state !== "completed" && !record.accepted) ||
+    const recovering = records.some(record => record.state !== "completed" && !record.accepted && !record.heldForInput) ||
       this.cancellations.size > 0 ||
       (await Promise.all(pendingRuns.map(record => this.ctx.storage.get(`cancelled-request:${record.id}`)))).some(Boolean) ||
       !!await this.ctx.storage.get("resume-kept-queue") ||
@@ -121,6 +122,7 @@ export async function armImpl(this: AgentRuntime,
           )) ?? Infinity)
         : Infinity,
       ...[...schedules.values()].map((item) => item.retryAt ?? item.dueAt),
+      inputAdmissionDeadline(records),
       retry ?? Infinity,
       pendingBilling ? Date.now() + 5000 : Infinity,
       pendingEvents ? Date.now() + 1000 : Infinity,
@@ -209,6 +211,8 @@ export async function restorePendingImpl(this: AgentRuntime) {
       await timed(this, "restageInputMirrors", () => restageInputMirrors(this));
     this.ctx.waitUntil(this.flushTerminalEvents());
     this.batchQueue.kick();
+    // Recover a settlement whose admission kick was interrupted by an eviction.
+    this.kickInputPrompts();
     await timed(this, "arm", () => this.arm());
     // A cold-start watchdog still performs the complete recovery pass. Its
     // waiters and maintenance schedule have only just been restored.
@@ -277,6 +281,7 @@ export async function wakeImpl(this: AgentRuntime) {
     this.admission = expire.catch(() => {});
     await expire;
     await expireDecisions(this);
+    this.kickInputPrompts();
     await this.restoreHostAdmissions();
     // A call's live credit hold reserves its funds. Only check available credit
     // between calls; checking here could abort work that already reserved it.
@@ -287,7 +292,7 @@ export async function wakeImpl(this: AgentRuntime) {
     for (const record of await this.records()) {
       if (record.accepted && record.state !== "completed")
         this.track(record.id);
-      if (record.method === "prompt" && !record.accepted && !record.noticeQueued) {
+      if (record.method === "prompt" && !record.accepted && !record.noticeQueued && !record.heldForInput) {
         try {
           await this.submit({
             id: record.id,

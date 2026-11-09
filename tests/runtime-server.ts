@@ -106,7 +106,7 @@ export async function runtime(t: T, respond: (body: any, index: number) => objec
   } }));
   const model = await fakeModel(t, respond);
   const { db, url: databaseUrl } = options.databaseUrl ? { db: undefined, url: options.databaseUrl } : await testDatabase();
-  const child = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", ...(options.execArgv ?? []), fileURLToPath(new URL("../src/server.ts", import.meta.url))], {
+  const child = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", ...(options.execArgv ?? []), fileURLToPath(new URL(env.TEST_SHARED_MEMBERS ? "./shared-agent-server.ts" : "../src/server.ts", import.meta.url))], {
     env: {
       PATH: process.env.PATH, HOME: root, AGENT_DATA_DIR: root, AGENT_DATABASE_URL: databaseUrl, PORT: "0", HOST: "127.0.0.1",
       ...(process.env.AGENT_HOSTING ? { AGENT_HOSTING: process.env.AGENT_HOSTING } : {}),

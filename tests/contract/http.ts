@@ -69,6 +69,8 @@ export async function fakeModel(t: T, respond: (body: any, index: number) => obj
   const keys: string[] = [];
   const headers: Record<string, string | string[] | undefined>[] = [];
   const url = await listen(t, async (req, res) => {
+    // Decode across network chunks: a runtime marker can split a UTF-8 character.
+    req.setEncoding("utf8");
     let text = "";
     try { for await (const chunk of req) text += chunk; }
     catch (error) {

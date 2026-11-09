@@ -364,9 +364,15 @@ authorize: async (request, { thread }) => {
 - Answers to the agent's questions are checked against who may answer: by default the person whose
   message started the turn.
 - Everyone watching sees the same conversation, live.
+- On an agent with shared membership, console prompts without `from` are stamped with the owner
+  member. Recorded senders may carry a runtime-set `role` (`owner` or `guest`); API callers cannot
+  set it. A guest turn's approvals go to the owner and the definition's approvers, excluding
+  members with the guest role. A new prompt supersedes only questions addressed to its sender or open to anyone.
+  Prompts wait in the queue while another person must still answer. Agents without shared
+  membership keep their existing input cancellation behavior.
 - It is one conversation with one turn at a time: a message sent while the agent works waits for
   that turn (or joins it, with `whileRunning: "steer"`); anyone's Stop stops the turn for everyone;
-  and a new message while the agent waits on a question supersedes the question (its call closes as
+  and, without shared membership, a new message while the agent waits on a question supersedes it (its call closes as
   not answered). Put per-user work in per-user agents.
 
 ## Theming and accessibility

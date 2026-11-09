@@ -26,6 +26,7 @@ export interface Input {
 }
 /** What is stored beyond what callers see: how the call is retried once answered. */
 type Stored = Pick<Input, "message" | "detail" | "responders"> & {
+  fixedResponders?: true;
   /** The call's name and a hash of its arguments: a retry must be the same call. */
   tool: string; argumentsHash: string;
   delivery?: { id: string; inputs: string[] };
