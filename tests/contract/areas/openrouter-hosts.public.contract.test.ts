@@ -7,7 +7,7 @@ import {fakeModel,runtime,toolCall} from "../support.ts";
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
 const HOSTS = ["fireworks", "together", "parasail", "coreweave", "nebius"];
 /** 1017's hosts it is never served by: they drop tool-call arguments (2026-10-27). */
-const IGNORED = ["inference-net", "wafer", "relace"];
+const IGNORED = ["inference-net", "wafer", "relace", "coreweave"];
 const FLASH = getModel("openrouter", "deepseek/deepseek-v4.1-flash")!;
 const FLASH_1017 = getModel("openrouter", "deepseek/deepseek-v4.1-flash-1017")!;
 /** Never an order or sort: either turns off OpenRouter's load balancing. An only or an ignore, never both; nor a quantization or anything else. */
@@ -63,7 +63,7 @@ portedTest("models","tests/openrouter-hosts.test.ts:77")("1017:vetted is 1017 se
   assert.deepEqual(openRouterHosts(vetted.id), only);
   assert.equal(openRouterIgnoredHosts(vetted.id), undefined);
   assert.deepEqual(withOpenRouterHosts(vetted, { model: vetted.id, messages: [] }), { model: FLASH_1017.id, messages: [], provider: { only } });
-  assert.deepEqual(openRouterIgnoredHosts(`${FLASH_1017.id}:nitro`), ["inference-net", "wafer", "relace"], ":nitro is untouched");
+  assert.deepEqual(openRouterIgnoredHosts(`${FLASH_1017.id}:nitro`), ["inference-net", "wafer", "relace", "coreweave"], ":nitro is untouched");
 
   const host = await fakeModel(t, () => ({ role: "assistant", content: "Vetted." }));
   const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), LOCAL);
