@@ -10,7 +10,7 @@ interface __BaseEnv_PilotEnv {
 	IMAGES: ImagesBinding;
 	PUBLIC_ASSETS: Fetcher;
 	PILOT_DB_PROFILE: "1";
-	MODEL: "openrouter/openai/gpt-4.1-nano";
+	MODEL: "openrouter/anthropic/claude-sonnet-5.5";
 	AGENT_PUBLIC_URL: "https://run-pilot.camelai.dev";
 	PUBLIC_URL: "https://run-pilot.camelai.dev";
 	EMAIL_FROM: "camelrun@staging.camelai.dev";
