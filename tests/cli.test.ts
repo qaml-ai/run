@@ -233,6 +233,6 @@ test("missing credentials errors name the canonical CAMELRUN_API_KEY", async () 
   const env = { CAMELRUN_CONFIG: join(mkdtempSync(join(tmpdir(), "camelrun-missing-")), "none.json") };
   assert.throws(() => resolve({}, env), /set CAMELRUN_API_KEY/);
   const errors: string[] = [];
-  assert.equal(await main(["login"], { out: () => {}, err: text => errors.push(text), tty: false, env }), 1);
+  assert.equal(await main(["login"], { out: () => {}, err: text => errors.push(text), tty: false, cwd: tmpdir(), env }), 1);
   assert.match(errors.join("\n"), /set CAMELRUN_API_KEY/);
 });

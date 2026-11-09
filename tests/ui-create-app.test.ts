@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import ts from "typescript";
+import { stripTypeScriptTypes } from "node:module";
 import { runInNewContext } from "node:vm";
 import { agentKeyFor } from "../clients/handler.ts";
 import { execFileSync } from "node:child_process";
@@ -76,7 +76,9 @@ test("both generated routes share pending initialization; Cloudflare keeps users
       "@camelai/run/server": { agentKeyFor, createAgentHandler: (value: unknown) => { creates++; options = value; return async () => new Response("ok"); } },
       "@camelai/run": { tool: (value: unknown) => value, schema: { Object: () => ({}), String: () => ({}) } },
     };
-    const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
+    const compiled = stripTypeScriptTypes(source)
+      .replace(/^import \{([^}]+)\} from "([^"]+)";$/gm, 'const {$1} = require("$2");')
+      .replace("export async function POST", "exports.POST = async function POST");
     const exports: any = {};
     runInNewContext(compiled, { exports, require: (name: string) => mocks[name], Response });
     const first = exports.POST(new Request("https://app.example"));
