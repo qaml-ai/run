@@ -3,7 +3,8 @@ import test, { type TestContext } from 'node:test';
 import { startFixture } from './fixture.ts';
 
 async function fixture(t: TestContext, vars: Record<string, string> = {}) {
-  const f = await startFixture({ tenant: 'apply-test', tenants: [{ id: 'apply-test', billing: 'prepaid' }], vars });
+  const token = 'local-apply-integration-token-at-least-32-characters';
+  const f = await startFixture({ token, tenant: 'apply-test', tenants: [{ id: 'apply-test', token, billing: 'prepaid' }], vars });
   t.after(() => f.stop());
   const apply = async (body: unknown) => {
     const response = await fetch(`${f.url}/v1/apply`, { method: 'POST', headers: { authorization: `Bearer ${f.token}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });

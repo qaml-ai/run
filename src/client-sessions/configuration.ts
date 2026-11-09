@@ -152,6 +152,10 @@ export async function create(ctx: ConfigurationContext, definitions: ToolDefinit
   const { apiKey: _key, ...safeConfig } = config;
   // Its own MCP servers are checked as they are given (ToolSources.inline), or copied from a checked agent (a fork).
   const own = { ...(access.builtins?.length ? { builtins: access.builtins } : {}), ...(access.delegate ? { delegate: access.delegate } : {}), ...(access.mcpServers?.length ? { mcpServers: access.mcpServers } : {}), ...(access.decide !== undefined ? { decide: access.decide } : {}) };
+  const known = ctx.sessions.get(id)?.header ?? existing?.value;
+  // Atomic provisioning may omit a previously assigned subject on an unchanged retry.
+  if (applying() && identity?.subject === undefined && known?.identity?.subject !== undefined)
+    identity = { ...identity, subject: known.identity.subject };
   const provisionHash = hash(canonical({ ...origin ? { definition: origin.provision } : { definitions, config: safeConfig, ...(Object.keys(metadata).length ? { metadata } : {}), ...(mounts !== undefined ? { mounts } : {}), ...own }, ...(identity ? { identity } : {}) }));
   // The same key for an existing agent updates it: create or reconfigure (the last upsert wins).
   // An upsert that names no model (nor its definition) leaves the agent's: the runtime's default is for agents being made.
@@ -160,7 +164,6 @@ export async function create(ctx: ConfigurationContext, definitions: ToolDefinit
   const sources: Sources | undefined = origin ? origin.sources : Object.keys(own).length ? own : undefined;
   // The caller counts the create (its rate limit) now, told whether the key's agent has this configuration already:
   // an upsert that changes nothing makes nothing.
-  const known = ctx.sessions.get(id)?.header ?? existing?.value;
   await access.admit?.(!!known && known.tenant === tenant && known.provisionHash === provisionHash && !known.revoked && !expired(known.expiresAt));
   if (applying() && known) {
     changes(known); // Preserve the ordinary upsert's immutable-field checks.
