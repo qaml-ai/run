@@ -41,7 +41,7 @@ export function childSecurity(parent: Record<string, any>, target: Record<string
 
 /** Existing agents cannot be reconfigured as a side effect of delegation. Refuse a wider target. */
 export function assertChildSecurity(parent: Record<string, any>, target: Record<string, any>) {
-  const restricted = childSecurity(parent, target);
+  const restricted: Record<string, any> = childSecurity(parent, target);
   const credentialsChanged = ['computer', 'mcpServers', 'openApi'].some(key => JSON.stringify(restricted[key]) !== JSON.stringify(target[key]));
   const a = parent.networking as Networking | undefined, b = target.networking as Networking | undefined;
   const networkWider = a?.type === 'limited' && (b?.type !== 'limited' || effectiveHosts(target, b).some(rule => !effectiveHosts(parent, a).some(boundary => narrower(rule, boundary))));
