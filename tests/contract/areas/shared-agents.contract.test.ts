@@ -364,3 +364,19 @@ contractTest("shared-agents", "nonblocking", "an open decision does not hold ano
   await memberPrompt(f, id, members.members[2].id, "Hello now");
   assert.equal((await f.call(`/v1/agents/${id}/inputs?state=pending`)).json[0].id, decision.id);
 }, options);
+
+contractTest('shared-agents', 'native', 'concurrent member submissions preserve request ID conflicts', async t => {
+  const { until } = await import('../support.ts');
+  const r = await createContractFixture(t);
+  const agent = (await r.call('/v1/agents', { body: {} })).json.id;
+  const link = (await r.call(`/v1/agents/${agent}/share-links`, { body: {} })).json.id;
+  const member = 'm_0123456789abcdef';
+  await r.sharedAgentsQuery(`insert into agent_members (id,tenant,agent,person,role,name,link,added_at) select $1,tenant,agent,'guest','guest','Dana',id,$3 from agent_share_links where id=$2`, [member, link, Date.now()]);
+  const responses = await Promise.all(Array.from({ length: 8 }, (_, n) => r.call(`/v1/agents/${agent}/prompt`, {
+    body: { text: `message ${n}`, requestId: 'concurrent-member', actor: `member:${member}` },
+  })));
+  assert.equal(responses.filter(response => response.status === 202).length, 1);
+  assert.equal(responses.filter(response => response.status === 409 && response.json.code === 'IDEMPOTENCY_CONFLICT').length, 7);
+  await until(async () => (await r.call(`/v1/agents/${agent}/requests/concurrent-member`)).json.state === 'completed', 'the one admitted request');
+  assert.equal(r.model.bodies.length, 1);
+}, { timeout: 90_000 });

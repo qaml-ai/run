@@ -1,6 +1,7 @@
+import { ConsoleAgentChat } from "./agent-chat";
 import { AgentSchedules } from "./agent-schedules";
-import { useRef, useState, type FormEvent } from "react";
-import { ArrowLeft, Braces, GitFork, Loader2, Paperclip, RefreshCw, Send, Square, Trash2, Wrench, X } from "lucide-react";
+import { useState, type FormEvent } from "react";
+import { ArrowLeft, Braces, GitFork, Loader2, RefreshCw, Square, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,21 +11,13 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Progress } from "@/components/ui/progress";
-import { Textarea } from "@/components/ui/textarea";
 import { StatusPanel } from "@/components/brand";
-import { ConfirmButton, CopyButton, EmptyState, ErrorAlert, LearnMore, PageHeader } from "@/components/common";
-import { MoveMenu, WorkspaceTag } from "@/components/workspace-ui";
+import { ConfirmButton, CopyButton, ErrorAlert, LearnMore } from "@/components/common";
+import { MoveMenu } from "@/components/workspace-ui";
 import { moveToWorkspace, useWorkspaceDirectory } from "@/lib/workspace";
 import { FileBrowser, FileCard } from "@/components/files";
-import { api, formatBytes, formatTime, putFile, useApi, type AgentDetail, type FileRef, type Mount, type RequestRecord, type RunFiles, type ToolSource } from "@/lib/api";
+import { api, formatBytes, formatTime, useApi, type AgentDetail, type FileRef, type Mount, type RequestRecord, type RunFiles, type ToolSource } from "@/lib/api";
 import { Link, navigate } from "@/lib/router";
-import { AgentStatus } from "@/pages/agents";
-
-type Part = { type: string; text?: string; thinking?: string; name?: string; arguments?: any; id?: string };
-type Message = { role: string; content: string | Part[]; toolName?: string; toolCallId?: string; isError?: boolean; timestamp?: number; stopReason?: string; errorMessage?: string };
-const parts = (content: Message["content"]): Part[] => typeof content === "string" ? [{ type: "text", text: content }] : content ?? [];
-const text = (content: Message["content"]) => parts(content).filter(part => part.type === "text").map(part => part.text).join("\n");
 
 /** Where a path the agent saw lives: the deepest mount containing it (of `volume`, when known). */
 function locate(mounts: Mount[] | undefined, shown: string, volume?: string) {
@@ -38,57 +31,6 @@ function RefCard({ mounts, file, caption }: { mounts?: Mount[]; file: Pick<FileR
   const place = locate(mounts, file.path, file.volume);
   return <FileCard volume={place?.volume} path={place?.path} shown={file.path} contentType={file.contentType} size={file.size} caption={caption && <span className="whitespace-pre-wrap">{caption}</span>} />;
 }
-const files = (content: Message["content"]) => parts(content).filter(part => part.type === "file") as unknown as FileRef[];
-const json = (value: string) => { try { return JSON.parse(value); } catch { return undefined; } };
-
-function Conversation({ messages, indexes, mounts, onFork }: { messages: Message[]; indexes?: number[]; mounts?: Mount[]; onFork?: (index: number) => void }) {
-  if (!messages.length) return <EmptyState icon={<Send />} title="No messages yet">Prompts sent by your app, or from the “Try it” tab, appear here.</EmptyState>;
-  // present_file's result names the file's type and size; its call has the caption.
-  const presented = new Map(messages.filter(message => message.role === "toolResult" && message.toolName === "present_file" && !message.isError)
-    .map(message => [message.toolCallId, json(text(message.content))]));
-  return (
-    <div className="flex flex-col gap-3">
-      {messages.map((message, index) => {
-        if (message.role === "user") return (
-          <div key={index} className="ml-auto flex max-w-[85%] flex-col items-end gap-2">
-            {text(message.content) && <div className="bg-muted rounded-lg px-3 py-2 text-sm whitespace-pre-wrap">{text(message.content)}</div>}
-            {/* Audio shows what was heard (or why it was not). */}
-            {files(message.content).map((file, fileIndex) => <RefCard key={fileIndex} mounts={mounts} file={file} caption={file.transcript ? `“${file.transcript.text}”` : file.untranscribed && `Not transcribed: ${file.untranscribed}`} />)}
-          </div>
-        );
-        if (message.role === "toolResult") return message.toolName === "present_file" && !message.isError ? null : (
-          <details key={index} className="rounded-md border px-3 py-2 text-xs">
-            <summary className="text-muted-foreground cursor-pointer">
-              Result of <span className="font-mono">{message.toolName}</span>{message.isError && <Badge variant="destructive" className="ml-2">error</Badge>}
-              {files(message.content).length > 0 && <Badge variant="outline" className="ml-2">{files(message.content).length} files</Badge>}
-            </summary>
-            <pre className="mt-2 max-h-80 overflow-auto font-mono whitespace-pre-wrap">{text(message.content)}</pre>
-            <div className="mt-2 flex flex-col gap-2">{files(message.content).map((file, fileIndex) => <RefCard key={fileIndex} mounts={mounts} file={file} />)}</div>
-          </details>
-        );
-        return (
-          <div key={index} className="flex max-w-[85%] flex-col gap-2 text-sm">
-            {parts(message.content).map((part, partIndex) => part.type === "text" ? <p key={partIndex} className="whitespace-pre-wrap">{part.text}</p>
-              : part.type === "thinking" ? <p key={partIndex} className="text-muted-foreground text-xs italic whitespace-pre-wrap">{part.thinking}</p>
-              : part.type === "toolCall" && part.name === "present_file" && presented.get(part.id) ? (
-                <RefCard key={partIndex} mounts={mounts} file={presented.get(part.id)} caption={part.arguments?.caption} />
-              ) : part.type === "toolCall" ? (
-                <div key={partIndex} className="bg-muted flex items-start gap-2 border px-3 py-2 font-mono text-xs">
-                  <Wrench className="mt-0.5 size-3.5 shrink-0" />
-                  <span className="break-all">{part.name}({JSON.stringify(part.arguments)})</span>
-                </div>
-              ) : null)}
-            {message.stopReason === "error" && <ErrorAlert error={message.errorMessage ?? "The model call failed"} title="Model error" />}
-            {onFork && message.stopReason !== "error" && text(message.content) && (
-              <Button variant="ghost" size="xs" className="text-muted-foreground self-start" onClick={() => onFork(indexes?.[index] ?? index)}><GitFork />Fork from here</Button>
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 /** Files a run handed over (with captions), and the paths it wrote. */
 function RunOutputs({ mounts, result }: { mounts?: Mount[]; result?: RunFiles }) {
   if (!result?.presented?.length && !result?.files?.length) return null;
@@ -128,67 +70,6 @@ function Requests({ requests, mounts }: { requests: RequestRecord[]; mounts?: Mo
         </TableBody>
       </Table>
     </div>
-  );
-}
-
-function TryIt({ agentId, onDone }: { agentId: string; onDone: () => void }) {
-  const [draft, setDraft] = useState("");
-  const [attached, setAttached] = useState<File[]>([]);
-  const [progress, setProgress] = useState<number>();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string>();
-  const input = useRef<HTMLInputElement>(null);
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    setBusy(true); setError(undefined);
-    try {
-      // Attachments are uploaded first, under the request's id, then sent as {path} references.
-      const requestId = crypto.randomUUID();
-      const total = attached.reduce((sum, file) => sum + file.size, 0) || 1;
-      let done = 0;
-      const files: { path: string }[] = [];
-      for (const file of attached) {
-        setProgress(done / total);
-        const saved = await putFile(`/v1/agents/${agentId}/uploads/${requestId}/${encodeURIComponent(file.name)}`, file, fraction => setProgress((done + fraction * file.size) / total));
-        files.push({ path: saved.path });
-        done += file.size;
-      }
-      setProgress(undefined);
-      const request = await api<RequestRecord>(`/v1/agents/${agentId}/prompt`, { body: { text: draft, requestId, ...(files.length ? { files } : {}) } });
-      setDraft(""); setAttached([]);
-      for (let settled = request; settled.state === "running";) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        settled = await api<RequestRecord>(`/v1/agents/${agentId}/requests/${request.id}`);
-        if (settled.state !== "running" && settled.outcome?.error) setError(settled.outcome.error);
-        if (settled.state !== "running") break;
-      }
-      onDone();
-    } catch (caught) { setError((caught as Error).message); }
-    finally { setBusy(false); setProgress(undefined); }
-  }
-  return (
-    <form onSubmit={submit} className="flex flex-col gap-2">
-      <p className="text-muted-foreground text-sm">
-        Sends a prompt to this agent. If it calls one of your application's tools while your app is not connected, that call fails without running.
-      </p>
-      <ErrorAlert error={error} title="The prompt failed" />
-      <Textarea rows={4} value={draft} onChange={event => setDraft(event.target.value)} placeholder="Ask the agent something…" />
-      {attached.length > 0 && (
-        <div className="flex flex-wrap gap-2">
-          {attached.map((file, index) => (
-            <span key={index} className="bg-secondary text-secondary-foreground inline-flex h-6 items-center gap-1.5 px-2 text-xs">{file.name} · {formatBytes(file.size)}
-              <button type="button" aria-label={`Remove ${file.name}`} disabled={busy} onClick={() => setAttached(attached.filter((_, at) => at !== index))}><X className="size-3" /></button>
-            </span>
-          ))}
-        </div>
-      )}
-      {progress !== undefined && <Progress value={progress * 100} />}
-      <input ref={input} type="file" multiple hidden onChange={event => { setAttached([...attached, ...event.target.files ?? []]); event.target.value = ""; }} />
-      <div className="flex gap-2">
-        <Button type="button" variant="outline" disabled={busy} onClick={() => input.current?.click()}><Paperclip />Attach</Button>
-        <Button type="submit" disabled={!draft.trim() || busy}>{busy ? <Loader2 className="animate-spin" /> : <Send />}Send</Button>
-      </div>
-    </form>
   );
 }
 
@@ -338,10 +219,11 @@ export function ForkDialog({ agent, atMessage, onClose }: { agent: AgentDetail; 
 }
 
 export function AgentPage({ id }: { id: string }) {
-  const agent = useApi<AgentDetail>(`/v1/agents/${id}`, 5_000);
-  const history = useApi<{ entries: { index: number; message: Message }[] }>(`/v1/agents/${id}/history?limit=100&maxBytes=4000000`, agent.data?.running ? 3_000 : undefined);
+  const agent = useApi<AgentDetail>(`/v1/agents/${id}`);
+  const definition = useApi<{ description?: string }>(agent.data?.definition ? `/v1/definitions/${encodeURIComponent(agent.data.definition.id)}` : undefined);
   const [error, setError] = useState<string>();
   const directory = useWorkspaceDirectory();
+  const [manage, setManage] = useState(false);
   /** The fork dialog, open: from the last finished turn, or from a message. */
   const [forking, setForking] = useState<{ atMessage?: number }>();
   if (agent.error?.status === 404) return <StatusPanel code="404" label="Not found" detail="This agent does not exist or belongs to another tenant."
@@ -351,12 +233,22 @@ export function AgentPage({ id }: { id: string }) {
   const workspaceId = directory.workspaceOf("agent", id);
   return (
     <>
-      <Link to="agents" className="text-muted-foreground hover:text-foreground mb-3 inline-flex items-center gap-1 text-sm"><ArrowLeft className="size-4" />Agents</Link>
-      <PageHeader
-        title={data.name} docs="events"
-        description={<span className="inline-flex flex-wrap items-center gap-2"><AgentStatus agent={data} /><span className="font-mono text-xs">{data.model}</span><span>· {data.type}</span>{data.definition && <Link to="definitions" className="underline">· definition revision {data.definition.revision}</Link>}{data.forkedFrom && <Link to={`agents/${data.forkedFrom.agentId}`} className="underline">· forked from {data.forkedFrom.agentId}{data.forkedFrom.atMessage !== null ? ` at message ${data.forkedFrom.atMessage}` : ""}</Link>}{data.parentAgentId && <Link to={`agents/${data.parentAgentId}`} className="underline">· sub-agent of {data.parentAgentId}</Link>}{!!directory.workspaces?.length && directory.loaded && <span className="inline-flex items-center gap-1">· <WorkspaceTag directory={directory} id={workspaceId} /></span>}</span>}
-        actions={<>
-          {!!directory.workspaces?.length && directory.loaded && <MoveMenu directory={directory} current={workspaceId} align="end"
+      <header className="mb-3 flex min-w-0 items-center gap-3">
+        <Link to="agents" aria-label="Back to agents" className="shrink-0 text-muted-foreground hover:text-foreground"><ArrowLeft className="size-4" /></Link>
+        <div className="min-w-0 flex-1">
+          <h1 className="truncate text-lg font-semibold">{data.name}</h1>
+          <div className="flex items-center justify-between gap-2">
+            <span className="truncate font-mono text-xs text-muted-foreground">{data.model}</span>
+            <Button variant="ghost" size="sm" className="h-7 shrink-0 px-2 text-xs" onClick={() => setManage(true)}>Manage agent</Button>
+          </div>
+        </div>
+      </header>
+      <ErrorAlert error={error} />
+      {forking && <ForkDialog agent={data} atMessage={forking.atMessage} onClose={() => setForking(undefined)} />}
+      <ConsoleAgentChat key={id} agentId={id} description={definition.data?.description} />
+      <Dialog open={manage} onOpenChange={setManage}><DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-4xl"><DialogHeader><DialogTitle>Manage {data.name}</DialogTitle><DialogDescription>Files, schedules, configuration and agent controls.</DialogDescription></DialogHeader>
+      <p className="text-xs text-muted-foreground">{data.type}{data.definition && <> · definition revision {data.definition.revision}</>}{data.forkedFrom && <> · forked from <Link className="underline" to={`agents/${data.forkedFrom.agentId}`}>{data.forkedFrom.agentId}</Link></>}{data.parentAgentId && <> · worker of <Link className="underline" to={`agents/${data.parentAgentId}`}>{data.parentAgentId}</Link></>}</p>
+      <div className="flex flex-wrap gap-2">          {!!directory.workspaces?.length && directory.loaded && <MoveMenu directory={directory} current={workspaceId} align="end"
             onMove={async target => { setError(undefined); try { await moveToWorkspace("agent", [id], target); } catch (caught) { setError((caught as Error).message); } }}>
             <Button variant="outline" size="sm">Move…</Button>
           </MoveMenu>}
@@ -364,23 +256,15 @@ export function AgentPage({ id }: { id: string }) {
           <ConfirmButton label="Abort" icon={<Square />} title="Abort the running turn?" description="The current model turn stops. Tool calls already started in your application may still complete." confirm="Abort"
             onConfirm={async () => { try { await api(`/v1/agents/${id}/abort`, { body: {} }); await agent.reload(); } catch (caught) { setError((caught as Error).message); } }} />
           <ConfirmButton label="Delete" icon={<Trash2 />} variant="destructive" title={`Delete ${data.name}?`} description="Its session token stops working and it disappears from your tenant. This cannot be undone." confirm="Delete agent"
-            onConfirm={async () => { try { await api(`/v1/agents/${id}`, { method: "DELETE" }); navigate("agents"); } catch (caught) { setError((caught as Error).message); } }} />
-        </>}
-      />
-      <ErrorAlert error={error} />
-      {forking && <ForkDialog agent={data} atMessage={forking.atMessage} onClose={() => setForking(undefined)} />}
-      <Tabs defaultValue="conversation">
-        <TabsList variant="line">
-          <TabsTrigger value="conversation">Conversation</TabsTrigger>
+            onConfirm={async () => { try { await api(`/v1/agents/${id}`, { method: "DELETE" }); navigate("agents"); } catch (caught) { setError((caught as Error).message); } }} /></div>
+      <Tabs defaultValue="requests">
+        <TabsList variant="line" className="max-w-full overflow-x-auto">
           <TabsTrigger value="requests">Requests</TabsTrigger>
-          <TabsTrigger value="try">Try it</TabsTrigger>
           <TabsTrigger value="files">Files</TabsTrigger>
           <TabsTrigger value="config">Configuration</TabsTrigger>
           <TabsTrigger value="schedules">Schedules</TabsTrigger>
         </TabsList>
-        <TabsContent value="conversation" className="pt-4"><ErrorAlert error={history.error} />{history.data ? <Conversation messages={history.data.entries.map(entry => entry.message)} indexes={history.data.entries.map(entry => entry.index)} mounts={data.mounts} onFork={atMessage => setForking({ atMessage })} /> : <Skeleton className="h-40 w-full" />}</TabsContent>
         <TabsContent value="requests" className="pt-4"><Requests requests={data.requests} mounts={data.mounts} /></TabsContent>
-        <TabsContent value="try" className="pt-4"><TryIt agentId={id} onDone={() => { void history.reload(); void agent.reload(); }} /></TabsContent>
         <TabsContent value="files" className="pt-4"><Files mounts={data.mounts} /></TabsContent>
         <TabsContent value="schedules" className="pt-4"><AgentSchedules agentId={id}/></TabsContent>
         <TabsContent value="config" className="grid gap-4 pt-4 lg:grid-cols-2">
@@ -395,6 +279,7 @@ export function AgentPage({ id }: { id: string }) {
           <ToolSources agentId={id} sources={data.toolSources ?? []} />
         </TabsContent>
       </Tabs>
+      </DialogContent></Dialog>
     </>
   );
 }
