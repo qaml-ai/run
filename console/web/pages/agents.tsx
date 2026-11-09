@@ -1,3 +1,5 @@
+import { useAgentPreviews } from "@/lib/agent-previews";
+import { type InboxPage } from "@/lib/inbox";
 import { useEffect, useState } from "react";
 import { Bot, ChevronDown, ChevronLeft, ChevronRight, RefreshCw, Search } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -7,7 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { EmptyState, ErrorAlert, PageHeader } from "@/components/common";
 import { MoveMenu, ScopeCrumb, scopeName, WorkspaceTag } from "@/components/workspace-ui";
-import { AGENT_PAGE, formatAgo, formatTime, useApiPage, type useApi, type AgentSummary, type Billing } from "@/lib/api";
+import { AGENT_PAGE, formatAgo, formatTime, useApiPage, useApi, type AgentSummary, type Billing } from "@/lib/api";
 import { docsUrl } from "@/lib/docs";
 import { Link, navigate } from "@/lib/router";
 import { cn } from "@/lib/utils";
@@ -89,6 +91,8 @@ export function AgentsPage({ hasAgents, billing }: {
   const page = useApiPage<AgentSummary>(hasAgents ? agentsPath({ ws: scope, filter, q, cursor: cursors.at(-1) }) : undefined, 10_000);
   const shown = page.items ?? page.previous ?? [];
   const rows = nested(shown);
+  const previews = useAgentPreviews(shown);
+  const inbox = useApi<InboxPage>("/v1/inbox?limit=1", 15_000);
   const picked = shown.filter(agent => selected.has(agent.id));
   const toggle = (id: string, on: boolean) => setSelected(current => { const next = new Set(current); if (on) next.add(id); else next.delete(id); return next; });
   const move = async (ids: string[], workspaceId: string | null) => {
@@ -106,7 +110,7 @@ export function AgentsPage({ hasAgents, billing }: {
       <ScopeCrumb directory={directory} />
       <PageHeader
         title="Agents"
-        description="Agents in your account. Your application creates them with the SDK or POST /v1/agents." docs="concepts"
+        description="Your conversations. Pick an agent to keep working together." docs="concepts"
         actions={<>
           {hasAgents && <div className="relative">
             <Search aria-hidden="true" className="text-muted-foreground pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2" />
@@ -149,46 +153,12 @@ export function AgentsPage({ hasAgents, billing }: {
                 {filtered ? "Nothing here matches the search and filter." : ws === UNASSIGNED ? "Agents in no workspace show here." : "Move agents here from All workspaces, or create them with this workspace's workspaceId."}
               </EmptyState>
             ) : (
-              <div className={cn("bg-card border transition-opacity", page.stale && "opacity-60")} aria-busy={page.stale}>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      {grouped && <TableHead className="w-8"><input type="checkbox" aria-label="Select all agents on this page" className="accent-foreground size-4 align-middle"
-                        checked={shown.length > 0 && picked.length === shown.length} ref={element => { if (element) element.indeterminate = picked.length > 0 && picked.length < shown.length; }}
-                        onChange={event => setSelected(event.target.checked ? new Set(shown.map(agent => agent.id)) : new Set())} /></TableHead>}
-                      <TableHead>Name</TableHead>
-                      {showWorkspace && <TableHead>Workspace</TableHead>}
-                      <TableHead>Model</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead className="hidden md:table-cell">Last active</TableHead>
-                      <TableHead className="hidden lg:table-cell">Session expires</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {rows.map(({ agent, depth }) => (
-                      <TableRow key={agent.id} className="cursor-pointer" data-state={selected.has(agent.id) ? "selected" : undefined} onClick={() => navigate(`agents/${agent.id}`)}>
-                        {grouped && <TableCell onClick={event => event.stopPropagation()}>
-                          <input type="checkbox" aria-label={`Select ${agent.name}`} className="accent-foreground size-4 align-middle" checked={selected.has(agent.id)} onChange={event => toggle(agent.id, event.target.checked)} />
-                        </TableCell>}
-                        <TableCell style={depth ? { paddingLeft: `${0.5 + depth * 1.25}rem` } : undefined}>
-                          {depth > 0 && <span className="text-muted-foreground mr-1" aria-label="sub-agent of the row above">↳</span>}<Link className="font-medium" to={`agents/${agent.id}`}>{agent.name}</Link>
-                          {agent.key && depth === 0 && <div className="text-muted-foreground font-mono text-xs">key {agent.key}</div>}
-                        </TableCell>
-                        {showWorkspace && <TableCell onClick={event => event.stopPropagation()}>
-                          {agent.workspaceId ? <WorkspaceTag directory={directory} id={agent.workspaceId} /> : (
-                            <MoveMenu directory={directory} current={null} label="Assign to workspace" onMove={target => void move([agent.id], target)}>
-                              <button type="button" className="text-muted-foreground hover:text-foreground text-sm underline underline-offset-4" disabled={moving}>Assign…</button>
-                            </MoveMenu>
-                          )}
-                        </TableCell>}
-                        <TableCell className="font-mono text-xs">{agent.model}</TableCell>
-                        <TableCell onClick={event => event.stopPropagation()}><AgentStatus agent={agent} /></TableCell>
-                        <TableCell className="text-muted-foreground hidden md:table-cell" title={agent.lastActiveAt ? formatTime(agent.lastActiveAt) : undefined}>{agent.running ? "now" : formatAgo(agent.lastActiveAt)}</TableCell>
-                        <TableCell className="text-muted-foreground hidden lg:table-cell">{agent.expiresAt === null ? "Never" : formatTime(agent.expiresAt)}</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+              <div className={cn("grid gap-3 transition-opacity", page.stale && "opacity-60")} aria-busy={page.stale}>
+                {rows.map(({ agent, depth }) => <div key={agent.id} className="flex flex-wrap items-center gap-3" style={depth ? { marginLeft: `${Math.min(depth, 3)}rem` } : undefined}>
+                  {grouped && <input type="checkbox" aria-label={`Select ${agent.name}`} checked={selected.has(agent.id)} onChange={event => toggle(agent.id, event.target.checked)} />}
+                  <AgentPreview agent={agent} preview={previews[agent.id]} pending={inbox.data?.counts?.lead[agent.id] ?? 0} />
+                  {showWorkspace && (agent.workspaceId ? <WorkspaceTag directory={directory} id={agent.workspaceId} /> : <MoveMenu directory={directory} current={null} label="Assign to workspace" onMove={target => void move([agent.id], target)}><button type="button" className="text-xs underline" disabled={moving}>Assign…</button></MoveMenu>)}
+                </div>)}
               </div>
             )}
             {(cursors.length > 1 || page.next) && (
@@ -202,4 +172,12 @@ export function AgentsPage({ hasAgents, billing }: {
         )}
     </>
   );
+}
+
+export function AgentPreview({ agent, preview, pending = 0 }: { agent: AgentSummary; preview?: string; pending?: number }) {
+  const status = pending ? "Waiting on you" : agent.running ? "Working" : failedRecently(agent) ? "Error" : "Idle";
+  return <Link aria-label={agent.name} to={`agents/${agent.id}`} className="min-w-0 flex-1 rounded-xl border bg-card p-4 transition-colors hover:bg-accent focus-visible:ring-2">
+    <div className="flex flex-wrap items-center gap-2"><span className="font-semibold">{agent.name}</span><Badge variant={pending ? "secondary" : agent.running ? "live" : status === "Error" ? "destructive" : "outline"}>{status}</Badge>{pending > 0 && <Badge variant="secondary">{pending} pending</Badge>}<span className="ml-auto text-xs text-muted-foreground">{agent.running ? "now" : formatAgo(agent.lastActiveAt)}</span></div>
+    <p className="mt-2 line-clamp-2 text-sm text-muted-foreground">{preview === undefined ? "Loading conversation…" : preview || "Start a conversation"}</p>
+  </Link>;
 }
