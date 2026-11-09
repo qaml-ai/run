@@ -1,3 +1,4 @@
+import { AgentTriggers } from "./agent-triggers";
 import { ConsoleAgentChat } from "./agent-chat";
 import { AgentSchedules } from "./agent-schedules";
 import { useState, type FormEvent } from "react";
@@ -246,7 +247,7 @@ export function AgentPage({ id }: { id: string }) {
       <ErrorAlert error={error} />
       {forking && <ForkDialog agent={data} atMessage={forking.atMessage} onClose={() => setForking(undefined)} />}
       <ConsoleAgentChat key={id} agentId={id} description={definition.data?.description} />
-      <Dialog open={manage} onOpenChange={setManage}><DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-4xl"><DialogHeader><DialogTitle>Manage {data.name}</DialogTitle><DialogDescription>Files, schedules, configuration and agent controls.</DialogDescription></DialogHeader>
+      <Dialog open={manage} onOpenChange={setManage}><DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-4xl"><DialogHeader><DialogTitle>Manage {data.name}</DialogTitle><DialogDescription>Files, schedules, triggers, configuration and agent controls.</DialogDescription></DialogHeader>
       <p className="text-xs text-muted-foreground">{data.type}{data.definition && <> · definition revision {data.definition.revision}</>}{data.forkedFrom && <> · forked from <Link className="underline" to={`agents/${data.forkedFrom.agentId}`}>{data.forkedFrom.agentId}</Link></>}{data.parentAgentId && <> · worker of <Link className="underline" to={`agents/${data.parentAgentId}`}>{data.parentAgentId}</Link></>}</p>
       <div className="flex flex-wrap gap-2">          {!!directory.workspaces?.length && directory.loaded && <MoveMenu directory={directory} current={workspaceId} align="end"
             onMove={async target => { setError(undefined); try { await moveToWorkspace("agent", [id], target); } catch (caught) { setError((caught as Error).message); } }}>
@@ -262,10 +263,12 @@ export function AgentPage({ id }: { id: string }) {
           <TabsTrigger value="requests">Requests</TabsTrigger>
           <TabsTrigger value="files">Files</TabsTrigger>
           <TabsTrigger value="config">Configuration</TabsTrigger>
+          <TabsTrigger value="triggers">Triggers</TabsTrigger>
           <TabsTrigger value="schedules">Schedules</TabsTrigger>
         </TabsList>
         <TabsContent value="requests" className="pt-4"><Requests requests={data.requests} mounts={data.mounts} /></TabsContent>
         <TabsContent value="files" className="pt-4"><Files mounts={data.mounts} /></TabsContent>
+        <TabsContent value="triggers" className="pt-4"><AgentTriggers agentId={id}/></TabsContent>
         <TabsContent value="schedules" className="pt-4"><AgentSchedules agentId={id}/></TabsContent>
         <TabsContent value="config" className="grid gap-4 pt-4 lg:grid-cols-2">
           <Card>

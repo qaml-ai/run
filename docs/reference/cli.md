@@ -279,6 +279,7 @@ or a connected app can create and delete every agent in the account. Give a
 coding agent a key of its own, or connect it with OAuth, so you can revoke it
 alone.
 
+See [incoming webhook triggers](../guides/triggers.md) for the trigger management API and commands.
 ## Scheduled runs
 
 `camelrun schedules add <agent> --text 'Report' --cron '0 9 * * 1-5'

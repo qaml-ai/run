@@ -12,6 +12,7 @@ export type FixtureOptions = {
   tenants?: object;
   /** Fail the first real image resize job, then allow normal retries. */
   failImageResizeOnce?: boolean;
+  triggerMaintenance?: boolean;
   /** Local STS/token endpoint used by the real Anthropic federation adapter. */
   anthropicFederationEndpoint?: string;
   /** Create additional local fake endpoints before starting either backend. */
@@ -59,6 +60,8 @@ export interface ContractFixture {
   sharedAgentsQuery(text: string, values?: unknown[]): Promise<{ rows: any[]; rowCount: number | null }>;
   /** Inbox storage contract: only the asking agent's index columns, on either backend. */
   inputIndex(agent: string): Promise<{ state: string; version: number; priority: string; priority_rank: number; blocking: boolean; responders: string[] }[]>;
+  /** Trigger delivery/reservation state, shared by both backends. */
+  triggerQuery(text: string, values?: unknown[]): Promise<{ rows: any[]; rowCount: number | null }>;
   /** Channel cases only: a query on the channel tables (fixtures/channel-state.ts), which both backends share. */
   channelQuery(text: string, values?: unknown[]): Promise<{ rows: any[]; rowCount: number | null }>;
   /**

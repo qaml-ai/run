@@ -1,9 +1,9 @@
+import { FRESH_RUN_TTL_MS, MAX_FRESH_RUN_AGENTS } from './fresh-runs.ts';
+export { FRESH_RUN_TTL_MS, MAX_FRESH_RUN_AGENTS } from './fresh-runs.ts';
 /** Shared SQL projection of scheduled requests. Reading deliveries never loads an agent. */
 type Sql = { query(text: string, values?: any[]): Promise<{ rows: any[]; rowCount?: number | null }> };
 export type ScheduleRunSource = { tenant: string; agent: string; schedule: string; createdAt: number };
 export const SCHEDULE_RUN_RETENTION_MS = 30 * 86_400_000;
-export const FRESH_RUN_TTL_MS = 7 * 86_400_000;
-export const MAX_FRESH_RUN_AGENTS = 200;
 export const FRESH_CAP_ERROR = 'This schedule already has 200 live run agents; delete or wait for a run agent to expire';
 
 export function scheduleRunMetadata(source: ScheduleRunSource) {
