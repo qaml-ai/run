@@ -179,4 +179,6 @@ test('a Lambda exec checks only its machine, shares first use and idle resume, a
   await fixture.db.query('update computer_leases set expires_at=1 where connection=$1', [connection]);
   await assert.rejects(service.call(child, 'computer_exec', { command: 'true' }, 'expired'), /parent's machine is stopped/);
   assert.equal(commands.length, 3);
+  await service.remove(owner);
+  await assert.rejects(service.call(child, 'computer_exec', { command: 'true' }, 'deleted'), (error: any) => error.code === 'COMPUTER_STOPPED');
 });

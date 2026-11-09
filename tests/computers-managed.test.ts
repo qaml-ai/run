@@ -355,5 +355,8 @@ test("a sharing child's first exec starts and bills its owner's managed computer
     await f.stop();
     await assert.rejects(f.service.call('payg', 'child', 'computer_exec', { command: 'true' }, 'stopped'), (error: any) => error.code === 'COMPUTER_STOPPED');
     assert.equal(f.state.creates, 1);
+    const connection = (await f.service.status('payg', 'a')).connection.id;
+    await f.service.remove('payg', connection);
+    await assert.rejects(f.service.call('payg', 'child', 'computer_exec', { command: 'true' }, 'deleted'), (error: any) => error.code === 'COMPUTER_STOPPED');
   } finally { f.done(); }
 });

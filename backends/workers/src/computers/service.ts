@@ -167,7 +167,13 @@ export class ComputerService {
   /** Mutations run inside the owning agent DO's serial queue. Never hold PG over provider I/O. */
   async call(agent: string, name: string, args: Record<string, any>, key: string) {
     if (!COMPUTER_TOOLS.has(name)) throw new HttpError(400, 'Unknown computer tool');
-    const c = await this.connection(agent);
+    let c;
+    try { c = await this.connection(agent); }
+    catch (error) {
+      if ((error as HttpError).status === 404 && await withSql(this.env, sql => computerOwner(sql, this.tenant, agent)) !== agent)
+        throw new HttpError(409, SHARED_COMPUTER_STOPPED, 'COMPUTER_STOPPED');
+      throw error;
+    }
     if (c.agent !== agent && ['computer_start', 'computer_stop'].includes(name)) throw new HttpError(409, SHARED_COMPUTER_CONTROL);
     if (c.agent !== agent) key = `${agent}:${key}`;
     if (!(await this.tools(agent)).some(t => t.name === name)) throw new HttpError(400, 'Tool not supported by this computer');

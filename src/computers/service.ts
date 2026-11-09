@@ -328,7 +328,13 @@ export class Computers {
   }
   async call(tenant: string, agent: string, name: string, args: Record<string, any>, requestKey: string, files?: Pick<ToolContext, "mounts" | "onWrite">, receiptsOnly = false) {
     if (!COMPUTER_TOOLS.has(name)) throw new HttpError(400, "Unknown computer tool");
-    const connection = await this.connection(tenant, agent);
+    let connection;
+    try { connection = await this.connection(tenant, agent); }
+    catch (error) {
+      if ((error as HttpError).status === 404 && await computerOwner(this.options.db, tenant, agent) !== agent)
+        throw new HttpError(409, SHARED_COMPUTER_STOPPED, "COMPUTER_STOPPED");
+      throw error;
+    }
     const shared = connection.agent !== agent;
     if (shared && ["computer_start", "computer_stop"].includes(name)) throw new HttpError(409, SHARED_COMPUTER_CONTROL);
     if (shared) requestKey = `${agent}:${requestKey}`;
