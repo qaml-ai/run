@@ -23,6 +23,8 @@ export type Config = {
 
 export type RequestRecord = {
   id: string;
+  sharedAgent?: import("../../../src/shared-agents.ts").SharedAgent | null;
+  heldForInput?: true;
   method: string;
   params?: Record<string, unknown>;
   endUser?: string;

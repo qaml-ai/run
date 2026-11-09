@@ -1,3 +1,5 @@
+import { SharedAgents } from "../../../src/shared-agents.ts";
+import { database } from "./postgres.ts";
 import { TestStorage } from "./test-storage.ts";
 import { modelCompactionSettings } from "./model-context.ts";
 import { RecentEvents } from "./recent-events.ts";
@@ -64,6 +66,7 @@ class AgentContext {
 /** Internal state, never exposed as a Durable Object RPC target.
  * Field order follows the original agent so eager initialization is unchanged. */
 export class AgentRuntime extends AgentContext {
+  readonly sharedAgents = new SharedAgents(database(this.env));
   readonly dbProfile = new DbProfile(this.env.PILOT_DB_PROFILE === "1");
 
   async databaseProfile(reset = false) {
@@ -343,8 +346,17 @@ export class AgentRuntime extends AgentContext {
     notice?: RuntimeNotice,
     delivery?: NoticeDelivery,
     acceptedFingerprint?: string,
+    member?: string,
   ) {
-    return submitImpl.call(this, input, notice, delivery, acceptedFingerprint);
+    return submitImpl.call(this, input, notice, delivery, acceptedFingerprint, member);
+  }
+
+  /** A settled input, including cancellation or expiry, releases prompts waiting behind it. */
+  kickInputPrompts() {
+    this.ctx.waitUntil(this.admission.then(async () => {
+      for (const record of await this.records()) if (record.heldForInput && record.state !== "completed")
+        await this.submit({ id: record.id, method: record.method, params: record.params }, undefined, undefined, record.fingerprint);
+    }).catch(() => this.arm(Date.now() + 1000)));
   }
 
   abortRequests(queued: 'cancel' | 'keep' = 'cancel', keepChildren = false) {
@@ -421,8 +433,9 @@ export class AgentRuntime extends AgentContext {
     notice?: RuntimeNotice,
     delivery?: NoticeDelivery,
     acceptedFingerprint?: string,
+    member?: string,
   ) {
-    return admitImpl.call(this, input, notice, delivery, acceptedFingerprint);
+    return admitImpl.call(this, input, notice, delivery, acceptedFingerprint, member);
   }
 
   activity() {
@@ -441,8 +454,8 @@ export class AgentRuntime extends AgentContext {
     return answerHumanInputsImpl.call(this, answers, via, system);
   }
 
-  closeHumanInputs(system: "expired" | "superseded") {
-    return closeHumanInputsImpl.call(this, system);
+  closeHumanInputs(system: "expired" | "superseded", sender?: string, shared = false) {
+    return closeHumanInputsImpl.call(this, system, sender, shared);
   }
 
   dueHumanInputs(at: number) {

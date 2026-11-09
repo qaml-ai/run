@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { z } from '@hono/zod-openapi';
 import type { Db, Sql } from './db.ts';
 import { HttpError } from './core/http-error.ts';
+import type { Sender } from './sender.ts';
 
 export const ShareLinkInput = z.object({ expiresIn: z.union([z.literal(86400), z.literal(604800), z.literal(2592000)]).nullable().optional() }).strict();
 export const MemberInput = z.object({ dailyCapMicros: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable().optional(), removed: z.literal(false).optional() }).strict().refine(x => Object.keys(x).length > 0);
@@ -28,6 +29,13 @@ export class SharedAgents {
     try { await sql.query('begin'); const result = await run(sql); await sql.query('commit'); return result; }
     catch (error) { await sql.query('rollback'); throw error; }
     finally { sql.release(); }
+  }
+  /** One live membership snapshot per admitted turn; ids are the runtime's sender ids. */
+  async get(agent: string, tenant: string): Promise<SharedAgent | undefined> {
+    const rows = (await this.db.query("select id, name, role from agent_members where agent=$1 and tenant=$2 and removed_at is null order by added_at,id", [agent, tenant])).rows;
+    const members: Sender[] = rows.map(row => ({ id: `member:${row.id}`, name: row.name, role: row.role }));
+    const owner = members.find(member => member.role === 'owner');
+    return owner ? { owner, members } : undefined;
   }
   async create(tenant: string, agent: string, input: z.infer<typeof ShareLinkInput>, origin: string) {
     return this.transaction(async sql => {
@@ -71,4 +79,31 @@ export class SharedAgents {
       throw new HttpError(owner ? 400 : 404, owner ? 'Only guests can have a daily cap, be removed or be restored' : 'Unknown member');
     }
   }
+}
+
+
+/** Supplied by the membership store, never by a prompt or agent definition. */
+export type SharedAgent = { owner: Sender; members: Sender[] };
+export type SharedAgentDirectory = { get(agent: string, tenant: string): Promise<SharedAgent | undefined> };
+
+export function inputAudience(kind: string, actor: string | undefined, from: Sender | undefined, shared: SharedAgent | undefined, approvers: string[] = []): string[] {
+  const guest = from?.role === "guest";
+  if (kind === "approval" && guest && !shared) throw new Error("Shared agent owner is unavailable");
+  // Fail closed even if membership disappeared while the guest's turn was running.
+  const audience = kind === "approval" && guest ? (shared ? [shared.owner.id] : []) : actor ? [actor] : [];
+  const guests = new Set(shared?.members.filter(member => member.role === "guest").map(member => member.id));
+  if (guest) guests.add(from.id);
+  return [...new Set([...audience, ...approvers])].filter(id => !(kind === "approval" && guest && guests.has(id)));
+}
+
+export function supersedesInput(input: { kind: string; responders: { audience?: string[] } }, shared: boolean, sender: string | undefined): boolean {
+  if (!shared) return true;
+  const audience = input.responders.audience ?? [];
+  return input.kind === "question" && (!audience.length || sender !== undefined && audience.includes(sender));
+}
+
+/** Reserved guest ingress: the member identity and all control fields belong to the runtime. */
+export function sharedPromptInput(value: unknown): void {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => key !== 'text' && key !== 'files'))
+    throw new HttpError(400, 'A shared prompt takes only text and files');
 }

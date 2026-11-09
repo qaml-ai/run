@@ -473,7 +473,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
               id: requestId ?? idempotencyKey ?? crypto.randomUUID(),
               method: "prompt",
               params,
-            }),
+            }, undefined, undefined, undefined, request.headers.get("x-camel-shared-owner") === "1" ? "owner" : undefined),
         );
       }
       if (path === "/configuration" && request.method === "GET")

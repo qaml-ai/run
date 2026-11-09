@@ -1,7 +1,8 @@
-import { requireActiveMember } from "../../../src/shared-agents.ts";
+import { requireActiveMember, sharedPromptInput } from "../../../src/shared-agents.ts";
 import { keyServices } from "./security-services.ts";
 import { EndUserCredits } from "./end-user-credits.ts";
 import { billingRunStop } from "./billing-run-stop.ts";
+import { HumanInputs } from "./human.ts";
 import { admitAgentMessage } from "./message-admission.ts";
 import { MULTI_AGENT_LIMITS, viaParent } from "./multi-agent-policy.ts";
 import { childParent } from "./child-parent.ts";
@@ -208,9 +209,13 @@ export async function admitImpl(this: AgentRuntime,
   input: unknown,
   notice?: RuntimeNotice,
   delivery?: NoticeDelivery,
-  acceptedFingerprint?: string) {
+  acceptedFingerprint?: string, member?: string) {
     await this.config();
     const request = object(input, ["id", "method", "params"]);
+    if (member && member !== "owner") {
+      if (request.method !== "prompt") throw new BadRequest("A shared member can only prompt");
+      sharedPromptInput(request.params);
+    }
     // Keep the raw spelling's idle hold; active steers share prompt payer checks.
     const rawSteer = request.method === "steer";
     if (request.method === "steer") {
@@ -375,6 +380,11 @@ export async function admitImpl(this: AgentRuntime,
             Array.isArray(params.files) && params.files.length > 0
           ? ""
         : boundedText(params.text, "text", 6 * 1024 * 1024);
+    const current = await this.config();
+    const prior = await this.ctx.storage.get<RequestRecord>(reqKey(id));
+    const lineage = await this.delegation.lineage(current.id, { id, metadata: params.metadata });
+    const shared = prior && Object.hasOwn(prior, "sharedAgent") ? prior.sharedAgent
+      : await this.sharedAgents.get(lineage?.root ?? current.id, current.tenantId) ?? null;
     if (notice) {
       // An agent's message, and a child's ending sent at once (delegate.notify "asap"), join the running turn.
       params.whileRunning =
@@ -382,7 +392,19 @@ export async function admitImpl(this: AgentRuntime,
     } else {
       if (params.metadata !== undefined)
         params.metadata = metadataInput(params.metadata);
-      if (params.from !== undefined) params.from = senderInput(params.from);
+      if (params.from !== undefined) {
+        const supplied = params.from as Record<string, unknown>;
+        if (acceptedFingerprint && supplied.role) {
+          if (prior?.sharedAgent) member = String(supplied.id);
+          const { role: _, ...rest } = supplied;
+          params.from = senderInput(rest);
+        } else params.from = senderInput(params.from);
+      }
+      if (member && request.method === "prompt") {
+        const sender = member === "owner" ? (!params.from ? shared?.owner : undefined) : shared?.members.find(entry => entry.id === member);
+        if (member !== "owner" && !sender) throw new BadRequest("Unknown shared agent member");
+        if (sender) { params.from = sender; params.actor = sender.id; }
+      }
     }
     try {
       if (params.actor !== undefined) params.actor = actorInput(params.actor);
@@ -432,6 +454,11 @@ export async function admitImpl(this: AgentRuntime,
     if (request.method === 'steer') params.whileRunning = 'steer';
     if (params.output !== undefined && params.whileRunning === "steer")
       throw new BadRequest("output is for a prompt that starts its own turn, not whileRunning: steer");
+    if (lineage && params.actor) {
+      const sender = shared?.members.find(entry => entry.id === params.actor);
+      if (String(params.actor).startsWith("member:") && !sender) throw new BadRequest("Unknown shared agent member");
+      if (sender) params.from = sender;
+    }
     const fingerprint = acceptedFingerprint ?? (
       params.files === undefined
         ? canonical({ method: request.method, params })
@@ -453,7 +480,7 @@ export async function admitImpl(this: AgentRuntime,
     const actor = params.actor ?? (params.from as { id?: string } | undefined)?.id;
     const checkMember = async () => {
       if (!notice && typeof actor === "string" && actor.startsWith("member:"))
-        await withSql(this.env, sql => requireActiveMember(sql, conf.tenantId, conf.id, actor));
+        await withSql(this.env, sql => requireActiveMember(sql, conf.tenantId, lineage?.root ?? conf.id, actor));
     };
     await checkMember();
     if (params.endUser !== undefined) {
@@ -539,10 +566,11 @@ export async function admitImpl(this: AgentRuntime,
       throw error;
     }
     if (request.method === "prompt" && !rawSteer && !notice && !old?.accepted)
-      await this.closeHumanInputs("superseded");
+      await this.closeHumanInputs("superseded", (params.from as { id?: string } | undefined)?.id ?? params.actor as string | undefined, !!shared);
     const record: RequestRecord = old && !old.noticeQueued ? old : {
       id,
       method: String(request.method),
+      sharedAgent: shared,
       billing: {
         tenantId: conf.tenantId,
         agentId: conf.id,
@@ -563,6 +591,18 @@ export async function admitImpl(this: AgentRuntime,
       startedAt: old?.startedAt ?? Date.now(),
     };
     delete record.noticeQueued;
+    // Keep the suspended call live. Input settlement retries admission, without a polling alarm.
+    if (request.method === "prompt" && shared) {
+      const inputs = await (await this.harness.pi()).snapshot(HumanInputs, BACKGROUND_CONTEXT);
+      if (Object.values(inputs?.requests ?? {}).some(input => input.answer === undefined)) {
+        record.state = "queued";
+        record.heldForInput = true;
+        if (preparing) { record.admitted = true; await this.promptPreparations.finish(id); }
+        await this.ctx.storage.put(reqKey(id), record);
+        return record;
+      }
+    }
+    delete record.heldForInput;
     const prompt = files
       ? attachmentInput(text, files)
       : params.images

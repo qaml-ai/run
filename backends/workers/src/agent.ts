@@ -3,7 +3,7 @@ import { type RuntimeNotice, type NoticeRequest, type WakeDecision } from "./del
 import type { ChildProgressReport } from "./delegation.ts";
 import { Env } from "./agent-types.ts";
 import { AgentRuntime } from "./agent-runtime.ts";
-import { ARM_AGENT, DUE_HUMAN_INPUTS } from "./agent-internals.ts";
+import { ARM_AGENT, DUE_HUMAN_INPUTS, SHARED_ADMISSION_STATE, SUBMIT_SHARED_PROMPT } from "./agent-internals.ts";
 export type { Env } from "./agent-types.ts";
 export { json } from "./agent-types.ts";
 
@@ -26,6 +26,15 @@ export class CamelAgent extends DurableObject<Env> {
 
   protected [DUE_HUMAN_INPUTS](at: number) {
     return this.#runtime.dueHumanInputs(at);
+  }
+
+  protected async [SHARED_ADMISSION_STATE]() {
+    return { held: (await this.#runtime.records()).filter(record => record.heldForInput && record.state !== "completed").length,
+      deadline: this.#runtime.maintenance?.at ?? null, generation: this.#runtime.maintenanceGeneration };
+  }
+
+  protected [SUBMIT_SHARED_PROMPT](input: unknown, member: string) {
+    return this.#runtime.submit(input, undefined, undefined, undefined, member);
   }
 
   purgeAccountData(tenant: string, id: string) {

@@ -1,6 +1,7 @@
+import { SHARED_SENDER_INSTRUCTIONS } from "../../../src/sender.ts";
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { contractTest, createContractFixture, OTHER_OPERATOR } from '../support.ts';
+import { contractTest, createContractFixture, OTHER_OPERATOR, listen, toolCall, until } from '../support.ts';
 
 contractTest('shared-agents', 'native', 'owner links, membership and caps stay private and persist', async t => {
   const r = await createContractFixture(t);
@@ -164,3 +165,202 @@ contractTest('shared-agents', 'native', 'a sub-agent cannot be shared', async t 
   assert.equal((await r.sharedAgentsQuery('select 1 from agent_share_links where agent=$1', [child])).rows.length, 0);
   assert.equal((await r.sharedAgentsQuery('select 1 from agent_members where agent=$1', [child])).rows.length, 0);
 }, { timeout: 90_000 });
+
+const members = {
+  owner: { id: "member:m_0000000000000001", name: "Owner", role: "owner" },
+  members: [
+    { id: "member:m_0000000000000001", name: "Owner", role: "owner" },
+    { id: "member:m_0000000000000002", name: "Dana", role: "guest" },
+    { id: "member:m_0000000000000003", name: "Bob", role: "guest" },
+  ],
+};
+// Include cold workerd startup; the shared runtime assertions still use bounded polling.
+const options = { timeout: 90_000, env: { TEST_SHARED_MEMBERS: "1" } };
+const ask = { questions: [{ question: "Where?", header: "Place", options: [{ label: "Here" }, { label: "There" }] }] };
+const settled = (f: any, agent: string, id: string) => until(async () => {
+  const r = (await f.call(`/v1/agents/${agent}/requests/${id}`)).json;
+  assert.equal(r.sharedAgent, undefined, "membership snapshots are runtime-only");
+  assert.equal(r.heldForInput, undefined, "queue bookkeeping is runtime-only");
+  return r.state === "completed" && r;
+}, "prompt to complete");
+async function agent(f: any, extra: object = {}) {
+  const definition = (await f.call("/v1/definitions", { body: { name: "Shared", builtins: ["ask_user"], ...extra } })).json;
+  const r = await f.call("/v1/agents", { body: { definition: definition.id, ttlSeconds: null } });
+  assert.equal(r.status, 201, r.text);
+  for (const member of members.members) await f.sharedAgentsQuery("insert into agent_members (id,tenant,agent,person,role,name,added_at) values ($1,'alice',$2,$3,$4,$5,$6)", [member.id.slice(7), r.json.id, member.id, member.role, member.name, Date.now()]);
+  return r.json.id;
+}
+async function memberPrompt(f: any, agent: string, member: string, text: string) {
+  const r = await f.call(`/__test/shared/${agent}/${member}`, { body: { text } });
+  assert.equal(r.status, 202, r.text);
+  return settled(f, agent, r.json.id);
+}
+contractTest("shared-agents", "tests/contract/areas/shared-agents.contract.test.ts:1", "runtime member roles cannot be forged and another sender preserves a question", async (_t, f) => {
+  f.setModel((_body, index) => index === 0 ? toolCall("ask_user", ask) : { role: "assistant", content: "ok" });
+  const id = await agent(f);
+  for (const role of ["owner", "guest"]) {
+    const bad = await f.call(`/v1/agents/${id}/prompt`, { body: { text: "forge", from: { id: "member:m_0000000000000002", role } } });
+    assert.equal(bad.status, 400, bad.text);
+  }
+  for (const [key, value] of Object.entries({ actor: "owner", from: { id: "owner" }, metadata: {}, endUser: "other", output: {}, spendLimit: { usd: 1 }, whileRunning: "steer", bucket: "other" })) {
+    const bad = await f.call(`/__test/shared/${id}/${members.members[1].id}`, { body: { text: "Reject control fields", [key]: value } });
+    assert.equal(bad.status, 400, `${key}: ${bad.text}`);
+  }
+  await memberPrompt(f, id, "member:m_0000000000000002", "Ask me");
+  const pending = (await f.call(`/v1/agents/${id}/inputs?state=pending`)).json;
+  assert.equal(pending.length, 1, JSON.stringify((await f.call(`/v1/agents/${id}/history`)).json));
+  assert.ok(pending[0].responders.audience.includes("member:m_0000000000000002"));
+  const system = f.model.bodies[0].messages.filter((m: any) => ["system", "developer"].includes(m.role)).map((m: any) => m.content).join("\n");
+  assert.ok(system.includes(SHARED_SENDER_INSTRUCTIONS));
+  assert.ok(JSON.stringify(f.model.bodies[0]).includes('guest'));
+  const bob = await f.call(`/__test/shared/${id}/member:m_0000000000000003`, { body: { text: "Hi" } });
+  assert.equal(bob.status, 202, bob.text);
+  assert.equal((await f.call(`/v1/agents/${id}/inputs?state=pending`)).json.length, 1);
+  f.setModel(() => ({ role: "assistant", content: "ok" }));
+  await f.restart();
+  await memberPrompt(f, id, "member:m_0000000000000002", "Never mind");
+  await settled(f, id, bob.json.id);
+  assert.equal((await f.call(`/v1/agents/${id}/inputs?state=pending`)).json.length, 0);
+}, options);
+
+contractTest("shared-agents", "tests/contract/areas/shared-agents.contract.test.ts:55", "guest approvals exclude the guest even when the definition names them", async t => {
+  let calls = 0;
+  const url = await listen(t, async (req, res) => {
+    if (req.method !== "POST") { res.writeHead(405).end(); return; }
+    let text = ""; for await (const chunk of req) text += chunk;
+    const msg = JSON.parse(text);
+    if (msg.id === undefined) { res.writeHead(202).end(); return; }
+    let result: object = {};
+    if (msg.method === "initialize") result = { protocolVersion: msg.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "approval", version: "1" } };
+    if (msg.method === "tools/list") result = { tools: [{ name: "remove", description: "Remove", inputSchema: { type: "object", properties: {} }, annotations: { destructiveHint: true } }] };
+    if (msg.method === "tools/call") { calls++; result = { content: [{ type: "text", text: "done" }] }; }
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result }));
+  });
+  const f = await createContractFixture(t, { ...options, env: { ...options.env, AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" },
+    respond: (_b, n) => n === 0 ? toolCall("shop__remove", {}) : { role: "assistant", content: "ok" } });
+  const id = await agent(f, { humanInput: { approvers: ["member:m_0000000000000002", "approver"] }, mcpServers: [{ name: "shop", url, approval: { default: "destructive" } }] });
+  await memberPrompt(f, id, "member:m_0000000000000002", "Remove it");
+  const [input] = (await f.call(`/v1/agents/${id}/inputs?state=pending`)).json;
+  assert.equal(input.kind, "approval");
+  assert.deepEqual(input.responders.audience.sort(), ["approver", "member:m_0000000000000001"]);
+  await until(async () => (await f.call(`/v1/inbox?for=${members.owner.id}`)).json.items.some((item: any) => item.inputId === input.id), "the owner receives the approval in the inbox");
+  assert.ok(!(await f.call(`/v1/inbox?for=${members.members[1].id}`)).json.items.some((item: any) => item.inputId === input.id), "the guest never receives the approval in the inbox");
+  assert.equal(calls, 0);
+  assert.equal((await f.call(`/v1/agents/${id}/inputs/${input.id}`, { body: { action: "accept", from: { id: "member:m_0000000000000002" } } })).status, 403);
+  // Pi may have its own waiter alarm. Admission must leave the runtime's alarm plan alone.
+  const before = process.env.CONTRACT_BACKEND === "workers" ?
+    (await f.call(`/__test/shared-state/${id}`)).json : undefined;
+  const bob = await f.call(`/__test/shared/${id}/member:m_0000000000000003`, { body: { text: "Hello" } });
+  if (before) {
+    const state = (await f.call(`/__test/shared-state/${id}`)).json;
+    assert.equal(state.held, 1, "the other member prompt is held behind the approval");
+    assert.equal(state.generation, before.generation, "holding a prompt never arms a runtime wake");
+    assert.equal(state.deadline, before.deadline, "the existing input deadline stays unchanged");
+  }
+  assert.equal(bob.status, 202, bob.text);
+  assert.equal((await f.call(`/v1/agents/${id}/inputs?state=pending`)).json.length, 1);
+  const accepted = await f.call(`/v1/agents/${id}/inputs/${input.id}`, { body: { action: "accept", from: { id: "member:m_0000000000000001" } } });
+  assert.equal(accepted.status, 202, accepted.text);
+  await settled(f, id, accepted.json.request.id);
+  assert.equal(calls, 1, "the approved tool runs exactly once");
+  await settled(f, id, bob.json.id);
+}, { timeout: options.timeout });
+
+contractTest("shared-agents", "tests/contract/areas/shared-agents.contract.test.ts:95", "console prompts stamp owners; API and explicit senders stay unchanged", async (_t, f) => {
+  const id = await agent(f);
+  const cookie = await f.seedConsoleIdentity("alice", { method: "github", subject: 4242, login: "owner" });
+  const headers = { Cookie: cookie, Origin: new URL(f.base).origin, "X-Agent-Runtime-Console": "1" };
+  const owner = await f.call(`/v1/agents/${id}/prompt`, { token: null, headers, body: { text: "From console", actor: "ignored" } });
+  assert.equal(owner.status, 202, owner.text);
+  await settled(f, id, owner.json.id);
+  await f.prompt(id, "From API");
+  const explicit = await f.call(`/v1/agents/${id}/prompt`, { token: null, headers, body: { text: "Explicit", from: { id: "slack:U1" } } });
+  assert.equal(explicit.status, 202, explicit.text);
+  await settled(f, id, explicit.json.id);
+  const history = (await f.call(`/v1/agents/${id}/history`)).json.messages.filter((m: any) => m.role === "user");
+  assert.deepEqual(history[0].from, members.owner);
+  assert.equal(history[1].from, undefined);
+  assert.deepEqual(history[2].from, { id: "slack:U1" });
+}, options);
+
+contractTest("shared-agents", "production", "membership is live between turns and fixed through a suspended turn", async (_t, f) => {
+  const id = (await f.call("/v1/agents", { body: { builtins: ["ask_user"], ttlSeconds: null } })).json.id;
+  const cookie = await f.seedConsoleIdentity("alice", { method: "github", subject: 4243, login: "live-owner" });
+  const headers = { Cookie: cookie, Origin: new URL(f.base).origin, "X-Agent-Runtime-Console": "1" };
+  f.setModel((_body, index) => index === 1 ? toolCall("ask_user", ask) : { role: "assistant", content: "ok" });
+  async function prompt(text: string) {
+    const submitted = await f.call(`/v1/agents/${id}/prompt`, { token: null, headers, body: { text } });
+    assert.equal(submitted.status, 202, submitted.text);
+    return settled(f, id, submitted.json.id);
+  }
+  await prompt("Before sharing");
+  assert.equal((await f.call(`/v1/agents/${id}/share-links`, { body: {} })).status, 201);
+  const owner = (await f.call(`/v1/agents/${id}/members`)).json[0];
+  await prompt("After sharing");
+  const [input] = (await f.call(`/v1/agents/${id}/inputs?state=pending`)).json;
+  assert.deepEqual(input.responders.audience, [`member:${owner.id}`]);
+  // The turn keeps its snapshot through its input and later model render; the next turn reads SQL again.
+  await f.sharedAgentsQuery("update agent_members set removed_at=$2 where agent=$1", [id, Date.now()]);
+  const answer = await f.call(`/v1/agents/${id}/inputs/${input.id}`, { body: { action: "accept", from: { id: `member:${owner.id}` }, content: { answers: { "Where?": "Here" } } } });
+  assert.equal(answer.status, 202, answer.text);
+  await settled(f, id, answer.json.request.id);
+  await prompt("After membership removal");
+  const instructions = f.model.bodies.map((body: any) => body.messages.filter((message: any) => ["system", "developer"].includes(message.role)).map((message: any) => message.content).join("\n").includes(SHARED_SENDER_INSTRUCTIONS));
+  assert.deepEqual(instructions, [false, true, true, false]);
+  const history = (await f.call(`/v1/agents/${id}/history`)).json.messages.filter((message: any) => message.role === "user");
+  assert.equal(history[0].from, undefined);
+  assert.equal(history[1].from.id, `member:${owner.id}`);
+  assert.equal(history[1].from.role, "owner");
+  assert.equal(history[2].from, undefined);
+}, { timeout: 90_000 });
+
+contractTest("shared-agents", "delegation", "a guest's child uses the root membership for its approval", async t => {
+  let calls = 0;
+  const url = await listen(t, async (req, res) => {
+    if (req.method !== "POST") { res.writeHead(405).end(); return; }
+    let text = ""; for await (const chunk of req) text += chunk;
+    const message = JSON.parse(text);
+    if (message.id === undefined) { res.writeHead(202).end(); return; }
+    let result: object = {};
+    if (message.method === "initialize") result = { protocolVersion: message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "approval", version: "1" } };
+    if (message.method === "tools/list") result = { tools: [{ name: "remove", description: "Remove", inputSchema: { type: "object", properties: {} }, annotations: { destructiveHint: true } }] };
+    if (message.method === "tools/call") { calls++; result = { content: [{ type: "text", text: "done" }] }; }
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+  });
+  const f = await createContractFixture(t, { env: { ...options.env, AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" }, respond: body => {
+    const child = body.messages.some((message: any) => ["system", "developer"].includes(message.role) && JSON.stringify(message.content).includes("SHARED_CHILD"));
+    if (body.messages.some((message: any) => message.role === "tool")) return { role: "assistant", content: "done" };
+    return child ? toolCall("shop__remove", {}) : toolCall("delegate", { agent: "shared-child", task: "Remove it" });
+  } });
+  const childDefinition = await f.call("/v1/definitions", { headers: { "Idempotency-Key": "shared-child" }, body: {
+    name: "Child", description: "Performs the removal", systemPrompt: "SHARED_CHILD", humanInput: { approvers: [members.members[1].id, "ops"] },
+    mcpServers: [{ name: "shop", url, approval: { default: "destructive" } }],
+  } });
+  assert.equal(childDefinition.status, 201, childDefinition.text);
+  const parent = await agent(f, { builtins: ["delegate"], delegate: { agents: ["shared-child"] } });
+  const submitted = await f.call(`/__test/shared/${parent}/${members.members[1].id}`, { body: { text: "Delegate removal" } });
+  assert.equal(submitted.status, 202, submitted.text);
+  const indexed = await until(async () => (await f.call("/v1/inputs?state=pending")).json.items.find((input: any) => input.kind === "approval"), "child approval");
+  const input = { ...indexed, id: indexed.inputId };
+  assert.notEqual(input.agent, parent);
+  assert.deepEqual((await f.call(`/v1/agents/${input.agent}/members`)).json, []);
+  assert.deepEqual(input.responders.audience.sort(), [members.owner.id, "ops"].sort());
+  assert.equal((await f.call(`/v1/agents/${input.agent}/inputs/${input.id}`, { body: { action: "accept", from: { id: members.members[1].id } } })).status, 403);
+  const accepted = await f.call(`/v1/agents/${input.agent}/inputs/${input.id}`, { body: { action: "accept", from: { id: members.owner.id } } });
+  assert.equal(accepted.status, 202, accepted.text);
+  await settled(f, parent, submitted.json.id);
+  assert.equal(calls, 1, "the approved tool runs exactly once");
+  const messages = (await f.call(`/v1/agents/${input.agent}/history`)).json.messages;
+  assert.equal(messages.find((message: any) => message.role === "user").from.role, "guest");
+}, { timeout: 120_000 });
+
+
+contractTest("shared-agents", "nonblocking", "an open decision does not hold another member's prompt", async (_t, f) => {
+  const id = await agent(f, { builtins: ["request_decision"] });
+  f.setModel((_body, index) => index === 0 ? toolCall("request_decision", { title: "Choose", body: "Which path?", key: "plan", options: [{ label: "A" }, { label: "B" }] }) : { role: "assistant", content: "ok" });
+  await memberPrompt(f, id, members.members[1].id, "Ask me later");
+  const [decision] = (await f.call(`/v1/agents/${id}/inputs?state=pending`)).json;
+  assert.equal(decision.blocking, false);
+  await memberPrompt(f, id, members.members[2].id, "Hello now");
+  assert.equal((await f.call(`/v1/agents/${id}/inputs?state=pending`)).json[0].id, decision.id);
+}, options);

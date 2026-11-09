@@ -631,6 +631,10 @@ const worker = {
         const input = await body(request, 6 * 1024 * 1024) as Record<string, unknown>;
         request = new Request(request.url, { method: 'POST', headers: request.headers, body: JSON.stringify({ ...input, requestId: request.headers.get('idempotency-key') }) });
       }
+      const trustedHeaders = new Headers(request.headers);
+      trustedHeaders.delete("x-camel-shared-owner");
+      if (auth?.kind === "console" && tail === "/prompt") trustedHeaders.set("x-camel-shared-owner", "1");
+      request = new Request(request, { headers: trustedHeaders });
       const response = tail === "/events" && wantsEventStream(request)
         ? await bridgeEvents(request, request => forward(request, env, entry!.id, tail, ctx), bridgeOptions(env))
         : tail === "/events"

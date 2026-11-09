@@ -19,7 +19,7 @@ export async function abortRequestsImpl(this: AgentRuntime,
       await this.ctx.storage.delete([...held.keys()]);
     }
     const pending = await this.harness.pending();
-    const deferred = (await this.records()).filter(record => record.state !== 'completed' && record.configurationWait !== undefined);
+    const deferred = (await this.records()).filter(record => record.state !== 'completed' && (record.configurationWait !== undefined || record.heldForInput));
     const cancelled = queued === 'keep' ? [] : [...new Set([
       ...pending.filter(item => item.status === 'queued').map(item => item.operationId),
       ...deferred.map(record => record.id),
@@ -239,6 +239,7 @@ export async function cancelHumanInputsImpl(this: AgentRuntime,
       const doc = await tx.doc(HumanInputs);
       for (const { key } of cancelled) doc.requests[key] = cancelledHumanInput(doc.requests[key]);
     }, BACKGROUND_CONTEXT);
+    this.kickInputPrompts();
     for (const { key, owner } of cancelled)
       await this.emit({ type: "event", requestId: owner, event: { type: "input_resolved", id: key, state: "cancelled", by: { system: "aborted" } } });
   }

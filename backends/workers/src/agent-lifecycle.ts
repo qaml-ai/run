@@ -104,7 +104,7 @@ export async function armImpl(this: AgentRuntime,
     const pendingRuns = records.filter(record => record.accepted && record.state !== "completed");
     const children = await this.delegation.children();
     const childKeys = new Set(children.map(child => child.key));
-    const recovering = records.some(record => record.state !== "completed" && !record.accepted) ||
+    const recovering = records.some(record => record.state !== "completed" && !record.accepted && !record.heldForInput) ||
       this.cancellations.size > 0 ||
       (await Promise.all(pendingRuns.map(record => this.ctx.storage.get(`cancelled-request:${record.id}`)))).some(Boolean) ||
       !!await this.ctx.storage.get("resume-kept-queue") ||
@@ -209,6 +209,8 @@ export async function restorePendingImpl(this: AgentRuntime) {
       await timed(this, "restageInputMirrors", () => restageInputMirrors(this));
     this.ctx.waitUntil(this.flushTerminalEvents());
     this.batchQueue.kick();
+    // Recover a settlement whose admission kick was interrupted by an eviction.
+    this.kickInputPrompts();
     await timed(this, "arm", () => this.arm());
     // A cold-start watchdog still performs the complete recovery pass. Its
     // waiters and maintenance schedule have only just been restored.
@@ -287,7 +289,7 @@ export async function wakeImpl(this: AgentRuntime) {
     for (const record of await this.records()) {
       if (record.accepted && record.state !== "completed")
         this.track(record.id);
-      if (record.method === "prompt" && !record.accepted && !record.noticeQueued) {
+      if (record.method === "prompt" && !record.accepted && !record.noticeQueued && !record.heldForInput) {
         try {
           await this.submit({
             id: record.id,

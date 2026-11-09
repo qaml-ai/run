@@ -82,3 +82,14 @@ test('Workers ask_user has exactly the Node schema and conditional description',
     assert.equal(worker.description, node.description);
   }
 });
+
+
+test("a guest approval fixes the same owner audience for answers and the inbox", () => {
+  const owner = { id: "member:owner", role: "owner" as const };
+  const guest = { id: "member:guest", role: "guest" as const };
+  const approval = bindHumanInput({ question: "Remove?", kind: "approval", createdAt: 1000 }, "run", guest.id,
+    { approvers: [guest.id, "ops"] }, null, guest, { owner, members: [owner, guest] });
+  assert.deepEqual(approval.responders.audience, [owner.id, "ops"]);
+  assert.deepEqual(approval.inboxResponders, [owner.id, "ops"]);
+  assert.equal(approval.fixedResponders, true);
+});

@@ -258,9 +258,10 @@ export function createHarness(this: AgentRuntime): PiHarness {
         registry.install(
           runtimePromptSections(
             async () => {
-              const config = (await this.config()).config;
+              const current = await this.config();
+              const config = current.config;
               const run = await this.currentRun();
-              return { ...config, output: "params" in run ? run.params?.output : undefined } as never;
+              return { ...config, sharedAgent: "sharedAgent" in run ? run.sharedAgent : undefined, output: "params" in run ? run.params?.output : undefined } as never;
             },
           ),
         );

@@ -662,7 +662,7 @@ export interface FileLink { url: string; method: "GET" | "PUT"; path: string; ex
 /** A link's options: `expiresIn` seconds (default 900, at most 86400); for PUT, the largest upload and its content type. */
 export interface LinkOptions { method?: "GET" | "PUT"; expiresIn?: number; maxBytes?: number; contentType?: string }
 /** A message as the runtime records it: a user message also names its sender (if given), the request that sent it, and the application's `metadata`. */
-export type RecordedMessage = Message & { from?: Sender; requestId?: string; metadata?: Record<string, string> };
+export type RecordedMessage = Message & { from?: Sender & { role?: "owner" | "guest" }; requestId?: string; metadata?: Record<string, string> };
 export interface AgentHistory { messages: RecordedMessage[] }
 /** A page of history: oldest first, whole turns unless a size bound splits them, each message at its index in the agent's history. `next` is the older page's `before` (null at the start); `nextAfter` (with `after`) is the newer page's `after`, and `truncated` says the history does not reach back to the `after` asked for. */
 export interface HistoryPage { entries: { index: number; message: RecordedMessage }[]; next: number | null; total: number; split?: true; nextAfter?: number; truncated?: true }

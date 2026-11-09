@@ -1,3 +1,4 @@
+import { SharedAgents } from "./shared-agents.ts";
 import { withOpenRouterDetails } from "./openrouter-model.ts";
 import { modelReference } from "./virtual-models.ts";
 import { ComputerTransfers } from "./computers/transfers.ts";
@@ -134,6 +135,7 @@ const HTTP_DRAIN_MS = 10_000;
  * `nodeDeps` makes the real ones from a node's configuration.
  */
 export type NodeDeps = {
+  sharedAgents?: import("./shared-agents.ts").SharedAgentDirectory;
   tenants: Tenants;
   secrets: RuntimeSecrets;
   /** The control-plane pool; the node ends it when it closes. */
@@ -214,7 +216,7 @@ export async function nodeDeps(config: NodeConfig): Promise<NodeDeps> {
   const db = await databaseFromEnvironment(env);
   const address = await taskAddress(env);
   return {
-    tenants, secrets, db, listen: handlers => listenFromEnvironment(handlers, env), sandbox, address, codeSandbox, readCgroupMemory: cgroupMemory,
+    tenants, secrets, db, sharedAgents: new SharedAgents(db), listen: handlers => listenFromEnvironment(handlers, env), sandbox, address, codeSandbox, readCgroupMemory: cgroupMemory,
     supersession: () => supersession(env),
   };
 }
@@ -224,6 +226,7 @@ export type RuntimeNode = {
   /** The URL peers reach this node at, which it heartbeats and owns actors under. */
   node: string;
   app: Hono<Env>;
+  clients: ClientSessions;
   /** The HTTP server around `app`, listening once `start` resolves. */
   server: Server;
   /** Listen on the configured host and port. */
@@ -851,6 +854,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     return entry?.baseUrl ? { baseUrl: entry.baseUrl } : entry?.apiKey;
   }, endUsers);
   const clients = new ClientSessions(supervisor, {
+    sharedAgents: deps.sharedAgents,
     runEvents: tenant => subscribers.runs(tenant),
     // A self-hosted runtime configured by its environment takes keys there too.
     ...(config.selfHostedTenant ? { modelKeyHint: "On this self-hosted runtime, AGENT_TENANT_API_KEYS in its environment sets keys too ({\"anthropic\": \"sk-ant-...\"}; restart it after)." } : {}),
@@ -1755,7 +1759,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   };
 
   return {
-    node, app, server, start,
+    node, app, clients, server, start,
     reloadTenants: () => reloadTenants(true),
     run: work => work(),
     drain: (signal = "drain") => leave(signal, config.drainMs),

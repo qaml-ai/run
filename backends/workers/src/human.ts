@@ -1,4 +1,7 @@
 import { askUserDefinition } from "./inbox-definitions.ts";
+import { inputAudience } from "../../../src/shared-agents.ts";
+import type { Sender } from "./sender.ts";
+import type { SharedAgent } from "../../../src/shared-agents.ts";
 import { defineDoc, defineTool, hook, ToolTask, type Extension, type Harness, type ToolExecutionApi, type ToolRegistration, type ToolTaskInput } from "@earendil-works/pi-durable";
 import { obj, str } from "@earendil-works/pi-schema";
 import type { Context } from "@earendil-works/chord";
@@ -20,6 +23,7 @@ export type HumanInput = {
   state?: "pending" | "answered" | "declined" | "cancelled" | "expired" | "superseded";
   answerDetail?: Omit<Answer, "content"> & { content?: any };
   responders?: { audience?: string[] };
+  fixedResponders?: true;
   policyBound?: boolean;
   requestId?: string;
   conversationId?: number;
@@ -112,9 +116,11 @@ export function humanInputView(id: string, item: HumanInput, agent: string, requ
 }
 
 /** Bind policy once, before publishing the input or accepting an answer. */
-export function bindHumanInput(item: HumanInput, requestId: string, actor: string | undefined, settings: HumanInputSettings | undefined, agentExpiresAt: number | null): HumanInput {
+export function bindHumanInput(item: HumanInput, requestId: string, actor: string | undefined, settings: HumanInputSettings | undefined, agentExpiresAt: number | null, from?: Sender, shared?: SharedAgent): HumanInput {
   if (item.policyBound) return item;
-  return { ...item, requestId, inboxResponders: [...new Set([...(actor ? [actor] : []), ...settings?.approvers ?? []])], responders: actor ? { audience: [actor] } : {},
+  const audience = shared || from?.role === "guest" ? inputAudience(item.kind ?? "question", actor, from, shared, settings?.approvers) : undefined;
+  return { ...item, requestId, inboxResponders: audience ?? [...new Set([...(actor ? [actor] : []), ...settings?.approvers ?? []])],
+    ...(audience ? { fixedResponders: true as const } : {}), responders: audience ? { audience } : actor ? { audience: [actor] } : {},
     expiresAt: expiresAt(settings, agentExpiresAt, item.createdAt), policyBound: true };
 }
 
