@@ -21,7 +21,7 @@ test("default candidates preserve virtual names and reject misspelled operator f
 test("configuration validates prompt, human input and exclusive lifetimes", () => {
   assert.throws(() => configuration({systemPrompt:" "},"test/echo"), /1–32000/);
   assert.throws(() => configuration({systemPromptAppend:"x".repeat(32001)},"test/echo"), /32000/);
-  assert.throws(() => configuration({humanInput:{onExpire:"resume"}},"test/echo"), /humanInput is \{ expiresInSeconds\?, approvers\? \}/, "onExpire is gone");
+  assert.throws(() => configuration({humanInput:{onExpire:"resume"}},"test/echo"), /humanInput is \{ expiresInSeconds\?, approvers\?, unattended\?: "decline" \}/, "onExpire is gone");
   assert.throws(() => configuration({humanInput:{expiresInSeconds:59}},"test/echo"), /expiresInSeconds/);
   assert.throws(() => configuration({ttlSeconds:3600,idleTtlSeconds:600},"test/echo"), /not both/);
   const idle = configuration({idleTtlSeconds:600,humanInput:{expiresInSeconds:600}},"test/echo");
