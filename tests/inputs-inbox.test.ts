@@ -152,6 +152,16 @@ test("an item the runtime closes itself (expired, superseded) changes too: a new
   }
 });
 
+test('settleAll compares the supplied version under its row lock', async () => {
+  const { db } = await testDatabase();
+  const inputs = new Inputs({ db });
+  const [input] = await inputs.create({ agent: 'cas', tenant: 'alice', requestId: 'r', toolCallId: 't', responders: {}, expiresAt: Date.now() + 60000, tool: 'ask_user', argumentsHash: 'h' }, [{ kind: 'question', message: 'Q', detail: { questions: [] } }]);
+  await db.query('update agent_inputs set version=version+1 where id=$1', [input.id]);
+  const answer = { action: 'accept' as const, by: { via: 'api' as const }, at: Date.now() };
+  assert.equal(await inputs.settleAll([{ id: input.id, version: 1, answer }]), undefined);
+  assert.equal((await inputs.get(input.id))!.state, 'pending');
+  assert.equal((await inputs.settleAll([{ id: input.id, version: 2, answer }]))!.length, 1);
+});
 
 test("a shared approval keeps its fixed audience in the inbox index", async () => {
   const { db } = await testDatabase();

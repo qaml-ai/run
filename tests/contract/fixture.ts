@@ -72,6 +72,10 @@ export interface ContractFixture {
   drain(): Promise<void>;
   waitForAgentIdle(agent: string): Promise<void>;
   failAgentLoad(agent: string): Promise<void>;
+  failInboxAgent(agent: string): Promise<void>;
+  advanceInboxVersion(agent: string): Promise<void>;
+  ageInboxReceipt(requestId: string): Promise<void>;
+  pruneInboxReceipts(): Promise<number>;
   agentRecovery(agent: string): Promise<{ failures: number; retryAt: number }>;
   setAgentRecovery(agent: string, state: { failures?: number; retryAt?: number }): Promise<void>;
   failNextAdmissionWrite(agent: string): Promise<void>;

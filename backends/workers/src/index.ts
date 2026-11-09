@@ -1,3 +1,4 @@
+import { inboxAnswers, inboxReceipt, inboxAgentFailure, sweepInboxReceipts, type InboxOutcome } from "../../../shared/inbox-answers.ts";
 import { vaultRoutes } from "./vault.ts";
 import { workerDreaming } from "./dreaming.ts";
 import { handleHook, hookPath } from "../../../src/core/trigger-ingress.ts";
@@ -7,7 +8,7 @@ import { pruneScheduleRuns } from '../../../src/core/schedule-runs.ts';
 import { SharedAgents, ShareLinkInput, MemberInput } from '../../../src/shared-agents.ts';
 import { database } from './postgres.ts';
 import { inboxQuery, readInbox, InboxQueryError } from '../../../shared/inbox.ts';
-import { withSql as inboxSql } from './postgres.ts';
+import { withSql as inboxSql, database as inboxDatabase } from './postgres.ts';
 import { sweepInputMirrors } from "./input-mirror.ts";
 import { HttpError as CoreHttpError } from "../../../src/core/http-error.ts";
 import { serveToolFile } from './tool-files.ts';
@@ -368,6 +369,27 @@ const worker = {
         if (path === "/v1/apply" && request.method === "POST") return apply(request, env, auth);
         const control = await controlRoutes(request, env, auth);
         if (control) return control;
+        if (path === "/v1/inbox/answers" && request.method === "POST") {
+          const input = inboxAnswers(await body(request, 1024 * 1024));
+          const sql = inboxDatabase(env);
+          return json(await inboxReceipt(sql, auth.tenantId, input, async () => {
+            const groups = new Map<string, typeof input.answers>();
+            for (const answer of input.answers) groups.set(answer.agent, [...groups.get(answer.agent) ?? [], answer]);
+            const outcomes: (InboxOutcome & { agent: string })[] = [];
+            for (const [agent, answers] of groups) {
+              try {
+                const target = await new Directory(env, auth.tenantId).get(agent);
+                if (!target || target.deleted || (target.expiresAt !== null && target.expiresAt <= Date.now())) throw new ApiError(404, "Unknown agent");
+                if (!target.initialized) throw new ApiError(503, "Agent initialization is pending");
+                const response = await forward(new Request(request.url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answers }) }), env, target.id, "/inbox-answers", ctx);
+                if (!response.ok && ![403, 404].includes(response.status)) throw new ApiError(response.status, "Inbox authority unavailable");
+                const result = response.ok ? await response.json() as { outcomes: InboxOutcome[] } : { outcomes: answers.map(a => inboxAgentFailure(a.id, { status: response.status })) };
+                outcomes.push(...result.outcomes.map(outcome => ({ ...outcome, agent })));
+              } catch (error) { outcomes.push(...answers.map(answer => ({ ...inboxAgentFailure(answer.id, error), agent }))); }
+            }
+            return input.answers.map(a => outcomes.find(o => o.agent === a.agent && o.id === a.id)!);
+          }));
+        }
         if ((path === "/v1/inputs" || path === "/v1/inbox") && request.method === "GET") {
           try {
             const query = inboxQuery(url.searchParams);
@@ -712,7 +734,7 @@ const worker = {
     catch(error) { failure(env,"trigger_scan_failed",error); }
     try {
       await withSql(env,sql=>pruneScheduleRuns(sql)).catch(error=>failure(env,"schedule_retention_failed",error));
-      if (_controller.cron === "* * * * *") { await sweepInputMirrors(env); await workerDreaming(env).scan(); return; }
+      if (_controller.cron === "* * * * *") { await sweepInputMirrors(env); await inboxSql(env, sql => sweepInboxReceipts(sql)); await workerDreaming(env).scan(); return; }
       await maintenance(env);
       await moneyMaintenance(env);
       await publishScheduleEmails(env);

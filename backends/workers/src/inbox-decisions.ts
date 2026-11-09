@@ -29,11 +29,11 @@ export async function answerDecisions(agent: AgentRuntime, answers: { id: string
     const input = await store.get(entry.id);
     if (!input || input.agent !== conf.id || input.tenant !== conf.tenantId || input.blocking !== false) throw new HttpError(404, 'Unknown decision');
     const by = { via, ...(entry.body.actor !== undefined ? { actor: actorInput(entry.body.actor) } : {}), ...(entry.body.from !== undefined ? { from: senderInput(entry.body.from) } : {}) };
-    if (!mayAnswer(input, by, conf.config.humanInput?.approvers as string[] | undefined)) throw new HttpError(403, 'This person may not answer this input');
+    if (!mayAnswer(input, by, input.stored.fixedResponders ? [] : conf.config.humanInput?.approvers as string[] | undefined)) throw new HttpError(403, 'This person may not answer this input');
     if (input.state === 'pending' && input.expiresAt <= Date.now()) throw new HttpError(409, 'This input expired');
     checked.push({ input, answer: { ...answerInput(input, entry.body), by, at: Date.now() } });
   }
-  const settled = checked.every(c => c.input.state === 'pending') ? await store.settleAll(checked.map(c => ({ id: c.input.id, answer: c.answer }))) : undefined;
+  const settled = checked.every(c => c.input.state === 'pending') ? await store.settleAll(checked.map(c => ({ id: c.input.id, answer: c.answer, version: answers.find(entry => entry.id === c.input.id)?.body.version }))) : undefined;
   const rows = settled ?? await Promise.all(checked.map(c => store.get(c.input.id))) as InputRow[];
   if (!settled && !rows.every((row, i) => row.answer && !row.answer.by.system && row.answer.action === checked[i].answer.action && canonical(row.answer.content ?? null) === canonical(checked[i].answer.content ?? null))) throw new HttpError(409, 'An input is already settled');
   await agent.ctx.storage.put("decision-input-deadline", Date.now() + 5000);

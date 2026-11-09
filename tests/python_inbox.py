@@ -37,8 +37,8 @@ class DecisionAnswers(unittest.TestCase):
         class Client:
             def _rest(self, method, path, body, **kwargs):
                 return (method, path, body)
-        self.assertEqual(AgentRuntime.answer_inbox(Client(), {"agent": "a", "id": "local"}, EXPECTED),
-                         ("POST", "/v1/agents/a/inputs/local", EXPECTED))
+        self.assertEqual(AgentRuntime.answer_inbox(Client(), [{"agent": "a", "id": "local", "version": 1, **EXPECTED}], request_id="review"),
+                         ("POST", "/v1/inbox/answers", {"requestId": "review", "answers": [{"agent": "a", "id": "local", "version": 1, **EXPECTED}]}))
 
     def test_sync(self):
         class Client:

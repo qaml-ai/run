@@ -6497,6 +6497,11 @@
       "AnswerInput": {
         "type": "object",
         "properties": {
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Compare-and-set the observed input version"
+          },
           "action": {
             "type": "string",
             "enum": [
@@ -6589,6 +6594,138 @@
           }
         },
         "required": [
+          "answers"
+        ]
+      },
+      "InboxOutcomes": {
+        "type": "object",
+        "properties": {
+          "outcomes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "agent": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "outcome": {
+                  "type": "string",
+                  "enum": [
+                    "answered",
+                    "same",
+                    "conflict",
+                    "forbidden",
+                    "unknown",
+                    "invalid",
+                    "unavailable"
+                  ]
+                },
+                "status": {
+                  "type": "number"
+                },
+                "retryable": {
+                  "type": "boolean"
+                },
+                "state": {
+                  "type": "string"
+                },
+                "by": {},
+                "error": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "agent",
+                "id",
+                "outcome",
+                "status"
+              ]
+            }
+          }
+        },
+        "required": [
+          "outcomes"
+        ]
+      },
+      "InboxAnswers": {
+        "type": "object",
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "answers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "agent": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "id": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "action": {
+                  "type": "string",
+                  "enum": [
+                    "accept",
+                    "decline",
+                    "cancel"
+                  ]
+                },
+                "content": {},
+                "accept": {
+                  "type": "string",
+                  "enum": [
+                    "recommended"
+                  ]
+                },
+                "actor": {
+                  "type": "string"
+                },
+                "from": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "username": {
+                      "type": "string"
+                    },
+                    "thread": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "agent",
+                "id",
+                "version"
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 100
+          }
+        },
+        "required": [
+          "requestId",
           "answers"
         ]
       },
@@ -19368,6 +19505,64 @@
           },
           "409": {
             "description": "The input had already settled otherwise",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/inbox/answers": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InboxAnswers"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "One outcome per item; replayed by requestId",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxOutcomes"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "requestId was used with different answers",
             "content": {
               "application/json": {
                 "schema": {

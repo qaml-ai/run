@@ -847,15 +847,16 @@ class _RuntimeCalls:
         body = {key: value for key, value in {"ttlSeconds": ttl_seconds, "scopes": scopes, "events": events, "redact": redact, "subject": subject}.items() if value is not None}
         return self._rest("POST", f"/v1/agents/{_path(agent_id)}/browser-tokens", body, retry=False)
 
+    def answer_inbox(self, answers, *, request_id):
+        """Answer inbox row IDs at their observed versions; reuse request_id to replay outcomes."""
+        return self._rest("POST", "/v1/inbox/answers", {"answers": answers, "requestId": request_id})
+
     def inbox(self, *, for_=None, subject=None, root=None, priority=None, kind=None, cursor=None, limit=None):
         """A page of pending inputs in priority order: {items, cursor, counts}. id addresses the per-agent answer route; inputId is its compatibility alias."""
         query = urlencode({key: value for key, value in {"for": for_, "subject": subject, "root": root,
             "priority": priority, "kind": kind, "cursor": cursor, "limit": limit}.items() if value is not None})
         return self._rest("GET", "/v1/inbox" + (f"?{query}" if query else ""))
 
-    def answer_inbox(self, item, answer):
-        """Answer a page item using its public id and agent."""
-        return self._rest("POST", f"/v1/agents/{_path(item['agent'])}/inputs/{_path(item['id'])}", answer, retry=False)
 
     def tool_sources(self, agent_id, *, schemas=False, refresh=False):
         """Every source of an agent's tools (its application, file tools, built-ins, MCP servers, OpenAPI
@@ -1799,13 +1800,13 @@ class _AgentCalls:
     def outcomes(self):
         return self._http("/state")
 
-    def answer(self, input_id, *, action, content=None, actor=None, **sender):
+    def answer(self, input_id, *, action, content=None, actor=None, version=None, **sender):
         """Answer an input the agent waits on: action is accept, decline or cancel. `content`: for a question,
         {"answers": {"<question>": "<label>" | ["<label>"] | "<own words>"}}; for a form, its fields. `from` (as
         from_) or `actor` names who answers, checked against who may. Returns {input, request}: request is the
         run resuming the turn once its last input is answered."""
         who = sender.get("from_") or sender.get("from")
-        body = {"action": action, **({"content": content} if content is not None else {}), **({"actor": actor} if actor else {}), **({"from": who} if who else {})}
+        body = {"action": action, **({"version": version} if version is not None else {}), **({"content": content} if content is not None else {}), **({"actor": actor} if actor else {}), **({"from": who} if who else {})}
         return self._http(f"/inputs/{quote(input_id, safe='')}", "POST", body)
 
     def inputs(self, *, state=None):

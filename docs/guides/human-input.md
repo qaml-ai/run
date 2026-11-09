@@ -193,3 +193,26 @@ option's number or label, `approve`/`yes` or `deny`/`no`, `done`), is the answer
 anything else is a new message. See [Channels](channels.md).
 
 Set `humanInput: { unattended: "decline" }` on an agent or definition to decline approval requests immediately. The tool does not run. Questions, forms and URL steps still wait for input.
+
+### Answer the inbox in a batch
+
+`POST /v1/inbox/answers` takes `{requestId, answers}`. Use a new `requestId` for each
+submission and reuse it to retrieve the same outcomes for seven days. Reusing a
+key with different answers returns HTTP 409. Expired receipts are swept automatically. Each of the 1–100 answers
+names the inbox item's `agent`, public `id`, and observed `version`, plus `action` and optional
+`content`, `actor` or `from`. `accept: "recommended"` uses the stored recommendation
+at that version. A changed version is a conflict.
+
+The response is `{outcomes: [{id, outcome, status, retryable?, state?, by?, error?}]}` in request
+order. Each item independently returns `answered` (202), `same` (200), `conflict`
+(409), `forbidden` (403), `unknown` (404), `invalid` (400), or `unavailable` (503,
+`retryable: true`); the batch returns 200. Retry unavailable items with a new request
+key. A matching answer already recorded returns `same`, even with its old version.
+Answers are checked at the input authority, including the responder policy, and
+blocking inputs and decisions settle independently. One agent's decision answers
+arrive together in one notice. The supplied agent routes each answer to its authority;
+the inbox mirror does not authorize or settle answers.
+
+TypeScript: `runtime.answerInbox(answers, requestId)`. Python, async or sync:
+`runtime.answer_inbox(answers, request_id="review-1")`. CLI:
+`camelrun inbox-answer '{"requestId":"review-1","answers":[{"agent":"client_...","id":"inp_...","version":1,"action":"accept","content":{"answers":{"Which region?":"EU"}},"actor":"alice"}]}'`.

@@ -759,12 +759,15 @@ export const InboxPage = z.object({
   cursor: z.string().nullable(), counts: z.object({ priority: z.object({ urgent: z.number(), high: z.number(), normal: z.number(), low: z.number() }), lead: z.record(z.string(), z.number()) }),
 }).openapi("InboxPage");
 export const AnswerInput = z.object({
+  version: z.number().int().min(1).optional().openapi({ description: "Compare-and-set the observed input version" }),
   action: z.enum(["accept", "decline", "cancel"]),
   content: z.unknown().optional().openapi({ description: "question: { answers: { \"<question>\": \"<label>\" | [\"<label>\"] | \"<own words>\" } }; form: the fields, checked against its schema; approval decline: { reason? }" }),
   from: Sender.optional().openapi({ description: "Who is answering, in your app: checked against the input's audience and approvers (403)" }),
   actor: z.string().optional().openapi({ description: "Who is answering (a user id in your app), when not from.id" }),
 }).openapi("AnswerInput");
 export const AnswerInputs = z.object({ answers: z.array(AnswerInput.extend({ id: z.string() })).min(1).max(100) }).openapi("AnswerInputs");
+export const InboxAnswers = z.object({ requestId: z.string().min(1).max(200), answers: z.array(z.object({ agent: z.string().min(1), id: z.string(), version: z.number().int().min(1), action: z.enum(["accept", "decline", "cancel"]).optional(), content: z.unknown().optional(), accept: z.literal("recommended").optional(), actor: z.string().optional(), from: Sender.optional() })).min(1).max(100) }).openapi("InboxAnswers");
+export const InboxOutcomes = z.object({ outcomes: z.array(z.object({ agent: z.string(), id: z.string(), outcome: z.enum(["answered", "same", "conflict", "forbidden", "unknown", "invalid", "unavailable"]), status: z.number(), retryable: z.boolean().optional(), state: z.string().optional(), by: z.unknown().optional(), error: z.string().optional() })) }).openapi("InboxOutcomes");
 export const AnsweredAll = z.object({ inputs: z.array(Input), requests: z.array(RequestRecord).openapi({ description: "The runs resuming turns whose last input these answers settled" }) }).openapi("AnsweredAll");
 export const Answered = z.object({ input: Input, request: RequestRecord.nullable().openapi({ description: "The run resuming the turn, once the suspension's last input settled; poll it like a prompt" }) }).openapi("Answered");
 

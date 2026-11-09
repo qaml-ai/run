@@ -1,3 +1,5 @@
+import { answerInboxGroup, type InboxAnswer } from "../../../shared/inbox-answers.ts";
+import { answerInput, mayAnswer } from "./input-policy.ts";
 import { HttpError } from "./errors.ts";
 import { inputView } from "./decision-inputs.ts";
 import { decisionInputs, answerDecisions } from "./inbox-decisions.ts";
@@ -610,6 +612,37 @@ export async function fetchRequestImpl(this: AgentRuntime,
         const missing = await repairInputMirrors(this, input.ids);
         return json({ refreshed: true, missing });
       }
+      if (path === "/inbox-answers" && request.method === "POST") {
+        const input = await body(request) as { answers: InboxAnswer[] };
+        const conf = await this.config();
+        const internal = (method: string, pathname: string, data?: unknown) => {
+          const url = new URL(request.url); url.pathname = pathname;
+          return this.fetch(new Request(url, { method, headers: { "Content-Type": "application/json" }, ...(data ? { body: JSON.stringify(data) } : {}) }));
+        };
+        const read = async (id: string) => {
+          const decision = await decisionInputs(this).get(id);
+          if (decision?.agent === conf.id && decision.tenant === conf.tenantId && decision.blocking === false) return { ...inputView(decision), fixedResponders: decision.stored.fixedResponders };
+          const pi = await this.harness.pi(), doc = await pi.snapshot(HumanInputs, BACKGROUND_CONTEXT);
+          const pending = doc?.requests[id];
+          return pending ? { ...humanInputView(id, pending, conf.id), fixedResponders: pending.fixedResponders, policyBound: pending.policyBound } : undefined;
+        };
+        const outcomes = await answerInboxGroup(input.answers, read, (view, answer) => {
+          if (!mayAnswer(view, { via: "api", actor: answer.actor, from: answer.from }, view.fixedResponders ? [] : conf.config.humanInput?.approvers as string[] | undefined))
+            throw Object.assign(new Error("This person may not answer this input"), { status: 403 });
+          if (view.blocking && !view.policyBound) throw Object.assign(new Error("The input is not ready"), { status: 409 });
+          return answerInput(view, answer);
+        }, async answers => {
+          const response = await internal("POST", "/inputs", { answers: answers.map(({ id, body }) => ({ ...body, id })) });
+          if (!response.ok) {
+            const error = await response.json() as { error?: string };
+            throw Object.assign(new Error(error.error ?? "Input answer failed"), { status: response.status });
+          }
+          return { status: response.status };
+        }, view => view.blocking === false ? "decision" : "blocking");
+        await repairInputMirrors(this, input.answers.map(a => a.id)).catch(error => failure(this.env, "input_mirror_repair_failed", error));
+        return json({ outcomes: input.answers.map(a => outcomes.find(o => o.id === a.id)) });
+      }
+
       if ((path === "/inputs" || path.startsWith("/inputs/")) && request.method === "POST") {
         const input = await body(request, 1024 * 1024);
         const batch = path === "/inputs";

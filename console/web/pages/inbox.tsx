@@ -59,11 +59,18 @@ function InboxCard({ item, onAnswered }: { item: InboxItem; onAnswered: () => vo
   const [confirmDismiss, setConfirmDismiss] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const pending = useRef<{ value: string; requestId: string } | undefined>(undefined);
   async function answer(value: InputValue | InputAnswer) {
     if (busy) return;
     setBusy(true); setError(undefined);
-    try { await answerInbox(item, value); onAnswered(); }
-    catch (error) { setError((error as Error).message); }
+    const fingerprint = JSON.stringify([item.agent, item.id, item.version, value]);
+    if (pending.current?.value !== fingerprint) pending.current = { value: fingerprint, requestId: crypto.randomUUID() };
+    try { await answerInbox(item, value, pending.current.requestId); pending.current = undefined; onAnswered(); }
+    catch (error) {
+      // A received outcome is final for its key; transport failures retain it for replay.
+      if (error instanceof Error && "status" in error) pending.current = undefined;
+      setError((error as Error).message);
+    }
     finally { setBusy(false); }
   }
   return <><AgentInputView input={{ ...item, key: item.key ?? undefined, answering: busy, ...(error ? { error: { code: "answer_failed", message: error } } : {}) }} onAnswer={value => void answer(value)} /><Button data-dismiss type="button" variant="ghost" size="sm" disabled={busy} onClick={() => setConfirmDismiss(true)}>Dismiss</Button><Dialog open={confirmDismiss} onOpenChange={setConfirmDismiss}><DialogContent><DialogHeader><DialogTitle>Dismiss this request?</DialogTitle><DialogDescription>{item.message}</DialogDescription></DialogHeader><Button disabled={busy} onClick={() => { void answer({ action: "decline" }); setConfirmDismiss(false); }}>Confirm dismiss</Button><Button variant="outline" onClick={() => setConfirmDismiss(false)}>Keep request</Button></DialogContent></Dialog></>;

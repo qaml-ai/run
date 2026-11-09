@@ -53,6 +53,7 @@ Stateless runs (a configuration and a message in, the result out; nothing carrie
   history <agent> [--limit n]
   abort <agent>
   inputs [agent]                   Questions and approvals waiting on someone
+  inbox-answer <json>              Batch {requestId, answers} with agents, input IDs and versions
   answer <agent> <inputId> <value> true/false, text, JSON, or "decline"
   triggers list|add|delete|rotate|deliveries <agent> [triggerId] [--input JSON]
   schedules list <agent>
@@ -223,6 +224,12 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
         const result = args[0] ? await client.get(`/v1/agents/${enc(await client.agentId(args[0]))}/inputs?state=pending`) : await client.get("/v1/inbox");
         const inputs: any[] = Array.isArray(result) ? result : result.items;
         print(result, () => inputs.length ? inputs.map(input => `${input.inputId ?? input.id}  ${input.agent}  ${input.kind}: ${input.message ?? JSON.stringify(input.detail).slice(0, 200)}`).join("\n") : "Nothing is waiting");
+        return 0;
+      }
+      case "inbox-answer": {
+        if (!args[0]) throw new UsageError(`Usage: camelrun inbox-answer '{"requestId":"key","answers":[{"agent":"...","id":"...","version":1,"action":"accept"}]}'`);
+        const result = await api().call("POST", "/v1/inbox/answers", JSON.parse(args[0]));
+        print(result, () => JSON.stringify(result));
         return 0;
       }
       case "answer": {
