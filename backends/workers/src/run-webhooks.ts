@@ -1,3 +1,4 @@
+import { checkRequest } from "../../../shared/monitors.ts";
 import { pendingInputMirrors, upsertInputMirrors } from "./input-mirror.ts";
 import { outcomeEnding, type Outcome } from "../../../shared/client-protocol.ts";
 import { transaction, type PostgresEnv } from "./postgres.ts";
@@ -15,7 +16,8 @@ type Owner = { id: string; tenantId: string };
 
 /** The source run contract, projected from the request committed in this object. */
 export function runWebhook(owner: Owner, record: Run, messageCount?: number): WebhookEvent | undefined {
-  if (!RUN_METHODS.has(record.method)) return;
+  // A monitor's checks are not runs: only the turns its fires start are announced.
+  if (!RUN_METHODS.has(record.method) || checkRequest(record.id)) return;
   const base = { agentId: owner.id, requestId: record.id, method: record.method,
     ...(record.endUser ? { endUser: record.endUser } : {}),
     ...(record.actor ? { actor: record.actor } : {}), ...(record.metadata ? { metadata: record.metadata } : {}) };

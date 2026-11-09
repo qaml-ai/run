@@ -15,7 +15,7 @@ import { scriptValue } from "./mcp-results.ts";
 import { callableFromCode, declaredToModel, errorText, normalizeTool, STOPPED_NOTICE, type ToolDefinition, CONTEXT_RANGE_MAX_BYTES, CONTEXT_TOO_LARGE, contextRangeMessage, IDENTITY_KEY, legacyFormatRefused, PERSISTENCE_FAILED, SCOPE_KEY, scratchMount, type AgentConfig, type CallContext, type Credentials, type RunStop } from "./protocol.ts";
 import { APPLICATION, applicationInstructions, CODEMODE, ENVIRONMENT, environmentSummary, INSTRUCTIONS, LANGUAGE, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL, RUNTIME, runtimeRules } from "./system-prompt.ts";
 import { languageInstructions } from "./language.ts";
-import { allowedInCheck, checkRequest, MONITOR_LIMITS } from "../shared/monitors.ts";
+import { allowedInCheck, checkRequest, MONITOR_LIMITS, TOOL_CALLS_ERROR } from "../shared/monitors.ts";
 import { AGENT_UPDATES, renderMessages, stamp, type MessageSource } from "./sender.ts";
 import { closeInterruptedTurn, importedHistory, interruptedTurnRepairs, step, validateInitialMessages, validateUserMessages } from "./history.ts";
 import { contextTokens, explicitKeyStream, modelKeyFailure, type ModelGate } from "./compaction.ts";
@@ -543,7 +543,7 @@ export function createAgentHost(hostIO: HostIO) {
     const tools = config.tools.filter(callableFromCode).filter(tool => !monitor || allowedInCheck(tool.name)).map((tool): CodemodeTool => ({
       name: tool.name, description: tool.description, inputSchema: tool.parameters,
       execute: async args => {
-        if (monitor && callIndex >= MONITOR_LIMITS.toolCalls) throw new Error(`A monitor's check makes at most ${MONITOR_LIMITS.toolCalls} tool calls`);
+        if (monitor && callIndex >= MONITOR_LIMITS.toolCalls) throw new Error(TOOL_CALLS_ERROR);
         const identity = requestId ? { toolCallId: `execute:${requestId}`, innerCallId: `c${++callIndex}` } : undefined;
         const value = await io.tool(tool.name, args as Record<string, unknown>, identity, signal);
         return tool.resultFormat === "content" ? scriptValue(value) : value;

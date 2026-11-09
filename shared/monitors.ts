@@ -31,6 +31,8 @@ export interface Monitor {
   notBefore?: number;
   /** The check in flight: its key (the occurrence's due time) and when it was sent. */
   pending?: { key: number; at: number };
+  /** The key of the last check settled: its request record can go (Workers deletes it at the next occurrence). */
+  settled?: number;
   paused?: "noise";
   /** Set once the monitor is over; its schedule goes once its last message was delivered. */
   ended?: "fired" | "errors";
@@ -40,6 +42,11 @@ export interface Monitor {
 }
 export type MonitorInput = { name: string; everySeconds: number; code: string; mode: "once" | "repeat"; expiresAt: number; budget?: { usd: number } };
 
+/** JSON with object keys sorted at every level: equal values compare equal however a store (jsonb) ordered their keys. */
+export function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, inner) => inner && typeof inner === "object" && !Array.isArray(inner)
+    ? Object.fromEntries(Object.keys(inner).sort().map(key => [key, (inner as Record<string, unknown>)[key]])) : inner) ?? "null";
+}
 const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).length;
 
 /** `{ name, everySeconds?, code, mode?, expiresInSeconds?, budget? }` as a tool call or the API gives it. Throws what is wrong. */
@@ -61,14 +68,20 @@ export const newMonitor = (input: MonitorInput, now = Date.now()): Monitor => ({
   name: input.name, mode: input.mode, createdAt: now, expiresAt: input.expiresAt, ...(input.budget ? { budget: input.budget } : {}), checks: 0, fires: 0, errors: 0, fireTimes: [], log: [],
 });
 
-/** Tools a check's script does not get: nothing that starts model work, waits on a person, or uses a computer. */
-const DENIED = /^(?:delegate|spawn_agent|send_message|wait_agent|interrupt_agent|list_agents|report_progress|ask_user|ask_human|request_decision|decide|generate_image|schedule|list_schedules|cancel_schedule|monitor_start|monitor_stop|monitor_list|computer|computer_.*|browser_.*|bash|exec|shell|execute)$/;
+/** Tools a check's script does not get: nothing that starts model work, waits on a person, uses a computer, or writes or imports files (reads are fine). */
+const DENIED = /^(?:delegate|spawn_agent|send_message|wait_agent|interrupt_agent|list_agents|report_progress|ask_user|ask_human|request_decision|decide|generate_image|write|edit|multi_edit|apply_patch|cp|mv|rm|mkdir|delete|move|copy|present_file|file_import|file_link|schedule|list_schedules|cancel_schedule|monitor_start|monitor_stop|monitor_list|computer|computer_.*|browser_.*|bash|exec|shell|execute)$/;
 export const allowedInCheck = (tool: string) => !DENIED.test(tool);
 
 /** The check as the request that runs it: `state` in scope, its return value wrapped so the result is told from printing. */
 export function checkCode(code: string, state: unknown) {
   return `const state = ${JSON.stringify(state ?? null)};\nconst __check = await (async () => {\n${code}\n})();\nreturn { __monitor: __check === undefined ? null : __check };`;
 }
+/**
+ * The key of the check an occurrence sends: the one still in flight if there is one (its request is sent again under
+ * the same id, which is a no-op while it waits and finds its result if its settling was lost), else the occurrence's.
+ * So a monitor never has more than one open check request, however long the agent is busy.
+ */
+export const checkKey = (monitor: Monitor, due: number) => monitor.pending?.key ?? due;
 export const checkRequestId = (schedule: string, key: number) => `monitor-check-${schedule}-${key}`;
 /** The schedule and occurrence of a check's request id; undefined for any other request. */
 export function checkRequest(id: unknown) {
@@ -80,8 +93,10 @@ export const monitorRequest = (id: unknown) => typeof id === "string" && id.star
 
 export type CheckResult = { ok: true; fire: boolean; value?: unknown; state?: unknown; nextSeconds?: number } | { ok: false; error: string };
 /** What a finished check request says, from its record (`outcome.error`, or `outcome.result.output`, the script's return last). */
-export function checkResult(record: { outcome?: { error?: unknown; result?: any } }): CheckResult {
+export function checkResult(record: { state?: string; outcome?: { error?: unknown; result?: any } }): CheckResult {
   const failed = (error: unknown): CheckResult => ({ ok: false, error: (typeof error === "string" ? error : (error as { message?: string })?.message ?? JSON.stringify(error) ?? "The check failed").slice(0, 500) });
+  // Ended any other way (failed, aborted, refused): a failed check, for the backoff and the stop.
+  if (record.state !== undefined && record.state !== "completed" && !record.outcome) return failed(`The check ended ${record.state}`);
   const result = record.outcome?.result;
   const error = record.outcome?.error ?? result?.error ?? (result?.stopped ? `The check was stopped: ${result.stopped}` : undefined);
   if (error) return failed(error);
@@ -118,7 +133,7 @@ export const pausedText = (name: string) =>
 export function settleCheck(schedule: string, everySeconds: number, monitor: Monitor, key: number, result: CheckResult, now = Date.now()): Monitor | undefined {
   if (monitor.pending?.key !== key || monitor.ended) return undefined;
   const { pending: _pending, notBefore: _notBefore, lastError: _lastError, ...rest } = monitor;
-  const next: Monitor = { ...rest, checks: monitor.checks + 1, lastCheckAt: now, outbox: [...monitor.outbox ?? []] };
+  const next: Monitor = { ...rest, checks: monitor.checks + 1, lastCheckAt: now, settled: key, outbox: [...monitor.outbox ?? []] };
   const log = (entry: MonitorCheck) => { next.log = [...monitor.log, entry].slice(-MONITOR_LIMITS.log); };
   if (!result.ok) {
     next.errors = monitor.errors + 1;
@@ -136,7 +151,7 @@ export function settleCheck(schedule: string, everySeconds: number, monitor: Mon
   // A second early, so the occurrence that falls on that time is not the one skipped.
   if (result.nextSeconds !== undefined) next.notBefore = now + result.nextSeconds * 1000 - 1000;
   // repeat: only a value that differs from the last one fired.
-  const fired = result.fire && (monitor.fires === 0 || monitor.mode === "once" || JSON.stringify(result.value ?? null) !== JSON.stringify(monitor.value ?? null));
+  const fired = result.fire && (monitor.fires === 0 || monitor.mode === "once" || canonicalJson(result.value ?? null) !== canonicalJson(monitor.value ?? null));
   log({ at: now, fired });
   if (!fired) return next;
   next.fires = monitor.fires + 1;
@@ -179,7 +194,7 @@ export function monitorToolView(schedule: Parameters<typeof monitorView>[0]) {
 export const MONITOR_TOOLS = [
   {
     name: "monitor_start",
-    description: "Start a background check that wakes you when something happens, without spending a turn while nothing does. Every everySeconds the runtime runs `code`, a short script with your code tools (no sub-agents, questions, approvals or computers; 10 seconds and 10 tool calls a run). The script reads `state` (what its last run returned as state; null the first time) and returns { fire: boolean, value?, state?, nextSeconds? }. When fire is true you get value as a new message. mode \"once\" stops after the first fire; \"repeat\" goes on and fires again only when value changes. Starting a monitor under a name you already use replaces it.",
+    description: "Start a background check that wakes you when something happens, without spending a turn while nothing does. Every everySeconds the runtime runs `code`, a short script with your code tools (no sub-agents, questions, approvals, computers or file writes; 10 seconds and 10 tool calls a run). The script reads `state` (what its last run returned as state; null the first time) and returns { fire: boolean, value?, state?, nextSeconds? }. When fire is true you get value as a new message. mode \"once\" stops after the first fire; \"repeat\" goes on and fires again only when value changes. Starting a monitor under a name you already use replaces it.",
     parameters: { type: "object", additionalProperties: false, required: ["name", "code"], properties: {
       name: { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,63}$" },
       everySeconds: { type: "integer", minimum: 60, maximum: 86_400, description: "Default 300" },
@@ -193,3 +208,4 @@ export const MONITOR_TOOLS = [
   { name: "monitor_list", description: "List your monitors.", parameters: { type: "object", additionalProperties: false, properties: {} } },
 ] as const;
 export const MONITOR_CAP_ERROR = `An agent can have at most ${MONITOR_LIMITS.perAgent} monitors: stop one first`;
+export const TOOL_CALLS_ERROR = `A monitor's check makes at most ${MONITOR_LIMITS.toolCalls} tool calls`;

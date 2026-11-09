@@ -207,6 +207,7 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
       const result = await db.query("update agent_inputs set expires_at = 0 where agent = $1 and state = 'pending'", [agent]);
       if (!result.rowCount) throw new Error("Fixture inputs not found");
     },
+    async checkRequestRecords() { return undefined; },
     async setScheduleDueAt(agent, schedule, dueAt) {
       const result = await db.query("update schedules set due_at=$3 where agent=$1 and id=$2", [agent, schedule, dueAt]);
       if (result.rowCount !== 1) throw new Error("Fixture schedule not found");

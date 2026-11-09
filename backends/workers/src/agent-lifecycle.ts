@@ -1,4 +1,4 @@
-import { flushMonitors, monitorDeadline, monitorDue } from "./agent-monitors.ts";
+import { checkGcDeadline, collectChecks, flushMonitors, monitorDeadline, monitorDue } from "./agent-monitors.ts";
 import { flushScheduleOutcomes } from './schedule-outcomes.ts';
 import { HttpError } from "./errors.ts";
 import { expireDecisions } from "./inbox-decisions.ts";
@@ -129,6 +129,7 @@ export async function armImpl(this: AgentRuntime,
       inputAdmissionDeadline(records),
       retry ?? Infinity,
       (await this.ctx.storage.list({prefix:"schedule-outcome:",limit:1})).size ? Date.now()+60_000 : Infinity,
+      await checkGcDeadline(this),
       pendingBilling ? Date.now() + 5000 : Infinity,
       pendingEvents ? Date.now() + 1000 : Infinity,
       records.some(record => record.method === 'configure' && record.state !== 'completed') ? Date.now() + 1000 : Infinity,
@@ -312,6 +313,7 @@ export async function wakeImpl(this: AgentRuntime) {
     const now = Date.now();
     // Messages monitors still owe the agent, then their due checks (agent-monitors.ts).
     await flushMonitors(this).catch(error => failure(this.env, "monitor_flush_failed", error));
+    await collectChecks(this, now).catch(error => failure(this.env, "monitor_gc_failed", error));
     for (const [key, schedule] of await this.ctx.storage.list<Schedule>({
       prefix: "schedule:",
       limit: 100,

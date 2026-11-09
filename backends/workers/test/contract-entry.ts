@@ -160,6 +160,10 @@ export class CamelAgent extends RuntimeAgent {
       if (!due) return Response.json({ error: "Fixture inputs not found" }, { status: 404 });
       return Response.json({ updated: due });
     }
+    if (this.env.TEST_MODE === "1" && new URL(request.url).pathname === "/__test/contract-check-records" && request.method === "GET") {
+      // Request records of monitor checks still in this object's storage (they must not accumulate).
+      return Response.json({ count: [...(await this.ctx.storage.list({ prefix: "request:monitor-check-" })).keys()].length });
+    }
     if (this.env.TEST_MODE === "1" && new URL(request.url).pathname === "/__test/contract-schedule-due" && request.method === "POST") {
       const { id, dueAt, history } = await request.json() as { id: string; dueAt: number; history?: "none" };
       if (typeof id !== "string" || !Number.isSafeInteger(dueAt) || (history !== undefined && history !== "none")) return Response.json({ error: "Invalid schedule fixture input" }, { status: 400 });

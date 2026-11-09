@@ -1,7 +1,7 @@
 import { defineTool, type ToolRegistration } from '@earendil-works/pi-durable';
 import { compile } from '@earendil-works/pi-schema';
 import {
-  beforeCheck, checkCode, checkRequest, checkRequestId, checkResult, monitorInput, monitorToolView, monitorView, newMonitor, settleCheck, wakeRetryable,
+  beforeCheck, checkCode, checkKey, checkRequest, checkRequestId, checkResult, monitorInput, monitorToolView, monitorView, newMonitor, settleCheck, wakeRetryable,
   MONITOR_CAP_ERROR, MONITOR_LIMITS, MONITOR_TOOLS, type MonitorWake,
 } from '../../../shared/monitors.ts';
 import { HttpError } from './errors.ts';
@@ -11,6 +11,7 @@ import { nextOccurrence } from './schedule-policy.ts';
 import { failure } from './observability.ts';
 import type { StoredSchedule as Schedule } from './schedules.ts';
 import type { AgentRuntime } from './agent-runtime.ts';
+import { reqKey } from './agent-types.ts';
 
 /**
  * Monitors on Workers (shared/monitors.ts): a monitor is one of the agent's schedules (`schedule:<id>` in its storage)
@@ -23,6 +24,28 @@ import type { AgentRuntime } from './agent-runtime.ts';
 export type MonitorToolsHost = { start(input: unknown): Promise<Schedule>; list(): Promise<Schedule[]>; stop(name: string): Promise<boolean> };
 
 const key = (id: string) => `schedule:${id}`;
+/**
+ * Check request records must not pile up in the agent's storage (every wake lists its requests). A settled check's
+ * record goes at the monitor's next occurrence; one of a monitor that is removed is marked here and goes a minute on.
+ */
+const GC = 'monitor-gc:';
+async function forget(storage: { put(key: string, value: unknown): Promise<unknown> }, schedule: Schedule) {
+  for (const at of [schedule.monitor?.settled, schedule.monitor?.pending?.key]) if (at !== undefined) await storage.put(`${GC}${checkRequestId(schedule.id, at)}`, Date.now());
+}
+export async function collectChecks(runtime: AgentRuntime, now = Date.now()) {
+  for (const [name, at] of await runtime.ctx.storage.list<number>({ prefix: GC, limit: 100 })) {
+    if (now - at < 60_000) continue;
+    const record = await runtime.ctx.storage.get<{ state?: string }>(reqKey(name.slice(GC.length)));
+    // One still running keeps its record until it ends (five minutes at most, then it goes regardless).
+    if (record && record.state !== 'completed' && now - at < 300_000) continue;
+    await runtime.ctx.storage.delete([reqKey(name.slice(GC.length)), name]);
+  }
+}
+export async function checkGcDeadline(runtime: AgentRuntime) {
+  const marks = [...(await runtime.ctx.storage.list<number>({ prefix: GC, limit: 100 })).values()], now = Date.now();
+  // A minute after the mark; one still running then is looked at once more, five minutes after it, and goes.
+  return marks.length ? Math.max(now + 1000, Math.min(...marks.map(at => now - at < 60_000 ? at + 60_000 : at + 300_000))) : Infinity;
+}
 export async function monitorsOf(runtime: AgentRuntime): Promise<Schedule[]> {
   return [...(await runtime.ctx.storage.list<Schedule>({ prefix: 'schedule:', limit: 100 })).values()]
     .filter(schedule => schedule.monitor && !schedule.monitor.ended).sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
@@ -40,7 +63,7 @@ export async function startMonitor(runtime: AgentRuntime, raw: unknown): Promise
     const replaced = all.filter(entry => entry.monitor?.name === input.name);
     if (all.filter(entry => entry.monitor && !entry.monitor.ended).length - replaced.filter(entry => !entry.monitor!.ended).length >= MONITOR_LIMITS.perAgent) throw new HttpError(400, MONITOR_CAP_ERROR);
     if (all.length - replaced.length >= 100) throw new HttpError(400, 'At most 100 schedules per agent');
-    for (const entry of replaced) await tx.delete(key(entry.id));
+    for (const entry of replaced) { await forget(tx, entry); await tx.delete(key(entry.id)); }
     await tx.put(key(schedule.id), schedule);
   });
   await runtime.arm();
@@ -48,7 +71,7 @@ export async function startMonitor(runtime: AgentRuntime, raw: unknown): Promise
 }
 export async function stopMonitor(runtime: AgentRuntime, name: string) {
   const found = (await monitorsOf(runtime)).filter(schedule => schedule.monitor!.name === name || schedule.id === name);
-  for (const schedule of found) await runtime.ctx.storage.delete(key(schedule.id));
+  for (const schedule of found) { await forget(runtime.ctx.storage, schedule); await runtime.ctx.storage.delete(key(schedule.id)); }
   if (found.length) await runtime.arm();
   return found.length > 0;
 }
@@ -124,7 +147,7 @@ export async function flushMonitors(runtime: AgentRuntime) {
       const current = await tx.get<Schedule>(key(schedule.id));
       if (!current?.monitor) return;
       const outbox = (current.monitor.outbox ?? []).filter(wake => !done.has(wake.id)).map((wake): MonitorWake => failed.has(wake.id) ? { ...wake, attempts: (wake.attempts ?? 0) + 1 } : wake);
-      if (current.monitor.ended && !outbox.length) await tx.delete(key(schedule.id));
+      if (current.monitor.ended && !outbox.length) { await forget(tx, current); await tx.delete(key(schedule.id)); }
       else if (done.size || failed.size) await tx.put(key(schedule.id), { ...current, monitor: { ...current.monitor, outbox } });
     });
   }
@@ -133,14 +156,19 @@ export async function flushMonitors(runtime: AgentRuntime) {
 /** A monitor's due occurrence, from the alarm: send its check or skip it, having moved to the next occurrence first. */
 export async function monitorDue(runtime: AgentRuntime, schedule: Schedule, now = Date.now()) {
   const action = beforeCheck(schedule.monitor!, now);
-  if (action === 'expire' || action === 'remove') { await runtime.ctx.storage.delete(key(schedule.id)); return; }
-  const due = schedule.dueAt;
+  if (action === 'expire' || action === 'remove') { await forget(runtime.ctx.storage, schedule); await runtime.ctx.storage.delete(key(schedule.id)); return; }
+  // One open request a monitor: a check still in flight is sent again under its own id, never beside a new one.
+  const due = checkKey(schedule.monitor!, schedule.dueAt);
+  // The last settled check's request record goes now, an interval after it ended.
+  if (schedule.monitor!.settled !== undefined && schedule.monitor!.settled !== due) await runtime.ctx.storage.delete(reqKey(checkRequestId(schedule.id, schedule.monitor!.settled)));
   // Moved on before anything is sent: whatever happens next, this occurrence is not delivered twice.
   const next: Schedule = { ...schedule, dueAt: nextOccurrence(schedule), monitor: action === 'run' ? { ...schedule.monitor!, pending: { key: due, at: now } } : schedule.monitor! };
   await runtime.ctx.storage.put(key(schedule.id), next);
   if (action !== 'run') return;
   try {
-    await runtime.submit({ id: checkRequestId(schedule.id, due), method: 'execute', params: { code: checkCode(schedule.code!, schedule.monitor!.state), timeoutMs: MONITOR_LIMITS.timeoutMs, maxOutputCharacters: 16_000, allowDisconnected: true } });
+    const record = await runtime.submit({ id: checkRequestId(schedule.id, due), method: 'execute', params: { code: checkCode(schedule.code!, schedule.monitor!.state), timeoutMs: MONITOR_LIMITS.timeoutMs, maxOutputCharacters: 16_000, allowDisconnected: true } }) as { id?: string; state?: string } | undefined;
+    // It had ended already (its settling was lost): settle it from its record.
+    if (record?.id && record.state === 'completed' && await runtime.ctx.storage.transaction(tx => stageMonitorSettle(tx, record as { id: string }))) await flushMonitors(runtime);
   } catch (error) {
     failure(runtime.env, 'monitor_check_not_sent', error);
     // Not sent: nothing is in flight, and the next occurrence tries again.

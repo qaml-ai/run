@@ -928,7 +928,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     get hooks() {
       return { ...channels.hooks, requestEnded: (agent, record) => {
         // A monitor's check ended: settle it (state, counters, and the message of a fire).
-        if (checkRequest(record.id)) void scheduler.settleMonitor(record).catch(error => console.error(JSON.stringify({type:"monitor_settle_failed",error:safeError(error)})));
+        if (checkRequest(record.id)) void scheduler.settleMonitor(agent, record).catch(error => console.error(JSON.stringify({type:"monitor_settle_failed",error:safeError(error)})));
         const source = scheduleRunSource(agent.tenant, record);
         if (source) void recordScheduleRun(db, source, agent.id, record).catch(error => console.error(JSON.stringify({type:"schedule_outcome_failed",error:safeError(error)})));
       }, runEnded: (agent, record) => {

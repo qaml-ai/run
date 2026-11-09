@@ -1,3 +1,4 @@
+import { checkRequest } from "../../../shared/monitors.ts";
 import { requireActiveMember, sharedPromptInput } from "../../../src/shared-agents.ts";
 import { keyServices } from "./security-services.ts";
 import { EndUserCredits } from "./end-user-credits.ts";
@@ -278,7 +279,8 @@ export async function admitImpl(this: AgentRuntime,
         await withSql(this.env, sql => requireActiveMember(sql, conf.tenantId, conf.id, actor));
       }
       await this.requireApplication(allowDisconnected);
-      await refreshIdleLifetime(this.env, this.ctx.storage, await this.config());
+      // A monitor's check does not keep an idle agent alive.
+      if (!checkRequest(id)) await refreshIdleLifetime(this.env, this.ctx.storage, await this.config());
       const record: RequestRecord = {
         id,
         method: "execute",

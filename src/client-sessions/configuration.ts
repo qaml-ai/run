@@ -1,4 +1,5 @@
 import { humanInputSettings, type HumanInputSettings } from "../inputs.ts";
+import { checkRequest } from "../../shared/monitors.ts";
 import { applying } from "../../shared/apply-scope.ts";
 import { withOpenRouterDetails } from "../openrouter-model.ts";
 import { currentModel, modelReference } from "../virtual-models.ts";
@@ -429,7 +430,7 @@ export async function inspect(ctx: ConfigurationContext, id: string, tenant: str
     maxOutputTokens: session.header.config.maxOutputTokens ?? null, temperature: session.header.config.temperature ?? null, dataCollection: session.header.config.dataCollection ?? null, language: session.header.config.language ?? null,
     queue: session.header.config.queue ?? null,
     ...(session.header.forkedFrom ? { forkedFrom: session.header.forkedFrom } : {}),
-    ...activityOf(session.running.values()), cursor: session.cursor, events: session.events.map(({ id, data }) => ({ id, data })), requests: [...session.requests.values()].map(visible) };
+    ...activityOf(session.running.values()), cursor: session.cursor, events: session.events.map(({ id, data }) => ({ id, data })), requests: [...session.requests.values()].filter(record => !checkRequest(record.id)).map(visible) };
 }
 
 /**

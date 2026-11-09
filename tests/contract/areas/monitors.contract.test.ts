@@ -44,14 +44,14 @@ contractTest("monitors", "tests/monitors.test.ts:2", "repeat fires again only wh
   f.setModel(() => ({ role: "assistant", content: "noted" }));
   const agent = (await f.call("/v1/agents", { body: {} })).json.id;
   const path = `/v1/agents/${agent}/monitors`;
-  const id = (await f.call(path, { body: { name: "phase", mode: "repeat", code: "const n = (state?.n ?? 0) + 1; return { fire: true, value: { phase: n < 3 ? 'a' : 'b' }, state: { n } };" } })).json.id;
+  const id = (await f.call(path, { body: { name: "phase", mode: "repeat", code: "const n = (state?.n ?? 0) + 1; return { fire: true, value: { phase: n < 3 ? 'a' : 'b', a: 1, zz: [1, { y: 2, b: 1 }] }, state: { n } };" } })).json.id;
   assert.equal((await settled(f, agent, id, 1)).fires, 1);
   await f.setScheduleDueAt(agent, id, 1000);
   assert.equal((await settled(f, agent, id, 2)).fires, 1, "the same value does not fire again");
   await f.setScheduleDueAt(agent, id, 2000);
   const third = await settled(f, agent, id, 3);
   assert.equal(third.fires, 2);
-  assert.deepEqual(third.value, { phase: "b" });
+  assert.deepEqual(third.value, { phase: "b", a: 1, zz: [1, { y: 2, b: 1 }] }, "a value of several keys is compared whatever order a store keeps them in");
   assert.equal(third.status, "active");
   await until(() => events(f).length === 2, "both fires' messages");
   assert.deepEqual((await f.call(`${path}/${id}/checks`)).json.map((check: any) => check.fired), [true, false, true]);
@@ -79,10 +79,16 @@ contractTest("monitors", "tests/monitors.test.ts:3", "a failing check is counted
   // Not an object with fire: an error too. And the agent's schedule and monitor tools are not in a check's sandbox.
   const shape = (await f.call(path, { body: { name: "shape", code: "return 5;" } })).json.id;
   assert.match((await settled(f, agent, shape, 1)).lastError, /must return \{ fire: boolean/);
-  const tools = (await f.call(path, { body: { name: "tools", mode: "repeat", code: "const names = ALL_TOOLS.map(tool => tool.name ?? tool); return { fire: true, value: { tools: names.length > 0, denied: names.filter(name => /schedule|monitor_/.test(name)) } };" } })).json.id;
-  assert.deepEqual((await settled(f, agent, tools, 1)).value, { tools: true, denied: [] });
-  await until(() => events(f).length === 1, "the one fire");
-  assert.equal(f.model.bodies.length, 1, "failed checks called no model");
+  const tools = (await f.call(path, { body: { name: "tools", mode: "repeat", code: "const names = ALL_TOOLS.map(tool => tool.name ?? tool); return { fire: true, value: { read: names.includes('read'), write: names.includes('write'), edit: names.includes('edit'), denied: names.filter(name => /schedule|monitor_/.test(name)) } };" } })).json.id;
+  assert.deepEqual((await settled(f, agent, tools, 1)).value, { read: true, write: false, edit: false, denied: [] }, "a check reads files but does not write them");
+  // Ten tool calls a check: the eleventh fails.
+  const calls = (await f.call(path, { body: { name: "calls", mode: "repeat", code: "let last = ''; for (let n = 0; n < 11; n++) { try { await tools.ls({ path: '/workspace' }); last = 'ok'; } catch (error) { last = String(error.message ?? error); } } return { fire: true, value: { last } };" } })).json.id;
+  assert.match((await settled(f, agent, calls, 1)).value.last, /at most 10 tool calls/);
+  await until(() => events(f).length === 2, "the two fires");
+  assert.equal(f.model.bodies.length, 2, "failed checks called no model");
+  // Checks are not runs: they are not listed with the agent's requests.
+  const listed = (await f.call(`/v1/agents/${agent}/state`)).json.requests ?? [];
+  assert.ok(listed.every((request: any) => !String(request.id).startsWith("monitor-check-")), JSON.stringify(listed.map((request: any) => request.id)));
 });
 
 contractTest("monitors", "tests/monitors.test.ts:4", "an agent starts, lists and stops its own monitors; at most 20; they go with the agent", async (t, f) => {
@@ -118,3 +124,18 @@ contractTest("monitors", "tests/monitors.test.ts:4", "an agent starts, lists and
   assert.equal((await f.call(`/v1/agents/${agent}`, { method: "DELETE" })).status, 200);
   assert.equal((await f.call(path)).status, 404, "a deleted agent has no monitors");
 }, { timeout: 180_000 });
+
+contractTest("monitors", "tests/monitors.test.ts:5", "many checks leave no pile of request records, and the same check log", async (t, f) => {
+  f.setModel(() => ({ role: "assistant", content: "noted" }));
+  const agent = (await f.call("/v1/agents", { body: {} })).json.id;
+  const id = (await f.call(`/v1/agents/${agent}/monitors`, { body: { name: "many", mode: "repeat", code: "return { fire: false, state: (state ?? 0) + 1 };" } })).json.id;
+  await settled(f, agent, id, 1);
+  for (let n = 2; n <= 30; n++) {
+    await f.setScheduleDueAt(agent, id, n * 1000);
+    await settled(f, agent, id, n);
+  }
+  const records = await f.checkRequestRecords(agent);
+  assert.ok(records === undefined || records <= 2, `30 checks left ${records} request records`);
+  assert.equal((await f.call(`/v1/agents/${agent}/monitors/${id}/checks`)).json.length, 20);
+  assert.equal(f.model.bodies.length, 0);
+}, { timeout: 300_000 });

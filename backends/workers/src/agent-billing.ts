@@ -1,3 +1,4 @@
+import { checkRequest } from "../../../shared/monitors.ts";
 import { tenantRunCaps } from "./tenant-run-caps.ts";
 import { type AssistantMessage } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -57,7 +58,8 @@ export async function admitRequestImpl(this: AgentRuntime,
   bucket?: string, endUser?: string) {
     let acquired = false;
     try {
-      const rate = await runAdmission(this.env, conf.tenantId);
+      // A monitor's check takes none of the tenant's runs per minute.
+      const rate = checkRequest(id) ? undefined : await runAdmission(this.env, conf.tenantId);
       if (rate) this.runRates.set(id, rate);
       const refusal = agentSpendRefusal(conf.id, await this.agentSpend(conf));
       if (refusal)
