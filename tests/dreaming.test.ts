@@ -64,6 +64,9 @@ test('durable dreams keep the window on publication failure, resume polling afte
 test('dream redaction removes credential fields, bearer tokens and private keys',()=>{
   const redacted=redactDream({apiKey:'secret',message:'password=hunter2 Bearer secret-token',nested:{token:'secret'},key:'-----BEGIN PRIVATE KEY-----\nprivate\n-----END PRIVATE KEY-----'});
   const serialized=JSON.stringify(redacted);
+  assert.equal(redactDream('access_token=short value with spaces'),'access_token=[redacted]');
+  assert.equal(redactDream('Authorization: Basic short'),'Authorization=[redacted]');
+  assert.equal(redactDream('api key: short'),'api key=[redacted]');
   const source='client_'+'1'.repeat(40);
   assert.equal(redactDream(`Evidence from ${source}, message 3.`),`Evidence from ${source}, message 3.`);
   for(const secret of ['hunter2','secret-token','private','"secret"']) assert.ok(!serialized.includes(secret));
