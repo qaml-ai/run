@@ -35,6 +35,6 @@ except that one oversized message is returned whole. Pages preserve message
 indexes and the stored transcript format, including tool calls and results.
 
 This is a live view of retained history, not a snapshot or a run-status listing.
-Deleted agents and purged messages are unavailable. Messages without timestamps
+Deleted or expired agents and purged messages are unavailable. Messages without timestamps
 are excluded. Choose a closed time window after runs settle when consolidating
 memory. Keep transcripts private: they can contain user content and tool output.

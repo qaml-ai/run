@@ -25,7 +25,7 @@ export async function sessionTranscripts(store: TranscriptStore, tenant: string,
   ), tree(id) as (
     select id from agents where id=$1 and tenant=$2 and not revoked and purged_at is null
     union select c.child from edges c join tree t on t.id=c.parent where $3
-  ) select a.id from tree join agents a on a.id=tree.id where a.tenant=$2 and not a.revoked and a.purged_at is null and a.id >= $4 order by a.id limit 1`, [root, tenant, children, agent]);
+  ) select a.id from tree join agents a on a.id=tree.id where a.tenant=$2 and not a.revoked and a.purged_at is null and (a.expires_at is null or a.expires_at > $5) and a.id >= $4 order by a.id limit 1`, [root, tenant, children, agent, Date.now()]);
   if (!rows.length) return { agentId: null, entries: [], next: null };
   const id = rows[0].id as string;
   const page = await store.page(id, id === agent ? after : 0, limit);
