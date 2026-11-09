@@ -1,4 +1,4 @@
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import { Api, ApiError, enc } from "./api.ts";
@@ -21,6 +21,7 @@ Setup
   init [key] [--model m]           Write an agent.yaml manifest here
 
 Deploy
+  apply file.json [--dry-run]      Atomically provision keyed resources
   deploy [file…] [--apply] [--dry-run]
                                    Upsert each manifest's definition by its key and make its agents;
                                    --apply also moves live agents to the new revision between turns
@@ -148,6 +149,12 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
         if (DEFAULT_FILES.some(name => existsSync(`${io.cwd}/${name}`)) && !flags.force) throw new UsageError("A manifest is already here (--force overwrites agent.yaml)");
         writeFileSync(path, template(key, flags.model));
         print({ file: path, key }, () => `Wrote ${path}. Edit it, then: camelrun deploy`);
+        return 0;
+      }
+      case "apply": {
+        if (args.length !== 1) throw new UsageError("Usage: camelrun apply file.json [--dry-run]");
+        const manifest = JSON.parse(readFileSync(args[0], "utf8"));
+        print(await api().call("POST", "/v1/apply", { ...manifest, ...(flags["dry-run"] ? { dryRun: true } : {}) }));
         return 0;
       }
       case "deploy": {

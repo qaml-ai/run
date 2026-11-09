@@ -10186,6 +10186,18 @@
         },
         "additionalProperties": false
       },
+      "VolumeInput": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string",
+            "description": "Your name for the volume (1–200 letters, digits and ._:-): the first create with a key makes it, every later one answers with it (existing: true), for as long as it lives. A deleted one's key makes no other"
+          }
+        }
+      },
       "Definition": {
         "type": "object",
         "properties": {
@@ -14295,18 +14307,6 @@
             ]
           }
         ]
-      },
-      "VolumeInput": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "key": {
-            "type": "string",
-            "description": "Your name for the volume (1–200 letters, digits and ._:-): the first create with a key makes it, every later one answers with it (existing: true), for as long as it lives. A deleted one's key makes no other"
-          }
-        }
       },
       "Snapshot": {
         "type": "object",
@@ -22571,6 +22571,133 @@
                   },
                   "required": [
                     "deleted"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/apply": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "volumes": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "$ref": "#/components/schemas/VolumeInput"
+                    }
+                  },
+                  "definitions": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "object",
+                      "additionalProperties": {}
+                    }
+                  },
+                  "agents": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "object",
+                      "additionalProperties": {}
+                    }
+                  },
+                  "dryRun": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Atomic provisioning result or dry-run diff",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "dryRun": {
+                      "type": "boolean"
+                    },
+                    "volumes": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "definitions": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "agents": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "changes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "resource": {
+                            "type": "string"
+                          },
+                          "action": {
+                            "type": "string",
+                            "enum": [
+                              "create",
+                              "update",
+                              "unchanged"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "resource",
+                          "action"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "dryRun",
+                    "volumes",
+                    "definitions",
+                    "agents",
+                    "changes"
                   ]
                 }
               }

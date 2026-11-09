@@ -47,6 +47,7 @@ export const PAGES: { section: string; path: string; about: string }[] = [
   { section: "Guides", path: "guides/aws.md", about: "an agent reads your AWS account through an MCP server you run yourself: one Lambda, identity tokens instead of a secret, reads only, what enabling writes needs" },
   { section: "Guides", path: "guides/export.md", about: "the account export (GET /v1/account/export): what the zip holds, that it is whole or fails, and moving to a self-hosted runtime (no import yet)" },
   { section: "Guides", path: "production.md", about: "the checklist before shipping" },
+  { section: "Reference", path: "reference/apply.md", about: "transactional provisioning with keyed resources and dry runs" },
   { section: "Reference", path: "reference/sdk.md", about: "the TypeScript and Python SDKs" },
   { section: "Reference", path: "reference/cli.md", about: "the camelRun CLI (camelrun) and MCP servers, hosted at /mcp and local: deploying agent.yaml manifests, running and managing agents from a terminal or a coding agent" },
   { section: "Reference", path: "reference/events.md", about: "every event on an agent's stream, and a run's outcome" },
