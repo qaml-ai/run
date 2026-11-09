@@ -1,7 +1,7 @@
 /** Local-only fixture adapter. It is never referenced by a deployment config. */
 import application from "../src/index.ts";
 import { CamelAgent as RuntimeAgent } from "../src/agent.ts";
-import { ARM_AGENT, DUE_HUMAN_INPUTS, SHARED_ADMISSION_STATE, SUBMIT_SHARED_PROMPT } from "../src/agent-internals.ts";
+import { ARM_AGENT, DUE_HUMAN_INPUTS, testAgentRuntimes } from "../src/agent-internals.ts";
 import type { Env } from "../src/agent.ts";
 import type { DelegatedChild } from "../src/delegation.ts";
 import { databaseUnavailable, withSql } from "../src/postgres.ts";
@@ -98,11 +98,15 @@ export class CamelAgent extends RuntimeAgent {
   }
 
   async fetch(request: Request) {
-    if (new URL(request.url).pathname === "/__test/shared-state") return Response.json(await this[SHARED_ADMISSION_STATE]());
+    if (new URL(request.url).pathname === "/__test/shared-state") {
+      const runtime = testAgentRuntimes.get(this)!;
+      return Response.json({ held: (await runtime.records()).filter(record => record.heldForInput && record.state !== "completed").length,
+        deadline: runtime.maintenance?.at ?? null, generation: runtime.maintenanceGeneration });
+    }
     if (new URL(request.url).pathname === "/__test/shared-prompt" && request.method === "POST") {
       const { member, ...params } = await request.json() as Record<string, unknown>;
       try {
-        const record = await this[SUBMIT_SHARED_PROMPT]({ id: crypto.randomUUID(), method: "prompt", params }, String(member));
+        const record = await testAgentRuntimes.get(this)!.submit({ id: crypto.randomUUID(), method: "prompt", params }, undefined, undefined, undefined, String(member));
         return Response.json({ id: record.id, state: record.state }, { status: 202 });
       } catch (error) {
         return Response.json({ error: String((error as Error).message) }, { status: (error as { status?: number }).status ?? 500 });

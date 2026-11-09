@@ -1,5 +1,6 @@
 import { expireDecisions } from "./inbox-decisions.ts";
 import { restageInputMirrors } from "./agent-input-mirror.ts";
+import { inputAdmissionDeadline } from "./input-admission.ts";
 import { MULTI_AGENT_LIMITS, viaParent } from "./multi-agent-policy.ts";
 import { childParent } from "./child-parent.ts";
 import { type EventSubscription } from "./event-socket.ts";
@@ -121,6 +122,7 @@ export async function armImpl(this: AgentRuntime,
           )) ?? Infinity)
         : Infinity,
       ...[...schedules.values()].map((item) => item.retryAt ?? item.dueAt),
+      inputAdmissionDeadline(records),
       retry ?? Infinity,
       pendingBilling ? Date.now() + 5000 : Infinity,
       pendingEvents ? Date.now() + 1000 : Infinity,
@@ -279,6 +281,7 @@ export async function wakeImpl(this: AgentRuntime) {
     this.admission = expire.catch(() => {});
     await expire;
     await expireDecisions(this);
+    this.kickInputPrompts();
     await this.restoreHostAdmissions();
     // A call's live credit hold reserves its funds. Only check available credit
     // between calls; checking here could abort work that already reserved it.

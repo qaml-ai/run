@@ -595,6 +595,7 @@ export async function admitImpl(this: AgentRuntime,
     if (request.method === "prompt" && shared) {
       const inputs = await (await this.harness.pi()).snapshot(HumanInputs, BACKGROUND_CONTEXT);
       if (Object.values(inputs?.requests ?? {}).some(input => input.answer === undefined)) {
+        delete record.inputAdmissionRetry;
         record.state = "queued";
         record.heldForInput = true;
         if (preparing) { record.admitted = true; await this.promptPreparations.finish(id); }
@@ -603,6 +604,7 @@ export async function admitImpl(this: AgentRuntime,
       }
     }
     delete record.heldForInput;
+    delete record.inputAdmissionRetry;
     const prompt = files
       ? attachmentInput(text, files)
       : params.images
