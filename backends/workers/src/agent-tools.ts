@@ -1,3 +1,6 @@
+import { decisionInputs } from "./inbox-decisions.ts";
+import { decisionDetail, argumentsHash } from "./decision-inputs.ts";
+import { builtinDefinitions as inboxBuiltinDefinitions } from "./inbox-definitions.ts";
 import { retriesModelError } from "./model-errors.ts";
 import { modelCompactionSettings } from "./model-context.ts";
 import { withCompactionPrompt } from "./model-compaction.ts";
@@ -15,7 +18,7 @@ import { PiHarness } from "agents/harness/pi";
 import { startStuck } from "./agent-lifecycle.ts";
 import { computerTool } from "./computers/tool.ts";
 import { computerSetup } from "./computers/agent-setup.ts";
-import { askHuman, askUser, humanInputExtension } from "./human.ts";
+import { askHuman, makeAskUser, humanInputExtension } from "./human.ts";
 import { volumeTools, type Mount } from "./files.ts";
 import { attachedComputerTools } from "./computers/agent-tools.ts";
 import { ComputerService } from "./computers/service.ts";
@@ -55,7 +58,7 @@ export function createDecisions(this: AgentRuntime): ReturnType<typeof decisionS
         spendLimit: (params?.spendLimit as { usd?: number } | undefined)?.usd,
         actor: params?.actor as string | undefined,
         identity: {
-          subject: conf.config.subject,
+          subject: (params?.endUser as string | undefined) ?? conf.config.subject,
           context: conf.config.context,
         },
         keyScope: conf.config.keyScope,
@@ -139,7 +142,7 @@ export function createModels(this: AgentRuntime): ReturnType<typeof modelRuntime
               tenant: conf.tenantId,
               agent: conf.id,
               requestId: run.id === "background" ? undefined : run.id,
-              subject: conf.config.subject,
+              subject: (params?.endUser as string | undefined) ?? conf.config.subject,
               context: conf.config.context,
               bucket:
                 (params?.bucket as string | undefined) ?? conf.config.bucket,
@@ -334,7 +337,32 @@ export function createHarness(this: AgentRuntime): PiHarness {
           tools: wordedFileTools(tools, conf.config),
           sections: [],
         });
-        registry.install({ name: "camel.human", tools: [askHuman, askUser] });
+        const attachments = async (items: any[]) => {
+          const conf = await this.config();
+          const found: any[] = [];
+          const present = volumeTools(this.env, conf.tenantId, conf.id, async () => conf.config.mounts as Mount[] ?? [], async file => { found.push({ path: file.path, version: file.version, contentType: file.contentType, ...(file.caption ? { caption: file.caption } : {}) }); }).find(tool => tool.name === "present_file")!;
+          for (const item of items) await present.execute(item, {} as never, BACKGROUND_CONTEXT);
+          return found;
+        };
+        const decisionDefinition = inboxBuiltinDefinitions(["request_decision"])[0];
+        const requestDecision: ToolRegistration = { ...decisionDefinition, replay: "safe", structuredOutputSchema: {}, callers: ["model", "tools"], async execute(args, api) {
+          const detail = decisionDetail(args as Record<string, any>);
+          if (detail.attachments?.length) detail.attachments = await attachments(detail.attachments);
+          const conf = await runtime.config(), run = await runtime.currentRun(api);
+          const position = await runtime.delegation.lineage(conf.id, run);
+          const lineage = [...position?.chain ?? [], conf.id];
+          const rows = await decisionInputs(runtime).create({ agent: conf.id, tenant: conf.tenantId, requestId: run.id, toolCallId: api.callId,
+            tool: "request_decision", argumentsHash: argumentsHash("request_decision", args), responders: "actor" in run && run.actor ? { audience: [run.actor] } : {},
+            approvers: conf.config.humanInput?.approvers as string[] | undefined, subject: conf.config.subject, rootAgent: lineage[0], lineage, blocking: false, itemKey: (args as any).key,
+            expiresAt: Math.min(Date.now() + 7 * 86400000, conf.expiresAt ?? Infinity),
+          }, [{ kind: "decision", message: detail.title, detail }]);
+          await runtime.ctx.storage.put("decision-input-deadline", Math.min(await runtime.ctx.storage.get<number>("decision-input-deadline") ?? Infinity, rows[0].expiresAt));
+          await runtime.arm();
+          const value = { inputId: rows[0].id };
+          return { output: [{ type: "text", text: JSON.stringify(value) }], structuredOutput: value };
+        } };
+        const runtime = this;
+        registry.install({ name: "camel.human", tools: [askHuman, makeAskUser(attachments, conf.config.builtins ?? []), ...((conf.config.builtins ?? []).includes("request_decision") ? [requestDecision] : [])] });
         // A channel's agents send updates and files to their conversation before the final reply. One that also messages
         // agents (its sub-agents) gets one send_message for both, dispatched on `to` (installed with camel.delegation).
         const messaging = this.channels.messaging(async () => this.config(), async api => { const run = await this.currentRun(api as never); return run.id === "background" ? undefined : run.id; },
@@ -394,7 +422,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
               builtins: conf.config.builtins,
               webSearch: conf.config.webSearch,
               keyScope: conf.config.keyScope,
-              identity: { subject: conf.config.subject, context: conf.config.context },
+              identity: { subject: (params?.endUser as string | undefined) ?? conf.config.subject, context: conf.config.context },
               actor: ("actor" in run ? run.actor : undefined) ?? params?.actor as string | undefined,
               bucket: (params?.bucket as string | undefined) ?? conf.config.bucket ?? await this.ctx.storage.get<string>("run-bucket") ?? "default",
               files: (await this.sourceIdentity(api)).toolFiles('web_fetch'),

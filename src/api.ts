@@ -1,4 +1,5 @@
 import { SharedAgents, ShareLinkInput, MemberInput, ShareLink, CreatedShareLink, Member } from './shared-agents.ts';
+import { inboxQuery, readInbox, InboxQueryError } from '../shared/inbox.ts';
 import { rejectWorkflow } from "./builtins.ts";
 import { computerRoutes } from "./computers/api.ts";
 import type { Computers } from "./computers/service.ts";
@@ -626,6 +627,7 @@ export function api(context: ApiContext) {
     }
     // A first prompt is checked before anything is made, and sent once the agent is: it runs when the agent has started.
     const first = prompt === undefined ? undefined : promptRequest(parse(schema.PromptInput, prompt));
+    if (prompt?.endUser !== undefined && !["operator", "token"].includes(c.var.principal.via)) throw new HttpError(403, "Only a tenant key can choose a run payer");
     // Counted as the key's agent is found: an upsert that changes nothing is not a create, though its headers say where the tenant stands.
     let counting: Promise<RateLimitState | undefined> | undefined;
     const admit = (unchanged: boolean) => counting ??= context.rateLimits?.agentCreate(tenant, !unchanged) ?? Promise.resolve(undefined);
@@ -769,6 +771,7 @@ export function api(context: ApiContext) {
   route(createRoute({ method: "post", path: "/v1/agents/{id}/prompt", request: { params: agentId, body: content(schema.PromptInput) }, responses: { 202: { ...reply("The accepted request", schema.RequestRecord), headers: rateLimited("Runs") } } }), async c => {
     // Room for inline files (FILE_LIMITS.inlineBytes, as base64); larger ones are uploaded first.
     const body = parse(schema.PromptInput, await readJson(c.req.raw.body, 6 * 1024 * 1024, {}));
+    if (body.endUser !== undefined && !["operator", "token"].includes(c.var.principal.via)) throw new HttpError(403, "Only a tenant key can choose a run payer");
     const record = await clients.submit(c.req.param("id")!, c.var.principal.tenant, promptRequest(body, c.req.header("idempotency-key")),
       rate => { for (const [name, value] of Object.entries(rateLimitHeaders(rate))) c.header(name, value); });
     return json(c, 202, record);
@@ -810,7 +813,7 @@ export function api(context: ApiContext) {
     method: "get", path: "/v1/agents/{id}/children", request: { params: agentId }, security: readers,
     responses: { 200: reply("The children its delegate and spawn_agent calls (and tools' spawn directives) started, newest first, each as its latest run says: whether it runs, how it ended, whether its answer reached the agent yet, and a running one's latest progress. The agent idle (state) and every child ended and delivered: the whole tree is settled", schema.ChildAgents) },
   }), async c => json(c, 200, { children: await clients.childrenFor(c.req.param("id")!) }));
-  const inputState = z.object({ state: z.enum(["pending", "answered", "declined", "cancelled", "expired", "superseded"]).optional() });
+  const inputState = z.object({ state: z.enum(["pending", "answered", "declined", "cancelled", "expired", "superseded", "withdrawn"]).optional() });
   route(createRoute({ method: "get", path: "/v1/agents/{id}/inputs", request: { params: agentId, query: inputState }, security: readers, responses: { 200: reply("The agent's human inputs, newest first", z.array(schema.Input)) } }),
     async c => {
       const inputs = await clients.inputsFor(c.req.param("id")!, c.var.principal.tenant, c.req.query("state"));
@@ -830,8 +833,12 @@ export function api(context: ApiContext) {
     const { status, ...answered } = await clients.answer(c.req.param("id")!, c.var.principal.tenant, answerList(await readJson(c.req.raw.body, 1024 * 1024, {})));
     return json(c, status, answered);
   });
-  route(createRoute({ method: "get", path: "/v1/inputs", request: { query: inputState }, responses: { 200: reply("The tenant's human inputs across its agents, newest first: what waits on someone", z.array(schema.Input)) } }),
-    async c => json(c, 200, await clients.inbox(c.var.principal.tenant, c.req.query("state"))));
+  for (const path of ["/v1/inbox", "/v1/inputs"]) {
+    route(createRoute({ method: "get", path, request: { query: schema.InboxQuery }, responses: { 200: reply("Pending inputs in priority order, with filtered counts before pagination", schema.InboxPage) } }), async c => {
+      try { return json(c, 200, await readInbox(accounts.db, c.var.principal.tenant, inboxQuery(new URL(c.req.url).searchParams))); }
+      catch (error) { if (error instanceof InboxQueryError) throw new HttpError(400, error.message); throw error; }
+    });
+  }
 
   route(createRoute({ method: "get", path: "/v1/agents/{id}/schedule-deliveries", request: { params: agentId }, responses: { 200: reply("The latest 100 scheduled email deliveries", z.array(z.object({ id: z.string(), state: z.string(), email: z.record(z.string(), z.unknown()), createdAt: z.number(), sentAt: z.number().nullable(), messageId: z.string().nullable(), error: z.string().nullable() }))) } }), async c => {
     const { rows } = await accounts.db.query('select id,state,email,created_at as "createdAt",sent_at as "sentAt",message_id as "messageId",error from schedule_deliveries where tenant=$1 and agent=$2 order by created_at desc limit 100', [c.var.principal.tenant,c.req.param("id")]);

@@ -151,6 +151,7 @@ Run options (`run`, `stream`):
 
 | TypeScript | Python | |
 | --- | --- | --- |
+| `endUser` | `end_user=` | existing end user whose credits pay for this prompt; requires a tenant-key client. A steer joins only a turn with the same payer selection. Omit to charge the agent subject. See [End-user credits](../guides/end-user-credits.md) |
 | `user` | `user=` | who sent it: your user id, or `{ id, name, username }`; the model sees who, tools get `identity.actor` |
 | `files` | `files=` | attachments, by bytes, path, `{ url }` or `{ path }` in the agent's mounts; audio among them is transcribed for the model (`transcribe: false` keeps a file plain). See [Files](../guides/files.md) and [Voice and audio](../guides/voice.md). With audio, the text may be `""` |
 | `metadata` | `metadata=` | your own key-value data about the message (16 strings); the model never sees it |
@@ -387,7 +388,7 @@ available and stable for code that needs the wire's shape: `agents.runtime`,
 | `runtime.upsertDefinition(key, input)`, `createDefinition`, `updateDefinition`, `definition(s)`, `deleteDefinition` | `upsert_definition(key, …)`, `create_definition`, … | definitions; the same key is the same definition |
 | `runtime.createVolume`, `volume(id)`, `mounts`, `setMounts` | `create_volume`, `volume(id)`, … | volumes and mounts |
 | `runtime.projects.create({ key, template })`, `project.mount`, `project.publish`, `publishTool` | `camelai_run.projects`: `Projects(runtime).create(key, template=)`, `mount`, `publish`, `publish_tool` | [projects](../guides/projects.md): an agent builds in a keyed volume; your code checks and publishes snapshots |
-| `runtime.inbox(state)`, `toolSources(agentId)` | `inbox(state=)`, `tool_sources(agent_id)` | inputs across agents; an agent's tools |
+| `runtime.inbox(options)`, `toolSources(agentId)` | `inbox(for_=, subject=, root=, priority=, kind=, cursor=, limit=)`, `tool_sources(agent_id)` | pending input page (`items`, `cursor`, `counts`); an agent's tools |
 | | `set_scope_key(scope, provider, api_key=, base_url=, headers=, region=)`, `key_scope(scope)`, `delete_scope_key(scope, provider)`, `delete_key_scope(scope)` | a key scope's provider keys (`/v1/key-scopes`): agents made with `key_scope=` use them first; see [Models and keys](../guides/models-and-keys.md) |
 | | `set_scope_provider(scope, name, base_url=, models=, …)`, `scope_providers(scope)`, `delete_scope_provider(scope, name)` | a key scope's own providers, as `set_provider`'s |
 | | `usage(days=)` | tokens and cost per day and model (`GET /v1/usage`) |
@@ -403,7 +404,7 @@ available and stable for code that needs the wire's shape: `agents.runtime`,
 | `client.execute(code)` | `execute(code)` | run code in the sandbox with the agent's tools, outside its history |
 | `client.steerMessage(text, options)` | `steer_message(text, …)` | `prompt` with `whileRunning: "steer"`, answered as soon as the runtime has it: `{id, status: "accepted" \| "taken" \| "queued", steeredInto?}` (`client.prompt(text, { whileRunning: "steer" })` waits for the turn that took it) |
 | `client.status()`, `client.abort({ queued })` | `status()`, `abort(queued=)` | whether the agent is busy (`busy`, `activeRun`, `queuedRuns`, as `GET /v1/agents/{id}` says too); stop it (its running turn, and unless `queued: "keep"` the runs queued behind it) |
-| `client.steer(text)` | `steer()` | the legacy `steer` request, which holds the message for the running (or next) turn; new code uses `steerMessage` |
+| `client.steer(text)` | `steer()` | holds idle input for the next run; joins it only with the same payer. An explicit payer uses prompt steering. Use `steerMessage` for an immediate receipt |
 | `client.setMetadata({ name, type })` | `set_metadata(name=, type=)` | rename or regroup |
 | `client.destroy()`, `close()` | same | delete the agent; close the connection |
 

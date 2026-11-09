@@ -68,6 +68,10 @@
                   "execute"
                 ]
               },
+              "endUser": {
+                "type": "string",
+                "description": "The explicit payer override for this run"
+              },
               "actor": {
                 "type": "string"
               },
@@ -133,6 +137,10 @@
                   "resume",
                   "execute"
                 ]
+              },
+              "endUser": {
+                "type": "string",
+                "description": "The explicit payer override for this run"
               },
               "actor": {
                 "type": "string"
@@ -284,6 +292,10 @@
                   "execute"
                 ]
               },
+              "endUser": {
+                "type": "string",
+                "description": "With an end user's credit refusal: whose credit (the payer)"
+              },
               "actor": {
                 "type": "string"
               },
@@ -363,10 +375,6 @@
               "bucket": {
                 "type": "string",
                 "description": "With an end user's credit refusal: the bucket refused (builder, bot:42, default)"
-              },
-              "endUser": {
-                "type": "string",
-                "description": "With an end user's credit refusal: whose credit (the subject)"
               },
               "uncertain": {
                 "type": "boolean",
@@ -458,7 +466,8 @@
                   "question",
                   "approval",
                   "form",
-                  "url"
+                  "url",
+                  "decision"
                 ]
               },
               "expiresAt": {
@@ -520,7 +529,8 @@
                   "declined",
                   "cancelled",
                   "expired",
-                  "superseded"
+                  "superseded",
+                  "withdrawn"
                 ]
               }
             },
@@ -2570,7 +2580,7 @@
           },
           "endUser": {
             "type": "string",
-            "description": "With END_USER_CREDIT: whose credit refused the work (the subject)"
+            "description": "With END_USER_CREDIT: whose credit refused the work (the payer)"
           },
           "bucket": {
             "type": "string",
@@ -3749,6 +3759,10 @@
       "RequestRecord": {
         "type": "object",
         "properties": {
+          "endUser": {
+            "type": "string",
+            "description": "The tenant-selected payer override for this run"
+          },
           "id": {
             "type": "string"
           },
@@ -4218,6 +4232,7 @@
           "x_search",
           "schedule",
           "ask_user",
+          "request_decision",
           "delegate",
           "generate_image",
           "agents",
@@ -4465,6 +4480,12 @@
       "PromptInput": {
         "type": "object",
         "properties": {
+          "endUser": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "Charge this prompt to an existing end user of this tenant instead of the agent subject. Tenant API key only. A steer joins only a turn with the same endUser selection. Child tasks, their notifications and messages inherit the run payer; child tool identity stays the owner. Later prompts without it use the agent subject"
+          },
           "text": {
             "type": "string",
             "description": "The message. It may be left out when the message attaches audio, whose transcript is then the message"
@@ -4513,7 +4534,7 @@
               "queue",
               "steer"
             ],
-            "description": "What happens if the agent is working on a turn when this arrives. queue (default): it runs as the next turn. steer: the running turn takes it after its current step. The 202 says so at once (steer: \"accepted\"; \"queued\" when no turn could take it), and this request completes as soon as the turn takes the message (steeredInto names the turn, whose own request has its outcome; a steer_taken event marks it), so steered messages never wait for the turn's end, nor count against the agent's queue once taken. If the turn ends first, it runs as a turn of its own. With no turn running, both start one"
+            "description": "What happens if the agent is working on a turn when this arrives. queue (default): it runs as the next turn. steer: a running turn with the same endUser selection takes it after its current step; a different payer queues a separate turn. The 202 says so at once (steer: \"accepted\"; \"queued\" when no turn could take it), and this request completes as soon as the turn takes the message (steeredInto names the turn, whose own request has its outcome; a steer_taken event marks it), so steered messages never wait for the turn's end, nor count against the agent's queue once taken. If the turn ends first, it runs as a turn of its own. With no turn running, both start one"
           },
           "spendLimit": {
             "allOf": [
@@ -4527,7 +4548,7 @@
           },
           "bucket": {
             "type": "string",
-            "description": "With end-user credits on (/v1/end-user-settings): the bucket of the agent's subject this run spends from, instead of the agent's. Only the tenant may set it"
+            "description": "With end-user credits on (/v1/end-user-settings): the bucket of this run's payer (endUser, else the agent subject) it spends from, instead of the agent's. Only the tenant may set it"
           },
           "runLimits": {
             "type": "object",
@@ -6136,7 +6157,8 @@
               "question",
               "approval",
               "form",
-              "url"
+              "url",
+              "decision"
             ],
             "description": "question: ask_user's questions; approval: a call the runtime or a tool wants approved; form: fields a tool asks for; url: a page a tool asks the user to open"
           },
@@ -6168,7 +6190,8 @@
               "declined",
               "cancelled",
               "expired",
-              "superseded"
+              "superseded",
+              "withdrawn"
             ],
             "description": "expired: no one answered by expiresAt, so the runtime answered for the person (answer.by.system \"expired\"; an approval is not given) and the agent went on without them"
           },
@@ -6197,6 +6220,69 @@
               "by",
               "at"
             ]
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "urgent",
+              "high",
+              "normal",
+              "low"
+            ]
+          },
+          "blocking": {
+            "type": "boolean"
+          },
+          "key": {
+            "type": "string"
+          },
+          "version": {
+            "type": "number"
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "number"
+                },
+                "contentType": {
+                  "type": "string"
+                },
+                "caption": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "version"
+              ]
+            }
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "recommendation": {
+            "type": "object",
+            "properties": {
+              "answer": {},
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason"
+            ]
+          },
+          "applyRecommendationOnExpiry": {
+            "type": "boolean"
           },
           "createdAt": {
             "type": "number"
@@ -6342,6 +6428,113 @@
         },
         "required": [
           "answers"
+        ]
+      },
+      "InboxPage": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Input"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "key": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "version": {
+                      "type": "integer"
+                    },
+                    "inputId": {
+                      "type": "string",
+                      "description": "Use this id with the per-agent input answer route; id identifies the inbox row"
+                    },
+                    "subject": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "root": {
+                      "type": "string"
+                    },
+                    "lineage": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "priority",
+                    "blocking",
+                    "key",
+                    "version",
+                    "inputId",
+                    "subject",
+                    "root",
+                    "lineage"
+                  ]
+                }
+              ]
+            }
+          },
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "counts": {
+            "type": "object",
+            "properties": {
+              "priority": {
+                "type": "object",
+                "properties": {
+                  "urgent": {
+                    "type": "number"
+                  },
+                  "high": {
+                    "type": "number"
+                  },
+                  "normal": {
+                    "type": "number"
+                  },
+                  "low": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "urgent",
+                  "high",
+                  "normal",
+                  "low"
+                ]
+              },
+              "lead": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "number"
+                }
+              }
+            },
+            "required": [
+              "priority",
+              "lead"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "cursor",
+          "counts"
         ]
       },
       "Schedule": {
@@ -11123,7 +11316,7 @@
           },
           "endUser": {
             "type": "string",
-            "description": "With an end user's credit refusal: whose credit (the subject)"
+            "description": "With an end user's credit refusal: whose credit (the payer)"
           },
           "errorClass": {
             "type": "string",
@@ -17455,7 +17648,8 @@
                 "declined",
                 "cancelled",
                 "expired",
-                "superseded"
+                "superseded",
+                "withdrawn"
               ]
             },
             "required": false,
@@ -17648,36 +17842,187 @@
         }
       }
     },
-    "/v1/inputs": {
+    "/v1/inbox": {
       "get": {
         "parameters": [
           {
             "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "for",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "subject",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "root",
+            "in": "query"
+          },
+          {
+            "schema": {
               "type": "string",
               "enum": [
-                "pending",
-                "answered",
-                "declined",
-                "cancelled",
-                "expired",
-                "superseded"
+                "urgent",
+                "high",
+                "normal",
+                "low"
               ]
             },
             "required": false,
-            "name": "state",
+            "name": "priority",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "question",
+                "approval",
+                "form",
+                "url",
+                "decision"
+              ]
+            },
+            "required": false,
+            "name": "kind",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "required": false,
+            "name": "limit",
             "in": "query"
           }
         ],
         "responses": {
           "200": {
-            "description": "The tenant's human inputs across its agents, newest first: what waits on someone",
+            "description": "Pending inputs in priority order, with filtered counts before pagination",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/Input"
-                  }
+                  "$ref": "#/components/schemas/InboxPage"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/inputs": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "for",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "subject",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "root",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "urgent",
+                "high",
+                "normal",
+                "low"
+              ]
+            },
+            "required": false,
+            "name": "priority",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "question",
+                "approval",
+                "form",
+                "url",
+                "decision"
+              ]
+            },
+            "required": false,
+            "name": "kind",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Pending inputs in priority order, with filtered counts before pagination",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxPage"
                 }
               }
             }

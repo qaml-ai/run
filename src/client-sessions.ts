@@ -448,7 +448,7 @@ export class ClientSessions {
    */
   private runEvent(session: Session, record: RequestRecord, usage?: RunUsage): WebhookEvent {
     const { id: agentId, tenant } = session.header;
-    const base = { agentId, requestId: record.id, method: record.method, ...(record.actor ? { actor: record.actor } : {}), ...(record.metadata ? { metadata: record.metadata } : {}) };
+    const base = { agentId, requestId: record.id, method: record.method, ...(record.endUser ? { endUser: record.endUser } : {}), ...(record.actor ? { actor: record.actor } : {}), ...(record.metadata ? { metadata: record.metadata } : {}) };
     if (record.state === "running") return webhookEvent("run.started", tenant, { ...base, ...(record.resumes ? { resumes: record.resumes } : {}) }, `run.started:${agentId}:${record.id}`);
     const outcome = record.outcome ?? { error: "No outcome was recorded" };
     const result = (outcome.result ?? {}) as { stopped?: string; inputs?: { id: string }[]; replyIndex?: number; messages?: number; code?: unknown; limit?: unknown; reason?: unknown; bucket?: unknown; endUser?: unknown; servedModel?: string; modelError?: object };
@@ -502,6 +502,8 @@ export class ClientSessions {
   }
 
   private track(session: Session, record: RequestRecord) {
+    // Releasing an idle steer is a new queue position, including when replaying its journal update.
+    if (session.requests.get(record.id)?.method === "steer" && record.method === "prompt") session.requests.delete(record.id);
     session.requests.set(record.id, record);
     if (record.state === "running") session.running.set(record.id, record);
     else if (session.running.delete(record.id) && session.busy) this.releaseBusy(session);
@@ -596,7 +598,7 @@ export class ClientSessions {
   private async fold(session: Session) {
     if (session.log.appendedSinceRewrite < FOLD_AFTER_RECORDS && session.requests.size < 4 * RETAINED_SETTLED) return;
     const prune = <T extends { id: string; state: string }>(records: Map<string, T>, at: (record: T) => number) => {
-      const old = [...records.values()].filter(record => settled(record.state)).sort((a, b) => at(a) - at(b));
+      const old = [...records.values()].filter(record => settled(record.state) && !("method" in record && record.method === "steer" && "params" in record && record.params !== undefined)).sort((a, b) => at(a) - at(b));
       for (const record of old.slice(0, Math.max(0, old.length - RETAINED_SETTLED))) records.delete(record.id);
     };
     prune(session.requests, record => record.endedAt ?? record.startedAt ?? 0);
@@ -865,8 +867,9 @@ export class ClientSessions {
         modelAttempt: async event => {
           if (event.type === "begin" && session.header.revoked) return Promise.reject(new Error("Session revoked"));
           const run = runningRun(session);
-          const { identity, keyScope } = session.header;
-          // Who pays is the runtime's to say, never the host's: the agent's subject, from its run's bucket.
+          const { keyScope } = session.header;
+          const identity = spend.billingIdentity(session, run);
+          // The runtime selects the payer and bucket; the host cannot override them.
           const payer = event.type === "begin" ? spend.modelPayer(this.spendContext, session, run) : undefined;
           const { endUser: _given, ...asked } = event as Extract<typeof event, { type: "begin" }>;
           const scoped = event.type === "begin" ? { ...asked, ...(payer ? { endUser: payer } : {}), context: { ...(run ? { requestId: run.id, actor: run.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) } } : event;
@@ -959,6 +962,7 @@ export class ClientSessions {
     const cancelled: RequestRecord[] = [];
     let kept = false;
     if (queued === "cancel") {
+      for (const record of session.requests.values()) if (record.method === "steer" && record.state === "completed" && record.params !== undefined) this.upsertRequest(session, { ...record, params: undefined });
       for (const record of [...session.running.values()]) {
         if (record.began || !CANCELLABLE.includes(record.method) || (run && record.batchedInto === run.id)) continue;
         // A sub-agent's notification (or message to its parent) is the runtime's, sent once: it is not cancelled, but
@@ -1025,9 +1029,6 @@ export class ClientSessions {
    * node serving the agent, returned in `requests`.
    */
   async answer(id: string, tenant: string, answers: { id: string; body: any }[], via: Responder["via"] = "api"): Promise<{ status: 200 | 202; inputs: Input[]; requests: RequestRecord[] }> { return humanInput.answer(this.inputsContext, id, tenant, answers, via); }
-
-  /** A tenant's inputs across its agents, newest first: the inbox of what waits on someone. */
-  async inbox(tenant: string, state?: string) { return humanInput.inbox(this.inputsContext, tenant, state); }
 
   /**
    * Expire inputs past their time, on any node: each suspension whose last input expired is resumed
@@ -1678,6 +1679,18 @@ export class ClientSessions {
    */
   private async accept(session: Session, body: any, trusted = false): Promise<{ status: 200 | 202; record: RequestRecord; rate?: RateLimitState }> {
     if (!validId(body?.id) || !REQUEST_METHODS.includes(body.method) || !body.params || typeof body.params !== "object" || Array.isArray(body.params)) throw new HttpError(400, "Invalid request");
+    // An idle raw steer is held for the next prompt. Active steers use payer-aware prompt admission.
+    const rawSteer = body.method === "steer";
+    const oldSteer = rawSteer && session.requests.get(body.id);
+    const heldSteer = rawSteer && (oldSteer ? oldSteer.method === "steer" : ![...session.running.values()].some(record => RUN_METHODS.includes(record.method)));
+    if (rawSteer && !heldSteer) body = { ...body, method: "prompt", params: { ...body.params, whileRunning: "steer" } };
+    if (body.params.endUser !== undefined) {
+      if (!trusted) throw new HttpError(403, "Only a tenant key can choose a run payer");
+      if (!["prompt", "steer"].includes(body.method)) throw new HttpError(400, "endUser is for a prompt");
+      if (!this.options.endUsers) throw new HttpError(404, "End-user credits are unavailable");
+      const internal = /^(child_|msg_|delegate_|spawn_)/.test(body.id) && (childSessions.validNotice(body.params.notice) || delegation.delegation(this.delegationContext, session.header.id, body.id, body.params.metadata).chain.length > 0);
+      if (!internal) await this.options.endUsers.requireExisting(session.header.tenant, body.params.endUser);
+    }
     // Only the runtime resumes a suspension, once its inputs have settled.
     if (body.method === "resume" && (!trusted || Object.keys(body.params).length !== 1 || !validId(body.params.suspension))) throw new HttpError(400, "Answer the agent's inputs to resume its turn");
     // Applying a definition reads the tenant's definitions, so only the tenant may ask for it, not the agent's own token.
@@ -1689,7 +1702,7 @@ export class ClientSessions {
     // Which of its end user's buckets the agent's runs spend from: the tenant's to say, applied at once, as a spend limit is.
     const agentBucket = body.method === "configure" && Object.hasOwn(body.params, "bucket") ? body.params.bucket === null ? null : bucketInput(body.params.bucket) : undefined;
     // A run's own bucket, likewise the tenant's alone: an agent's token choosing one could spend another bucket's allowance.
-    if (body.method !== "configure" && body.params.bucket !== undefined && (!trusted || !MODEL_RUNS.includes(body.method))) {
+    if (body.method !== "configure" && body.params.bucket !== undefined && (!trusted || (!MODEL_RUNS.includes(body.method) && body.method !== "steer"))) {
       throw new HttpError(trusted ? 400 : 403, trusted ? "bucket is for a model run (prompt, continue)" : "Only the tenant can choose a run's bucket");
     }
     if (applying && (!trusted || !this.options.definitionFor || Object.keys(body.params).length !== 1 || typeof body.params.definition?.id !== "string")) throw new HttpError(400, "Apply a definition with PATCH /v1/definitions/<id> and apply: \"all\"");
@@ -1713,7 +1726,10 @@ export class ClientSessions {
     const { allowDisconnected, traceparent: _traceparent, ...asked } = body.params;
     if (allowDisconnected !== undefined && typeof allowDisconnected !== "boolean") throw new HttpError(400, "allowDisconnected is true or false");
     body = { ...body, params: asked };
-    const fingerprint = hash(canonical({ method: body.method, params: body.params }));
+    // A held raw steer may later become an own turn. Its retry must still name the same input.
+    const fingerprint = hash(canonical(rawSteer
+      ? { method: "prompt", params: { ...body.params, whileRunning: "steer" } }
+      : { method: body.method, params: body.params }));
     const existing = () => {
       const record = session.requests.get(body.id);
       if (record && record.fingerprint !== fingerprint) throw new HttpError(409, "Request ID reused with different arguments", "IDEMPOTENCY_CONFLICT");
@@ -1748,6 +1764,7 @@ export class ClientSessions {
     let actor: string | undefined;
     let { actor: rawActor, bucket: rawBucket, ...params } = body.params;
     if (spendLimit !== undefined) delete params.spendLimit;
+    let endUser = params.endUser as string | undefined;
     let bucket = body.method === "configure" || rawBucket === undefined ? undefined : bucketInput(rawBucket);
     if (rawActor !== undefined && !isRun) throw new HttpError(400, "actor is only for runs (prompt, continue, execute)");
     const isMessage = ["prompt", "steer"].includes(body.method);
@@ -1783,6 +1800,7 @@ export class ClientSessions {
       if (body.method === "resume") {
         actor = session.requests.get(params.suspension)?.actor;
         bucket = session.requests.get(params.suspension)?.bucket;
+        endUser = session.requests.get(params.suspension)?.endUser;
       }
     } catch (error) { throw new HttpError(400, errorText(error)); }
     if (params.notice === undefined && (CANCELLABLE.includes(body.method) || body.method === "steer")) await requireActiveMember(this.db, session.header.tenant, session.header.id, actor);
@@ -1796,10 +1814,10 @@ export class ClientSessions {
     // or notification of the runtime's. Anyone else's prompt, steer, continue or code is refused (answering its inputs still resumes it).
     if (session.header.parent && ["prompt", "steer", "continue", "execute"].includes(body.method) && !notice && !delegation.delegation(this.delegationContext, session.header.id, body.id, params.metadata).chain.length) throw viaParent(session.header.id);
     const rate = isRun && body.method !== "resume" && !notice ? await this.options.runRate?.(session.header.tenant) ?? undefined : undefined;
-    const limited = body.method === "resume" || notice ? undefined : await spend.runLimit(this.spendContext, session, body.method, bucket);
+    const limited = body.method === "resume" || notice ? undefined : await spend.runLimit(this.spendContext, session, body.method, bucket, endUser);
     if (limited) throw limited;
     // The bucket the tenant names for a run is the one the runs the runtime starts for the agent after it spend from.
-    if (bucket && body.method !== "resume" && session.header.runBucket !== bucket) {
+    if (bucket && endUser === undefined && body.method !== "resume" && session.header.runBucket !== bucket) {
       session.header.runBucket = bucket;
       await this.writeHeader(session);
     }
@@ -1821,7 +1839,7 @@ export class ClientSessions {
       }
       const queued = QUEUED_METHODS.includes(body.method);
       // Status and aborts need no process; queued requests start it (if at all) when their turn comes.
-      if (!queued && !["status", "abort"].includes(body.method)) await this.ensureStarted(session);
+      if (!queued && !["status", "abort", "steer"].includes(body.method)) await this.ensureStarted(session);
       // Concurrent retries may have waited on the same process startup.
       const raced = existing();
       if (raced) return taken(raced);
@@ -1833,7 +1851,7 @@ export class ClientSessions {
         if (work && work.fingerprint !== fingerprint) throw new HttpError(409, "Request ID reused with different arguments", "IDEMPOTENCY_CONFLICT");
         if (!work) {
           const budget = params.spendLimit?.usd as number | undefined;
-          work = { fingerprint, files: tools.attach(this.toolsContext, session, body.id, params.files).then(files => spend.transcribeAttached(this.spendContext, session, body.id, files, { actor, budget, bucket })) };
+          work = { fingerprint, files: tools.attach(this.toolsContext, session, body.id, params.files).then(files => spend.transcribeAttached(this.spendContext, session, body.id, files, { actor, budget, bucket, endUser })) };
           attaching.set(body.id, work);
           const done = () => { if (attaching.get(body.id) === work) attaching.delete(body.id); };
           work.files.then(done, done);
@@ -1848,6 +1866,13 @@ export class ClientSessions {
       if (["prompt", "steer"].includes(body.method) && params.message === undefined && !(typeof params.text === "string" && params.text.trim()) && !params.files?.some((file: FileRef) => file.transcript)) {
         throw new HttpError(400, "Send {\"text\": \"...\"}, or attach audio to transcribe");
       }
+      if (heldSteer) {
+        const record = this.upsertRequest(session, { id: body.id, method: "steer", fingerprint, state: "completed", startedAt: Date.now(), endedAt: Date.now(), params,
+          ...(endUser ? { endUser } : {}), ...(bucket ? { bucket } : {}), outcome: { result: { queued: true, running: false } } });
+        await this.commit(session, true);
+        this.publish(session, { type: "response", id: record.id, outcome: record.outcome! });
+        return { status: 202, record: visible(record) };
+      }
       // Work is open: marked before the request is taken (a failed write takes nothing, so a retry starts afresh) and before
       // it is durable, so a node dying with it leaves it for another's sweep (see `resumeOrphans`).
       // One write per busy spell: the mark stays until an unload with nothing open clears it.
@@ -1859,12 +1884,30 @@ export class ClientSessions {
         if (again) return taken(again);
       }
       if (params.notice === undefined && (CANCELLABLE.includes(body.method) || body.method === "steer")) await requireActiveMember(this.db, session.header.tenant, session.header.id, actor);
+      const later: RequestRecord[] = [];
+      if (body.method === "prompt") {
+        const held = [...session.requests.values()].filter(record => record.method === "steer" && record.state === "completed" && record.params !== undefined).sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0));
+        const matching: unknown[] = [];
+        for (const steer of held) {
+          const { params: input, outcome: _outcome, endedAt: _end, ...base } = steer;
+          if ((steer.endUser ?? null) === (endUser ?? null)) {
+            matching.push(input);
+            this.upsertRequest(session, { ...steer, params: undefined });
+          } else later.push({ ...base, method: "prompt", state: "running", params: { ...input as object, whileRunning: "steer" } });
+        }
+        if (matching.length) params = { ...params, batch: [...(Array.isArray(params.batch) ? params.batch : []), ...matching] };
+      }
       const record = this.upsertRequest(session, {
         startedAt: Date.now(), ...(body.method === "prompt" && typeof body.params.text === "string" ? { prompt: body.params.text } : {}),
         ...(body.method === "execute" && typeof body.params.code === "string" ? { code: body.params.code } : {}),
-        id: body.id, method: body.method, fingerprint, state: "running", ...(queued ? { params } : {}), ...(actor ? { actor } : {}), ...(bucket ? { bucket } : {}), ...(params.metadata ? { metadata: params.metadata } : {}),
+        id: body.id, method: body.method, fingerprint, state: "running", ...(queued ? { params } : {}), ...(actor ? { actor } : {}), ...(endUser ? { endUser } : {}), ...(bucket ? { bucket } : {}), ...(params.metadata ? { metadata: params.metadata } : {}),
         ...(body.method === "resume" ? { suspension: params.suspension } : {}),
       });
+      // Recovery sorts by arrival time, with log order breaking ties. Keep the released holds behind their trigger.
+      for (const steer of later) {
+        steer.startedAt = record.startedAt;
+        this.upsertRequest(session, steer);
+      }
       // Taken: its running record now keeps the agent busy, so it is no longer being admitted. An abort that cancels it
       // before the write below is done then gives the slot back before the run is seen to end, as for any cancelled run.
       if (admitting) { admitting = false; session.admitting!--; }
@@ -1874,6 +1917,7 @@ export class ClientSessions {
       finally { session.accepting.delete(record.id); }
       if (queued) this.enqueue(session, record, params);
       else void this.run(session, record, params);
+      for (const steer of later) this.enqueue(session, steer, steer.params);
       // A child's ending to an agent set to hear it at once (delegate.notify "asap"), while a turn runs: landed now (its
       // row claimed with the endings it carries, charged; or found taken by a wait, then nothing is offered), and offered
       // to the running turn as a steer. One the turn does not take runs as a turn of its own, whose landing finds it landed
@@ -1910,6 +1954,7 @@ export class ClientSessions {
     const ahead = () => [...session.running.values()].some(run => run.id !== id && run.method !== "execute" && RUN_METHODS.includes(run.method));
     while (!session.turn && ahead() && Date.now() <= deadline) await new Promise(resolve => setTimeout(resolve, 25));
     for (const turn = session.turn; turn && turn.requestId !== id;) {
+      if ((session.requests.get(id)?.endUser ?? null) !== (session.requests.get(turn.requestId)?.endUser ?? null)) return false;
       let steered = false;
       try { steered = !!(await this.supervisor.request(session.header.id, "steer", params))?.steered; }
       catch { return false; /* Not running after all: the queued prompt runs. */ }
@@ -2019,7 +2064,8 @@ export class ClientSessions {
           // Failed calls report zero usage; count only responses the provider completed.
           // Responses through the tenant's own endpoint count under it: `chiridion/openrouter/<model>`.
           const via = spend.endpoint(this.spendContext, session) ? `${session.header.config.model.provider}/` : "";
-          const { identity, keyScope } = session.header;
+          const { keyScope } = session.header;
+          const identity = spend.billingIdentity(session, record);
           const run = { requestId: record.id, ...(record.actor ? { actor: record.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) };
           if (spend.billed(event?.type === "message_end" ? event.message : undefined)) {
             const usage = spend.responseUsage(this.spendContext, session, event.message);
@@ -2198,7 +2244,7 @@ export class ClientSessions {
         // A run queued behind the one that reached the cap never begins; a resumed turn is stopped by the host.
         // A child's notification is never refused: at a limit it lands without a turn (`landNotice`).
         if (!session.resuming.has(record.id) && (params as { notice?: unknown } | undefined)?.notice === undefined) {
-          const limited = await spend.runLimit(this.spendContext, session, record.method, record.bucket);
+          const limited = await spend.runLimit(this.spendContext, session, record.method, record.bucket, record.endUser);
           if (limited) throw limited;
         }
         try {
@@ -2240,7 +2286,7 @@ export class ClientSessions {
         batch = record.method === "prompt" && !session.resuming.has(record.id) ? this.batchOf(session, session.requests.get(record.id)!) : [];
         record = this.upsertRequest(session, { ...rest, ...notice ? { notice } : {}, began: continued && rest.began ? rest.began : Date.now(), ...(session.resuming.has(record.id) && !continued ? { resumes: (rest.resumes ?? 0) + 1 } : {}) });
         for (const member of batch) this.upsertRequest(session, { ...member, batchedInto: record.id });
-        if (batch.length) params = { ...params as object, batch: batch.map(member => member.params) };
+        if (batch.length) params = { ...params as object, batch: [...((params as { batch?: unknown[] })?.batch ?? []), ...batch.map(member => member.params)] };
         // Code has no effect outside its sandbox until it calls a tool, and every tool call
         // makes this record durable first (`beforeEffect`; the application's tools do it when
         // their call is recorded, which is appended after it). So an execution needs no commit of its
@@ -2417,7 +2463,7 @@ export class ClientSessions {
   /**
    * The prompts that join `lead`'s turn as it begins, on an agent whose queue batches (`queue: {mode: "batch"}`): those
    * queued behind it, in arrival order, up to the first that cannot join it (`joins`: a notification, a prompt with an
-   * output schema or limits of its own, another actor or bucket) or is not a prompt waiting to begin. A sub-agent's runs
+   * output schema or limits of its own, another actor, payer selection or bucket) or is not a prompt waiting to begin. A sub-agent's runs
    * are its parent's to send, one turn each, so it never batches.
    */
   private batchOf(session: Session, lead: RequestRecord): RequestRecord[] {
@@ -2508,7 +2554,16 @@ export class ClientSessions {
   }
 
   endUserCharge(agent: string, usage: UsageRecord) { spend.endUserCharge(this.spendContext, agent, usage); }
-  /** Who pays for the agent's current run, where the tenant meters its end users. */
+  /** Attribute tool usage to the run that made it. */
+  billingUsage(agent: string, usage: UsageRecord): UsageRecord {
+    const session = this.sessions.get(agent);
+    if (!session) return usage;
+    const run = usage.requestId ? session.requests.get(usage.requestId) : runningRun(session);
+    const identity = spend.billingIdentity(session, run);
+    return { ...usage, ...(run ? { requestId: run.id } : {}), ...(identity ? { identity } : {}) };
+  }
+
+  /** Who pays for the current run. */
   payerOf(agent: string) { const session = this.sessions.get(agent); return session && spend.payer(this.spendContext, session, runningRun(session)); }
 
   /** Give the agent a budget of `usd` from now (null: none). A new value starts counting from zero. */

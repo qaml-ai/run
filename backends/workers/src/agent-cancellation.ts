@@ -266,6 +266,8 @@ export async function startHostRequestImpl(this: AgentRuntime,
       await this.cancelHostIntent(intent);
       return (await this.ctx.storage.get<RequestRecord>(reqKey(intent.id)))!;
     }
+    // Host-only work needs input observation too, including after a restart.
+    await this.observe();
     const record = await admitHostExecution(this.ctx.storage, reqKey(intent.id), intent, async saved => {
       const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
       const tool = this.availableTools.find(tool => tool.name === HOST_EXECUTION_TOOL)!;

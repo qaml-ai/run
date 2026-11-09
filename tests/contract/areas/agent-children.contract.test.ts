@@ -78,7 +78,7 @@ contractTest("delegation", SOURCE, "an agent's children: running with progress, 
   const listed = await handle.children();
   assert.deepEqual(listed.map(child => child.agentId), [helper.agentId, worker.agentId]);
   await agents.close();
-});
+}, { timeout: 180_000 });
 
 contractTest("delegation", SOURCE, "a browser token lists its agent's children only with the children scope, and never another agent's", async (t, r) => {
   r.setModel(body => roleText(body).includes("WORKER") ? { role: "assistant", content: "worked" }

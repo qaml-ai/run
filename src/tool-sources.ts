@@ -616,7 +616,7 @@ export class ToolSources {
           const callFiles = files(name, runId);
           // web_fetch reads URLs the model chooses: never the operator's own services, however they are allowed for configured ones.
           const services = { links: this.options.links, outbound: this.outbound.withoutOrigins(), scheduler: this.options.scheduler, search: this.options.search, render: this.options.render, xSearch: this.options.xSearch };
-          return runBuiltin(services, { ...context, ...(sources?.webSearch ? { searchProviders: sources.webSearch.providers } : {}), ...(callFiles ? { files: callFiles } : {}) }, name, args, signal);
+          return runBuiltin(services, { ...context, ...(runId ? { requestId: runId } : {}), ...(sources?.webSearch ? { searchProviders: sources.webSearch.providers } : {}), ...(callFiles ? { files: callFiles } : {}) }, name, args, signal);
         }
         const api = sources?.openApi?.find(entry => name.startsWith(`${entry.name}__`));
         const operation = api?.operations.find(entry => operationTool(api.name, entry).name === name);

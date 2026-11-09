@@ -35,8 +35,11 @@ export interface ContractFixture {
   setScheduleDueAt(agent: string, schedule: string, dueAt: number): Promise<void>;
   /** Make an agent's pending inputs due now, as if no one had answered in time; the backend's own expiry (its scheduler, or its alarm) then answers them. */
   expireInputs(agent: string): Promise<void>;
+  /** Seed only the shared inbox index, independently of either backend's input authority. */
+  seedInbox(rows: import('./fixtures/inbox.ts').InboxSeed[]): Promise<void>;
   setScheduleLegacyHistory(agent: string, schedule: string, history: "none"): Promise<void>;
   resetChildSettlement(parent: string): Promise<void>;
+  deleteEndUser(tenant: string, endUser: string): Promise<void>;
   /** A definition as stored before the workflow builtin was removed (#624): its builtins and settings name it. */
   seedLegacyWorkflowDefinition(definition: string): Promise<void>;
   countOAuthRefreshTokens(): Promise<number>;
@@ -52,8 +55,11 @@ export interface ContractFixture {
   setRejectRunEvents(enabled: boolean): Promise<void>;
   updateLegacyUsageWebhook(url: string): Promise<void>;
   seedJourneyAccount(input: { login: string; githubId: number; startingGrant: number; accountRef?: string }): Promise<{ tenant: string; token: string }>;
-  /** Channel cases only: a query on the channel tables (fixtures/channel-state.ts), which both backends share. */
+  /** Shared-agent cases only: queries on the membership tables, shared by both backends. */
   sharedAgentsQuery(text: string, values?: unknown[]): Promise<{ rows: any[]; rowCount: number | null }>;
+  /** Inbox storage contract: only the asking agent's index columns, on either backend. */
+  inputIndex(agent: string): Promise<{ state: string; version: number; priority: string; priority_rank: number; blocking: boolean; responders: string[] }[]>;
+  /** Channel cases only: a query on the channel tables (fixtures/channel-state.ts), which both backends share. */
   channelQuery(text: string, values?: unknown[]): Promise<{ rows: any[]; rowCount: number | null }>;
   /**
    * Email channel cases only (env AGENT_EMAIL_DOMAIN): a raw message as the backend's mail ingress receives it, with

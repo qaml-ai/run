@@ -163,7 +163,7 @@ export function answerValue(input: Pick<AgentInput, "kind" | "detail">, value: I
     case "approval": case "url":
       if (typeof value !== "boolean") throw new Error(`Answer ${input.kind === "approval" ? "an approval" : "a url step"} with true or false`);
       return { action: value ? "accept" : "decline" };
-    case "question": {
+    case "question": case "decision": {
       const questions = (input.detail?.questions ?? []) as { question: string }[];
       if (typeof value === "string" || Array.isArray(value)) {
         if (questions.length !== 1) throw new Error(`This input asks ${questions.length} questions: answer with { "<question>": "<answer>" } for each`);
@@ -560,7 +560,7 @@ export function createAgentChat(options: AgentChatOptions): AgentChat {
     const status: ChatStatus = fatal ? "error"
       : streaming ? "streaming"
       : waiting || view?.running ? "submitted"
-      : stableInputs.some(input => !input.answering) ? "input_required"
+      : stableInputs.some(input => input.blocking !== false && !input.answering) ? "input_required"
       : !view?.transport ? "connecting"
       : "ready";
     const next: ChatSnapshot = { status, messages, inputs: stableInputs, error, hasOlder: view?.hasOlder ?? false, connected: view?.connected ?? false, loaded: view?.loaded ?? false, agentId };

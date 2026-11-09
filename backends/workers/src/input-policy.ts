@@ -4,8 +4,10 @@ import type { Sender } from './sender.ts';
 import { compile } from '@earendil-works/pi-schema';
 const schemaAccepts = (schema: object, value: unknown) => compile(schema).check(value);
 type Sealed = object;
-export type InputKind = "question" | "approval" | "form" | "url";
-export type InputState = "pending" | "answered" | "declined" | "cancelled" | "expired" | "superseded";
+export type InputKind = "question" | "approval" | "form" | "url" | "decision";
+export type InputState = "pending" | "answered" | "declined" | "cancelled" | "expired" | "superseded" | "withdrawn";
+/** Where an item sits in a person's queue (agent_inputs.priority): an approval is `high`, everything else `normal`. */
+export type Priority = "urgent" | "high" | "normal" | "low";
 export type Action = "accept" | "decline" | "cancel";
 /** Who answered: the application (its token, and whom it names), a channel's sender, or the runtime itself. */
 export type Responder = { via?: "api" | "agent" | "channel"; from?: Sender; actor?: string; system?: "expired" | "aborted" | "superseded" };
@@ -13,6 +15,9 @@ export type Answer = { action: Action; content?: unknown; by: Responder; at: num
 export interface Input {
   id: string; agent: string; tenant: string; requestId: string; toolCallId: string;
   kind: InputKind; message: string;
+  priority?: Priority; blocking?: boolean; key?: string; version?: number;
+  attachments?: { path: string; version: number; contentType?: string; caption?: string }[];
+  links?: string[]; recommendation?: { answer: unknown; reason: string }; applyRecommendationOnExpiry?: boolean;
   /** question: { questions }; approval: { tool, source, arguments (or argumentsPreview), argumentsHash, reason? }; form: { requestedSchema }; url: { url, origin }. */
   detail: Record<string, any>;
   /** Who may answer, besides the definition's approvers: the person whose message started the turn. */
@@ -23,6 +28,7 @@ export interface Input {
 type Stored = Pick<Input, "message" | "detail" | "responders"> & {
   /** The call's name and a hash of its arguments: a retry must be the same call. */
   tool: string; argumentsHash: string;
+  delivery?: { id: string; inputs: string[] };
   /** The tool's own request's key (MCP `inputRequests`), answered by the same key on the retry. */
   key?: string;
   /** The tool's opaque `requestState`, sealed at rest; never shown to the model or callers. */
@@ -32,8 +38,51 @@ export type InputRow = Input & { stored: Stored };
 /** How a call is run again once its inputs are answered: with the approval's proof, and the tool's requests' answers. */
 export type RetryPlan = { argumentsHash: string; approval?: { input: string; by: Responder; at: number }; inputResponses?: Record<string, unknown>; requestState?: string; note: string };
 export type HumanInputSettings = { expiresInSeconds?: number; approvers?: string[] };
+/**
+ * The channel an item's change is announced on (`pg_notify`, the tenant as payload), in the transaction that writes it:
+ * a node's inbox watchers (`GET /v1/inbox/events`) re-read what changed. Heard by every node; the tenant says whose it was.
+ */
+export const INBOX_CHANNEL = "inbox";
 export const INPUT_LIMITS = Object.freeze({ defaultExpiresSeconds: 15 * 60, maxExpiresSeconds: 30 * 86_400, perCall: 8, text: 4_000, arguments: 4_000 });
 const clip = (text: unknown, max: number = INPUT_LIMITS.text) => String(text ?? "").slice(0, max);
+
+/** Shared fields for a question or an independent decision. */
+export const inboxFields = {
+  priority: { type: "string", enum: ["urgent", "high", "normal", "low"], description: "How soon a person should look: urgent, high, normal or low." },
+  attachments: { type: "array", maxItems: 32, items: { type: "object", required: ["path"], properties: { path: { type: "string" }, caption: { type: "string" } }, additionalProperties: false } },
+  links: { type: "array", maxItems: 32, items: { type: "string" } },
+  recommendation: { type: "object", required: ["answer", "reason"], properties: { answer: {}, reason: { type: "string", description: "Why you recommend it, in a sentence." } }, additionalProperties: false },
+  applyRecommendationOnExpiry: { type: "boolean", description: "Apply your recommendation if nobody answers before it expires. Never for approvals." },
+};
+export function inboxDetail(args: Record<string, any>, kind: InputKind = "question") {
+  if (args.priority !== undefined && !["urgent", "high", "normal", "low"].includes(args.priority)) throw new Error("Invalid priority");
+  if (args.links !== undefined && (!Array.isArray(args.links) || args.links.length > 32 || args.links.some((link: unknown) => { try { return typeof link !== "string" || new URL(link).protocol !== "https:"; } catch { return true; } }))) throw new Error("Use at most 32 https links");
+  if (args.attachments !== undefined && (!Array.isArray(args.attachments) || args.attachments.length > 32 || args.attachments.some((file: any) => typeof file?.path !== "string" || !file.path || (file.caption !== undefined && (typeof file.caption !== "string" || file.caption.length > 1000))))) throw new Error("Use at most 32 attachments with paths");
+  const questions = questionsInput(args.questions);
+  const recommended = Object.fromEntries(questions.filter(q => q.recommended !== undefined).map(q => [q.question, q.recommended]));
+  const recommendation = args.recommendation ?? (Object.keys(recommended).length === questions.length ? { answer: { answers: recommended }, reason: questions.map(q => q.reason).join("\n") } : undefined);
+  if (recommendation && (typeof recommendation.reason !== "string" || !recommendation.reason.trim())) throw new Error("A recommendation needs a reason");
+  if (recommendation) answerInput({ kind, detail: { questions } }, { action: "accept", content: recommendation.answer });
+  if (args.applyRecommendationOnExpiry !== undefined && typeof args.applyRecommendationOnExpiry !== "boolean") throw new Error("applyRecommendationOnExpiry must be a boolean");
+  if (args.applyRecommendationOnExpiry && (kind === "approval" || !recommendation)) throw new Error("Only questions with a recommendation can apply it on expiry");
+  return { questions, ...(args.priority ? { priority: args.priority } : {}), ...(args.attachments ? { attachments: args.attachments } : {}), ...(args.links ? { links: args.links } : {}), ...(recommendation ? { recommendation } : {}), ...(args.applyRecommendationOnExpiry ? { applyRecommendationOnExpiry: true } : {}) };
+}
+export function decisionDetail(args: Record<string, any>) {
+  if (typeof args.title !== "string" || !args.title.trim() || args.title.length > 1000 || typeof args.body !== "string" || args.body.length > 4000) throw new Error("A decision needs a title and body");
+  if (args.key !== undefined && (typeof args.key !== "string" || !args.key.trim() || args.key.length > 200)) throw new Error("A decision key is 1 to 200 characters");
+  const recommendation = args.recommendation && typeof args.recommendation.answer === "string"
+    ? { ...args.recommendation, answer: { answers: { [args.title]: args.recommendation.answer } } } : args.recommendation;
+  return { ...inboxDetail({ ...args, recommendation, questions: [{ question: args.title, options: args.options, allowOther: true }] }), title: args.title, body: args.body };
+}
+export function expiryAnswer(input: Pick<Input, "kind" | "detail">, now = Date.now()): Answer {
+  const automatic = input.kind !== "approval" && input.detail.applyRecommendationOnExpiry === true && input.detail.recommendation;
+  return { ...(automatic ? answerInput(input, { action: "accept", content: automatic.answer }) : { action: "cancel" as const }), by: { system: "expired" }, at: now };
+}
+export function decisionNotice(inputs: InputRow[]) {
+  const sorted = [...inputs].sort((a, b) => a.id.localeCompare(b.id));
+  const escape = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  return sorted.map(input => `<decision_answer id="${escape(input.id)}" by="${escape(responderName(input.answer!.by))}">${escape(JSON.stringify({ state: input.state, ...input.answer }))}</decision_answer>`).join("\n");
+}
 
 /** A person's name for the model, from an answer: never a credential. */
 export function responderName(by: Responder) {
@@ -47,15 +96,16 @@ export function waited(ms: number) {
   return d ? `${d}d${h ? ` ${h}h` : ""}` : h ? `${h}h${m ? ` ${m}m` : ""}` : m ? `${m}m` : `${s}s`;
 }
 
-export function inputRequests(result: { inputRequests?: unknown }): { key: string; kind: InputKind; message: string; detail: Record<string, unknown> }[] {
+export function inputRequests(result: { inputRequests?: unknown }, inbox = false): { key: string; kind: Exclude<InputKind, "decision">; message: string; detail: Record<string, unknown> }[] {
   const requests = result.inputRequests;
   if (!requests || typeof requests !== "object" || Array.isArray(requests) || !Object.keys(requests).length) throw new Error("The tool asked for input but named none");
   const entries = Object.entries(requests as Record<string, any>);
   if (entries.length > INPUT_LIMITS.perCall) throw new Error(`The tool asked for more than ${INPUT_LIMITS.perCall} inputs at once`);
   return entries.map(([key, request]) => {
     const params = request?.params ?? {};
+    if (request?.method === "agent-runtime/approval" && params.applyRecommendationOnExpiry) throw new Error("Approvals cannot apply recommendations on expiry");
     if (request?.method === "agent-runtime/approval") return { key, kind: "approval" as const, message: "", detail: params.reason ? { reason: clip(params.reason, 1000) } : {} };
-    if (request?.method === "agent-runtime/question") return { key, kind: "question" as const, message: questionMessage(params.questions), detail: { questions: questionsInput(params.questions) } };
+    if (request?.method === "agent-runtime/question") return { key, kind: "question" as const, message: questionMessage(params.questions), detail: { ...(inbox ? params : {}), questions: questionsInput(params.questions) } };
     if (request?.method !== "elicitation/create") throw new Error(`The tool asked for input the runtime cannot give (${String(request?.method)})`);
     if (params.mode === "url") {
       let url: URL;
@@ -86,12 +136,14 @@ export function questionsInput(value: unknown) {
     const open = entry.options === undefined || (Array.isArray(entry.options) && entry.options.length === 0);
     if (!open && (!Array.isArray(entry.options) || entry.options.length < 2 || entry.options.length > 4 || entry.options.some((option: any) => typeof option?.label !== "string" || !option.label.trim()))) throw new Error("Each question needs 2 to 4 options, each with a label, or none (answered in the person's own words)");
     const options: any[] = open ? [] : entry.options;
+    if (entry.recommended !== undefined && (!options.some(option => option.label === entry.recommended) || typeof entry.reason !== "string" || !entry.reason.trim())) throw new Error("A recommended option needs its label and a reason");
     const labels = options.map((option: any) => option.label);
     if (new Set(labels).size !== labels.length) throw new Error("A question's option labels must differ");
     if (value.filter((other: any) => other?.question === entry.question).length > 1) throw new Error("Each question must be different");
     return {
       question: clip(entry.question, 1000), header: clip(header, 12).trimEnd(),
       options: options.map((option: any) => ({ label: clip(option.label, 200), ...(typeof option.description === "string" ? { description: clip(option.description, 1000) } : {}) })),
+      ...(entry.recommended !== undefined ? { recommended: entry.recommended, reason: clip(entry.reason, 1000) } : {}),
       multiSelect: !open && entry.multiSelect === true, allowOther: open || entry.allowOther === true,
     };
   });
@@ -118,6 +170,7 @@ export function answerInput(input: Pick<Input, "kind" | "detail">, body: any): {
     if (!body.content || typeof body.content !== "object" || Array.isArray(body.content) || !schemaAccepts(input.detail.requestedSchema, body.content)) throw new HttpError(400, "content does not fit the form's schema");
     return { action, content: body.content };
   }
+  if (input.kind === "decision" && typeof body.content === "string") return answerInput({ kind: "question", detail: input.detail }, { ...body, content: { answers: { [input.detail.title]: body.content } } });
   const answers = body.content?.answers;
   if (!answers || typeof answers !== "object" || Array.isArray(answers)) throw new HttpError(400, "Answer questions with content: { answers: { \"<question>\": \"<label>\" | [\"<label>\", ...] | \"<your own words>\" } }");
   const checked: Record<string, string | string[]> = {};
@@ -180,7 +233,7 @@ export function resolution(inputs: InputRow[], unseal: (row: InputRow) => string
   const last = inputs.reduce((latest, input) => Math.max(latest, input.answer?.at ?? 0), 0);
   const who = [...new Set(inputs.map(input => responderName(input.answer!.by)))].join(", ");
   const note = { answeredBy: who, waited: waited(last - Math.min(...inputs.map(input => input.createdAt))) };
-  const closed = inputs.find(input => input.answer?.by.system);
+  const closed = inputs.find(input => input.answer?.by.system && !(input.answer.by.system === "expired" && input.answer.action === "accept"));
   if (closed?.answer!.by.system === "expired") {
     // No one answered in time, so the runtime answers. A question gets an empty answer that the model and code read on
     // from; an approval is not given and a tool's own request is cancelled, so the call does not run (an error, as a

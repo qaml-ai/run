@@ -1,4 +1,5 @@
 import { sharedAgentsQuery } from './shared-agent-state.ts';
+import { seedInbox } from './inbox.ts';
 import { createHash, randomBytes } from "node:crypto";
 import { seedOpsAccount } from "./ops-seed.ts";
 import { spawn } from "node:child_process";
@@ -198,6 +199,7 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
       }
       return { id, token };
     },
+    seedInbox: rows => seedInbox(db, rows),
     async expireInputs(agent) {
       const result = await db.query("update agent_inputs set expires_at = 0 where agent = $1 and state = 'pending'", [agent]);
       if (!result.rowCount) throw new Error("Fixture inputs not found");
@@ -216,6 +218,9 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
     async resetChildSettlement(parent) {
       const result = await db.query("update agent_children set ended_at=null,landed_at=null,landed_by=null,state='running',checked_at=0 where parent=$1", [parent]);
       if (!result.rowCount) throw new Error("Fixture child settlement not found");
+    },
+    async deleteEndUser(tenant, endUser) {
+      await db.query("delete from end_users where tenant=$1 and id=$2", [tenant, endUser]);
     },
     async seedLegacyWorkflowDefinition(definition) {
       const result = await db.query(`update definitions set spec = (spec::jsonb || '{"builtins":["workflow"],"workflow":{"instructions":true}}'::jsonb)::json where id = $1`, [definition]);
@@ -259,6 +264,7 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
     async updateLegacyUsageWebhook(url) { await db.query("update usage_webhooks set url=$1 where tenant='alice'", [url]); },
     seedJourneyAccount: input => seedJourneyAccount(db, input),
     sharedAgentsQuery: sharedAgentsQuery(db),
+    inputIndex: async (agent: string) => (await db.query("select state, version, priority, priority_rank, blocking, responders from agent_inputs where agent=$1 order by created_at, id", [agent])).rows,
     channelQuery: channelQuery(db),
     async deliverEmail(raw, receipt = {}) {
       if (!sns) throw new Error("Email channel cases set AGENT_EMAIL_DOMAIN");

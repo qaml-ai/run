@@ -83,7 +83,8 @@ A sub-agent the runtime makes is a real agent:
 - It is **linked to its parent**: `parentAgentId` and `parentRunId` in
   `GET /v1/agents/{id}` and the agent list, and in the metadata of its run.
 - It **acts for whom the parent acts** (`subject`, `context`) and uses the
-  parent's key scope. It is billed to the same account. Its tool servers'
+  parent's key scope. Its tasks and notifications bill the sending run's
+  payer and bucket, even when that run sets `endUser`; tool identity stays the owner's. Its tool servers'
   [identity tokens](tools.md) also name its parent and its chain's first agent
   (`par` and `root`; `identity.parentAgentId` and `rootAgentId` in the SDKs).
 - It is **reached only through its parent**. A prompt to it
@@ -169,7 +170,7 @@ agents targeted by tool spawn directives keep their own connections.
 The child calls `computer_start` to start its own session. No machine or session
 is shared, and grandchildren inherit too. Set `subagents: false` when attaching
 the parent's computer to opt out. Each connection is billed independently under
-the usual rules, using the child's inherited account, subject and bucket.
+the usual rules, using the child's account and the current run's payer and bucket.
 
 Deleting or expiring the child stops its session and detaches its connection;
 finishing or aborting a turn leaves the agent alive and its connection attached.

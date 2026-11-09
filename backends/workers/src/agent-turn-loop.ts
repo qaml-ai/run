@@ -1,3 +1,4 @@
+import { expiryAnswer, type Answer } from "./input-policy.ts";
 import { steeringCanJoin, steeringJoined } from "./steering-placement.ts";
 import { type Message, type AssistantMessage } from "@earendil-works/pi-ai";
 import { type ConversationView, type LiveState, LiveDoc } from "@earendil-works/pi-durable";
@@ -84,9 +85,11 @@ export async function markBeganImpl(this: AgentRuntime,
   }
 
 export async function observeImpl(this: AgentRuntime) {
+    // Startup may itself observe restored host requests. An outside caller must
+    // not cache a promise waiting for that startup, or both wait on each other.
+    const pi = await this.harness.pi();
     return (this.observer ??= (async () => {
       const watch = await this.harness.session().watch();
-      const pi = await this.harness.pi();
       const root = await pi.root(BACKGROUND_CONTEXT);
       await this.historyIndex.sync(root);
       this.nextMessage = this.historyIndex.total();
@@ -368,7 +371,7 @@ export async function onHumanImpl(this: AgentRuntime,
           const doc = await tx.doc(HumanInputs);
           for (const [key, input] of bound) {
             const current = doc.requests[key];
-            if (current && !current.policyBound) Object.assign(current, { requestId: input.requestId, responders: input.responders, expiresAt: input.expiresAt, policyBound: true });
+            if (current && !current.policyBound) Object.assign(current, { requestId: input.requestId, responders: input.responders, inboxResponders: input.inboxResponders, expiresAt: input.expiresAt, policyBound: true });
           }
         }, BACKGROUND_CONTEXT);
       }
@@ -430,7 +433,7 @@ export async function onHumanImpl(this: AgentRuntime,
               record.endedAt! - (record.began ?? record.endedAt!),
             ),
             startedAt: record.startedAt,
-            subject: conf.config.subject,
+            subject: (record.params?.endUser as string | undefined) ?? conf.config.subject,
             bucket:
               (record.params?.bucket as string | undefined) ??
               conf.config.bucket,
@@ -676,7 +679,7 @@ export async function settleImpl(this: AgentRuntime,
             ),
             startedAt: record.startedAt,
             responses: usage.responses,
-            subject: conf.config.subject,
+            subject: (record.params?.endUser as string | undefined) ?? conf.config.subject,
             bucket:
               (record.params?.bucket as string | undefined) ??
               conf.config.bucket,
@@ -774,7 +777,7 @@ export async function answerHumanInputsImpl(this: AgentRuntime,
       const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
       conf = await this.config();
       const snapshot = await pi.snapshot(HumanInputs, BACKGROUND_CONTEXT);
-      const checked: Array<{ id: string; body: unknown; pending: HumanInput; owner: string | undefined; answer: ReturnType<typeof answerHuman> | ReturnType<typeof systemHumanAnswer> }> = [];
+      const checked: Array<{ id: string; body: unknown; pending: HumanInput; owner: string | undefined; answer: { answer: string; state: NonNullable<HumanInput["state"]>; answerDetail: Answer } }> = [];
       for (const entry of answers) {
         const pending = snapshot?.requests[entry.id];
         if (!pending) throw Object.assign(new Error(`Unknown input ${entry.id}`), { status: 404 });
@@ -782,7 +785,7 @@ export async function answerHumanInputsImpl(this: AgentRuntime,
         const view = humanInputView(entry.id, pending, conf.id, owner);
         if (!system && owner && await this.ctx.storage.get(`cancelled-request:${owner}`))
           throw Object.assign(new Error("This input is cancelled"), { status: 409, input: view });
-        checked.push({ ...entry, pending, owner, answer: system ? systemHumanAnswer(system) : answerHuman(pending, entry.body, via, conf.config.humanInput?.approvers as string[] | undefined) });
+        checked.push({ ...entry, pending, owner, answer: system ? (system === "expired" ? (() => { const answerDetail = expiryAnswer({ kind: pending.kind ?? "question", detail: pending.detail ?? {} }); return { answer: JSON.stringify(answerDetail.content ?? { action: "cancel" }), state: "expired" as const, answerDetail }; })() : systemHumanAnswer(system)) : answerHuman(pending, entry.body, via, conf.config.humanInput?.approvers as string[] | undefined) });
       }
       const fresh = checked.every(entry => entry.pending.answer === undefined);
       if (!fresh && !checked.every(entry => sameHumanAnswer(entry.pending, entry.answer)))
@@ -810,7 +813,7 @@ export async function answerHumanInputsImpl(this: AgentRuntime,
         let resumed = await this.ctx.storage.get<RequestRecord>(reqKey(resumeId));
         if (!resumed) {
           await this.flushBilling(true);
-          if (!system) await this.admitRequest(conf, resumeId, old.params?.bucket as string | undefined);
+          if (!system) await this.admitRequest(conf, resumeId, old.params?.bucket as string | undefined, old.params?.endUser as string | undefined);
           resumed = { ...old, id: resumeId, piId, method: "resume", state: "running", status: undefined,
             outcome: undefined, startedAt: Date.now(), began: Date.now(), endedAt: undefined,
             usageBaseline: this.usageView(await this.usageForRequest(piId)) };
@@ -837,7 +840,7 @@ export async function answerHumanInputsImpl(this: AgentRuntime,
         }
         for (const entry of checked) {
           const current = doc.requests[entry.id];
-          if (current.answer === undefined) Object.assign(current, entry.answer);
+          if (current.answer === undefined) Object.assign(current, entry.answer, { version: (current.version ?? 1) + 1 });
           inputs.push(humanInputView(entry.id, JSON.parse(JSON.stringify(current)), conf!.id, entry.owner));
         }
       }, BACKGROUND_CONTEXT);
@@ -872,7 +875,9 @@ export async function dueHumanInputsImpl(this: AgentRuntime, at: number) {
     await root.commit(async tx => {
       const doc = await tx.doc(HumanInputs);
       for (const input of Object.values(doc.requests)) if (input.answer === undefined) {
-        input.expiresAt = Math.min(input.expiresAt ?? at, at);
+        const deadline = Math.min(input.expiresAt ?? at, at);
+        if (deadline !== input.expiresAt) input.version = (input.version ?? 1) + 1;
+        input.expiresAt = deadline;
         due++;
       }
     }, BACKGROUND_CONTEXT);

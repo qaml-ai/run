@@ -93,7 +93,7 @@ export async function agentToken(secret: string, id: string, version?: string): 
   return `cat_${[...new Uint8Array(signature)].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
-const BUILTINS = ["file_link", "file_import", "web_fetch", "web_search", "x_search", "schedule", "ask_user", "ask_human", "delegate", "generate_image", "agents", "decide"];
+const BUILTINS = ["file_link", "file_import", "web_fetch", "web_search", "x_search", "schedule", "ask_user", "request_decision", "ask_human", "delegate", "generate_image", "agents", "decide"];
 export function configuration(input: unknown, defaultModel: string, operation: "create" | "patch" = "create"): { config: AgentConfiguration; ttlSeconds?: number | null } {
   // Before the field check, so old workflow input gets its own answer, not "Unknown agent field".
   rejectWorkflow(input);

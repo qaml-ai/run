@@ -1,12 +1,12 @@
 import type { CodemodeSandboxDurableObject } from "@earendil-works/pi-codemode/cloudflare";
-import { type ComputerBindings } from "./computers/tool.ts";
-import { type ControlEnv, type TurnReceipt } from "./control.ts";
-import { type FileBindings } from "./files.ts";
+import type { ComputerBindings } from "./computers/tool.ts";
+import type { ControlEnv, TurnReceipt } from "./control.ts";
+import type { FileBindings } from "./files.ts";
 import type { TenantAdmission } from "./tenant.ts";
-import { type ComputerEnv } from "./computers/service.ts";
+import type { ComputerEnv } from "./computers/service.ts";
 import type { AdminEnv } from "./admin-api.ts";
 import type { MediaBindings } from "./media-api.ts";
-import { type KeyEnv } from "./security-services.ts";
+import type { KeyEnv } from "./security-services.ts";
 import type { AccountEnv } from "./account-services.ts";
 import type { AgentConfiguration } from "./api-contract.ts";
 import type { CamelAgent } from "./agent.ts";
@@ -25,6 +25,7 @@ export type RequestRecord = {
   id: string;
   method: string;
   params?: Record<string, unknown>;
+  endUser?: string;
   configurationOrder?: number;
   configurationOrigin?: string;
   configurationWait?: number;

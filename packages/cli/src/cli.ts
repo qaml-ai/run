@@ -40,7 +40,7 @@ Agents (an agent is its key or its id, client_…)
                                    one: for an agent whose runs fail with context_too_large. Its history
                                    and files stay
   agents delete <agent> --yes      Stop it and purge its history and files
-  run <agent> <message…> [--wait s] [--no-wait] [--from user] [--steer] [--allow-disconnected]
+  run <agent> <message…> [--wait s] [--no-wait] [--from user] [--end-user user] [--steer] [--allow-disconnected]
   runs get <agent> <requestId> [--wait s]
 
 Stateless runs (a configuration and a message in, the result out; nothing carried over, no agent kept)
@@ -76,7 +76,7 @@ const OPTIONS = {
   "api-key": { type: "string" }, url: { type: "string" },
   apply: { type: "boolean" }, "dry-run": { type: "boolean" }, available: { type: "boolean" }, force: { type: "boolean" }, yes: { type: "boolean", short: "y" },
   model: { type: "string" }, prompt: { type: "string" }, "prompt-append": { type: "string" }, thinking: { type: "string" }, name: { type: "string" }, definition: { type: "string" },
-  wait: { type: "string" }, "no-wait": { type: "boolean" }, from: { type: "string" }, steer: { type: "boolean" }, "allow-disconnected": { type: "boolean" }, "request-id": { type: "string" },
+  wait: { type: "string" }, "no-wait": { type: "boolean" }, from: { type: "string" }, "end-user": { type: "string" }, steer: { type: "boolean" }, "allow-disconnected": { type: "boolean" }, "request-id": { type: "string" },
   limit: { type: "string" }, key: { type: "string" }, text: { type: "string" }, in: { type: "string" }, at: { type: "string" }, every: { type: "string" }, history: { type: "string" },
   stateless: { type: "boolean" }, summary: { type: "string" }, keep: { type: "string" },
 } as const;
@@ -151,7 +151,7 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
         }
         const [agent, ...words] = args;
         if (!agent || !words.length) throw new UsageError("Usage: camelrun run <agent> <message…>");
-        const result = await ops.run(api(), agent, words.join(" "), { wait: waitSeconds(flags), from: flags.from, steer: flags.steer, allowDisconnected: flags["allow-disconnected"], requestId: flags["request-id"] });
+        const result = await ops.run(api(), agent, words.join(" "), { wait: waitSeconds(flags), from: flags.from, endUser: flags["end-user"], steer: flags.steer, allowDisconnected: flags["allow-disconnected"], requestId: flags["request-id"] });
         return printRun(result, print, io);
       }
       case "runs": {
@@ -186,8 +186,9 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
       }
       case "inputs": {
         const client = api();
-        const inputs: any[] = args[0] ? await client.get(`/v1/agents/${enc(await client.agentId(args[0]))}/inputs?state=pending`) : await client.get("/v1/inputs?state=pending");
-        print(inputs, () => inputs.length ? inputs.map(input => `${input.id}  ${input.agent}  ${input.kind}: ${input.message ?? JSON.stringify(input.detail).slice(0, 200)}`).join("\n") : "Nothing is waiting");
+        const result = args[0] ? await client.get(`/v1/agents/${enc(await client.agentId(args[0]))}/inputs?state=pending`) : await client.get("/v1/inbox");
+        const inputs: any[] = Array.isArray(result) ? result : result.items;
+        print(result, () => inputs.length ? inputs.map(input => `${input.inputId ?? input.id}  ${input.agent}  ${input.kind}: ${input.message ?? JSON.stringify(input.detail).slice(0, 200)}`).join("\n") : "Nothing is waiting");
         return 0;
       }
       case "answer": {
@@ -197,7 +198,7 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
         let value: unknown = raw;
         try { value = JSON.parse(raw); } catch { /* text */ }
         const result = await ops.answer(api(), agent, inputId, value, { from: flags.from, wait: waitSeconds(flags) });
-        return "requestId" in result ? printRun(result, print, io) : (print(result, () => result.note), 0);
+        return "requestId" in result ? printRun(result, print, io) : (print(result, () => result.note ?? "Decision answered."), 0);
       }
       case "schedules": return await schedules(args, flags, api, print, io.err);
       default: throw new UsageError(`Unknown command: ${command}. Run camelrun --help`);

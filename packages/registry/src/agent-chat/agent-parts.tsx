@@ -56,7 +56,7 @@ export const AgentInputCard = memo(function AgentInputCard({ input }: { input: C
           </div>
         </>
       )}
-      {input.kind === "question" && <Questions questions={(input.detail.questions ?? []) as Question[]} busy={busy} onAnswer={answer} />}
+      {(input.kind === "question" || input.kind === "decision") && <Questions questions={(input.detail.questions ?? []) as Question[]} busy={busy} onAnswer={answer} />}
       {input.kind === "form" && <FormFields input={input} busy={busy} onAnswer={answer} />}
       {input.kind === "url" && (
         <>

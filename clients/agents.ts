@@ -149,7 +149,7 @@ export interface RunFailure extends Partial<ModelFailure> {
   reason?: CreditReason;
   /** With code end_user_credit: the bucket refused. */
   bucket?: string;
-  /** With code end_user_credit: whose credit (the subject). */
+  /** With code end_user_credit: whose credit (the payer). */
   endUser?: string;
 }
 
@@ -196,7 +196,7 @@ export interface AnswerOptions {
   throwOnError?: boolean;
   signal?: AbortSignal;
 }
-/** Human input a run waits on, with the means to answer it. Answering resolves with the resumed run. */
+/** Human input with the means to answer it. Decisions return a completed receipt; blocking inputs return the resumed run. */
 export interface RunInput<T = unknown> extends Omit<AgentInput, "answer"> {
   answer(value: InputValue, options?: AnswerOptions): Promise<Run<T>>;
   decline(options?: AnswerOptions): Promise<Run<T>>;
@@ -220,6 +220,8 @@ export type OutputSchema = StandardOutputSchema<any> | TSchema | Record<string, 
 export type OutputOf<S> = S extends { readonly "~standard": { readonly types?: { readonly output: infer T } } } ? T : S extends TSchema ? Static<S> : unknown;
 
 export interface RunOptions {
+  /** Charge this existing end user. Requires a tenant API key; unavailable for steers. */
+  endUser?: string;
   /** Who sent it (your user id, or a Sender): the model sees who, and tools get it as `identity.user`. */
   user?: string | Sender;
   files?: Attachment[];
@@ -676,8 +678,8 @@ export class Agent {
       const { request } = await this.client.answer(input.id, answer);
       if (request) return this.settle<T>(request.id, this.client.waitForRequest(request.id, { ...(options.signal ? { signal: options.signal } : {}) }), options.throwOnError, schema);
       // Other inputs of the run still wait: it resumes once they are answered too.
-      const pending = (await this.client.inputs("pending")).filter(other => other.requestId === input.requestId);
-      return { id: input.requestId, status: "input_required", text: "", inputs: pending.map(other => this.input<T>(other, schema)), error: null, usage: null, files: [], toolErrors: [], toolCalls: [], sourceErrors: [], raw: null };
+      const pending = input.blocking === false ? [] : (await this.client.inputs("pending")).filter(other => other.requestId === input.requestId && other.blocking !== false);
+      return { id: input.requestId, status: pending.length ? "input_required" : "completed", text: "", inputs: pending.map(other => this.input<T>(other, schema)), error: null, usage: null, files: [], toolErrors: [], toolCalls: [], sourceErrors: [], raw: null };
     };
     return {
       ...input,
@@ -772,6 +774,7 @@ function messageOptions(options: Pick<RunOptions, "user" | "files" | "metadata">
 function promptOptions(id: string, options: RunOptions) {
   return {
     ...messageOptions(options), idempotencyKey: id,
+    ...(options.endUser !== undefined ? { endUser: options.endUser } : {}),
     ...(options.signal ? { signal: options.signal } : {}), ...(options.whileRunning ? { whileRunning: options.whileRunning } : {}),
     ...(options.allowDisconnected ? { allowDisconnected: true } : {}), ...(options.spendLimit ? { spendLimit: options.spendLimit } : {}),
     ...(options.runLimits ? { runLimits: options.runLimits } : {}),
@@ -786,7 +789,7 @@ function answerFor(input: AgentInput, value: InputValue): InputAnswer {
     case "approval": case "url":
       if (typeof value !== "boolean") throw new AgentError(`Answer ${input.kind === "approval" ? "an approval" : "a url step"} with true or false`);
       return { action: value ? "accept" : "decline" };
-    case "question": {
+    case "question": case "decision": {
       const questions = (input.detail.questions ?? []) as { question: string }[];
       if (typeof value === "string" || Array.isArray(value)) {
         if (questions.length !== 1) throw new AgentError(`This input asks ${questions.length} questions: answer with { "<question>": "<answer>" } for each`);

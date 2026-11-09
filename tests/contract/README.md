@@ -32,7 +32,11 @@ assignment, merged rows, and raw-log order are deterministic.
 Use `CONTRACT_SPRITES` or `--shards=N` to change the pool size.
 `CONTRACT_CONCURRENCY` controls files per Sprite (Workers default two, Node six,
 maximum sixteen). The lower Workers limit keeps wrangler's build and workerd
-processes within each Sprite's memory budget.
+processes within each Sprite's memory budget. Before launching Workers files,
+the runner starts and stops one isolated fixture to warm Wrangler and workerd.
+Cold concurrent builds otherwise consume the case budget before the first API
+request. Preparation failures fail the run; cases keep their existing timeouts
+and each gets a fresh database and Worker.
 Every Node fixture owns a random schema; every Workers fixture owns a random
 Postgres database and workerd directory. `serialFiles` in `groups.mjs` records
 exceptions and their reasons; there are currently none.

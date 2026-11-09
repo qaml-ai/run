@@ -131,7 +131,7 @@ async function startChild(ctx: ChildrenContext, session: Session, run: RequestRe
   let { agent } = child;
   const { made, task, output } = child;
   if (chain.includes(agent)) throw new Error(`${child.base} is already working on this task's chain`);
-  const { row, fresh } = await childRow(ctx, session, { id: requestId, child: agent, name: child.name, ...(child.preferred ? { preferred: child.preferred } : {}), base: child.base, depth, root: chain[0], run: run.id, toolCallId, made }, settings?.maxParallel ?? MULTI_AGENT_LIMITS.maxParallel);
+  const { row, fresh } = await childRow(ctx, session, { id: requestId, child: agent, name: child.name, ...(child.preferred ? { preferred: child.preferred } : {}), base: child.base, depth, root: chain[0], run: run.id, payer: run.endUser, bucket: spend.bucketOf(ctx.spendContext, session, run), toolCallId, made }, settings?.maxParallel ?? MULTI_AGENT_LIMITS.maxParallel);
   if (row.state !== "running" && row.status === "failed" && !row.ended_at) throw new Error("This sub-agent could not be started");
   (session.children ??= new Map()).set(toolCallId, { agent, requestId, made, done: true });
   const at = { toolCallId, agentId: agent, requestId };
@@ -188,7 +188,7 @@ export async function toolSpawn(ctx: ChildrenContext, session: Session, call: To
  * time per parent (only its owner runs its turns), so `max` running children holds. A name is unique among the running
  * ones: the default is the target's name and the next number.
  */
-async function childRow(ctx: ChildrenContext, session: Session, child: { id: string; child: string; name?: string; base: string; depth: number; root: string; run: string; toolCallId: string; made: boolean; preferred?: string }, max: number) {
+async function childRow(ctx: ChildrenContext, session: Session, child: { id: string; child: string; name?: string; base: string; depth: number; root: string; run: string; payer?: string; bucket: string; toolCallId: string; made: boolean; preferred?: string }, max: number) {
   const previous = session.spawning ?? Promise.resolve();
   let release!: () => void;
   session.spawning = new Promise<void>(resolve => { release = resolve; });
@@ -206,8 +206,8 @@ async function childRow(ctx: ChildrenContext, session: Session, child: { id: str
     for (let attempt = 0; attempt < 10; attempt++) {
       const name = child.name ?? (attempt === 0 && child.preferred ? child.preferred : `${child.base}-${next++}`);
       const now = Date.now();
-      const { rows } = await underClaim(ctx.db, session.claim, sql => sql.query(`insert into agent_children (id, tenant, parent, child, request_id, name, depth, root, parent_run, tool_call_id, made, checked_at, created_at, updated_at)
-        values ($1, $2, $3, $4, $1, $5, $6, $7, $8, $9, $10, $11, $11, $11) on conflict do nothing returning *`, [child.id, session.header.tenant, parent, child.child, name, child.depth, child.root, child.run, child.toolCallId, child.made, now]));
+      const { rows } = await underClaim(ctx.db, session.claim, sql => sql.query(`insert into agent_children (id, tenant, parent, child, request_id, name, depth, root, parent_run, tool_call_id, made, checked_at, created_at, updated_at, payer, bucket)
+        values ($1, $2, $3, $4, $1, $5, $6, $7, $8, $9, $10, $11, $11, $11, $12, $13) on conflict do nothing returning *`, [child.id, session.header.tenant, parent, child.child, name, child.depth, child.root, child.run, child.toolCallId, child.made, now, child.payer ?? null, child.bucket]));
       if (rows[0]) return { row: rows[0], fresh: true };
       if (child.name) throw new Error(`A sub-agent named ${child.name} is running: pick another name`);
     }
@@ -509,8 +509,8 @@ async function recordEnding(ctx: ChildrenContext, row: { id: string; tenant?: st
     // Its resume, once a person answers: a row of its own, written with this ending so no sweep can miss it.
     if (done && status === "input_required") {
       const resume = resumeId(done.request_id);
-      await sql.query(`insert into agent_children (id, tenant, parent, child, request_id, name, depth, root, parent_run, tool_call_id, kind, made, checked_at, created_at, updated_at)
-        values ($1, $2, $3, $4, $1, $5, $6, $7, $8, $9, 'resume', $10, $11, $11, $11) on conflict do nothing`, [resume, done.tenant, done.parent, done.child, done.name, done.depth, done.root, done.parent_run, done.tool_call_id, done.made, now]);
+      await sql.query(`insert into agent_children (id, tenant, parent, child, request_id, name, depth, root, parent_run, tool_call_id, kind, made, checked_at, created_at, updated_at, payer, bucket)
+        values ($1, $2, $3, $4, $1, $5, $6, $7, $8, $9, 'resume', $10, $11, $11, $11, $12, $13) on conflict do nothing`, [resume, done.tenant, done.parent, done.child, done.name, done.depth, done.root, done.parent_run, done.tool_call_id, done.made, now, done.payer, done.bucket]);
     }
     return done;
   });
@@ -537,9 +537,9 @@ export async function childEnded(ctx: ChildrenContext, child: string, record: Re
 async function deliverChild(ctx: ChildrenContext, row: any) {
   const release = () => ctx.db.query("update agent_children set claimed_until = null where id = $1", [row.id]).catch(() => {});
   try {
-    if ((await ctx.options.inputs?.pending(row.parent))?.length) return void await release();
+    if ((await ctx.options.inputs?.pending(row.parent))?.some(input => input.blocking !== false)) return void await release();
     const submit = ctx.options.submit ?? ((agent, tenant, request) => ctx.submit(agent, tenant, request));
-    await submit(row.parent, row.tenant, { id: `child_${row.request_id}`, method: "prompt", params: { ...row.notice, allowDisconnected: true } });
+    await submit(row.parent, row.tenant, { id: `child_${row.request_id}`, method: "prompt", params: { ...row.notice, ...(row.payer ? { endUser: row.payer } : {}), ...(row.bucket ? { bucket: row.bucket } : {}), allowDisconnected: true } });
   } catch (error) {
     const status = (error as HttpError).status;
     if (status !== 404 && status !== 410 && (error as HttpError).code !== "IDEMPOTENCY_CONFLICT") {
@@ -686,7 +686,7 @@ async function sendMessage(ctx: ChildrenContext, session: Session, settings: Del
     const named = (await ctx.db.query("select name from agent_children where parent = $1 and child = $2 order by created_at desc limit 1", [lineage.parent, header.id])).rows[0]?.name as string | undefined;
     const message = agentMessage({ agentId: header.id, name: named ?? header.metadata?.name ?? "subagent", root: lineage.root }, text, "parent");
     // Its running turn takes it in at its next step (a wait_agent of its answers at once); an idle parent, as a turn of its own.
-    const record = await submit(lineage.parent, tenant, { id: requestId, method: "prompt", params: { ...message, allowDisconnected: true, whileRunning: "steer" } });
+    const record = await submit(lineage.parent, tenant, { id: requestId, method: "prompt", params: { ...message, ...(run.endUser ? { endUser: run.endUser } : {}), bucket: spend.bucketOf(ctx.spendContext, session, run), allowDisconnected: true, whileRunning: "steer" } });
     return jsonResult({ sent: true, to: "parent", into: record.steer === "accepted" || record.steeredInto ? "its running turn" : "a new turn of its own" });
   }
   const latest = await childNamed(ctx, header.id, to);
@@ -709,14 +709,14 @@ async function sendMessage(ctx: ChildrenContext, session: Session, settings: Del
   // joins it rather than queuing behind all of it.
   if (open) await turnBegun(ctx, child, tenant, open.request_id, call.signal);
   await transaction(ctx.db, async sql => {
-    const { rows } = await sql.query(`insert into agent_children (id, tenant, parent, child, request_id, name, depth, root, parent_run, tool_call_id, kind, made, checked_at, created_at, updated_at)
-      values ($1, $2, $3, $4, $1, $5, $6, $7, $8, $9, 'message', $10, $11, $11, $11) on conflict do nothing returning id`, [requestId, tenant, header.id, child, latest.name, depth, chain[0], run.id, call.toolCallId, latest.made, now]);
+    const { rows } = await sql.query(`insert into agent_children (id, tenant, parent, child, request_id, name, depth, root, parent_run, tool_call_id, kind, made, checked_at, created_at, updated_at, payer, bucket)
+      values ($1, $2, $3, $4, $1, $5, $6, $7, $8, $9, 'message', $10, $11, $11, $11, $12, $13) on conflict do nothing returning id`, [requestId, tenant, header.id, child, latest.name, depth, chain[0], run.id, call.toolCallId, latest.made, now, run.endUser ?? null, spend.bucketOf(ctx.spendContext, session, run)]);
     // A new message supersedes what the child waits on a person for: its resume will not come.
     if (rows.length && !running) await sql.query("update agent_children set ended_at = $3, state = 'notified', landed_at = $3, landed_by = 'superseded', updated_at = $3 where parent = $1 and child = $2 and kind = 'resume' and ended_at is null", [header.id, child, now]);
   });
   const at = { toolCallId: call.toolCallId, agentId: child, requestId };
   try {
-    const record = await submit(child, tenant, { id: requestId, method: "prompt", params: { ...message, metadata, ...running ? { whileRunning: "steer" } : {} } });
+    const record = await submit(child, tenant, { id: requestId, method: "prompt", params: { ...message, metadata, ...(run.endUser ? { endUser: run.endUser } : {}), bucket: spend.bucketOf(ctx.spendContext, session, run), ...running ? { whileRunning: "steer" } : {} } });
     if (record.steer !== "accepted" && !record.steeredInto) relayChild(ctx, session, run.id, at);
     return jsonResult({ sent: true, to: latest.name, agentId: child, ...record.steer === "accepted" || record.steeredInto ? { into: "its running turn" } : { into: "a new turn: its answer comes as a notification" } });
   } catch (error) {
@@ -822,7 +822,8 @@ async function landNotice(ctx: ChildrenContext, session: Session, record: Reques
       await ctx.db.query(`update agent_children set landed_at = $3, landed_by = 'notice', state = 'notified', updated_at = $3,
         notice = notice || jsonb_build_object('batchedInto', $2::text)
         where parent = $1 and kind in ('spawn', 'message', 'resume') and ended_at is not null and landed_at is null and notice is not null
-        and not (child = $4 and request_id = $5) and not (request_id = any($6::text[]))`, [parent, record.id, now, notice.source.agentId, childRequest, bound]);
+        and payer is not distinct from $7::text and bucket is not distinct from $8::text
+        and not (child = $4 and request_id = $5) and not (request_id = any($6::text[]))`, [parent, record.id, now, notice.source.agentId, childRequest, bound, record.endUser ?? null, record.bucket ?? null]);
     }
     const rows = (await ctx.db.query("select * from agent_children where parent = $1 and notice->>'batchedInto' = $2 order by ended_at, id", [parent, record.id])).rows;
     // One charge site, keyed by row: a carried child is charged to this run, and announced, once, by whichever attempt
@@ -838,7 +839,7 @@ async function landNotice(ctx: ChildrenContext, session: Session, record: Reques
   // Stopped before it ran (`stop`): it lands without a turn, which counts no wake.
   const stopped = session.requests.get(record.id)?.landOnly;
   if (stopped) return { params: { ...params, landOnly: stopped } };
-  const refused = await spend.runLimit(ctx.spendContext, session, "prompt");
+  const refused = await spend.runLimit(ctx.spendContext, session, "prompt", record.bucket, record.endUser);
   const cap = ctx.options.wakesPerHour ?? MULTI_AGENT_LIMITS.wakesPerHour;
   const hour = Math.floor(now / 3_600_000);
   const turns = refused ? 0 : Number((fresh

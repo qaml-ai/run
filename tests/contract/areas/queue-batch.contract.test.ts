@@ -55,8 +55,7 @@ contractTest("messages", "tests/queue-batch.test.ts:12", "an agent whose queue b
   assert.equal(r.model.bodies.length, 2, "the retry started nothing");
   // Charged once: the usage counts two model responses for the four prompts.
   await until(async () => Number((await r.call("/v1/usage")).json.totals?.responses) === 2, "the usage of two responses");
-  // The first Workers fixture includes a cold Wrangler build, which can exceed the baseline-derived 30s floor.
-}, { timeout: 90_000 });
+}, { timeout: 90_000 }); // Includes the file's cold Workers fixture startup.
 
 contractTest("messages", "tests/queue-batch.test.ts:55", "a batch ends at the first prompt that cannot join it: one with limits of its own, or for another actor", async t => {
   const r = await runtime(t, echo());

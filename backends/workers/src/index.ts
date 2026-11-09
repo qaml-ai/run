@@ -1,5 +1,8 @@
 import { SharedAgents, ShareLinkInput, MemberInput } from '../../../src/shared-agents.ts';
 import { database } from './postgres.ts';
+import { inboxQuery, readInbox, InboxQueryError } from '../../../shared/inbox.ts';
+import { withSql as inboxSql } from './postgres.ts';
+import { sweepInputMirrors } from "./input-mirror.ts";
 import { HttpError as CoreHttpError } from "../../../src/core/http-error.ts";
 import { serveToolFile } from './tool-files.ts';
 import { withMoneyMetrics } from "./money-metrics.ts";
@@ -343,15 +346,11 @@ const worker = {
         }
         const control = await controlRoutes(request, env, auth);
         if (control) return control;
-        if (path === "/v1/inputs" && request.method === "GET") {
-          const entries = await new Directory(env, auth.tenantId).list();
-          const inputs = [];
-          for (const entry of entries) {
-            const response = await forward(request, env, entry.id, "/inputs", ctx);
-            if (!response.ok) return response;
-            inputs.push(...await response.json() as Array<{ id: string; createdAt: number }>);
-          }
-          return json(inputs.sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id)).slice(0, 100));
+        if ((path === "/v1/inputs" || path === "/v1/inbox") && request.method === "GET") {
+          try {
+            const query = inboxQuery(url.searchParams);
+            return json(await inboxSql(env, sql => readInbox(sql, auth.tenantId, query)));
+          } catch (error) { if (error instanceof InboxQueryError) throw new ApiError(400, error.message); throw error; }
         }
         const media = await handleMediaRequest(request, env, auth);
         if (media) return media;
@@ -371,6 +370,10 @@ const worker = {
           return json(
             modelCatalog(env, url.searchParams.get("provider") ?? undefined),
           );
+        if (path === "/v1/agents" && request.method === "POST") {
+          const input = await body(request.clone(), 17 * 1024 * 1024) as { prompt?: { endUser?: unknown } };
+          if (input?.prompt?.endUser !== undefined && !["operator", "api"].includes(auth.kind)) throw new HttpError(403, "Only a tenant key can choose a run payer");
+        }
         if (path === "/v1/agents") {
           const directory = new Directory(env, auth.tenantId);
           if (request.method === "GET")
@@ -595,17 +598,22 @@ const worker = {
         env.TEST_MODEL !== "1"
       )
         throw new ApiError(404, "Not found");
+      if (tail === "/_input-mirror") throw new ApiError(404, "Not found");
       const lifecycle = !browser
         ? await agentLifecycleRoutes(request, env, entry, tail, auth?.kind !== "oauth")
         : undefined;
       if (lifecycle) return lifecycle;
+      if (request.method === "POST" && ["/prompt", "/requests"].includes(tail)) {
+        const payerInput = await body(request.clone(), (tail === "/prompt" ? 7 : 6) * 1024 * 1024) as { endUser?: unknown; params?: { endUser?: unknown } };
+        if ((payerInput?.endUser !== undefined || payerInput?.params?.endUser !== undefined) && (!auth || !["operator", "api"].includes(auth.kind))) throw new HttpError(403, "Only a tenant key can choose a run payer");
+      }
       if (tail === "/requests" && request.method === "POST") {
-        const input = (await request.clone().json()) as { method?: string; params?: Record<string, unknown> };
-        if (!auth && input.method === "configure") scopedConfiguration(input.params);
-        if (input.method !== "configure" && input.params?.bucket !== undefined &&
-          (!auth || !["prompt", "continue"].includes(input.method ?? "")))
+        const input = (await body(request.clone(), 6 * 1024 * 1024)) as { method?: string; params?: Record<string, unknown> };
+        if (!auth && input?.method === "configure") scopedConfiguration(input.params);
+        if (input?.method !== "configure" && input?.params?.bucket !== undefined &&
+          (!auth || !["prompt", "steer", "continue"].includes(input.method ?? "")))
           throw new HttpError(auth ? 400 : 403, auth
-            ? "bucket is for a model run (prompt, continue)"
+            ? "bucket is for a model run (prompt, steer, continue)"
             : "Only the tenant can choose a run's bucket");
       }
       if (tail === "/inputs" || tail.startsWith("/inputs/")) {
@@ -671,6 +679,7 @@ const worker = {
   async scheduled(_controller: ScheduledController, env: Env) {
     return withMoneyMetrics(env, async () => {
     try {
+      if (_controller.cron === "* * * * *") { await sweepInputMirrors(env); return; }
       await maintenance(env);
       await moneyMaintenance(env);
       await publishScheduleEmails(env);

@@ -1,3 +1,6 @@
+import { inputView } from "./decision-inputs.ts";
+import { decisionInputs, answerDecisions } from "./inbox-decisions.ts";
+import { repairInputMirrors } from "./agent-input-mirror.ts";
 import { computerSetup } from "./computers/agent-setup.ts";
 import { forkComputerInto } from "./computers/child-fork.ts";
 import { modelCompactionSettings } from "./model-context.ts";
@@ -201,7 +204,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
                 builtins: conf.config.builtins,
                 webSearch: conf.config.webSearch,
                 keyScope: conf.config.keyScope,
-                identity: { subject: conf.config.subject, context: conf.config.context },
+                identity: { subject: (params?.endUser as string | undefined) ?? conf.config.subject, context: conf.config.context },
                 actor: ("actor" in run ? run.actor : undefined) ?? params?.actor as string | undefined,
                 bucket: (params?.bucket as string | undefined) ?? conf.config.bucket ?? await this.ctx.storage.get<string>("run-bucket") ?? "default",
                 files: (await this.sourceIdentity(api)).toolFiles('web_fetch'),
@@ -386,10 +389,15 @@ export async function fetchRequestImpl(this: AgentRuntime,
         const unaccepted = await this.testStorage.get<number>("test:host-unaccepted-task");
         return json({
           crashReached: !!(await this.testStorage.get("test:crash-reached")),
+          inputEmitReached: !!(await this.testStorage.get("test:input-emit-owner")),
           pending: (await this.ctx.storage.list({ prefix: "billing:" })).size,
           hostFinishedAt: await this.testStorage.get<number>("test:host-finished-at"),
           unacceptedFinishedAt: unaccepted === undefined ? undefined : (await waitHostExecution(await this.harness.pi(), unaccepted as never)).endedAt,
         });
+      }
+      if (path === "/__test/crash-input-before-emit" && this.env.TEST_HOOKS === "1" && request.method === "POST") {
+        await this.testStorage.put("test:crash-input-emit", true);
+        return json({ armed: true });
       }
       if (
         path === "/__test/crash-next-settlement" &&
@@ -453,6 +461,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
           "spendLimit",
           "runLimits",
           "bucket",
+          "endUser",
           "actor",
           "images",
           "attachments",
@@ -554,7 +563,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
           root = await pi.root(BACKGROUND_CONTEXT);
         const doc = await pi.snapshot(HumanInputs, BACKGROUND_CONTEXT),
           conf = await this.config();
-        const values = [];
+        const values: Array<ReturnType<typeof humanInputView> | ReturnType<typeof inputView>> = (await decisionInputs(this).list(conf.tenantId, { agent: conf.id, ...(url.searchParams.get("state") ? { state: url.searchParams.get("state")! } : {}) })).filter(row => row.blocking === false).map(row => ({ ...inputView(row), question: row.message }));
         const state = url.searchParams.get("state") ?? "all";
         if (
           ![
@@ -565,6 +574,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
             "cancelled",
             "expired",
             "superseded",
+            "withdrawn",
           ].includes(state)
         )
           throw new BadRequest("Invalid input state");
@@ -581,13 +591,30 @@ export async function fetchRequestImpl(this: AgentRuntime,
             );
         return json(values.sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id)).slice(0, 100));
       }
+      if (path === "/_input-mirror" && request.method === "POST") {
+        const input = await body(request) as { tenant: string; ids: string[] };
+        const conf = await this.config();
+        if (input.tenant !== conf.tenantId) throw new BadRequest("Tenant mismatch");
+        if (!Array.isArray(input.ids) || input.ids.length > 100 || input.ids.some(id => typeof id !== "string"))
+          throw new BadRequest("Expected at most 100 input IDs");
+        const missing = await repairInputMirrors(this, input.ids);
+        return json({ refreshed: true, missing });
+      }
       if ((path === "/inputs" || path.startsWith("/inputs/")) && request.method === "POST") {
         const input = await body(request, 1024 * 1024);
         const batch = path === "/inputs";
         const answers = batch ? answerList(input) : [{ id: decodeURIComponent(path.slice(8)), body: input }];
-        const answering = this.admission.then(() => this.answerHumanInputs(answers, request.headers.get("x-camel-input-via") === "agent" ? "agent" : request.headers.get("x-camel-input-via") === "channel" ? "channel" : "api"));
+        const decision = answers.every((entry: { id: string }) => entry.id.startsWith("inp_"));
+        // Decisions live in Postgres; blocking inputs live in Pi. The inbox answers route must partition these authorities.
+        if (!decision && answers.some((entry: { id: string }) => entry.id.startsWith("inp_"))) throw new BadRequest("Answer decisions and blocking inputs in separate batches");
+        const answering = this.admission.then(async () => (decision ? answerDecisions(this, answers, request.headers.get("x-camel-input-via") === "channel" ? "channel" : "api") : this.answerHumanInputs(answers, request.headers.get("x-camel-input-via") === "agent" ? "agent" : request.headers.get("x-camel-input-via") === "channel" ? "channel" : "api")));
         this.admission = answering.catch(() => {});
-        const answered = await answering;
+        const answered = await answering.catch(async error => {
+          if (errorStatus(error, 500) === 409) {
+            await repairInputMirrors(this, answers.map((entry: { id: string }) => entry.id)).catch(error => failure(this.env, "input_mirror_repair_failed", error));
+          }
+          throw error;
+        });
         return json(batch ? { inputs: answered.inputs, requests: answered.requests } : { input: answered.inputs[0], request: answered.requests[0] ?? null }, answered.status);
       }
       if (path === "/abort" && request.method === "POST") {

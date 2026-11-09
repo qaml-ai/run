@@ -7,7 +7,7 @@ import { metadataInput, senderInput } from "./sender.ts";
 /** Check a create's first prompt before provisioning anything; file reads happen after creation. */
 export function firstPrompt(input: unknown) {
   if (input === undefined) return;
-  const params = object(input, ["text", "files", "requestId", "metadata", "from", "actor", "allowDisconnected", "whileRunning", "spendLimit", "bucket", "runLimits", "output", "history"]);
+  const params = object(input, ["text", "files", "requestId", "metadata", "from", "actor", "allowDisconnected", "whileRunning", "spendLimit", "bucket", "endUser", "runLimits", "output", "history"]);
   if (params.text !== undefined && (typeof params.text !== "string" || new TextEncoder().encode(params.text).length > 100_000)) throw new ApiError(400, "Invalid prompt text");
   if (!(typeof params.text === "string" && params.text.trim()) && !(Array.isArray(params.files) && params.files.length)) throw new ApiError(400, 'Send {"text": "..."}, or attach audio to transcribe');
   if (params.files !== undefined) attachmentInputs(params.files);

@@ -1,4 +1,5 @@
 import { sharedAgentsQuery } from './shared-agent-state.ts';
+import { seedInbox } from './inbox.ts';
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { seedOpsAccount } from "./ops-seed.ts";
 import { fileURLToPath } from "node:url";
@@ -192,6 +193,7 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
     signFileToken: (grant, expiresAt) => fixtureSigner(server.db, env.AGENT_SECRETS_KEY, server.url).fileToken(grant, expiresAt),
     signIdentityToken: (audience, claims) => fixtureSigner(server.db, env.AGENT_SECRETS_KEY, server.url).token(audience, claims),
     get logs() { return server.worker.logs().split("\n"); },
+    seedInbox: rows => seedInbox(server.db, rows),
     async expireInputs(agent) {
       const result = await call(`/v1/agents/${agent}/__test/contract-inputs-due`, { body: {} });
       if (result.status !== 200) throw new Error(`Inputs fixture: ${result.status} ${result.text}`);
@@ -210,6 +212,9 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
     async resetChildSettlement(parent) {
       const result = await call(`/v1/agents/${parent}/__test/contract-child-settlement`, { body: {} });
       if (result.status !== 200) throw new Error(`Child settlement fixture: ${result.status} ${result.text}`);
+    },
+    async deleteEndUser(tenant, endUser) {
+      await server.db.query("delete from end_users where tenant=$1 and id=$2", [tenant, endUser]);
     },
     async seedLegacyWorkflowDefinition(definition) {
       const result = await server.db.query(`update definitions set spec = (spec::jsonb || '{"builtins":["workflow"],"workflow":{"instructions":true}}'::jsonb)::json where id = $1`, [definition]);
@@ -253,6 +258,7 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
     async updateLegacyUsageWebhook(url) { await server.db.query("update usage_webhooks set url=$1 where tenant='alice'", [url]); },
     seedJourneyAccount: input => seedJourneyAccount(server.db, input),
     sharedAgentsQuery: sharedAgentsQuery(server.db),
+    inputIndex: async (agent: string) => (await server.db.query("select state, version, priority, priority_rank, blocking, responders from agent_inputs where agent=$1 order by created_at, id", [agent])).rows,
     channelQuery: channelQuery(server.db),
     async deliverEmail(raw, receipt = {}) {
       if (!dkim) throw new Error("Email channel cases set AGENT_EMAIL_DOMAIN");
