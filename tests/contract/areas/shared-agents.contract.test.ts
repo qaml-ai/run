@@ -80,8 +80,8 @@ for (const mode of ['each', 'batch'] as const) contractTest('shared-agents', 'na
     assert.equal(refused.status, 403, refused.text);
     assert.equal(refused.json.code, 'FORBIDDEN');
   }
-  for (const [route, body] of [['continue', { actor: `member:${member}` }], ['execute', { code: '1', actor: `member:${member}` }]] as const) {
-    const refused = await r.call(`${base}/${route}`, { body });
+  for (const [method, params] of [['continue', { actor: `member:${member}` }], ['execute', { code: '1', actor: `member:${member}` }]] as const) {
+    const refused = await r.call(`/registry/${agent}/requests`, { body: { id: `removed-${method}`, method, params } });
     assert.equal(refused.status, 403, refused.text);
     assert.equal(refused.json.code, 'FORBIDDEN');
   }
