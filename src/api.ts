@@ -1,4 +1,6 @@
 import { inboxAnswers, inboxReceipt, inboxAgentFailure } from "../shared/inbox-answers.ts";
+import { vaultRoutes } from "./vault-api.ts";
+import type { Vault } from "./core/vault.ts";
 import type { Dreaming } from "../shared/dreaming.ts";
 import { sessionTranscripts } from "../shared/session-transcripts.ts";
 import { handleHook } from "./core/trigger-ingress.ts";
@@ -116,6 +118,7 @@ export interface ApiContext {
   channels?: Channels;
   /** A tenant's GitHub Apps (`/v1/github-apps`), which egress grants and tool sources mint tokens from. */
   githubApps?: GitHubApps;
+  vault?: Vault;
   volumes?: VolumeService;
   definitions?: Definitions;
   /** Tenants whose operator tokens may adjust any tenant's credit (AGENT_BILLING_ADMINS). */
@@ -1489,6 +1492,7 @@ export function api(context: ApiContext) {
   route(createRoute({method:"get",path:"/v1/agents/{id}/triggers/{triggerId}/deliveries",request:{params:triggerPath},responses:{200:reply("Deliveries",z.array(z.unknown()))}}),async c=>json(c,200,await triggers().deliveries(c.var.principal.tenant,c.req.param("id")!,c.req.param("triggerId")!)));
 
   githubAppRoutes(route, () => context.githubApps);
+  vaultRoutes(route, () => context.vault);
   applyRoutes(route, context);
   definitionRoutes(route, () => context);
   workspaceRoutes(route, () => accounts.db);

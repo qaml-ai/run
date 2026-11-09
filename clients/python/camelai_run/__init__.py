@@ -734,6 +734,26 @@ class _RuntimeCalls:
     # Make agents from one with create_agent(definition=id). Fields use the REST names (systemPrompt, mcpServers, runLimits...)
     # or their Python spelling (system_prompt, mcp_servers, run_limits...). An MCP server's auth is {"type": "bearer", "token"},
     # {"type": "runtime"} or {"type": "exchange", "url", "audience"?} (a credential fetched from an endpoint of yours).
+    def list_secrets(self, workspace=None):
+        return self._rest("GET", self._vault_path(workspace))
+
+    def create_secret(self, name, *, value, allowed_hosts, locations=None, workspace=None):
+        fields = {"value": value, "allowedHosts": allowed_hosts}
+        if locations is not None:
+            fields["locations"] = locations
+        return self._rest("POST", self._vault_path(workspace) + "/" + _path(name), fields, retry=False)
+
+    def update_secret(self, name, *, workspace=None, **fields):
+        if "allowed_hosts" in fields:
+            fields["allowedHosts"] = fields.pop("allowed_hosts")
+        return self._rest("PATCH", self._vault_path(workspace) + "/" + _path(name), fields, retry=False)
+
+    def delete_secret(self, name, workspace=None):
+        return self._rest("DELETE", self._vault_path(workspace) + "/" + _path(name), retry=False)
+
+    @staticmethod
+    def _vault_path(workspace):
+        return "/v1/workspaces/" + _path(workspace) + "/secrets" if workspace else "/v1/secrets"
     def apply(self, manifest):
         """Atomically provision keyed resources; dryRun previews changes without saving."""
         return self._rest("POST", "/v1/apply", manifest)
@@ -980,7 +1000,7 @@ class AgentRuntime(_RuntimeCalls):
             raise
         return then(value) if then else value
 
-    async def create_agent(self, *, tools, workspace_id=_DEFAULT, system_prompt=None, name=None, type=None, metadata=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, on_input=None, builtins=None, delegate=None, subagents=False, prompt=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, idle_ttl_seconds=None):
+    async def create_agent(self, *, tools, workspace_id=_DEFAULT, system_prompt=None, name=None, type=None, metadata=None, networking=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, on_input=None, builtins=None, delegate=None, subagents=False, prompt=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, idle_ttl_seconds=None):
         """Provision an agent. `model` is "provider/model-id", e.g. "anthropic/claude-sonnet-5-5".
         `definition` makes it from a definition (GET /v1/definitions), which supplies the model, system prompt,
         thinking level and tool sources; `tools` are added as the agent's attached MCP server.
@@ -1000,7 +1020,7 @@ class AgentRuntime(_RuntimeCalls):
         if not self.api_key:
             raise AgentError("No API key: set CAMELAI_API_KEY (or pass api_key). Create one at https://run.camelai.com/console/tokens")
         # subject: who the agent acts for; context: claims for its tool servers' identity tokens. Set only here.
-        body = _provisioning(tools, definition=definition, name=name, type=type, metadata=metadata, system_prompt=system_prompt, model=model, thinking_level=thinking_level,
+        body = _provisioning(tools, definition=definition, name=name, type=type, metadata=metadata, networking=networking, system_prompt=system_prompt, model=model, thinking_level=thinking_level,
                              workspace_id=workspace_id, mounts=mounts, subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits, model_headers=model_headers, builtins=builtins,
                              delegate=delegate, prompt=prompt, initial_messages=initial_messages, import_messages=import_messages, max_output_tokens=max_output_tokens, temperature=temperature, data_collection=data_collection, language=language, mcp_servers=mcp_servers)
         # A key of the caller's makes the agent durable (it lives until deleted); one the SDK makes up, only so a retried
@@ -1450,12 +1470,12 @@ class Voice:
 
 def _provisioning(tools, *, workspace_id=_DEFAULT, definition=None, name=None, type=None, metadata=None, system_prompt=None, model=None, thinking_level=None, mounts=None, remount=None,
                   subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, system_prompt_append=None, file_tools=None, builtins=None,
-                  delegate=None, prompt=None, code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, bucket=None, queue=None):
+                  delegate=None, prompt=None, code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, bucket=None, queue=None, networking=None):
     """A create request's body: the tools as the attached MCP server's tools/list, and the fields given."""
     optional = {"metadata": metadata, "definition": definition, "name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level,
                 "mounts": mounts, "remount": remount, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit, "runLimits": run_limits, "modelHeaders": model_headers,
                 "systemPromptAppend": system_prompt_append, "fileTools": file_tools, "codeMode": code_mode, "builtins": builtins, "delegate": delegate, "mcpServers": mcp_servers, "prompt": prompt,
-                "initialMessages": initial_messages, "importMessages": import_messages, "maxOutputTokens": max_output_tokens, "temperature": temperature, "dataCollection": data_collection, "language": language, "bucket": bucket, "queue": queue}
+                "initialMessages": initial_messages, "importMessages": import_messages, "maxOutputTokens": max_output_tokens, "temperature": temperature, "dataCollection": data_collection, "language": language, "bucket": bucket, "queue": queue, "networking": networking}
     if workspace_id is not _DEFAULT:
         optional["workspaceId"] = workspace_id
     return _with_multi_agent({"mcp": {"tools": [item.mcp_tool() for item in tools]}, **{key: value for key, value in optional.items() if value is not None or key == "workspaceId"}})

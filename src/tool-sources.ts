@@ -1,3 +1,4 @@
+import { maskResponse, vaultAuth, type Vault, type VaultAuth } from "./core/vault.ts";
 import type { FileLinks } from "./files.ts";
 import { COMPUTER_TOOLS, type Computers } from "./computers/service.ts";
 import { randomUUID } from "node:crypto";
@@ -45,7 +46,7 @@ export type Exposure = "direct" | "codemode" | "both";
  * How a source is authenticated beyond its headers: a stored bearer token, a token the runtime signs for each request,
  * or (an MCP server) a credential the runtime fetches from the tenant's own endpoint and refreshes (credential-exchange.ts).
  */
-export type SourceAuth = { type: "bearer" } | { type: "runtime" } | ExchangeAuth | GitHubAppAuth;
+export type SourceAuth = { type: "bearer" } | { type: "runtime" } | ExchangeAuth | GitHubAppAuth | VaultAuth;
 /**
  * A source whose GitHub App token could not be had (the App is gone, not installed where asked, or GitHub refused):
  * unavailable for the call, and the model reads why. `transient` when GitHub could not be reached or was busy.
@@ -169,7 +170,7 @@ function credentialHeaders(headers: unknown, auth: unknown) {
     if (type === "oauth") throw bad("OAuth is not supported yet; use a bearer token, the runtime's identity tokens, or headers");
     if (Object.keys(result).some(name => name.toLowerCase() === "authorization")) throw bad("Give an Authorization header or auth, not both");
     // The runtime's own tokens are minted per request, and an exchange's or a GitHub App's credentials had as they are needed, so nothing is stored for them.
-    if (((type === "runtime" || type === "exchange") && token === undefined) || type === "github-app") return result;
+    if (((type === "runtime" || type === "exchange") && token === undefined) || type === "github-app" || type === "vault") return result;
     if (type !== "bearer" || typeof token !== "string" || !/^[\x21-\x7e]{1,8192}$/.test(token)) throw bad("auth is { type: \"bearer\", token }, { type: \"runtime\" }, { type: \"github-app\", app, ... } or (an MCP server's) { type: \"exchange\", url }");
     result.Authorization = `Bearer ${token}`;
   }
@@ -219,7 +220,7 @@ export function inlineMcpServersInput(input: unknown, context: Context): McpServ
     if (!server || typeof server !== "object" || Array.isArray(server)) continue;
     const { headers, auth } = server as { headers?: unknown; auth?: unknown };
     if (headers !== undefined) throw bad(INLINE_CREDENTIALS);
-    if (auth !== undefined && (!auth || typeof auth !== "object" || (auth as { type?: unknown }).type !== "runtime" || Object.keys(auth).length !== 1)) throw bad(INLINE_CREDENTIALS);
+    if ((auth as {type?:unknown})?.type !== "vault" && auth !== undefined && (!auth || typeof auth !== "object" || (auth as { type?: unknown }).type !== "runtime" || Object.keys(auth).length !== 1)) throw bad(INLINE_CREDENTIALS);
   }
   // Nothing is sealed (auth "runtime" stores no secret), so no definition's name is needed for one.
   return mcpServersInput(input, undefined, "", context);
@@ -318,7 +319,7 @@ function sealCredentials(headers: unknown, auth: unknown, previous: { url: strin
   if (type === "exchange" && !exchangeFor) throw bad("auth { type: \"exchange\" } is for MCP servers");
   // A GitHub App's tokens are minted from the tenant's stored App (core/github-apps.ts), which needs the secrets key to read.
   if (type === "github-app" && !context.accounts?.canStoreKeys) throw new HttpError(503, "This runtime has no AGENT_SECRETS_KEY, so it holds no GitHub Apps");
-  const kind: SourceAuth | undefined = type === "exchange" ? exchangeInput(auth, exchangeFor!, context) : type === "github-app" ? githubAppAuthInput(auth, `${label}: auth`)
+  const kind: SourceAuth | undefined = type === "vault" ? vaultAuth(auth) : type === "exchange" ? exchangeInput(auth, exchangeFor!, context) : type === "github-app" ? githubAppAuthInput(auth, `${label}: auth`)
     : runtime ? { type: "runtime" } : auth ? { type: "bearer" } : undefined;
   if (!Object.keys(credentials).length) return kind ? { auth: kind } : {};
   if (!context.accounts?.canStoreKeys) throw new HttpError(503, "This runtime has no AGENT_SECRETS_KEY, so it cannot store credentials");
@@ -394,14 +395,14 @@ export class ToolSources {
   private readonly accounts?: Accounts;
   private readonly mcp: McpConnections;
   private readonly outbound: Outbound;
-  private readonly options: { scheduler?: Scheduler; search?: WebSearch; render?: WebRender; xSearch?: XSearch; computers?: Computers; volumes?: VolumeService; fileUrls?: FileUrls; links?: FileLinks; githubApps?: GitHubApps };
+  private readonly options: { vault?: Vault; scheduler?: Scheduler; search?: WebSearch; render?: WebRender; xSearch?: XSearch; computers?: Computers; volumes?: VolumeService; fileUrls?: FileUrls; links?: FileLinks; githubApps?: GitHubApps };
 
   private readonly signer?: RuntimeSigner;
   /** Credentials fetched for servers with auth "exchange": this node's, in memory only. */
   readonly exchange: CredentialExchange;
 
   /** `fileUrls` signs the URLs of files sent to tools (file-arguments.ts). */
-  constructor(options: { accounts?: Accounts; mcp: McpConnections; outbound: Outbound; scheduler?: Scheduler; signer?: RuntimeSigner; search?: WebSearch; render?: WebRender; xSearch?: XSearch; computers?: Computers; volumes?: VolumeService; fileUrls?: FileUrls; links?: FileLinks; githubApps?: GitHubApps }) {
+  constructor(options: { accounts?: Accounts; mcp: McpConnections; outbound: Outbound; scheduler?: Scheduler; signer?: RuntimeSigner; search?: WebSearch; render?: WebRender; xSearch?: XSearch; computers?: Computers; volumes?: VolumeService; fileUrls?: FileUrls; links?: FileLinks; githubApps?: GitHubApps; vault?: Vault }) {
     this.accounts = options.accounts;
     this.mcp = options.mcp;
     this.outbound = options.outbound;
@@ -428,6 +429,13 @@ export class ToolSources {
     // Credentials are sealed under a definition: an agent's own servers (no definition) carry none.
     if (spec.sealed && !context.definition) throw new Error(`MCP server ${spec.name} has sealed credentials but no definition to unseal them with`);
     const headers = spec.sealed ? this.headers(sealedAad(context.definition!, spec.name), spec.sealed) : {};
+    if (spec.auth?.type === "vault") {
+      const auth = spec.auth;
+      return { url: spec.url, headers, token: async () => {
+        if (!this.options.vault) throw new Error("Vault is unavailable");
+        return this.options.vault.open(context.tenant, auth, new URL(spec.url), "header");
+      }, vault: true, scope: `${context.agent}:vault:${JSON.stringify(auth)}` };
+    }
     const exchange = this.exchanged(context, spec);
     // The credential is the agent's own (the endpoint decides per caller), so the agent has its own session too.
     if (exchange) return { url: spec.url, headers, token: () => this.exchange.token(exchange.caller, exchange.target), refused: token => this.exchange.refused(exchange.caller, exchange.target, token), scope: `${context.agent}:exchange:${this.exchange.key(exchange.caller, exchange.target)}` };
@@ -632,12 +640,17 @@ export class ToolSources {
             if (api.sealed && !context.definition) throw new Error(`OpenAPI source ${api.name} has sealed credentials but no definition to unseal them with`);
             const secrets = api.sealed ? this.headers(sealedAad(context.definition!, api.name, "openapi"), api.sealed) : {};
             if (api.auth?.type === "runtime") secrets.Authorization = `Bearer ${await this.identityToken(context, audienceOf(api.audience, api.baseUrl, context.tenant), turn)}`;
+            if (api.auth?.type === "vault") {
+              if (!this.options.vault) throw new Error("Vault is unavailable");
+              secrets.Authorization = `Bearer ${await this.options.vault.open(context.tenant, api.auth, new URL(url), "header")}`;
+            }
             const minted = api.auth?.type === "github-app" ? await this.githubToken(context.tenant, api.auth, `OpenAPI source ${api.name}`, api.baseUrl) : undefined;
             if (minted) secrets.Authorization = `Bearer ${minted.token}`;
             // The call's key, as APIs that dedupe writes take one (Stripe's convention).
             if (idempotencyKey) init.headers = { ...init.headers as Record<string, string>, "Idempotency-Key": idempotencyKey };
             // Text answers are capped lower as they are read (openapi.ts).
-            const response = await this.outbound.fetch(url, { ...init, signal, timeoutMs: api.timeoutMs ?? API_TIMEOUT_MS, maxBytes: TOOL_FILE_LIMITS.responseBytes, secrets });
+            let response = await this.outbound.fetch(url, { ...init, signal, timeoutMs: api.timeoutMs ?? API_TIMEOUT_MS, maxBytes: TOOL_FILE_LIMITS.responseBytes, secrets }).catch(error => { if (api.auth?.type === "vault") throw new Error("Vault source request failed"); throw error; });
+            if (api.auth?.type === "vault") response = await maskResponse(response, [secrets.Authorization.replace(/^Bearer /, "")]);
             // A token the API turned away is not used again: the next call mints another.
             if (minted && response.status === 401) minted.refused();
             return await operationResult(operation, response, callFiles);

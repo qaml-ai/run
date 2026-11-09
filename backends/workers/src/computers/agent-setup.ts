@@ -23,7 +23,7 @@ export const parentCacheSize = () => parents.size;
  * parent's computer object, by the name the parent's own computer tool uses (the parent agent's object id).
  */
 export async function computerSetup(env: ControlEnv & { AGENT_PUBLIC_URL?: string; AGENTS: { idFromName(name: string): DurableObjectId } }, conf: Config): Promise<OperateSetup> {
-  const settings = (conf.config.computer ?? {}) as ComputerSettings;
+  const settings = { ...(conf.config.computer ?? {}), networking: conf.config.networking, mcpHosts: (conf.config.mcpServers ?? []).map(s => new URL(String(s.url)).hostname) } as ComputerSettings;
   const issuer = env.AGENT_PUBLIC_URL || conf.runtimeOrigin || "";
   if (settings.egress?.some(grant => grant.auth) && !issuer) throw new Error("Runtime public URL is not configured");
   const claims = {
