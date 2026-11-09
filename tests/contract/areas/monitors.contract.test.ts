@@ -55,6 +55,16 @@ contractTest("monitors", "tests/monitors.test.ts:2", "repeat fires again only wh
   assert.equal(third.status, "active");
   await until(() => events(f).length === 2, "both fires' messages");
   assert.deepEqual((await f.call(`${path}/${id}/checks`)).json.map((check: any) => check.fired), [true, false, true]);
+  // A check is told by its request id, so a client cannot use one: not a made-up id, not one naming a real monitor.
+  for (const reserved of ["monitor-check-00000000-0000-0000-0000-000000000000-1", `monitor-check-${id}-999`, `monitor-check-${id}-2000`]) {
+    const sent = await f.call(`/registry/${agent}/requests`, { body: { id: reserved, method: "execute", params: { code: "return 1" } } });
+    assert.equal(sent.status, 400, sent.text);
+    assert.match(sent.text, /monitor-check- are reserved/);
+  }
+  assert.equal((await f.call(`/registry/${agent}/requests`, { body: { id: `monitor-check-${id}-999`, method: "prompt", params: { text: "hi" } } })).status, 400);
+  const plain = await f.call(`/registry/${agent}/requests`, { body: { id: "an-ordinary-run", method: "execute", params: { code: "return 1" } } });
+  assert.ok(plain.status === 200 || plain.status === 202, plain.text);
+  assert.equal((await f.call(`${path}/${id}`)).json.checks, 3, "none of them settled the monitor");
   assert.equal((await f.call(`${path}/phase`, { method: "DELETE" })).status, 200);
   assert.equal((await f.call(`${path}/phase`)).status, 404);
 });

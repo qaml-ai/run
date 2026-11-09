@@ -209,6 +209,12 @@ export class Scheduler {
     return !!(await underClaim(this.db, claim, sql => sql.query("delete from schedules where agent = $1 and monitor is not null and (monitor->>'name' = $2 or id::text = $2)", [agent, key]))).rowCount;
   }
 
+  /** Whether request `id` is the check this agent's monitor has in flight: the scheduler marks it before sending it. */
+  async checkInFlight(agent: string, tenant: string, id: string) {
+    const request = checkRequest(id);
+    return !!request && !!(await this.db.query("select 1 from schedules where id = $1 and agent = $2 and tenant = $3 and monitor->'pending'->>'key' = $4", [request.schedule, agent, tenant, String(request.key)])).rowCount;
+  }
+
   /** Change a monitor under its row's lock; `change` returning undefined leaves it. Returns the row after. */
   private async changeMonitor(id: string, change: (monitor: Monitor, row: Schedule) => Monitor | undefined, owner?: { id: string; tenant: string }): Promise<Schedule | undefined> {
     return transaction(this.db, async sql => {

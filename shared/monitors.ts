@@ -104,6 +104,9 @@ export function checkRequest(id: unknown) {
   const match = typeof id === "string" ? /^monitor-check-([0-9a-f-]{36})-(\d+)$/.exec(id) : null;
   return match ? { schedule: match[1], key: Number(match[2]) } : undefined;
 }
+/** Request ids only the runtime may use: a request under one is accepted only while it is that agent's monitor's check in flight. */
+export const RESERVED_CHECK_PREFIX = "monitor-check-";
+export const RESERVED_CHECK_ERROR = "Request ids starting with monitor-check- are reserved for the runtime";
 /** Requests a monitor made: its checks and the messages of its fires. Approvals asked in them are declined (nobody is there). */
 export const monitorRequest = (id: unknown) => typeof id === "string" && id.startsWith("monitor-");
 

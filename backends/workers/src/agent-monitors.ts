@@ -29,22 +29,24 @@ const key = (id: string) => `schedule:${id}`;
  * record goes at the monitor's next occurrence; one of a monitor that is removed is marked here and goes a minute on.
  */
 const GC = 'monitor-gc:';
+type Mark = { first: number; next: number };
 async function forget(storage: { put(key: string, value: unknown): Promise<unknown> }, schedule: Schedule) {
-  for (const at of [schedule.monitor?.settled, schedule.monitor?.pending?.key]) if (at !== undefined) await storage.put(`${GC}${checkRequestId(schedule.id, at)}`, Date.now());
+  const now = Date.now();
+  for (const at of [schedule.monitor?.settled, schedule.monitor?.pending?.key]) if (at !== undefined) await storage.put(`${GC}${checkRequestId(schedule.id, at)}`, { first: now, next: now + 60_000 } satisfies Mark);
 }
 export async function collectChecks(runtime: AgentRuntime, now = Date.now()) {
-  for (const [name, at] of await runtime.ctx.storage.list<number>({ prefix: GC, limit: 100 })) {
-    if (now - at < 60_000) continue;
+  for (const [name, mark] of await runtime.ctx.storage.list<Mark>({ prefix: GC, limit: 100 })) {
+    if (now < mark.next) continue;
     const record = await runtime.ctx.storage.get<{ state?: string }>(reqKey(name.slice(GC.length)));
-    // One still running keeps its record until it ends (five minutes at most, then it goes regardless).
-    if (record && record.state !== 'completed' && now - at < 300_000) continue;
-    await runtime.ctx.storage.delete([reqKey(name.slice(GC.length)), name]);
+    // A check still queued or running keeps its record: it is deleted only once it has settled. Looked at again a
+    // minute on, and every fifteen minutes once it has waited an hour, so the wait never spins the alarm.
+    if (record && record.state !== 'completed') await runtime.ctx.storage.put(name, { first: mark.first, next: now + (now - mark.first < 3_600_000 ? 60_000 : 900_000) } satisfies Mark);
+    else await runtime.ctx.storage.delete([reqKey(name.slice(GC.length)), name]);
   }
 }
 export async function checkGcDeadline(runtime: AgentRuntime) {
-  const marks = [...(await runtime.ctx.storage.list<number>({ prefix: GC, limit: 100 })).values()], now = Date.now();
-  // A minute after the mark; one still running then is looked at once more, five minutes after it, and goes.
-  return marks.length ? Math.max(now + 1000, Math.min(...marks.map(at => now - at < 60_000 ? at + 60_000 : at + 300_000))) : Infinity;
+  const marks = [...(await runtime.ctx.storage.list<Mark>({ prefix: GC, limit: 100 })).values()];
+  return marks.length ? Math.max(Date.now() + 1000, Math.min(...marks.map(mark => mark.next))) : Infinity;
 }
 export async function monitorsOf(runtime: AgentRuntime): Promise<Schedule[]> {
   return [...(await runtime.ctx.storage.list<Schedule>({ prefix: 'schedule:', limit: 100 })).values()]

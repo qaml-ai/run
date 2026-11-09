@@ -22,7 +22,7 @@ import { outputInput } from "./tool-policy.ts";
 import { importedHistory, validateUserMessages } from "./history.ts";
 import { convertToLlm, createCompactionSummaryMessage } from "./pi-harness/messages.ts";
 import { canonical } from "../shared/durable-json.ts";
-import { checkRequest } from "../shared/monitors.ts";
+import { checkRequest, RESERVED_CHECK_ERROR, RESERVED_CHECK_PREFIX } from "../shared/monitors.ts";
 import { joins, CANCELLABLE_METHODS as CANCELLABLE } from "../shared/queue-mode.ts";
 import type { CommitEffect } from "../shared/append-log.ts";
 import { fileStorage, type Storage } from "../shared/storage.ts";
@@ -1708,6 +1708,9 @@ export class ClientSessions {
    */
   private async accept(session: Session, body: any, trusted = false, member?: string): Promise<{ status: 200 | 202; record: RequestRecord; rate?: RateLimitState }> {
     if (!validId(body?.id) || !REQUEST_METHODS.includes(body.method) || !body.params || typeof body.params !== "object" || Array.isArray(body.params)) throw new HttpError(400, "Invalid request");
+    // A monitor's check is told by its id, which a client could choose: one is accepted only while the scheduler has
+    // marked it in flight for this agent's monitor (before sending it), so no client request gets a check's treatment.
+    if (body.id.startsWith(RESERVED_CHECK_PREFIX) && (body.method !== "execute" || !await this.options.scheduler?.checkInFlight(session.header.id, session.header.tenant, body.id))) throw new HttpError(400, RESERVED_CHECK_ERROR);
     // An idle raw steer is held for the next prompt. Active steers use payer-aware prompt admission.
     const rawSteer = body.method === "steer";
     const oldSteer = rawSteer && session.requests.get(body.id);

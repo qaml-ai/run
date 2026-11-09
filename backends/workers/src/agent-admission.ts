@@ -1,4 +1,4 @@
-import { checkRequest } from "../../../shared/monitors.ts";
+import { checkRequest, RESERVED_CHECK_ERROR, RESERVED_CHECK_PREFIX } from "../../../shared/monitors.ts";
 import { requireActiveMember, sharedPromptInput } from "../../../src/shared-agents.ts";
 import { keyServices } from "./security-services.ts";
 import { EndUserCredits } from "./end-user-credits.ts";
@@ -227,6 +227,13 @@ export async function admitImpl(this: AgentRuntime,
     const id = boundedText(request.id, "id", 80);
     if (!/^[A-Za-z0-9_-]+$/.test(id))
       throw new BadRequest("Invalid request id");
+    // A monitor's check is told by its id, which a client could choose: one is accepted only while the alarm has
+    // marked it in flight for a monitor of this agent (before sending it), so no client request gets a check's treatment.
+    if (id.startsWith(RESERVED_CHECK_PREFIX)) {
+      const check = checkRequest(id);
+      const monitor = check && (await this.ctx.storage.get<{ monitor?: { pending?: { key: number } } }>(`schedule:${check.schedule}`))?.monitor;
+      if (request.method !== "execute" || !check || monitor?.pending?.key !== check.key) throw new BadRequest(RESERVED_CHECK_ERROR);
+    }
     // A sub-agent the runtime made runs only what its parent sends it: a run signed into its parent's chain, or a message
     // or notification of the runtime's. Anyone else's prompt, steer, continue or code is refused (answering its inputs still resumes it).
     if (!notice && ["prompt", "steer", "continue", "execute"].includes(String(request.method))) {
