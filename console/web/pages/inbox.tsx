@@ -59,7 +59,7 @@ function InboxCard({ item, onAnswered }: { item: InboxItem; onAnswered: () => vo
   const [confirmDismiss, setConfirmDismiss] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
-  const pending = useRef<{ value: string; requestId: string }>();
+  const pending = useRef<{ value: string; requestId: string } | undefined>(undefined);
   async function answer(value: InputValue | InputAnswer) {
     if (busy) return;
     setBusy(true); setError(undefined);
