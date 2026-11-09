@@ -53,7 +53,7 @@ Stateless runs (a configuration and a message in, the result out; nothing carrie
   history <agent> [--limit n]
   abort <agent>
   inputs [agent]                   Questions and approvals waiting on someone
-  inbox-answer <json>              Batch {requestId, answers} with inbox IDs and versions
+  inbox-answer <json>              Batch {requestId, answers} with agents, input IDs and versions
   answer <agent> <inputId> <value> true/false, text, JSON, or "decline"
   triggers list|add|delete|rotate|deliveries <agent> [triggerId] [--input JSON]
   schedules list <agent>
@@ -227,7 +227,7 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
         return 0;
       }
       case "inbox-answer": {
-        if (!args[0]) throw new UsageError(`Usage: camelrun inbox-answer '{"requestId":"key","answers":[{"id":"...","version":1,"action":"accept"}]}'`);
+        if (!args[0]) throw new UsageError(`Usage: camelrun inbox-answer '{"requestId":"key","answers":[{"agent":"...","id":"...","version":1,"action":"accept"}]}'`);
         const result = await api().call("POST", "/v1/inbox/answers", JSON.parse(args[0]));
         print(result, () => JSON.stringify(result));
         return 0;

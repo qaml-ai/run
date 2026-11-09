@@ -37,7 +37,7 @@ export interface Input {
   detail: Record<string, any>;
   /** Who may answer, besides the definition's approvers: the person whose message started the turn. */
   responders: { audience?: string[] };
-  version?: number; state: InputState; answer?: Answer; createdAt: number; expiresAt: number;
+  state: InputState; answer?: Answer; createdAt: number; expiresAt: number;
 }
 /** What is stored beyond what callers see: how the call is retried once answered. */
 type Stored = Pick<Input, "message" | "detail" | "responders"> & {
