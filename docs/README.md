@@ -37,6 +37,8 @@ model-written code in a sandbox, and wakes agents when there is work.
    - [Channels](guides/channels.md): Slack, Telegram, GitHub, email and any service that sends webhooks
    - [Agents as MCP servers](guides/mcp-server.md): connect Claude or Cursor to an agent
    - [Coming from the OpenAI Agents SDK or LangGraph](guides/migrating.md): each concept mapped, and what camelRun does not have
+   - [Dreaming](guides/dreaming.md): nightly consolidation into a memory volume
+   - [Session transcripts](guides/session-transcripts.md): time-filtered pages from an agent and its descendants
    - [Exporting your data](guides/export.md): the account export, and moving to a self-hosted runtime
 4. **[Production checklist](production.md)**
 5. **Reference**

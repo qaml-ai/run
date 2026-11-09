@@ -2109,7 +2109,7 @@ export class ClientSessions {
       else params = { ...params, aborted: true };
     }
     try {
-      return await this.supervisor.request(id, method, params, RUN_METHODS.includes(record.method)
+      return await this.supervisor.request(id, method, method === "execute" ? { ...params, requestId: record.id } : params, RUN_METHODS.includes(record.method)
       ? event => {
           // Failed calls report zero usage; count only responses the provider completed.
           // Responses through the tenant's own endpoint count under it: `chiridion/openrouter/<model>`.

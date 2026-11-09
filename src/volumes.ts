@@ -970,6 +970,7 @@ export class VolumeService {
       if (mode !== "ro" && mode !== "rw") throw new HttpError(400, "mode must be ro or rw");
       if (notify !== undefined && typeof notify !== "boolean") throw new HttpError(400, "notify must be a boolean");
       if (!validVolumeId(volumeId) || !await this.owns(volumeId, tenant)) throw new HttpError(404, `Unknown volume ${String(volumeId)}`);
+      if (mode === "rw" && (await this.db.query('select agent from agent_dreaming where tenant=$1 and volume=$2', [tenant, volumeId])).rows.length) throw new HttpError(400, "Dream memory volumes must be mounted read-only");
       if (mounts.some(other => within(path, other.path) || within(other.path, path))) throw new HttpError(400, `Mount path ${path} overlaps another mount`);
       const subpath = (input as Record<string, unknown>).subpath === undefined ? "/" : normalizePath((input as Record<string, unknown>).subpath, "subpath");
       mounts.push({ volumeId, path, mode, ...(subpath !== "/" ? { subpath } : {}), ...(notify ? { notify } : {}) });

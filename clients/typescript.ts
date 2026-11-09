@@ -809,6 +809,27 @@ export interface AgentFile { path: string; version: number; size: number; update
  */
 export interface CalendarSchedule { time: string; timeZone: string; daysOfWeek?: number[] }
 export interface ScheduleEmail { to: string; subject: string; format?: "text" | "markdown" | "html" }
+export interface DreamingConfig {
+  enabled: boolean;
+  volumeId: string;
+  schedule: { time: string; timeZone: string };
+  analyzerModel?: string;
+  organizerModel?: string;
+  budgetUsd: number;
+  instructions: string;
+  endUser?: string;
+  acrossUsers?: boolean;
+}
+export interface DreamingStatus {
+  config: DreamingConfig;
+  since: number;
+  dueAt: number;
+  running: boolean;
+  checkpoint: {from: number; to: number; cursor?: string; offset?: number; fragment?: number} | null;
+  failedNights: number;
+  lastResult: { status: string; from: number; to: number; summary?: string; error?: string } | null;
+  results: NonNullable<DreamingStatus["lastResult"]>[];
+}
 export interface Schedule { mounts?: MountInput[]; cron?: {expression:string; timeZone:string}; sessionMode?: "continue" | "fresh"; spendLimit?: {usd:number}; calendar?: CalendarSchedule; email?: ScheduleEmail; id: string; agent: string; text?: string; code?: string; /** @deprecated Never set: every wake-up sees the agent's history. */ history?: "none"; dueAt: number; everySeconds?: number; createdAt: number; failures?: number; lastError?: string; lastErrorAt?: number }
 /**
  * A steered message as the runtime took it (`steerMessage`, `agent.steer`): `accepted`, the running turn reads it after
@@ -1846,6 +1867,14 @@ export class AgentRuntime {
   mounts(agentId: string): Promise<Mount[]> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/mounts`, this.operator()); }
   /** Replace an agent's mounts: a removed one at once, the rest from its next turn, which is told of them. */
   setMounts(agentId: string, mounts: MountInput[]): Promise<Mount[]> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/mounts`, this.operator(), "PUT", { mounts }, false); }
+  /** A page of this conversation tree in [from,to), in epoch milliseconds. Follow next, including empty pages. */
+  sessions(agentId: string, options: { from: number; to: number; cursor?: string; limit?: number; children?: boolean; endUser?: string }): Promise<{ agentId: string | null; entries: { index: number; message: unknown }[]; next: string | null }> {
+    const query = new URLSearchParams(Object.entries(options).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)]));
+    return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/sessions?${query}`, this.operator());
+  }
+  dreaming(agentId: string): Promise<DreamingStatus | null> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/dreaming`, this.operator()); }
+  configureDreaming(agentId: string, config: DreamingConfig): Promise<DreamingStatus> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/dreaming`, this.operator(), "PUT", config, false); }
+  dreamNow(agentId: string): Promise<{queued: boolean}> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/dreaming/run`, this.operator(), "POST", {}, false); }
   /**
    * A token a browser reads one agent with (`@camelai/run/watch`): mint one per user, after your
    * own access checks. It reads only that agent's events, state, history and inputs (or `scopes`), for

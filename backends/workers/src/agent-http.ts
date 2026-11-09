@@ -451,6 +451,9 @@ export async function fetchRequestImpl(this: AgentRuntime,
         await this.arm();
         return json({ deleted });
       }
+      // Internal lineage for transcript consolidation includes every retained child, including named targets.
+      if (path === "/conversation-children" && request.method === "GET")
+        return json({ children: [...new Set((await this.delegation.children()).map(child => child.id).filter(Boolean))] });
       // The public list (GET /v1/agents/{id}/children, as on Node).
       if (path === "/children" && request.method === "GET")
         return json({ children: childrenView(await this.delegation.children()) });

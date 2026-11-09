@@ -22,7 +22,7 @@ test('a tool-using agent without code keeps present_file and drops disabled file
 });
 
 test('an entirely bare agent has no present_file, including explicit decide or internal output tools', () => {
-  const internal = [{ name: 'final_output' }, { name: 'decide' }, { name: 'host_execute' }];
+  const internal = [{ name: 'final_output' }, { name: 'decide' }, { name: 'host_execute' }, { name: 'report_progress' }, { name: 'send_message' }];
   const selection = selectFileTools([...files, ...internal], names, { codeMode: false, fileTools: false });
   assert.deepEqual(selection.tools, internal);
   assert.deepEqual(selectFileTools(files, names, { codeMode: false, fileTools: false }).tools, []);
