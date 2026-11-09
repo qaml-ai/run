@@ -1487,7 +1487,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   // Deleted and expired agents' data, purged by whichever nodes get to it first.
   const purgeTimer = setInterval(() => {
     void clients.sweep();
-    void pruneUsageDetails(db).catch(error => console.error(JSON.stringify({ type: "usage_retention_failed", error: errorText(error) })));
+    void pruneUsageDetails(db).catch(error => console.error(JSON.stringify({ type: "usage_retention_failed", error: safeError(error) })));
   }, config.purgeMs);
   purgeTimer.unref();
   // Chunks nothing refers to any more, and deleted volumes' objects, collected a tenant at a time by whichever node is free.
