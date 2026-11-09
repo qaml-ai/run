@@ -262,3 +262,5 @@ Files an MCP tool returns (images, audio, embedded blobs, long text resources) a
 with `fileArguments` on is downloaded the same way; from any other server it stays a link, with a hint to use
 `file_import`.
 Without a workspace mount, MCP results keep their existing behavior.
+
+A volume mount may include `instructions` (at most 4,096 characters per mount and 8,192 across all mounts). The agent sees them beside the mount path and read/write mode under `Mount notes from the agent's owner:`. Whitespace is collapsed to keep each note on one line. Delegate children that inherit mounts inherit these instructions.

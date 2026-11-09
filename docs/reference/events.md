@@ -125,7 +125,7 @@ carry it out, and `uncertain: true` that nobody can tell whether its work took
 effect (a restart cut it short). The same outcome is at
 `GET …/requests/:requestId` and in `GET …/state`, which is what to trust. There,
 an ended request (`state: "completed"`) also carries `status` (`completed`,
-`input_required` or `failed`), `error` (the runtime's, or the model's from
+`input_required`, `paused` or `failed`), `error` (the runtime's, or the model's from
 `result.error`) and `stopped` on top, so a failed run reads as failed without
 looking inside `result`. `GET …/requests/:requestId?wait=<seconds>` (at most 25)
 waits for a running request: it answers as soon as the request settles, or when
@@ -294,6 +294,7 @@ A prompt's `response.outcome.result` (and `GET …/requests/:id`'s `outcome`):
 | `error` | the model's error (a provider refusal after retries), or `null` |
 | `code` | a stable name for `error`, where the runtime gives one: `model_key_missing` (no key for the agent's model), `model_key_invalid` (the provider refused the key), `output_missing` (a structured run ended without its output), `model_stream_stalled` (the model stopped answering mid-request, past every retry), `aborted` (the agent was stopped while the run went), `cancelled` (a stop cancelled the run before it began), `spend_limit`, `turn_limit` |
 | `stopped` | why the run stopped early: `input_required` (it waits on `inputs`), `spend_limit` or `turn_limit` (its model responses or time, see [run limits](../guides/models-and-keys.md#run-limits)), with the reason in `error` |
+| `status`, `stoppedReason` | a spend-limit stop adds `status: "paused"` and `stoppedReason: "budget_reached"`; `limit` keeps the kind of budget that stopped it |
 | `inputs` | when `stopped` is `input_required`: the pending inputs (as `input_required` carries them) |
 | `files` | files the run wrote (at most 100): `{path, version, size, contentType, …}` |
 | `presented` | files the run presented to the user (at most 20) |

@@ -1,0 +1,316 @@
+{
+  "revision": "Same commit as this report",
+  "date": "2026-11-09",
+  "environment": {
+    "runtime": "workerd 1.20261103.1",
+    "miniflare": "5.20261103.0-beta",
+    "wrangler": "4.157.0",
+    "host": "Fly Sprite",
+    "production": false
+  },
+  "method": {
+    "test": "backends/workers/test/delegation-load.integration.ts",
+    "parallelChildren": 64,
+    "holdAllActiveMs": 5500,
+    "postCompletionObservationMs": 6000,
+    "sampleIntervalMs": 250,
+    "memoryBytes": "Runtime.getHeapUsage usedSize + embedderHeapUsedSize + backingStorageSize (conservative sum)",
+    "gc": "96 MiB old-space, 2 MiB semi-space; normal V8 GC only, no forced collections",
+    "outgoingCalls": "Parent AGENTS binding calls, including configuration, submission, fallback reads and computer release; queued calls are not simultaneous open relay connections",
+    "localDefaultComparison": "Unconstrained local workerd previously reached 202792692 bytes before counting backing storage. The constrained run verifies completion under memory pressure, rather than assuming local GC matches hosted Workers.",
+    "attribution": "Inspector samples cover the entire isolate: parent plus all 64 real child DOs. The previous ~0.7 MB per child was not a parent-only attribution. Serialized child state and the logged bookkeeping estimate are parent-only; they are not full heap measurements.",
+    "isolation": "The 65-DO load measurement runs alone after the other integration fixtures. Startup and completion have separate 90-second deadlines."
+  },
+  "result": {
+    "concurrentChildren": 64,
+    "v8Flags": "--max-old-space-size=96 --max-semi-space-size=2",
+    "elapsedMs": 66723,
+    "baselineHeap": {
+      "usedSize": 50828184,
+      "totalSize": 56700928,
+      "embedderHeapUsedSize": 214864,
+      "backingStorageSize": 1815084
+    },
+    "peakHeap": {
+      "usedSize": 86531212,
+      "totalSize": 91537408,
+      "embedderHeapUsedSize": 5626152,
+      "backingStorageSize": 2339475
+    },
+    "peakHeapBytes": 94496839,
+    "childStateBytes": 40430,
+    "childPayloadBytes": 17590,
+    "childFetches": 441,
+    "activeFetches": 0,
+    "maxActiveFetches": 57,
+    "eventStreams": 0,
+    "alarmFires": 0,
+    "rpc": {
+      "total": 569,
+      "active": 0,
+      "peak": 58,
+      "methods": {
+        "PUT /configuration": 64,
+        "POST /requests": 64,
+        "GET /requests/:id": 377,
+        "POST /__computer": 64
+      }
+    },
+    "nextAlarm": 1794323235438,
+    "relayStreams": 0,
+    "fallbackSweeps": 7,
+    "fallbackRequests": 377,
+    "pushedEvents": 640,
+    "pushedCompletions": 64,
+    "maxFallbackConcurrent": 6,
+    "childStatuses": {
+      "completed": 64
+    }
+  },
+  "assertions": {
+    "allCompleted": true,
+    "allCompletionsPushed": true,
+    "noRelayStreams": true,
+    "fallbackConcurrencyAtMostSix": true,
+    "noFallbackSweepsAfterCompletion": true,
+    "noAlarmsAfterCompletion": true,
+    "parentCallsBelow1000": true,
+    "conservativeMemoryBelow128MiB": true
+  },
+  "modelFacingText": {
+    "newPromptLabel": "Mount notes from the agent's owner:",
+    "mountLineTemplateVerbatim": "  ${mount.path} (${mount.mode === \"ro\" ? \"read-only\" : \"read-write\"}): ${mount.instructions!.replace(/\\s+/g, \" \").trim()}",
+    "newOrChangedValidationMessages": [
+      "Mount instructions must be at most 4096 characters",
+      "Mount instructions total must be at most 8192 characters",
+      "Invalid definition revision",
+      "revision requires a definition and a positive integer",
+      "humanInput is { expiresInSeconds?, approvers?, unattended?: \"decline\" }",
+      "humanInput.unattended must be decline",
+      "delegate.maxParallel is an integer from 1 to 64"
+    ],
+    "reusedApprovalResult": "Approval declined: unattended mode. The tool did not run.",
+    "delegationPush": "No new model-facing text.",
+    "memoryOptimization": "No new model-facing strings."
+  },
+  "migration": "130_definition_revisions.sql",
+  "camelBots": "No changes required; spend_limit code and stopped fields preserved.",
+  "validation": {
+    "nodeFullSuite": "8/8 shards: 2748 passed, 3 skipped, 0 failed. Sprite 14 restarted; its automatic retry was stopped and shard 6 passed on Sprite 2.",
+    "workersUnitSuite": "657/657 passed, including the final no-cache outbox change",
+    "smallParity": "Post-merge: Node 7/7; shared contract 5/5 on Node and Workers",
+    "spendLimits": "Post-merge: Node 2/2; shared contract 2/2 on Node and Workers",
+    "workersDelegationIntegration": "Post-merge 3/3",
+    "workersPolicy": "33/33",
+    "typecheck": "Post-merge: root and Workers passed",
+    "docs": "Post-merge: generation and llms.txt checks passed",
+    "delegationContractsBothBackends": "Post-merge: multi-agent 9/9 and background-agents 11/11 on both Node and Workers",
+    "payloadMemory": "3/3, including legacy rows, complete results, notification batching and no-cache payload access",
+    "python": "65/65 passed",
+    "postFinalMainMerge": "Root/Workers typechecks, OpenAPI freshness, small-parity contracts (5/5 each) and webhook trigger contracts (10/10 each) passed after merging 5bfad658.",
+    "suiteRevisions": "Node first seven shards: f7bb2c46; replacement shard 6 and final Workers suite: 503eb07d. Final upstream merge 6cf844b8 adds webhook triggers; post-merge focused checks and PR CI validate that integration.",
+    "ciLoadTestCorrection": "The initial Workers CI load test exhausted one shared startup/completion deadline under parallel fixture contention. Run the load test alone and bound each phase separately; the standalone Sprite rerun passed."
+  },
+  "beforeMemoryChange": {
+    "result": {
+      "concurrentChildren": 64,
+      "v8Flags": "--max-old-space-size=96 --max-semi-space-size=2",
+      "elapsedMs": 63508,
+      "baselineHeap": {
+        "usedSize": 50428364,
+        "totalSize": 56201216,
+        "embedderHeapUsedSize": 193368,
+        "backingStorageSize": 1815084
+      },
+      "peakHeap": {
+        "usedSize": 86130340,
+        "totalSize": 91029504,
+        "embedderHeapUsedSize": 5776072,
+        "backingStorageSize": 2041997
+      },
+      "peakHeapBytes": 93948409,
+      "childFetches": 468,
+      "activeFetches": 0,
+      "maxActiveFetches": 56,
+      "eventStreams": 0,
+      "alarmFires": 0,
+      "rpc": {
+        "total": 596,
+        "active": 0,
+        "peak": 60,
+        "methods": {
+          "PUT /configuration": 64,
+          "POST /requests": 64,
+          "GET /requests/:id": 404,
+          "POST /__computer": 64
+        }
+      },
+      "nextAlarm": 1794320228727,
+      "relayStreams": 0,
+      "fallbackSweeps": 8,
+      "fallbackRequests": 404,
+      "pushedEvents": 640,
+      "pushedCompletions": 64,
+      "maxFallbackConcurrent": 6,
+      "childStatuses": {
+        "completed": 64
+      }
+    },
+    "revision": "f438128d"
+  },
+  "memoryLog": {
+    "type": "delegation_memory",
+    "agentId": "client_d9b7116f0c6950debe60596931b36237b46c1985",
+    "requestId": "1c6d8659-8497-4329-98d2-ab30488adfc9",
+    "childCount": 64,
+    "heapEstimateBytes": 135016,
+    "estimateScope": "parent_delegation_bookkeeping",
+    "payloadStorageBytes": 4726
+  },
+  "memoryChanges": [
+    "Store task, outcome and notification outbox payloads with noCache reads/writes; retain compact child status for scans/waits; hydrate on submission/result/notification, including sibling batching.",
+    "Upgrade old inline child rows during recovery.",
+    "Use one shared background waiter instead of a waiter promise per child.",
+    "Skip rebuilding the parent live-turn snapshot for child transcript events.",
+    "Emit delegation_memory above 32 running children; estimate = UTF-16 serialized status bytes plus 1024 bytes of per-child bookkeeping, excluding the shared runtime/model context."
+  ],
+  "repeatBeforeMainMerge": {
+    "concurrentChildren": 64,
+    "v8Flags": "--max-old-space-size=96 --max-semi-space-size=2",
+    "elapsedMs": 64120,
+    "baselineHeap": {
+      "usedSize": 50374280,
+      "totalSize": 56205312,
+      "embedderHeapUsedSize": 214144,
+      "backingStorageSize": 1815084
+    },
+    "peakHeap": {
+      "usedSize": 85097328,
+      "totalSize": 91295744,
+      "embedderHeapUsedSize": 5124544,
+      "backingStorageSize": 2178157
+    },
+    "peakHeapBytes": 92400029,
+    "childStateBytes": 40430,
+    "childPayloadBytes": 17590,
+    "childFetches": 457,
+    "activeFetches": 0,
+    "maxActiveFetches": 56,
+    "eventStreams": 0,
+    "alarmFires": 0,
+    "rpc": {
+      "total": 585,
+      "active": 0,
+      "peak": 60,
+      "methods": {
+        "PUT /configuration": 64,
+        "POST /requests": 64,
+        "GET /requests/:id": 393,
+        "POST /__computer": 64
+      }
+    },
+    "nextAlarm": 1794321729170,
+    "relayStreams": 0,
+    "fallbackSweeps": 8,
+    "fallbackRequests": 393,
+    "pushedEvents": 640,
+    "pushedCompletions": 64,
+    "maxFallbackConcurrent": 6,
+    "childStatuses": {
+      "completed": 64
+    }
+  },
+  "memoryConclusion": "Parent payload retention is removed; final compact status is 40430 bytes for 64 children. Whole-isolate optimized peaks ranged from 92400029 to 94670012 bytes versus the prior 93948409. No statistically meaningful whole-isolate peak reduction is claimed.",
+  "previousPostMergeTrial": {
+    "concurrentChildren": 64,
+    "v8Flags": "--max-old-space-size=96 --max-semi-space-size=2",
+    "elapsedMs": 60925,
+    "baselineHeap": {
+      "usedSize": 51278700,
+      "totalSize": 56356864,
+      "embedderHeapUsedSize": 352128,
+      "backingStorageSize": 1932113
+    },
+    "peakHeap": {
+      "usedSize": 85809276,
+      "totalSize": 91193344,
+      "embedderHeapUsedSize": 5648056,
+      "backingStorageSize": 2248951
+    },
+    "peakHeapBytes": 93706283,
+    "childStateBytes": 40430,
+    "childPayloadBytes": 17590,
+    "childFetches": 408,
+    "activeFetches": 0,
+    "maxActiveFetches": 56,
+    "eventStreams": 0,
+    "alarmFires": 0,
+    "rpc": {
+      "total": 536,
+      "active": 0,
+      "peak": 58,
+      "methods": {
+        "PUT /configuration": 64,
+        "POST /requests": 64,
+        "GET /requests/:id": 344,
+        "POST /__computer": 64
+      }
+    },
+    "nextAlarm": 1794321864881,
+    "relayStreams": 0,
+    "fallbackSweeps": 7,
+    "fallbackRequests": 344,
+    "pushedEvents": 640,
+    "pushedCompletions": 64,
+    "maxFallbackConcurrent": 6,
+    "childStatuses": {
+      "completed": 64
+    }
+  },
+  "previousFinalTrial": {
+    "concurrentChildren": 64,
+    "v8Flags": "--max-old-space-size=96 --max-semi-space-size=2",
+    "elapsedMs": 62628,
+    "baselineHeap": {
+      "usedSize": 50558448,
+      "totalSize": 56360960,
+      "embedderHeapUsedSize": 213744,
+      "backingStorageSize": 1815084
+    },
+    "peakHeap": {
+      "usedSize": 86804024,
+      "totalSize": 91197440,
+      "embedderHeapUsedSize": 5499992,
+      "backingStorageSize": 2365996
+    },
+    "peakHeapBytes": 94670012,
+    "childStateBytes": 40430,
+    "childPayloadBytes": 17590,
+    "childFetches": 461,
+    "activeFetches": 0,
+    "maxActiveFetches": 56,
+    "eventStreams": 0,
+    "alarmFires": 0,
+    "rpc": {
+      "total": 589,
+      "active": 0,
+      "peak": 58,
+      "methods": {
+        "PUT /configuration": 64,
+        "POST /requests": 64,
+        "GET /requests/:id": 397,
+        "POST /__computer": 64
+      }
+    },
+    "nextAlarm": 1794322251725,
+    "relayStreams": 0,
+    "fallbackSweeps": 8,
+    "fallbackRequests": 397,
+    "pushedEvents": 640,
+    "pushedCompletions": 64,
+    "maxFallbackConcurrent": 6,
+    "childStatuses": {
+      "completed": 64
+    }
+  }
+}

@@ -15,6 +15,8 @@ test("an agent's spend limit ends the turn that crosses it and refuses new promp
   const first = await r.prompt(id, "go");
   assert.equal(first.outcome.result.stopped, "spend_limit");
   assert.equal(first.outcome.result.limit, "agent");
+  assert.equal(first.outcome.result.stoppedReason, "budget_reached");
+  assert.equal(first.outcome.result.status, "paused");
   assert.match(first.outcome.result.error, /This agent has reached its spend limit of \$0\.2 \(\$0\.3 spent/);
   assert.equal(r.model.bodies.length, 2, "the turn ended after the response that crossed the limit");
   assert.equal((await r.call(`/v1/agents/${id}`)).json.spendLimit.spent.toFixed(2), "0.30");
@@ -34,6 +36,8 @@ test("an agent's spend limit ends the turn that crosses it and refuses new promp
   await r.call(`/v1/agents/${id}/configuration`, { method: "PATCH", body: { spendLimit: null } });
   assert.equal((await r.call(`/v1/agents/${id}`)).json.spendLimit, null);
   assert.equal((await r.call(`/v1/agents/${id}/prompt`, { body: { text: "free" } })).status, 202);
+  // Finish the deliberately unlimited turn before graceful fixture shutdown.
+  assert.equal((await r.call(`/v1/agents/${id}/abort`, { method: "POST" })).status, 200);
 });
 
 test("a run's own spend limit ends that run once it crosses it, and leaves the agent's limit and later runs alone", async t => {

@@ -1,3 +1,4 @@
+import { PARENT_KEYS } from "./multi-agent-policy.ts";
 import { stageScheduleOutcome, flushScheduleOutcomes } from './schedule-outcomes.ts';
 import { readInputMirrors } from "./agent-input-mirror.ts";
 import { stageInputMirror } from "./input-mirror.ts";
@@ -50,12 +51,17 @@ export async function emitImpl(this: AgentRuntime,
         if (announcement) await stageWebhook(tx, announcement);
         for (const row of mirrors) await stageInputMirror(tx, row);
         committed = { owner, record };
-        const live = { cursor: next, events: [], turn: await tx.get<LiveTurn>("live-turn"), partial: this.partial };
-        if (value.type === "event" && value.event?.type === "agent_start" && live.turn?.requestId !== value.requestId)
-          live.turn = { requestId: value.requestId, count: 0, bytes: 0, messages: [] };
-        followLiveTurn(live, value, JSON.stringify(value), false);
-        if (live.turn) await tx.put("live-turn", live.turn);
-        else await tx.delete("live-turn");
+        // Only local message boundaries change the snapshot. Child transcript
+        // frames must not repeatedly load/copy the parent's complete turn.
+        if (value.type === "response" || (value.type === "event" &&
+          ["agent_start", "turn_opened", "message_retracted", "message_end"].includes(value.event?.type))) {
+          const live = { cursor: next, events: [], turn: await tx.get<LiveTurn>("live-turn"), partial: this.partial };
+          if (value.type === "event" && value.event?.type === "agent_start" && live.turn?.requestId !== value.requestId)
+            live.turn = { requestId: value.requestId, count: 0, bytes: 0, messages: [] };
+          followLiveTurn(live, value, JSON.stringify(value), false);
+          if (live.turn) await tx.put("live-turn", live.turn);
+          else await tx.delete("live-turn");
+        }
         this.eventLog.append(next, event);
         this.recentEvents.append(next, event);
         return next;
@@ -89,6 +95,16 @@ export async function emitImpl(this: AgentRuntime,
     this.serial = work.catch(() => {});
     await work;
     const value = event as any;
+    const metadata = (committed.record?.metadata ?? committed.record?.params?.metadata) as Record<string, unknown> | undefined;
+    const parent = metadata?.[PARENT_KEYS.agent];
+    if (typeof parent === "string" && committed.owner && committed.record &&
+      (value.requestId === committed.record.id || value.id === committed.record.id)) {
+      const push = { agentId: committed.owner.id, requestId: committed.record.id, event: value,
+        ...(value.type === "response" ? { record: { ...committed.record, outcome: value.outcome } } : {}) };
+      // Child-owned sequencing preserves event order without holding a relay stream in the parent.
+      this.delegationPush = this.delegationPush.then(() => this.env.AGENTS.getByName(parent).receiveChildEvent(push)).catch(() => { /* The parent's bounded recovery sweep retries a lost push. */ });
+      this.ctx.waitUntil(this.delegationPush);
+    }
     if (value.type === "response") this.ctx.waitUntil(flushScheduleOutcomes(this).then(()=>this.arm()));
     if (webhook || value.type === "response" || ["agent_start", "input_required", "input_resolved"].includes(value.event?.type))
       this.ctx.waitUntil(this.dbProfile.run("webhooks", () => this.webhooks.flush()));

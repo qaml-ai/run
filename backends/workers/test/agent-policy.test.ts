@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { Decider, decisionRequest, decisionsAnswer, checkedAnswers } from '../src/decision-policy.ts';
 import { delegateInput, delegateSettings } from '../src/multi-agent-policy.ts';
@@ -36,6 +36,16 @@ test('stock delegation configuration validates named targets and depth ceilings'
   assert.throws(() => delegateInput({ instructions: true, maxDepth: 6 }));
   assert.throws(() => delegateSettings(['delegate'], undefined));
   assert.deepEqual(delegateSettings(['delegate'], { agents: ['helper'] })?.agents, [{ name: 'helper', definition: 'helper' }]);
+});
+const fixtures: { delegation: Delegation; host: DelegationHost }[] = [];
+after(async () => {
+  // Complete mock children left running by assertion-only fixtures, so the
+  // real recovery timers do not survive the file.
+  for (const { delegation, host } of fixtures) {
+    host.fetch = async () => Response.json({ state: 'completed', status: 'completed' });
+    host.notify = undefined;
+    await delegation.recover();
+  }
 });
 function fixture() {
   const values = new Map<string, unknown>();
@@ -78,7 +88,9 @@ function fixture() {
     },
     emit: async event => { events.push(event); }, waitUntil: promise => { tasks.push(promise); },
   };
-  return { delegation: new Delegation(host), host, events, submitted, tasks, setRun: (value: unknown) => { run = value; }, setId: (value: string) => { parentId = value; }, values };
+  const delegation = new Delegation(host);
+  fixtures.push({ delegation, host });
+  return { delegation, host, events, submitted, tasks, setRun: (value: unknown) => { run = value; }, setId: (value: string) => { parentId = value; }, values };
 }
 test('decision and delegation tools resolve context from the executing conversation', async () => {
   const api = { ...toolApi('host-call'), conversationId: 42 } as ToolExecutionApi;
@@ -304,10 +316,15 @@ test('parent cancellation aborts made children and only its actively running nam
   f.values.set('delegation:queued', { ...base, id: 'queued', key: 'queued', made: false });
   f.host.fetch = async (id, request) => {
     if (request.method === 'POST') { aborted.push(id); return Response.json({}); }
+    if (aborted.includes(id)) return Response.json({ state: 'completed', status: 'aborted' });
     return Response.json(id === 'named' ? { state: 'running', began: 1 } : { state: 'running' });
   };
   await f.delegation.cancel('parent-run');
   assert.deepEqual(aborted.sort(), ['made', 'named']);
+  // The queued request belongs to the existing agent; finish it before disposing
+  // this fixture so its recovery timer does not outlive the test.
+  f.host.fetch = async () => Response.json({ state: 'completed', status: 'completed' });
+  await f.delegation.recover();
 });
 test('cancellation during child creation cannot submit or reopen a child', async () => {
   const f = fixture();

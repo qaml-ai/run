@@ -31,6 +31,7 @@ export async function requestView<
     ...visible,
     ...(typeof error === "string" ? { error, status: 'failed' } : {}),
     ...((visible.outcome as { result?: { stopped?: string } } | undefined)?.result?.stopped ? { stopped: (visible.outcome as { result: { stopped: string } }).result.stopped } : {}),
+    ...((visible.outcome as { result?: { stopped?: string } } | undefined)?.result?.stopped === "spend_limit" ? { status: "paused", stoppedReason: "budget_reached" } : {}),
     state: record.state === "queued" ? "running" : record.state,
     fingerprint: await digest(fingerprint),
   };

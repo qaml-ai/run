@@ -146,7 +146,7 @@ export async function armImpl(this: AgentRuntime,
     // A slower planner must not replace a newer deadline with its stale reads.
     // If activity invalidated it without another plan, retain prompt recovery.
     const watchdog = current
-      ? Math.min(next, pendingRuns.length || recovering ? Date.now() + 1000 : Infinity)
+      ? Math.min(next, pendingRuns.length || recovering ? Date.now() + (children.some(child => child.status === "running") ? 15_000 : 1000) : Infinity)
       : Math.min(Date.now() + 1000, this.maintenance?.at ?? Infinity);
     if (Number.isFinite(watchdog))
       await this.lifecycle.jobs.push({

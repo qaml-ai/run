@@ -119,6 +119,7 @@ export function humanInputView(id: string, item: HumanInput, agent: string, requ
 export function bindHumanInput(item: HumanInput, requestId: string, actor: string | undefined, settings: HumanInputSettings | undefined, agentExpiresAt: number | null, from?: Sender, shared?: SharedAgent): HumanInput {
   if (item.policyBound) return item;
   const audience = shared || from?.role === "guest" ? inputAudience(item.kind ?? "question", actor, from, shared, settings?.approvers) : undefined;
+  if (item.kind === "approval" && settings?.unattended === "decline") return { ...item, requestId, policyBound: true, state: "declined", answer: JSON.stringify({ action: "decline" }), answerDetail: { action: "decline", content: { reason: "Approval declined: unattended mode. The tool did not run." }, by: {}, at: Date.now() } };
   return { ...item, requestId, inboxResponders: audience ?? [...new Set([...(actor ? [actor] : []), ...settings?.approvers ?? []])],
     ...(audience ? { fixedResponders: true as const } : {}), responders: audience ? { audience } : actor ? { audience: [actor] } : {},
     expiresAt: expiresAt(settings, agentExpiresAt, item.createdAt), policyBound: true };

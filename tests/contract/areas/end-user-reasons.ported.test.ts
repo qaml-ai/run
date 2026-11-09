@@ -20,5 +20,5 @@ test("a queued run refused as it starts for the agent's spend limit carries spen
     const value = (await r.call(`/v1/agents/${id}/requests/second`)).json;
     return value.state === "completed" && value;
   }, "the second to end", 30_000);
-  assert.deepEqual([record.status, record.outcome.result?.code, record.outcome.result?.limit], ["failed", "spend_limit", "agent"], JSON.stringify(record));
+  assert.deepEqual([record.status, record.outcome.result?.code, record.outcome.result?.limit], ["paused", "spend_limit", "agent"], JSON.stringify(record));
 });

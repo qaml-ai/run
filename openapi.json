@@ -3897,14 +3897,21 @@
             ],
             "description": "Why an ended run stopped early (outcome.result.stopped)"
           },
+          "stoppedReason": {
+            "type": "string",
+            "enum": [
+              "budget_reached"
+            ]
+          },
           "status": {
             "type": "string",
             "enum": [
               "completed",
               "input_required",
+              "paused",
               "failed"
             ],
-            "description": "How an ended request ended (state says only that it ended): failed when it has an error or stopped at a spend or turn limit; input_required when it waits on people. Absent while running"
+            "description": "How an ended request ended (state says only that it ended): paused at a spend limit; failed for other errors or turn limits; input_required when it waits on people. Absent while running"
           }
         },
         "required": [
@@ -3931,6 +3938,30 @@
       "AgentInput": {
         "type": "object",
         "properties": {
+          "humanInput": {
+            "type": "object",
+            "properties": {
+              "unattended": {
+                "type": "string",
+                "enum": [
+                  "decline"
+                ]
+              },
+              "expiresInSeconds": {
+                "type": "integer",
+                "minimum": 60,
+                "maximum": 2592000
+              },
+              "approvers": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 100
+              }
+            },
+            "additionalProperties": false
+          },
           "networking": {
             "$ref": "#/components/schemas/Networking"
           },
@@ -3958,6 +3989,10 @@
               "tools"
             ],
             "description": "The application's attached MCP server: its tools/list, whose tools the agent calls back through the application's connection. The SDKs send it"
+          },
+          "definitionRevision": {
+            "type": "integer",
+            "exclusiveMinimum": 0
           },
           "definition": {
             "type": "string",
@@ -4237,6 +4272,10 @@
             "type": "string",
             "description": "Mount only this directory of the volume"
           },
+          "instructions": {
+            "type": "string",
+            "maxLength": 4096
+          },
           "notify": {
             "type": "boolean",
             "description": "Prompt the agent when others change files under this mount"
@@ -4253,6 +4292,10 @@
         "properties": {
           "workspace": {
             "type": "boolean"
+          },
+          "instructions": {
+            "type": "string",
+            "maxLength": 4096
           },
           "path": {
             "type": "string",
@@ -4308,7 +4351,7 @@
           "maxParallel": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 16,
+            "maximum": 64,
             "description": "delegate calls of one run in flight at once (more wait their turn), and the agent's background sub-agents running at once (spawn_agent past it is refused). Default 4"
           },
           "notify": {
@@ -4336,6 +4379,10 @@
                 "type": "string",
                 "pattern": "^[A-Za-z0-9_-]{1,64}$",
                 "description": "What the model calls it; default: the definition's or agent's key"
+              },
+              "revision": {
+                "type": "integer",
+                "exclusiveMinimum": 0
               },
               "definition": {
                 "type": "string",
@@ -6068,6 +6115,30 @@
             },
             "description": "Replaces the agent's model headers; null or {} removes them"
           },
+          "humanInput": {
+            "type": "object",
+            "properties": {
+              "unattended": {
+                "type": "string",
+                "enum": [
+                  "decline"
+                ]
+              },
+              "expiresInSeconds": {
+                "type": "integer",
+                "minimum": 60,
+                "maximum": 2592000
+              },
+              "approvers": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 100
+              }
+            },
+            "additionalProperties": false
+          },
           "builtins": {
             "type": "array",
             "items": {
@@ -6110,7 +6181,7 @@
               "maxParallel": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 16,
+                "maximum": 64,
                 "description": "delegate calls of one run in flight at once (more wait their turn), and the agent's background sub-agents running at once (spawn_agent past it is refused). Default 4"
               },
               "notify": {
@@ -6176,7 +6247,8 @@
               "completed",
               "failed",
               "aborted",
-              "input_required"
+              "input_required",
+              "paused"
             ],
             "description": "As its latest run says: a message or a resume starts it again"
           },
@@ -10513,6 +10585,12 @@
           "humanInput": {
             "type": "object",
             "properties": {
+              "unattended": {
+                "type": "string",
+                "enum": [
+                  "decline"
+                ]
+              },
               "expiresInSeconds": {
                 "type": "integer",
                 "minimum": 60,
@@ -11035,6 +11113,12 @@
           "humanInput": {
             "type": "object",
             "properties": {
+              "unattended": {
+                "type": "string",
+                "enum": [
+                  "decline"
+                ]
+              },
               "expiresInSeconds": {
                 "type": "integer",
                 "minimum": 60,
@@ -11699,6 +11783,12 @@
               "null"
             ],
             "properties": {
+              "unattended": {
+                "type": "string",
+                "enum": [
+                  "decline"
+                ]
+              },
               "expiresInSeconds": {
                 "type": "integer",
                 "minimum": 60,
@@ -11787,6 +11877,22 @@
             "type": "string",
             "description": "run_…"
           },
+          "stoppedReason": {
+            "type": "string",
+            "enum": [
+              "budget_reached"
+            ]
+          },
+          "limit": {
+            "type": "string",
+            "enum": [
+              "run",
+              "agent",
+              "tenant",
+              "credit",
+              "end_user"
+            ]
+          },
           "status": {
             "type": "string",
             "enum": [
@@ -11795,7 +11901,7 @@
               "input_required",
               "failed"
             ],
-            "description": "running until it ends; then completed, failed, or input_required (a tool asked for approval or input, which a run cannot wait on: it ends there)"
+            "description": "running until it ends; then completed, failed (including spend limits), or input_required (a tool asked for approval or input, which a run cannot wait on: it ends there)"
           },
           "text": {
             "type": "string",

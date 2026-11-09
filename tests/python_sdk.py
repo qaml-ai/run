@@ -1128,7 +1128,7 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(end_user_credit(refused.exception), EndUserCreditFailure("balance", "bot:7", "person", str(refused.exception)))
         # A run stopped mid-way, or refused as it left the queue: its error has the same fields, by code.
         stopped = _run_of("r1", {"error": "words that may change", "stopped": "spend_limit", "code": "end_user_credit", "limit": "end_user", "reason": "bucket_limit", "bucket": "bot:7", "endUser": "person"}, None, lambda value: value)
-        self.assertEqual((stopped.status, stopped.error["code"], stopped.error["reason"], stopped.error["bucket"], stopped.error["endUser"], stopped.error["limit"]), ("failed", "end_user_credit", "bucket_limit", "bot:7", "person", "end_user"))
+        self.assertEqual((stopped.status, stopped.error["code"], stopped.error["reason"], stopped.error["bucket"], stopped.error["endUser"], stopped.error["limit"]), ("paused", "end_user_credit", "bucket_limit", "bot:7", "person", "end_user"))
         self.assertEqual(end_user_credit(stopped).reason, "bucket_limit")
         self.assertEqual(end_user_credit(RunError(stopped)).bucket, "bot:7")
         self.assertIsNone(end_user_credit(AgentError("busy", 429, code="RATE_LIMITED")))
