@@ -83,6 +83,19 @@ export const cases: Record<string, (t: T, start: Start) => Promise<void>> = {
     assert.equal((await r.call("/v1/github-apps/code/repositories?perPage=101")).status, 400);
     assert.ok(github.minted().every(token => JSON.stringify(token.permissions) === JSON.stringify({ metadata: "read" })));
   },
+  "repository reads reject malformed paths and invalid pagination without minting tokens": async (t, start) => {
+    const { r, github } = await setup(t, start);
+    await createApp(r, github);
+    for (const path of ['/v1/github-apps/%', '/v1/github-apps/%/repositories',
+      '/v1/github-apps/code/repositories/%/app', '/v1/github-apps/code/repositories/acme/%C3',
+      ...['cursor=', 'cursor=0:0:1', 'cursor=1:100:1', 'cursor=1:0:0', 'perPage=0', 'perPage=1.5', 'perPage=nope']
+        .map(query => `/v1/github-apps/code/repositories?${query}`)]) {
+      const response = await r.call(path);
+      assert.equal(response.status, 400, `${path}: ${response.text}`);
+      noSecrets(response.text, github);
+    }
+    assert.equal(github.minted().length, 0);
+  },
   "an App is checked with GitHub, kept sealed and shown masked; it is renamed, its key rotated, and deleted": async (t, start) => {
     const { r, github } = await setup(t, start);
     const refused = async (body: unknown, status: number, message: RegExp, method = "POST", path = "/v1/github-apps") => {

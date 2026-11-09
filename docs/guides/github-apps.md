@@ -193,6 +193,12 @@ An account API token can read the repositories of its registered App:
   installation can access this repository. A public repository without an
   installation is not enough. Unavailable repositories return 404.
 
+Repository cursors follow GitHub's live installation and repository pages; they
+do not identify a fixed snapshot. Changes to installations or repository access
+between requests can skip or repeat items. Deduplicate by repository `id` and
+restart the listing when you need a fresh inventory. Keep `perPage` unchanged
+while following a cursor.
+
 Each item has `id`, `name`, `fullName`, `private`, `htmlUrl`, and
 `defaultBranch`. These are App permissions, not the signed-in user's GitHub
 permissions. Enforce your application's membership policy before exposing them.

@@ -21,15 +21,11 @@ export async function applicationMetadataCase(r: { call(path: string, init?: any
   assert.equal(list.status, 200, list.text);
   assert.deepEqual(list.json.map((a: any) => a.id), [id]);
   assert.deepEqual(list.json[0].metadata, metadata);
+  assert.deepEqual((await r.call('/v1/agents')).json.find((agent: any) => agent.id === id).metadata, metadata);
   assert.equal(list.json[0].lastActiveAt, null);
   assert.equal(list.json[0].lastError, null);
   assert.deepEqual((await r.call("/v1/agents?metadata.numeric=2")).json, []);
   assert.deepEqual((await r.call("/v1/agents?metadata.type=other")).json, []);
-  assert.equal((await r.call("/v1/agents?metadata.=x")).status, 400);
-  for (const invalid of [null, [], "text", { large: "é".repeat(8192) }]) {
-    const response = await r.call("/v1/agents", { body: { metadata: invalid } });
-    assert.equal(response.status, 400, response.text);
-  }
   // A legacy upsert leaves application metadata alone.
   const again = await r.call("/v1/agents", { body: { name: "Project" }, headers: { "Idempotency-Key": "metadata-project" } });
   assert.equal(again.status, 201, again.text);
@@ -50,6 +46,25 @@ export async function applicationMetadataCase(r: { call(path: string, init?: any
   const clear = await r.call(`/v1/agents/${id}/configuration`, { method: "PATCH", body: { metadata: {} } });
   assert.equal(clear.status, 202, clear.text);
   await waitMetadata({});
+}
+
+export async function invalidMetadataCase(r: { call(path: string, init?: any): Promise<any> }) {
+  const overhead = new TextEncoder().encode(JSON.stringify({ value: '' })).length;
+  const exactLimit = { value: 'x'.repeat(16_384 - overhead) };
+  const created = await r.call('/v1/agents', { body: { metadata: exactLimit } });
+  assert.equal(created.status, 201, created.text);
+  for (const invalid of [null, [], 'text', 42, true,
+    { value: exactLimit.value + 'x' }, { value: 'é'.repeat(8192) }]) {
+    const made = await r.call('/v1/agents', { body: { metadata: invalid } });
+    assert.equal(made.status, 400, made.text);
+    const updated = await r.call(`/v1/agents/${created.json.id}/configuration`, { method: 'PATCH', body: { metadata: invalid } });
+    assert.equal(updated.status, 400, updated.text);
+  }
+  for (const query of ['metadata.=x', 'metadata.type=a&metadata.type=b', 'metadata.%74ype=a&metadata.type=a']) {
+    const response = await r.call(`/v1/agents?${query}`);
+    assert.equal(response.status, 400, response.text);
+  }
+  assert.deepEqual((await r.call(`/v1/agents/${created.json.id}`)).json.metadata, exactLimit);
 }
 
 /** A legacy upsert queued behind a metadata update must not restore the old value. */

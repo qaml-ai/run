@@ -1,8 +1,12 @@
 import { test } from "node:test";
 import { runtime } from "./runtime-server.ts";
-import { applicationMetadataCase, queuedMetadataCase } from "./application-metadata-cases.ts";
+import { applicationMetadataCase, invalidMetadataCase, queuedMetadataCase } from "./application-metadata-cases.ts";
 test("tenant application metadata is bounded, replaceable and queryable", async t => {
   await applicationMetadataCase(await runtime(t, () => ({ role: "assistant", content: "Done" })));
+});
+
+test('metadata validates UTF-8 size, object shape and unique nonempty filter keys', async t => {
+  await invalidMetadataCase(await runtime(t, () => ({ role: 'assistant', content: 'Done' })));
 });
 
 

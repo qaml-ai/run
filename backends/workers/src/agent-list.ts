@@ -28,7 +28,7 @@ export async function listAgents(request: Request, env: ControlEnv, tenant: stri
   const list: Record<string, unknown>[] = [];
   const workspace = query.get('workspaceId');
   const candidates = (await directory.list()).filter(entry => {
-    if (!metadata.has(entry.id)) return false;
+    if (Object.keys(filters).length && !metadata.has(entry.id)) return false;
     if (entry.config.type === 'run' || (cursor && entry.id <= cursor)) return false;
     const child = !!entry.parentAgentId || entry.config.type === 'subagent';
     if (subAgents === 'only' && !child || subAgents === 'exclude' && child) return false;
