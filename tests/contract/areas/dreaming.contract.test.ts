@@ -46,7 +46,7 @@ contractTest('history','docs/guides/session-transcripts.md','a run-now dream del
   assert.equal(files.status,200,files.text);
   assert.ok(files.json.files.some((file:any)=>file.path==='/_index.md'));
   assert.ok(analyzed.length);
-  assert.ok(workerTools.every(names=>names.every(name=>['final_output','report_progress'].includes(name))),JSON.stringify(workerTools));
+  assert.ok(workerTools.every(names=>names.every(name=>['final_output','report_progress','send_message'].includes(name))),JSON.stringify(workerTools));
   assert.ok(analyzed.every(text=>!text.includes('demo-hidden-secret-123')));
   assert.ok(!JSON.stringify(files.json).includes('demo-hidden-secret-123'));
 }, {env:{AGENT_OUTBOUND_ALLOW_HTTP:'true',AGENT_OUTBOUND_ALLOW_CIDRS:'127.0.0.1/32'}});

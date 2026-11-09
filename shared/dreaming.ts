@@ -37,7 +37,7 @@ export function redactDream(value: unknown): any {
   if (/^client_[a-f0-9]{40}$/.test(value)) return value;
   return value.replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g, '[redacted]')
     .replace(/\b(?:sk[-_]|xai-|AIza|ya29\.|gh[pousr]_|github_pat_|xox[baprs]-|AKIA)[A-Za-z0-9_.-]{8,}\b/g, '[redacted]')
-    .replace(/\b[A-Za-z0-9_+\/-]{32,}={0,2}\b/g, '[redacted]')
+    .replace(/\b[A-Za-z0-9_+\/-]{32,}={0,2}\b/g, token => /^client_[a-f0-9]{40}$/.test(token) ? token : '[redacted]')
     .replace(/\bBearer\s+[^\s"']+/gi, 'Bearer [redacted]')
     .replace(/\b(password|secret|token|api[_-]?key)["']?\s*[:=]\s*["']?[^\s"',;]+/gi, '$1=[redacted]')
     .replace(/\b(password|secret|token)\s+(?:is|was)\s+[^\s.,;]+/gi, '$1 is [redacted]')

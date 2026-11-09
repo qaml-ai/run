@@ -13,7 +13,8 @@ if another branch reserves 124). No push, PR, or production writes.
   lower watermark. Each analyzer failure is isolated and collected before the
   workflow fails; partial analyses never publish.
 - Definitions disable file tools, code mode, builtins, decision tools and computer
-  inheritance for model workers. The coordinator uses only `tools.delegate`.
+  inheritance for model workers. Existing parent messaging/progress tools remain;
+  they do not grant shell, web, or file access. The coordinator uses only `tools.delegate`.
   Aggregate spend uses the existing parent/child budget machinery. Node SDK
   execution now supplies stable request-scoped tool identities for delegation.
 - Publication validates paths, frontmatter and local links, creates a pinned
@@ -52,7 +53,10 @@ callers in `src/app/camelrun.ts`, `src/ops/prompt-categories.ts`, and
 `src/api/builder.ts` retain their response shape. Builder's `PUT .../mounts`
 caller remains compatible: the new read-only restriction applies only to volumes
 explicitly enrolled in this new feature. No camelRun SDK execute caller was found;
-local functions named execute are unrelated. No camel-bots change is required.
+local functions named execute are unrelated. Also checked `src/ops/triage-agent.ts`,
+`src/ops/first-user-notices.ts`, `src/ops/profiler.ts`, and `src/app/ai.ts` for
+file/code settings: their existing configurations remain compatible. No
+camel-bots change is required.
 
 ## Validation
 

@@ -1032,7 +1032,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     return !(await db.query("select 1 from billing_email_suppressions where email_hash=$1", [createHash("sha256").update(email).digest("hex")])).rowCount;
   };
   const dreaming = nodeDreaming({db,clients,definitions,volumes,create:createAgent,submit:submitAnywhere,request:requestAnywhere});
-  const dreamTimer = setInterval(() => void dreaming.scan().catch(error => console.error(JSON.stringify({type:"dream_scan_failed",error:String(error)}))), 10000);
+  const dreamTimer = setInterval(() => void dreaming.scan().catch(error => console.error(JSON.stringify({type:"dream_scan_failed",error:safeError(error)}))), 10000);
   dreamTimer.unref();
   const scheduler = new Scheduler({
     db, node, emailEnabled: !!scheduleMailConfig, canEmail: canScheduleEmail,
