@@ -51,7 +51,10 @@ but completed is a failed check: it backs off and counts toward the stop at 10.
 agent's lifetime, emits no `run.completed` webhook and is not listed with the agent's requests; the monitor's check
 log has it. A monitor has at most one open check request: one still in flight when the next would be sent is sent
 again under its own id (a no-op while it waits, and the way a lost settling is recovered), so monitors cannot fill an
-agent's request queue behind a long turn. Only a request of the monitor's own agent settles it.
+agent's request queue behind a long turn. Only a request of the monitor's own agent settles it. Request ids starting
+with `monitor-check-` are reserved: a request under one is accepted only while the scheduler (Node) or the alarm
+(Workers) has marked that check in flight for a monitor of the same agent, and is otherwise refused with 400, so no
+client-named request gets a check's treatment.
 
 **A fire** queues one ordinary prompt to the agent (request id `monitor-<schedule>-<n>`), so the agent's
 `queue: {mode: "batch"}` merges a burst into one turn, and its spend and run limits and billing apply as to any
@@ -104,7 +107,8 @@ The script runs in v8-exec in the agent's host, as every `execute` does.
 steps 1–2 (`monitorDue`), the script runs in the agent's `CodemodeSandbox` object exactly as any code-mode run, and
 step 3 commits in the same storage transaction that publishes the request's response (`stageMonitorSettle`).
 Check request records do not accumulate in the object (every wake lists its requests): a settled check's record is
-deleted at the monitor's next occurrence, and a removed monitor's a minute later, so a monitor holds two at most.
+deleted at the monitor's next occurrence, and a removed monitor's once it has settled (looked at a minute later, never
+while the check is still queued or running), so a monitor holds two at most.
 
 **Wake-loop safety (Workers).** A past production OOM came from wake spirals, so: `everySeconds` is validated
 server-side (60 at least) on every path that creates a monitor; the alarm is armed for the monitor's due time and the
