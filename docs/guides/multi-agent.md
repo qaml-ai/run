@@ -160,6 +160,9 @@ A sub-agent shares its parent's computer by default (`computer: "share"`). It us
 exactly the same connection, provider, session and filesystem, concurrently with
 the parent. Grandchildren share the same machine. Only the parent can start,
 stop or replace it; a child's `computer_start` or `computer_stop` is refused.
+Give each child its own directory or git worktree. Never switch branches in a
+checkout another agent is using. If the parent's machine stops, the child must
+finish and report back; only the parent can restart it.
 Children's computer activity counts toward the parent's idle policy. The machine
 is billed to its owner as before; sharing creates no new machine or charge.
 
@@ -180,8 +183,10 @@ the parent's computer to opt out. Each connection is billed independently under
 the usual rules, using the child's account and the current run's payer and bucket.
 
 Deleting or expiring the child stops its session and detaches its connection.
-When a runtime-made child finishes its task, its machine stops and releases its
-slot; the agent and its connection remain available for a later task.
+When a `delegate` child finishes its task, its machine stops and releases its
+slot; the agent and its connection remain available for a later task. Background
+`spawn_agent` children keep their machines until stopped, expired or deleted, so
+you can message a finished worker again.
 Delete a child you no longer need, or have it call `computer_stop` after saving
 its results. Deleting the parent also deletes the children the runtime made.
 

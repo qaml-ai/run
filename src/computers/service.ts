@@ -10,8 +10,8 @@ import type { ComputerMount } from "../computer-env.ts";
 import type { ComputerTransfers } from "./transfers.ts";
 import { fileCommand, MANAGED, ManagedComputers, managedTools, storable } from "./managed.ts";
 import { fileReceipts, driver, isBrowserProvider, PROVIDERS, type Credentials, type DriverFactory, type ComputerDriver, type Provider, type Reference } from "./providers.ts";
-import { reserveComputer, releaseComputer } from "../core/computer-limit.ts";
-import { computerOwner, shareComputer, SHARED_COMPUTER_CONTROL } from "../core/computer-share.ts";
+import { reserveComputer, releaseComputer, computerToolError } from "../core/computer-limit.ts";
+import { computerOwner, shareComputer, SHARED_COMPUTER_CONTROL, SHARED_COMPUTER_STOPPED } from "../core/computer-share.ts";
 import { connectionForkable, FORK_LIMITS, forkableProvider, forkedFrom, forkRows, forkUnsupported, noSession, notForkable, snapshotFailed, snapshotRef, type ForkedFrom, type SnapshotRef } from "../core/computer-fork.ts";
 
 const id = () => `cmp_${randomUUID().replaceAll("-", "")}`;
@@ -336,7 +336,7 @@ export class Computers {
       if (!SHELL.concat(COMMON).some(t => t.name === name)) throw new HttpError(400, "Tool not supported by this computer");
       const input = JSON.stringify([name, args]);
       if (input.length > 40000) throw new HttpError(400, "Computer tool input too large");
-      return this.managed.call(connection, tenant, connection.agent, name, args, requestKey, createHash("sha256").update(input).digest("hex"), files, receiptsOnly, name === "computer_start" ? await this.seedOf(connection) : undefined);
+      return this.managed.call(connection, tenant, connection.agent, name, args, requestKey, createHash("sha256").update(input).digest("hex"), files, receiptsOnly, name === "computer_start" ? await this.seedOf(connection) : undefined, shared);
     }
     return this.lock(tenant, agent, async sql => {
       const c = await this.connection(tenant, agent, sql);
@@ -353,7 +353,7 @@ export class Computers {
       let lease = await this.latest(c.id, sql);
       if (name === "computer_status") return publicLease(lease);
       if (name === "computer_stop") { await this.stop(c, lease, sql); return { stopped: true }; }
-      if (shared && lease && lease.expires_at <= this.now()) throw new HttpError(409, SHARED_COMPUTER_CONTROL);
+      if (shared && (!lease || lease.state !== "active" || lease.expires_at <= this.now())) throw new HttpError(409, SHARED_COMPUTER_STOPPED, "COMPUTER_STOPPED");
       if (lease && lease.state !== "closed" && lease.expires_at <= this.now()) { await this.stop(c, lease, sql); lease = undefined; }
       if (name === "computer_start") {
         if (lease && lease.state !== "closed") { if (lease.state !== "active") throw new HttpError(409, "This computer is waiting on an earlier operation, which may need its owner to confirm cleanup in the Computers console. Do not retry in this turn; tell the user."); return publicLease(lease); }
@@ -407,7 +407,7 @@ export class Computers {
         return result;
       } catch (error) {
         if (name !== "computer_status") await sql.query("update computer_operations set state='uncertain' where connection=$1 and key=$2", [c.id, requestKey]);
-        throw error;
+        throw computerToolError(error);
       }
     });
   }

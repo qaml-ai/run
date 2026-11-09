@@ -1,4 +1,4 @@
-export const VERSION = "0.23.0";
+export const VERSION = "0.22.1";
 // Generated from packages/cli/src/{api,ops}.ts by scripts/reuse-agent-mcp.mjs.
 /**
  * A refused call: the runtime's `error` message, with the HTTP status and its `code` when it gave one. The message

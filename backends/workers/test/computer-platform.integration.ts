@@ -141,3 +141,35 @@ test('browser tools need no shell command and provider calls retain the remainin
   assert.ok(calls.at(-1)!.args.remainingSeconds > 590, 'connect keeps the fixed lease instead of shortening it to the command timeout');
   await assert.rejects(service.call(agent, 'computer_exec', {}, 'invalid'), /Invalid computer command/);
 });
+
+test('a Lambda exec checks only its machine, sharing refuses a resume, and the owner can resume', async t => {
+  const { ComputerService } = await import('../src/computers/service.ts');
+  const { shareComputer } = await import('../../../src/core/computer-share.ts');
+  const fixture = await startFixture(); t.after(() => fixture.stop());
+  const env = { HYPERDRIVE: { connectionString: fixture.databaseUrl }, API_TOKEN: fixture.token, TEST_MODE: '1', COMPUTER_MANAGED_ENABLED: '1' } as any;
+  const checked: string[] = [], commands: string[] = [];
+  let running = true;
+  const service = new ComputerService(env, 'camelrun-proto-local', (_env, _tenant, agent) => ({
+    create: async () => ({ id: agent }), close: async () => {},
+    running: async ref => { checked.push(ref.id); if (ref.id !== owner) throw new Error('other machine unavailable'); return running; },
+    call: async ref => { commands.push(ref.id); running = true; return { exitCode: 0 }; },
+  }));
+  const create = async () => {
+    const response = await fetch(fixture.url + '/v1/agents', { method: 'POST', headers: { authorization: `Bearer ${fixture.token}`, 'content-type': 'application/json' }, body: JSON.stringify({ codeMode: false }) });
+    return (await response.json() as any).id as string;
+  };
+  const owner = await create(), child = await create(), other = await create();
+  for (const agent of [owner, other]) { await service.create({ agent, provider: 'lambda' }); await service.call(agent, 'computer_start', {}, `start-${agent}`); }
+  await shareComputer(fixture.db as any, 'camelrun-proto-local', owner, child);
+  await service.call(child, 'computer_exec', { command: 'true' }, 'shared-running');
+  assert.deepEqual(checked, [owner]);
+  running = false;
+  await assert.rejects(service.call(child, 'computer_exec', { command: 'true' }, 'shared-stopped'), /parent's machine is stopped/);
+  assert.equal(commands.length, 1);
+  await service.call(owner, 'computer_exec', { command: 'true' }, 'owner-resume');
+  assert.equal(commands.length, 2);
+  const connection = (await service.status(owner)).connection.id;
+  await fixture.db.query('update computer_leases set expires_at=1 where connection=$1', [connection]);
+  await assert.rejects(service.call(child, 'computer_exec', { command: 'true' }, 'expired'), /parent's machine is stopped/);
+  assert.equal(commands.length, 2);
+});

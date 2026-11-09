@@ -16,4 +16,5 @@ export async function computerDisabled(sql: Sql, tenant: string, agent: string):
 export async function disableComputer(sql: Sql, tenant: string, child: string) {
   await sql.query("insert into computer_shares(tenant,agent,owner) values($1,$2,null) on conflict (agent) do nothing", [tenant, child]);
 }
-export const SHARED_COMPUTER_CONTROL = "This is the parent's machine. A sharing child cannot start, stop or replace it; ask the parent to manage its machine.";
+export const SHARED_COMPUTER_CONTROL = "This machine belongs to your parent agent: you can't start, stop or replace it. Finish your task and report back if it needs to change.";
+export const SHARED_COMPUTER_STOPPED = "Your parent's machine is stopped. Finish your task and report back to your parent.";

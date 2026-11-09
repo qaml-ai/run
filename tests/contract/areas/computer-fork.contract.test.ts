@@ -180,8 +180,8 @@ for (const explicit of [false, true]) contractTest("computers", SOURCE, `shared 
   assert.equal(run.status, 'completed', JSON.stringify(run.outcome));
   assert.match(run.outcome.result.reply, /child/);
   await until(async () => !!childResult, 'shared child finished');
-  assert.match(childResult, /parent's machine/);
-  assert.equal((childResult.match(/parent's machine/g) ?? []).length, 2);
+  assert.match(childResult, /belongs to your parent agent/);
+  assert.equal((childResult.match(/belongs to your parent agent/g) ?? []).length, 2);
   assert.match(childResult, /parent/);
   const child = run.outcome.result.toolCalls.find((call: any) => call.agentId)?.agentId;
   assert.ok(child);
@@ -247,8 +247,36 @@ for (const override of [false, true]) contractTest('computers', SOURCE, `tree ca
     assert.doesNotMatch(run.outcome.result.reply, /reached its concurrent computer limit/);
     assert.equal(boat.state.creates, 3, 'both sequential children start after the prior child releases its slot');
   } else {
-    assert.ok(JSON.parse(run.outcome.result.reply.split('\n---\n')[0]).text.includes('This agent tree has reached its concurrent computer limit. Use computer: "share" or wait for a child to finish and release its machine.'));
+    assert.ok(JSON.parse(run.outcome.result.reply.split('\n---\n')[0]).text.includes('This agent tree already runs its limit of machines. Use computer "share" for new sub-agents, or wait until one finishes.'));
     assert.equal(boat.state.creates, 1, 'refused children start no extra machines');
   }
   for (const value of [0, 65, 1.5]) assert.equal((await call('/v1/agents', { body: { computerLimit: value } })).status, 400);
+});
+
+contractTest('computers', SOURCE, 'a finished background fork worker retains its machine and files for another message', async t => {
+  const boat = await fakeBoatServer(); t.after(() => boat.close());
+  const r = await createContractFixture(t, { env: boatEnv(boat.url), respond: body => {
+    const results = turnResults(body);
+    if (systemText(body).includes('PERSIST_PARENT')) {
+      if (!results.length) return toolCall('computer_start', {}, 'start');
+      if (results.length === 1) return toolCall('computer_exec', { command: 'echo parent > parent.txt' }, 'write');
+      if (results.length === 2) return toolCall('spawn_agent', { instructions: 'PERSIST_WORKER', task: 'Save your work', computer: 'fork' }, 'spawn');
+      return { role: 'assistant', content: 'started' };
+    }
+    if (JSON.stringify(body.messages).includes('READ_AGAIN')) return results.length
+      ? { role: 'assistant', content: results[0] }
+      : toolCall('computer_exec', { command: 'cat worker.txt' }, 'read');
+    if (!results.length) return toolCall('computer_start', {}, 'start');
+    if (results.length === 1) return toolCall('computer_exec', { command: 'echo saved-work > worker.txt' }, 'write');
+    return { role: 'assistant', content: 'saved' };
+  } });
+  const parent = (await r.call('/v1/agents', { body: { systemPrompt: 'PERSIST_PARENT', builtins: ['agents'], delegate: { instructions: true } } })).json.id;
+  await connect(r, parent);
+  const run = await r.prompt(parent, 'Start a worker');
+  const child = run.outcome.result.toolCalls.find((call: any) => call.agentId)?.agentId;
+  assert.ok(child);
+  await until(async () => (await r.call(`/v1/agents/${parent}/children`)).json.children.some((entry: any) => entry.status === 'completed'), 'background worker completion');
+  assert.equal((await r.call(`/v1/agents/${child}/computer`)).json.session.state, 'active');
+  const again = await r.prompt(child, 'READ_AGAIN');
+  assert.match(again.outcome.result.reply, /saved-work/);
 });

@@ -1,3 +1,5 @@
+import { SHARED_COMPUTER_STOPPED } from "../core/computer-share.ts";
+import { HttpError } from "../core/http-error.ts";
 import { reserveComputer, suspendComputer, beginComputerUse, endComputerUse } from "../core/computer-limit.ts";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
@@ -171,14 +173,13 @@ export function microvmMachines(options: { db: Db; outbound: Outbound; settings:
       }
       return found;
     },
-    async run(id, command, timeoutSeconds, requestKey = randomUUID()) {
+    async run(id, command, timeoutSeconds, requestKey = randomUUID(), shared = false) {
       const vm = await get(id), at = now();
       const row = (await db.query("select id from managed_computers where machine=$1 and provider='lambda'", [id])).rows[0];
       if (!row) throw new Error("Unknown MicroVM owner");
       const current = await record(row.id, vm, at);
-      // Refresh other machines before a suspended machine's traffic can resume it.
-      const siblings = (await db.query("select id,machine from managed_computers where tenant=$1 and provider='lambda' and ended_at is null and machine is not null and id<>$2", [current.row.tenant, row.id])).rows;
-      for (const sibling of siblings) await record(sibling.id, await get(sibling.machine));
+      if (shared && (paused(vm.state) || vm.state === "TERMINATED" || vm.state === "TERMINATING"))
+        throw new HttpError(409, SHARED_COMPUTER_STOPPED, "COMPUTER_STOPPED");
       await transaction(db, async sql => {
         await reserveComputer(sql, current.row.tenant, current.row.agent, current.row.connection,
           Number(current.row.deadline), now(), options.tenantComputerLimit?.(current.row.tenant));

@@ -1,4 +1,5 @@
 import { defineTool } from "@earendil-works/pi-durable";
+import { SHARED_COMPUTER_CONTROL } from "../../../../src/core/computer-share.ts";
 import {
   arr,
   int,
@@ -74,7 +75,7 @@ export function computerTool(bindings: ComputerBindings, agentId: string, setup?
         throw new Error(`Optional ${provider} computer is not configured`);
       if ("path" in request) request.path = computerPath(request.path);
       const target = await owner?.();
-      if (target?.shared && ["sleep", "restore"].includes(request.op)) throw new Error("This is the parent's machine. A sharing child cannot stop or replace it.");
+      if (target?.shared && ["sleep", "restore"].includes(request.op)) throw new Error(SHARED_COMPUTER_CONTROL);
       const result = await namespace.getByName(target?.id ?? agentId).operate(request as never, await setup?.());
       return { output: [{ type: "text", text: JSON.stringify(result) }] };
     },

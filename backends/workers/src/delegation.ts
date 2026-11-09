@@ -391,7 +391,7 @@ export class Delegation {
           return { child: value, changed: !folded };
         });
         // A delegate child answered: its computers (keyed by the child) stop, so they bill nothing more.
-        if (finished.changed && child.made && child.id && finished.child.status !== 'input_required') await this.host.releaseComputer?.(child.id).catch(() => {});
+        if (finished.changed && !child.background && child.made && child.id && finished.child.status !== 'input_required') await this.host.releaseComputer?.(child.id).catch(() => {});
         if (finished.changed) await this.host.emit({ type: 'event', requestId: child.parentRequestId, event: { type: 'subagent_end', toolCallId: child.toolCallId, agentId: child.id, requestId: child.requestId, name: child.name, status: finished.child.status, ...(child.background ? { background: true } : {}), ...(finished.child.error ? { error: finished.child.error } : {}) } });
         return finished.child;
       }

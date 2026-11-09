@@ -178,7 +178,7 @@ test("sharing keeps one managed connection, owner billing, idle activity and gra
   assert.equal((await exec(f.service, "grandchild", "get shared")).stdout, "parent");
   await exec(f.service, "child", "put shared child");
   assert.equal((await exec(f.service, "a", "get shared")).stdout, "child");
-  for (const name of ["computer_start", "computer_stop"]) await assert.rejects(f.service.call("payg", "child", name, {}, name), /parent's machine/);
+  for (const name of ["computer_start", "computer_stop"]) await assert.rejects(f.service.call("payg", "child", name, {}, name), /belongs to your parent agent/);
   const deadline = Number((await f.row()).deadline);
   f.advance(4_000_000);
   await exec(f.service, "grandchild", "get shared", "keep-alive");
@@ -204,10 +204,61 @@ test('tree computer cap admits concurrent starts atomically and releases stopped
   const results = await Promise.allSettled(['c1', 'c2'].map(child => start(f.service, child)));
   assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
   const refusedResult = results.find(result => result.status === 'rejected') as PromiseRejectedResult;
-  assert.match(refusedResult.reason.message, /Use computer: "share" or wait for a child/);
+  assert.match(refusedResult.reason.message, /Use computer "share" for new sub-agents/);
   const winner = ['c1', 'c2'][results.findIndex(result => result.status === 'fulfilled')];
   const loser = ['c1', 'c2'][results.findIndex(result => result.status === 'rejected')];
   await f.service.release('payg', winner);
   await start(f.service, loser);
   assert.equal((await f.service.status('payg', loser)).session!.state, 'active');
+});
+
+test('managed starts never list other machines, and expired sharing calls fail without blocking their owner', async t => {
+  const f = await fixture({ extraAgents: ['child'] }); t.after(f.done);
+  const service = new Computers({ ...f.service.options, provider: 'lambda' });
+  f.state.listFails = true;
+  await service.create('payg', { agent: 'a', provider: 'lambda' });
+  await start(service, 'a');
+  await service.inherit('payg', 'a', 'child', f.db, 'share');
+  await f.db.query('update managed_computers set deadline=$1', [1]);
+  const calls = f.state.runs.length;
+  await assert.rejects(exec(service, 'child', 'true'), /parent's machine is stopped.*Finish your task and report back/);
+  assert.equal(f.state.runs.length, calls);
+  f.state.listFails = false;
+  f.advance(1);
+  await start(service, 'a');
+  assert.equal((await service.status('payg', 'a')).session!.state, 'active');
+});
+
+
+test("expired BYO sharing calls fail before cleanup and leave the owner free to restart", async t => {
+  const boat = await fakeBoatServer(); t.after(() => boat.close());
+  const f = await fixture({ extraAgents: ["child"] }); t.after(f.done);
+  const service = new Computers({ db: f.db, accounts: f.accounts, outbound: new Outbound({ allowHttp: true, allow: ["127.0.0.1/32"] }), enabled: true, runtime: "https://run.test", boatUrl: boat.url });
+  await service.create("payg", { agent: "a", provider: "boat", credentials: { apiKey: "byo-key" }, leaseSeconds: 600, dailySeconds: 3600 });
+  await start(service, "a");
+  await service.inherit("payg", "a", "child", f.db, "share");
+  await f.db.query("update computer_leases set expires_at=1");
+  await assert.rejects(exec(service, "child", "true"), /parent's machine is stopped.*Finish your task and report back/);
+  assert.equal(boat.state.sandboxes.size, 1, "a sharer does not stop the expired owner machine");
+  await start(service, "a");
+  assert.equal((await service.status("payg", "a")).session!.state, "active");
+});
+
+
+test("slot admission reconciles only ended rows in its own tree without provider listing", async t => {
+  const f = await fixture({ extraAgents: ["ended", "unrelated"] }); t.after(f.done);
+  await f.db.query("update agents set header=$1 where id='a'", [JSON.stringify({ config: { computerLimit: 1 } })]);
+  await f.db.query("update agents set header=$1 where id='ended'", [JSON.stringify({ parent: { agentId: "a" } })]);
+  await f.connect();
+  await f.connect("payg", "ended");
+  await f.connect("payg", "unrelated");
+  await start(f.service, "ended");
+  await start(f.service, "unrelated");
+  await f.db.query("update managed_computers set ended_at=$1 where agent in ('ended','unrelated')", [f.now() + 1]);
+  const before = (await f.db.query("select s.* from computer_slots s join computer_connections c on c.id=s.machine where c.agent='unrelated'")).rows[0];
+  f.state.listFails = true;
+  await start(f.service, "a");
+  assert.equal((await f.service.status("payg", "a")).session!.state, "active");
+  const after = (await f.db.query("select s.* from computer_slots s join computer_connections c on c.id=s.machine where c.agent='unrelated'")).rows[0];
+  assert.deepEqual(after, before, "admission leaves another root's slots alone");
 });

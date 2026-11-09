@@ -1,6 +1,6 @@
 import { keyServices } from "../security-services.ts";
-import { reserveComputer, releaseComputer, suspendComputer, beginComputerUse, endComputerUse } from "../../../../src/core/computer-limit.ts";
-import { computerOwner, SHARED_COMPUTER_CONTROL } from "../../../../src/core/computer-share.ts";
+import { reserveComputer, releaseComputer, suspendComputer, beginComputerUse, endComputerUse, computerToolError } from "../../../../src/core/computer-limit.ts";
+import { computerOwner, SHARED_COMPUTER_CONTROL, SHARED_COMPUTER_STOPPED } from "../../../../src/core/computer-share.ts";
 import { z } from 'zod';
 import { transaction, withSql, type Sql } from '../postgres.ts';
 import { seal, unseal } from '../webhooks.ts';
@@ -164,14 +164,6 @@ export class ComputerService {
     await withSql(this.env, sql => sql.query("update computer_leases set state='closed',closed_at=$2,reference=null,error=null where id=$1", [lease.id, Date.now()]));
     await withSql(this.env, sql => releaseComputer(sql, this.tenant, c.id));
   }
-  private async refreshSleeping() {
-    const rows = await withSql(this.env, sql => sql.query("select c.*,l.reference from computer_connections c join computer_leases l on l.connection=c.id where c.tenant=$1 and c.provider='lambda' and l.state='active' and l.expires_at>$2", [this.tenant, Date.now()]));
-    for (const row of rows.rows) {
-      const driver = await this.driver(row);
-      if (driver.running && !(await driver.running(JSON.parse(await unseal(row.reference, this.env)))))
-        await withSql(this.env, sql => suspendComputer(sql, this.tenant, row.id));
-    }
-  }
   /** Mutations run inside the owning agent DO's serial queue. Never hold PG over provider I/O. */
   async call(agent: string, name: string, args: Record<string, any>, key: string) {
     if (!COMPUTER_TOOLS.has(name)) throw new HttpError(400, 'Unknown computer tool');
@@ -194,7 +186,7 @@ export class ComputerService {
       let result: unknown;
       if (name === 'computer_stop') { await this.stop(c, lease); result = { stopped: true }; }
       else {
-        if (c.agent !== agent && lease && Number(lease.expires_at) <= Date.now()) throw new HttpError(409, SHARED_COMPUTER_CONTROL);
+        if (c.agent !== agent && (!lease || lease.state !== "active" || Number(lease.expires_at) <= Date.now())) throw new HttpError(409, SHARED_COMPUTER_STOPPED, "COMPUTER_STOPPED");
         if (lease && lease.state !== 'closed' && Number(lease.expires_at) <= Date.now()) { await this.stop(c, lease); lease = undefined; }
         if (name === 'computer_start') {
           if (lease && lease.state !== 'closed') { if (lease.state !== 'active') throw new HttpError(409, 'Computer needs provider cleanup before restart'); result = publicLease(lease); }
@@ -203,7 +195,6 @@ export class ComputerService {
             if (used + c.lease_seconds * 1000 > c.daily_seconds * 1000) throw new HttpError(429, 'Computer daily time budget reached');
             // A forked connection's every new session starts from its seed, the parent's disk as it was at the fork.
             const from = await this.seedOf(c);
-            await this.refreshSleeping();
             await transaction(this.env, async sql => reserveComputer(sql, this.tenant, c.agent, c.id, Date.now() + c.lease_seconds * 1000, Date.now(), (await keyServices(this.env)).accounts.tenants.computerLimit(this.tenant)));
             const session = id(), now = Date.now();
             lease = await withSql(this.env, async sql => (await sql.query("insert into computer_leases(id,tenant,agent,connection,provider,state,created_at,expires_at) values($1,$2,$3,$4,$5,'starting',$6,$7) returning *", [session, this.tenant, agent, c.id, c.provider, now, now+c.lease_seconds*1000])).rows[0]);
@@ -225,7 +216,11 @@ export class ComputerService {
           if (!lease || lease.state !== 'active') throw new HttpError(409, 'Call computer_start before using the computer');
           const ref = JSON.parse(await unseal(lease.reference, this.env));
           if (c.provider === 'lambda') {
-            await this.refreshSleeping();
+            const driver = await this.driver(c);
+            if (driver.running && !(await driver.running(ref))) {
+              await withSql(this.env, sql => suspendComputer(sql, this.tenant, c.id));
+              if (c.agent !== agent) throw new HttpError(409, SHARED_COMPUTER_STOPPED, 'COMPUTER_STOPPED');
+            }
             await transaction(this.env, async sql => {
               await reserveComputer(sql, this.tenant, c.agent, c.id, Number(lease.expires_at), Date.now(), (await keyServices(this.env)).accounts.tenants.computerLimit(this.tenant));
               await beginComputerUse(sql, this.tenant, c.id, Date.now() + (timeout + 60) * 1000);
@@ -240,7 +235,7 @@ export class ComputerService {
       return result;
     } catch (error) {
       await withSql(this.env, sql => sql.query("update computer_operations set state='uncertain' where connection=$1 and key=$2", [c.id, key]));
-      throw error;
+      throw computerToolError(error);
     }
   }
   private async detach(c: any) {

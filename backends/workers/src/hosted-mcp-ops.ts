@@ -109,10 +109,10 @@ export async function waitFor(api: Api, agentId: string, requestId: string, seco
 }
 
 /** Send an agent a message and wait up to `wait` seconds for its run. `requestId` makes a retry the same run. */
-export async function run(api: Api, agent: string, text: string, options: { wait?: number; requestId?: string; endUser?: string; from?: string; steer?: boolean; allowDisconnected?: boolean; signal?: AbortSignal } = {}) {
+export async function run(api: Api, agent: string, text: string, options: { wait?: number; requestId?: string; from?: string; steer?: boolean; allowDisconnected?: boolean; signal?: AbortSignal } = {}) {
   const id = await api.agentId(agent);
   const record = await api.call("POST", `/v1/agents/${enc(id)}/prompt`, {
-    text, ...(options.endUser !== undefined ? { endUser: options.endUser } : {}), requestId: options.requestId ?? `cli_${crypto.randomUUID()}`, ...(options.allowDisconnected ? { allowDisconnected: true } : {}),
+    text, requestId: options.requestId ?? `cli_${crypto.randomUUID()}`, ...(options.allowDisconnected ? { allowDisconnected: true } : {}),
     ...(options.from ? { from: { id: options.from } } : {}), ...(options.steer ? { whileRunning: "steer" } : {}),
   });
   return options.wait === 0 ? summarize(id, record) : waitFor(api, id, record.id, options.wait ?? Infinity, options.signal);
@@ -152,7 +152,7 @@ export async function answer(api: Api, agent: string, inputId: string, value: un
   if (!input) throw new ApiError(404, `No input ${inputId} on ${agent}`);
   const body = { ...answerFor(input, value), ...(options.from ? { from: { id: options.from } } : {}) };
   const answered = await api.call("POST", `/v1/agents/${enc(id)}/inputs/${enc(inputId)}`, body);
-  if (!answered.request) return { agent: id, input: inputId, status: "answered", ...(input.blocking !== false ? { note: "Other inputs of this run still wait; it resumes once they are answered" } : {}) };
+  if (!answered.request) return { agent: id, input: inputId, status: "answered", note: "Other inputs of this run still wait; it resumes once they are answered" };
   return options.wait === 0 ? summarize(id, answered.request) : waitFor(api, id, answered.request.id, options.wait ?? Infinity);
 }
 
@@ -162,7 +162,7 @@ function answerFor(input: any, value: unknown) {
     case "approval": case "url":
       if (typeof value !== "boolean") throw new Error(`Answer ${input.kind === "approval" ? "an approval" : "a url step"} with true or false`);
       return { action: value ? "accept" : "decline" };
-    case "question": case "decision": {
+    case "question": {
       const questions: { question: string }[] = input.detail?.questions ?? [];
       if (typeof value === "string" || Array.isArray(value)) {
         if (questions.length !== 1) throw new Error(`This input asks ${questions.length} questions: answer with {"<question>": "<answer>"} for each`);

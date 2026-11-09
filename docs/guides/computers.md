@@ -24,9 +24,10 @@ A fresh connection inherits the provider, credentials, managed setting, lease
 and daily limits. `"subagents": false` on the parent's connection disables this
 fresh-connection inheritance. It does not disable sharing or an explicit fork.
 
-Separate child machines are billed independently. When a runtime-made child
+Separate child machines are billed independently. When a `delegate` child
 finishes, its machine stops and releases its slot; its connection stays for a
-later task. Deleting or expiring the child also stops and detaches its own
+later task. Background `spawn_agent` workers keep their computers so they can
+be messaged again. Deleting or expiring the child also stops and detaches its own
 computer. A shared child's completion or deletion leaves the parent's machine
 running.
 

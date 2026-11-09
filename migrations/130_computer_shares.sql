@@ -14,6 +14,7 @@ create table computer_slots (
   machine text not null,
   root text not null,
   expires_at bigint not null,
+  acquired_at bigint not null default 0,
   in_flight integer not null default 0,
   busy_until bigint not null default 0,
   primary key (tenant,machine)

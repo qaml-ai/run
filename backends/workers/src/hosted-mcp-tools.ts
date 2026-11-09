@@ -126,7 +126,7 @@ export function tools(api: () => Api, options: { local?: LocalFiles } = {}): Too
       systemPrompt: z.string().optional().describe("Not with a definition, which owns the prompt"),
       systemPromptAppend: z.string().optional().describe("Text after the prompt, e.g. this agent's own context"),
       name: z.string().optional(),
-      builtins: z.array(z.enum(["web_fetch", "web_search", "x_search", "schedule", "ask_user", "request_decision", "generate_image"])).optional().describe("Without a definition: tools the runtime answers itself"),
+      builtins: z.array(z.enum(["web_fetch", "web_search", "x_search", "schedule", "ask_user", "generate_image"])).optional().describe("Without a definition: tools the runtime answers itself"),
     },
     ({ key, ...config }) => ops.upsertAgent(api(), key, config), { ...destructive, idempotentHint: true });
   tool("configure_agent", "Configure agent", "Change one agent's model, system prompt, prompt addition or thinking level between its runs, replacing the current values; its history is kept.", {
@@ -162,7 +162,6 @@ export function tools(api: () => Api, options: { local?: LocalFiles } = {}): Too
     "Send an agent a message and wait for its run: the reply, the input it waits on, or why it failed. A run still going after `wait` seconds comes back as running; call get_run. The agent acts with the tools it was given (such as web search and its MCP servers), and the run uses the account's model credit.",
     {
       agent, message: z.string(), wait,
-      endUser: z.string().optional().describe("Existing end user to charge for this prompt; requires a tenant API key and cannot accompany steer"),
       from: z.string().optional().describe("Who is sending, as a user id in the application"),
       steer: z.boolean().optional().describe("If a run is going, have it read this after its current step instead of queuing it"),
       allowDisconnected: z.boolean().optional().describe("Run even though the application serving its attached tools is not connected; those calls then fail"),

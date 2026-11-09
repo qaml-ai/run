@@ -1,4 +1,5 @@
-import { computerOwner } from "../../../../src/core/computer-share.ts";
+import { HttpError } from "../errors.ts";
+import { computerOwner, SHARED_COMPUTER_STOPPED } from "../../../../src/core/computer-share.ts";
 import { withSql } from "../postgres.ts";
 import { Directory, type ControlEnv } from "../control.ts";
 import type { Config } from "../agent-types.ts";
@@ -26,9 +27,10 @@ export const parentCacheSize = () => parents.size;
  */
 export async function computerSetup(env: ControlEnv & { AGENT_PUBLIC_URL?: string; AGENTS: { idFromName(name: string): DurableObjectId } }, conf: Config): Promise<OperateSetup> {
   const owner = await withSql(env, sql => computerOwner(sql, conf.tenantId, conf.id));
+  const shared = owner !== conf.id;
   if (owner !== conf.id) {
     const entry = await new Directory(env, conf.tenantId).get(owner);
-    if (!entry) throw new Error("The parent's machine is no longer available");
+    if (!entry || entry.deleted || (entry.expiresAt != null && entry.expiresAt <= Date.now())) throw new HttpError(409, SHARED_COMPUTER_STOPPED, "COMPUTER_STOPPED");
     conf = { ...conf, id: owner, config: entry.config as Config["config"] };
   }
   const settings = (conf.config.computer ?? {}) as ComputerSettings;
@@ -46,5 +48,5 @@ export async function computerSetup(env: ControlEnv & { AGENT_PUBLIC_URL?: strin
     parent = entry?.parentAgentId ? env.AGENTS.idFromName(entry.parentAgentId).toString() : null;
     if (entry) rememberParent(conf.id, parent);
   }
-  return { settings, identity: { issuer, claims }, ...(parent ? { parent } : {}) };
+  return { settings, identity: { issuer, claims }, ...(parent ? { parent } : {}), ...(shared ? { shared: true } : {}) };
 }

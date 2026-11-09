@@ -10,8 +10,8 @@ async function fixture() {
   await pg.exec(`create table agents(id text primary key, tenant text, header jsonb);
     insert into agents values('root','tenant','{"config":{"computerLimit":1}}');
     create table tenants(id text primary key,limits jsonb);
-    create table computer_slots(tenant text,machine text,root text,expires_at bigint,in_flight integer default 0,busy_until bigint default 0,primary key(tenant,machine));
-    create table computer_leases(tenant text,agent text,connection text,state text,expires_at bigint);
+    create table computer_slots(tenant text,machine text,root text,expires_at bigint,acquired_at bigint default 0,in_flight integer default 0,busy_until bigint default 0,primary key(tenant,machine));
+    create table computer_leases(tenant text,agent text,connection text,state text,expires_at bigint,closed_at bigint);
     create table managed_computers (id text primary key, tenant text, agent text default 'root', connection text default 'connection', deadline bigint default 99999999, machine text, provider text default 'lambda', created_at bigint, ended_at bigint, microvm jsonb);
     insert into managed_computers(id,tenant,created_at) values ('computer','tenant',1000000);`);
   const query = async (sql: string, params?: unknown[]) => {
@@ -168,5 +168,23 @@ test("a suspended MicroVM frees capacity and cannot auto-resume past the tree ca
     assert.equal(f.requests.length, before, "no traffic resumes the machine at capacity");
     await f.db.query("delete from computer_slots where machine='sibling'");
     assert.equal((await machines.run("vm1", "echo allowed", 60)).exitCode, 0);
+  } finally { await f.pg.close(); }
+});
+
+test("exec inspects only its own MicroVM; a sharer cannot resume it but its owner can", async () => {
+  const f = await fixture();
+  try {
+    const machines = f.make();
+    await machines.create('computer', 'tenant', 7200);
+    // This unrelated broken machine must never be queried, nor participate in root's cap.
+    await f.db.query("insert into agents values('other-root','tenant','{}')");
+    await f.db.query("insert into managed_computers(id,tenant,agent,connection,created_at,machine) values('other','tenant','other-root','other-connection',1,'broken')");
+    f.vm.state = 'SUSPENDED';
+    const before = f.requests.length, calls = f.calls.length;
+    await assert.rejects(machines.run('vm1', 'true', 60, 'shared', true), /parent's machine is stopped/);
+    assert.equal(f.requests.length, before, 'no proxy call can resume the shared machine');
+    assert.deepEqual(f.calls.slice(calls).map(call => call.input.microvmIdentifier), ['vm1']);
+    assert.equal((await machines.run('vm1', 'true', 60, 'owner')).exitCode, 0);
+    assert.ok(f.calls.slice(calls).every(call => call.input.microvmIdentifier === 'vm1'));
   } finally { await f.pg.close(); }
 });

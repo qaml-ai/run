@@ -577,7 +577,7 @@ test("computer egress: git clone and push through the runtime's credential gatew
   assert.match(parentWork.stdout, /child/);
   for (const op of ["sleep", "restore"]) {
     const denied = await computer(sharedChild, { op, ...(op === "restore" ? { name: "saved" } : {}) }, [400]);
-    assert.match(JSON.stringify(denied), /parent's machine/);
+    assert.match(JSON.stringify(denied), /belongs to your parent agent/);
   }
   await api(`/v1/agents/${sharedChild}`, { method: "DELETE" });
   assert.match((await sh(sharedLead.id, "cat /workspace/shared.txt")).stdout, /parent/);
@@ -593,7 +593,7 @@ test("computer egress: git clone and push through the runtime's credential gatew
   }
   assert.ok(cappedChild);
   const capRefusal = await computer(cappedChild, { op: "exec", command: "echo should-not-run" }, [409]);
-  assert.match(JSON.stringify(capRefusal), /concurrent computer limit/);
+  assert.match(JSON.stringify(capRefusal), /This agent tree already runs its limit of machines/);
   assert.match((await sh(capped.id, "cat /workspace/root.txt")).stdout, /root/);
 
   // A child's fork never changes its parent's machine; a computer that never ran has nothing to fork.
@@ -761,4 +761,21 @@ test('computer.idle "sleep": a machine that idles out saves its disk, and the ne
   const resumed = await computer({ op: "read", path: "kept.txt" });
   assert.equal(resumed.content, "still here");
   assert.equal(resumed.computer?.restoredFrom, "sleep", JSON.stringify(resumed));
+  // An idle alarm firing during exec must not queue the next exec behind that command.
+  const long = computer({ op: "exec", command: "touch /workspace/in-flight; while ! test -f /workspace/release; do sleep 0.05; done", timeoutMs: 40_000 });
+  await new Promise(resolve => setTimeout(resolve, 13_000));
+  await computer({ op: "exec", command: "touch /workspace/release", timeoutMs: 5000 });
+  assert.equal((await long).exitCode, 0);
+
+  const child = await api('/v1/agents', { definition: definition.id });
+  await fixture.db.query('insert into computer_shares(tenant,agent,owner) values($1,$2,$3)', ['camelrun-proto-local', child.id, agent.id]);
+  const readChild = () => fetch(fixture.url + `/experimental/agents/${child.id}/computer`, {
+    method: 'POST', headers: { authorization: `Bearer ${fixture.token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ provider: 'container', op: 'read', path: 'kept.txt' }),
+  });
+  await computer({ op: 'sleep' });
+  assert.match(await (await readChild()).text(), /parent's machine is stopped/);
+  assert.equal((await computer({ op: 'read', path: 'kept.txt' })).content, 'still here', 'the owner can resume');
+  await fixture.db.query('update agents set revoked=true where id=$1', [agent.id]);
+  assert.match(await (await readChild()).text(), /parent's machine is stopped/);
 });

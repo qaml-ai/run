@@ -1,5 +1,7 @@
+import { HttpError } from "../errors.ts";
 import { keyServices } from "../security-services.ts";
-import { reserveComputer, releaseComputer } from "../../../../src/core/computer-limit.ts";
+import { reserveComputer, releaseComputer, computerToolError } from "../../../../src/core/computer-limit.ts";
+import { SHARED_COMPUTER_STOPPED, SHARED_COMPUTER_CONTROL } from "../../../../src/core/computer-share.ts";
 import { transaction, withSql } from "../postgres.ts";
 import { DurableObject } from "cloudflare:workers";
 import {
@@ -26,7 +28,7 @@ type ComputerObjectEnv = KeyEnv & WebhookEnv & { COMPUTER_IMAGE?: string; COMPUT
  * What the agent sends with an operation: its definition's computer settings and identity, and, for a sub-agent, the
  * name of its parent's computer object, which the runtime takes from the signed parent link.
  */
-export type OperateSetup = ComputerSetup & { parent?: string; externalPermit?: boolean };
+export type OperateSetup = ComputerSetup & { parent?: string; externalPermit?: boolean; shared?: boolean };
 type EgressBinding = (options: { props: EgressProps }) => Fetcher;
 /** Who pays for an operation's container time: the identity's tenant and agent. */
 function payerOf(setup?: OperateSetup): ComputerPayer | undefined {
@@ -79,6 +81,7 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
     const network = this.network(setup), meter = this.meter(), payer = payerOf(setup);
     const bound: ProviderMeter = {
       admit: async () => {
+        if (setup?.shared && !this.ctx.container?.running) throw new HttpError(409, SHARED_COMPUTER_STOPPED, "COMPUTER_STOPPED");
         if (!payer) return;
         await meter.admit(payer);
         if (setup?.externalPermit) return;
@@ -110,13 +113,17 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
     return result;
   }
   async operate(request: ComputerRequest, setup?: OperateSetup) {
+    if (setup?.shared && ["sleep", "restore"].includes(request.op)) throw new Error(SHARED_COMPUTER_CONTROL);
     const timeout = request.op === "exec" ? (request.timeoutMs ?? 30_000) : 30_000;
     if (!Number.isInteger(timeout) || timeout < 1 || timeout > COMPUTER_LIMITS.execMs) throw new Error("Invalid computer timeout");
     if (["sleep", "restore", "snapshot"].includes(request.op)) return this.serial(() => operate(this.provider(setup), request, AbortSignal.timeout(timeout)));
     // Startup and configuration changes stay serialized; running commands share the live container.
     let running!: Promise<unknown>;
     const begin = this.queue.then(async () => {
-      if (this.ctx.container?.running && !sameComputerNetwork(await this.ctx.storage.get<string>("network") ?? "", this.network(setup).key)) await Promise.allSettled([...this.active]);
+      if (this.ctx.container?.running && !sameComputerNetwork(await this.ctx.storage.get<string>("network") ?? "", this.network(setup).key)) {
+        if (setup?.shared) throw new Error(SHARED_COMPUTER_CONTROL);
+        await Promise.allSettled([...this.active]);
+      }
       const provider = this.provider(setup, timeout);
       await provider.ready();
       running = operate(provider, request, AbortSignal.timeout(timeout));
@@ -132,7 +139,7 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
       }).catch(() => {});
     });
     this.queue = begin.catch(() => {});
-    await begin;
+    try { await begin; } catch (error) { throw computerToolError(error); }
     return running;
   }
   // Forking (native-fork.ts). Errors a caller acts on cross RPC as values: an HttpError's code does not survive it.
@@ -218,7 +225,11 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
    * charges that failed, and drop fork snapshots no child adopted.
    */
   async alarm() {
-    await this.serial(async () => {
+    // Never put a waiter for a long command onto the command queue. Check again after that command,
+    // leaving exec admission free for the other agents sharing this container.
+    if (this.active.size) { await this.ctx.storage.setAlarm(Date.now() + 1000); return; }
+    const check = this.queue.then(async () => {
+      if (this.active.size) { await this.ctx.storage.setAlarm(Date.now() + 1000); return; }
       const provider = this.ctx.container ? this.provider() : undefined;
       const next = await provider?.sleepIfIdle().catch((error: unknown) => {
         console.error(JSON.stringify({ type: "computer_idle_sleep_failed", error: error instanceof Error ? error.message.slice(0, 200) : "unknown" }));
@@ -229,5 +240,7 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
       await provider?.dropStale().catch(() => {});
       if (next !== undefined) await this.wake(next);
     });
+    this.queue = check.catch(() => {});
+    await check;
   }
 }
