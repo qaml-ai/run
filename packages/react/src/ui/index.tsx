@@ -26,6 +26,8 @@ export type { AgentChatComponents, ComposerHandle, ComposerProps, Labels };
 export interface AgentChatProps extends Partial<UseAgentChatOptions> {
   /** A chat you made (`useAgentChat`); else `endpoint`; else the nearest <AgentProvider>'s. */
   chat?: Chat;
+  /** Watch background sub-agents too. Overrides watch.subagents when supplied. */
+  subagents?: boolean;
   /** Your own components for tool calls, by tool name (generative UI). */
   tools?: ToolRenderers;
   /** Replace parts of the chat: Markdown, UserMessage, AssistantMessage, ToolFallback, InputCard, FilePreview, EmptyState. */
@@ -51,9 +53,9 @@ export interface AgentChatProps extends Partial<UseAgentChatOptions> {
 
 /** The whole chat. Inside an <AgentProvider> it uses that chat; with `endpoint` it makes its own. */
 export function AgentChat({ chat, endpoint, tools, ...props }: AgentChatProps) {
-  const { thread, headers, credentials, whileRunning, watch, onEvent, onError, fetch, ...rest } = props;
+  const { thread, headers, credentials, whileRunning, watch, subagents, onEvent, onError, fetch, ...rest } = props;
   if (chat || endpoint) {
-    const options = { thread, headers, credentials, whileRunning, watch, onEvent, onError, fetch };
+    const options = { thread, headers, credentials, whileRunning, watch: subagents === undefined ? watch : { ...watch, subagents }, onEvent, onError, fetch };
     const defined = Object.fromEntries(Object.entries(options).filter(([, value]) => value !== undefined));
     return <AgentProvider chat={chat} endpoint={endpoint} {...defined}><AgentChatRoot tools={tools} whileRunning={whileRunning} {...rest} /></AgentProvider>;
   }
@@ -106,3 +108,5 @@ function ErrorBanner() {
   if (error?.code === "stream_error" && !connected) return <div className="agent-chat__error agent-chat__error--soft" role="status">{labels.reconnecting}</div>;
   return null;
 }
+
+export { InboxList, type InboxListProps } from "./inbox.tsx";

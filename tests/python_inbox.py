@@ -11,7 +11,7 @@ if missing:
     raise SystemExit(0)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "clients" / "python"))
-from camelai_run import Agent, RunInput
+from camelai_run import Agent, RunInput, AgentRuntime
 from camelai_run import sync
 
 INPUT = {"id": "decision", "requestId": "original", "kind": "decision", "blocking": False,
@@ -32,6 +32,13 @@ class DecisionAnswers(unittest.TestCase):
         receipt = asyncio.run(RunInput(Agent(client), INPUT).answer("EU"))
         self.assertEqual(client.sent, ("decision", EXPECTED))
         self.assertEqual((receipt.status, receipt.inputs), ("completed", []))
+
+    def test_inbox_answer_route(self):
+        class Client:
+            def _rest(self, method, path, body, **kwargs):
+                return (method, path, body)
+        self.assertEqual(AgentRuntime.answer_inbox(Client(), {"agent": "a", "id": "local"}, EXPECTED),
+                         ("POST", "/v1/agents/a/inputs/local", EXPECTED))
 
     def test_sync(self):
         class Client:
