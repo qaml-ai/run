@@ -7,7 +7,7 @@ import { ARM_AGENT, DUE_HUMAN_INPUTS } from "../src/agent-internals.ts";
 
 test("the Durable Object preserves its RPC boundary and gates pilot counters", async () => {
   const methods = [
-    "databaseProfile",
+    "removeMember", "databaseProfile",
     "purgeAccountData", "admitDelegateWake", "receiveAgentMessage", "receiveAgentProgress",
     "hasBackgroundChild", "cancelRequest", "fetch", "onStart", "onJob",
     "webSocketMessage", "webSocketClose", "webSocketError",
@@ -51,9 +51,10 @@ test("the Durable Object preserves its RPC boundary and gates pilot counters", a
   for (const name of methods) assert.equal(agent[name](...inputs), result, name);
   assert.deepEqual(calls.map(call => call.name), methods);
   assert.ok(calls.every(call => call.receiver instanceof Runtime));
-  assert.equal(calls[0].args[0], inputs[0], "the profiling reset argument is preserved");
-  assert.equal(calls[1].args[0], inputs[0], "argument identity is preserved");
-  assert.equal(calls[1].args[1], inputs[1]);
+  assert.deepEqual(calls[0].args, [inputs[0]], "member removal forwards only the member ID");
+  assert.equal(calls[1].args[0], inputs[0], "the profiling reset argument is preserved");
+  assert.equal(calls[2].args[0], inputs[0], "argument identity is preserved");
+  assert.equal(calls[2].args[1], inputs[1]);
   assert.equal(agent[ARM_AGENT](123), result);
   assert.deepEqual(calls.at(-1)?.args, [123]);
   assert.equal(calls.at(-1)?.name, "arm", "the subclass capability uses the runtime alarm implementation");

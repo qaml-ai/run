@@ -1803,7 +1803,7 @@ export class ClientSessions {
         endUser = session.requests.get(params.suspension)?.endUser;
       }
     } catch (error) { throw new HttpError(400, errorText(error)); }
-    if (params.notice === undefined && (CANCELLABLE.includes(body.method) || body.method === "steer")) await requireActiveMember(this.db, session.header.tenant, session.header.id, actor);
+    if (actor?.startsWith("member:") && params.notice === undefined && (CANCELLABLE.includes(body.method) || body.method === "steer")) await requireActiveMember(this.db, session.header.tenant, session.header.id, actor);
     // A child's notification (`notice`) is the runtime's alone. Its child's run was counted and checked already, and it is
     // never refused at a limit: it lands without a turn instead (`landNotice`).
     const notice = params.notice !== undefined;
@@ -1883,7 +1883,12 @@ export class ClientSessions {
         const again = existing();
         if (again) return taken(again);
       }
-      if (params.notice === undefined && (CANCELLABLE.includes(body.method) || body.method === "steer")) await requireActiveMember(this.db, session.header.tenant, session.header.id, actor);
+      if (actor?.startsWith("member:") && params.notice === undefined && (CANCELLABLE.includes(body.method) || body.method === "steer")) {
+        await requireActiveMember(this.db, session.header.tenant, session.header.id, actor);
+        // Another submission of this ID may have committed during the membership lookup.
+        const raced = existing();
+        if (raced) return taken(raced);
+      }
       const later: RequestRecord[] = [];
       if (body.method === "prompt") {
         const held = [...session.requests.values()].filter(record => record.method === "steer" && record.state === "completed" && record.params !== undefined).sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0));
