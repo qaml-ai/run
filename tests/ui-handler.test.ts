@@ -331,7 +331,7 @@ test("existing mode reads credentials by id or key and never creates or updates"
 test("existing mode separates selected agents and retries failed credential lookups", async t => {
   const r = await runtime(t, () => ({ role: "assistant", content: "hello" }));
   const ids: Record<string, string> = {};
-  for (const user of ["alice", "bob"]) ids[user] = (await r.call("/v1/agents", { body: { systemPrompt: user } })).json.id;
+  for (const user of ["alice", "bob"]) ids[user] = (await r.call("/v1/agents", { body: { systemPrompt: user }, headers: { "Idempotency-Key": `existing-${user}` } })).json.id;
   let failNext = true;
   const credentials: string[] = [];
   const handler = createAgentHandler({ apiKey: OPERATOR, url: r.base,
