@@ -3573,6 +3573,11 @@
       "AgentSummary": {
         "type": "object",
         "properties": {
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Tenant-owned JSON object, at most 16384 UTF-8 bytes. Replaced whole when supplied; omitted preserves it. Not sent to the model. List filtering: ?metadata.type=camelcode-project matches top-level strings exactly."
+          },
           "id": {
             "type": "string"
           },
@@ -3671,6 +3676,7 @@
           }
         },
         "required": [
+          "metadata",
           "id",
           "key",
           "name",
@@ -3924,6 +3930,11 @@
         "properties": {
           "networking": {
             "$ref": "#/components/schemas/Networking"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Tenant-owned JSON object, at most 16384 UTF-8 bytes. Replaced whole when supplied; omitted preserves it. Not sent to the model. List filtering: ?metadata.type=camelcode-project matches top-level strings exactly."
           },
           "workspaceId": {
             "type": [
@@ -5875,6 +5886,11 @@
           "networking": {
             "$ref": "#/components/schemas/Networking"
           },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Tenant-owned JSON object, at most 16384 UTF-8 bytes. Replaced whole when supplied; omitted preserves it. Not sent to the model. List filtering: ?metadata.type=camelcode-project matches top-level strings exactly."
+          },
           "requestId": {
             "type": "string",
             "minLength": 1
@@ -7006,6 +7022,151 @@
         "required": [
           "revoked",
           "left"
+        ]
+      },
+      "GroupedUsage": {
+        "type": "object",
+        "properties": {
+          "since": {
+            "type": "number"
+          },
+          "groupBy": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "agent",
+                "definition",
+                "endUser",
+                "model",
+                "day"
+              ]
+            }
+          },
+          "rollup": {
+            "type": "boolean"
+          },
+          "totals": {
+            "type": "object",
+            "properties": {
+              "responses": {
+                "type": "number"
+              },
+              "input": {
+                "type": "number"
+              },
+              "output": {
+                "type": "number"
+              },
+              "cacheRead": {
+                "type": "number"
+              },
+              "cacheWrite": {
+                "type": "number"
+              },
+              "cost": {
+                "type": "number",
+                "description": "Usage cost in USD: model calls use provider-reported cost or a catalog estimate, excluding model credit funding; tool-ranking costs already include their funding"
+              },
+              "platformResponses": {
+                "type": "number",
+                "description": "Responses that ran on a key that is not the tenant's own"
+              },
+              "platformCost": {
+                "type": "number",
+                "description": "Cost in USD on platform keys, including configured provider credit funding costs; prepaid tenants pay it from credit"
+              }
+            },
+            "required": [
+              "responses",
+              "input",
+              "output",
+              "cacheRead",
+              "cacheWrite",
+              "cost",
+              "platformResponses",
+              "platformCost"
+            ]
+          },
+          "next": {
+            "type": "string"
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "responses": {
+                  "type": "number"
+                },
+                "input": {
+                  "type": "number"
+                },
+                "output": {
+                  "type": "number"
+                },
+                "cacheRead": {
+                  "type": "number"
+                },
+                "cacheWrite": {
+                  "type": "number"
+                },
+                "cost": {
+                  "type": "number",
+                  "description": "Usage cost in USD: model calls use provider-reported cost or a catalog estimate, excluding model credit funding; tool-ranking costs already include their funding"
+                },
+                "platformResponses": {
+                  "type": "number",
+                  "description": "Responses that ran on a key that is not the tenant's own"
+                },
+                "platformCost": {
+                  "type": "number",
+                  "description": "Cost in USD on platform keys, including configured provider credit funding costs; prepaid tenants pay it from credit"
+                },
+                "agent": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "definition": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "endUser": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "model": {
+                  "type": "string"
+                },
+                "day": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "responses",
+                "input",
+                "output",
+                "cacheRead",
+                "cacheWrite",
+                "cost",
+                "platformResponses",
+                "platformCost"
+              ]
+            }
+          }
+        },
+        "required": [
+          "since",
+          "groupBy",
+          "rollup",
+          "totals",
+          "groups"
         ]
       },
       "Usage": {
@@ -9887,6 +10048,61 @@
           "deliveredAt"
         ]
       },
+      "GitHubRepositories": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GitHubRepository"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor"
+        ]
+      },
+      "GitHubRepository": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "number"
+          },
+          "name": {
+            "type": "string"
+          },
+          "fullName": {
+            "type": "string"
+          },
+          "private": {
+            "type": "boolean"
+          },
+          "htmlUrl": {
+            "type": "string"
+          },
+          "defaultBranch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "fullName",
+          "private",
+          "htmlUrl",
+          "defaultBranch"
+        ]
+      },
       "GitHubApp": {
         "type": "object",
         "properties": {
@@ -12105,6 +12321,89 @@
             ],
             "additionalProperties": false
           }
+        ]
+      },
+      "RunLog": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Run"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "truncated": {
+                    "type": "boolean",
+                    "enum": [
+                      true
+                    ]
+                  },
+                  "originalBytes": {
+                    "type": "number"
+                  },
+                  "preview": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "truncated",
+                  "originalBytes",
+                  "preview"
+                ]
+              }
+            ]
+          },
+          "durationMs": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "index": {
+                  "type": "number"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "message"
+                  ]
+                },
+                "at": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "message": {},
+                "truncated": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "index",
+                "type",
+                "at"
+              ]
+            }
+          },
+          "next": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "run",
+          "durationMs",
+          "events"
         ]
       },
       "EndUserSettings": {
@@ -16850,6 +17149,16 @@
           {
             "schema": {
               "type": "string",
+              "description": "Exact match on a top-level metadata string. Any metadata.<key> is supported; multiple filters are ANDed."
+            },
+            "required": false,
+            "description": "Exact match on a top-level metadata string. Any metadata.<key> is supported; multiple filters are ANDed.",
+            "name": "metadata.type",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
               "description": "Only agents in this workspace, or unassigned for agents in none"
             },
             "required": false,
@@ -18993,17 +19302,139 @@
         }
       }
     },
+    "/v1/agents/{id}/usage": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "days",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "groupBy",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            },
+            "required": false,
+            "name": "rollup",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "workspaceId",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Agent usage",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupedUsage"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/usage": {
       "get": {
         "parameters": [
           {
             "schema": {
-              "type": "string",
-              "description": "1–365, default 30"
+              "type": "string"
             },
             "required": false,
-            "description": "1–365, default 30",
             "name": "days",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "groupBy",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            },
+            "required": false,
+            "name": "rollup",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "cursor",
             "in": "query"
           },
           {
@@ -19019,11 +19450,18 @@
         ],
         "responses": {
           "200": {
-            "description": "Token usage per UTC day and model",
+            "description": "Token usage per UTC day and model, or requested dimensions",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Usage"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Usage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/GroupedUsage"
+                    }
+                  ]
                 }
               }
             }
@@ -22097,6 +22535,114 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ChannelEventDelivered"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/github-apps/{app}/repositories": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The App's id (gha_…) or name"
+            },
+            "required": true,
+            "description": "The App's id (gha_…) or name",
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "perPage",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of installation repositories; follow nextCursor until null, including empty pages",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubRepositories"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/github-apps/{app}/repositories/{owner}/{name}": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The App's id (gha_…) or name"
+            },
+            "required": true,
+            "description": "The App's id (gha_…) or name",
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "owner",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "name",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Repository the installation can access; 404 if unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubRepository"
                 }
               }
             }
@@ -25309,6 +25855,60 @@
               "text/event-stream": {
                 "schema": {
                   "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{id}/log": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The run's id (run_…)"
+            },
+            "required": true,
+            "description": "The run's id (run_…)",
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Durable run log with messages, tool calls, errors, usage and timing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunLog"
                 }
               }
             }
