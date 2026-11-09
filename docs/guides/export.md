@@ -45,3 +45,6 @@ export into another runtime in one step. To carry agents over by hand:
 
 To delete the account and everything in it, use **Delete account** on the
 console's Account page.
+
+For paginated, time-filtered transcripts from one agent and its descendants, see
+[Session transcripts](session-transcripts.md).

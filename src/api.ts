@@ -1,3 +1,5 @@
+import type { Dreaming } from "../shared/dreaming.ts";
+import { sessionTranscripts } from "../shared/session-transcripts.ts";
 import { handleHook } from "./core/trigger-ingress.ts";
 import { TriggerInput, type Triggers } from "./triggers.ts";
 import { applyRoutes } from "./apply-api.ts";
@@ -78,6 +80,7 @@ import { legacyCoverage, LegacyCoverageCursorError, legacyLogLister } from "./le
  * below are the OpenAPI document served at /v1/openapi.json.
  */
 export interface ApiContext {
+  dreaming?: Dreaming;
   applyDb?: Db;
   computers?: Computers;
   accounts: Accounts;
@@ -739,6 +742,31 @@ export function api(context: ApiContext) {
   route(createRoute({ method: "get", path: "/v1/agents/{id}/state", request: { params: agentId }, security: readers, responses: { 200: reply("Request state and the stream's cursor; for a browser token, each request only as how it ended", schema.SessionState) } }), async c => {
     const state = await clients.stateFor(c.req.param("id")!, c.var.principal.tenant);
     return json(c, 200, c.var.principal.browser ? { ...state, requests: state.requests.map(readableRequest) } : state);
+  });
+  const DreamConfigSchema = z.strictObject({enabled:z.boolean(),volumeId:z.string(),schedule:z.strictObject({time:z.string(),timeZone:z.string()}),analyzerModel:z.string().optional(),organizerModel:z.string().optional(),endUser:z.string().optional(),acrossUsers:z.boolean().optional(),budgetUsd:z.number().positive(),instructions:z.string().max(16000)});
+  const DreamResultSchema = z.object({status:z.enum(["completed","failed","budget_reached","deferred"]),from:z.number(),to:z.number(),summary:z.string().optional(),error:z.string().optional(),failures:z.array(z.unknown()).optional()});
+  const DreamStatusSchema = z.object({config:DreamConfigSchema,since:z.number(),dueAt:z.number(),running:z.boolean(),checkpoint:z.unknown().nullable(),failedNights:z.number(),lastResult:DreamResultSchema.nullable(),results:z.array(DreamResultSchema)});
+  const dreamService = () => { if (!context.dreaming) throw new HttpError(503,"Dreaming is unavailable"); return context.dreaming; };
+  route(createRoute({method:"get",path:"/v1/agents/{id}/dreaming",request:{params:agentId},responses:{200:reply("Dream configuration and last result",DreamStatusSchema.nullable())}}), async c => {
+    if (!await clients.owns(c.req.param("id")!,c.var.principal.tenant)) throw new HttpError(404,"Unknown agent");
+    return json(c,200,await dreamService().get(c.var.principal.tenant,c.req.param("id")!));
+  });
+  route(createRoute({method:"put",path:"/v1/agents/{id}/dreaming",request:{params:agentId,body:content(DreamConfigSchema)},responses:{200:reply("Dream configuration",DreamStatusSchema)}}), async c => json(c,200,await dreamService().configure(c.var.principal.tenant,c.req.param("id")!,await c.req.json())));
+  route(createRoute({method:"post",path:"/v1/agents/{id}/dreaming/run",request:{params:agentId},responses:{202:reply("Dream queued",z.object({queued:z.boolean()}))}}), async c => {
+    if (!await clients.owns(c.req.param("id")!,c.var.principal.tenant)) throw new HttpError(404,"Unknown agent");
+    const service=dreamService();
+    const queued=await service.now(c.var.principal.tenant,c.req.param("id")!);
+    void service.scan().catch(()=>{});
+    return json(c,202,queued);
+  });
+  route(createRoute({ method: "get", path: "/v1/agents/{id}/sessions", request: { params: agentId, query: z.object({ from: z.string(), to: z.string(), cursor: z.string().optional(), limit: z.string().optional(), children: z.enum(["true", "false"]).optional(), endUser: z.string().optional() }) }, responses: { 200: reply("A bounded transcript page from this agent and its descendants, filtered to [from,to). Follow next until null; pages may be empty", z.object({ agentId: z.string().nullable(), entries: z.array(z.object({ index: z.number(), message: z.unknown() })), next: z.string().nullable() })) } }), async c => {
+    const id = c.req.param("id")!, tenant = c.var.principal.tenant;
+    if (!await clients.owns(id, tenant)) throw new HttpError(404, "Unknown agent");
+    try { return json(c, 200, await sessionTranscripts({ query: (sql, values) => accounts.db.query(sql, values), scope: async agent => {
+      const row=(await accounts.db.query('select header from agents where id=$1 and tenant=$2',[agent,tenant])).rows[0];
+      return {subject:row?.header.identity?.subject,requests:(await clients.stateFor(agent,tenant)).requests};
+    }, page: (agent, after, limit) => clients.historyPageFor(agent, tenant, { after: String(after), limit: String(limit), maxBytes: "1000000" }) }, tenant, id, { from: Number(c.req.query("from")), to: Number(c.req.query("to")), cursor: c.req.query("cursor"), limit: c.req.query("limit") === undefined ? undefined : Number(c.req.query("limit")), children: c.req.query("children") !== "false", endUser:c.req.query("endUser") })); }
+    catch (error) { if ((error as any).status === 400) throw new HttpError(400, (error as Error).message); throw error; }
   });
   route(createRoute({
     method: "get", path: "/v1/agents/{id}/history",
