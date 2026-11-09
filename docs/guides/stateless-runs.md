@@ -93,7 +93,7 @@ The SDKs take the same configuration with their usual names (`instructions`,
 
 | | |
 | --- | --- |
-| `GET /v1/runs/{id}` | The run: `status` (`running`, `completed`, `paused`, `failed`, `input_required`), `text`, `output`, `error`, `usage`, `toolCalls`, `toolErrors`. `?wait=25` waits for its end first |
+| `GET /v1/runs/{id}` | The run: `status` (`running`, `completed`, `failed`, `input_required`), `text`, `output`, `error`, `usage`, `toolCalls`, `toolErrors`. `?wait=25` waits for its end first |
 | `GET /v1/runs/{id}/events` | Its events as server-sent events, ending with its `response`. Reconnect with `Last-Event-ID` and the stream picks up after it |
 | `GET /v1/runs/{id}/messages` | Its messages: the input, the model's turns, tool results |
 | `POST /v1/runs/{id}/abort` | Stop it: it ends `failed`, code `aborted` |
@@ -172,4 +172,4 @@ past either is turned away cheaply (429 `BUSY_AGENT_LIMIT` or `RATE_LIMITED`, wi
   Serve them over HTTP (`serveTools`) and name them in a definition instead.
 - The CLI runs one with `camelrun run --stateless "…" [--definition key]`.
 
-A spend limit returns `status: "paused"`, `stoppedReason: "budget_reached"`, and the limit kind. SDK `run()` returns this state without throwing. The legacy spend-limit error fields remain available. For ongoing work, use an agent: raise its spend limit if needed, then send `continue` to keep its history and proceed with a new turn budget. Account and end-user credit limits still apply.
+A spend limit returns `status: "failed"`, `stoppedReason: "budget_reached"`, and the limit kind. SDK `run()` throws unless `throwOnError` is false (`throw_on_error=False` in Python). Stateless runs cannot resume. The legacy spend-limit error fields remain available. For ongoing work, use an agent: raise its spend limit if needed, then send `continue` to keep its history and proceed with a new turn budget. Account and end-user credit limits still apply.

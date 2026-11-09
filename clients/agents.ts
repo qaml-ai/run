@@ -534,7 +534,7 @@ async function settled<S extends OutputSchema>(run: StatelessRun, config: Pick<S
     else output = parsed.value;
   }
   const value: Run<OutputOf<S>> = {
-    stoppedReason: run.stoppedReason, limit: run.limit, id: run.id, status: run.status === "paused" ? "paused" : error ? "failed" : run.status === "input_required" ? "input_required" : "completed", text: run.text, ...(output !== undefined ? { output } : {}), inputs: [], error,
+    stoppedReason: run.stoppedReason, limit: run.limit, id: run.id, status: error ? "failed" : run.status === "input_required" ? "input_required" : "completed", text: run.text, ...(output !== undefined ? { output } : {}), inputs: [], error,
     usage: run.usage, ...(run.servedModel ? { servedModel: run.servedModel } : {}), files: run.files, toolErrors: run.toolErrors, toolCalls: run.toolCalls, sourceErrors: run.sourceErrors, raw: null,
   };
   if (value.status !== "paused" && value.error && config.throwOnError !== false) throw new RunError(value);

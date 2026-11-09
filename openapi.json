@@ -6157,7 +6157,8 @@
               "completed",
               "failed",
               "aborted",
-              "input_required"
+              "input_required",
+              "paused"
             ],
             "description": "As its latest run says: a message or a resume starts it again"
           },
@@ -11259,10 +11260,9 @@
               "running",
               "completed",
               "input_required",
-              "paused",
               "failed"
             ],
-            "description": "running until it ends; then completed, paused at a spend limit, failed, or input_required (a tool asked for approval or input, which a run cannot wait on: it ends there)"
+            "description": "running until it ends; then completed, failed (including spend limits), or input_required (a tool asked for approval or input, which a run cannot wait on: it ends there)"
           },
           "text": {
             "type": "string",

@@ -621,4 +621,6 @@ parent's task.
 | `recursion_limit` | `delegate.maxDepth` and the run's `runLimits` |
 | Checkpointed subgraph state | Each sub-agent's own history, read by its id (`run.toolCalls[i].agentId`) |
 
-A definition target can pin a revision: `{ name: "reviewer", definition: "review", revision: 3 }`. New children use that saved revision even after the definition changes. Revisions available before this feature start with the revision current at migration; older revisions cannot be recovered. Deleting the definition deletes its revisions.
+A definition target can pin a revision: `{ name: "reviewer", definition: "review", revision: 3 }`. New children use that saved revision even after the definition changes. Revisions available before this feature start with the revision current at migration; older revisions cannot be recovered. Deleting the definition deletes its revisions. Rotating or removing a credential purges its sealed value from old revisions; a pin does not preserve retired credentials.
+
+On Workers, child events and completion are pushed to the parent Durable Object. A single recovery sweep runs every five seconds for missed notifications, with at most six child reads in flight. Waiting does not open a relay stream or polling timer for each child. The concurrency ceiling is 64 on both backends; configured capacity and spend limits still apply.

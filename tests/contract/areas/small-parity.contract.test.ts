@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { contractTest, listen, toolCall, toolResults, OPERATOR } from '../support.ts';
+import { contractTest, listen, OTHER_OPERATOR, toolCall, toolResults, OPERATOR } from '../support.ts';
 
 import { Agents } from '../../../clients/agents.ts';
 
@@ -19,6 +19,29 @@ contractTest('configuration', 'tests/small-parity.test.ts', 'mount instructions 
   assert.match(result.outcome.result.reply, /Read the index before searching/);
   const invalid = await r.call('/v1/agents', { body: { mounts: [{ ...mounts[0], instructions: 'x'.repeat(4097) }] } });
   assert.equal(invalid.status, 400, invalid.text);
+  assert.match(result.outcome.result.reply, /Mount notes from the agent's owner/);
+  const tooMany = await r.call('/v1/agents', { body: { mounts: [0, 1, 2].map(i => ({ ...mounts[0], path: `/m${i}`, instructions: 'x'.repeat(3000) })) } });
+  assert.equal(tooMany.status, 400, tooMany.text);
+  const atLimit = await r.call('/v1/agents', { body: { mounts: [0, 1].map(i => ({ ...mounts[0], path: `/m${i}`, instructions: 'x'.repeat(4096) })) } });
+  assert.equal(atLimit.status, 201, atLimit.text);
+  const tooWide = await r.call('/v1/agents', { body: { delegate: { maxParallel: 65 } } });
+  assert.equal(tooWide.status, 400, tooWide.text);
+  assert.match(tooWide.text, /64/);
+  for (const revision of [0, -1, 1.5, 999]) {
+    const invalidPin = await r.call('/v1/agents', { body: { definition: definition.json.id, definitionRevision: revision } });
+    assert.ok([400, 404].includes(invalidPin.status), invalidPin.text);
+  }
+  const foreign = await r.call('/v1/agents', { token: OTHER_OPERATOR, body: { definition: definition.json.id, definitionRevision: 1 } });
+  assert.equal(foreign.status, 404, foreign.text);
+  for (const [revision, token] of [[0, OPERATOR], [999, OPERATOR], [1, OTHER_OPERATOR]] as const) {
+    const invalidTarget = await r.call('/v1/agents', { token, body: { builtins: ['delegate'], delegate: { agents: [{ name: 'bad', definition: definition.json.id, revision }] } } });
+    if (revision === 0) { assert.equal(invalidTarget.status, 400, invalidTarget.text); continue; }
+    assert.equal(invalidTarget.status, 201, invalidTarget.text);
+    r.setModel(body => toolResults(body).length ? { role: 'assistant', content: toolResults(body).at(-1) } : toolCall('delegate', { agent: 'bad', task: 'describe' }));
+    const rejected = await r.prompt(invalidTarget.json.id, 'delegate', token);
+    assert.match(rejected.outcome.result.reply, /Unknown definition/);
+    assert.doesNotMatch(rejected.outcome.result.reply, /REVISION_ONE/);
+  }
   const parent = await r.call('/v1/agents', { body: { builtins: ["delegate"], delegate: { maxParallel: 64, agents: [{ name: 'pinned', definition: definition.json.id, revision: 1 }] } } });
   assert.equal(parent.status, 201, parent.text);
   r.setModel(body => {
@@ -65,8 +88,8 @@ contractTest('human-input', 'tests/small-parity.test.ts', 'unattended approvals 
 contractTest('quotas', 'tests/small-parity.test.ts', 'SDK run returns a budget pause without throwing', async (_t, r) => {
   r.setModel((_body, index) => ({ ...toolCall('codemode', { code: 'return 1' }, `call_${index}`), usage: { prompt_tokens: 5000, completion_tokens: 0 } }));
   const agents = new Agents({ url: r.base, apiKey: OPERATOR });
-  const run = await agents.run({ input: 'go', spendLimit: { usd: 0.000001 } });
-  assert.equal(run.status, 'paused');
+  const run = await agents.run({ input: 'go', spendLimit: { usd: 0.000001 }, throwOnError: false });
+  assert.equal(run.status, 'failed');
   assert.equal(run.stoppedReason, 'budget_reached');
   assert.equal(run.limit, 'run');
   assert.equal(run.error?.code, 'spend_limit');
@@ -79,3 +102,42 @@ contractTest('quotas', 'tests/small-parity.test.ts', 'SDK run returns a budget p
     assert.equal(resumed.reply, 'continued');
   } finally { await agent.close(); }
 });
+
+contractTest('agents', 'tests/small-parity.test.ts', 'agent MCP reports a budget pause as an error with limit details', async (t, r) => {
+  const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+  const { StreamableHTTPClientTransport } = await import('@modelcontextprotocol/sdk/client/streamableHttp.js');
+  r.setModel((_body, index) => ({ ...toolCall('codemode', { code: 'return 1' }, `call_${index}`), usage: { prompt_tokens: 5000, completion_tokens: 0 } }));
+  const made = await r.call('/v1/agents', { body: { spendLimit: { usd: 0.000001 } } });
+  assert.equal(made.status, 201, made.text);
+  const client = new Client({ name: 'budget-test', version: '1' });
+  await client.connect(new StreamableHTTPClientTransport(new URL(`${r.base}/v1/agents/${made.json.id}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${OPERATOR}` } } }));
+  t.after(() => client.close());
+  const result = await client.callTool({ name: 'message', arguments: { text: 'work' } });
+  assert.equal(result.isError, true);
+  assert.equal((result.structuredContent as any).error.code, 'spend_limit');
+  assert.equal((result.structuredContent as any).error.limit, 'agent');
+});
+
+contractTest('human-input', 'tests/small-parity.test.ts', 'unattended declines only the approval in a mixed input request', async (t, r) => {
+  const server = await listen(t, async (req, res) => {
+    if (req.method !== 'POST') { res.writeHead(405).end(); return; }
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    const body = JSON.parse(raw);
+    if (body.id === undefined) { res.writeHead(202).end(); return; }
+    const reply = (result: unknown) => res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ jsonrpc: '2.0', id: body.id, result }));
+    if (body.method === 'initialize') return reply({ protocolVersion: body.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'mixed', version: '1' } });
+    if (body.method === 'tools/list') return reply({ tools: [{ name: 'ask', inputSchema: { type: 'object', properties: {} } }] });
+    return reply({ resultType: 'input_required', inputRequests: {
+      approval: { method: 'agent-runtime/approval', params: {} },
+      question: { method: 'agent-runtime/question', params: { questions: [{ question: 'Which region?', header: 'Region', options: [{ label: 'EU' }, { label: 'US' }] }] } },
+    } });
+  });
+  r.setModel(() => toolCall('mixed__ask', {}));
+  const made = await r.call('/v1/agents', { body: { humanInput: { unattended: 'decline' }, mcpServers: [{ name: 'mixed', url: server + '/mcp', exposure: 'direct' }] } });
+  assert.equal(made.status, 201, made.text);
+  const result = await r.prompt(made.json.id, 'ask');
+  assert.equal(result.outcome.result.stopped, 'input_required');
+  const inputs = await r.call(`/v1/agents/${made.json.id}/inputs`);
+  assert.ok(inputs.json.some((input: any) => input.kind === 'question' && input.state === 'pending'), inputs.text);
+  assert.ok(inputs.json.some((input: any) => input.kind === 'approval' && input.state === 'declined'), inputs.text);
+}, { env: { AGENT_OUTBOUND_ALLOW_HTTP: 'true', AGENT_OUTBOUND_ALLOW_CIDRS: '127.0.0.1/32' } });

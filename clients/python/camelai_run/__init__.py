@@ -2829,10 +2829,10 @@ def _stateless_run(view, output=None, throw_on_error=True):
             value = _parsed_output(output, value)
         except ValueError as invalid:
             error = {"code": "output_invalid", "message": f"The output does not fit its schema: {invalid}"}
-    run = Run(view["id"], "paused" if view["status"] == "paused" else "failed" if error else view["status"], text=view.get("text") or "", output=value, error=error, usage=view.get("usage"),
+    run = Run(view["id"], "failed" if error else view["status"], text=view.get("text") or "", output=value, error=error, usage=view.get("usage"),
               files=view.get("files") or [], tool_errors=view.get("toolErrors") or [], tool_calls=view.get("toolCalls") or [],
               source_errors=view.get("sourceErrors") or [], raw=view, served_model=view.get("servedModel"), stopped_reason=view.get("stoppedReason"), limit=view.get("limit"))
-    if run.status != "paused" and run.error and throw_on_error:
+    if run.error and throw_on_error:
         raise RunError(run)
     return run
 

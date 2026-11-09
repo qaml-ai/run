@@ -80,6 +80,7 @@ export function visibleConfiguration(config: AgentConfiguration) {
   return { ...visible, keyScope: config.keyScope ?? null, modelHeaders: config.modelHeaders ?? null, decide: config.decide ?? null, language: config.language ?? null, runLimits: config.runLimits ?? null, queue: config.queue ?? null, tools: config.mcp?.tools ?? [], mcp: config.mcp ?? { tools: [] }, mcpServers: (config.mcpServers ?? []).map(source => sourceView(source as RemoteSource)), openApi: (config.openApi ?? []).map(source => sourceView(source as RemoteSource)) };
 }
 export async function resolveDefinition(env: ControlEnv, tenant: string, ref: string, revision?: number): Promise<Definition> {
+  if (revision !== undefined && (!Number.isSafeInteger(revision) || revision < 1)) throw new ApiError(400, "Invalid definition revision");
   const id = /^def_[a-f0-9]{20}$/.test(ref) ? ref : `def_${(await digest(`${tenant}:${ref}`)).slice(0, 20)}`;
   const row = (await withSql(env, sql => sql.query(revision === undefined ? "select * from definitions where tenant=$1 and id=$2" : "select * from definition_revisions where tenant=$1 and id=$2 and revision=$3", revision === undefined ? [tenant, id] : [tenant, id, revision]))).rows[0];
   if (!row) throw new ApiError(404, `Unknown definition ${ref}`, "NOT_FOUND");

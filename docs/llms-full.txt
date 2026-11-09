@@ -2456,7 +2456,7 @@ The SDKs take the same configuration with their usual names (`instructions`,
 
 | | |
 | --- | --- |
-| `GET /v1/runs/{id}` | The run: `status` (`running`, `completed`, `paused`, `failed`, `input_required`), `text`, `output`, `error`, `usage`, `toolCalls`, `toolErrors`. `?wait=25` waits for its end first |
+| `GET /v1/runs/{id}` | The run: `status` (`running`, `completed`, `failed`, `input_required`), `text`, `output`, `error`, `usage`, `toolCalls`, `toolErrors`. `?wait=25` waits for its end first |
 | `GET /v1/runs/{id}/events` | Its events as server-sent events, ending with its `response`. Reconnect with `Last-Event-ID` and the stream picks up after it |
 | `GET /v1/runs/{id}/messages` | Its messages: the input, the model's turns, tool results |
 | `POST /v1/runs/{id}/abort` | Stop it: it ends `failed`, code `aborted` |
@@ -2535,7 +2535,7 @@ past either is turned away cheaply (429 `BUSY_AGENT_LIMIT` or `RATE_LIMITED`, wi
   Serve them over HTTP (`serveTools`) and name them in a definition instead.
 - The CLI runs one with `camelrun run --stateless "…" [--definition key]`.
 
-A spend limit returns `status: "paused"`, `stoppedReason: "budget_reached"`, and the limit kind. SDK `run()` returns this state without throwing. The legacy spend-limit error fields remain available. For ongoing work, use an agent: raise its spend limit if needed, then send `continue` to keep its history and proceed with a new turn budget. Account and end-user credit limits still apply.
+A spend limit returns `status: "failed"`, `stoppedReason: "budget_reached"`, and the limit kind. SDK `run()` throws unless `throwOnError` is false (`throw_on_error=False` in Python). Stateless runs cannot resume. The legacy spend-limit error fields remain available. For ongoing work, use an agent: raise its spend limit if needed, then send `continue` to keep its history and proceed with a new turn budget. Account and end-user credit limits still apply.
 
 ---
 
@@ -4621,7 +4621,7 @@ with `fileArguments` on is downloaded the same way; from any other server it sta
 `file_import`.
 Without a workspace mount, MCP results keep their existing behavior.
 
-A volume mount may include `instructions` (at most 4,096 characters). The agent sees them beside the mount path and read/write mode. Delegate children that inherit mounts inherit these instructions.
+A volume mount may include `instructions` (at most 4,096 characters per mount and 8,192 across all mounts). The agent sees them beside the mount path and read/write mode under `Mount notes from the agent's owner:`. Whitespace is collapsed to keep each note on one line. Delegate children that inherit mounts inherit these instructions.
 
 ---
 
@@ -6835,7 +6835,9 @@ parent's task.
 | `recursion_limit` | `delegate.maxDepth` and the run's `runLimits` |
 | Checkpointed subgraph state | Each sub-agent's own history, read by its id (`run.toolCalls[i].agentId`) |
 
-A definition target can pin a revision: `{ name: "reviewer", definition: "review", revision: 3 }`. New children use that saved revision even after the definition changes. Revisions available before this feature start with the revision current at migration; older revisions cannot be recovered. Deleting the definition deletes its revisions.
+A definition target can pin a revision: `{ name: "reviewer", definition: "review", revision: 3 }`. New children use that saved revision even after the definition changes. Revisions available before this feature start with the revision current at migration; older revisions cannot be recovered. Deleting the definition deletes its revisions. Rotating or removing a credential purges its sealed value from old revisions; a pin does not preserve retired credentials.
+
+On Workers, child events and completion are pushed to the parent Durable Object. A single recovery sweep runs every five seconds for missed notifications, with at most six child reads in flight. Waiting does not open a relay stream or polling timer for each child. The concurrency ceiling is 64 on both backends; configured capacity and spend limits still apply.
 
 ---
 

@@ -289,12 +289,15 @@ export function agentUpdates(reports: ChildProgress[], now = Date.now()) {
 }
 
 /** How a child's run ended, as its parent hears it. */
-export type ChildStatus = "completed" | "failed" | "aborted" | "input_required";
+export type ChildStatus = "completed" | "failed" | "aborted" | "input_required" | "paused";
 /** A child's ended run (a request record as callers see it): its status, error and result. */
 type Ended = { status?: string; error?: string; outcome?: { result?: unknown; error?: string } };
 export function childStatus(record: Ended): ChildStatus {
-  if ((record.outcome?.result as { code?: string } | undefined)?.code === "aborted") return "aborted";
-  return record.status === "completed" || record.status === "input_required" ? record.status : "failed";
+  const result = record.outcome?.result as { code?: string; stopped?: string } | undefined;
+  if (result?.code === "aborted" || result?.code === "cancelled") return "aborted";
+  if (result?.stopped === "spend_limit") return "paused";
+  if (result?.stopped === "input_required") return "input_required";
+  return record.status === "completed" || record.status === "input_required" || record.status === "paused" ? record.status : "failed";
 }
 
 /** Who sent a notification: the child, by its id and its name in its parent's eyes. */

@@ -1,3 +1,4 @@
+import { mountNotesTooLong } from "../../../shared/mount-notes.ts";
 import { digest, FileError } from "./volume.ts";
 import {
   normalizePath,
@@ -117,6 +118,7 @@ export async function prepareMounts(
     !expanded.some((m) => normalizePath(m.path) === "/workspace")
   )
     expanded.push({ volumeId: own, path: "/workspace", mode: "rw" });
+  if (mountNotesTooLong(expanded)) throw new FileError("Mount instructions total must be at most 8192 characters");
   const mounts: Mount[] = [];
   for (const m of expanded) {
     if (

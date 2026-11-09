@@ -485,7 +485,7 @@ export function expiresAt(settings: HumanInputSettings | undefined, agentExpires
 
 /** A definition's `humanInput` settings, checked. */
 export function humanInputSettings(value: unknown): HumanInputSettings {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => !["expiresInSeconds", "approvers", "unattended"].includes(key))) throw new HttpError(400, "humanInput is { expiresInSeconds?, approvers? }");
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => !["expiresInSeconds", "approvers", "unattended"].includes(key))) throw new HttpError(400, "humanInput is { expiresInSeconds?, approvers?, unattended?: \"decline\" }");
   const { expiresInSeconds, approvers, unattended } = value as Record<string, unknown>;
   if (unattended !== undefined && unattended !== "decline") throw new HttpError(400, "humanInput.unattended must be decline");
   if (expiresInSeconds !== undefined && (!Number.isInteger(expiresInSeconds) || (expiresInSeconds as number) < 60 || (expiresInSeconds as number) > INPUT_LIMITS.maxExpiresSeconds)) throw new HttpError(400, `humanInput.expiresInSeconds is an integer from 60 to ${INPUT_LIMITS.maxExpiresSeconds}`);

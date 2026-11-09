@@ -355,7 +355,7 @@ export interface ChildAgent {
   name: string;
   /** true: spawn_agent's (its answer a notification); false: a delegate call's (its answer the call's result). */
   background: boolean;
-  status: "running" | "completed" | "failed" | "aborted" | "input_required";
+  status: "running" | "completed" | "failed" | "aborted" | "input_required" | "paused";
   /** Its latest run's request id, on the child. */
   requestId: string;
   /** The parent's tool call that started that run. */
@@ -1949,7 +1949,7 @@ export interface StatelessRun {
   stoppedReason?: "budget_reached";
   limit?: RunResult["limit"];
   id: string;
-  status: "running" | "completed" | "input_required" | "paused" | "failed";
+  status: "running" | "completed" | "input_required" | "failed";
   text: string;
   output?: unknown;
   error: ({ code: string; message: string; uncertain?: boolean } & Partial<ModelFailure>) | null;

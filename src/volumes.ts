@@ -1,3 +1,4 @@
+import { mountNotesTooLong } from "../shared/mount-notes.ts";
 import { createHash, randomBytes } from "node:crypto";
 import type { AppendLog } from "../shared/append-log.ts";
 import type { Storage } from "../shared/storage.ts";
@@ -949,6 +950,7 @@ export class VolumeService {
     if (requested === undefined) return [await workspace()];
     if (!Array.isArray(requested) || requested.length > VOLUME_LIMITS.mounts) throw new HttpError(400, `mounts must be an array of at most ${VOLUME_LIMITS.mounts}`);
     if (requested.filter(input => isWorkspace(input) || isWorkspace(input, false)).length > 1) throw new HttpError(400, "Give {workspace: true} or {workspace: false} once");
+    if (mountNotesTooLong(requested)) throw new HttpError(400, "Mount instructions total must be at most 8192 characters");
     const own = VolumeService.workspaceOf(agent);
     const mounts: Mount[] = [];
     for (const input of VolumeService.resolved(agent, requested)) {

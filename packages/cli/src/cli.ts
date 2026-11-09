@@ -353,7 +353,7 @@ function printRun(result: ops.RunSummary, print: (value: unknown, human?: () => 
       default: return [result.output !== undefined ? JSON.stringify(result.output, null, 2) : result.text || "(no reply)", ...(result.toolErrors ?? []).map(error => `tool error: ${JSON.stringify(error)}`)].join("\n");
     }
   });
-  if (result.status === "failed") return 1;
+  if (result.status === "failed" || result.status === "paused") return 1;
   if (result.status === "input_required") { if (io.tty) io.err("(the run waits on the input above)"); return 2; }
   return 0;
 }
