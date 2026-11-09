@@ -7,11 +7,11 @@ function fixture() {
   const payloadAccess: { key: string; noCache: boolean }[] = [];
   const storage = {
     async get(key: string, options?: { noCache?: boolean }) {
-      if (key.startsWith('delegation-payload:')) payloadAccess.push({ key, noCache: options?.noCache === true });
+      if (key.startsWith('delegation-payload:') || key.startsWith('delegation-notice:')) payloadAccess.push({ key, noCache: options?.noCache === true });
       return structuredClone(values.get(key));
     },
     async put(key: string, value: unknown, options?: { noCache?: boolean }) {
-      if (key.startsWith('delegation-payload:')) payloadAccess.push({ key, noCache: options?.noCache === true });
+      if (key.startsWith('delegation-payload:') || key.startsWith('delegation-notice:')) payloadAccess.push({ key, noCache: options?.noCache === true });
       values.set(key, structuredClone(value));
     },
     async list({ prefix }: { prefix: string }) { return new Map([...values].filter(([key]) => key.startsWith(prefix)).map(([key, value]) => [key, structuredClone(value)])); },
@@ -69,11 +69,13 @@ test('a batched notification hydrates a spilled sibling that has no outbox entry
   const f = fixture();
   const sibling = { ...f.child, background: true, status: 'completed', task: undefined, spent: 0.25 };
   await f.storage.put('delegation:child', sibling);
-  await f.storage.put('delegation-payload:child', { task: 'sibling task', outcome: { result: { reply: 'spilled sibling answer' } } });
+  await f.storage.put('delegation-payload:child', { task: 'sibling task', outcome: { result: { reply: 'spilled sibling answer' } } }, { noCache: true });
   const sent: any[] = [];
   const notices = new DelegationNotifications({ storage: f.storage, submit: async (...args) => { sent.push(args); }, admitWake: async () => ({ allowed: true, hour: 0 }), retry: async () => {} });
   await notices.deliver({ ...sibling, id: 'other', key: 'other', requestId: 'other', task: 'other task', outcome: { result: { reply: 'other answer' } } });
   assert.equal(sent.length, 1);
   assert.equal(sent[0][1].metadata.batch[0].text, 'spilled sibling answer');
   assert.equal(sent[0][1].metadata.batch[0].costUsd, 0.25);
+  assert.ok(f.payloadAccess.some(access => access.key.startsWith('delegation-notice:')));
+  assert.ok(f.payloadAccess.every(access => access.noCache));
 });
