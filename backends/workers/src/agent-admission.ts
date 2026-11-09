@@ -1,3 +1,8 @@
+import { requireActiveMember, sharedPromptInput } from "../../../src/shared-agents.ts";
+import { keyServices } from "./security-services.ts";
+import { EndUserCredits } from "./end-user-credits.ts";
+import { billingRunStop } from "./billing-run-stop.ts";
+import { HumanInputs } from "./human.ts";
 import { admitAgentMessage } from "./message-admission.ts";
 import { MULTI_AGENT_LIMITS, viaParent } from "./multi-agent-policy.ts";
 import { childParent } from "./child-parent.ts";
@@ -204,9 +209,20 @@ export async function admitImpl(this: AgentRuntime,
   input: unknown,
   notice?: RuntimeNotice,
   delivery?: NoticeDelivery,
-  acceptedFingerprint?: string) {
+  acceptedFingerprint?: string, member?: string) {
     await this.config();
     const request = object(input, ["id", "method", "params"]);
+    if (member && member !== "owner") {
+      if (request.method !== "prompt") throw new BadRequest("A shared member can only prompt");
+      sharedPromptInput(request.params);
+    }
+    // Keep the raw spelling's idle hold; active steers share prompt payer checks.
+    const rawSteer = request.method === "steer";
+    if (request.method === "steer") {
+      request.method = "prompt";
+      if (!request.params || typeof request.params !== "object" || Array.isArray(request.params)) throw new BadRequest("Expected a JSON object");
+      request.params = { ...request.params, whileRunning: "steer" };
+    }
     const id = boundedText(request.id, "id", 80);
     if (!/^[A-Za-z0-9_-]+$/.test(id))
       throw new BadRequest("Invalid request id");
@@ -223,12 +239,14 @@ export async function admitImpl(this: AgentRuntime,
       let params;
       const raw = object(request.params, [
         "code",
+        "metadata",
         "timeoutMs",
         "maxOutputCharacters",
         "actor",
         "allowDisconnected",
       ]);
-      const { actor, allowDisconnected, ...code } = raw;
+      const { actor, allowDisconnected, metadata: rawMetadata, ...code } = raw;
+      const metadata = rawMetadata === undefined ? undefined : metadataInput(rawMetadata);
       try {
         params = executionParams(code);
       } catch (error) {
@@ -244,6 +262,7 @@ export async function admitImpl(this: AgentRuntime,
         params,
         actor,
         allowDisconnected,
+        metadata,
       });
       const old = await this.ctx.storage.get<RequestRecord>(reqKey(id));
       if (old && old.fingerprint !== fingerprint)
@@ -254,6 +273,10 @@ export async function admitImpl(this: AgentRuntime,
       if (old) return old.accepted || old.state === "completed" ? this.replayedRequest(old) : this.startHostRequest(old);
       if (await this.ctx.storage.get(`cancelled-request:${id}`))
         throw Object.assign(new Error("Request cancelled"), { status: 409, code: "aborted" });
+      if (typeof actor === "string" && actor.startsWith("member:")) {
+        const conf = await this.config();
+        await withSql(this.env, sql => requireActiveMember(sql, conf.tenantId, conf.id, actor));
+      }
       await this.requireApplication(allowDisconnected);
       await refreshIdleLifetime(this.env, this.ctx.storage, await this.config());
       const record: RequestRecord = {
@@ -261,6 +284,8 @@ export async function admitImpl(this: AgentRuntime,
         method: "execute",
         fingerprint,
         params: { ...params, ...(actor ? { actor } : {}) },
+        ...(actor ? { actor: String(actor) } : {}),
+        ...(metadata ? {metadata} : {}),
         accepted: false,
         state: "queued",
         startedAt: Date.now(),
@@ -349,6 +374,7 @@ export async function admitImpl(this: AgentRuntime,
       "runLimits",
       "actor",
       "bucket",
+      "endUser",
     ]);
     const text =
       request.method === "continue"
@@ -358,6 +384,11 @@ export async function admitImpl(this: AgentRuntime,
             Array.isArray(params.files) && params.files.length > 0
           ? ""
         : boundedText(params.text, "text", 6 * 1024 * 1024);
+    const current = await this.config();
+    const prior = await this.ctx.storage.get<RequestRecord>(reqKey(id));
+    const lineage = await this.delegation.lineage(current.id, { id, metadata: params.metadata });
+    const shared = prior && Object.hasOwn(prior, "sharedAgent") ? prior.sharedAgent
+      : await this.sharedAgents.get(lineage?.root ?? current.id, current.tenantId) ?? null;
     if (notice) {
       // An agent's message, and a child's ending sent at once (delegate.notify "asap"), join the running turn.
       params.whileRunning =
@@ -365,7 +396,19 @@ export async function admitImpl(this: AgentRuntime,
     } else {
       if (params.metadata !== undefined)
         params.metadata = metadataInput(params.metadata);
-      if (params.from !== undefined) params.from = senderInput(params.from);
+      if (params.from !== undefined) {
+        const supplied = params.from as Record<string, unknown>;
+        if (acceptedFingerprint && supplied.role) {
+          if (prior?.sharedAgent) member = String(supplied.id);
+          const { role: _, ...rest } = supplied;
+          params.from = senderInput(rest);
+        } else params.from = senderInput(params.from);
+      }
+      if (member && request.method === "prompt") {
+        const sender = member === "owner" ? (!params.from ? shared?.owner : undefined) : shared?.members.find(entry => entry.id === member);
+        if (member !== "owner" && !sender) throw new BadRequest("Unknown shared agent member");
+        if (sender) { params.from = sender; params.actor = sender.id; }
+      }
     }
     try {
       if (params.actor !== undefined) params.actor = actorInput(params.actor);
@@ -415,6 +458,11 @@ export async function admitImpl(this: AgentRuntime,
     if (request.method === 'steer') params.whileRunning = 'steer';
     if (params.output !== undefined && params.whileRunning === "steer")
       throw new BadRequest("output is for a prompt that starts its own turn, not whileRunning: steer");
+    if (lineage && params.actor) {
+      const sender = shared?.members.find(entry => entry.id === params.actor);
+      if (String(params.actor).startsWith("member:") && !sender) throw new BadRequest("Unknown shared agent member");
+      if (sender) params.from = sender;
+    }
     const fingerprint = acceptedFingerprint ?? (
       params.files === undefined
         ? canonical({ method: request.method, params })
@@ -433,6 +481,18 @@ export async function admitImpl(this: AgentRuntime,
     if (!old && request.method !== "steer" && (await this.records()).filter(record => record.state !== "completed").length >= MAX_OPEN_REQUESTS)
       throw Object.assign(new Error("Too many requests queued for this agent"), { status: 429 });
     const conf = await this.config();
+    const actor = params.actor ?? (params.from as { id?: string } | undefined)?.id;
+    const checkMember = async () => {
+      if (!notice && typeof actor === "string" && actor.startsWith("member:"))
+        await withSql(this.env, sql => requireActiveMember(sql, conf.tenantId, lineage?.root ?? conf.id, actor));
+    };
+    await checkMember();
+    if (params.endUser !== undefined) {
+      if (request.method !== "prompt") throw new BadRequest("endUser is for a prompt");
+      const { accounts } = await keyServices(this.env);
+      const internal = /^(child_|msg_|delegate_|spawn_)/.test(id) && (notice !== undefined || !!await this.delegation.lineage(conf.id, { id, metadata: params.metadata }));
+      if (!internal) await new EndUserCredits(accounts.db).requireExisting(conf.tenantId, params.endUser as string);
+    }
     const requestedBucket = params.bucket as string | undefined;
     const effectiveBucket = requestedBucket ?? conf.config.bucket ?? await this.ctx.storage.get<string>("run-bucket") ?? "default";
     params.bucket = effectiveBucket;
@@ -446,15 +506,17 @@ export async function admitImpl(this: AgentRuntime,
         status: 402,
         code: "SPEND_LIMIT",
       });
-    const endUserRefusal = await this.endUserLimit(conf, effectiveBucket);
-    if (endUserRefusal) throw endUserRefusal;
+    const endUserRefusal = await this.endUserLimit(conf, effectiveBucket, params.endUser as string | undefined);
+    if (endUserRefusal && !notice) throw endUserRefusal;
     const pending = (await this.harness.pending()).find(
       (item) => item.status === "running",
     );
     // Pending operation receipts can outlive their native run. Only a live
     // turn can take a steer; its accepted steers remain part of that logical
     // turn when Pi drains them after a final answer.
-    const candidate = params.whileRunning === 'steer' ? await this.runningRequest() : undefined;
+    let candidate = params.whileRunning === 'steer' ? await this.runningRequest() : undefined;
+    if (candidate && ((await this.ctx.storage.get<RequestRecord>(reqKey(candidate.owner)))?.params?.endUser ?? null) !== (params.endUser ?? null)) candidate = undefined;
+    if (candidate && !await this.batchQueue.canSteer(params.endUser as string | undefined)) candidate = undefined;
     const running = old?.steerCommitted ? old.steeredInto : candidate?.owner;
     const messageWake = async () => {
       const wake = notice!.root === conf.id
@@ -463,12 +525,12 @@ export async function admitImpl(this: AgentRuntime,
       return wake.allowed ? undefined : { error: `This agent's chain has had ${this.delegateWakeLimit ? Number(this.delegateWakeLimit) : MULTI_AGENT_LIMITS.wakesPerHour} turns started by sub-agent notifications and messages this hour, its limit: the message is in its history, but no turn ran. Send a message to go on`, code: 'agent_loop_limit', stopped: 'agent_loop_limit' };
     };
     const noTurn = notice
-      ? refusal ?? (delivery && !delivery.run ? { error: delivery.message, code: delivery.stopped, stopped: delivery.stopped } : undefined)
+      ? refusal ?? billingRunStop(endUserRefusal) ?? (delivery && !delivery.run ? { error: delivery.message, code: delivery.stopped, stopped: delivery.stopped } : undefined)
       : undefined;
     await this.requireApplication(params.allowDisconnected);
     const preparing = params.files !== undefined && !old?.admitted && !(delivery && !delivery.run && notice);
     if (preparing) {
-      await this.promptPreparations.begin({ tenant: conf.tenantId, agent: conf.id, requestId: id, fingerprint }, () => this.admitRequest(conf, id, params.bucket as string | undefined));
+      await this.promptPreparations.begin({ tenant: conf.tenantId, agent: conf.id, requestId: id, fingerprint }, () => this.admitRequest(conf, id, params.bucket as string | undefined, params.endUser as string | undefined));
       await this.arm();
     }
     let files: Awaited<ReturnType<PromptAttachments["attach"]>> | undefined;
@@ -491,7 +553,7 @@ export async function admitImpl(this: AgentRuntime,
               spendLimit: (params.spendLimit as { usd?: number } | undefined)?.usd,
               ...(Number.isFinite(audioBudget) ? { budget: audioBudget } : {}),
               keyScope: conf.config.keyScope,
-              identity: { subject: conf.config.subject, context: conf.config.context },
+              identity: { subject: (params.endUser as string | undefined) ?? conf.config.subject, context: conf.config.context },
               actor: params.actor as string | undefined,
               bucket: (params.bucket as string | undefined) ?? conf.config.bucket,
             },
@@ -501,22 +563,25 @@ export async function admitImpl(this: AgentRuntime,
       throw new BadRequest("Give the agent some text, or audio to transcribe");
     if (!noTurn && await this.ctx.storage.get(`cancelled-request:${id}`))
       throw Object.assign(new Error("Request cancelled"), { status: 409, code: "aborted" });
+    await checkMember();
     if (files) params.files = attachmentFiles(files);
     } catch (error) {
       if (preparing) await this.promptPreparations.fail(id);
       throw error;
     }
-    if (request.method === "prompt" && !notice && !old?.accepted)
-      await this.closeHumanInputs("superseded");
+    if (request.method === "prompt" && !rawSteer && !notice && !old?.accepted)
+      await this.closeHumanInputs("superseded", (params.from as { id?: string } | undefined)?.id ?? params.actor as string | undefined, !!shared);
     const record: RequestRecord = old && !old.noticeQueued ? old : {
       id,
       method: String(request.method),
+      sharedAgent: shared,
       billing: {
         tenantId: conf.tenantId,
         agentId: conf.id,
         model: conf.config.model,
       },
       params,
+      ...(typeof params.endUser === "string" ? { endUser: params.endUser } : {}),
       agentSpendAt: spend?.setAt ?? null,
       ...(params.metadata !== undefined ? { metadata: params.metadata } : {}),
       ...((params.actor ?? (params.from as { id?: string } | undefined)?.id) ? { actor: String(params.actor ?? (params.from as { id: string }).id) } : {}),
@@ -530,24 +595,39 @@ export async function admitImpl(this: AgentRuntime,
       startedAt: old?.startedAt ?? Date.now(),
     };
     delete record.noticeQueued;
+    // Keep the suspended call live. Input settlement retries admission, without a polling alarm.
+    if (request.method === "prompt" && shared) {
+      const inputs = await (await this.harness.pi()).snapshot(HumanInputs, BACKGROUND_CONTEXT);
+      if (Object.values(inputs?.requests ?? {}).some(input => input.answer === undefined)) {
+        delete record.inputAdmissionRetry;
+        record.state = "queued";
+        record.heldForInput = true;
+        if (preparing) { record.admitted = true; await this.promptPreparations.finish(id); }
+        await this.ctx.storage.put(reqKey(id), record);
+        return record;
+      }
+    }
+    delete record.heldForInput;
+    delete record.inputAdmissionRetry;
     const prompt = files
       ? attachmentInput(text, files)
       : params.images
         ? imageReferenceInput(text, params.images as ImageRef[], conf.tenantId)
         : text;
-    if (request.method === 'steer' && !running) {
-      record.state = 'completed';
-      record.status = 'completed';
+    if (rawSteer && !pending && !running && !(await this.records()).some(other => other.id !== id && other.state !== "completed")) {
+      record.method = "steer";
+      record.state = "completed";
+      record.status = "completed";
       record.endedAt = Date.now();
-      record.outcome = { result: { queued: true } };
-      await this.ctx.storage.put(`held-steer:${id}`, { id, prompt, startedAt: record.startedAt });
+      record.outcome = { result: { queued: true, running: false } };
+      await this.ctx.storage.put(`held-steer:${id}`, { id, prompt, params, fingerprint, endUser: params.endUser, startedAt: record.startedAt });
       await this.ctx.storage.put(reqKey(id), record);
       if (preparing) {
         await this.promptPreparations.finish(id);
         await releaseTurn(this.env, conf.tenantId, conf.id, id);
         await this.env.TENANTS.getByName(conf.tenantId).release(`${conf.id}:${id}`);
       }
-      await this.emit({ type: 'response', id, outcome: record.outcome });
+      await this.emit({ type: "response", id, outcome: record.outcome });
       return record;
     }
     const configurationWait = record.configurationWait ?? await this.configurationQueue.pendingOrder();
@@ -612,7 +692,7 @@ export async function admitImpl(this: AgentRuntime,
     if (noTurn && notice) return landWithoutTurn(noTurn);
     await this.arm(Date.now() + 1000);
     if (!record.admitted) {
-      await this.admitRequest(conf, id, params.bucket as string | undefined);
+      await this.admitRequest(conf, id, params.bucket as string | undefined, params.endUser as string | undefined);
       record.admitted = true;
     }
     await this.ctx.storage.put(reqKey(id), record);
@@ -631,10 +711,11 @@ export async function admitImpl(this: AgentRuntime,
         if (await root.commit(async tx => !!(await tx.submissionByRequest(root.id, taking.request)), BACKGROUND_CONTEXT)) await this.ctx.storage.delete(taking.keys);
         await this.ctx.storage.delete('held-steer-taking');
       }
-      const held = !pending ? await this.ctx.storage.list<{ id: string; prompt: typeof prompt; startedAt: number }>({ prefix: 'held-steer:' }) : new Map();
+      const allHeld = !pending ? await this.ctx.storage.list<{ id: string; prompt: typeof prompt; params?: Record<string, unknown>; fingerprint?: string; endUser?: string; startedAt: number }>({ prefix: 'held-steer:' }) : new Map();
+      const held = new Map([...allHeld].filter(([, steer]) => (steer.endUser ?? null) === (params.endUser ?? null)));
       const submission = {
         operationId: id,
-        whenBusy: params.whileRunning === "steer" ? "steer" as const : "followUp" as const,
+        whenBusy: params.whileRunning === "steer" && running ? "steer" as const : "followUp" as const,
         entry: {
           kind: record.steeredInto ? "camel.steer" : "camel.prompt",
           data: {
@@ -649,11 +730,11 @@ export async function admitImpl(this: AgentRuntime,
       };
       // A steer the running turn takes and an agent's message join a turn already going; anything else may be held for
       // a batch, so Pi's inbox only holds prompts that may share a turn (batch-queue.ts).
-      const holding = running || notice?.metadata.kind === 'message' ? false
+      const holding = running || notice?.metadata.kind === 'message' || allHeld.size ? false
         : await this.batchQueue.holds(conf, { id, ...(record.actor ? { actor: record.actor } : {}), bucket: effectiveBucket, params }, notice !== undefined);
       if (holding) {
         const accepted = await this.batchQueue.hold(record, prompt, submission, holding === "window");
-        if (requestedBucket !== undefined) await this.ctx.storage.put("run-bucket", requestedBucket);
+        if (requestedBucket !== undefined && params.endUser === undefined) await this.ctx.storage.put("run-bucket", requestedBucket);
         await this.arm();
         return accepted;
       }
@@ -695,12 +776,29 @@ export async function admitImpl(this: AgentRuntime,
         }, BACKGROUND_CONTEXT);
         await this.ctx.storage.delete([...held.keys(), 'held-steer-taking']);
       }
+      // Different payers run after this prompt; their original receipt and fingerprint remain idempotent.
+      for (const [key, steer] of allHeld) {
+        if (held.has(key)) continue;
+        const old = await this.ctx.storage.get<RequestRecord>(reqKey(steer.id));
+        if (!old || !steer.params) continue;
+        const next = { ...old, method: "prompt", state: "queued" as const, accepted: false, outcome: undefined, endedAt: undefined, status: undefined, params: { ...steer.params, whileRunning: "steer" } };
+        await this.ctx.storage.transaction(async tx => {
+          await tx.put(reqKey(steer.id), next);
+          await tx.delete(key);
+        });
+        try { await this.admit({ id: steer.id, method: "prompt", params: next.params }, undefined, undefined, old.fingerprint); }
+        catch (error) {
+          const outcome = { error: error instanceof Error ? error.message : String(error) };
+          await this.ctx.storage.put(reqKey(steer.id), { ...next, state: "completed", status: "failed", endedAt: Date.now(), outcome });
+          await this.emit({ type: "response", id: steer.id, outcome });
+        }
+      }
     }
     const accepted = await this.ctx.storage.transaction(async (tx) => {
       const latest = (await tx.get<RequestRecord>(reqKey(id))) ?? record;
       const accepted = { ...latest, accepted: true };
       await tx.put(reqKey(id), accepted);
-      if (requestedBucket !== undefined) await tx.put("run-bucket", requestedBucket);
+      if (requestedBucket !== undefined && params.endUser === undefined) await tx.put("run-bucket", requestedBucket);
       return accepted;
     });
     this.track(id);

@@ -15,6 +15,7 @@ export const WORKSPACE_NAV: NavItem[] = [
 ];
 /** Account-wide pages: they never change with the switcher. */
 export const ACCOUNT_NAV: NavItem[] = [
+  { to: "inbox", label: "Inbox", icon: MessageCircle, sections: ["inbox"] },
   { to: "channels", label: "Channels", icon: MessageCircle, sections: ["channels"] },
   { to: "volumes", label: "Volumes", icon: HardDrive, sections: ["volumes"] },
   { to: "computers", label: "Computers", icon: Monitor, sections: ["computers"] },

@@ -79,7 +79,7 @@ export interface SessionHeader {
    * (Computers.inherit); left out, a fresh one where the parent's connection allows.
    */
   /** The sub-agent's place as its parent made it: its depth, its chain's limit and its chain (its parent last; missing for one made before they were recorded). */
-  parent?: { agentId: string; runId: string; toolCallId: string; depth: number; maxDepth?: number; chain?: string[]; computer?: "none" | { seed: string } };
+  parent?: { payer?: string; agentId: string; runId: string; toolCallId: string; depth: number; maxDepth?: number; chain?: string[]; computer?: "none" | { seed: string } };
   /**
    * A stateless run's single-use session (POST /v1/runs): hidden from the agents list, its one prompt's request is the run.
    * Once the run ends its data is kept `retentionMs`, then purged as an expired agent's is. `fingerprint`: the request
@@ -272,6 +272,7 @@ export type Session = {
 /** What a run handed off at a step boundary had gathered for its outcome, which its next owner takes over (`takeOver`). */
 export type Carried = { usage?: RunUsage; childSpend?: number; imageSpend?: number; decisionSpend?: number; spendLimit?: number; runLimits?: RunLimits; toolCalls?: RunToolCall[]; toolErrors?: ToolError[]; files?: WrittenFile[]; presented?: (FileRef & { caption?: string })[] };
 export interface ClientSessionOptions {
+  sharedAgents?: import("../shared-agents.ts").SharedAgentDirectory;
   secret: string; toolTimeoutMs?: number; ttlMs?: number; eventBytes?: number;
   /** Event ids reserved at a time (default EVENT_BLOCK); tests set fewer, to reserve often. */
   eventBlock?: number;
@@ -438,6 +439,8 @@ export type ProviderKey = { key: string; platform: boolean };
 export type AgentRef = { id: string; tenant: string; claim?: Claim };
 /** Runtime features layered on agents (channels): they observe runs and may answer tools themselves. */
 export interface SessionHooks {
+  /** After any request outcome is durable, including queued cancellation and batched requests. */
+  requestEnded?(agent: AgentRef, record: RequestRecord): void;
   runStarted?(agent: AgentRef, record: RequestRecord): void;
   /** After the run's outcome is durable, on the node that ran it. */
   runEnded?(agent: AgentRef, record: RequestRecord): void;
@@ -454,7 +457,7 @@ export const MODEL_RUNS = ["prompt", "continue"];
  * A request as callers see it: queued parameters stay internal, and an ended one's error, early stop and `status` are on
  * top. `state` says only whether it ended; `status` how, as the SDKs' runs say it: completed, input_required or failed.
  */
-export const visible = ({ params: _params, announce: _announce, handedOff: _handedOff, carried: _carried, notice: _notice, landOnly: _landOnly, ...record }: RequestRecord): RequestRecord => {
+export const visible = ({ sharedAgent: _sharedAgent, heldForInput: _heldForInput, sender: _sender, params: _params, announce: _announce, handedOff: _handedOff, carried: _carried, notice: _notice, landOnly: _landOnly, ...record }: RequestRecord): RequestRecord => {
   if (record.state !== "completed") return record;
   const ending = outcomeEnding(record.outcome);
   const status = ending.error !== undefined || ending.stopped === "spend_limit" || ending.stopped === "turn_limit" || ending.stopped === "agent_loop_limit" ? "failed" : ending.stopped === "input_required" ? "input_required" : "completed";

@@ -162,3 +162,13 @@ test('settleAll compares the supplied version under its row lock', async () => {
   assert.equal((await inputs.get(input.id))!.state, 'pending');
   assert.equal((await inputs.settleAll([{ id: input.id, version: 2, answer }]))!.length, 1);
 });
+
+test("a shared approval keeps its fixed audience in the inbox index", async () => {
+  const { db } = await testDatabase();
+  const [input] = await new Inputs({ db }).create({
+    agent: "shared", tenant: "alice", requestId: "r", toolCallId: "call", expiresAt: Date.now() + 60_000,
+    responders: { audience: ["guest"] }, approvers: ["guest", "ops"], tool: "remove", argumentsHash: "h",
+  }, [{ kind: "approval", message: "Remove?", detail: {}, audience: ["owner", "ops"] }]);
+  assert.deepEqual(input.responders.audience, ["owner", "ops"]);
+  assert.deepEqual((await row(db, input.id)).responders, ["owner", "ops"]);
+});

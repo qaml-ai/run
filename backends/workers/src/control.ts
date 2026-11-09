@@ -1,3 +1,4 @@
+import { applying, prepareApply } from "../../../shared/apply-scope.ts";
 import type { FileBindings } from "./files.ts";
 import type { TenantAdmission } from "./tenant.ts";
 import {
@@ -23,6 +24,7 @@ import { resolveAgentKey } from "./agent-key.ts";
 import { prepareCreateAdmission } from "./admission.ts";
 import { reserveAgentCreation } from "./agent-capacity.ts";
 import type { RateLimitState } from "./admission.ts";
+import { recordUsageDetails } from "../../../shared/usage-details.ts";
 import { applyUsageRows } from "./accounts.ts";
 import { applyWorkspaceUsage, Workspaces } from "./workspaces.ts";
 import { activeCharge } from "../../../src/pricing.ts";
@@ -145,7 +147,7 @@ export class Directory {
   }
   /** The directory stages a replacement before the DO accepts it. Readers keep the applied configuration. */
   private async applied(entry: DirectoryEntry): Promise<DirectoryEntry> {
-    if (entry.initialized || entry.deleted) return entry;
+    if (applying() || entry.initialized || entry.deleted) return entry;
     const response = await this.env.AGENTS.getByName(entry.id).fetch(new Request("https://agent/configuration"));
     if (!response.ok) return entry;
     const current = await response.json() as Pick<DirectoryEntry, "id" | "tenantId" | "config" | "revision" | "expiresAt">;
@@ -170,7 +172,7 @@ export class Directory {
   ): Promise<DirectoryEntry | DirectoryFailure> {
     const fields = input && typeof input === "object" ? input as Record<string, unknown> : {};
     const defaultModel = fields.model === undefined
-      ? await defaultModelFor(this.env, this.tenantId, typeof fields.keyScope === "string" ? fields.keyScope : undefined)
+      ? await prepareApply(`default-model:${JSON.stringify([this.tenantId, fields.keyScope])}`, () => defaultModelFor(this.env, this.tenantId, typeof fields.keyScope === "string" ? fields.keyScope : undefined))
       : this.env.MODEL;
     const { config, ttlSeconds } = configuration(input, defaultModel);
     const workspaces = new Workspaces(database(this.env));
@@ -184,13 +186,21 @@ export class Directory {
     if (owner && owner.tenant!==this.tenantId) throw new ApiError(403,'Agent belongs to another account','FORBIDDEN');
     if (owner?.revoked) throw new ApiError(410,'Agent is deleted','AGENT_GONE');
     const previousEntry = await this.get(id), previousConfig = previousEntry?.config;
+    if (fields.metadata === undefined && previousConfig?.metadata !== undefined) config.metadata = previousConfig.metadata;
     if (fields.model === undefined && previousConfig?.model) config.model = previousConfig.model;
     if (fields.language === undefined && previousConfig?.language !== undefined) config.language = previousConfig.language;
     // An upsert that leaves its queue out keeps the one the agent has, as for its language.
     if (fields.queue === undefined && previousConfig?.queue !== undefined) config.queue = previousConfig.queue;
-    const resolvedModel = await validateAgentModel(this.env, this.tenantId, config, { reference: previousConfig?.model, model: previousEntry?.resolvedModel, defaultModel: fields.model === undefined });
+    if (fields.subject === undefined && previousConfig?.subject) config.subject = previousConfig.subject;
+    const resolvedModel = await prepareApply(`agent-model:${JSON.stringify([this.tenantId, config, previousConfig?.model, previousEntry?.resolvedModel, fields.model === undefined])}`,
+      () => validateAgentModel(this.env, this.tenantId, config, { reference: previousConfig?.model, model: previousEntry?.resolvedModel, defaultModel: fields.model === undefined }));
     // An agent whose first configuration never applied (initialized false: the apply failed) is still being
     // created: a retry applies it as a creation, since there is no configuration on the agent to queue a change on.
+    if (applying() && previousEntry) {
+      const mounts = fields.mounts === undefined ? previousEntry.config.mounts : await (await import("./file-mounts.ts")).prepareMounts(this.env, this.tenantId, id, fields.mounts);
+      if (previousEntry.configHash !== await digest(canonical({ ...config, mounts })) || JSON.stringify(previousEntry.resolvedModel) !== JSON.stringify(resolvedModel)) throw new ApiError(409, "Atomic apply cannot reconfigure an existing agent; use its configuration endpoint");
+      return previousEntry;
+    }
     if (queueConfiguration && previousEntry?.initialized) {
       for (const field of ['subject', 'context', 'definition'] as const)
         if (canonical(config[field] ?? null) !== canonical(previousEntry.config[field] ?? null))
@@ -205,6 +215,7 @@ export class Directory {
       if (fields.model === undefined) delete target.model;
       if (fields.language === undefined) delete target.language;
       if (fields.queue === undefined) delete target.queue;
+      if (fields.metadata === undefined) delete target.metadata;
       const response = await this.env.AGENTS.getByName(id).fetch(new Request('https://agent/upsert', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ id: crypto.randomUUID(), method: 'configure', params: {
@@ -216,7 +227,7 @@ export class Directory {
       const updated = reconfigured.state === 'completed' ? await this.get(id) : previousEntry;
       return { ...(updated ?? previousEntry), reconfigured };
     }
-    const release = config.type !== "run" && !previousEntry?.initialized
+    const release = !applying() && config.type !== "run" && !previousEntry?.initialized
       ? await reserveAgentCreation(this.env as import("./agent.ts").Env, this.tenantId, id)
       : async () => {};
     let rate: RateLimitState | undefined;
@@ -226,9 +237,9 @@ export class Directory {
     // Volume initialization uses its own SQL and DO calls. Keep those outside
     // the directory transaction; preserve the latest mounts under its lock.
     config.mounts=await (await import('./file-mounts.ts')).prepareMounts(this.env,this.tenantId,id,requested===undefined?before?.config.mounts:requested);
-    const admitCreate = config.type !== "run" ? await prepareCreateAdmission(this.env, this.tenantId) : undefined;
+    const admitCreate = config.type !== "run" ? await prepareApply(`create-admission:${this.tenantId}`, () => prepareCreateAdmission(this.env, this.tenantId)) : undefined;
     let createdHere = false;
-    const entry = await transaction(this.env, async (sql) => {
+    let entry = await transaction(this.env, async (sql) => {
       // A transaction-scoped lock covers the absent row as well as concurrent creates.
       await sql.query("select pg_advisory_xact_lock(hashtextextended($1,0))", [
         id,
@@ -255,6 +266,7 @@ export class Directory {
       if (requested===undefined && old?.config.mounts) config.mounts=old.config.mounts;
       if(old?.config.mounts&&requested!==undefined&&mountIdentity(old.config.mounts)!==mountIdentity(config.mounts)&&(input as {remount?:boolean}).remount!==true)
         throw new ApiError(409,`An existing agent's mounts cannot change; delete it (DELETE /v1/agents/${id}) or use another idempotency key, or send remount: true to change its mounts`);
+      if (fields.metadata === undefined && old?.config.metadata !== undefined) config.metadata = old.config.metadata;
       const configHash=await digest(canonical(config));
       const sameModel = JSON.stringify(old?.resolvedModel) === JSON.stringify(resolvedModel);
       if (admitCreate)
@@ -299,13 +311,40 @@ export class Directory {
         throw new ApiError(403, "Agent belongs to another tenant", "FORBIDDEN");
       return next;
     });
+    if (!entry.initialized && !applying()) {
+      const initialized = await this.initialize(entry, runtimeOrigin);
+      if ('failed' in initialized) return initialized;
+      entry = initialized;
+    }
+    if (config.workspaceId !== undefined) await workspaces.assign(this.tenantId, "agent", id, config.workspaceId);
+    else if (config.definition) {
+      const inherited = await workspaces.current(this.tenantId, "definition", config.definition);
+      if (inherited) await workspaces.assign(this.tenantId, "agent", id, inherited.workspace, true);
+    }
+    const result: DirectoryEntry = createdHere ? entry : { ...entry, existingAgent: true };
+    if (rate) creationRates.set(result, rate);
+    return result;
+    } finally { await release(); }
+  }
+  /** Initialize exactly the committed revision, never a second upsert or a configuration request. */
+  async initializeCommitted(entry: DirectoryEntry, runtimeOrigin?: string): Promise<DirectoryEntry | DirectoryFailure> {
+    const row = (await withSql(this.env, sql => sql.query(
+      "select header,revoked from agents where id=$1 and tenant=$2", [entry.id, this.tenantId]))).rows[0];
+    const stored = row?.header as DirectoryEntry | undefined;
+    if (!stored || row.revoked || stored.revision !== entry.revision || stored.configHash !== entry.configHash ||
+        JSON.stringify(stored.resolvedModel) !== JSON.stringify(entry.resolvedModel))
+      throw new ApiError(409, "A newer configuration or revocation won; retry");
+    if (stored.initialized) return stored;
+    return this.initialize(stored, runtimeOrigin);
+  }
+  private async initialize(entry: DirectoryEntry, runtimeOrigin?: string): Promise<DirectoryEntry | DirectoryFailure> {
     if (!entry.initialized) {
-      const response = await this.env.AGENTS.getByName(id).fetch(
+      const response = await this.env.AGENTS.getByName(entry.id).fetch(
         new Request("https://agent/configuration", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            id,
+            id: entry.id,
             tenantId: this.tenantId,
             config:entry.config,
             resolvedModel:entry.resolvedModel,
@@ -337,12 +376,12 @@ export class Directory {
       const applied = await withSql(this.env, (sql) =>
         sql.query(
           "update agents set header=jsonb_set(header::jsonb, '{initialized}', 'true'::jsonb)::json where id=$1 and tenant=$2 and revision=$3 and not revoked returning header",
-          [id, this.tenantId, entry.revision],
+          [entry.id, this.tenantId, entry.revision],
         ),
       );
       if (applied.rowCount) Object.assign(entry, applied.rows[0].header);
       if (!applied.rowCount) {
-        const latest = await this.get(id);
+        const latest = await this.get(entry.id);
         if (latest?.initialized && latest.configHash === entry.configHash) return latest;
         return {
           failed: true,
@@ -352,19 +391,12 @@ export class Directory {
         };
       }
     }
-    if (config.workspaceId !== undefined) await workspaces.assign(this.tenantId, "agent", id, config.workspaceId);
-    else if (config.definition) {
-      const inherited = await workspaces.current(this.tenantId, "definition", config.definition);
-      if (inherited) await workspaces.assign(this.tenantId, "agent", id, inherited.workspace, true);
-    }
-    const result: DirectoryEntry = createdHere ? entry : { ...entry, existingAgent: true };
-    if (rate) creationRates.set(result, rate);
-    return result;
-    } finally { await release(); }
+    return entry;
   }
   async remove(id: string): Promise<boolean | DirectoryFailure> {
     const entry = await this.get(id);
     if (!entry || (entry.deleted && !entry.cleanupPending)) return false;
+    await withSql(this.env, sql => sql.query('update agent_members set removed_at=coalesce(removed_at,$2), revision=revision+1 where agent=$1', [entry.id, Date.now()]));
     entry.deleted = true;
     entry.cleanupPending = true;
     await withSql(this.env, (sql) =>
@@ -512,6 +544,7 @@ export async function settleTurn(
         responses: receipt.responses ?? 1, input: receipt.inputTokens ?? 0, output: receipt.outputTokens ?? 0, cacheRead: 0, cacheWrite: 0,
         cost: receipt.costMicros / 1_000_000, platformResponses: receipt.responses ?? 1, platformCost: receipt.costMicros / 1_000_000 };
       await applyUsageRows(sql, [totals]);
+      await recordUsageDetails(sql, [{ ...totals, agent: receipt.agentId, endUser: receipt.subject ?? null, timestamp: receipt.startedAt ?? Date.now() }]);
       await applyWorkspaceUsage(sql, [{ ...totals, agent: receipt.agentId, timestamp: receipt.startedAt ?? Date.now() }]);
       if (receipt.subject) await settleUsage(sql, { tenant: receipt.tenantId, endUser: receipt.subject, bucket: receipt.bucket ?? "default",
         day: totals.day, raw: receipt.costMicros, key, metadata: { requestId: receipt.requestId, agent: receipt.agentId } }, Date.now(), endUser);

@@ -186,3 +186,10 @@ test('a wait consumes a staged notice without exposing its message', async () =>
   assert.equal(f.submissions.length, 0);
   assert.equal(await f.notifications.pending(), false);
 });
+
+test('a completion notification retains the child task payer and bucket', async () => {
+  const f = fixture();
+  await f.notifications.deliver({ ...child, payer: 'guest', bucket: 'bot:7' });
+  assert.equal(f.submissions[0].request.params.endUser, 'guest');
+  assert.equal(f.submissions[0].request.params.bucket, 'bot:7');
+});

@@ -23,7 +23,7 @@ async function readInputMirrorState(runtime: AgentRuntime, ids?: string[]) {
       const actor = record?.params?.actor as string | undefined ?? (record?.params?.from as { id?: string } | undefined)?.id;
       item = await pi.commit(async tx => {
         const current = (await tx.doc(HumanInputs)).requests[id];
-        Object.assign(current, bindHumanInput(current, requestId, actor, conf.config.humanInput, conf.expiresAt));
+        Object.assign(current, bindHumanInput(current, requestId, actor, conf.config.humanInput, conf.expiresAt, record?.params?.from as import("./sender.ts").Sender | undefined, record?.sharedAgent ?? undefined));
         return JSON.parse(JSON.stringify(current)) as typeof saved;
       }, BACKGROUND_CONTEXT);
     }

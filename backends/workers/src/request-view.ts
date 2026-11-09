@@ -6,6 +6,9 @@ export async function requestView<
 >(record: T) {
   const {
     params: _params,
+    sharedAgent: _sharedAgent,
+    heldForInput: _heldForInput,
+    inputAdmissionRetry: _inputAdmissionRetry,
     configurationOrder: _configurationOrder,
     configurationOrigin: _configurationOrigin,
     configurationWait: _configurationWait,

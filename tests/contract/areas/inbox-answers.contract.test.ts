@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import assert from 'node:assert/strict';
 import { contractTest, toolCall, until } from '../support.ts';
 
@@ -10,7 +9,7 @@ contractTest('inbox-answers', 'shared/inbox-answers.ts', 'batch answers use the 
   const agent = created.json.id;
   await f.prompt(agent, 'Ask', undefined, { actor: 'alice' });
   const item = await until(async () => (await f.call('/v1/inbox')).json.items.find((i: any) => i.agent === agent), 'indexed question');
-  const answer = { id: item.id, version: item.version, action: 'accept', content: { answers: { 'Region?': 'EU' } }, actor: 'alice' };
+  const answer = { agent: item.agent, id: item.id, version: item.version, action: 'accept', content: { answers: { 'Region?': 'EU' } }, actor: 'alice' };
   const forbidden = await f.call('/v1/inbox/answers', { body: { requestId: 'forbidden', answers: [{ ...answer, actor: 'mallory' }] } });
   assert.equal(forbidden.status, 200, forbidden.text);
   assert.equal(forbidden.json.outcomes[0].outcome, 'forbidden');
@@ -27,7 +26,7 @@ contractTest('inbox-answers', 'shared/inbox-answers.ts', 'batch answers use the 
   assert.equal(first.status, 200, first.text);
   assert.deepEqual(first.json.outcomes.map((o: any) => o.outcome), ['answered', 'unknown']);
   assert.deepEqual((await f.call('/v1/inbox/answers', { body: batch })).json, first.json);
-  const reordered = { requestId: batch.requestId, answers: [{ actor: answer.actor, content: answer.content, action: answer.action, version: answer.version, id: answer.id }, batch.answers[1]] };
+  const reordered = { requestId: batch.requestId, answers: [{ agent: answer.agent, actor: answer.actor, content: answer.content, action: answer.action, version: answer.version, id: answer.id }, batch.answers[1]] };
   assert.deepEqual((await f.call('/v1/inbox/answers', { body: reordered })).json, first.json);
   const changed = { ...batch, answers: [{ ...answer, content: { answers: { 'Region?': 'US' } } }] };
   assert.equal((await f.call('/v1/inbox/answers', { body: changed })).status, 409);
@@ -54,7 +53,7 @@ contractTest('inbox-answers', 'shared/inbox-answers.ts', 'several answers for on
     const items = (await f.call('/v1/inbox')).json.items.filter((i: any) => i.agent === agent);
     return items.length === 2 && items;
   }, 'two indexed questions');
-  const body = { requestId: 'two', answers: items.map((i: any) => ({ id: i.id, version: i.version, action: 'accept', content: { answers: { [i.message]: 'Yes' } } })) };
+  const body = { requestId: 'two', answers: items.map((i: any) => ({ agent: i.agent, id: i.id, version: i.version, action: 'accept', content: { answers: { [i.message]: 'Yes' } } })) };
   const result = await f.call('/v1/inbox/answers', { body });
   assert.equal(result.status, 200, result.text);
   assert.deepEqual(result.json.outcomes.map((o: any) => o.outcome), ['answered', 'answered']);
@@ -76,7 +75,7 @@ contractTest('inbox-answers', 'shared/inbox-answers.ts', 'a mixed batch answers 
     items.push(await until(async () => (await f.call('/v1/inbox')).json.items.find((item: any) => item.agent === created.json.id), 'indexed question'));
   }
   f.setModel(() => ({ role: 'assistant', content: 'Recorded.' }));
-  const answer = (item: any) => ({ id: item.id, version: item.version, action: 'accept', content: { answers: { 'Region?': 'EU' } }, actor: 'alice' });
+  const answer = (item: any) => ({ agent: item.agent, id: item.id, version: item.version, action: 'accept', content: { answers: { 'Region?': 'EU' } }, actor: 'alice' });
   const settled = await f.call(`/v1/agents/${items[1].agent}/inputs/${items[1].inputId}`, { body: answer(items[1]) });
   assert.equal(settled.status, 202, settled.text);
   await f.expireInputs(items[2].agent);
@@ -88,9 +87,6 @@ contractTest('inbox-answers', 'shared/inbox-answers.ts', 'a mixed batch answers 
   assert.deepEqual((await f.call('/v1/inbox/answers', { body })).json, result.json);
 });
 
-// This authority is supplied by slices 6–7. Keep the combined contract here so
-// bringing that branch in also exercises withdrawal and the actual notice.
-if (existsSync(new URL('../../../backends/workers/src/inbox-decisions.ts', import.meta.url))) {
   contractTest('inbox-answers', 'shared/inbox-answers.ts', 'withdrawn decisions conflict while several fresh answers arrive in one notice', async (_t, f) => {
     const definition = await f.call('/v1/definitions', { body: { name: 'Inbox decisions', builtins: ['request_decision'] } });
     assert.equal(definition.status, 201, definition.text);
@@ -98,7 +94,7 @@ if (existsSync(new URL('../../../backends/workers/src/inbox-decisions.ts', impor
     assert.equal(created.status, 201, created.text);
     const agent = created.json.id;
     for (let i = 0; i < 3; i++) {
-      f.setModel((_body, index) => index === 0 ? toolCall('request_decision', { title: `Choice ${i}`, body: 'Review', key: i < 2 ? 'plan' : 'other', options: [{ label: 'A' }, { label: 'B' }] }, `decision_${i}`) : { role: 'assistant', content: 'Continuing.' });
+      f.setModel((_body, index) => index % 2 === 0 ? toolCall('request_decision', { title: `Choice ${i}`, body: 'Review', key: i < 2 ? 'plan' : 'other', options: [{ label: 'A' }, { label: 'B' }] }, `decision_${i}`) : { role: 'assistant', content: 'Continuing.' });
       await f.prompt(agent, `Ask ${i}`, undefined, { actor: 'alice' });
     }
     const all = (await f.call(`/v1/agents/${agent}/inputs`)).json;
@@ -106,7 +102,7 @@ if (existsSync(new URL('../../../backends/workers/src/inbox-decisions.ts', impor
     assert.equal(all.filter((i: any) => i.state === 'withdrawn').length, 1);
     const before = f.model.bodies.length;
     f.setModel(() => ({ role: 'assistant', content: 'Decisions recorded.' }));
-    const body = { requestId: 'decisions', answers: all.map((i: any) => ({ id: i.id, version: i.version, action: 'accept', content: { answers: { [i.message]: 'A' } }, actor: 'alice' })) };
+    const body = { requestId: 'decisions', answers: all.map((i: any) => ({ agent: i.agent, id: i.id, version: i.version, action: 'accept', content: { answers: { [i.message]: 'A' } }, actor: 'alice' })) };
     const result = await f.call('/v1/inbox/answers', { body });
     assert.equal(result.status, 200, result.text);
     assert.equal(result.json.outcomes.filter((o: any) => o.outcome === 'answered').length, 2);
@@ -118,7 +114,6 @@ if (existsSync(new URL('../../../backends/workers/src/inbox-decisions.ts', impor
     assert.deepEqual((await f.call('/v1/inbox/answers', { body })).json, result.json);
     assert.equal(f.model.bodies.length, before + 1);
   });
-}
 
 contractTest('inbox-answers', 'shared/inbox-answers.ts', 'a down agent is unavailable without blocking a healthy agent', async (_t, f) => {
   f.setModel(() => toolCall('ask_user', { questions: [{ question: 'Region?', header: 'Region', options: [{ label: 'EU' }, { label: 'US' }] }] }));
@@ -132,10 +127,10 @@ contractTest('inbox-answers', 'shared/inbox-answers.ts', 'a down agent is unavai
   }
   f.setModel(() => ({ role: 'assistant', content: 'Recorded.' }));
   await f.failInboxAgent(items[0].agent);
-  const body = { requestId: 'availability', answers: items.map(item => ({ id: item.id, version: item.version, action: 'accept', content: { answers: { 'Region?': 'EU' } } })) };
+  const body = { requestId: 'availability', answers: items.map(item => ({ agent: item.agent, id: item.id, version: item.version, action: 'accept', content: { answers: { 'Region?': 'EU' } } })) };
   const response = await f.call('/v1/inbox/answers', { body });
   assert.equal(response.status, 200, response.text);
-  assert.deepEqual(response.json.outcomes[0], { id: items[0].id, outcome: 'unavailable', status: 503, retryable: true });
+  assert.deepEqual(response.json.outcomes[0], { agent: items[0].agent, id: items[0].id, outcome: 'unavailable', status: 503, retryable: true });
   assert.equal(response.json.outcomes[1].outcome, 'answered');
   assert.deepEqual((await f.call('/v1/inbox/answers', { body })).json, response.json);
   const pending = (await f.call('/v1/inbox')).json.items.find((item: any) => item.id === items[0].id);
@@ -156,4 +151,40 @@ contractTest('inbox-answers', 'shared/inbox-answers.ts', 'the per-agent writer r
   const current = (await f.call('/v1/inbox')).json.items.find((input: any) => input.id === item.id);
   assert.equal(current.state, 'pending');
   assert.equal(current.version, item.version + 1);
+});
+
+contractTest('inbox-answers', 'shared/inbox-answers.ts', 'mixed blocking inputs and decisions settle independently with one decision notice', async (_t, f) => {
+  const definition = (await f.call('/v1/definitions', { body: { name: 'Mixed authorities', builtins: ['ask_user', 'request_decision'] } })).json;
+  const created = await f.call('/v1/agents', { body: { definition: definition.id, ttlSeconds: null } });
+  assert.equal(created.status, 201, created.text);
+  const agent = created.json.id;
+  for (let i = 0; i < 3; i++) {
+    f.setModel((_body, index) => index % 2 === 0 ? toolCall('request_decision', {
+      title: `Decision ${i}`, body: 'Review', key: i < 2 ? 'plan' : 'other', options: [{ label: 'A' }, { label: 'B' }],
+    }, `decision_${i}`) : { role: 'assistant', content: 'Continuing.' });
+    await f.prompt(agent, `Ask ${i}`);
+  }
+  f.setModel(() => toolCall('ask_user', { questions: [{ question: 'Blocking?', header: 'Block', options: [{ label: 'A' }, { label: 'B' }] }] }));
+  await f.prompt(agent, 'Ask blocking');
+  const all = (await f.call(`/v1/agents/${agent}/inputs`)).json;
+  assert.equal(all.length, 4);
+  assert.equal(all.filter((item: any) => item.state === 'withdrawn').length, 1);
+  f.setModel(() => ({ role: 'assistant', content: 'Recorded.' }));
+  // Decisions first in the request must not prevent the blocking answer being recorded.
+  const ordered = [...all].sort((a: any, b: any) => Number(a.blocking) - Number(b.blocking));
+  const body = { requestId: 'mixed-authorities', answers: ordered.map((item: any) => ({ agent, id: item.id, version: item.version, action: 'accept', content: { answers: { [item.message]: 'A' } } })) };
+  const response = await f.call('/v1/inbox/answers', { body });
+  assert.equal(response.status, 200, response.text);
+  assert.equal(response.json.outcomes.filter((outcome: any) => outcome.outcome === 'answered').length, 3, response.text);
+  assert.equal(response.json.outcomes.find((outcome: any) => outcome.outcome === 'conflict').state, 'withdrawn');
+  await until(async () => {
+    const requests = (await f.call(`/v1/agents/${agent}`)).json.requests;
+    return requests.some((request: any) => request.id.startsWith('decision_') && request.state === 'completed');
+  }, 'the decision notice completes');
+  const notices = (await f.call(`/v1/agents/${agent}`)).json.requests.filter((request: any) => request.id.startsWith('decision_'));
+  assert.equal(notices.length, 1);
+  const delivered = f.model.bodies.map(body => JSON.stringify(body)).find(body => body.includes('decision_answer'))!;
+  for (const item of all.filter((item: any) => !item.blocking && item.state === 'pending')) assert.ok(delivered.includes(item.id));
+  assert.deepEqual((await f.call('/v1/inbox/answers', { body })).json, response.json);
+  assert.equal((await f.call(`/v1/agents/${agent}`)).json.requests.filter((request: any) => request.id.startsWith('decision_')).length, 1);
 });

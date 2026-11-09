@@ -353,6 +353,12 @@ export async function watchAgent(ctx: EventContext, c: Context<ClientEnv>, heade
   return RESPONSE_ALREADY_SENT;
 }
 
+// S5 tags guest watchers when it introduces the shared events route.
+export const memberStreams = new WeakMap<ServerResponse, { member: string; revision: number }>();
+export function endMember(session: Session, member: string) {
+  for (const response of session.watchers) if (memberStreams.get(response)?.member === member) response.end();
+}
+
 /** Every open event stream of the agent: the application's connection and its watchers. */
 export function streams(session: Session) {
   return session.response ? [session.response, ...session.watchers] : [...session.watchers];

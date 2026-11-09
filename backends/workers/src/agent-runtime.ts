@@ -1,3 +1,7 @@
+import { SharedAgents } from "../../../src/shared-agents.ts";
+import { testAgentRuntimes } from "./agent-internals.ts";
+import { releaseInputPrompts } from "./input-admission.ts";
+import { database } from "./postgres.ts";
 import { TestStorage } from "./test-storage.ts";
 import { modelCompactionSettings } from "./model-context.ts";
 import { RecentEvents } from "./recent-events.ts";
@@ -38,7 +42,7 @@ import { BatchQueue } from "./batch-queue.ts";
 import type { WebhookEvent } from "./webhook-policy.ts";
 import { Config, RequestRecord, Env } from "./agent-types.ts";
 import { currentRunImpl, recordsImpl, markBeganImpl, observeImpl, requestForInputsImpl, runningRequestImpl, projectMessageImpl, reconcileSteeringImpl, steeringOwnerImpl, onViewImpl, onHumanImpl, trackImpl, settleImpl, submitImpl, answerHumanInputsImpl, closeHumanInputsImpl, dueHumanInputsImpl } from "./agent-turn-loop.ts";
-import { abortRequestsImpl, resumeKeptQueueImpl, cancelRequestImpl, resumeCancellationImpl, restoreCancellationsImpl, abortExecutionsImpl, markCancelledRequestsImpl, cancelHostIntentImpl, cancelHumanInputsImpl, startHostRequestImpl, restoreHostAdmissionsImpl } from "./agent-cancellation.ts";
+import { removeMemberImpl, abortRequestsImpl, resumeKeptQueueImpl, cancelRequestImpl, resumeCancellationImpl, restoreCancellationsImpl, abortExecutionsImpl, markCancelledRequestsImpl, cancelHostIntentImpl, cancelHumanInputsImpl, startHostRequestImpl, restoreHostAdmissionsImpl } from "./agent-cancellation.ts";
 import { releaseConfigurationWaitersImpl, configureRequestImpl, acceptConfigurationRequestImpl, applyConfigurationRequestImpl, requireApplicationImpl, admitImpl, createConfigurationQueue } from "./agent-admission.ts";
 import { imageToolsImpl, sourceIdentityImpl, fileRequestIdImpl } from "./agent-attachments.ts";
 import { computerNamesImpl, refreshComputerToolsImpl, enabledToolsImpl, createDecisions, createModels, createHarness } from "./agent-tools.ts";
@@ -64,6 +68,12 @@ class AgentContext {
 /** Internal state, never exposed as a Durable Object RPC target.
  * Field order follows the original agent so eager initialization is unchanged. */
 export class AgentRuntime extends AgentContext {
+  constructor(ctx: DurableObjectState, env: Env, host: CamelAgent) {
+    super(ctx, env, host);
+    if (env.TEST_MODE === "1") testAgentRuntimes.set(host, this);
+  }
+
+  readonly sharedAgents = new SharedAgents(database(this.env));
   readonly dbProfile = new DbProfile(this.env.PILOT_DB_PROFILE === "1");
 
   async databaseProfile(reset = false) {
@@ -156,8 +166,8 @@ export class AgentRuntime extends AgentContext {
     return imageToolsImpl.call(this);
   }
 
-  admitRequest(conf: Config, id: string, bucket?: string) {
-    return this.dbProfile.run("admission", () => admitRequestImpl.call(this, conf, id, bucket));
+  admitRequest(conf: Config, id: string, bucket?: string, endUser?: string) {
+    return this.dbProfile.run("admission", () => admitRequestImpl.call(this, conf, id, bucket, endUser));
   }
 
   toolFileBudgets = new Map<string, { left: number }>();
@@ -173,8 +183,8 @@ export class AgentRuntime extends AgentContext {
     return requestResponseImpl.call(this, record);
   }
 
-  endUserLimit(conf: Config, bucket?: string) {
-    return endUserLimitImpl.call(this, conf, bucket);
+  endUserLimit(conf: Config, bucket?: string, endUser?: string) {
+    return endUserLimitImpl.call(this, conf, bucket, endUser);
   }
 
   sourceIdentity(api?: ToolExecutionApi) {
@@ -343,8 +353,16 @@ export class AgentRuntime extends AgentContext {
     notice?: RuntimeNotice,
     delivery?: NoticeDelivery,
     acceptedFingerprint?: string,
+    member?: string,
   ) {
-    return submitImpl.call(this, input, notice, delivery, acceptedFingerprint);
+    return submitImpl.call(this, input, notice, delivery, acceptedFingerprint, member);
+  }
+
+  /** A settled input, including cancellation or expiry, releases prompts waiting behind it. */
+  kickInputPrompts() {
+    const work = this.admission.then(() => releaseInputPrompts(this));
+    this.admission = work.catch(() => {});
+    this.ctx.waitUntil(work);
   }
 
   abortRequests(queued: 'cancel' | 'keep' = 'cancel', keepChildren = false) {
@@ -353,6 +371,10 @@ export class AgentRuntime extends AgentContext {
 
   resumeKeptQueue() {
     return resumeKeptQueueImpl.call(this);
+  }
+
+  removeMember(member: string) {
+    return removeMemberImpl.call(this, member);
   }
 
   cancelRequest(id: string) {
@@ -417,8 +439,9 @@ export class AgentRuntime extends AgentContext {
     notice?: RuntimeNotice,
     delivery?: NoticeDelivery,
     acceptedFingerprint?: string,
+    member?: string,
   ) {
-    return admitImpl.call(this, input, notice, delivery, acceptedFingerprint);
+    return admitImpl.call(this, input, notice, delivery, acceptedFingerprint, member);
   }
 
   activity() {
@@ -437,8 +460,8 @@ export class AgentRuntime extends AgentContext {
     return answerHumanInputsImpl.call(this, answers, via, system);
   }
 
-  closeHumanInputs(system: "expired" | "superseded") {
-    return closeHumanInputsImpl.call(this, system);
+  closeHumanInputs(system: "expired" | "superseded", sender?: string, shared = false) {
+    return closeHumanInputsImpl.call(this, system, sender, shared);
   }
 
   dueHumanInputs(at: number) {

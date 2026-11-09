@@ -99,7 +99,7 @@ export const InputCard = memo(function InputCard({ input }: { input: ChatInput }
           </>
         );
       }
-      case "question": return <Questions input={input} questions={(input.detail.questions ?? []) as Question[]} onAnswer={answer} />;
+      case "question": case "decision": return <Questions input={input} questions={(input.detail.questions ?? []) as Question[]} onAnswer={answer} />;
       case "form": return <Form input={input} onAnswer={answer} />;
       case "url": {
         const detail = input.detail as { url?: string; origin?: string };

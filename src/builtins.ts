@@ -1,7 +1,7 @@
 import type { ToolDefinition } from "./protocol.ts";
 import type { Outbound } from "./outbound.ts";
 import type { Calendar } from "./calendar.ts";
-import { scheduleInput, type Scheduler } from "./scheduler.ts";
+import { scheduleInput, type Scheduler, type Schedule } from "./scheduler.ts";
 import type { Claim } from "./ownership.ts";
 import { FRESHNESS, SEARCH, webSearchUnavailable, type WebSearch } from "./web-search.ts";
 import { isShell, type WebRender } from "./web-render.ts";
@@ -12,7 +12,7 @@ import { download, need, readCapped, type ToolFiles } from "./tool-files.ts";
 import { HttpError } from "./http.ts";
 import { textual, type FileLinks } from "./files.ts";
 import { TOOL_FILE_LIMITS } from "./limits.ts";
-import { questionsInput } from "./inputs.ts";
+import { questionsInput, inboxFields, inboxDetail, decisionDetail } from "./inputs.ts";
 import { VOLUME_LIMITS } from "./volumes.ts";
 import { X_SEARCH, xSearchUnavailable, type XSearch } from "./x-search.ts";
 
@@ -36,6 +36,7 @@ export const BUILTINS = {
   x_search: ["x_search"],
   schedule: ["schedule", "list_schedules", "cancel_schedule"],
   ask_user: ["ask_user"],
+  request_decision: ["request_decision"],
   delegate: [],
   generate_image: [],
   agents: [],
@@ -117,10 +118,12 @@ const DEFINITIONS: Record<string, ToolDefinition> = {
   },
   schedule: {
     name: "schedule", exposure: "both",
-    description: "Schedule a wake-up for yourself: at the time given, you receive `text` as a new message and can act on it. Give inSeconds or at (an ISO time); everySeconds (at least 60) repeats it. Or give calendar: local HH:MM, IANA timeZone and optional daysOfWeek (Sunday 0 to Saturday 6), respecting daylight saving time. Do not combine calendar with other timing fields. Returns its id.",
+    description: "Schedule a wake-up for yourself: at the time given, you receive `text` as a new message and can act on it. Give inSeconds or at (an ISO time); everySeconds (at least 60) repeats it. Or give calendar: local HH:MM, IANA timeZone and optional daysOfWeek (Sunday 0 to Saturday 6), respecting daylight saving time. Do not combine calendar with other timing fields. Returns its id. Or cron: a 5-field cron expression with timeZone (IANA), in place of calendar.",
     parameters: { type: "object", additionalProperties: false, required: ["text"], properties: {
       text: { type: "string", minLength: 1, maxLength: 32_000, description: "The message you will receive" },
-      calendar: { type: "object", additionalProperties: false, required: ["time", "timeZone"], properties: { time: { type: "string" }, timeZone: { type: "string" }, daysOfWeek: { type: "array", items: { type: "integer", minimum: 0, maximum: 6 } } } },
+      cron: {type:'object',description:'A 5-field cron expression, e.g. "0 9 * * 1-5".',additionalProperties:false,required:['expression','timeZone'],properties:{expression:{type:'string'},timeZone:{type:'string',description:'IANA time zone for cron and calendar times.'}}},
+      spendLimit: {type:'object',additionalProperties:false,required:['usd'],properties:{usd:{type:'number',minimum:0,maximum:1000000}}},
+      calendar: { type: "object", additionalProperties: false, required: ["time", "timeZone"], properties: { time: { type: "string" }, timeZone: { type: "string", description: "IANA time zone for cron and calendar times." }, daysOfWeek: { type: "array", items: { type: "integer", minimum: 0, maximum: 6 } } } },
       inSeconds: { type: "number", minimum: 0 }, at: { type: "string", description: "ISO 8601 time" }, everySeconds: { type: "integer", minimum: 60 },
       // Accepted so callers that still send it do not fail, as the HTTP API and MCP add_schedule do.
       history: { type: "string", enum: ["full", "none"], description: "Ignored; every run sees the agent's history" },
@@ -135,15 +138,25 @@ const DEFINITIONS: Record<string, ToolDefinition> = {
     name: "ask_user", exposure: "direct", callers: ["model", "tools"],
     description: "Ask the user 1-4 questions, each with 2-4 options, when you are blocked on a choice only they can make. Your turn pauses until they answer, which may take days; the answers come back as this call's result. Don't ask about what you can find out yourself.",
     parameters: { type: "object", additionalProperties: false, required: ["questions"], properties: {
+      ...inboxFields,
       questions: { type: "array", minItems: 1, maxItems: 4, items: { type: "object", additionalProperties: false, required: ["question", "header", "options"], properties: {
         question: { type: "string", minLength: 1, maxLength: 1000, description: "The full question, ending with a question mark" },
         header: { type: "string", minLength: 1, maxLength: 12, description: "A short label, like \"Auth method\"" },
         options: { type: "array", minItems: 2, maxItems: 4, items: { type: "object", additionalProperties: false, required: ["label"], properties: {
           label: { type: "string", minLength: 1, maxLength: 200 }, description: { type: "string", maxLength: 1000, description: "What choosing it means" },
         } } },
+        recommended: { type: "string", description: "The option you recommend." }, reason: { type: "string", maxLength: 1000, description: "Why you recommend it, in a sentence." },
         multiSelect: { type: "boolean", description: "Let the user choose several options" },
         allowOther: { type: "boolean", description: "Let the user answer in their own words instead" },
       } } },
+    } },
+  },
+  request_decision: {
+    name: "request_decision", exposure: "direct", callers: ["model", "tools"],
+    description: "Ask the user for a decision without stopping: your turn continues, and the answer arrives later as a <decision_answer> message. Give a title, a body saying what they must decide, and 2-4 options (or none, for an answer in their own words). It stays open for 7 days, then is cancelled unless you set applyRecommendationOnExpiry with a recommendation. New messages never cancel it. Reuse the same key to replace your earlier pending decision about the same thing.",
+    parameters: { type: "object", additionalProperties: false, required: ["title", "body"], properties: {
+      ...inboxFields, title: { type: "string", minLength: 1, maxLength: 1000 }, body: { type: "string", maxLength: 4000 },
+      options: { type: "array", minItems: 2, maxItems: 4, items: { type: "object", required: ["label"], properties: { label: { type: "string" }, description: { type: "string" } }, additionalProperties: false } }, key: { type: "string", minLength: 1, maxLength: 200, description: "A stable name for this decision; a new decision with the same key replaces the pending one." },
     } },
   },
   cancel_schedule: {
@@ -152,19 +165,31 @@ const DEFINITIONS: Record<string, ToolDefinition> = {
   },
 };
 
+/** Only agents with request_decision are directed to use it. */
+export function askUserDefinition(builtins: readonly string[] = []) {
+  return { ...DEFINITIONS.ask_user, description: DEFINITIONS.ask_user.description + (builtins.includes("request_decision") ? " If you can keep working while you wait, use request_decision instead." : "") };
+}
+
 /** The built-ins' tools; with web_fetch not enabled, web_search does not point the model at it. */
-export const builtinDefinitions = (builtins: string[] = []) => builtinNames(builtins).map(name => name === "web_search" && !builtins.includes("web_fetch")
+export const builtinDefinitions = (builtins: string[] = []) => builtinNames(builtins).map(name => name === "ask_user" ? askUserDefinition(builtins) : name === "web_search" && !builtins.includes("web_fetch")
   ? { ...DEFINITIONS[name], description: DEFINITIONS[name].description.replace(" The excerpts often hold the answer, so you may not need to open the page; when they don't, or a result has only a snippet, read the page with web_fetch.", " Answer from the excerpts and snippets: pages cannot be opened.") }
   : DEFINITIONS[name]);
 
 /** `searchProviders`: the order the agent's definition gives web_search, instead of the runtime's; `files`, where web_fetch saves files. */
-export type BuiltinContext = { tenant: string; agent: string; claim?: Claim; searchProviders?: string[]; files?: ToolFiles };
+export type BuiltinContext = { tenant: string; agent: string; requestId?: string; claim?: Claim; searchProviders?: string[]; files?: ToolFiles };
 export type BuiltinServices = { outbound: Outbound; scheduler?: Scheduler; search?: WebSearch; render?: WebRender; xSearch?: XSearch; links?: FileLinks };
 
 export async function runBuiltin(services: BuiltinServices, context: BuiltinContext, name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<McpResult> {
   if (name === "web_fetch") return webFetch(services, context, String(args.url), (args.maxCharacters as number | undefined) ?? FETCH.characters, signal);
   // The questions go to the user as an input; the answers become this call's result.
-  if (name === "ask_user") return { resultType: "input_required", inputRequests: { questions: { method: "agent-runtime/question", params: { questions: questionsInput(args.questions) } } } };
+  if (name === "ask_user" || name === "request_decision") {
+    const detail = name === "ask_user" ? inboxDetail(args) : decisionDetail(args);
+    if (detail.attachments) detail.attachments = await Promise.all(detail.attachments.map(async (attachment: any) => {
+      const file = await need(context.files).open(attachment.path);
+      return { path: file.path, version: file.entry.version, contentType: file.contentType, ...(attachment.caption ? { caption: attachment.caption } : {}) };
+    }));
+    return { resultType: "input_required", inputRequests: { questions: { method: "agent-runtime/question", params: detail } } };
+  }
   return jsonResult(await builtinValue(services, context, name, args, signal));
 }
 
@@ -185,12 +210,12 @@ async function builtinValue(services: BuiltinServices, context: BuiltinContext, 
   }
   if (name === "web_search") {
     if (!services.search) throw new Error("Web search is not enabled on this runtime");
-    return services.search.search({ tenant: context.tenant, agent: context.agent, ...(context.searchProviders ? { providers: context.searchProviders } : {}) }, args, signal);
+    return services.search.search({ tenant: context.tenant, agent: context.agent, ...(context.requestId ? { requestId: context.requestId } : {}), ...(context.searchProviders ? { providers: context.searchProviders } : {}) }, args, signal);
   }
   const scheduler = services.scheduler;
   if (!scheduler) throw new Error("Schedules are not enabled on this runtime");
   if (name === "schedule") {
-    const input = scheduleInput({ text: args.text, ...(args.calendar !== undefined ? { calendar: args.calendar } : {}), ...(args.at !== undefined ? { at: args.at } : {}), ...(args.inSeconds !== undefined ? { inSeconds: args.inSeconds } : {}), ...(args.everySeconds !== undefined ? { everySeconds: args.everySeconds } : {}) });
+    const input = scheduleInput({ text: args.text, cron: args.cron, spendLimit: args.spendLimit, ...(args.calendar !== undefined ? { calendar: args.calendar } : {}), ...(args.at !== undefined ? { at: args.at } : {}), ...(args.inSeconds !== undefined ? { inSeconds: args.inSeconds } : {}), ...(args.everySeconds !== undefined ? { everySeconds: args.everySeconds } : {}) });
     // Under the agent's claim: a node that lost the agent mid-turn schedules nothing for it.
     const created = await scheduler.create({ agent: context.agent, tenant: context.tenant, ...input }, context.claim);
     return view(created);
@@ -200,8 +225,8 @@ async function builtinValue(services: BuiltinServices, context: BuiltinContext, 
   throw new Error(`Unknown tool ${name}`);
 }
 
-const view = (schedule: { id: string; text?: string; code?: string; dueAt: number; everySeconds?: number; calendar?: Calendar; failures?: number; lastError?: string }) => ({
-  id: schedule.id, ...(schedule.calendar ? { calendar: schedule.calendar } : {}), ...(schedule.text !== undefined ? { text: schedule.text } : { code: schedule.code }), dueAt: new Date(schedule.dueAt).toISOString(),
+const view = (schedule: Schedule) => ({
+  id: schedule.id, ...(schedule.cron ? { cron: schedule.cron } : {}), ...(schedule.sessionMode ? { sessionMode: schedule.sessionMode } : {}), ...(schedule.spendLimit ? { spendLimit: schedule.spendLimit } : {}), ...(schedule.calendar ? { calendar: schedule.calendar } : {}), ...(schedule.text !== undefined ? { text: schedule.text } : { code: schedule.code }), dueAt: new Date(schedule.dueAt).toISOString(),
   ...(schedule.everySeconds ? { everySeconds: schedule.everySeconds } : {}),
   ...(schedule.failures ? { failures: schedule.failures } : {}), ...(schedule.lastError !== undefined ? { lastError: schedule.lastError } : {}),
 });

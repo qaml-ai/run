@@ -3,7 +3,7 @@ import { approvalPrompt } from './tool-approval-prompt.ts';
 import { runtimeRules } from './prompt-policy.ts';
 import { languageInstructions } from '../../../src/language.ts';
 
-type Config = { codeMode?: boolean; fileTools?: boolean; language?: string; systemPrompt?: string; systemPromptAppend?: string; mounts?: { path: string; mode: string }[]; output?: unknown };
+type Config = { sharedAgent?: unknown; codeMode?: boolean; fileTools?: boolean; language?: string; systemPrompt?: string; systemPromptAppend?: string; mounts?: { path: string; mode: string }[]; output?: unknown };
 const activeTools = <T extends { name: string }>(tools: readonly T[], config: Config) => tools.filter(tool => tool.name !== 'final_output' || config.output !== undefined);
 /** Pi renders these each request, so compaction cannot discard the runtime rules. */
 export function runtimePromptSections(config: () => Promise<Config>): Extension {

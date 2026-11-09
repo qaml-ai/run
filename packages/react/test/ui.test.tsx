@@ -1,8 +1,8 @@
 import { useEffect } from "react";
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import axe from "axe-core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { projectMessages, type ChatInput, type LocalSend, type ProjectInput, type ProjectMemo, type UserChatMessage } from "@camelai/run/chat";
 import { AgentChat, Markdown, UserMessage } from "@camelai/run-react/ui";
 import type { ToolRenderProps } from "@camelai/run-react";
@@ -212,4 +212,20 @@ describe("<Markdown>", () => {
     expect(container.querySelector("p")!.firstChild).toBe(firstText);
     fireEvent.click(container);
   });
+});
+
+it("InboxList preserves page order, loads cursors and answers the selected item", async () => {
+  const { InboxList } = await import("../src/ui/inbox.tsx");
+  const first = { id: "same", agent: "a", message: "First" } as any;
+  const second = { id: "same", agent: "b", message: "Second" } as any;
+  const answer = vi.fn().mockResolvedValue({});
+  const load = vi.fn().mockResolvedValue({ items: [second], cursor: null });
+  render(<InboxList page={{ items: [first], cursor: "next", counts: {} } as any} load={load} answer={answer}
+    renderItem={(item, respond) => <button onClick={() => void respond({ action: "accept" })}>{item.message}</button>} />);
+  fireEvent.click(screen.getByText("Load more"));
+  await waitFor(() => expect(screen.getByText("Second")).toBeTruthy());
+  expect(load).toHaveBeenCalledWith({ cursor: "next" });
+  fireEvent.click(screen.getByText("Second"));
+  await waitFor(() => expect(answer).toHaveBeenCalledWith(second, { action: "accept" }));
+  expect(screen.getByText("First")).toBeTruthy();
 });

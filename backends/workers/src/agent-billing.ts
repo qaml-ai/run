@@ -36,7 +36,7 @@ export function createLimits(this: AgentRuntime): AgentRunLimits {
     const { accounts } = await keyServices(this.env);
     const refusal = await accounts.runLimit(conf.tenantId);
     if (typeof refusal === "string") return { error: refusal, code: "spend_limit", stopped: "spend_limit", limit: "tenant" };
-    return billingRunStop(refusal ?? await this.endUserLimit(conf, "params" in run ? run.params?.bucket as string | undefined : undefined));
+    return billingRunStop(refusal ?? await this.endUserLimit(conf, "params" in run ? run.params?.bucket as string | undefined : undefined, "params" in run ? run.params?.endUser as string | undefined : undefined));
   });
 }
 
@@ -54,7 +54,7 @@ export async function agentSpendImpl(this: AgentRuntime,
 export async function admitRequestImpl(this: AgentRuntime,
   conf: Config,
   id: string,
-  bucket?: string) {
+  bucket?: string, endUser?: string) {
     let acquired = false;
     try {
       const rate = await runAdmission(this.env, conf.tenantId);
@@ -71,8 +71,8 @@ export async function admitRequestImpl(this: AgentRuntime,
         throw typeof limited === "string"
           ? Object.assign(new Error(limited), { status: 402 })
           : limited;
-      if (conf.config.subject && (conf.resolvedModel ?? this.models.resolve(conf.config.model)).api !== "openai-codex-responses") {
-        const broke = await new EndUserCredits(accounts.db).refusal(conf.tenantId, conf.config.subject, bucket ?? conf.config.bucket ?? "default");
+      if ((endUser ?? conf.config.subject) && (conf.resolvedModel ?? this.models.resolve(conf.config.model)).api !== "openai-codex-responses") {
+        const broke = await new EndUserCredits(accounts.db).refusal(conf.tenantId, (endUser ?? conf.config.subject)!, bucket ?? conf.config.bucket ?? "default");
         if (broke) throw creditError(broke);
       }
       const { limit } = await accounts.billing.busyLimit(conf.tenantId);
@@ -102,11 +102,11 @@ export async function admitRequestImpl(this: AgentRuntime,
 
 export async function endUserLimitImpl(this: AgentRuntime,
   conf: Config,
-  bucket?: string) {
-    if (!conf.config.subject || conf.resolvedModel?.api === "openai-codex-responses") return;
+  bucket?: string, endUser?: string) {
+    if (!(endUser ?? conf.config.subject) || conf.resolvedModel?.api === "openai-codex-responses") return;
     const { accounts } = await keyServices(this.env);
     const refusal = await new EndUserCredits(accounts.db).refusal(
-      conf.tenantId, conf.config.subject,
+      conf.tenantId, (endUser ?? conf.config.subject)!,
       bucket ?? conf.config.bucket ?? await this.ctx.storage.get<string>("run-bucket") ?? "default",
     );
     return refusal ? creditError(refusal) : undefined;

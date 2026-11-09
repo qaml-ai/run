@@ -18,6 +18,7 @@ beforeEach(() => {
   localStorage.clear();
   vi.stubGlobal("fetch", vi.fn(async (path: string) => {
     paths.push(path);
+    if (path.startsWith("/v1/inbox")) return json({ items: [], cursor: null, counts: { priority: { urgent: 0, high: 0, normal: 0, low: 0 }, lead: {} } });
     if (path === "/v1/workspaces") return json(WORKSPACES);
     if (path.startsWith("/v1/usage")) return json({ since: 0, totals: totals(93.45), days: [], workspaces: [{ id: "ws_desk", name: "Trading Desk", ...totals(51.4) }, { id: null, name: "Unassigned", ...totals(14.02) }] });
     return json({});
@@ -32,13 +33,13 @@ const shell = (active: string, workspaces: Workspace[] | undefined = WORKSPACES)
 describe("nav groups", () => {
   it("puts what workspaces scope above the Account group, and keeps every page reachable", () => {
     expect(WORKSPACE_NAV.map(item => item.label)).toEqual(["Overview", "Agents", "Definitions", "Usage", "Workspaces"]);
-    expect(ACCOUNT_NAV.map(item => item.label)).toEqual(["Channels", "Volumes", "Computers", "API keys", "Models & keys", "Billing", "Settings"]);
+    expect(ACCOUNT_NAV.map(item => item.label)).toEqual(["Inbox", "Channels", "Volumes", "Computers", "API keys", "Models & keys", "Billing", "Settings"]);
     expect(groupOf("")?.label).toBe("Overview");
     expect(groupOf("agents")?.label).toBe("Agents");
     expect(groupOf("account")?.label).toBe("Settings");
     expect(groupOf("quickstart")?.label).toBe("Get started");
     const reachable = new Set([...WORKSPACE_NAV, ...ACCOUNT_NAV].map(item => item.to).concat(Object.values(TABS).flat().map(tab => tab.to)));
-    for (const page of ["agents", "definitions", "workspaces", "channels", "volumes", "computers", "models", "tokens", "usage", "billing", "account"]) expect(reachable).toContain(page);
+    for (const page of ["inbox", "agents", "definitions", "workspaces", "channels", "volumes", "computers", "models", "tokens", "usage", "billing", "account"]) expect(reachable).toContain(page);
   });
 
   it("titles the tab with the page and the workspace it shows", () => {

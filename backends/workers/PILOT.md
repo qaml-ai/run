@@ -136,6 +136,8 @@ curl https://run-pilot.camelai.dev/v1/agents \
   -H "Authorization: Bearer $PILOT_API_KEY"
 ```
 
+For password-only console sign-in on an existing tenant, run `node backends/workers/scripts/pilot-console-password.mjs pilot-camel-code <email>` from the repository root in your own terminal; it prompts twice with echo off for a 12–256 character password and sets it without creating a tenant.
+
 ## Validation
 
 Modal was dropped from the Workers computer providers by CTO decision. New

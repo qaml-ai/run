@@ -39,7 +39,7 @@ async function lockTenant(sql: Sql, tenant: string) {
 }
 
 // Drop resolved/older payment warnings before delivery. Receipt history remains useful.
-const currentProblem = `(o.kind <> 'problems' or o.payload->'data'->>'notice' is null or
+const currentProblem = `(o.kind <> 'problems' or o.payload->'data'->>'notice' is null or o.payload->'data'->>'notice'='dreaming' or
   case when o.payload->'data'->>'attempt' is not null then exists (
     select 1 from billing_auto_attempts a where a.id::text=o.payload->'data'->>'attempt'
       and a.tenant=o.tenant and (not a.cancel_requested or a.state='reconcile') and a.generation::text=o.payload->'data'->>'generation'

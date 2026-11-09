@@ -1,7 +1,7 @@
 /** Transport-independent batch coordination. Reads and validation run at the input authority. */
 import { createHash, randomUUID } from 'node:crypto';
 import { canonical } from './durable-json.ts';
-export type InboxAnswer = { id: string; version: number; action?: string; content?: unknown; accept?: 'recommended'; actor?: string; from?: unknown };
+export type InboxAnswer = { agent: string; id: string; version: number; action?: string; content?: unknown; accept?: 'recommended'; actor?: string; from?: unknown };
 export type InboxOutcome = { id: string; outcome: 'answered' | 'same' | 'conflict' | 'forbidden' | 'unknown' | 'invalid' | 'unavailable'; status: number; retryable?: boolean; state?: string; by?: unknown; error?: string };
 export const unavailable = (id: string): InboxOutcome => ({ id, outcome: 'unavailable', status: 503, retryable: true });
 export const inboxAgentFailure = (id: string, error: any): InboxOutcome => [403, 404].includes(error?.status) ? inboxFailure(id, error) : unavailable(id);
@@ -14,15 +14,15 @@ export function inboxFailure(id: string, error: any, input?: any): InboxOutcome 
 export function inboxAnswers(body: any): { requestId: string; answers: InboxAnswer[] } {
   if (!body || typeof body.requestId !== 'string' || !body.requestId.length || body.requestId.length > 200 ||
       !Array.isArray(body.answers) || !body.answers.length || body.answers.length > 100 ||
-      body.answers.some((a: any) => !a || typeof a.id !== 'string' || !a.id.length || !Number.isSafeInteger(a.version) || a.version < 1) ||
-      new Set(body.answers.map((a: any) => a.id)).size !== body.answers.length)
-    throw Object.assign(new Error('Send requestId and 1 to 100 different answers with id and version'), { status: 400 });
+      body.answers.some((a: any) => !a || typeof a.agent !== 'string' || !a.agent.length || typeof a.id !== 'string' || !a.id.length || !Number.isSafeInteger(a.version) || a.version < 1) ||
+      new Set(body.answers.map((a: any) => JSON.stringify([a.agent, a.id]))).size !== body.answers.length)
+    throw Object.assign(new Error('Send requestId and 1 to 100 different answers with agent, id and version'), { status: 400 });
   return body;
 }
 const conflict = (message: string) => Object.assign(new Error(message), { status: 409 });
 export async function answerInboxGroup(entries: InboxAnswer[], read: (id: string) => Promise<any>, validate: (input: any, body: any) => { action: string; content?: unknown } | void,
-  write: (answers: { id: string; body: any }[]) => Promise<{ status: number }>): Promise<InboxOutcome[]> {
-  const outcomes = new Map<string, InboxOutcome>(), ready: { id: string; body: any }[] = [];
+  write: (answers: { id: string; body: any }[]) => Promise<{ status: number }>, partition: (input: any) => string = () => ''): Promise<InboxOutcome[]> {
+  const outcomes = new Map<string, InboxOutcome>(), ready: { id: string; body: any; partition: string }[] = [];
   const check = async (entry: InboxAnswer) => {
     let input: any;
     try {
@@ -41,18 +41,19 @@ export async function answerInboxGroup(entries: InboxAnswer[], read: (id: string
       if (same) { outcomes.set(entry.id, { id: entry.id, outcome: 'same', status: 200 }); return; }
       if (entry.version !== (input.version ?? 1)) throw conflict('Input version moved');
       if (input.state !== 'pending' || input.expiresAt <= Date.now()) throw conflict('Input is already settled or expired');
-      return { id: entry.id, body };
+      return { id: entry.id, body, partition: partition(input) };
     } catch (error) { outcomes.set(entry.id, inboxFailure(entry.id, error, input)); }
   };
   for (const entry of entries) { const item = await check(entry); if (item) ready.push(item); }
-  if (ready.length) {
+  for (const key of [...new Set(ready.map(item => item.partition))].sort()) {
+    const group = ready.filter(item => item.partition === key);
     try {
-      const result = await write(ready);
-      for (const item of ready) outcomes.set(item.id, { id: item.id, outcome: result.status === 200 ? 'same' : 'answered', status: result.status });
+      const result = await write(group);
+      for (const item of group) outcomes.set(item.id, { id: item.id, outcome: result.status === 200 ? 'same' : 'answered', status: result.status });
     } catch {
       // Never split a failed write into more notices. Re-read races and classify
       // each item; unchanged pending items remain retryable, not falsely answered.
-      for (const item of ready) {
+      for (const item of group) {
         const pending = await check(entries.find(entry => entry.id === item.id)!);
         if (pending) outcomes.set(item.id, unavailable(item.id));
       }

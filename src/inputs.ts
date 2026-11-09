@@ -16,7 +16,7 @@ import { enqueueEvents, webhookEvent, type WebhookEvent } from "./webhooks.ts";
  * input settles once. When the last input of a suspension settles, a `resume` run gives each open
  * call its result: the answer itself, or the call run again with it (`RetryPlan`).
  */
-export type InputKind = "question" | "approval" | "form" | "url";
+export type InputKind = "question" | "approval" | "form" | "url" | "decision";
 export type InputState = "pending" | "answered" | "declined" | "cancelled" | "expired" | "superseded" | "withdrawn";
 /** Where an item sits in a person's queue (agent_inputs.priority): an approval is `high`, everything else `normal`. */
 export type Priority = "urgent" | "high" | "normal" | "low";
@@ -27,6 +27,9 @@ export type Answer = { action: Action; content?: unknown; by: Responder; at: num
 export interface Input {
   id: string; agent: string; tenant: string; requestId: string; toolCallId: string;
   kind: InputKind; message: string;
+  priority?: Priority; blocking?: boolean; key?: string; version?: number;
+  attachments?: { path: string; version: number; contentType?: string; caption?: string }[];
+  links?: string[]; recommendation?: { answer: unknown; reason: string }; applyRecommendationOnExpiry?: boolean;
   /** question: { questions }; approval: { tool, source, arguments (or argumentsPreview), argumentsHash, reason? }; form: { requestedSchema }; url: { url, origin }. */
   detail: Record<string, any>;
   /** Who may answer, besides the definition's approvers: the person whose message started the turn. */
@@ -35,8 +38,10 @@ export interface Input {
 }
 /** What is stored beyond what callers see: how the call is retried once answered. */
 type Stored = Pick<Input, "message" | "detail" | "responders"> & {
+  fixedResponders?: true;
   /** The call's name and a hash of its arguments: a retry must be the same call. */
   tool: string; argumentsHash: string;
+  delivery?: { id: string; inputs: string[] };
   /** The tool's own request's key (MCP `inputRequests`), answered by the same key on the retry. */
   key?: string;
   /** The tool's opaque `requestState`, sealed at rest; never shown to the model or callers. */
@@ -72,6 +77,44 @@ const PRIORITY_RANK: Record<Priority, number> = { urgent: 0, high: 1, normal: 2,
 export const argumentsHash = (name: string, args: unknown) => createHash("sha256").update(canonical({ name, arguments: args })).digest("hex");
 const clip = (text: unknown, max: number = INPUT_LIMITS.text) => String(text ?? "").slice(0, max);
 
+/** Shared fields for a question or an independent decision. */
+export const inboxFields = {
+  priority: { type: "string", enum: ["urgent", "high", "normal", "low"], description: "How soon a person should look: urgent, high, normal or low." },
+  attachments: { type: "array", maxItems: 32, items: { type: "object", required: ["path"], properties: { path: { type: "string" }, caption: { type: "string" } }, additionalProperties: false } },
+  links: { type: "array", maxItems: 32, items: { type: "string" } },
+  recommendation: { type: "object", required: ["answer", "reason"], properties: { answer: {}, reason: { type: "string", description: "Why you recommend it, in a sentence." } }, additionalProperties: false },
+  applyRecommendationOnExpiry: { type: "boolean", description: "Apply your recommendation if nobody answers before it expires. Never for approvals." },
+};
+export function inboxDetail(args: Record<string, any>, kind: InputKind = "question") {
+  if (args.priority !== undefined && !["urgent", "high", "normal", "low"].includes(args.priority)) throw new Error("Invalid priority");
+  if (args.links !== undefined && (!Array.isArray(args.links) || args.links.length > 32 || args.links.some((link: unknown) => { try { return typeof link !== "string" || new URL(link).protocol !== "https:"; } catch { return true; } }))) throw new Error("Use at most 32 https links");
+  if (args.attachments !== undefined && (!Array.isArray(args.attachments) || args.attachments.length > 32 || args.attachments.some((file: any) => typeof file?.path !== "string" || !file.path || (file.caption !== undefined && (typeof file.caption !== "string" || file.caption.length > 1000))))) throw new Error("Use at most 32 attachments with paths");
+  const questions = questionsInput(args.questions);
+  const recommended = Object.fromEntries(questions.filter(q => q.recommended !== undefined).map(q => [q.question, q.recommended]));
+  const recommendation = args.recommendation ?? (Object.keys(recommended).length === questions.length ? { answer: { answers: recommended }, reason: questions.map(q => q.reason).join("\n") } : undefined);
+  if (recommendation && (typeof recommendation.reason !== "string" || !recommendation.reason.trim())) throw new Error("A recommendation needs a reason");
+  if (recommendation) answerInput({ kind, detail: { questions } }, { action: "accept", content: recommendation.answer });
+  if (args.applyRecommendationOnExpiry !== undefined && typeof args.applyRecommendationOnExpiry !== "boolean") throw new Error("applyRecommendationOnExpiry must be a boolean");
+  if (args.applyRecommendationOnExpiry && (kind === "approval" || !recommendation)) throw new Error("Only questions with a recommendation can apply it on expiry");
+  return { questions, ...(args.priority ? { priority: args.priority } : {}), ...(args.attachments ? { attachments: args.attachments } : {}), ...(args.links ? { links: args.links } : {}), ...(recommendation ? { recommendation } : {}), ...(args.applyRecommendationOnExpiry ? { applyRecommendationOnExpiry: true } : {}) };
+}
+export function decisionDetail(args: Record<string, any>) {
+  if (typeof args.title !== "string" || !args.title.trim() || args.title.length > 1000 || typeof args.body !== "string" || args.body.length > 4000) throw new Error("A decision needs a title and body");
+  if (args.key !== undefined && (typeof args.key !== "string" || !args.key.trim() || args.key.length > 200)) throw new Error("A decision key is 1 to 200 characters");
+  const recommendation = args.recommendation && typeof args.recommendation.answer === "string"
+    ? { ...args.recommendation, answer: { answers: { [args.title]: args.recommendation.answer } } } : args.recommendation;
+  return { ...inboxDetail({ ...args, recommendation, questions: [{ question: args.title, options: args.options, allowOther: true }] }), title: args.title, body: args.body };
+}
+export function expiryAnswer(input: Pick<Input, "kind" | "detail">, now = Date.now()): Answer {
+  const automatic = input.kind !== "approval" && input.detail.applyRecommendationOnExpiry === true && input.detail.recommendation;
+  return { ...(automatic ? answerInput(input, { action: "accept", content: automatic.answer }) : { action: "cancel" as const }), by: { system: "expired" }, at: now };
+}
+export function decisionNotice(inputs: InputRow[]) {
+  const sorted = [...inputs].sort((a, b) => a.id.localeCompare(b.id));
+  const escape = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  return sorted.map(input => `<decision_answer id="${escape(input.id)}" by="${escape(responderName(input.answer!.by))}">${escape(JSON.stringify({ state: input.state, ...input.answer }))}</decision_answer>`).join("\n");
+}
+
 /** A person's name for the model, from an answer: never a credential. */
 export function responderName(by: Responder) {
   if (by.system) return "the runtime";
@@ -88,15 +131,16 @@ export function waited(ms: number) {
  * The inputs a tool's `input_required` result asks for: MCP elicitations (form or url), and the
  * runtime's own approval and question requests. Anything else (sampling, roots) is refused.
  */
-export function inputRequests(result: { inputRequests?: unknown }): { key: string; kind: InputKind; message: string; detail: Record<string, unknown> }[] {
+export function inputRequests(result: { inputRequests?: unknown }, inbox = false): { key: string; kind: Exclude<InputKind, "decision">; message: string; detail: Record<string, unknown> }[] {
   const requests = result.inputRequests;
   if (!requests || typeof requests !== "object" || Array.isArray(requests) || !Object.keys(requests).length) throw new Error("The tool asked for input but named none");
   const entries = Object.entries(requests as Record<string, any>);
   if (entries.length > INPUT_LIMITS.perCall) throw new Error(`The tool asked for more than ${INPUT_LIMITS.perCall} inputs at once`);
   return entries.map(([key, request]) => {
     const params = request?.params ?? {};
+    if (request?.method === "agent-runtime/approval" && params.applyRecommendationOnExpiry) throw new Error("Approvals cannot apply recommendations on expiry");
     if (request?.method === "agent-runtime/approval") return { key, kind: "approval" as const, message: "", detail: params.reason ? { reason: clip(params.reason, 1000) } : {} };
-    if (request?.method === "agent-runtime/question") return { key, kind: "question" as const, message: questionMessage(params.questions), detail: { questions: questionsInput(params.questions) } };
+    if (request?.method === "agent-runtime/question") return { key, kind: "question" as const, message: questionMessage(params.questions), detail: { ...(inbox ? params : {}), questions: questionsInput(params.questions) } };
     if (request?.method !== "elicitation/create") throw new Error(`The tool asked for input the runtime cannot give (${String(request?.method)})`);
     if (params.mode === "url") {
       let url: URL;
@@ -127,12 +171,14 @@ export function questionsInput(value: unknown) {
     const open = entry.options === undefined || (Array.isArray(entry.options) && entry.options.length === 0);
     if (!open && (!Array.isArray(entry.options) || entry.options.length < 2 || entry.options.length > 4 || entry.options.some((option: any) => typeof option?.label !== "string" || !option.label.trim()))) throw new Error("Each question needs 2 to 4 options, each with a label, or none (answered in the person's own words)");
     const options: any[] = open ? [] : entry.options;
+    if (entry.recommended !== undefined && (!options.some(option => option.label === entry.recommended) || typeof entry.reason !== "string" || !entry.reason.trim())) throw new Error("A recommended option needs its label and a reason");
     const labels = options.map((option: any) => option.label);
     if (new Set(labels).size !== labels.length) throw new Error("A question's option labels must differ");
     if (value.filter((other: any) => other?.question === entry.question).length > 1) throw new Error("Each question must be different");
     return {
       question: clip(entry.question, 1000), header: clip(header, 12).trimEnd(),
       options: options.map((option: any) => ({ label: clip(option.label, 200), ...(typeof option.description === "string" ? { description: clip(option.description, 1000) } : {}) })),
+      ...(entry.recommended !== undefined ? { recommended: entry.recommended, reason: clip(entry.reason, 1000) } : {}),
       multiSelect: !open && entry.multiSelect === true, allowOther: open || entry.allowOther === true,
     };
   });
@@ -159,6 +205,7 @@ export function answerInput(input: Pick<Input, "kind" | "detail">, body: any): {
     if (!body.content || typeof body.content !== "object" || Array.isArray(body.content) || !schemaAccepts(input.detail.requestedSchema, body.content)) throw new HttpError(400, "content does not fit the form's schema");
     return { action, content: body.content };
   }
+  if (input.kind === "decision" && typeof body.content === "string") return answerInput({ kind: "question", detail: input.detail }, { ...body, content: { answers: { [input.detail.title]: body.content } } });
   const answers = body.content?.answers;
   if (!answers || typeof answers !== "object" || Array.isArray(answers)) throw new HttpError(400, "Answer questions with content: { answers: { \"<question>\": \"<label>\" | [\"<label>\", ...] | \"<your own words>\" } }");
   const checked: Record<string, string | string[]> = {};
@@ -221,7 +268,7 @@ export function resolution(inputs: InputRow[], unseal: (row: InputRow) => string
   const last = inputs.reduce((latest, input) => Math.max(latest, input.answer?.at ?? 0), 0);
   const who = [...new Set(inputs.map(input => responderName(input.answer!.by)))].join(", ");
   const note = { answeredBy: who, waited: waited(last - Math.min(...inputs.map(input => input.createdAt))) };
-  const closed = inputs.find(input => input.answer?.by.system);
+  const closed = inputs.find(input => input.answer?.by.system && !(input.answer.by.system === "expired" && input.answer.action === "accept"));
   if (closed?.answer!.by.system === "expired") {
     // No one answered in time, so the runtime answers. A question gets an empty answer that the model and code read on
     // from; an approval is not given and a tool's own request is cancelled, so the call does not run (an error, as a
@@ -260,8 +307,8 @@ export function resolution(inputs: InputRow[], unseal: (row: InputRow) => string
 const row = (value: any): InputRow => {
   const { message, detail, responders } = value.input as Stored;
   return {
-    version: value.version, id: value.id, agent: value.agent, tenant: value.tenant, requestId: value.request_id, toolCallId: value.tool_call_id, kind: value.kind,
-    message, detail, responders, state: value.state, ...(value.answer ? { answer: value.answer } : {}),
+    id: value.id, agent: value.agent, tenant: value.tenant, requestId: value.request_id, toolCallId: value.tool_call_id, kind: value.kind,
+    message, detail, responders, attachments: detail.attachments, links: detail.links, recommendation: detail.recommendation, applyRecommendationOnExpiry: detail.applyRecommendationOnExpiry, priority: value.priority ?? "normal", blocking: value.blocking ?? true, key: value.item_key ?? undefined, version: value.version ?? 1, state: value.state, ...(value.answer ? { answer: value.answer } : {}),
     createdAt: Number(value.created_at), expiresAt: Number(value.expires_at), stored: value.input,
   };
 };
@@ -285,41 +332,47 @@ export class Inputs {
    * was lost), it returns the rows the call's run already has pending, and records nothing new.
    */
   async create(base: Pick<Input, "agent" | "tenant" | "requestId" | "toolCallId" | "responders" | "expiresAt"> & {
-    tool: string; argumentsHash: string; requestState?: string;
+    tool: string; argumentsHash: string; requestState?: string; blocking?: boolean; itemKey?: string; subject?: string;
     /** The definition's approvers (humanInput.approvers): with the audience, who may answer, frozen into `responders`. */
     approvers?: string[];
     /** The asking agent's chain (delegation.position): its root, and the chain from that root to it. */
     rootAgent?: string; lineage?: string[];
   },
-    requests: { key?: string; kind: InputKind; message: string; detail: Record<string, unknown> }[], claim?: Claim): Promise<InputRow[]> {
+    requests: { key?: string; kind: InputKind; message: string; detail: Record<string, unknown>; audience?: string[] }[], claim?: Claim): Promise<InputRow[]> {
     const createdAt = Date.now();
     // Who may answer, as the row holds it: the audience plus the approvers, frozen now (a later change to the definition
     // does not widen or narrow an item that was already asked).
-    const responders = [...new Set([...base.responders.audience ?? [], ...base.approvers ?? []])];
     const lineage = base.lineage ?? (base.rootAgent === undefined ? undefined : [base.rootAgent]);
     const rootAgent = base.rootAgent ?? lineage?.[0];
     const rows = requests.map(request => {
       const id = `inp_${randomBytes(16).toString("hex")}`;
       const requestState = base.requestState === undefined ? undefined : this.sealer ? this.sealer.seal(`input:${base.agent}:${base.toolCallId}`, base.requestState) : base.requestState;
       const stored: Stored = {
-        message: request.message, detail: request.detail, responders: base.responders, tool: base.tool, argumentsHash: base.argumentsHash,
+        message: request.message, detail: request.detail, responders: request.audience ? { audience: request.audience } : base.responders, ...(request.audience ? { fixedResponders: true as const } : {}), tool: base.tool, argumentsHash: base.argumentsHash,
         ...(request.key !== undefined ? { key: request.key } : {}), ...(requestState !== undefined ? { requestState } : {}),
       };
       return row({ id, agent: base.agent, tenant: base.tenant, request_id: base.requestId, tool_call_id: base.toolCallId, kind: request.kind, state: "pending", input: stored, created_at: createdAt, expires_at: base.expiresAt });
     });
     return underClaim(this.db, claim, async sql => {
-      const pending = (await sql.query("select * from agent_inputs where agent = $1 and request_id = $2 and tool_call_id = $3 and state = 'pending' order by created_at, id",
+      await sql.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [base.agent]);
+      const pending = (await sql.query("select * from agent_inputs where agent = $1 and request_id = $2 and tool_call_id = $3 and (state = 'pending' or not blocking) order by created_at, id",
         [base.agent, base.requestId, base.toolCallId])).rows.map(row);
       const keys = new Set(requests.map(request => request.key ?? null));
       const same = pending.filter(input => keys.has(input.stored.key ?? null));
       if (same.length === requests.length) return same;
+      if (base.blocking === false && base.itemKey) {
+        const older = (await sql.query("select id from agent_inputs where agent = $1 and item_key = $2 and not blocking and state = 'pending'", [base.agent, base.itemKey])).rows;
+        for (const old of older) await this.settle(old.id, { action: "cancel", by: { system: "superseded" }, at: createdAt }, "withdrawn", sql);
+      }
       for (const input of rows) {
-        const priority = priorityOf(input.kind);
+        const priority: Priority = input.detail.priority ?? priorityOf(input.kind);
+        input.priority = priority; input.blocking = base.blocking ?? true; input.key = base.itemKey;
+        if (input.kind === "approval" && input.detail.applyRecommendationOnExpiry) throw new Error("Approvals cannot apply recommendations on expiry");
         await sql.query(`insert into agent_inputs (id, agent, tenant, request_id, tool_call_id, kind, input, created_at, expires_at,
-          priority, priority_rank, blocking, responders, root_agent, lineage)
-          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, true, $12, $13, $14)`,
+          priority, priority_rank, blocking, responders, root_agent, lineage, item_key, subject)
+          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $15, $12, $13, $14, $16, $17)`,
           [input.id, input.agent, input.tenant, input.requestId, input.toolCallId, input.kind, JSON.stringify(input.stored), input.createdAt, input.expiresAt,
-            priority, PRIORITY_RANK[priority], responders, rootAgent ?? null, lineage ?? null]);
+            priority, PRIORITY_RANK[priority], [...new Set([...input.stored.responders.audience ?? [], ...(input.stored.fixedResponders ? [] : base.approvers ?? [])])], rootAgent ?? null, lineage ?? null, base.blocking ?? true, base.itemKey ?? null, base.subject ?? null]);
       }
       await enqueueEvents(sql, rows.map(input => inputEvent("input.requested", input)));
       // Heard by the inbox watchers of every node, in this transaction: a listener sees it once, at commit.
@@ -343,7 +396,7 @@ export class Inputs {
 
   /** A suspension's inputs: those one run's calls asked for. */
   async forRequest(agent: string, requestId: string) {
-    return (await this.db.query("select * from agent_inputs where agent = $1 and request_id = $2 order by created_at, id", [agent, requestId])).rows.map(row);
+    return (await this.db.query("select * from agent_inputs where agent = $1 and request_id = $2 and blocking order by created_at, id", [agent, requestId])).rows.map(row);
   }
 
   /** A tenant's inputs, newest first: one agent's, or all of them (the inbox). */
@@ -364,7 +417,9 @@ export class Inputs {
       if (!updated) return undefined;
       await enqueueEvents(sql, [inputEvent("input.resolved", row(updated))]);
       await sql.query("select pg_notify($1, $2)", [INBOX_CHANNEL, updated.tenant]);
-      return row(updated);
+      const result = row(updated);
+      if (result.blocking === false && state !== "withdrawn") await this.stageDecisions([result], sql);
+      return result;
     };
     return sql ? work(sql) : transaction(this.db, work);
   }
@@ -384,9 +439,35 @@ export class Inputs {
           if (!done) throw taken;
           settled.push(done);
         }
+        await this.stageDecisions(settled.filter(input => input.blocking === false), sql);
         return settled;
       });
     } catch (error) { if (error === taken) return undefined; throw error; }
+  }
+
+  /** The answer transaction also records delivery intent; a crash is retried by the expiry sweep. */
+  async stageDecisions(rows: InputRow[], sql: Sql) {
+    if (!rows.length) return;
+    const inputs = rows.map(row => row.id).sort();
+    const delivery = { id: `decision_${createHash("sha256").update(inputs.join(",")).digest("hex").slice(0, 40)}`, inputs };
+    await sql.query("update agent_inputs set input = jsonb_set(input, '{delivery}', $2::jsonb) where id = any($1::text[])", [inputs, JSON.stringify(delivery)]);
+  }
+  async deliveries(agent?: string) {
+    const rows = (await this.db.query("select * from agent_inputs where not blocking and input ? 'delivery' and ($1::text is null or agent = $1) order by created_at, id limit 1000", [agent ?? null])).rows.map(row);
+    const groups = new Map<string, InputRow[]>();
+    for (const input of rows) {
+      const id = input.stored.delivery!.id;
+      if (!groups.has(id)) groups.set(id, []);
+      groups.get(id)!.push(input);
+    }
+    // The scan limit may cut through a batch whose items were asked at different times. Deliver it whole.
+    for (const [id, group] of groups) if (group.length < group[0].stored.delivery!.inputs.length) {
+      groups.set(id, (await this.db.query("select * from agent_inputs where input->'delivery'->>'id' = $1 order by id", [id])).rows.map(row));
+    }
+    return groups;
+  }
+  async delivered(id: string) {
+    await this.db.query("update agent_inputs set input = input - 'delivery' where input->'delivery'->>'id' = $1", [id]);
   }
 
   /** Claim pending inputs past their expiry, a batch at a time; a claim left by a crashed node lapses after a minute. */

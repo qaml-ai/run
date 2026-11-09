@@ -1,3 +1,6 @@
+/** User runs a stop or member removal may cancel before they begin. A resume closes a suspended turn and is the runtime's. */
+export const CANCELLABLE_METHODS: readonly string[] = ["prompt", "continue", "execute"];
+
 /**
  * An agent's `queue`: what it does with the prompts that wait while a turn runs. Unset (or `{mode: "each"}`): each runs
  * as a turn of its own, in order. `{mode: "batch"}`: those that can share a turn (`batchable`) run together as the next
@@ -34,15 +37,15 @@ const RUNTIME_IDS = /^(?:delegate_|spawn_|msg_|resume_|child_|schedule-|kept-que
 export function batchable(given: unknown, id?: string) {
   const params = given as Record<string, unknown> | undefined;
   const metadata = params?.metadata as Record<string, unknown> | undefined;
-  return !!params && typeof params === "object" && params.notice === undefined && params.landOnly === undefined && params.output === undefined
+  return !!params && typeof params === "object" && params.whileRunning !== "steer" && params.notice === undefined && params.landOnly === undefined && params.output === undefined
     && params.spendLimit === undefined && params.runLimits === undefined && !(id !== undefined && RUNTIME_IDS.test(id))
     && metadata?.parentAgentId === undefined && metadata?.delegationSignature === undefined;
 }
 
 /**
- * Whether `member` may join `lead`'s turn: both batchable, acting for the same actor and spending from the same bucket
+ * Whether `member` may join `lead`'s turn: both batchable, acting for the same actor, payer selection and bucket
  * (the turn acts for one and is charged to one).
  */
 export function joins(lead: { id?: string; actor?: string; bucket?: string; params?: unknown }, member: { id?: string; actor?: string; bucket?: string; params?: unknown }) {
-  return batchable(lead.params, lead.id) && batchable(member.params, member.id) && (lead.actor ?? null) === (member.actor ?? null) && (lead.bucket ?? null) === (member.bucket ?? null);
+  return batchable(lead.params, lead.id) && batchable(member.params, member.id) && (lead.actor ?? null) === (member.actor ?? null) && (lead.bucket ?? null) === (member.bucket ?? null) && ((lead.params as { endUser?: string })?.endUser ?? null) === ((member.params as { endUser?: string })?.endUser ?? null);
 }

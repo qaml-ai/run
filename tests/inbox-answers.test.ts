@@ -13,7 +13,7 @@ test('inbox separates conflicts and forbidden items before submitting one agent 
     moved: { state: 'pending', version: 3 },
   };
   const writes: unknown[] = [];
-  const answers = Object.keys(rows).map(id => ({ id, version: 1, action: 'accept' }));
+  const answers = Object.keys(rows).map(id => ({ agent: 'a', id, version: 1, action: 'accept' }));
   const result = await answerInboxGroup(answers, async id => rows[id], (input) => {
     if (input === rows.forbidden) throw Object.assign(new Error('Not a responder'), { status: 403 });
   }, async batch => { writes.push(batch); return { status: 202 }; });
@@ -21,22 +21,22 @@ test('inbox separates conflicts and forbidden items before submitting one agent 
   assert.equal(writes.length, 1);
   assert.deepEqual((writes[0] as any[]).map(a => a.id), ['fresh', 'another']);
   assert.deepEqual((writes[0] as any[]).map(a => a.body.version), [1, 1]);
-  assert.throws(() => inboxAnswers({ requestId: 'x', answers: [{ id: 'a', version: 0 }] }));
+  assert.throws(() => inboxAnswers({ requestId: 'x', answers: [{ agent: 'a', id: 'a', version: 0 }] }));
 });
 
 test('recommendations are taken from the authority and guarded by the observed version', async () => {
   const input = { version: 2, state: 'pending', expiresAt: Date.now() + 10000, detail: { recommendation: { answer: { choice: 'current' } } } };
   const written: any[] = [];
   const write = async (batch: any[]) => { written.push(...batch); return { status: 202 }; };
-  const stale = await answerInboxGroup([{ id: 'a', version: 1, accept: 'recommended' }], async () => input, () => {}, write);
+  const stale = await answerInboxGroup([{ agent: 'a', id: 'a', version: 1, accept: 'recommended' }], async () => input, () => {}, write);
   assert.equal(stale[0].outcome, 'conflict');
   assert.equal(written.length, 0);
-  await answerInboxGroup([{ id: 'a', version: 2, accept: 'recommended' }], async () => input, () => {}, write);
+  await answerInboxGroup([{ agent: 'a', id: 'a', version: 2, accept: 'recommended' }], async () => input, () => {}, write);
   assert.deepEqual(written[0].body.content, { choice: 'current' });
 });
 
 test('authority read failures are unavailable; forbidden results reveal no state or responder', async () => {
-  const results = await answerInboxGroup(['down', 'forbidden', 'ok'].map(id => ({ id, version: 1, action: 'accept' })), async id => {
+  const results = await answerInboxGroup(['down', 'forbidden', 'ok'].map(id => ({ agent: 'a', id, version: 1, action: 'accept' })), async id => {
     if (id === 'down') throw new Error('private infrastructure error');
     return { id, version: 1, state: 'pending', expiresAt: Date.now() + 10000, answer: { by: { actor: 'secret' } } };
   }, input => { if (input.id === 'forbidden') throw Object.assign(new Error('Not allowed'), { status: 403 }); }, async () => ({ status: 202 }));
@@ -49,7 +49,7 @@ test('authority read failures are unavailable; forbidden results reveal no state
 
 test('one failed write is not bisected, and pending version races become conflicts', async () => {
   let version = 1, writes = 0;
-  const entries = ['a', 'b'].map(id => ({ id, version: 1, action: 'accept' }));
+  const entries = ['a', 'b'].map(id => ({ agent: 'a', id, version: 1, action: 'accept' }));
   const results = await answerInboxGroup(entries, async () => ({ version, state: 'pending', expiresAt: Date.now() + 10000 }), () => {}, async () => {
     writes++;
     version++;
@@ -62,8 +62,20 @@ test('one failed write is not bisected, and pending version races become conflic
 test('write outages are retryable and settled matching answers are same without a write', async () => {
   let writes = 0;
   const rows: any = { same: { version: 2, state: 'answered', answer: { action: 'accept', content: { a: 1, b: 2 }, by: { actor: 'a' } } }, pending: { version: 1, state: 'pending', expiresAt: Date.now() + 10000 } };
-  const results = await answerInboxGroup(['same', 'pending'].map(id => ({ id, version: 1, action: 'accept', content: { b: 2, a: 1 } })), async id => rows[id], () => {}, async () => { writes++; throw new Error('Unavailable'); });
+  const results = await answerInboxGroup(['same', 'pending'].map(id => ({ agent: 'a', id, version: 1, action: 'accept', content: { b: 2, a: 1 } })), async id => rows[id], () => {}, async () => { writes++; throw new Error('Unavailable'); });
   assert.equal(writes, 1);
   assert.equal(results[0].outcome, 'same');
   assert.deepEqual(results[1], { id: 'pending', outcome: 'unavailable', status: 503, retryable: true });
+});
+
+test('a failed blocking write does not prevent the one decision batch', async () => {
+  const rows: any = { block: { blocking: true }, a: { blocking: false }, b: { blocking: false } };
+  const writes: string[][] = [];
+  const outcomes = await answerInboxGroup(['a', 'block', 'b'].map(id => ({ agent: 'agent', id, version: 1 })), async id => ({ ...rows[id], state: 'pending', version: 1, expiresAt: Date.now() + 10000 }), () => {}, async answers => {
+    const ids = answers.map(answer => answer.id); writes.push(ids);
+    if (ids.includes('block')) throw new Error('Unavailable');
+    return { status: 202 };
+  }, input => input.blocking ? 'blocking' : 'decision');
+  assert.deepEqual(writes, [['block'], ['a', 'b']]);
+  assert.deepEqual(outcomes.map(outcome => outcome.outcome), ['answered', 'unavailable', 'answered']);
 });

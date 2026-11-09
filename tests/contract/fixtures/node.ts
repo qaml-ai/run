@@ -1,4 +1,5 @@
 import { inboxReceiptFixture } from "./inbox-receipts.ts";
+import { sharedAgentsQuery } from './shared-agent-state.ts';
 import { seedInbox } from './inbox.ts';
 import { createHash, randomBytes } from "node:crypto";
 import { seedOpsAccount } from "./ops-seed.ts";
@@ -11,6 +12,7 @@ import pg from "pg";
 import { migrate } from "../../../src/db.ts";
 import { EndUserCredits } from "../../../src/end-user-credits.ts";
 import { seedJourneyAccount } from "./journey-state.ts";
+import { triggerQuery } from "./trigger-state.ts";
 import { channelQuery } from "./channel-state.ts";
 import { EMAIL_TOPIC, snsSigner } from "./email.ts";
 import { runtime } from "../../runtime-server.ts";
@@ -220,6 +222,9 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
       const result = await db.query("update agent_children set ended_at=null,landed_at=null,landed_by=null,state='running',checked_at=0 where parent=$1", [parent]);
       if (!result.rowCount) throw new Error("Fixture child settlement not found");
     },
+    async deleteEndUser(tenant, endUser) {
+      await db.query("delete from end_users where tenant=$1 and id=$2", [tenant, endUser]);
+    },
     async seedLegacyWorkflowDefinition(definition) {
       const result = await db.query(`update definitions set spec = (spec::jsonb || '{"builtins":["workflow"],"workflow":{"instructions":true}}'::jsonb)::json where id = $1`, [definition]);
       if (result.rowCount !== 1) throw new Error("Fixture definition not found");
@@ -261,7 +266,9 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
     },
     async updateLegacyUsageWebhook(url) { await db.query("update usage_webhooks set url=$1 where tenant='alice'", [url]); },
     seedJourneyAccount: input => seedJourneyAccount(db, input),
+    sharedAgentsQuery: sharedAgentsQuery(db),
     inputIndex: async (agent: string) => (await db.query("select state, version, priority, priority_rank, blocking, responders from agent_inputs where agent=$1 order by created_at, id", [agent])).rows,
+    triggerQuery: triggerQuery(db),
     channelQuery: channelQuery(db),
     async deliverEmail(raw, receipt = {}) {
       if (!sns) throw new Error("Email channel cases set AGENT_EMAIL_DOMAIN");

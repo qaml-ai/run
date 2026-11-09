@@ -106,7 +106,7 @@ class AgentRuntime(_RuntimeCalls):
     def connect_agent(self, session, *, tools=()):
         """A client for an agent you hold the credentials of ({"id", "token"}). It holds no connection: each call is a
         request, and a run's outcome is waited for by asking for it. `tools` are what configure declares; it never serves them."""
-        return AgentClient(self.base, session, tools)
+        return AgentClient(self.base, session, tools, api_key=self.api_key)
 
     def wait_for_run(self, run_id, *, timeout=None):
         """A stateless run once it ends, however long it takes; `timeout` (seconds) stops the wait, not the run."""
@@ -174,11 +174,12 @@ class AgentClient(_AgentCalls):
     """One agent, with its own token, synchronous: requests, and their outcomes, asked for (a long poll of up to 25 s at a
     time). It holds a connection only while a stream reads a run, and never serves tools."""
 
-    def __init__(self, base, session, tools=()):
+    def __init__(self, base, session, tools=(), *, api_key=None):
         import re
         if not re.fullmatch(r"client_[a-f0-9]{40}", session["id"]):
             raise ValueError("Invalid session id")
         self.base = _origin(base)
+        self._api_key = api_key
         # The agent's id (client_...): safe to log and to store.
         self.id = session["id"]
         # Its id and token: keep the token secret (it is left out of repr).
@@ -201,12 +202,22 @@ class AgentClient(_AgentCalls):
             before = page["next"]
         return {"messages": [message for page in reversed(pages) for message in page]}
 
+    def _trigger_http(self, suffix, method="GET", body=None, retry=True):
+        if not self._api_key:
+            raise AgentError("Trigger management requires a tenant API key", 403)
+        return _http_sync(self.http, self.base, f"/v1/agents/{self.id}" + suffix, self._api_key, method, body, retry)
+
     def _http(self, suffix, method="GET", body=None, retry=True, timeout=None):
         return _http_sync(self.http, self.base, self.path + suffix, self.session["token"], method, body, retry, timeout=timeout)
 
     def _submit(self, method, params, request_id):
         """Send a request (the same id again joins the first): its record."""
         _check_request_id(request_id)
+        if method == "prompt" and params is not None and "endUser" in params:
+            if not self._api_key:
+                raise AgentError("end_user requires a tenant API key", 403)
+            return _http_sync(self.http, self.base, f"/v1/agents/{self.id}/prompt", self._api_key, "POST",
+                              {**params, "requestId": request_id})
         return _http_sync(self.http, self.base, self.path + "/requests", self.session["token"], "POST",
                           {"id": request_id, "method": method, "params": params or {}})
 
@@ -265,17 +276,17 @@ class AgentClient(_AgentCalls):
         return attached
 
     def _prompt_params(self, request_id, text, *, actor=None, from_=None, files=None, metadata=None, while_running=None, allow_disconnected=False,
-                       spend_limit=None, output=None, history=None, run_limits=None):
+                       spend_limit=None, output=None, history=None, run_limits=None, end_user=None):
         attached = self._attach(request_id, files) if files else None
-        return _message_params(text, attached, _prompt_extra(actor, while_running, allow_disconnected, spend_limit, output, history, run_limits), from_, metadata)
+        return _message_params(text, attached, _prompt_extra(actor, while_running, allow_disconnected, spend_limit, output, history, run_limits, end_user), from_, metadata)
 
     def prompt(self, text, *, actor=None, from_=None, files=None, metadata=None, while_running=None, idempotency_key=None, allow_disconnected=False,
-               spend_limit=None, output=None, history=None, timeout=None):
+               spend_limit=None, output=None, history=None, timeout=None, end_user=None):
         """Send a message and wait for the run's raw result ({"reply", "output", "error", "stopped", "inputs", ...}), as
         camelai_run.AgentClient.prompt. `files`: bytes, a local path, {"name", "data", "content_type"?} or {"path"}."""
         request_id = idempotency_key or str(uuid.uuid4())
         params = self._prompt_params(request_id, text, actor=actor, from_=from_, files=files, metadata=metadata, while_running=while_running,
-                                     allow_disconnected=allow_disconnected, spend_limit=spend_limit, output=output, history=history)
+                                     allow_disconnected=allow_disconnected, spend_limit=spend_limit, output=output, history=history, end_user=end_user)
         result = self.request("prompt", params, idempotency_key=request_id, timeout=timeout)
         # A steered message's request completes as the running turn takes it, naming the turn: its outcome is the turn's. So
         # does a prompt that ran in another's turn, on an agent whose queue batches (batchedInto).
@@ -400,11 +411,10 @@ class AgentFiles(_AsyncFiles):
 
 
 class RunInput(_AsyncInput):
-    """Human input a run waits on (a dict: id, kind, message, detail...), with the means to answer it. answer() and
-    decline() return the resumed run."""
+    """Human input with the means to answer it. Decisions return a completed receipt; blocking inputs return the resumed run."""
 
     def answer(self, value, *, from_=None, throw_on_error=True, timeout=None):
-        """approval or url: True or False; question: the label chosen (or labels, or your own words), or a dict of question
+        """approval or url: True or False; question or decision: the label chosen (or labels, or your own words), or a dict of question
         to answer; form: its fields. `from_`: who answers (your user id, or {"id", "name"?})."""
         return self._agent._respond(self, _answer_for(self, value), from_, throw_on_error, timeout)
 
@@ -483,14 +493,14 @@ class Agent:
         return self.client.files
 
     def run(self, text, *, user=None, files=None, metadata=None, idempotency_key=None, timeout=None, throw_on_error=True, while_running=None,
-            allow_disconnected=False, spend_limit=None, output=None, history=None, run_limits=None):
+            allow_disconnected=False, spend_limit=None, output=None, history=None, run_limits=None, end_user=None):
         """Send a message and wait for the run it starts: its reply, or the input it waits on. As camelai_run.Agent.run:
         `timeout` (seconds) only stops the wait, a failed run raises RunError unless throw_on_error=False, and the same
         idempotency_key returns the same run."""
         request_id = idempotency_key or str(uuid.uuid4())
         params = self.client._prompt_params(request_id, text, from_=_sender(user) if user else None, files=files, metadata=metadata, while_running=while_running,
                                             allow_disconnected=allow_disconnected, spend_limit=spend_limit, output=_output_request(output), history=history,
-                                            run_limits=run_limits)
+                                            run_limits=run_limits, end_user=end_user)
         record = self.client._submit("prompt", params, request_id)
         return self._settled(request_id, self.client._outcome(request_id, record, timeout), output, throw_on_error, timeout)
 
@@ -507,12 +517,12 @@ class Agent:
         return run
 
     def stream(self, text, *, user=None, files=None, metadata=None, idempotency_key=None, timeout=None, throw_on_error=True, while_running=None,
-               allow_disconnected=False, spend_limit=None, output=None, history=None):
+               allow_disconnected=False, spend_limit=None, output=None, history=None, end_user=None):
         """Send a message and read the run as it happens: text as it is written, tool calls and results, the input it
         waits on and, last, "done" with the run."""
         return RunStream(self, text, {"user": user, "files": files, "metadata": metadata, "idempotency_key": idempotency_key, "timeout": timeout,
                                       "throw_on_error": throw_on_error, "while_running": while_running, "allow_disconnected": allow_disconnected,
-                                      "spend_limit": spend_limit, "output": output, "history": history})
+                                      "spend_limit": spend_limit, "output": output, "history": history, "end_user": end_user})
 
     def _respond(self, input, answer, from_, throw_on_error, timeout):
         audience = (input.get("responders") or {}).get("audience")
@@ -523,17 +533,17 @@ class Agent:
         if request:
             return self._settled(request["id"], self.client._outcome(request["id"], timeout=timeout), input._output, throw_on_error, timeout)
         # Other inputs of the run still wait: it resumes once they are answered too.
-        pending = [RunInput(self, other, input._output) for other in self.client.inputs(state="pending") if other["requestId"] == input["requestId"]]
-        return Run(input["requestId"], "input_required", inputs=pending)
+        pending = [] if input.get("blocking") is False else [RunInput(self, other, input._output) for other in self.client.inputs(state="pending") if other["requestId"] == input["requestId"] and other.get("blocking") is not False]
+        return Run(input["requestId"], "input_required" if pending else "completed", inputs=pending)
 
     def send(self, text, *, user=None, files=None, metadata=None, idempotency_key=None, allow_disconnected=False, spend_limit=None,
-             output=None, history=None, run_limits=None):
+             output=None, history=None, run_limits=None, end_user=None):
         """Send a message and return as soon as the runtime has it, without waiting for the run: {"id", "state"} (running
         or queued). Get its outcome later with wait(id), the agent's events, or a run.completed webhook."""
         request_id = idempotency_key or str(uuid.uuid4())
         params = self.client._prompt_params(request_id, text, from_=_sender(user) if user else None, files=files, metadata=metadata,
                                             allow_disconnected=allow_disconnected, spend_limit=spend_limit, output=_output_request(output), history=history,
-                                            run_limits=run_limits)
+                                            run_limits=run_limits, end_user=end_user)
         record = self.client._submit("prompt", params, request_id)
         return {"id": record["id"], "state": record["state"]}
 
@@ -591,12 +601,30 @@ class Agent:
             raise AgentError("reset_context needs the Agents this agent came from (agents.upsert, get or agent)")
         return self._agents.runtime.reset_context(self.id, summary=summary, keep_messages=keep_messages)
 
-    def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None):
+    def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None, calendar=None, email=None, cron=None, session_mode=None, spend_limit=None, mounts=None):
         """Wake the agent later with a message (text), or run code; every_seconds (at least 60) repeats it."""
-        return self.client.schedule(text=text, code=code, at=at, in_seconds=in_seconds, every_seconds=every_seconds)
+        return self.client.schedule(text=text, code=code, at=at, in_seconds=in_seconds, every_seconds=every_seconds, calendar=calendar, email=email, cron=cron, session_mode=session_mode, spend_limit=spend_limit, mounts=mounts)
+
+    def create_trigger(self, **input):
+        return self.client.create_trigger(**input)
+
+    def triggers(self):
+        return self.client.triggers()
+
+    def delete_trigger(self, trigger_id):
+        return self.client.delete_trigger(trigger_id)
+
+    def rotate_trigger(self, trigger_id):
+        return self.client.rotate_trigger(trigger_id)
+
+    def trigger_deliveries(self, trigger_id):
+        return self.client.trigger_deliveries(trigger_id)
 
     def schedules(self):
         return self.client.schedules()
+
+    def run_schedule(self, schedule_id):
+        return self.client.run_schedule(schedule_id)
 
     def unschedule(self, schedule_id):
         return self.client.unschedule(schedule_id)
@@ -714,7 +742,7 @@ class Agents:
         return self.runs.run(input, **options)
 
     def upsert(self, key, *, model=None, instructions=None, tools=None, definition=None, thinking_level=None, subject=None, context=None,
-               key_scope=None, spend_limit=None, run_limits=None, model_headers=None, mounts=None, remount=None, name=None, instructions_append=None, file_tools=None,
+               key_scope=None, spend_limit=None, run_limits=None, model_headers=None, mounts=None, remount=None, name=None, metadata=None, instructions_append=None, file_tools=None,
                builtins=None, delegate=None, code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, bucket=None,
                queue=None):
         """The agent for `key`, made now if there is none, and set to this configuration if it differs (see
@@ -728,7 +756,7 @@ class Agents:
         tools = list(tools or [])
         session = self.runtime.upsert_agent(key, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
                                             subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits,
-                                            model_headers=model_headers, mounts=mounts, remount=remount, name=name, system_prompt_append=instructions_append, file_tools=file_tools,
+                                            model_headers=model_headers, mounts=mounts, remount=remount, name=name, metadata=metadata, system_prompt_append=instructions_append, file_tools=file_tools,
                                             builtins=builtins, delegate=delegate, code_mode=code_mode, initial_messages=initial_messages, import_messages=import_messages,
                                             max_output_tokens=max_output_tokens, temperature=temperature, data_collection=data_collection, language=language, mcp_servers=mcp_servers, bucket=bucket,
                                             queue=queue)

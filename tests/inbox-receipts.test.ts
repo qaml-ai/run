@@ -5,7 +5,7 @@ import { testDatabase } from './database.ts';
 
 test('receipts serialize identical callers, refuse changed payloads, expire and prune', async () => {
   const { db } = await testDatabase();
-  const body = { requestId: 'review', answers: [{ id: 'a', version: 1, action: 'accept' }] };
+  const body = { requestId: 'review', answers: [{ agent: 'a', id: 'a', version: 1, action: 'accept' }] };
   let runs = 0;
   const run = async () => {
     runs++;
@@ -15,9 +15,9 @@ test('receipts serialize identical callers, refuse changed payloads, expire and 
   const [one, two] = await Promise.all([inboxReceipt(db, 'alice', body, run), inboxReceipt(db, 'alice', body, run)]);
   assert.deepEqual(one, two);
   assert.equal(runs, 1);
-  const equivalent = { requestId: 'review', answers: [{ action: 'accept', version: 1, id: 'a' }] };
+  const equivalent = { requestId: 'review', answers: [{ action: 'accept', version: 1, id: 'a', agent: 'a' }] };
   assert.deepEqual(await inboxReceipt(db, 'alice', equivalent, run), one);
-  const different = { requestId: 'review', answers: [{ id: 'a', version: 2, action: 'cancel' }] };
+  const different = { requestId: 'review', answers: [{ agent: 'a', id: 'a', version: 2, action: 'cancel' }] };
   await assert.rejects(inboxReceipt(db, 'alice', different, run), { status: 409 });
   await db.query("update inbox_answer_receipts set created_at=now()-interval '8 days'");
   await inboxReceipt(db, 'alice', different, run);
@@ -33,7 +33,7 @@ test('a slow authority call renews its receipt without holding a SQL transaction
   let entered!: () => void, release!: () => void;
   const started = new Promise<void>(resolve => { entered = resolve; });
   const blocked = new Promise<void>(resolve => { release = resolve; });
-  const work = inboxReceipt(db, 'alice', { requestId: 'slow', answers: [{ id: 'a', version: 1 }] }, async () => {
+  const work = inboxReceipt(db, 'alice', { requestId: 'slow', answers: [{ agent: 'a', id: 'a', version: 1 }] }, async () => {
     entered();
     await blocked;
     return [{ id: 'a', outcome: 'answered', status: 202 }];

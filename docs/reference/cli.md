@@ -106,7 +106,9 @@ its id (`def_…`).
 `--from user-1` says who is sending, `--steer` gives the message to a run that
 is going. An agent whose tools are attached by an application that is not
 connected refuses the run (`APPLICATION_NOT_CONNECTED`) unless you pass
-`--allow-disconnected`.
+`--allow-disconnected`. `--end-user collaborator` charges that existing end user
+instead of the agent subject. It requires a tenant API key and cannot accompany
+`--steer`.
 
 `answer` takes `true` or `false` for an approval, the chosen label or your own
 words for a question (`{"<question>": "<answer>"}` for several), the fields as
@@ -276,3 +278,19 @@ key in your shell's environment or an ignored file such as `.env.local`. A key
 or a connected app can create and delete every agent in the account. Give a
 coding agent a key of its own, or connect it with OAuth, so you can revoke it
 alone.
+
+See [incoming webhook triggers](../guides/triggers.md) for the trigger management API and commands.
+## Scheduled runs
+
+`camelrun schedules add <agent> --text 'Report' --cron '0 9 * * 1-5'
+--time-zone America/Chicago --session-mode fresh --spend-limit 1` creates a
+weekday schedule. Omit `--session-mode` to continue the same agent. Existing
+`--in`, `--at` and `--every` timing flags still work.
+
+`camelrun schedules run <agent> <scheduleId>` runs it immediately without moving
+the next occurrence. See [Schedules](../guides/schedules.md) for retention and
+run history.
+
+## Provision several resources
+
+Use `POST /v1/apply` or `runtime.apply(manifest)` to create keyed volumes, definitions, and agents together. `camelrun apply file.json --dry-run` validates without saving. References are objects such as `{"$ref":"volumes.project"}`. Existing agents must be unchanged; reconfigure them through the existing configuration API. See [Provision an application](apply.md) for the transaction boundary.

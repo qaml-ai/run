@@ -1,6 +1,7 @@
 import { BadRequest, object } from "./validation.ts";
 
 import { languageInput } from "../../../src/language.ts";
+import { applicationMetadata } from "../../../shared/agent-metadata.ts";
 import { queueInput, type QueueSetting } from "../../../shared/queue-mode.ts";
 import { dataCollectionInput, maxOutputTokensInput, modelHeadersInput, runLimitsInput, temperatureInput, type RunLimits } from "./model-policy.ts";
 import { delegateInput, delegateSettings, type DelegateSettings } from "./multi-agent-policy.ts";
@@ -25,6 +26,7 @@ export interface AgentConfiguration {
   fileTools?: boolean;
   codeMode?: boolean;
   name?: string;
+  metadata?: Record<string, unknown>;
   idleTtlSeconds?: number | null;
   type?: string;
   thinkingLevel?: string;
@@ -93,19 +95,22 @@ export async function agentToken(secret: string, id: string, version?: string): 
   return `cat_${[...new Uint8Array(signature)].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
-const BUILTINS = ["file_link", "file_import", "web_fetch", "web_search", "x_search", "schedule", "ask_user", "ask_human", "delegate", "generate_image", "agents", "decide"];
+const BUILTINS = ["file_link", "file_import", "web_fetch", "web_search", "x_search", "schedule", "ask_user", "request_decision", "ask_human", "delegate", "generate_image", "agents", "decide"];
 export function configuration(input: unknown, defaultModel: string, operation: "create" | "patch" = "create"): { config: AgentConfiguration; ttlSeconds?: number | null } {
   // Before the field check, so old workflow input gets its own answer, not "Unknown agent field".
   rejectWorkflow(input);
   let fields: Record<string, unknown>;
   try {
-    fields = object(input, ["model", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "name", "type", "thinkingLevel", "mcp", "ttlSeconds", "idleTtlSeconds", "builtins", "webSearch", "delegate", "decide", "mounts", "maxOutputTokens", "temperature", "dataCollection", "language", "modelHeaders", "runLimits", "queue", "initialMessages", "importMessages", "definition", "subject", "context", "keyScope", "spendLimit", "bucket", "humanInput", "subagents", "workspaceId", "remount", "prompt", "mcpServers", "openApi", "definitionRevision", "definitionOverrides", "computer"]);
+    fields = object(input, ["model", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "metadata", "name", "type", "thinkingLevel", "mcp", "ttlSeconds", "idleTtlSeconds", "builtins", "webSearch", "delegate", "decide", "mounts", "maxOutputTokens", "temperature", "dataCollection", "language", "modelHeaders", "runLimits", "queue", "initialMessages", "importMessages", "definition", "subject", "context", "keyScope", "spendLimit", "bucket", "humanInput", "subagents", "workspaceId", "remount", "prompt", "mcpServers", "openApi", "definitionRevision", "definitionOverrides", "computer"]);
   } catch (error) {
     if (error instanceof BadRequest && error.message.startsWith("Unsupported field: "))
       throw new BadRequest(`Unknown agent field: ${error.message.slice("Unsupported field: ".length).split(", ")[0]}`);
     throw error;
   }
   const config: AgentConfiguration = { model: defaultModel };
+  if (fields.metadata !== undefined) {
+    try { config.metadata = applicationMetadata(fields.metadata); } catch (error) { throw new BadRequest((error as Error).message); }
+  }
   Object.assign(config, identityInput(fields));
   if (fields.bucket !== undefined && fields.bucket !== null) config.bucket = bucketInput(fields.bucket);
   // Creation requires a scope name; only configuration updates use null to remove it.

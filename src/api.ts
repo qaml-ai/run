@@ -1,4 +1,13 @@
 import { inboxAnswers, inboxReceipt, inboxAgentFailure } from "../shared/inbox-answers.ts";
+import type { Dreaming } from "../shared/dreaming.ts";
+import { sessionTranscripts } from "../shared/session-transcripts.ts";
+import { handleHook } from "./core/trigger-ingress.ts";
+import { TriggerInput, type Triggers } from "./triggers.ts";
+import { applyRoutes } from "./apply-api.ts";
+import type { Db } from "./db.ts";
+import { groupedUsage, usageOptions, usageDays, ownsUsageAgent } from "../shared/usage-details.ts";
+import { readScheduleRuns } from './core/schedule-runs.ts';
+import { SharedAgents, ShareLinkInput, MemberInput, ShareLink, CreatedShareLink, Member } from './shared-agents.ts';
 import { inboxQuery, readInbox, InboxQueryError } from '../shared/inbox.ts';
 import { rejectWorkflow } from "./builtins.ts";
 import { computerRoutes } from "./computers/api.ts";
@@ -30,6 +39,7 @@ import { limitRefused } from "./limit-hits.ts";
 import { AGENT_PAGE_MAX } from "./client-sessions/configuration.ts";
 import type { Channels } from "./channels.ts";
 import { channelRoutes } from "./channels-api.ts";
+import { metadataFilters } from "../shared/agent-metadata.ts";
 import type { GitHubApps } from "./core/github-apps.ts";
 import { githubAppRoutes } from "./github-apps-api.ts";
 import { validTtl, type Definitions } from "./definitions.ts";
@@ -71,6 +81,8 @@ import { legacyCoverage, LegacyCoverageCursorError, legacyLogLister } from "./le
  * below are the OpenAPI document served at /v1/openapi.json.
  */
 export interface ApiContext {
+  dreaming?: Dreaming;
+  applyDb?: Db;
   computers?: Computers;
   accounts: Accounts;
   billingAlerts?: { service: BillingAlerts; emailEnabled: boolean };
@@ -99,6 +111,7 @@ export interface ApiContext {
   /** A new run's cheap check of its tenant's runs per minute and busy agents, before anything is made. */
   runPrecheck?: RunsContext["runPrecheck"];
   verifyKeys?: boolean;
+  triggers?: Triggers;
   scheduler?: Scheduler;
   channels?: Channels;
   /** A tenant's GitHub Apps (`/v1/github-apps`), which egress grants and tool sources mint tokens from. */
@@ -160,7 +173,7 @@ const OAUTH_ROUTES = [
   /^GET \/v1\/(?:me|models|providers|inputs|usage|billing|billing\/ledger)$/,
   /^(?:GET|POST) \/v1\/agents$/,
   /^(?:GET|DELETE) \/v1\/agents\/[^/]+$/,
-  /^(?:GET|POST|PUT|PATCH|DELETE) \/v1\/agents\/[^/]+\/(?:abort|configuration|context\/reset|events|fork|history|inputs|inputs\/[^/]+|mounts|prompt|requests\/[^/]+|schedules|schedules\/[^/]+|schedule-deliveries|state|uploads\/[^/]+\/[^/]+)$/,
+  /^(?:GET|POST|PUT|PATCH|DELETE) \/v1\/agents\/[^/]+\/(?:abort|configuration|context\/reset|events|fork|history|inputs|inputs\/[^/]+|mounts|prompt|requests\/[^/]+|schedules|schedules\/[^/]+|schedules\/[^/]+\/run|schedule-deliveries|state|uploads\/[^/]+\/[^/]+)$/,
   /^(?:GET|POST|PATCH|DELETE) \/v1\/definitions(?:\/[^/]+(?:\/agents)?)?$/,
   /^POST \/v1\/(?:transcriptions|images|speech)$/,
   /^(?:POST \/v1\/runs|(?:GET|DELETE) \/v1\/runs\/[^/]+|GET \/v1\/runs\/[^/]+\/(?:events|messages)|POST \/v1\/runs\/[^/]+\/abort)$/,
@@ -328,6 +341,13 @@ export function api(context: ApiContext) {
     await context.billingAlerts?.service.unsubscribe(c.req.param("token"));
     return c.body(null, 204);
   });
+  for(const path of ["/v1/hooks/{token}","/v1/hooks"] as const) {
+    route(createRoute({method:"post",path,security:[],...(path.endsWith("}")?{request:{params:z.object({token:z.string()})}}:{}),responses:{200:reply("Verified challenge",z.unknown()),202:reply("Delivery accepted",z.unknown())}}), async c => {
+      if (!context.triggers) throw new HttpError(404,"Unknown hook");
+      const result=await handleHook(c.req.raw,context.clientAddress?.(c)??"unknown",async()=>context.triggers!);
+      return json(c,result.code,result.body);
+    });
+  }
   app.use("/v1/*", async (c, next) => {
     const principal = await authenticate(c, context);
     c.set("principal", principal);
@@ -347,8 +367,8 @@ export function api(context: ApiContext) {
     await next();
   });
   app.use("/v1/agents/:id/*", async (c, next) => {
-    // credentials takes a key as well as an id, and looks it up within the tenant itself.
-    if (!c.req.path.endsWith("/credentials") && !await clients.owns(c.req.param("id")!, c.var.principal.tenant, true)) throw new HttpError(404, "Unknown agent");
+    // Credentials and retained usage perform their own tenant-scoped ownership checks.
+    if (!/^\/v1\/agents\/[^/]+\/(?:credentials|usage)$/.test(c.req.path) && !await clients.owns(c.req.param("id")!, c.var.principal.tenant, true)) throw new HttpError(404, "Unknown agent");
     await next();
   });
   // Idempotency-Key on every POST: an agent's is its own key (create or upsert), and a prompt's its request's id.
@@ -356,8 +376,37 @@ export function api(context: ApiContext) {
     db: () => clients.db, tenant: c => c.var.principal.tenant, lockMs: context.idempotencyLockMs,
     skip: path => path === "/v1/agents" || path === "/v1/definitions" || path === "/v1/runs" || path === "/v1/transcriptions" || path === "/v1/images" || path === "/v1/speech" || path === "/v1/decisions" || /^\/v1\/agents\/[^/]+\/(?:prompt|fork)$/.test(path),
     // Answers with a secret shown once: API tokens (a new tenant's too), signing secrets, browser tokens, signed links.
-    secret: path => /^\/v1\/(?:tokens|tenants|webhooks|webhooks\/[^/]+\/secret|usage-webhook\/secret|agents\/[^/]+\/(?:browser-tokens|links|credentials\/rotate)|volumes\/[^/]+\/links)$/.test(path),
+    secret: path => /^\/v1\/(?:tokens|tenants|webhooks|webhooks\/[^/]+\/secret|usage-webhook\/secret|agents\/[^/]+\/(?:triggers|triggers\/[^/]+\/rotate|browser-tokens|links|share-links|credentials\/rotate)|volumes\/[^/]+\/links)$/.test(path),
   }));
+
+  const shared = () => new SharedAgents(clients.db);
+  const ownerShare = (c: Context<Env>) => {
+    if (c.var.principal.via !== 'token' && c.var.principal.via !== 'console' && c.var.principal.via !== 'operator') throw new HttpError(403, 'An owner API key or console session is required');
+  };
+  route(createRoute({ method: 'post', path: '/v1/agents/{id}/share-links', request: { params: agentId, body: content(ShareLinkInput) }, responses: { 201: reply('The link, with its secret shown once', CreatedShareLink) } }), async c => {
+    ownerShare(c);
+    return json(c, 201, await shared().create(c.var.principal.tenant, c.req.param('id')!, parse(ShareLinkInput, await readJson(c.req.raw.body, 4096, {})), origin(context)));
+  });
+  route(createRoute({ method: 'get', path: '/v1/agents/{id}/share-links', request: { params: agentId }, responses: { 200: reply('Live and revoked links, without secrets', z.array(ShareLink)) } }), async c => {
+    ownerShare(c); return json(c, 200, await shared().links(c.var.principal.tenant, c.req.param('id')!));
+  });
+  route(createRoute({ method: 'delete', path: '/v1/agents/{id}/share-links/{link}', request: { params: agentId.extend({ link: z.string() }) }, responses: { 200: reply('Link revoked; members stay', schema.Deleted) } }), async c => {
+    ownerShare(c); await shared().revoke(c.var.principal.tenant, c.req.param('id')!, c.req.param('link')!); return json(c, 200, { deleted: true });
+  });
+  route(createRoute({ method: 'get', path: '/v1/agents/{id}/members', request: { params: agentId }, responses: { 200: reply('Members and today’s spend in USD', z.array(Member)) } }), async c => {
+    ownerShare(c); return json(c, 200, await shared().members(c.var.principal.tenant, c.req.param('id')!));
+  });
+  route(createRoute({ method: 'patch', path: '/v1/agents/{id}/members/{member}', request: { params: agentId.extend({ member: z.string() }), body: content(MemberInput) }, responses: { 200: reply('Updated member', Member) } }), async c => {
+    ownerShare(c); const tenant = c.var.principal.tenant, agent = c.req.param('id')!, member = c.req.param('member')!;
+    await shared().change(tenant, agent, member, parse(MemberInput, await readJson(c.req.raw.body, 4096)));
+    return json(c, 200, (await shared().members(tenant, agent)).find(m => m.id === member));
+  });
+  route(createRoute({ method: 'delete', path: '/v1/agents/{id}/members/{member}', request: { params: agentId.extend({ member: z.string() }) }, responses: { 200: reply('Member removed', schema.Deleted) } }), async c => {
+    ownerShare(c); const tenant = c.var.principal.tenant, agent = c.req.param('id')!, member = c.req.param('member')!;
+    await shared().change(tenant, agent, member, 'remove');
+    await clients.removeMember(agent, tenant, member);
+    return json(c, 200, { deleted: true });
+  });
 
   route(createRoute({ method: "get", path: "/v1/me", responses: { 200: reply("The caller", schema.Me) } }), async c => {
     const principal = c.var.principal;
@@ -552,6 +601,7 @@ export function api(context: ApiContext) {
     request: { query: z.object({
       limit: z.string().optional().openapi({ description: `A page of at most this many (1–${AGENT_PAGE_MAX}), by id; the X-Next-Cursor header then holds the next page's cursor while there are more. Without limit or cursor, every agent that matches, as always` }),
       cursor: z.string().optional().openapi({ description: "The previous page's X-Next-Cursor" }),
+      "metadata.type": z.string().optional().openapi({ description: "Exact match on a top-level metadata string. Any metadata.<key> is supported; multiple filters are ANDed." }),
       workspaceId: z.string().optional().openapi({ description: "Only agents in this workspace, or unassigned for agents in none" }),
       status: z.enum(["running", "failed", "expiring"]).optional().openapi({ description: "running: loaded on a node now; failed: a run failed in the last 24 hours (lastError); expiring: has an expiresAt" }),
       subAgents: z.enum(["only", "exclude"]).optional().openapi({ description: "Only sub-agents (those with a parentAgentId), or none of them" }),
@@ -568,7 +618,9 @@ export function api(context: ApiContext) {
       return value as T | undefined;
     };
     if (query.q !== undefined && query.q.length > 200) throw new HttpError(400, "q must be at most 200 characters");
-    const page = await clients.page(c.var.principal.tenant, {
+    let metadata: Record<string, string>;
+    try { metadata = metadataFilters(new URL(c.req.url).searchParams); } catch (error) { throw new HttpError(400, (error as Error).message); }
+    const page = await clients.page(c.var.principal.tenant, { metadata,
       // A cursor without a limit pages at the largest size.
       limit: limit ?? (query.cursor !== undefined ? AGENT_PAGE_MAX : undefined), cursor: query.cursor, workspaceId: query.workspaceId || undefined, q: query.q,
       status: oneOf("status", ["running", "failed", "expiring"] as const), subAgents: oneOf("subAgents", ["only", "exclude"] as const),
@@ -598,6 +650,7 @@ export function api(context: ApiContext) {
     }
     // A first prompt is checked before anything is made, and sent once the agent is: it runs when the agent has started.
     const first = prompt === undefined ? undefined : promptRequest(parse(schema.PromptInput, prompt));
+    if (prompt?.endUser !== undefined && !["operator", "token"].includes(c.var.principal.via)) throw new HttpError(403, "Only a tenant key can choose a run payer");
     // Counted as the key's agent is found: an upsert that changes nothing is not a create, though its headers say where the tenant stands.
     let counting: Promise<RateLimitState | undefined> | undefined;
     const admit = (unchanged: boolean) => counting ??= context.rateLimits?.agentCreate(tenant, !unchanged) ?? Promise.resolve(undefined);
@@ -691,6 +744,31 @@ export function api(context: ApiContext) {
     const state = await clients.stateFor(c.req.param("id")!, c.var.principal.tenant);
     return json(c, 200, c.var.principal.browser ? { ...state, requests: state.requests.map(readableRequest) } : state);
   });
+  const DreamConfigSchema = z.strictObject({enabled:z.boolean(),volumeId:z.string(),schedule:z.strictObject({time:z.string(),timeZone:z.string()}),analyzerModel:z.string().optional(),organizerModel:z.string().optional(),endUser:z.string().optional(),acrossUsers:z.boolean().optional(),budgetUsd:z.number().positive(),instructions:z.string().max(16000)});
+  const DreamResultSchema = z.object({status:z.enum(["completed","failed","budget_reached","deferred"]),from:z.number(),to:z.number(),summary:z.string().optional(),error:z.string().optional(),failures:z.array(z.unknown()).optional()});
+  const DreamStatusSchema = z.object({config:DreamConfigSchema,since:z.number(),dueAt:z.number(),running:z.boolean(),checkpoint:z.unknown().nullable(),failedNights:z.number(),lastResult:DreamResultSchema.nullable(),results:z.array(DreamResultSchema)});
+  const dreamService = () => { if (!context.dreaming) throw new HttpError(503,"Dreaming is unavailable"); return context.dreaming; };
+  route(createRoute({method:"get",path:"/v1/agents/{id}/dreaming",request:{params:agentId},responses:{200:reply("Dream configuration and last result",DreamStatusSchema.nullable())}}), async c => {
+    if (!await clients.owns(c.req.param("id")!,c.var.principal.tenant)) throw new HttpError(404,"Unknown agent");
+    return json(c,200,await dreamService().get(c.var.principal.tenant,c.req.param("id")!));
+  });
+  route(createRoute({method:"put",path:"/v1/agents/{id}/dreaming",request:{params:agentId,body:content(DreamConfigSchema)},responses:{200:reply("Dream configuration",DreamStatusSchema)}}), async c => json(c,200,await dreamService().configure(c.var.principal.tenant,c.req.param("id")!,await c.req.json())));
+  route(createRoute({method:"post",path:"/v1/agents/{id}/dreaming/run",request:{params:agentId},responses:{202:reply("Dream queued",z.object({queued:z.boolean()}))}}), async c => {
+    if (!await clients.owns(c.req.param("id")!,c.var.principal.tenant)) throw new HttpError(404,"Unknown agent");
+    const service=dreamService();
+    const queued=await service.now(c.var.principal.tenant,c.req.param("id")!);
+    void service.scan().catch(()=>{});
+    return json(c,202,queued);
+  });
+  route(createRoute({ method: "get", path: "/v1/agents/{id}/sessions", request: { params: agentId, query: z.object({ from: z.string(), to: z.string(), cursor: z.string().optional(), limit: z.string().optional(), children: z.enum(["true", "false"]).optional(), endUser: z.string().optional() }) }, responses: { 200: reply("A bounded transcript page from this agent and its descendants, filtered to [from,to). Follow next until null; pages may be empty", z.object({ agentId: z.string().nullable(), entries: z.array(z.object({ index: z.number(), message: z.unknown() })), next: z.string().nullable() })) } }), async c => {
+    const id = c.req.param("id")!, tenant = c.var.principal.tenant;
+    if (!await clients.owns(id, tenant)) throw new HttpError(404, "Unknown agent");
+    try { return json(c, 200, await sessionTranscripts({ query: (sql, values) => accounts.db.query(sql, values), scope: async agent => {
+      const row=(await accounts.db.query('select header from agents where id=$1 and tenant=$2',[agent,tenant])).rows[0];
+      return {subject:row?.header.identity?.subject,requests:(await clients.stateFor(agent,tenant)).requests};
+    }, page: (agent, after, limit) => clients.historyPageFor(agent, tenant, { after: String(after), limit: String(limit), maxBytes: "1000000" }) }, tenant, id, { from: Number(c.req.query("from")), to: Number(c.req.query("to")), cursor: c.req.query("cursor"), limit: c.req.query("limit") === undefined ? undefined : Number(c.req.query("limit")), children: c.req.query("children") !== "false", endUser:c.req.query("endUser") })); }
+    catch (error) { if ((error as any).status === 400) throw new HttpError(400, (error as Error).message); throw error; }
+  });
   route(createRoute({
     method: "get", path: "/v1/agents/{id}/history",
     request: { params: agentId, query: z.object({
@@ -741,8 +819,9 @@ export function api(context: ApiContext) {
   route(createRoute({ method: "post", path: "/v1/agents/{id}/prompt", request: { params: agentId, body: content(schema.PromptInput) }, responses: { 202: { ...reply("The accepted request", schema.RequestRecord), headers: rateLimited("Runs") } } }), async c => {
     // Room for inline files (FILE_LIMITS.inlineBytes, as base64); larger ones are uploaded first.
     const body = parse(schema.PromptInput, await readJson(c.req.raw.body, 6 * 1024 * 1024, {}));
+    if (body.endUser !== undefined && !["operator", "token"].includes(c.var.principal.via)) throw new HttpError(403, "Only a tenant key can choose a run payer");
     const record = await clients.submit(c.req.param("id")!, c.var.principal.tenant, promptRequest(body, c.req.header("idempotency-key")),
-      rate => { for (const [name, value] of Object.entries(rateLimitHeaders(rate))) c.header(name, value); });
+      rate => { for (const [name, value] of Object.entries(rateLimitHeaders(rate))) c.header(name, value); }, personal(c.var.principal) ? "owner" : undefined);
     return json(c, 202, record);
   });
   route(createRoute({
@@ -782,7 +861,7 @@ export function api(context: ApiContext) {
     method: "get", path: "/v1/agents/{id}/children", request: { params: agentId }, security: readers,
     responses: { 200: reply("The children its delegate and spawn_agent calls (and tools' spawn directives) started, newest first, each as its latest run says: whether it runs, how it ended, whether its answer reached the agent yet, and a running one's latest progress. The agent idle (state) and every child ended and delivered: the whole tree is settled", schema.ChildAgents) },
   }), async c => json(c, 200, { children: await clients.childrenFor(c.req.param("id")!) }));
-  const inputState = z.object({ state: z.enum(["pending", "answered", "declined", "cancelled", "expired", "superseded"]).optional() });
+  const inputState = z.object({ state: z.enum(["pending", "answered", "declined", "cancelled", "expired", "superseded", "withdrawn"]).optional() });
   route(createRoute({ method: "get", path: "/v1/agents/{id}/inputs", request: { params: agentId, query: inputState }, security: readers, responses: { 200: reply("The agent's human inputs, newest first", z.array(schema.Input)) } }),
     async c => {
       const inputs = await clients.inputsFor(c.req.param("id")!, c.var.principal.tenant, c.req.query("state"));
@@ -806,11 +885,13 @@ export function api(context: ApiContext) {
     const body = inboxAnswers(await readJson(c.req.raw.body, 1024 * 1024, {}));
     const tenant = c.var.principal.tenant;
     return json(c, 200, await inboxReceipt(accounts.db, tenant, body, async () => {
-      const rows = (await accounts.db.query("select id,agent from agent_inputs where tenant=$1 and id=any($2::text[])", [tenant, body.answers.map(a => a.id)])).rows;
       const groups = new Map<string, typeof body.answers>();
-      for (const entry of body.answers) { const agent = rows.find(row => row.id === entry.id)?.agent; if (agent) groups.set(agent, [...groups.get(agent) ?? [], entry]); }
-      const outcomes = (await Promise.all([...groups].map(([agent, entries]) => clients.answerInbox(agent, tenant, entries).catch(error => { return entries.map(entry => inboxAgentFailure(entry.id, error)); })))).flat();
-      return body.answers.map(entry => outcomes.find(o => o.id === entry.id) ?? { id: entry.id, outcome: "unknown" as const, status: 404 });
+      for (const entry of body.answers) groups.set(entry.agent, [...groups.get(entry.agent) ?? [], entry]);
+      const outcomes = (await Promise.all([...groups].map(async ([agent, entries]) => {
+        const results = await clients.answerInbox(agent, tenant, entries).catch(error => entries.map(entry => inboxAgentFailure(entry.id, error)));
+        return results.map(result => ({ ...result, agent }));
+      }))).flat();
+      return body.answers.map(entry => outcomes.find(o => o.agent === entry.agent && o.id === entry.id)!);
     }));
   });
   for (const path of ["/v1/inbox", "/v1/inputs"]) {
@@ -820,9 +901,8 @@ export function api(context: ApiContext) {
     });
   }
 
-  route(createRoute({ method: "get", path: "/v1/agents/{id}/schedule-deliveries", request: { params: agentId }, responses: { 200: reply("The latest 100 scheduled email deliveries", z.array(z.object({ id: z.string(), state: z.string(), email: z.record(z.string(), z.unknown()), createdAt: z.number(), sentAt: z.number().nullable(), messageId: z.string().nullable(), error: z.string().nullable() }))) } }), async c => {
-    const { rows } = await accounts.db.query('select id,state,email,created_at as "createdAt",sent_at as "sentAt",message_id as "messageId",error from schedule_deliveries where tenant=$1 and agent=$2 order by created_at desc limit 100', [c.var.principal.tenant,c.req.param("id")]);
-    return json(c,200,rows);
+  route(createRoute({ method: "get", path: "/v1/agents/{id}/schedule-deliveries", request: { params: agentId }, responses: { 200: reply("The latest 100 scheduled runs and their email delivery", z.array(z.object({id:z.string(),schedule:z.string(),agent:z.string().nullable(),createdAt:z.number(),error:z.string().nullable(),state:z.string().nullable(),email:z.record(z.string(),z.unknown()).nullable(),sentAt:z.number().nullable(),messageId:z.string().nullable(),runId:z.string(),cost:z.number(),endedAt:z.number().nullable(),emailState:z.string().nullable(),emailError:z.string().nullable()}))) } }), async c => {
+    return json(c,200,await readScheduleRuns(accounts.db,c.var.principal.tenant,c.req.param("id")!));
   });
   const scheduler = () => {
     if (!context.scheduler) throw new HttpError(404, "Unknown agent route");
@@ -836,6 +916,7 @@ export function api(context: ApiContext) {
     try { input = scheduleInput(await readJson(c.req.raw.body, 64 * 1024, {})); } catch (error) { throw new HttpError(400, errorText(error)); }
     return json(c, 201, await schedules.create({ agent: c.req.param("id")!, tenant: c.var.principal.tenant, ...input }));
   });
+  route(createRoute({ method: "post", path: "/v1/agents/{id}/schedules/{scheduleId}/run", request: { params: agentId.extend({scheduleId:z.string()}) }, responses: {202:reply("The scheduled run",z.object({agent:z.string(),requestId:z.string(),record:z.unknown()}))} }), async c => json(c,202,await scheduler().runNow(c.req.param("id")!,c.req.param("scheduleId")!)));
   route(createRoute({ method: "delete", path: "/v1/agents/{id}/schedules/{scheduleId}", request: { params: agentId.extend({ scheduleId: z.string() }) }, responses: { 200: reply("The schedule is deleted", schema.Deleted) } }), async c => {
     if (!await scheduler().remove(c.req.param("id")!, c.req.param("scheduleId")!)) throw new HttpError(404, "Unknown schedule");
     return json(c, 200, { deleted: true });
@@ -907,13 +988,34 @@ export function api(context: ApiContext) {
     return json(c, 200, { revoked: true, left: await left(c.var.principal.tenant, `token:${id}`) });
   });
 
-  route(createRoute({
-    method: "get", path: "/v1/usage", request: { query: z.object({ days: z.string().optional().openapi({ description: "1–365, default 30" }), workspaceId: z.string().optional().openapi({ description: "Filter by workspace id, or unassigned. Omit for the account total." }) }) },
-    responses: { 200: reply("Token usage per UTC day and model", schema.Usage) },
+  route(createRoute({ method: "get", path: "/v1/agents/{id}/usage",
+    request: { params: z.object({ id: z.string() }), query: schema.GroupedUsageQuery },
+    responses: { 200: reply("Agent usage", schema.GroupedUsage) },
   }), async c => {
-    const days = Math.min(365, Math.max(1, Number(c.req.query("days") ?? 30) || 30));
+    const tenant = c.var.principal.tenant, id = c.req.param("id")!;
+    if (!await ownsUsageAgent(accounts.db, tenant, id)) throw new HttpError(404, "Unknown agent");
+    let options;
+    try { options = usageOptions(new URL(c.req.url).searchParams); } catch (error) { throw new HttpError(400, (error as Error).message); }
+    const days = usageDays(new URL(c.req.url).searchParams);
+    const workspace = c.req.query("workspaceId");
+    if (workspace && workspace !== "unassigned") await new Workspaces(accounts.db).get(tenant, workspace);
+    await accounts.flushUsage();
+    return json(c, 200, await groupedUsage(accounts.db, tenant, Date.now() - days * 86400000, options, id, c.req.query("workspaceId")));
+  });
+
+  route(createRoute({
+    method: "get", path: "/v1/usage", request: { query: z.object({ ...schema.GroupedUsageQuery.shape, workspaceId: z.string().optional().openapi({ description: "Filter by workspace id, or unassigned. Omit for the account total." }) }) },
+    responses: { 200: reply("Token usage per UTC day and model, or requested dimensions", z.union([schema.Usage, schema.GroupedUsage])) },
+  }), async c => {
+    const days = usageDays(new URL(c.req.url).searchParams);
     const workspace = c.req.query("workspaceId");
     if (workspace && workspace !== "unassigned") await new Workspaces(accounts.db).get(c.var.principal.tenant, workspace);
+    if (c.req.query("groupBy") !== undefined || c.req.query("rollup") !== undefined) {
+      let options;
+      try { options = usageOptions(new URL(c.req.url).searchParams); } catch (error) { throw new HttpError(400, (error as Error).message); }
+      await accounts.flushUsage();
+      return json(c, 200, await groupedUsage(accounts.db, c.var.principal.tenant, Date.now() - days * 86_400_000, options, undefined, workspace));
+    }
     return json(c, 200, await accounts.usage(c.var.principal.tenant, Date.now() - days * 86_400_000, workspace));
   });
 
@@ -1378,7 +1480,16 @@ export function api(context: ApiContext) {
   });
 
   channelRoutes(route, () => context.channels);
+  const triggers=()=>{if(!context.triggers)throw new HttpError(404,"Triggers are not enabled");return context.triggers;};
+  const triggerPath=z.object({id:z.string(),triggerId:z.string()});
+  route(createRoute({method:"get",path:"/v1/agents/{id}/triggers",request:{params:agentId},responses:{200:reply("Triggers",z.array(z.unknown()))}}),async c=>json(c,200,await triggers().list(c.var.principal.tenant,c.req.param("id")!)));
+  route(createRoute({method:"post",path:"/v1/agents/{id}/triggers",request:{params:agentId,body:content(TriggerInput)},responses:{201:reply("Trigger and one-time URL",z.unknown())}}),async c=>json(c,201,await triggers().create(c.var.principal.tenant,c.req.param("id")!,await readJson(c.req.raw.body,64000,{}),origin(context))));
+  route(createRoute({method:"delete",path:"/v1/agents/{id}/triggers/{triggerId}",request:{params:triggerPath},responses:{200:reply("Deleted",schema.Deleted)}}),async c=>json(c,200,await triggers().remove(c.var.principal.tenant,c.req.param("id")!,c.req.param("triggerId")!)));
+  route(createRoute({method:"post",path:"/v1/agents/{id}/triggers/{triggerId}/rotate",request:{params:triggerPath},responses:{200:reply("One-time URL",z.object({url:z.string()}))}}),async c=>json(c,200,await triggers().rotate(c.var.principal.tenant,c.req.param("id")!,c.req.param("triggerId")!,origin(context))));
+  route(createRoute({method:"get",path:"/v1/agents/{id}/triggers/{triggerId}/deliveries",request:{params:triggerPath},responses:{200:reply("Deliveries",z.array(z.unknown()))}}),async c=>json(c,200,await triggers().deliveries(c.var.principal.tenant,c.req.param("id")!,c.req.param("triggerId")!)));
+
   githubAppRoutes(route, () => context.githubApps);
+  applyRoutes(route, context);
   definitionRoutes(route, () => context);
   workspaceRoutes(route, () => accounts.db);
   computerRoutes(route, () => context.computers, operatorOnly);

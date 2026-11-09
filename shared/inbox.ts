@@ -4,7 +4,7 @@ import { Buffer } from 'node:buffer';
 type Sql = { query(text: string, values?: any[]): Promise<{ rows: any[] }> };
 export class InboxQueryError extends Error {}
 const priorities = ['urgent', 'high', 'normal', 'low'];
-const kinds = ['question', 'approval', 'form', 'url'];
+const kinds = ['question', 'approval', 'form', 'url', 'decision'];
 export function inboxQuery(params: URLSearchParams) {
   const limit = params.get('limit') ?? '50';
   if (!/^\d+$/.test(limit) || Number(limit) < 1 || Number(limit) > 100) throw new InboxQueryError('limit must be an integer from 1 to 100');
@@ -30,6 +30,8 @@ export function inboxQuery(params: URLSearchParams) {
 function inputView(row: any) {
   return { id: row.id, agent: row.agent, tenant: row.tenant, requestId: row.request_id, toolCallId: row.tool_call_id,
     kind: row.kind, message: row.input.message, detail: row.input.detail, responders: row.input.responders,
+    attachments: row.input.detail?.attachments, links: row.input.detail?.links,
+    recommendation: row.input.detail?.recommendation, applyRecommendationOnExpiry: row.input.detail?.applyRecommendationOnExpiry,
     state: row.state, ...(row.answer ? { answer: row.answer } : {}), createdAt: Number(row.created_at), expiresAt: Number(row.expires_at) };
 }
 
@@ -60,7 +62,7 @@ export async function readInbox(sql: Sql, tenant: string, query: ReturnType<type
     Object.defineProperty(counts.lead, group.lead, { value: (Object.hasOwn(counts.lead, group.lead) ? counts.lead[group.lead] : 0) + Number(group.count), enumerable: true, configurable: true });
   }
   const last = page.at(-1);
-  return { items: page.map(row => ({ ...inputView(row), inputId: row.input.workersInputId ?? row.id, priority: row.priority, blocking: row.blocking,
+  return { items: page.map(row => ({ ...inputView(row), id: row.input.workersInputId ?? row.id, inputId: row.input.workersInputId ?? row.id, priority: row.priority, blocking: row.blocking,
     subject: row.subject, root: row.root_agent ?? row.agent, lineage: row.lineage ?? [row.agent], key: row.item_key, version: row.version })),
     cursor: more && last ? Buffer.from(JSON.stringify([last.priority_rank, Number(last.expires_at), Number(last.created_at), last.id])).toString('base64url') : null, counts };
 }

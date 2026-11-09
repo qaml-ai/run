@@ -15,7 +15,7 @@ import { scriptValue } from "./mcp-results.ts";
 import { callableFromCode, declaredToModel, errorText, normalizeTool, STOPPED_NOTICE, type ToolDefinition, CONTEXT_RANGE_MAX_BYTES, CONTEXT_TOO_LARGE, contextRangeMessage, IDENTITY_KEY, legacyFormatRefused, PERSISTENCE_FAILED, SCOPE_KEY, scratchMount, type AgentConfig, type CallContext, type Credentials, type RunStop } from "./protocol.ts";
 import { APPLICATION, applicationInstructions, CODEMODE, ENVIRONMENT, environmentSummary, INSTRUCTIONS, LANGUAGE, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL, RUNTIME, runtimeRules } from "./system-prompt.ts";
 import { languageInstructions } from "./language.ts";
-import { AGENT_UPDATES, renderMessages, senderInput, stamp, type MessageSource } from "./sender.ts";
+import { AGENT_UPDATES, renderMessages, stamp, type MessageSource } from "./sender.ts";
 import { closeInterruptedTurn, importedHistory, interruptedTurnRepairs, step, validateInitialMessages, validateUserMessages } from "./history.ts";
 import { contextTokens, explicitKeyStream, modelKeyFailure, type ModelGate } from "./compaction.ts";
 import { requestImageLimit } from "./request-images.ts";
@@ -528,14 +528,19 @@ export function createAgentHost(hostIO: HostIO) {
    * `maxOutputCharacters` in all.
    */
   async function execute(params: unknown, signal: AbortSignal) {
-    const { code, timeoutMs, maxOutputCharacters = SANDBOX_LIMITS.outputCharacters } = codeRequest(params);
+    const { requestId, ...input } = params as Record<string, unknown>;
+    const { code, timeoutMs, maxOutputCharacters = SANDBOX_LIMITS.outputCharacters } = codeRequest(input);
     const longest = Math.min(config.codeLimits?.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs, SANDBOX_LIMITS.maxTimeoutMs);
     if (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || timeoutMs < 1)) throw new Error(`timeoutMs must be 1..${longest}`);
     if (!Number.isInteger(maxOutputCharacters) || maxOutputCharacters < 1 || maxOutputCharacters > SANDBOX_LIMITS.maxOutputCharacters) throw new Error(`maxOutputCharacters must be 1..${SANDBOX_LIMITS.maxOutputCharacters}`);
+    // An SDK script has no model tool call. Give its effects a stable request-scoped identity,
+    // including parallel delegates, so retries find the same child rather than creating another.
+    let callIndex = 0;
     const tools = config.tools.filter(callableFromCode).map((tool): CodemodeTool => ({
       name: tool.name, description: tool.description, inputSchema: tool.parameters,
       execute: async args => {
-        const value = await io.tool(tool.name, args as Record<string, unknown>);
+        const identity = requestId ? { toolCallId: `execute:${requestId}`, innerCallId: `c${++callIndex}` } : undefined;
+        const value = await io.tool(tool.name, args as Record<string, unknown>, identity, signal);
         return tool.resultFormat === "content" ? scriptValue(value) : value;
       },
     }));
@@ -781,7 +786,7 @@ export function createAgentHost(hostIO: HostIO) {
    */
   function userMessages(params: Record<string, any>): AgentMessage[] {
     const notice = params.notice as { source: MessageSource; metadata: Record<string, unknown> } | undefined;
-    const marks = notice ? { requestId: params.requestId, metadata: notice.metadata, source: notice.source } : { from: senderInput(params.from), requestId: params.requestId, metadata: params.metadata };
+    const marks = notice ? { requestId: params.requestId, metadata: notice.metadata, source: notice.source } : { from: params.from as import("./sender.ts").Sender | undefined, requestId: params.requestId, metadata: params.metadata };
     if (params.message !== undefined) {
       const messages = (Array.isArray(params.message) ? params.message : [params.message]) as AgentMessage[];
       validateUserMessages(messages);
@@ -1105,6 +1110,7 @@ export function createAgentHost(hostIO: HostIO) {
     }
     if (method === "configure") {
       if (busy) throw new Error("Agent is busy");
+      if (params.sharedAgent !== undefined) config.sharedAgent = params.sharedAgent ?? undefined;
       if (params.systemPrompt !== undefined) config.systemPrompt = params.systemPrompt ?? undefined;
       if (params.systemPromptAppend !== undefined) config.systemPromptAppend = params.systemPromptAppend;
       if (params.fileTools !== undefined) config.fileTools = params.fileTools;
@@ -1125,7 +1131,7 @@ export function createAgentHost(hostIO: HostIO) {
         agent.useExtensions((codemode = codeMode()) ? [codemode] : []);
         agent.state.tools = agentTools(config.tools);
       }
-      if (params.systemPrompt !== undefined || params.systemPromptAppend !== undefined || params.language !== undefined || params.tools !== undefined || params.codeMode !== undefined || params.fileTools !== undefined || params.model !== undefined) await declareConfiguration();
+      if (params.sharedAgent !== undefined || params.systemPrompt !== undefined || params.systemPromptAppend !== undefined || params.language !== undefined || params.tools !== undefined || params.codeMode !== undefined || params.fileTools !== undefined || params.model !== undefined) await declareConfiguration();
       return { configured: true };
     }
     // Before a stop: index the settled turns, so a page of them needs neither the process nor the journal.

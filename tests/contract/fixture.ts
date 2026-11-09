@@ -12,6 +12,7 @@ export type FixtureOptions = {
   tenants?: object;
   /** Fail the first real image resize job, then allow normal retries. */
   failImageResizeOnce?: boolean;
+  triggerMaintenance?: boolean;
   /** Local STS/token endpoint used by the real Anthropic federation adapter. */
   anthropicFederationEndpoint?: string;
   /** Create additional local fake endpoints before starting either backend. */
@@ -39,6 +40,7 @@ export interface ContractFixture {
   seedInbox(rows: import('./fixtures/inbox.ts').InboxSeed[]): Promise<void>;
   setScheduleLegacyHistory(agent: string, schedule: string, history: "none"): Promise<void>;
   resetChildSettlement(parent: string): Promise<void>;
+  deleteEndUser(tenant: string, endUser: string): Promise<void>;
   /** A definition as stored before the workflow builtin was removed (#624): its builtins and settings name it. */
   seedLegacyWorkflowDefinition(definition: string): Promise<void>;
   countOAuthRefreshTokens(): Promise<number>;
@@ -54,9 +56,13 @@ export interface ContractFixture {
   setRejectRunEvents(enabled: boolean): Promise<void>;
   updateLegacyUsageWebhook(url: string): Promise<void>;
   seedJourneyAccount(input: { login: string; githubId: number; startingGrant: number; accountRef?: string }): Promise<{ tenant: string; token: string }>;
-  /** Channel cases only: a query on the channel tables (fixtures/channel-state.ts), which both backends share. */
+  /** Shared-agent cases only: queries on the membership tables, shared by both backends. */
+  sharedAgentsQuery(text: string, values?: unknown[]): Promise<{ rows: any[]; rowCount: number | null }>;
   /** Inbox storage contract: only the asking agent's index columns, on either backend. */
   inputIndex(agent: string): Promise<{ state: string; version: number; priority: string; priority_rank: number; blocking: boolean; responders: string[] }[]>;
+  /** Trigger delivery/reservation state, shared by both backends. */
+  triggerQuery(text: string, values?: unknown[]): Promise<{ rows: any[]; rowCount: number | null }>;
+  /** Channel cases only: a query on the channel tables (fixtures/channel-state.ts), which both backends share. */
   channelQuery(text: string, values?: unknown[]): Promise<{ rows: any[]; rowCount: number | null }>;
   /**
    * Email channel cases only (env AGENT_EMAIL_DOMAIN): a raw message as the backend's mail ingress receives it, with

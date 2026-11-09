@@ -8,7 +8,7 @@ const PENDING = "webhook-pending:";
 const SENT = "webhook-sent:";
 const RUN_METHODS = new Set(["prompt", "execute", "continue", "steer", "resume"]);
 type Run = {
-  id: string; method: string; state: string; actor?: string; metadata?: unknown;
+  id: string; method: string; state: string; actor?: string; metadata?: unknown; params?: Record<string, unknown>; endUser?: string;
   resumes?: number; steeredInto?: string; batchedInto?: string; batch?: string[]; outcome?: { result?: unknown; error?: string; uncertain?: boolean };
 };
 type Owner = { id: string; tenantId: string };
@@ -17,6 +17,7 @@ type Owner = { id: string; tenantId: string };
 export function runWebhook(owner: Owner, record: Run, messageCount?: number): WebhookEvent | undefined {
   if (!RUN_METHODS.has(record.method)) return;
   const base = { agentId: owner.id, requestId: record.id, method: record.method,
+    ...(record.endUser ? { endUser: record.endUser } : {}),
     ...(record.actor ? { actor: record.actor } : {}), ...(record.metadata ? { metadata: record.metadata } : {}) };
   if (record.state !== "completed") return webhookEvent("run.started", owner.tenantId,
     { ...base, ...(record.resumes ? { resumes: record.resumes } : {}) }, `run.started:${owner.id}:${record.id}`);

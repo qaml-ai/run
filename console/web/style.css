@@ -284,3 +284,16 @@
 @media (prefers-color-scheme: dark) {
   html { background-color: #0b0b0c; }
 }
+
+/* Chat actions use the console signal blue. */
+.console-agent-chat {
+  --primary: #5aa7ff;
+  --primary-foreground: #111113;
+}
+
+.console-mobile-nav .overflow-x-auto,
+.console-mobile-nav nav {
+  flex-direction: column;
+  overflow: visible;
+}
+.console-mobile-nav [data-orientation="vertical"] { display: none; }

@@ -1,5 +1,8 @@
 import { answerInboxGroup, type InboxAnswer } from "../../../shared/inbox-answers.ts";
 import { answerInput, mayAnswer } from "./input-policy.ts";
+import { HttpError } from "./errors.ts";
+import { inputView } from "./decision-inputs.ts";
+import { decisionInputs, answerDecisions } from "./inbox-decisions.ts";
 import { repairInputMirrors } from "./agent-input-mirror.ts";
 import { computerSetup } from "./computers/agent-setup.ts";
 import { forkComputerInto } from "./computers/child-fork.ts";
@@ -18,7 +21,7 @@ import { humanInputView, HumanInputs } from "./human.ts";
 import { answerList } from "./input-policy.ts";
 import { handleAgentFileRequest, handleAgentFilesRoute } from "./files.ts";
 import { ComputerService } from "./computers/service.ts";
-import { scheduleDeliveries, type StoredSchedule as Schedule } from "./schedules.ts";
+import { deliverScheduledRun, scheduleDeliveries, type StoredSchedule as Schedule } from "./schedules.ts";
 import { keyServices } from "./security-services.ts";
 import { admissionHeaders, admissionError, errorFields, errorHeaders } from "./admission.ts";
 import { requestView } from "./request-view.ts";
@@ -204,7 +207,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
                 builtins: conf.config.builtins,
                 webSearch: conf.config.webSearch,
                 keyScope: conf.config.keyScope,
-                identity: { subject: conf.config.subject, context: conf.config.context },
+                identity: { subject: (params?.endUser as string | undefined) ?? conf.config.subject, context: conf.config.context },
                 actor: ("actor" in run ? run.actor : undefined) ?? params?.actor as string | undefined,
                 bucket: (params?.bucket as string | undefined) ?? conf.config.bucket ?? await this.ctx.storage.get<string>("run-bucket") ?? "default",
                 files: (await this.sourceIdentity(api)).toolFiles('web_fetch'),
@@ -437,6 +440,11 @@ export async function fetchRequestImpl(this: AgentRuntime,
         ]);
       if (path === "/schedules" && request.method === "POST")
         return json(await this.createSchedule(await body(request)), 201);
+      if (/^\/schedules\/[^/]+\/run$/.test(path) && request.method === "POST") {
+        const schedule=await this.ctx.storage.get<Schedule>(`schedule:${decodeURIComponent(path.split('/')[2])}`);
+        if(!schedule) throw new HttpError(404,'Unknown schedule');
+        return json(await deliverScheduledRun(this.env,schedule,`schedule-run-${crypto.randomUUID()}`,input=>this.submit(input),work=>this.ctx.waitUntil(work)),202);
+      }
       if (path.startsWith("/schedules/") && request.method === "DELETE") {
         const deleted = await this.ctx.storage.delete(
           `schedule:${decodeURIComponent(path.slice(11))}`,
@@ -444,6 +452,9 @@ export async function fetchRequestImpl(this: AgentRuntime,
         await this.arm();
         return json({ deleted });
       }
+      // Internal lineage for transcript consolidation includes every retained child, including named targets.
+      if (path === "/conversation-children" && request.method === "GET")
+        return json({ children: [...new Set((await this.delegation.children()).map(child => child.id).filter(Boolean))] });
       // The public list (GET /v1/agents/{id}/children, as on Node).
       if (path === "/children" && request.method === "GET")
         return json({ children: childrenView(await this.delegation.children()) });
@@ -461,6 +472,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
           "spendLimit",
           "runLimits",
           "bucket",
+          "endUser",
           "actor",
           "images",
           "attachments",
@@ -472,7 +484,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
               id: requestId ?? idempotencyKey ?? crypto.randomUUID(),
               method: "prompt",
               params,
-            }),
+            }, undefined, undefined, undefined, request.headers.get("x-camel-shared-owner") === "1" ? "owner" : undefined),
         );
       }
       if (path === "/configuration" && request.method === "GET")
@@ -562,7 +574,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
           root = await pi.root(BACKGROUND_CONTEXT);
         const doc = await pi.snapshot(HumanInputs, BACKGROUND_CONTEXT),
           conf = await this.config();
-        const values = [];
+        const values: Array<ReturnType<typeof humanInputView> | ReturnType<typeof inputView>> = (await decisionInputs(this).list(conf.tenantId, { agent: conf.id, ...(url.searchParams.get("state") ? { state: url.searchParams.get("state")! } : {}) })).filter(row => row.blocking === false).map(row => ({ ...inputView(row), question: row.message }));
         const state = url.searchParams.get("state") ?? "all";
         if (
           ![
@@ -573,6 +585,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
             "cancelled",
             "expired",
             "superseded",
+            "withdrawn",
           ].includes(state)
         )
           throw new BadRequest("Invalid input state");
@@ -606,23 +619,25 @@ export async function fetchRequestImpl(this: AgentRuntime,
           return this.fetch(new Request(url, { method, headers: { "Content-Type": "application/json" }, ...(data ? { body: JSON.stringify(data) } : {}) }));
         };
         const read = async (id: string) => {
-          const response = await internal("GET", "/inputs");
-          if (!response.ok) throw Object.assign(new Error("Input authority unavailable"), { status: response.status });
-          return (await response.json() as any[]).find(item => item.id === id);
+          const decision = await decisionInputs(this).get(id);
+          if (decision?.agent === conf.id && decision.tenant === conf.tenantId && decision.blocking === false) return { ...inputView(decision), fixedResponders: decision.stored.fixedResponders };
+          const pi = await this.harness.pi(), doc = await pi.snapshot(HumanInputs, BACKGROUND_CONTEXT);
+          const pending = doc?.requests[id];
+          return pending ? { ...humanInputView(id, pending, conf.id), fixedResponders: pending.fixedResponders, policyBound: pending.policyBound } : undefined;
         };
         const outcomes = await answerInboxGroup(input.answers, read, (view, answer) => {
-          if (!mayAnswer(view, { via: "api", actor: answer.actor, from: answer.from }, conf.config.humanInput?.approvers as string[] | undefined))
+          if (!mayAnswer(view, { via: "api", actor: answer.actor, from: answer.from }, view.fixedResponders ? [] : conf.config.humanInput?.approvers as string[] | undefined))
             throw Object.assign(new Error("This person may not answer this input"), { status: 403 });
+          if (view.blocking && !view.policyBound) throw Object.assign(new Error("The input is not ready"), { status: 409 });
           return answerInput(view, answer);
         }, async answers => {
-          // One authority write per agent preserves batched decision delivery.
           const response = await internal("POST", "/inputs", { answers: answers.map(({ id, body }) => ({ ...body, id })) });
           if (!response.ok) {
             const error = await response.json() as { error?: string };
             throw Object.assign(new Error(error.error ?? "Input answer failed"), { status: response.status });
           }
           return { status: response.status };
-        });
+        }, view => view.blocking === false ? "decision" : "blocking");
         await repairInputMirrors(this, input.answers.map(a => a.id)).catch(error => failure(this.env, "input_mirror_repair_failed", error));
         return json({ outcomes: input.answers.map(a => outcomes.find(o => o.id === a.id)) });
       }
@@ -631,7 +646,10 @@ export async function fetchRequestImpl(this: AgentRuntime,
         const input = await body(request, 1024 * 1024);
         const batch = path === "/inputs";
         const answers = batch ? answerList(input) : [{ id: decodeURIComponent(path.slice(8)), body: input }];
-        const answering = this.admission.then(() => this.answerHumanInputs(answers, request.headers.get("x-camel-input-via") === "agent" ? "agent" : request.headers.get("x-camel-input-via") === "channel" ? "channel" : "api"));
+        const decision = answers.every((entry: { id: string }) => entry.id.startsWith("inp_"));
+        // Decisions live in Postgres; blocking inputs live in Pi. The inbox answers route must partition these authorities.
+        if (!decision && answers.some((entry: { id: string }) => entry.id.startsWith("inp_"))) throw new BadRequest("Answer decisions and blocking inputs in separate batches");
+        const answering = this.admission.then(async () => (decision ? answerDecisions(this, answers, request.headers.get("x-camel-input-via") === "channel" ? "channel" : "api") : this.answerHumanInputs(answers, request.headers.get("x-camel-input-via") === "agent" ? "agent" : request.headers.get("x-camel-input-via") === "channel" ? "channel" : "api")));
         this.admission = answering.catch(() => {});
         const answered = await answering.catch(async error => {
           if (errorStatus(error, 500) === 409) {

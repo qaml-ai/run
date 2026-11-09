@@ -51,8 +51,8 @@ export function nodeListener(handler: (request: Request) => Promise<Response>, o
 }
 export class AgentRuntime extends PortableAgentRuntime {
   constructor(options: RuntimeOptions = {}) {
-    super({ ...options, url: options.url ?? process.env.AGENT_URL, openFile: options.openFile ?? (path => openAsBlob(path)),
-      apiKey: options.apiKey ?? process.env.AGENT_RUNTIME_TOKEN,
+    super({ ...options, url: options.url ?? (process.env.CAMELRUN_URL || process.env.CAMELAI_BASE_URL || process.env.CAMELAI_URL || process.env.AGENT_URL), openFile: options.openFile ?? (path => openAsBlob(path)),
+      apiKey: options.apiKey ?? (process.env.CAMELRUN_API_KEY || process.env.CAMELAI_API_KEY || process.env.AGENT_RUNTIME_TOKEN),
     });
   }
 }

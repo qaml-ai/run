@@ -133,6 +133,9 @@ async function run(which) {
   const concurrency = Number(process.env.CONTRACT_CONCURRENCY ?? (which === "workers" ? 2 : 6));
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 16) throw new Error("CONTRACT_CONCURRENCY must be an integer from 1 to 16");
   if (which === "workers" && files.length) {
+    // Cold parallel Wrangler builds can exhaust a case's budget before its
+    // first request. Warm the runtime once, then keep every case isolated and
+    // run the files concurrently with their existing timeouts.
     console.log("Preparing Workers runtime before parallel cases");
     const warmup = await command(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", "tests/contract/warm-workers.mjs"], {});
     if (warmup.code !== 0) throw new Error(`Workers preparation failed: ${warmup.log.slice(-5000)}`);

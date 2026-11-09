@@ -8,7 +8,7 @@ from camelai_run.sync import AgentRuntime as SyncRuntime
 
 class InboxAnswers(unittest.TestCase):
     def test_both_clients_share_request_contract(self):
-        payload = {'requestId': 'review-1', 'answers': [{'id': 'input', 'version': 3, 'action': 'accept'}]}
+        payload = {'requestId': 'review-1', 'answers': [{'agent': 'agent', 'id': 'input', 'version': 3, 'action': 'accept'}]}
         class Capture:
             def _rest(self, method, path, body):
                 return method, path, body

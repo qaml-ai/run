@@ -14,7 +14,7 @@ import { languageInput, MAX_LANGUAGE_LENGTH } from "./language.ts";
 /** An end user's credit refusal's fields, the same on a 402, a run's error, run.failed and voice.session.ended. */
 const creditReason = z.enum(CREDIT_REASONS).openapi({ description: "Why an end user's credit refused or stopped it (see the errors reference): balance (no credit left: nothing of the bucket's free allowance today, and no paid balance), daily_limit (the end user's daily credit limit on paid spend), bucket_limit (the bucket's own daily limit on paid spend; a bucket limited to 0 spends only its allowance). More may be added: treat an unknown one as a credit refusal of no particular kind" });
 const creditBucket = z.string().openapi({ description: "With an end user's credit refusal: the bucket refused (builder, bot:42, default)" });
-const creditEndUser = z.string().openapi({ description: "With an end user's credit refusal: whose credit (the subject)" });
+const creditEndUser = z.string().openapi({ description: "With an end user's credit refusal: whose credit (the payer)" });
 
 const SEND_KEY = "Send {\"apiKey\": \"...\"} with the provider's API key";
 const SEND_TEXT = "Send {\"text\": \"...\"}, or attach audio to transcribe";
@@ -42,7 +42,7 @@ export const ApiError = z.object({
     max: z.number().int(),
     windowSeconds: z.number().int(),
   }).optional().openapi({ description: "On a rate limit's 429: the limit reached. Retry-After says when to retry" }),
-  endUser: creditEndUser.optional().openapi({ description: "With END_USER_CREDIT: whose credit refused the work (the subject)" }),
+  endUser: creditEndUser.optional().openapi({ description: "With END_USER_CREDIT: whose credit refused the work (the payer)" }),
   bucket: creditBucket.optional().openapi({ description: "With END_USER_CREDIT: the bucket refused" }),
   reason: creditReason.optional(),
   refundable: z.number().int().optional().openapi({ description: "With INSUFFICIENT_BALANCE: the most a refund may return now (micro-USD)" }),
@@ -155,6 +155,7 @@ const envelope = <T extends string>(type: T, data: z.ZodType, description: strin
 const runFacts = {
   agentId: z.string(), requestId: z.string(),
   method: z.enum(["prompt", "continue", "resume", "execute"]),
+  endUser: z.string().optional().describe("The explicit payer override for this run"),
   actor: z.string().optional(), metadata: z.record(z.string(), z.string()).optional().openapi({ description: "The metadata the message that started it carried" }),
 };
 /** How a failed model call failed (model-errors.ts `ModelFailure`): on a run's error, its run.failed webhook and its events. */
@@ -221,10 +222,10 @@ export const WebhookEvents = {
     ...ModelFailure.partial().shape,
   }), "A run ended with an error: the runtime's, or the model's"),
   "input.requested": envelope("input.requested", z.object({
-    agentId: z.string(), requestId: z.string(), inputId: z.string(), toolCallId: z.string(), kind: z.enum(["question", "approval", "form", "url"]), expiresAt: z.number(),
+    agentId: z.string(), requestId: z.string(), inputId: z.string(), toolCallId: z.string(), kind: z.enum(["question", "approval", "form", "url", "decision"]), expiresAt: z.number(),
   }), "The agent asks a person for input; the run waits"),
   "input.resolved": envelope("input.resolved", z.object({
-    agentId: z.string(), requestId: z.string(), inputId: z.string(), state: z.enum(["answered", "declined", "cancelled", "expired", "superseded"]),
+    agentId: z.string(), requestId: z.string(), inputId: z.string(), state: z.enum(["answered", "declined", "cancelled", "expired", "superseded", "withdrawn"]),
   }), "An input settled"),
   "usage.recorded": envelope("usage.recorded", z.object({
     agentId: z.string().nullable().openapi({ description: "null for a transcription made with POST /v1/transcriptions, images made with POST /v1/images, or decisions made with POST /v1/decisions, which no agent made" }), requestId: z.string().nullable(), subject: z.string().nullable(), actor: z.string().nullable(), context: z.record(z.string(), z.unknown()), keyScope: z.string().nullable(),
@@ -392,7 +393,7 @@ export const ModelHeaders = z.record(z.string(), z.string()).openapi("ModelHeade
 });
 
 // Documentation only: sessionConfig validates provisioning, with the messages the SDKs rely on.
-const Builtin = z.enum(["file_link", "file_import", "web_fetch", "web_search", "x_search", "schedule", "ask_user", "delegate", "generate_image", "agents", "decide"]).openapi("Builtin", { description: "file_link: short-lived GET or PUT links to workspace files; file_import: public URLs streamed to the workspace; agents: sub-agents in the background (spawn_agent, wait_agent, list_agents), with the delegate settings" });
+const Builtin = z.enum(["file_link", "file_import", "web_fetch", "web_search", "x_search", "schedule", "ask_user", "request_decision", "delegate", "generate_image", "agents", "decide"]).openapi("Builtin", { description: "file_link: short-lived GET or PUT links to workspace files; file_import: public URLs streamed to the workspace; agents: sub-agents in the background (spawn_agent, wait_agent, list_agents), with the delegate settings" });
 const AgentTarget = z.union([
   z.string().openapi({ description: "A definition's key or id; the model sees it by that name" }),
   z.strictObject({
@@ -432,6 +433,7 @@ export const ContextReset = z.object({
   after: ContextRangeSize.openapi({ description: "The context's range after it" }),
 }).openapi("ContextReset");
 export const PromptInput = z.object({
+  endUser: z.string().min(1).max(200).optional().openapi({ description: "Charge this prompt to an existing end user of this tenant instead of the agent subject. Tenant API key only. A steer joins only a turn with the same endUser selection. Child tasks, their notifications and messages inherit the run payer; child tool identity stays the owner. Later prompts without it use the agent subject" }),
   text: z.string({ error: SEND_TEXT }).optional().openapi({ description: "The message. It may be left out when the message attaches audio, whose transcript is then the message" }),
   actor: z.string().optional().openapi({ description: "Who is acting in this turn (a user id in your app): `act` in its tools' identity tokens" }),
   from: z.strictObject({
@@ -442,9 +444,9 @@ export const PromptInput = z.object({
   }).optional().openapi({ description: "Who sent this message. The model sees it in a block only the runtime can write; `from.id` is also the turn's actor unless `actor` is given" }),
   requestId: z.string().optional().openapi({ description: "Idempotency: retrying with the same id returns the same request. The user message records it, so a UI can match its own bubble" }),
   allowDisconnected: z.boolean().optional().openapi({ description: "Run even though the agent's tools need its application and none is connected (else 409 APPLICATION_NOT_CONNECTED): its calls then fail as not connected" }),
-  whileRunning: z.enum(["queue", "steer"]).optional().openapi({ description: "What happens if the agent is working on a turn when this arrives. queue (default): it runs as the next turn. steer: the running turn takes it after its current step. The 202 says so at once (steer: \"accepted\"; \"queued\" when no turn could take it), and this request completes as soon as the turn takes the message (steeredInto names the turn, whose own request has its outcome; a steer_taken event marks it), so steered messages never wait for the turn's end, nor count against the agent's queue once taken. If the turn ends first, it runs as a turn of its own. With no turn running, both start one" }),
+  whileRunning: z.enum(["queue", "steer"]).optional().openapi({ description: "What happens if the agent is working on a turn when this arrives. queue (default): it runs as the next turn. steer: a running turn with the same endUser selection takes it after its current step; a different payer queues a separate turn. The 202 says so at once (steer: \"accepted\"; \"queued\" when no turn could take it), and this request completes as soon as the turn takes the message (steeredInto names the turn, whose own request has its outcome; a steer_taken event marks it), so steered messages never wait for the turn's end, nor count against the agent's queue once taken. If the turn ends first, it runs as a turn of its own. With no turn running, both start one" }),
   spendLimit: SpendLimitInput.optional().openapi({ description: "This run's own budget in USD: it ends before its next model request once it has spent this. The agent's spendLimit is unchanged and counts the run too" }),
-  bucket: z.string().optional().openapi({ description: "With end-user credits on (/v1/end-user-settings): the bucket of the agent's subject this run spends from, instead of the agent's. Only the tenant may set it" }),
+  bucket: z.string().optional().openapi({ description: "With end-user credits on (/v1/end-user-settings): the bucket of this run's payer (endUser, else the agent subject) it spends from, instead of the agent's. Only the tenant may set it" }),
   runLimits: z.strictObject({ maxResponses: z.number().int().min(1).optional(), maxSeconds: z.number().int().min(1).optional() }).optional().openapi({ description: "This run's own limits: at most this many model responses, or seconds. They only lower the agent's runLimits and the runtime's; at one, the run ends with stopped \"turn_limit\"" }),
   output: z.strictObject({
     schema: z.record(z.string(), z.unknown()).openapi({ description: "A JSON Schema for an object (type: \"object\"; at most 64 KB)", example: { type: "object", properties: { sentiment: { type: "string", enum: ["positive", "neutral", "negative"] } }, required: ["sentiment"] } }),
@@ -525,9 +527,12 @@ export const Workspace = z.object({ id: z.string(), name: z.string(), archived: 
 export const QueueSettingInput = z.strictObject({
   mode: z.enum(["each", "batch"]),
   windowMs: z.number().int().min(0).max(2_000).optional().openapi({ description: "With batch: how long a prompt that reaches an idle agent waits for others to join its turn (ms, at most 2000). Default 0" }),
-}).openapi("QueueSetting", { description: "What it does with prompts that arrive while a turn runs. {mode: \"each\"} (the default): each runs as a turn of its own, in order. {mode: \"batch\"}: the prompts waiting when a turn ends run together as the next turn, each its own user message in arrival order, so a burst of events costs one turn instead of one each. Each merged prompt's request ends with that turn, with its answer (reply...) and batchedInto naming the turn's first request, which has the usage. A prompt joins only with prompts like it: not a sub-agent's notification or message nor a delegate call or other prompt of the runtime's, none with an output schema, a spendLimit or runLimits of its own, and all for the same actor and bucket; the first that does not fit runs after the batch. windowMs (0 to 2000): a prompt reaching an idle agent waits this long first, so a burst sent at once merges too. Steers waiting for a boundary are taken all at once there. A sub-agent never batches. See Batching in the concepts guide" });
+}).openapi("QueueSetting", { description: "What it does with prompts that arrive while a turn runs. {mode: \"each\"} (the default): each runs as a turn of its own, in order. {mode: \"batch\"}: the prompts waiting when a turn ends run together as the next turn, each its own user message in arrival order, so a burst of events costs one turn instead of one each. Each merged prompt's request ends with that turn, with its answer (reply...) and batchedInto naming the turn's first request, which has the usage. A prompt joins only with prompts like it: not a sub-agent's notification or message nor a delegate call or other prompt of the runtime's, none with an output schema, a spendLimit or runLimits of its own, and all for the same actor, bucket and endUser; the first that does not fit runs after the batch. windowMs (0 to 2000): a prompt reaching an idle agent waits this long first, so a burst sent at once merges too. Steers accepted by the same turn are taken all at once at its next boundary. A sub-agent never batches. See Batching in the concepts guide" });
+
+const ApplicationMetadata = z.record(z.string(), z.unknown()).openapi({ description: "Tenant-owned JSON object, at most 16384 UTF-8 bytes. Replaced whole when supplied; omitted preserves it. Not sent to the model. List filtering: ?metadata.type=camelcode-project matches top-level strings exactly." });
 
 export const AgentInput = z.object({
+  metadata: ApplicationMetadata.optional(),
   workspaceId,
   mcp: z.object({ tools: z.array(z.unknown()) }).optional().openapi({ description: "The application's attached MCP server: its tools/list, whose tools the agent calls back through the application's connection. The SDKs send it" }),
   definition: z.string().optional().openapi({ description: "Make the agent from this definition (GET /v1/definitions). It supplies the model, system prompt, thinking level, fileTools and tool sources; name, type, ttlSeconds, mounts and initialMessages given here override its defaults. model, thinkingLevel, maxOutputTokens, temperature, language, fileTools, codeMode and runLimits given here are the agent's own: applying the definition later keeps them. systemPrompt cannot be given with a definition; use systemPromptAppend" }),
@@ -569,7 +574,11 @@ export const AgentInput = z.object({
 }).strict().openapi("AgentInput");
 
 
+export const GitHubRepository = z.object({ id: z.number(), name: z.string(), fullName: z.string(), private: z.boolean(), htmlUrl: z.string(), defaultBranch: z.string().nullable() }).openapi("GitHubRepository");
+export const GitHubRepositories = z.object({ items: z.array(GitHubRepository), nextCursor: z.string().nullable() }).openapi("GitHubRepositories");
+
 export const AgentSummary = z.object({
+  metadata: ApplicationMetadata,
   id: z.string(),
   key: z.string().nullable().openapi({ description: "The key it was made with (an upsert's, or POST /v1/agents' Idempotency-Key); null for one made without" }),
   name: z.string().openapi({ description: "Its name; its id when it was given none" }),
@@ -598,6 +607,7 @@ const Activity = z.object({
   queuedRuns: z.number().int().openapi({ description: "Runs accepted and waiting behind it (prompts, steered messages not yet read, continues, executions, resumes)" }),
 });
 export const RequestRecord = z.object({
+  endUser: z.string().optional().describe("The tenant-selected payer override for this run"),
   id: z.string(),
   method: z.enum(["prompt", "execute", "status", "abort", "continue", "steer", "configure", "resume"]).openapi({ description: "resume: the runtime continuing a turn that waited on human input, once its inputs settled" }),
   state: z.enum(["running", "completed"]),
@@ -712,21 +722,25 @@ export const Input = z.object({
   id: z.string(), agent: z.string(), tenant: z.string(),
   requestId: z.string().openapi({ description: "The run that suspended waiting on it" }),
   toolCallId: z.string(),
-  kind: z.enum(["question", "approval", "form", "url"]).openapi({ description: "question: ask_user's questions; approval: a call the runtime or a tool wants approved; form: fields a tool asks for; url: a page a tool asks the user to open" }),
+  kind: z.enum(["question", "approval", "form", "url", "decision"]).openapi({ description: "question: ask_user's questions; approval: a call the runtime or a tool wants approved; form: fields a tool asks for; url: a page a tool asks the user to open" }),
   message: z.string(),
   detail: z.record(z.string(), z.unknown()).openapi({ description: "question: { questions }; approval: { tool, source, arguments, argumentsHash }, built by the runtime from the real call; form: { requestedSchema }; url: { url, origin }" }),
   responders: z.object({ audience: z.array(z.string()).optional() }).openapi({ description: "Who may answer besides the definition's humanInput.approvers: by default the sender or actor whose message started the turn" }),
   state: z.enum(["pending", "answered", "declined", "cancelled", "expired", "superseded", "withdrawn"]).openapi({ description: "expired: no one answered by expiresAt, so the runtime answered for the person (answer.by.system \"expired\"; an approval is not given) and the agent went on without them" }),
   answer: z.object({ action: z.enum(["accept", "decline", "cancel"]), content: z.unknown().optional(), by: z.record(z.string(), z.unknown()), at: z.number() }).optional(),
+  priority: z.enum(["urgent", "high", "normal", "low"]).optional(), blocking: z.boolean().optional(),
+  key: z.string().optional(), version: z.number().optional(),
+  attachments: z.array(z.object({ path: z.string(), version: z.number(), contentType: z.string().optional(), caption: z.string().optional() })).optional(),
+  links: z.array(z.string()).optional(), recommendation: z.object({ answer: z.unknown(), reason: z.string() }).optional(), applyRecommendationOnExpiry: z.boolean().optional(),
   createdAt: z.number(), expiresAt: z.number(),
 }).openapi("Input");
 export const InboxQuery = z.object({
   for: z.string().optional(), subject: z.string().optional(), root: z.string().optional(),
-  priority: z.enum(["urgent", "high", "normal", "low"]).optional(), kind: z.enum(["question", "approval", "form", "url"]).optional(),
+  priority: z.enum(["urgent", "high", "normal", "low"]).optional(), kind: z.enum(["question", "approval", "form", "url", "decision"]).optional(),
   cursor: z.string().optional(), limit: z.coerce.number().int().min(1).max(100).optional(),
 });
 export const InboxPage = z.object({
-  items: z.array(Input.extend({ inputId: z.string().openapi({ description: "Use this id with the per-agent input answer route; id identifies the inbox row" }), priority: z.enum(["urgent", "high", "normal", "low"]), blocking: z.boolean(),
+  items: z.array(Input.extend({ inputId: z.string().openapi({ description: "Compatibility alias of id. Both identify the answerable input on agent; use (agent, id) as the row key" }), priority: z.enum(["urgent", "high", "normal", "low"]), blocking: z.boolean(),
     subject: z.string().nullable(), root: z.string(), lineage: z.array(z.string()), key: z.string().nullable(), version: z.number().int() })),
   cursor: z.string().nullable(), counts: z.object({ priority: z.object({ urgent: z.number(), high: z.number(), normal: z.number(), low: z.number() }), lead: z.record(z.string(), z.number()) }),
 }).openapi("InboxPage");
@@ -738,8 +752,8 @@ export const AnswerInput = z.object({
   actor: z.string().optional().openapi({ description: "Who is answering (a user id in your app), when not from.id" }),
 }).openapi("AnswerInput");
 export const AnswerInputs = z.object({ answers: z.array(AnswerInput.extend({ id: z.string() })).min(1).max(100) }).openapi("AnswerInputs");
-export const InboxAnswers = z.object({ requestId: z.string().min(1).max(200), answers: z.array(z.object({ id: z.string(), version: z.number().int().min(1), action: z.enum(["accept", "decline", "cancel"]).optional(), content: z.unknown().optional(), accept: z.literal("recommended").optional(), actor: z.string().optional(), from: Sender.optional() })).min(1).max(100) }).openapi("InboxAnswers");
-export const InboxOutcomes = z.object({ outcomes: z.array(z.object({ id: z.string(), outcome: z.enum(["answered", "same", "conflict", "forbidden", "unknown", "invalid", "unavailable"]), status: z.number(), retryable: z.boolean().optional(), state: z.string().optional(), by: z.unknown().optional(), error: z.string().optional() })) }).openapi("InboxOutcomes");
+export const InboxAnswers = z.object({ requestId: z.string().min(1).max(200), answers: z.array(z.object({ agent: z.string().min(1), id: z.string(), version: z.number().int().min(1), action: z.enum(["accept", "decline", "cancel"]).optional(), content: z.unknown().optional(), accept: z.literal("recommended").optional(), actor: z.string().optional(), from: Sender.optional() })).min(1).max(100) }).openapi("InboxAnswers");
+export const InboxOutcomes = z.object({ outcomes: z.array(z.object({ agent: z.string(), id: z.string(), outcome: z.enum(["answered", "same", "conflict", "forbidden", "unknown", "invalid", "unavailable"]), status: z.number(), retryable: z.boolean().optional(), state: z.string().optional(), by: z.unknown().optional(), error: z.string().optional() })) }).openapi("InboxOutcomes");
 export const AnsweredAll = z.object({ inputs: z.array(Input), requests: z.array(RequestRecord).openapi({ description: "The runs resuming turns whose last input these answers settled" }) }).openapi("AnsweredAll");
 export const Answered = z.object({ input: Input, request: RequestRecord.nullable().openapi({ description: "The run resuming the turn, once the suspension's last input settled; poll it like a prompt" }) }).openapi("Answered");
 
@@ -855,6 +869,13 @@ export const BrowserToken = z.object({
   expiresAt: z.number(), agentId: z.string(), url: z.string().optional().openapi({ description: "Where the browser reaches the runtime" }),
 }).openapi("BrowserToken");
 
+export const RunLogQuery = z.object({ cursor: z.string().optional(), limit: z.string().optional() });
+const LogTruncation = z.object({ truncated: z.literal(true), originalBytes: z.number(), preview: z.string() });
+export const RunLog = z.object({
+  run: z.union([Run, LogTruncation]), durationMs: z.number().nullable(),
+  events: z.array(z.object({ index: z.number(), type: z.literal("message"), at: z.number().nullable(), message: z.unknown(), truncated: z.boolean().optional() })),
+  next: z.string().optional(), truncated: z.boolean().optional(),
+}).openapi("RunLog");
 export const History = z.looseObject({ messages: z.array(z.unknown()) }).openapi("History");
 export const HistoryPage = z.object({
   entries: z.array(z.object({ index: z.number().openapi({ description: "The message's index in the agent's history" }), message: z.unknown() })).openapi({ description: "Messages, oldest first; whole turns unless a size bound splits them" }),
@@ -874,6 +895,10 @@ const Calendar = z.object({ time: z.string().openapi({ description: "Local HH:MM
 const ScheduleEmail = z.object({ to: z.email(), subject: z.string().min(1).max(200), format: z.enum(["text", "markdown", "html"]).optional().describe("Reply format; defaults to markdown. HTML is sent as supplied, with a generated plain-text alternative.") }).openapi("ScheduleEmail");
 // Documentation only: scheduleInput and Scheduler.create validate schedules.
 export const ScheduleInput = z.object({
+  mounts: z.array(MountInput).max(16).optional(),
+  cron: z.object({expression:z.string(),timeZone:z.string()}).optional(),
+  sessionMode: z.enum(["continue","fresh"]).optional(),
+  spendLimit: z.object({usd:z.number().min(0).max(1000000)}).optional(),
   calendar: Calendar.optional(),
   email: ScheduleEmail.optional().openapi({ description: "Email the successful run's final reply. Owner-configured only; failed runs are not sent." }),
   text: z.string().optional().openapi({ description: "Prompt to deliver; give exactly one of text or code" }),
@@ -885,6 +910,10 @@ export const ScheduleInput = z.object({
 }).openapi("ScheduleInput");
 
 export const Schedule = z.object({
+  mounts: z.array(MountInput).max(16).optional(),
+  cron: z.object({expression:z.string(),timeZone:z.string()}).optional(),
+  sessionMode: z.enum(["continue","fresh"]).optional(),
+  spendLimit: z.object({usd:z.number().min(0).max(1000000)}).optional(),
   calendar: Calendar.optional(),
   email: ScheduleEmail.optional(),
   id: z.string(),
@@ -1026,6 +1055,11 @@ export const Images = z.object({
   costUsd: z.number().openapi({ description: "What it cost at the runtime's price: charged to prepaid credit when it ran on the platform's key" }),
 }).openapi("Images");
 
+export const GroupedUsageQuery = z.object({ days: z.string().optional(), groupBy: z.string().optional(), rollup: z.enum(["true", "false"]).optional(), limit: z.string().optional(), cursor: z.string().optional(), workspaceId: z.string().optional() });
+export const GroupedUsage = z.object({
+  since: z.number(), groupBy: z.array(z.enum(["agent", "definition", "endUser", "model", "day"])), rollup: z.boolean(), totals: Totals, next: z.string().optional(),
+  groups: z.array(Totals.extend({ agent: z.string().nullable().optional(), definition: z.string().nullable().optional(), endUser: z.string().nullable().optional(), model: z.string().optional(), day: z.string().optional() })),
+}).openapi("GroupedUsage");
 export const Usage = z.object({
   since: z.number(),
   totals: Totals,
@@ -1127,6 +1161,7 @@ export const DefinitionUpdated = Definition.extend({
 export const DefinitionAgent = z.object({ id: z.string(), revision: z.number() }).openapi("DefinitionAgent");
 
 export const ConfigureInput = z.object({
+  metadata: ApplicationMetadata.optional(),
   requestId: z.string().min(1).optional(),
   model: z.string().optional().openapi({ description: "Model id from GET /v1/models" }),
   systemPrompt: z.string().min(1).max(32_000).optional(),

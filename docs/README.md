@@ -11,8 +11,10 @@ model-written code in a sandbox, and wakes agents when there is work.
    run, processes, people in the loop, idempotency. **[Pricing](pricing.md)**:
    what usage costs, and credit.
 3. **Guides**
+   - [Incoming webhook triggers](guides/triggers.md)
    - [Scheduled agents and email reports](guides/schedules.md)
    - [Workspaces](guides/workspaces.md): group agents and definitions and see model and tool spend by project
+   - [Application metadata](guides/agents.md): project data in agent lists and indexed filtering
    - [Projects](guides/projects.md): an agent builds a bot, site or report; your app checks and publishes versions
    - [Computers](guides/computers.md): native Linux computers, remote browsers and Cloudflare Tunnel; forking a computer into sub-agents
    - [Tools](guides/tools.md): writing tools, attached and served tools, identity, MCP and OpenAPI sources, built-ins
@@ -30,12 +32,16 @@ model-written code in a sandbox, and wakes agents when there is work.
    - [Webhooks](guides/webhooks.md): run and input events, signatures, delivery
    - [Models and keys](guides/models-and-keys.md): the catalog, your own keys and endpoints, key scopes, spend limits
    - [Definitions](guides/definitions.md): reusable configurations and rolling out changes
+   - [Schedules](guides/schedules.md): cron and calendar timing, fresh runs, per-run budgets and email reports
    - [Channels](guides/channels.md): Slack, Telegram, GitHub, email and any service that sends webhooks
    - [Agents as MCP servers](guides/mcp-server.md): connect Claude or Cursor to an agent
    - [Coming from the OpenAI Agents SDK or LangGraph](guides/migrating.md): each concept mapped, and what camelRun does not have
+   - [Dreaming](guides/dreaming.md): nightly consolidation into a memory volume
+   - [Session transcripts](guides/session-transcripts.md): time-filtered pages from an agent and its descendants
    - [Exporting your data](guides/export.md): the account export, and moving to a self-hosted runtime
 4. **[Production checklist](production.md)**
 5. **Reference**
+   - [Provision an application](reference/apply.md): volumes, definitions and agents in one transaction
    - [Events](reference/events.md): every event on an agent's stream, and a run's outcome
    - [Limits](reference/limits.md)
    - [Errors](reference/errors.md)

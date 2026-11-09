@@ -1,3 +1,4 @@
+import { applying } from "../shared/apply-scope.ts";
 import { createHash, randomBytes } from "node:crypto";
 import type { AppendLog } from "../shared/append-log.ts";
 import type { Storage } from "../shared/storage.ts";
@@ -280,7 +281,7 @@ export class VolumeService {
     const made = await this.readHeader(id);
     if (!made || made.tenant !== tenant) throw new HttpError(409, `Volume ${id} already exists`);
     if (made.deleted) throw new HttpError(409, `The volume for key ${input.key} was deleted; use another key`);
-    return { ...await this.call(id, tenant, "info"), existing: true };
+    return { ...(applying() ? this.summary(made) : await this.call(id, tenant, "info")), existing: true };
   }
   /** The id of a tenant's volume for `key` (POST /v1/volumes with a key). */
   static keyed(tenant: string, key: string) { return `vol_${sha256(`volume-key:${tenant}:${key}`).slice(0, 24)}`; }
@@ -969,6 +970,7 @@ export class VolumeService {
       if (mode !== "ro" && mode !== "rw") throw new HttpError(400, "mode must be ro or rw");
       if (notify !== undefined && typeof notify !== "boolean") throw new HttpError(400, "notify must be a boolean");
       if (!validVolumeId(volumeId) || !await this.owns(volumeId, tenant)) throw new HttpError(404, `Unknown volume ${String(volumeId)}`);
+      if (mode === "rw" && (await this.db.query('select agent from agent_dreaming where tenant=$1 and volume=$2', [tenant, volumeId])).rows.length) throw new HttpError(400, "Dream memory volumes must be mounted read-only");
       if (mounts.some(other => within(path, other.path) || within(other.path, path))) throw new HttpError(400, `Mount path ${path} overlaps another mount`);
       const subpath = (input as Record<string, unknown>).subpath === undefined ? "/" : normalizePath((input as Record<string, unknown>).subpath, "subpath");
       mounts.push({ volumeId, path, mode, ...(subpath !== "/" ? { subpath } : {}), ...(notify ? { notify } : {}) });

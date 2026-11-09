@@ -1,3 +1,4 @@
+import { CANCELLABLE_METHODS } from "../../../shared/queue-mode.ts";
 import { type LiveState } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { cancelledHumanInput, HumanInputs } from "./human.ts";
@@ -18,7 +19,7 @@ export async function abortRequestsImpl(this: AgentRuntime,
       await this.ctx.storage.delete([...held.keys()]);
     }
     const pending = await this.harness.pending();
-    const deferred = (await this.records()).filter(record => record.state !== 'completed' && record.configurationWait !== undefined);
+    const deferred = (await this.records()).filter(record => record.state !== 'completed' && (record.configurationWait !== undefined || record.heldForInput));
     const cancelled = queued === 'keep' ? [] : [...new Set([
       ...pending.filter(item => item.status === 'queued').map(item => item.operationId),
       ...deferred.map(record => record.id),
@@ -57,6 +58,14 @@ export async function abortRequestsImpl(this: AgentRuntime,
       }
       await this.resumeKeptQueue();
     }
+    await finishCancelledRequests.call(this, cancelled);
+    this.configurationQueue.kick();
+    if (queued === 'keep') this.batchQueue.kick();
+    return { aborted: true, cancelled: [...heldCancelled, ...cancelled] };
+  }
+
+/** The stop and member-removal paths publish the same terminal records and release the same reservations. */
+async function finishCancelledRequests(this: AgentRuntime, cancelled: string[]) {
     const conf = await this.config();
     for (const id of cancelled) {
       const record = await this.ctx.storage.get<RequestRecord>(reqKey(id));
@@ -75,10 +84,43 @@ export async function abortRequestsImpl(this: AgentRuntime,
       await this.emit({ type: 'event', requestId: id, event: { type: 'run_cancelled', reason: 'stopped' } });
       await this.emit({ type: "response", id, outcome: record.outcome });
     }
-    this.configurationQueue.kick();
-    if (queued === 'keep') this.batchQueue.kick();
-    return { aborted: true, cancelled: [...heldCancelled, ...cancelled] };
+}
+
+/** Abort one request through the same path used for durable per-request cancellation. */
+async function abortRequestWork(this: AgentRuntime, record: RequestRecord) {
+  await this.cancelHumanInputs(record.id);
+  if (record.method === "execute") await abortHostExecution(await this.harness.pi(), record.id);
+  else await this.harness.session().abort(record.piId ?? record.id);
+  await this.delegation.cancel(record.id);
+}
+
+export async function removeMemberImpl(this: AgentRuntime, member: string) {
+  // S4 guest routes must check membership; admission rechecks it after preparation.
+  // S5 attaches member identities to guest sockets and adds periodic revision checks.
+  for (const socket of this.ctx.getWebSockets()) {
+    if (socket.deserializeAttachment()?.member === member) socket.close(1008, JSON.stringify({ reason: "removed" }));
   }
+  const removal = this.admission.then(async () => {
+    const records = await this.records();
+    const cancelled: string[] = [];
+    for (const record of records) {
+      if (record.state === "completed" || record.began || record.steeredInto ||
+          !CANCELLABLE_METHODS.includes(record.method) || record.actor !== `member:${member}` ||
+          (record.batchedInto && records.some(lead => lead.id === record.batchedInto && lead.began))) continue;
+      await this.ctx.storage.put(`cancelled-request:${record.id}`, true);
+      if (record.batchHeld) await this.batchQueue.cancel(record.id);
+      else {
+        await abortRequestWork.call(this, record);
+        cancelled.push(record.id);
+      }
+    }
+    await finishCancelledRequests.call(this, cancelled);
+    this.configurationQueue.kick();
+    this.batchQueue.kick();
+  });
+  this.admission = removal.catch(() => {});
+  await removal;
+}
 
 export async function resumeKeptQueueImpl(this: AgentRuntime) {
     const intent = await this.ctx.storage.get<{ taskId: number }>('resume-kept-queue');
@@ -118,11 +160,7 @@ export function resumeCancellationImpl(this: AgentRuntime,
     // A child tool may be waiting on its parent's admission queue. Acknowledge
     // the durable cancellation before draining tools or calling another object.
     const work = (async () => {
-      await this.cancelHumanInputs(record.id);
-      if (record.method === "execute")
-        await abortHostExecution(await this.harness.pi(), record.id);
-      else await this.harness.session().abort(record.piId ?? record.id);
-      await this.delegation.cancel(record.id);
+      await abortRequestWork.call(this, record);
       if (record.method === "execute" && !record.accepted)
         await this.cancelHostIntent(record);
       else this.track(record.id);
@@ -201,6 +239,7 @@ export async function cancelHumanInputsImpl(this: AgentRuntime,
       const doc = await tx.doc(HumanInputs);
       for (const { key } of cancelled) doc.requests[key] = cancelledHumanInput(doc.requests[key]);
     }, BACKGROUND_CONTEXT);
+    this.kickInputPrompts();
     for (const { key, owner } of cancelled)
       await this.emit({ type: "event", requestId: owner, event: { type: "input_resolved", id: key, state: "cancelled", by: { system: "aborted" } } });
   }

@@ -18,15 +18,14 @@ its questions and approvals are answered in place.
 ## Start a new app
 
 ```sh
-export CAMELAI_API_KEY=art_...   # https://run.camelai.com/console/tokens
+export CAMELRUN_API_KEY=art_...   # https://run.camelai.com/console/tokens
 npm create @camelai/run-app my-app
 cd my-app && npm run dev
 ```
 
-It writes the key from `CAMELAI_API_KEY` to the app's `.env.local`.
+It writes the key from `CAMELRUN_API_KEY` to the app's `.env.local`.
 
-A Next.js app with the chat, its route, a tool drawn by its own component, and a demo sign-in to
-replace with yours. Examples with Vite (React, Vue, Svelte, Solid), the read proxy and the AI SDK are in
+A Next.js app with the chat, its route, a tool drawn by its own component, and GitHub/OIDC sign-in recipes to configure. Examples with Vite (React, Vue, Svelte, Solid), the read proxy and the AI SDK are in
 [examples/frontend](../examples/frontend). Get an API key in the [console](https://run.camelai.com/console).
 
 ## Add it to an app you have
@@ -46,7 +45,7 @@ and answers. Your API key never leaves the server.
 import { createAgentHandler } from "@camelai/run/server";
 
 export const POST = createAgentHandler({
-  // CAMELAI_API_KEY from the environment, or apiKey: "…"
+  // CAMELRUN_API_KEY from the environment, or apiKey: "…"
   authorize: async request => {
     const user = await getUser(request);          // your session check
     return user ? { userId: user.id, name: user.name } : null;   // null: 401
@@ -83,7 +82,7 @@ app.post("/api/agent", nodeListener(handler));    // before any body parser for 
 | `allowedOrigins` | Other origins whose pages may call the route (with CORS). |
 | `linkAnyMountedPath` | `true`: file links for any path in the agent's mounts, so the boundary is what the agent can read. Default: only files it presented, or in its own workspace volume. |
 | `proxy` | `true`: browsers read their agent through this route too, and only ever talk to your origin (see [Reading through your route](#reading-through-your-route-proxy)). Default `false`. |
-| `apiKey`, `url` | Default `CAMELAI_API_KEY`, and `CAMELAI_BASE_URL` or https://run.camelai.com. |
+| `apiKey`, `url` | Default `CAMELRUN_API_KEY`, and `CAMELRUN_URL` or https://run.camelai.com. |
 
 ### 2. The UI
 
@@ -364,9 +363,15 @@ authorize: async (request, { thread }) => {
 - Answers to the agent's questions are checked against who may answer: by default the person whose
   message started the turn.
 - Everyone watching sees the same conversation, live.
+- On an agent with shared membership, console prompts without `from` are stamped with the owner
+  member. Recorded senders may carry a runtime-set `role` (`owner` or `guest`); API callers cannot
+  set it. A guest turn's approvals go to the owner and the definition's approvers, excluding
+  members with the guest role. A new prompt supersedes only questions addressed to its sender or open to anyone.
+  Prompts wait in the queue while another person must still answer. Agents without shared
+  membership keep their existing input cancellation behavior.
 - It is one conversation with one turn at a time: a message sent while the agent works waits for
   that turn (or joins it, with `whileRunning: "steer"`); anyone's Stop stops the turn for everyone;
-  and a new message while the agent waits on a question supersedes the question (its call closes as
+  and, without shared membership, a new message while the agent waits on a question supersedes it (its call closes as
   not answered). Put per-user work in per-user agents.
 
 ## Theming and accessibility
@@ -406,8 +411,33 @@ with the store and the hooks where `fetch` streams (Expo's `expo/fetch`), or wit
 - **401 from the route**: `authorize` returned null: the user is not signed in, or the cookie did not
   reach the route (`credentials`).
 - **"Could not reach the runtime … CORS"** in the browser: the runtime allows any origin only for
-  browser tokens on its read routes; check the route's `browserToken.url` (or `CAMELAI_BASE_URL`).
+  browser tokens on its read routes; check the route's `browserToken.url` (or `CAMELRUN_URL`).
 - **Tool calls fail with "not connected"**: the process that serves the route's tools is not
   running (serverless); use `serveTools` and a definition.
 - **Two server instances**: tools served from the route belong to one process at a time; run one
   instance, or serve tools over HTTP.
+
+## Opening an existing agent
+
+`createAgentHandler({ authorize, existingAgent: "id-or-key" })` obtains credentials without creating,
+reconfiguring or attaching tools. A function can resolve the id from the verified user and thread.
+The authorization hook must check that user can access the selected agent. Passing `agent: {...}`
+explicitly opts into upsert; omitting both modes throws. Existing callers that pass `agent` keep working.
+
+The starter includes GitHub organization-gated OAuth and generic OIDC, signed eight-hour sessions,
+and a closed setup page until configured. Generate with `--cloudflare` for OpenNext, runtime bindings
+and a webpack production build with the generated directory as the standalone root.
+`CAMELRUN_API_KEY` and `CAMELRUN_URL` are canonical; `CAMELAI_API_KEY`, `CAMELAI_BASE_URL` and
+`CAMELAI_URL` remain fallback names. Explicit options take precedence.
+
+## Inbox list
+
+`runtime.inbox({ for, subject, root, priority, kind, cursor, limit })` returns `{items, cursor, counts}`.
+Each item's `id` is answerable on its `agent`; `inputId` is a compatibility alias for the same value.
+Use `runtime.answerInbox([{agent: item.agent, id: item.id, version: item.version, action: "accept", content: value}], requestId)` on your server. The priority-ordered
+page and next cursor come from the runtime; do not sort pages independently.
+
+`InboxList` from `@camelai/run-react/ui` takes a `page`, a `load(filters)` callback, an
+`answer(item, value)` callback and `renderItem(item, answer)`. Route load and answer through your own
+authenticated server; never put the tenant API key in the browser. Remount the list with a new React
+`key` when filters change. `AgentChat` accepts `subagents` directly; `watch.subagents` also works.

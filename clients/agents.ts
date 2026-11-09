@@ -22,9 +22,9 @@ const INSPECT = Symbol.for("nodejs.util.inspect.custom");
 const env = (name: string): string | undefined => (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.[name] || undefined;
 
 export interface AgentsOptions {
-  /** Your API key (the console's). Default: the CAMELAI_API_KEY environment variable. */
+  /** Your API key (the console's). Default: CAMELRUN_API_KEY, with CAMELAI_API_KEY as fallback. */
   apiKey?: string;
-  /** The runtime's origin. Default: CAMELAI_BASE_URL, else https://run.camelai.com. */
+  /** The runtime's origin. Default: CAMELRUN_URL, then CAMELAI_BASE_URL, else https://run.camelai.com. */
   url?: string;
   fetch?: typeof globalThis.fetch;
   /** Opens a local file to attach by its path; the Node entry sets it. */
@@ -39,6 +39,8 @@ export interface AgentsOptions {
 
 /** An agent's configuration: what `upsert` makes it, or changes it to. */
 export interface AgentConfig {
+  /** Tenant-owned application JSON (16 KB), never sent to the model. */
+  metadata?: Record<string, unknown>;
   /** Account workspace for spend attribution. */
   workspaceId?: string | null;
   /** A model from the catalog (GET /v1/models) as "provider/model-id", e.g. "anthropic/claude-sonnet-5-5". */
@@ -149,7 +151,7 @@ export interface RunFailure extends Partial<ModelFailure> {
   reason?: CreditReason;
   /** With code end_user_credit: the bucket refused. */
   bucket?: string;
-  /** With code end_user_credit: whose credit (the subject). */
+  /** With code end_user_credit: whose credit (the payer). */
   endUser?: string;
 }
 
@@ -196,7 +198,7 @@ export interface AnswerOptions {
   throwOnError?: boolean;
   signal?: AbortSignal;
 }
-/** Human input a run waits on, with the means to answer it. Answering resolves with the resumed run. */
+/** Human input with the means to answer it. Decisions return a completed receipt; blocking inputs return the resumed run. */
 export interface RunInput<T = unknown> extends Omit<AgentInput, "answer"> {
   answer(value: InputValue, options?: AnswerOptions): Promise<Run<T>>;
   decline(options?: AnswerOptions): Promise<Run<T>>;
@@ -220,6 +222,8 @@ export type OutputSchema = StandardOutputSchema<any> | TSchema | Record<string, 
 export type OutputOf<S> = S extends { readonly "~standard": { readonly types?: { readonly output: infer T } } } ? T : S extends TSchema ? Static<S> : unknown;
 
 export interface RunOptions {
+  /** Charge this existing end user. Requires a tenant API key; unavailable for steers. */
+  endUser?: string;
   /** Who sent it (your user id, or a Sender): the model sees who, and tools get it as `identity.user`. */
   user?: string | Sender;
   files?: Attachment[];
@@ -300,6 +304,8 @@ export class Agents {
   /** Stateless runs: `create`, `get`, `stream`, `abort`, `delete`, `messages`; `agents.run` is the one-call form. */
   readonly runs: Runs;
   /** Speech to text on its own: `create({ file | url })`. Audio attached to a message is transcribed without it. */
+  usage(options: import("./typescript.ts").UsageOptions = {}) { return this.runtime.usage(options); }
+  agentUsage(id: string, options: import("./typescript.ts").UsageOptions = {}) { return this.runtime.agentUsage(id, options); }
   get transcriptions() { return this.runtime.transcriptions; }
   /** Images on their own: `generate(prompt)`, `edit(prompt, images)`. Agents make them with the `generate_image` builtin. */
   get images() { return this.runtime.images; }
@@ -312,9 +318,9 @@ export class Agents {
   private readonly connection: "eager" | "lazy";
   constructor(options: AgentsOptions = {}) {
     this.connection = options.connection ?? "lazy";
-    const apiKey = options.apiKey ?? env("CAMELAI_API_KEY") ?? env("AGENT_RUNTIME_TOKEN");
+    const apiKey = options.apiKey ?? env("CAMELRUN_API_KEY") ?? env("CAMELAI_API_KEY") ?? env("AGENT_RUNTIME_TOKEN");
     this.runtime = new AgentRuntime({
-      ...options, url: options.url ?? env("CAMELAI_BASE_URL") ?? env("AGENT_URL"), ...(apiKey ? { apiKey } : {}),
+      ...options, url: options.url ?? env("CAMELRUN_URL") ?? env("CAMELAI_BASE_URL") ?? env("CAMELAI_URL") ?? env("AGENT_URL"), ...(apiKey ? { apiKey } : {}),
     });
     this.runs = new Runs(this.runtime);
   }
@@ -439,6 +445,7 @@ export class Runs {
   /** Delete a run's result, events and messages now, before its retention ends. */
   delete(id: string) { return this.runtime.deleteRun(id); }
   /** A run's messages: its input, the model's turns and tool results. */
+  log(id: string, options: { limit?: number; cursor?: string } = {}) { return this.runtime.runLog(id, options); }
   async messages(id: string): Promise<RecordedMessage[]> { return (await this.runtime.runMessages(id)).messages; }
   /** A run's raw event stream, to its end; see `stream` for one already read into text, tool calls and the result. */
   events(id: string, options: { lastEventId?: number; signal?: AbortSignal } = {}): AsyncGenerator<RunFrame> { return this.runtime.runEvents(id, options); }
@@ -676,8 +683,8 @@ export class Agent {
       const { request } = await this.client.answer(input.id, answer);
       if (request) return this.settle<T>(request.id, this.client.waitForRequest(request.id, { ...(options.signal ? { signal: options.signal } : {}) }), options.throwOnError, schema);
       // Other inputs of the run still wait: it resumes once they are answered too.
-      const pending = (await this.client.inputs("pending")).filter(other => other.requestId === input.requestId);
-      return { id: input.requestId, status: "input_required", text: "", inputs: pending.map(other => this.input<T>(other, schema)), error: null, usage: null, files: [], toolErrors: [], toolCalls: [], sourceErrors: [], raw: null };
+      const pending = input.blocking === false ? [] : (await this.client.inputs("pending")).filter(other => other.requestId === input.requestId && other.blocking !== false);
+      return { id: input.requestId, status: pending.length ? "input_required" : "completed", text: "", inputs: pending.map(other => this.input<T>(other, schema)), error: null, usage: null, files: [], toolErrors: [], toolCalls: [], sourceErrors: [], raw: null };
     };
     return {
       ...input,
@@ -755,6 +762,11 @@ export class Agent {
   }
   /** Wake the agent later with a message (`text`), or run `code`; `everySeconds` (at least 60) repeats it. */
   schedule(input: Parameters<AgentClient["schedule"]>[0]) { return this.client.schedule(input); }
+  createTrigger(input: Parameters<AgentClient["createTrigger"]>[0]) { return this.client.createTrigger(input); }
+  triggers() { return this.client.triggers(); }
+  deleteTrigger(id: string) { return this.client.deleteTrigger(id); }
+  rotateTrigger(id: string) { return this.client.rotateTrigger(id); }
+  triggerDeliveries(id: string) { return this.client.triggerDeliveries(id); }
   schedules() { return this.client.schedules(); }
   unschedule(id: string) { return this.client.unschedule(id); }
   /** Delete the agent, its history and its files, for good. */
@@ -772,6 +784,7 @@ function messageOptions(options: Pick<RunOptions, "user" | "files" | "metadata">
 function promptOptions(id: string, options: RunOptions) {
   return {
     ...messageOptions(options), idempotencyKey: id,
+    ...(options.endUser !== undefined ? { endUser: options.endUser } : {}),
     ...(options.signal ? { signal: options.signal } : {}), ...(options.whileRunning ? { whileRunning: options.whileRunning } : {}),
     ...(options.allowDisconnected ? { allowDisconnected: true } : {}), ...(options.spendLimit ? { spendLimit: options.spendLimit } : {}),
     ...(options.runLimits ? { runLimits: options.runLimits } : {}),
@@ -786,7 +799,7 @@ function answerFor(input: AgentInput, value: InputValue): InputAnswer {
     case "approval": case "url":
       if (typeof value !== "boolean") throw new AgentError(`Answer ${input.kind === "approval" ? "an approval" : "a url step"} with true or false`);
       return { action: value ? "accept" : "decline" };
-    case "question": {
+    case "question": case "decision": {
       const questions = (input.detail.questions ?? []) as { question: string }[];
       if (typeof value === "string" || Array.isArray(value)) {
         if (questions.length !== 1) throw new AgentError(`This input asks ${questions.length} questions: answer with { "<question>": "<answer>" } for each`);

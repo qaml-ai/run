@@ -7,3 +7,7 @@ globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {
 globalThis.IntersectionObserver ??= class { root = null; rootMargin = ""; thresholds = []; observe() {} unobserve() {} disconnect() {} takeRecords() { return []; } } as unknown as typeof IntersectionObserver;
 // jsdom has no 2D canvas; the dither art draws nothing without one.
 HTMLCanvasElement.prototype.getContext = (() => null) as typeof HTMLCanvasElement.prototype.getContext;
+
+// The shared chat follows streamed content and links to pending inputs.
+Element.prototype.scrollTo ??= function () {};
+Element.prototype.scrollIntoView ??= function () {};

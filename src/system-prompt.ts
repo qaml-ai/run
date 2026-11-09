@@ -1,5 +1,5 @@
 import type { SystemMessage, Tool } from "@earendil-works/pi-ai";
-import { SENDER_INSTRUCTIONS } from "./sender.ts";
+import { SENDER_INSTRUCTIONS, SHARED_SENDER_INSTRUCTIONS } from "./sender.ts";
 import { supportsDocuments } from "./files.ts";
 import { SANDBOX_LIMITS } from "./limits.ts";
 import { callableFromCode, declaredToModel, scratchMount, type AgentConfig } from "./protocol.ts";
@@ -147,16 +147,17 @@ const runtimeInstructions = codeInstructions(FILES_IN_CODE), fileCodeInstruction
  * The runtime's instructions: without code mode (codeMode: false) they cover only the tools the agent has, if any; with
  * it, where file work goes, by whether the file tools are the model's (`fileTools`).
  */
-export function runtimeRules(config: Pick<AgentConfig, "codeMode" | "tools"> & Partial<Pick<AgentConfig, "fileTools">>): string {
-  if (config.codeMode === false) return bare(config) ? bareInstructions : directInstructions;
-  return config.fileTools === false ? fileCodeInstructions : runtimeInstructions;
+export function runtimeRules(config: Pick<AgentConfig, "codeMode" | "tools"> & Partial<Pick<AgentConfig, "fileTools" | "sharedAgent">>): string {
+  const rules = config.codeMode === false ? (bare(config) ? bareInstructions : directInstructions)
+    : config.fileTools === false ? fileCodeInstructions : runtimeInstructions;
+  return config.sharedAgent ? rules.replace(SENDER_INSTRUCTIONS, `${SENDER_INSTRUCTIONS}\n${SHARED_SENDER_INSTRUCTIONS}`) : rules;
 }
 
 /**
  * The context's first system message: the runtime's instructions, the application's and a summary of the environment,
  * each a named section. Rendered, they are joined by blank lines.
  */
-export function leadingSystemMessage(config: Pick<AgentConfig, "systemPrompt" | "systemPromptAppend" | "language" | "mounts" | "model" | "tools" | "fileTools" | "codeMode" | "codeLimits">, tools: Tool[], codemode: string | null = null): SystemMessage {
+export function leadingSystemMessage(config: Pick<AgentConfig, "sharedAgent" | "systemPrompt" | "systemPromptAppend" | "language" | "mounts" | "model" | "tools" | "fileTools" | "codeMode" | "codeLimits">, tools: Tool[], codemode: string | null = null): SystemMessage {
   const environment = environmentSummary(config);
   return {
     role: "system", content: "", timestamp: 0,

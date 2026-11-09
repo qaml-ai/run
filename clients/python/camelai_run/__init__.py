@@ -30,7 +30,7 @@ from .event_transport import event_stream
 __version__ = "0.18.1"
 
 __all__ = [
-    "Agents", "Agent", "Run", "RunInput", "InputDetail", "Mount", "WorkspaceMount", "RunStream", "StreamPart", "Runs", "StatelessRunStream",
+    "AgentSummary", "GitHubRepository", "Agents", "Agent", "Run", "RunInput", "InputDetail", "Mount", "WorkspaceMount", "RunStream", "StreamPart", "Runs", "StatelessRunStream",
     "tool", "Tool", "ToolContext", "InputRequired", "RuntimeIdentity", "identity_from_claims", "spawn_agent", "SpawnAgent", "agent_notice",
     "AgentError", "RunError", "CREDIT_REASONS", "EndUserCreditFailure", "end_user_credit",
     "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Volume", "Transcriptions", "Images", "EndUsers", "Voice", "Voices", "DEFAULT_URL",
@@ -187,6 +187,25 @@ def identity_from_claims(claims):
                            approval=claims["approval"] if isinstance(claims.get("approval"), dict) else None,
                            request_id=text(claims.get("req")), tool_call_id=text(claims.get("tcid")),
                            parent_agent_id=text(claims.get("par")), root_agent_id=text(claims.get("root")))
+
+
+class AgentSummary(TypedDict):
+    id: str
+    key: str | None
+    name: str
+    type: str
+    metadata: dict[str, Any]
+    lastActiveAt: int | None
+    lastError: dict[str, Any] | None
+
+
+class GitHubRepository(TypedDict):
+    id: int
+    name: str
+    fullName: str
+    private: bool
+    htmlUrl: str
+    defaultBranch: str | None
 
 
 class InputRequired(Exception):
@@ -599,6 +618,24 @@ class _RuntimeCalls:
     """The operator API's calls that are one request each, shared by the async AgentRuntime and the synchronous one
     (camelai_run.sync): each returns what self._rest returns, an awaitable here and the answer there."""
 
+    def dreaming(self, agent_id):
+        return self._rest("GET", "/v1/agents/" + quote(agent_id, safe="") + "/dreaming")
+
+    def configure_dreaming(self, agent_id, config):
+        return self._rest("PUT", "/v1/agents/" + quote(agent_id, safe="") + "/dreaming", config, retry=False)
+
+    def dream_now(self, agent_id):
+        return self._rest("POST", "/v1/agents/" + quote(agent_id, safe="") + "/dreaming/run", {}, retry=False)
+
+    def sessions(self, agent_id, *, from_ms, to_ms, cursor=None, limit=100, children=True, end_user=None):
+        """A tenant-authenticated page of a conversation tree in [from_ms,to_ms). Follow next until null."""
+        query = {"from": from_ms, "to": to_ms, "limit": limit, "children": str(children).lower()}
+        if cursor is not None:
+            query["cursor"] = cursor
+        if end_user is not None:
+            query["endUser"] = end_user
+        return self._rest("GET", "/v1/agents/" + quote(agent_id, safe="") + "/sessions?" + urlencode(query))
+
     def fork_agent(self, agent_id, *, key=None, name=None, at_message=None, ttl_seconds=_DEFAULT, subject=None, context=None, instructions_append=None, model_headers=_DEFAULT):
         """A new agent with this one's configuration, a copy of its history and a fork of its workspace. Returns its
         credentials and where it came from ({"id", "token", "expiresAt", "forkedFrom": {"agentId", "atMessage"}}).
@@ -685,6 +722,10 @@ class _RuntimeCalls:
         """Delete a run now, before its retention ends (a running one stops)."""
         return self._rest("DELETE", f"/v1/runs/{_path(run_id)}")
 
+    def run_log(self, run_id, *, limit=None, cursor=None):
+        query = urlencode({k: v for k, v in {"limit": limit, "cursor": cursor}.items() if v is not None})
+        return self._rest("GET", f"/v1/runs/{_path(run_id)}/log" + ("?" + query if query else ""))
+
     def run_messages(self, run_id):
         """A run's messages: its input, the model's turns and tool results."""
         return self._rest("GET", f"/v1/runs/{_path(run_id)}/messages", then=lambda value: value["messages"])
@@ -693,6 +734,10 @@ class _RuntimeCalls:
     # Make agents from one with create_agent(definition=id). Fields use the REST names (systemPrompt, mcpServers, runLimits...)
     # or their Python spelling (system_prompt, mcp_servers, run_limits...). An MCP server's auth is {"type": "bearer", "token"},
     # {"type": "runtime"} or {"type": "exchange", "url", "audience"?} (a credential fetched from an endpoint of yours).
+    def apply(self, manifest):
+        """Atomically provision keyed resources; dryRun previews changes without saving."""
+        return self._rest("POST", "/v1/apply", manifest)
+
     def create_definition(self, **fields):
         return self._rest("POST", "/v1/definitions", _with_multi_agent(fields), retry=False)
 
@@ -731,9 +776,22 @@ class _RuntimeCalls:
         """Every provider: the built-in ones with your keys' status, and your own ("custom")."""
         return self._rest("GET", "/v1/providers")
 
-    def list_agents(self):
+    def list_agents(self, *, metadata: dict[str, str] | None = None):
         """The tenant's agents, each with the key it was made with (None for one made without) and its name."""
-        return self._rest("GET", "/v1/agents")
+        return self._rest("GET", "/v1/agents" + ("?" + urlencode({"metadata." + key: value for key, value in metadata.items()}) if metadata else ""))
+
+    def set_agent_metadata(self, agent_id, metadata):
+        """Replace tenant-owned application JSON (at most 16 KB)."""
+        return self._rest("PATCH", f"/v1/agents/{quote(agent_id, safe='')}/configuration", {"metadata": metadata})
+
+    def github_repositories(self, app, *, cursor=None, per_page=100):
+        query = {"perPage": per_page}
+        if cursor is not None:
+            query["cursor"] = cursor
+        return self._rest("GET", f"/v1/github-apps/{quote(app, safe='')}/repositories?" + urlencode(query))
+
+    def github_repository(self, app, owner, name):
+        return self._rest("GET", f"/v1/github-apps/{quote(app, safe='')}/repositories/{quote(owner, safe='')}/{quote(name, safe='')}")
 
     def create_volume(self, *, name=None, key=None, idempotency_key=None):
         """A new volume. With `key`, the tenant's volume for that key: made the first time, the same one ("existing": True)
@@ -774,10 +832,11 @@ class _RuntimeCalls:
         return self._rest("POST", "/v1/inbox/answers", {"answers": answers, "requestId": request_id})
 
     def inbox(self, *, for_=None, subject=None, root=None, priority=None, kind=None, cursor=None, limit=None):
-        """A page of pending inputs in priority order: {items, cursor, counts}. inputId addresses the per-agent answer route."""
+        """A page of pending inputs in priority order: {items, cursor, counts}. id addresses the per-agent answer route; inputId is its compatibility alias."""
         query = urlencode({key: value for key, value in {"for": for_, "subject": subject, "root": root,
             "priority": priority, "kind": kind, "cursor": cursor, "limit": limit}.items() if value is not None})
         return self._rest("GET", "/v1/inbox" + (f"?{query}" if query else ""))
+
 
     def tool_sources(self, agent_id, *, schemas=False, refresh=False):
         """Every source of an agent's tools (its application, file tools, built-ins, MCP servers, OpenAPI
@@ -817,11 +876,17 @@ class _RuntimeCalls:
         """The scope's own providers, never their keys or header values."""
         return self._rest("GET", f"/v1/key-scopes/{_path(scope)}/model-providers")
 
-    def usage(self, *, days=None):
-        """Token usage and cost per UTC day and model over the last `days` (1 to 365, default 30): {"since", "totals",
-        "days": [{"day", "model", "kind", "responses", "input", "output", "cacheRead", "cacheWrite", "cost", ...}]}.
-        Per user or per key scope: the usage.recorded webhook."""
-        return self._rest("GET", "/v1/usage" + (f"?days={int(days)}" if days is not None else ""))
+    def usage(self, *, days=None, group_by=None, rollup=False, agent=None, limit=None, cursor=None, workspace_id=None):
+        """Daily account totals by default; group_by selects attribution dimensions."""
+        query = {}
+        if days is not None:
+            query["days"] = int(days)
+        if group_by is not None or agent is not None or rollup:
+            query["groupBy"] = ",".join(group_by or ["agent"])
+            query["rollup"] = str(rollup).lower()
+        query.update({k: v for k, v in {"limit": limit, "cursor": cursor, "workspaceId": workspace_id}.items() if v is not None})
+        path = f"/v1/agents/{_path(agent)}/usage" if agent else "/v1/usage"
+        return self._rest("GET", path + ("?" + urlencode(query) if query else ""))
 
     # API tokens: the tenant's keys to this API. A token's secret is returned only when it is made.
     def tokens(self):
@@ -877,8 +942,8 @@ class AgentRuntime(_RuntimeCalls):
     else https://run.camelai.com; `api_key` to CAMELAI_API_KEY."""
 
     def __init__(self, url=None, api_key=None):
-        self.base = _origin(url or _env("CAMELAI_BASE_URL", "AGENT_URL") or DEFAULT_URL)
-        self.api_key = api_key or _env("CAMELAI_API_KEY", "AGENT_RUNTIME_TOKEN")
+        self.base = _origin(url or _env("CAMELRUN_URL", "CAMELAI_BASE_URL", "CAMELAI_URL", "AGENT_URL") or DEFAULT_URL)
+        self.api_key = api_key or _env("CAMELRUN_API_KEY", "CAMELAI_API_KEY", "AGENT_RUNTIME_TOKEN")
         self.http = httpx.AsyncClient(timeout=10, follow_redirects=False)
         self.agents = []
         # Speech to text on its own: create.
@@ -915,7 +980,7 @@ class AgentRuntime(_RuntimeCalls):
             raise
         return then(value) if then else value
 
-    async def create_agent(self, *, tools, workspace_id=_DEFAULT, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, on_input=None, builtins=None, delegate=None, subagents=False, prompt=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, idle_ttl_seconds=None):
+    async def create_agent(self, *, tools, workspace_id=_DEFAULT, system_prompt=None, name=None, type=None, metadata=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, on_input=None, builtins=None, delegate=None, subagents=False, prompt=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, idle_ttl_seconds=None):
         """Provision an agent. `model` is "provider/model-id", e.g. "anthropic/claude-sonnet-5-5".
         `definition` makes it from a definition (GET /v1/definitions), which supplies the model, system prompt,
         thinking level and tool sources; `tools` are added as the agent's attached MCP server.
@@ -935,7 +1000,7 @@ class AgentRuntime(_RuntimeCalls):
         if not self.api_key:
             raise AgentError("No API key: set CAMELAI_API_KEY (or pass api_key). Create one at https://run.camelai.com/console/tokens")
         # subject: who the agent acts for; context: claims for its tool servers' identity tokens. Set only here.
-        body = _provisioning(tools, definition=definition, name=name, type=type, system_prompt=system_prompt, model=model, thinking_level=thinking_level,
+        body = _provisioning(tools, definition=definition, name=name, type=type, metadata=metadata, system_prompt=system_prompt, model=model, thinking_level=thinking_level,
                              workspace_id=workspace_id, mounts=mounts, subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits, model_headers=model_headers, builtins=builtins,
                              delegate=delegate, prompt=prompt, initial_messages=initial_messages, import_messages=import_messages, max_output_tokens=max_output_tokens, temperature=temperature, data_collection=data_collection, language=language, mcp_servers=mcp_servers)
         # A key of the caller's makes the agent durable (it lives until deleted); one the SDK makes up, only so a retried
@@ -950,7 +1015,7 @@ class AgentRuntime(_RuntimeCalls):
                               headers={"Idempotency-Key": idempotency_key or str(uuid.uuid4())})
         return await self.connect_agent(session, tools=tools, on_event=on_event, on_error=on_error, on_input=on_input, subagents=subagents)
 
-    async def connect_agent(self, session, *, tools, on_event=None, on_error=None, on_input=None, attach=True, takeover=False, sync_tools=True, subagents=False, connection="eager"):
+    async def connect_agent(self, session, *, tools, on_event=None, on_error=None, on_input=None, attach=True, takeover=False, sync_tools=True, subagents=False, connection="eager", api_key=None):
         """`on_event(event, request_id)` hears every event, for display (a run's result is the truth): a plain or async
         function, called in order apart from the connection, so a slow one never holds up tool calls; what it raises goes
         to on_error. `on_input(input)` hears each question, approval or setup step the agent's turn now waits on: return an
@@ -964,7 +1029,7 @@ class AgentRuntime(_RuntimeCalls):
         settle by asking for their outcome (a long poll of up to 25 s at a time). A client that serves tools (attach), or
         has on_event or on_input, needs the stream throughout, so it is eager whatever this says."""
         agent = AgentClient(self.base, session, tools, on_event, on_error, on_input, attach=attach, takeover=takeover, sync_tools=sync_tools, subagents=subagents,
-                            connection=connection)
+                            connection=connection, api_key=self.api_key)
         self.agents.append(agent)
         try:
             await agent.connect()
@@ -1383,11 +1448,11 @@ class Voice:
         return self._runtime._rest("DELETE", f"/v1/voice/sessions/{quote(session_id, safe='')}")
 
 
-def _provisioning(tools, *, workspace_id=_DEFAULT, definition=None, name=None, type=None, system_prompt=None, model=None, thinking_level=None, mounts=None, remount=None,
+def _provisioning(tools, *, workspace_id=_DEFAULT, definition=None, name=None, type=None, metadata=None, system_prompt=None, model=None, thinking_level=None, mounts=None, remount=None,
                   subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, system_prompt_append=None, file_tools=None, builtins=None,
                   delegate=None, prompt=None, code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, bucket=None, queue=None):
     """A create request's body: the tools as the attached MCP server's tools/list, and the fields given."""
-    optional = {"definition": definition, "name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level,
+    optional = {"metadata": metadata, "definition": definition, "name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level,
                 "mounts": mounts, "remount": remount, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit, "runLimits": run_limits, "modelHeaders": model_headers,
                 "systemPromptAppend": system_prompt_append, "fileTools": file_tools, "codeMode": code_mode, "builtins": builtins, "delegate": delegate, "mcpServers": mcp_servers, "prompt": prompt,
                 "initialMessages": initial_messages, "importMessages": import_messages, "maxOutputTokens": max_output_tokens, "temperature": temperature, "dataCollection": data_collection, "language": language, "bucket": bucket, "queue": queue}
@@ -1607,8 +1672,8 @@ def _message_params(text, attached, extra, from_, metadata):
     return {"text": text, **({"files": attached} if attached else {}), **(extra or {}), **({"from": from_} if from_ else {}), **({"metadata": metadata} if metadata else {})}
 
 
-def _prompt_extra(actor=None, while_running=None, allow_disconnected=False, spend_limit=None, output=None, history=None, run_limits=None):
-    return {**({"actor": actor} if actor else {}), **({"whileRunning": "steer"} if while_running == "steer" else {}),
+def _prompt_extra(actor=None, while_running=None, allow_disconnected=False, spend_limit=None, output=None, history=None, run_limits=None, end_user=None):
+    return {**({"endUser": end_user} if end_user is not None else {}), **({"actor": actor} if actor else {}), **({"whileRunning": "steer"} if while_running == "steer" else {}),
             **({"allowDisconnected": True} if allow_disconnected else {}), **({"spendLimit": spend_limit} if spend_limit is not None else {}),
             **({"runLimits": run_limits} if run_limits is not None else {}),
             **({"output": output} if output is not None else {}), **({"history": "none"} if history == "none" else {})}
@@ -1673,13 +1738,31 @@ class _AgentCalls:
     def set_metadata(self, *, name, type):
         return self._http("/metadata", "POST", {"name": name, "type": type})
 
-    def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None, history=None, calendar=None, email=None):
+    def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None, history=None, calendar=None, email=None, cron=None, session_mode=None, spend_limit=None, mounts=None):
         """Wake this agent later with a prompt (text) or sandboxed code; every_seconds (>= 60) repeats it. history is deprecated and ignored: every wake-up sees the agent's history."""
-        body = {key: value for key, value in {"text": text, "code": code, "history": history, "at": at, "inSeconds": in_seconds, "everySeconds": every_seconds, "calendar": calendar, "email": email}.items() if value is not None}
+        body = {key: value for key, value in {"text": text, "code": code, "history": history, "at": at, "inSeconds": in_seconds, "everySeconds": every_seconds, "calendar": calendar, "email": email, "cron": cron, "sessionMode": session_mode, "spendLimit": spend_limit, "mounts": mounts}.items() if value is not None}
         return self._http("/schedules", "POST", body, retry=False)
+
+    def create_trigger(self, **input):
+        return self._trigger_http("/triggers", "POST", input, retry=False)
+
+    def triggers(self):
+        return self._trigger_http("/triggers")
+
+    def delete_trigger(self, trigger_id):
+        return self._trigger_http("/triggers/" + quote(trigger_id, safe=""), "DELETE", retry=False)
+
+    def rotate_trigger(self, trigger_id):
+        return self._trigger_http("/triggers/" + quote(trigger_id, safe="") + "/rotate", "POST", {}, retry=False)
+
+    def trigger_deliveries(self, trigger_id):
+        return self._trigger_http("/triggers/" + quote(trigger_id, safe="") + "/deliveries")
 
     def schedules(self):
         return self._http("/schedules")
+
+    def run_schedule(self, schedule_id):
+        return self._http(f"/schedules/{quote(schedule_id, safe='')}/run", "POST", {}, retry=False)
 
     def unschedule(self, schedule_id):
         return self._http(f"/schedules/{quote(schedule_id, safe='')}", "DELETE", None, retry=False)
@@ -1730,11 +1813,12 @@ class AgentClient(_AgentCalls):
     # How often a request still waiting for its result asks for its status, in case the result's event was lost.
     poll_interval = 30
 
-    def __init__(self, base, session, tools, on_event=None, on_error=None, on_input=None, attach=True, takeover=False, sync_tools=True, subagents=False, connection="eager"):
+    def __init__(self, base, session, tools, on_event=None, on_error=None, on_input=None, attach=True, takeover=False, sync_tools=True, subagents=False, connection="eager", api_key=None):
         import re
         if not re.fullmatch(r"client_[a-f0-9]{40}", session["id"]):
             raise ValueError("Invalid session id")
         self.base = _origin(base)
+        self._api_key = api_key
         # The agent's id (client_...): safe to log and to store.
         self.id = session["id"]
         # Its id and token: keep the token secret (it is left out of repr).
@@ -1786,6 +1870,11 @@ class AgentClient(_AgentCalls):
                 break
             before = page["next"]
         return {"messages": [message for page in reversed(pages) for message in page]}
+
+    async def _trigger_http(self, suffix, method="GET", body=None, retry=True):
+        if not self._api_key:
+            raise AgentError("Trigger management requires a tenant API key", 403)
+        return await _http(self.http, self.base, f"/v1/agents/{self.id}" + suffix, self._api_key, method, body, retry)
 
     async def _http(self, suffix, method="GET", body=None, retry=True, timeout=None):
         return await _http(self.http, self.base, self.path + suffix, self.session["token"], method, body, retry, timeout=timeout)
@@ -2109,6 +2198,16 @@ class AgentClient(_AgentCalls):
         finally:
             self.active.pop(key, None)
 
+    async def _submit_request(self, request_id, method, params):
+        params = params or {}
+        if method == "prompt" and "endUser" in params:
+            if not self._api_key:
+                raise AgentError("end_user requires a tenant API key", 403)
+            return await _http(self.http, self.base, f"/v1/agents/{self.id}/prompt", self._api_key, "POST",
+                               {**params, "requestId": request_id})
+        return await _http(self.http, self.base, self.path + "/requests", self.session["token"], "POST",
+                           {"id": request_id, "method": method, "params": params})
+
     async def request(self, method, params=None, *, idempotency_key=None, timeout=None):
         """Send a request and wait for its outcome, however long the run takes: `timeout` (seconds) only stops the
         wait, as cancelling the task does; the request goes on."""
@@ -2121,8 +2220,7 @@ class AgentClient(_AgentCalls):
             await self.connect()
         future = self._waiter(request_id)
         try:
-            record = await _http(self.http, self.base, self.path + "/requests", self.session["token"], "POST",
-                                 {"id": request_id, "method": method, "params": params or {}})
+            record = await self._submit_request(request_id, method, params)
             if "outcome" in record:
                 self._settle(request_id, record["outcome"])
             return await asyncio.wait_for(self._outcome(request_id, future), timeout)
@@ -2168,8 +2266,10 @@ class AgentClient(_AgentCalls):
         finally:
             self._release(request_id, future)
 
-    async def steer(self, text, *, from_=None, files=None, metadata=None):
-        """The legacy steer request: a message held for the running turn. New code: prompt(text, while_running="steer")."""
+    async def steer(self, text, *, end_user=None, from_=None, files=None, metadata=None):
+        """Hold idle input for the next run; an explicit payer uses prompt steering."""
+        if end_user is not None:
+            return await self.prompt(text, end_user=end_user, from_=from_, files=files, metadata=metadata, while_running="steer")
         return await self._message("steer", text, from_=from_, files=files, metadata=metadata)
 
     async def _message(self, method, text, *, from_=None, files=None, metadata=None, idempotency_key=None, extra=None, **options):
@@ -2178,7 +2278,7 @@ class AgentClient(_AgentCalls):
         return await self.request(method, _message_params(text, attached, extra, from_, metadata), idempotency_key=request_id, **options)
 
     async def prompt(self, text, *, actor=None, from_=None, files=None, metadata=None, while_running=None, idempotency_key=None, allow_disconnected=False,
-                     spend_limit=None, output=None, history=None, run_limits=None, **options):
+                     spend_limit=None, output=None, history=None, run_limits=None, end_user=None, **options):
         """`from_` ({"id", "name"?, "username"?}) says who sent the message: the model sees it in a block only
         the runtime can write, and its id is the turn's actor. `actor` names someone else acting (`act` in
         identity tokens) without telling the model. `files` are attached: bytes, a local path (str or Path),
@@ -2192,7 +2292,7 @@ class AgentClient(_AgentCalls):
         `history` is deprecated and ignored: every run sees the agent's history (use Agents.run for a stateless run).
         `run_limits` ({"maxResponses"?, "maxSeconds"?}) are this run's own limits, lowering the agent's."""
         result = await self._message("prompt", text, from_=from_, files=files, metadata=metadata, idempotency_key=idempotency_key,
-                                     extra=_prompt_extra(actor, while_running, allow_disconnected, spend_limit, output, history, run_limits),
+                                     extra=_prompt_extra(actor, while_running, allow_disconnected, spend_limit, output, history, run_limits, end_user),
                                      **options)
         # A steered message's request completes as the running turn takes it, naming the turn: its outcome is the turn's. So
         # does a prompt that ran in another's turn, on an agent whose queue batches (batchedInto).
@@ -2201,26 +2301,25 @@ class AgentClient(_AgentCalls):
             return await self.wait_for_request(into, timeout=options.get("timeout"))
         return result
 
-    async def steer_message(self, text, *, actor=None, from_=None, files=None, metadata=None, idempotency_key=None, allow_disconnected=False):
+    async def steer_message(self, text, *, end_user=None, actor=None, from_=None, files=None, metadata=None, idempotency_key=None, allow_disconnected=False):
         """Hand a message to the running turn (while_running="steer") and return as soon as the runtime has it, without
         waiting for the turn: {"id", "status", "steeredInto"?}. status "accepted": the running turn reads it after its current
         step; "taken": it has read it already (steeredInto names the turn, whose request has the turn's outcome); "queued": no
-        turn was running, so it starts one. A steer_taken event on the agent's stream says when the model has it. A taken
+        turn with the same payer selection could take it, so it starts one. A steer_taken event on the agent's stream says when the model has it. A taken
         steer no longer counts against the agent's open requests, however long its turn goes on."""
         if self.closed or self.closing or self.fatal:
             raise self.fatal or AgentError("Client closed")
         request_id = idempotency_key or str(uuid.uuid4())
         _check_request_id(request_id)
         attached = await self._attach(request_id, files) if files else None
-        params = _message_params(text, attached, _prompt_extra(actor, "steer", allow_disconnected), from_, metadata)
-        record = await _http(self.http, self.base, self.path + "/requests", self.session["token"], "POST",
-                             {"id": request_id, "method": "prompt", "params": params})
+        params = _message_params(text, attached, _prompt_extra(actor, "steer", allow_disconnected, end_user=end_user), from_, metadata)
+        record = await self._submit_request(request_id, "prompt", params)
         if "outcome" in record:
             self._settle(request_id, record["outcome"])
         return _steer_receipt(record)
 
     async def submit(self, text, *, actor=None, from_=None, files=None, metadata=None, idempotency_key=None, allow_disconnected=False,
-                     spend_limit=None, output=None, history=None, run_limits=None):
+                     spend_limit=None, output=None, history=None, run_limits=None, end_user=None):
         """Send a message and return as soon as the runtime has it (202), without waiting for its run: {"id", "state"},
         the request's id and whether it runs or is queued. Follow it with wait_for_request(id), the stream or a webhook."""
         if self.closed or self.closing or self.fatal:
@@ -2228,9 +2327,8 @@ class AgentClient(_AgentCalls):
         request_id = idempotency_key or str(uuid.uuid4())
         _check_request_id(request_id)
         attached = await self._attach(request_id, files) if files else None
-        params = _message_params(text, attached, _prompt_extra(actor, None, allow_disconnected, spend_limit, output, history, run_limits), from_, metadata)
-        record = await _http(self.http, self.base, self.path + "/requests", self.session["token"], "POST",
-                             {"id": request_id, "method": "prompt", "params": params})
+        params = _message_params(text, attached, _prompt_extra(actor, None, allow_disconnected, spend_limit, output, history, run_limits, end_user), from_, metadata)
+        record = await self._submit_request(request_id, "prompt", params)
         if "outcome" in record:
             self._settle(request_id, record["outcome"])
         return {"id": record["id"], "state": record["state"]}
@@ -2404,6 +2502,8 @@ class InputDetail(TypedDict):
     call's arguments as a dict (past 4,000 characters of JSON, argumentsPreview, their start, instead). form:
     requestedSchema. url: url, origin."""
     questions: NotRequired[list[dict]]
+    title: NotRequired[str]
+    body: NotRequired[str]
     tool: NotRequired[str]
     source: NotRequired[str]
     reason: NotRequired[str]
@@ -2444,8 +2544,8 @@ def _run_of(request_id, result, output, make_input):
 
 
 class RunInput(dict):
-    """Human input a run waits on (a dict: id, kind, message, detail (an InputDetail)...), with the means to answer it.
-    answer() and decline() return the resumed run."""
+    """Human input (a dict: id, kind, message, detail, blocking, priority...), with the means to answer it.
+    Decisions return a completed receipt; blocking inputs return the resumed run."""
 
     def __init__(self, agent, value, output=None):
         super().__init__(value)
@@ -2453,7 +2553,7 @@ class RunInput(dict):
         self._agent, self._output = agent, output
 
     async def answer(self, value, *, from_=None, throw_on_error=True, timeout=None):
-        """approval or url: True (yes, done) or False; question: the label chosen (or labels, or your own words), or a
+        """approval or url: True (yes, done) or False; question or decision: the label chosen (or labels, or your own words), or a
         dict of question to answer; form: its fields (a confirmation, a form without fields: True or False). `from_`: who answers (your user id, or {"id", "name"?})."""
         return await self._agent._respond(self, _answer_for(self, value), from_, throw_on_error, timeout)
 
@@ -2483,7 +2583,7 @@ def _answer_for(input, value):
         if not isinstance(value, bool):
             raise AgentError(f"Answer {'an approval' if kind == 'approval' else 'a url step'} with True or False")
         return {"action": "accept" if value else "decline"}
-    if kind == "question":
+    if kind in ("question", "decision"):
         questions = input["detail"].get("questions") or []
         if isinstance(value, (str, list)):
             if len(questions) != 1:
@@ -2645,7 +2745,7 @@ class Agent:
         return self.client.files
 
     async def run(self, text, *, user=None, files=None, metadata=None, idempotency_key=None, timeout=None, throw_on_error=True, while_running=None,
-                  allow_disconnected=False, spend_limit=None, output=None, history=None, run_limits=None):
+                  allow_disconnected=False, spend_limit=None, output=None, history=None, run_limits=None, end_user=None):
         """Send a message and wait for the run it starts: its reply, or the input it waits on. There is no timeout
         unless `timeout` (seconds) says so, and that only stops the wait. `user` (your user id, or {"id", "name"?}) is
         who sent it: the model sees who, and tools get it as identity.user. A failed run raises RunError (with the run)
@@ -2656,25 +2756,25 @@ class Agent:
         instance of the model); a run that ends without one fails (code "output_missing"). Not with while_running="steer".
         `history` is deprecated and ignored: every run sees the agent's history (use Agents.run for a stateless run).
         `run_limits` ({"maxResponses"?, "maxSeconds"?}) are this run's own
-        limits, lowering the agent's: at one, it ends with stopped "turn_limit". With end-user credits on, a run its subject's credit
+        limits, lowering the agent's: at one, it ends with stopped "turn_limit". With end-user credits on, a run its payer's credit
         stops fails with code "end_user_credit"."""
         return await self._run(text, idempotency_key or str(uuid.uuid4()), user=user, files=files, metadata=metadata, timeout=timeout,
                                throw_on_error=throw_on_error, while_running=while_running, allow_disconnected=allow_disconnected, spend_limit=spend_limit,
-                               output=output, history=history, run_limits=run_limits)
+                               output=output, history=history, run_limits=run_limits, end_user=end_user)
 
     def stream(self, text, *, user=None, files=None, metadata=None, idempotency_key=None, timeout=None, throw_on_error=True, while_running=None,
-               allow_disconnected=False, spend_limit=None, output=None, history=None):
+               allow_disconnected=False, spend_limit=None, output=None, history=None, end_user=None):
         """Send a message and read the run as it happens: text as it is written, tool calls and results, the input it
         waits on and, last, "done" with the run."""
         return RunStream(self, text, {"user": user, "files": files, "metadata": metadata, "idempotency_key": idempotency_key, "timeout": timeout,
                                       "throw_on_error": throw_on_error, "while_running": while_running, "allow_disconnected": allow_disconnected,
-                                      "spend_limit": spend_limit, "output": output, "history": history})
+                                      "spend_limit": spend_limit, "output": output, "history": history, "end_user": end_user})
 
     async def _run(self, text, request_id, *, user=None, files=None, metadata=None, timeout=None, throw_on_error=True, while_running=None,
-                   allow_disconnected=False, spend_limit=None, output=None, history=None, run_limits=None):
+                   allow_disconnected=False, spend_limit=None, output=None, history=None, run_limits=None, end_user=None):
         pending = self.client.prompt(text, from_=_sender(user) if user else None, files=files, metadata=metadata, idempotency_key=request_id,
                                      timeout=timeout, while_running=while_running, allow_disconnected=allow_disconnected, spend_limit=spend_limit,
-                                     output=_output_request(output), history=history, run_limits=run_limits)
+                                     output=_output_request(output), history=history, run_limits=run_limits, end_user=end_user)
         return await self._settle(request_id, pending, throw_on_error, output)
 
     async def _settle(self, request_id, pending, throw_on_error, output=None):
@@ -2701,16 +2801,16 @@ class Agent:
         if request:
             return await self._settle(request["id"], self.client.wait_for_request(request["id"], timeout=timeout), throw_on_error, input._output)
         # Other inputs of the run still wait: it resumes once they are answered too.
-        pending = [RunInput(self, other, input._output) for other in await self.client.inputs(state="pending") if other["requestId"] == input["requestId"]]
-        return Run(input["requestId"], "input_required", inputs=pending)
+        pending = [] if input.get("blocking") is False else [RunInput(self, other, input._output) for other in await self.client.inputs(state="pending") if other["requestId"] == input["requestId"] and other.get("blocking") is not False]
+        return Run(input["requestId"], "input_required" if pending else "completed", inputs=pending)
 
     async def send(self, text, *, user=None, files=None, metadata=None, idempotency_key=None, allow_disconnected=False, spend_limit=None,
-                   output=None, history=None, run_limits=None):
+                   output=None, history=None, run_limits=None, end_user=None):
         """Send a message and return as soon as the runtime has it, without waiting for the run: {"id", "state"} (running
         or queued). Get its outcome later with wait(id), the agent's events, or a run.completed webhook."""
         return await self.client.submit(text, from_=_sender(user) if user else None, files=files, metadata=metadata, idempotency_key=idempotency_key,
                                         allow_disconnected=allow_disconnected, spend_limit=spend_limit, output=_output_request(output),
-                                        history=history, run_limits=run_limits)
+                                        history=history, run_limits=run_limits, end_user=end_user)
 
     async def wait(self, request_id, *, timeout=None, throw_on_error=True):
         """A run sent with send, once it ends: as run answers (RunError if it failed, unless throw_on_error=False)."""
@@ -2774,12 +2874,30 @@ class Agent:
             raise AgentError("reset_context needs the Agents this agent came from (agents.upsert, get or agent)")
         return await self._agents.runtime.reset_context(self.id, summary=summary, keep_messages=keep_messages)
 
-    async def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None, history=None, calendar=None, email=None):
+    async def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None, history=None, calendar=None, email=None, cron=None, session_mode=None, spend_limit=None, mounts=None):
         """Wake the agent later with a message (text), or run code; every_seconds (at least 60) repeats it. history is deprecated and ignored."""
-        return await self.client.schedule(text=text, code=code, at=at, in_seconds=in_seconds, every_seconds=every_seconds, history=history, calendar=calendar, email=email)
+        return await self.client.schedule(text=text, code=code, at=at, in_seconds=in_seconds, every_seconds=every_seconds, history=history, calendar=calendar, email=email, cron=cron, session_mode=session_mode, spend_limit=spend_limit, mounts=mounts)
+
+    async def create_trigger(self, **input):
+        return await self.client.create_trigger(**input)
+
+    async def triggers(self):
+        return await self.client.triggers()
+
+    async def delete_trigger(self, trigger_id):
+        return await self.client.delete_trigger(trigger_id)
+
+    async def rotate_trigger(self, trigger_id):
+        return await self.client.rotate_trigger(trigger_id)
+
+    async def trigger_deliveries(self, trigger_id):
+        return await self.client.trigger_deliveries(trigger_id)
 
     async def schedules(self):
         return await self.client.schedules()
+
+    async def run_schedule(self, schedule_id):
+        return await self.client.run_schedule(schedule_id)
 
     async def unschedule(self, schedule_id):
         return await self.client.unschedule(schedule_id)
@@ -2896,6 +3014,9 @@ class Runs:
         """Delete a run's result, events and messages now, before its retention ends."""
         return await self.runtime.delete_run(run_id)
 
+    async def log(self, run_id, **options):
+        return await self.runtime.run_log(run_id, **options)
+
     async def messages(self, run_id):
         return await self.runtime.run_messages(run_id)
 
@@ -2945,6 +3066,9 @@ class Agents:
         self._open = set()
         self.connection = connection
 
+    async def usage(self, **options):
+        return await self.runtime.usage(**options)
+
     async def run(self, input, **options):
         """A stateless run: a configuration and `input` in, its result (a Run) out, nothing carried over and no agent kept.
         It is as durable as an agent's run (a node lost mid-run, or a deploy, goes on from its last step), and counts toward
@@ -2959,7 +3083,7 @@ class Agents:
         return await self.runs.run(input, **options)
 
     async def upsert(self, key, *, workspace_id=_DEFAULT, model=None, instructions=None, tools=None, definition=None, thinking_level=None, subject=None, context=None,
-                     key_scope=None, spend_limit=None, run_limits=None, model_headers=None, mounts=None, remount=None, name=None, instructions_append=None, file_tools=None,
+                     key_scope=None, spend_limit=None, run_limits=None, model_headers=None, mounts=None, remount=None, name=None, metadata=None, instructions_append=None, file_tools=None,
                      builtins=None, delegate=None, subagents=False, on_event=None, on_input=None, on_error=None, attach=None, takeover=False, connection=None,
                      code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, bucket=None,
                      queue=None):
@@ -2987,7 +3111,7 @@ class Agents:
         tools = list(tools or [])
         session = await self.runtime.upsert_agent(key, workspace_id=workspace_id, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
                                                   subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits,
-                                                  model_headers=model_headers, mounts=mounts, remount=remount, name=name, system_prompt_append=instructions_append, file_tools=file_tools, builtins=builtins,
+                                                  model_headers=model_headers, mounts=mounts, remount=remount, name=name, metadata=metadata, system_prompt_append=instructions_append, file_tools=file_tools, builtins=builtins,
                                                   delegate=delegate, code_mode=code_mode, initial_messages=initial_messages, import_messages=import_messages,
                                                   max_output_tokens=max_output_tokens, temperature=temperature, data_collection=data_collection, language=language, mcp_servers=mcp_servers, bucket=bucket,
                                                   queue=queue)

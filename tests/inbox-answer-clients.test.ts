@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { AgentRuntime } from '../clients/typescript.ts';
 
 test('TypeScript sends the inbox request key and versions unchanged', async () => {
-  const payload = { requestId: 'review-1', answers: [{ id: 'input', version: 3, action: 'accept' as const }] };
+  const payload = { requestId: 'review-1', answers: [{ agent: 'agent', id: 'input', version: 3, action: 'accept' as const }] };
   const client = new AgentRuntime({ url: 'https://runtime.test', apiKey: 'fixture', fetch: async (url, init) => {
     assert.equal(new URL(String(url)).pathname, '/v1/inbox/answers');
     assert.equal(init?.method, 'POST');

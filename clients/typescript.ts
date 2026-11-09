@@ -1,3 +1,5 @@
+export type { ApplyManifest, ApplyResult as ManifestApplyResult, ApplyReference } from "../shared/apply.ts";
+import type { ApplyManifest, ApplyResult as ManifestApplyResult } from "../shared/apply.ts";
 import type { AgentEvent, Message, ModelFailure, PresentedFile, ThinkingLevel } from "./types.ts";
 import type { Run } from "./agents.ts";
 import { Type, type TSchema, type Static } from "typebox";
@@ -366,29 +368,36 @@ export interface ChildAgent {
   error?: string;
 }
 /**
- * Human input a suspended turn waits on (its run ends with `stopped: "input_required"` and these in
- * `inputs`): the model's questions (ask_user), approvals, and a tool's form or URL step.
+ * A question, decision, approval, or a tool's form or URL step. Blocking inputs suspend the turn;
+ * decisions stay open while the agent continues.
  */
 export interface AgentInput {
   id: string; agent: string; requestId: string; toolCallId: string;
-  kind: "question" | "approval" | "form" | "url"; message: string;
+  kind: "question" | "approval" | "form" | "url" | "decision"; message: string;
   /** What it asks, by `kind`. */
   detail: InputDetail;
   responders: { audience?: string[] };
-  state: "pending" | "answered" | "declined" | "cancelled" | "expired" | "superseded";
+  state: "pending" | "answered" | "declined" | "cancelled" | "expired" | "superseded" | "withdrawn";
+  priority?: "urgent" | "high" | "normal" | "low"; blocking?: boolean;
+  key?: string; version?: number;
+  attachments?: { path: string; version: number; contentType?: string; caption?: string }[];
+  links?: string[]; recommendation?: { answer: unknown; reason: string }; applyRecommendationOnExpiry?: boolean;
   answer?: { action: string; content?: unknown; by: Record<string, unknown>; at: number };
   createdAt: number; expiresAt: number;
 }
 export type InboxPriority = "urgent" | "high" | "normal" | "low";
 export interface InboxOptions { for?: string; subject?: string; root?: string; priority?: InboxPriority; kind?: AgentInput["kind"]; cursor?: string; limit?: number }
-export interface InboxItem extends AgentInput { inputId: string; priority: InboxPriority; blocking: boolean; subject: string | null; root: string; lineage: string[]; key: string | null; version: number }
-export interface InboxAnswer { id: string; version: number; action?: "accept" | "decline" | "cancel"; content?: unknown; accept?: "recommended"; actor?: string; from?: Sender }
-export interface InboxOutcome { id: string; outcome: "answered" | "same" | "conflict" | "forbidden" | "unknown" | "invalid" | "unavailable"; status: number; retryable?: boolean; state?: string; by?: unknown; error?: string }
+/** id answers on agent; inputId is the same value for compatibility. Key rows by (agent, id). */
+export interface InboxItem extends Omit<AgentInput, "key"> { tenant: string; inputId: string; priority: InboxPriority; blocking: boolean; subject: string | null; root: string; lineage: string[]; key: string | null; version: number }
+export interface InboxAnswer { agent: string; id: string; version: number; action?: "accept" | "decline" | "cancel"; content?: unknown; accept?: "recommended"; actor?: string; from?: Sender }
+export interface InboxOutcome { agent: string; id: string; outcome: "answered" | "same" | "conflict" | "forbidden" | "unknown" | "invalid" | "unavailable"; status: number; retryable?: boolean; state?: string; by?: unknown; error?: string }
 export interface InboxPage { items: InboxItem[]; cursor: string | null; counts: { priority: Record<InboxPriority, number>; lead: Record<string, number> } }
 /** What an input asks: by its `kind`, the fields of one of these. */
 export interface InputDetail {
   /** question: the model's questions (ask_user). */
-  questions?: { question: string; header?: string; options: { label: string; description?: string }[]; multiSelect: boolean; allowOther: boolean }[];
+  questions?: { question: string; header?: string; options: { label: string; description?: string }[]; multiSelect: boolean; allowOther: boolean; recommended?: string; reason?: string }[];
+  /** decision: the title and the choice to make. */
+  title?: string; body?: string;
   /** approval: the tool call it waits on, where its tool comes from ("application", "runtime", or a tool source's name), and why it asks. */
   tool?: string; source?: string; reason?: string;
   /** approval: the call's arguments, as its tool_call event has them; past 4,000 characters of JSON, `argumentsPreview` (their start) instead. */
@@ -402,6 +411,8 @@ export interface InputDetail {
 export interface InputAnswer { version?: number; action: "accept" | "decline" | "cancel"; content?: unknown; from?: Sender; actor?: string }
 export type { ThinkingLevel };
 export interface CreateAgentOptions extends AgentOptions {
+  /** Tenant-owned JSON, at most 16 KB. Omitted on upsert preserves it. */
+  metadata?: Record<string, unknown>;
   /** Account workspace for spend attribution; null leaves it unassigned. */
   workspaceId?: string | null;
   idempotencyKey?: string;
@@ -482,14 +493,14 @@ export interface CreateAgentOptions extends AgentOptions {
    * A first prompt, sent in the same call once the agent is made (upsertAgent returns its request, or why it was refused).
    * Give it a `requestId`: a retried call with the same key and requestId sends it once.
    */
-  prompt?: { text: string; requestId?: string; actor?: string; from?: Sender; metadata?: Record<string, string>; spendLimit?: { usd: number }; whileRunning?: "queue" | "steer"; allowDisconnected?: boolean; files?: ({ path: string } | { name?: string; data: string; contentType?: string })[] };
+  prompt?: { text: string; endUser?: string; requestId?: string; actor?: string; from?: Sender; metadata?: Record<string, string>; spendLimit?: { usd: number }; whileRunning?: "queue" | "steer"; allowDisconnected?: boolean; files?: ({ path: string } | { name?: string; data: string; contentType?: string })[] };
 }
 /**
  * A tool the runtime answers itself: web_fetch, web_search, x_search, schedule (wake-ups), ask_user (questions, waiting for the answer),
  * delegate (sub-agents: needs `delegate` settings), or agents (sub-agents in the background: spawn_agent, wait_agent and
  * list_agents, with the same settings).
  */
-export type Builtin = "file_link" | "file_import" | "web_fetch" | "web_search" | "x_search" | "schedule" | "ask_user" | "delegate" | "generate_image" | "agents" | "decide";
+export type Builtin = "file_link" | "file_import" | "web_fetch" | "web_search" | "x_search" | "schedule" | "ask_user" | "request_decision" | "delegate" | "generate_image" | "agents" | "decide";
 /**
  * A delegate target: a definition's key or id, as a string or `{ definition }`, or an existing agent's key
  * (`{ agent }`, which keeps its own history across calls). `name` is what the model calls it (default: the key); `description`
@@ -607,7 +618,10 @@ export interface ProviderSummary {
   custom?: { type: CustomProviderType; baseUrl: string; auth: "x-api-key" | "bearer"; headers?: string[]; models: CustomModel[] };
 }
 /** An agent as GET /v1/agents lists it. */
+export interface GitHubRepository { id: number; name: string; fullName: string; private: boolean; htmlUrl: string; defaultBranch: string | null }
+
 export interface AgentSummary {
+  metadata: Record<string, unknown>;
   id: string; key: string | null; name: string; type: string; model: string; connected: boolean; running: boolean; expiresAt: number | null; resume: { failures: number; after: number } | null;
   /** A hash of its configuration: equal hashes, equal configurations (an upsert of it changes nothing, and is not counted as a create). */
   configHash: string;
@@ -658,7 +672,7 @@ export interface FileLink { url: string; method: "GET" | "PUT"; path: string; ex
 /** A link's options: `expiresIn` seconds (default 900, at most 86400); for PUT, the largest upload and its content type. */
 export interface LinkOptions { method?: "GET" | "PUT"; expiresIn?: number; maxBytes?: number; contentType?: string }
 /** A message as the runtime records it: a user message also names its sender (if given), the request that sent it, and the application's `metadata`. */
-export type RecordedMessage = Message & { from?: Sender; requestId?: string; metadata?: Record<string, string> };
+export type RecordedMessage = Message & { from?: Sender & { role?: "owner" | "guest" }; requestId?: string; metadata?: Record<string, string> };
 export interface AgentHistory { messages: RecordedMessage[] }
 /** A page of history: oldest first, whole turns unless a size bound splits them, each message at its index in the agent's history. `next` is the older page's `before` (null at the start); `nextAfter` (with `after`) is the newer page's `after`, and `truncated` says the history does not reach back to the `after` asked for. */
 export interface HistoryPage { entries: { index: number; message: RecordedMessage }[]; next: number | null; total: number; split?: true; nextAfter?: number; truncated?: true }
@@ -791,7 +805,28 @@ export interface AgentFile { path: string; version: number; size: number; update
  */
 export interface CalendarSchedule { time: string; timeZone: string; daysOfWeek?: number[] }
 export interface ScheduleEmail { to: string; subject: string; format?: "text" | "markdown" | "html" }
-export interface Schedule { calendar?: CalendarSchedule; email?: ScheduleEmail; id: string; agent: string; text?: string; code?: string; /** @deprecated Never set: every wake-up sees the agent's history. */ history?: "none"; dueAt: number; everySeconds?: number; createdAt: number; failures?: number; lastError?: string; lastErrorAt?: number }
+export interface DreamingConfig {
+  enabled: boolean;
+  volumeId: string;
+  schedule: { time: string; timeZone: string };
+  analyzerModel?: string;
+  organizerModel?: string;
+  budgetUsd: number;
+  instructions: string;
+  endUser?: string;
+  acrossUsers?: boolean;
+}
+export interface DreamingStatus {
+  config: DreamingConfig;
+  since: number;
+  dueAt: number;
+  running: boolean;
+  checkpoint: {from: number; to: number; cursor?: string; offset?: number; fragment?: number} | null;
+  failedNights: number;
+  lastResult: { status: string; from: number; to: number; summary?: string; error?: string } | null;
+  results: NonNullable<DreamingStatus["lastResult"]>[];
+}
+export interface Schedule { mounts?: MountInput[]; cron?: {expression:string; timeZone:string}; sessionMode?: "continue" | "fresh"; spendLimit?: {usd:number}; calendar?: CalendarSchedule; email?: ScheduleEmail; id: string; agent: string; text?: string; code?: string; /** @deprecated Never set: every wake-up sees the agent's history. */ history?: "none"; dueAt: number; everySeconds?: number; createdAt: number; failures?: number; lastError?: string; lastErrorAt?: number }
 /**
  * A steered message as the runtime took it (`steerMessage`, `agent.steer`): `accepted`, the running turn reads it after
  * its current step; `taken`, it has read it already, in the turn `steeredInto` names; `queued`, no turn was running, so it
@@ -1093,7 +1128,7 @@ const AGENT_KEY = /^[A-Za-z0-9_-]{1,80}$/;
 const REQUEST_ID = AGENT_KEY;
 /** A create request's fields, from the options given. */
 function provisioning(options: CreateAgentOptions) {
-  const fields = ["workspaceId", "subject", "context", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "definition", "mounts", "remount", "model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "queue", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "decide", "delegate", "mcpServers", "prompt"] as const;
+  const fields = ["metadata", "workspaceId", "subject", "context", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "definition", "mounts", "remount", "model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "queue", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "decide", "delegate", "mcpServers", "prompt"] as const;
   return withMultiAgent(Object.fromEntries(fields.filter(field => options[field] !== undefined).map(field => [field, options[field]])));
 }
 /** `delegate` settings bring their builtin: given the settings without delegate or agents, delegate is added. */
@@ -1667,6 +1702,14 @@ export class Voice {
 }
 
 /** Trusted-backend SDK. Only createAgent needs the operator key. */
+export type UsageOptions = { days?: number; groupBy?: ("agent" | "definition" | "endUser" | "model" | "day")[]; rollup?: boolean; limit?: number; cursor?: string; workspaceId?: string };
+export interface GroupedUsage {
+  since: number; groupBy: string[]; rollup: boolean; next?: string;
+  totals: Record<string, number>;
+  groups: (Record<string, string | number | null>)[];
+}
+export interface LogTruncation { truncated: true; originalBytes: number; preview: string }
+export interface RunLog { run: StatelessRun | LogTruncation; durationMs: number | null; events: { index: number; type: "message"; at: number | null; message: unknown; truncated?: boolean }[]; next?: string; truncated?: boolean }
 export class AgentRuntime {
   readonly options: RuntimeOptions;
   private readonly transport: Transport;
@@ -1680,6 +1723,9 @@ export class AgentRuntime {
   readonly voice: Voice;
   readonly voices: Voices;
   constructor(options: RuntimeOptions = {}) {
+    const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
+    options = { ...options, apiKey: options.apiKey ?? (env.CAMELRUN_API_KEY || env.CAMELAI_API_KEY || env.AGENT_RUNTIME_TOKEN),
+      url: options.url ?? (env.CAMELRUN_URL || env.CAMELAI_BASE_URL || env.CAMELAI_URL || env.AGENT_URL) };
     this.options = options; this.transport = new Transport(options);
     this.endUsers = new EndUsers(this.transport, () => this.operator());
     this.transcriptions = new Transcriptions(this.transport, () => this.operator());
@@ -1717,6 +1763,8 @@ export class AgentRuntime {
     try { await client.connect(); return client; }
     catch (error) { await client.close(); throw error; }
   }
+  /** Provision keyed resources in one transaction. Use dryRun to preview without writes. */
+  apply(manifest: ApplyManifest): Promise<ManifestApplyResult> { return this.transport.json("/v1/apply", this.operator(), "POST", manifest, true); }
   private operator() {
     if (!this.options.apiKey) throw new AgentError("Set apiKey to manage definitions, volumes and mounts");
     return this.options.apiKey;
@@ -1730,7 +1778,20 @@ export class AgentRuntime {
   /** Every provider: the built-in ones with your keys' status, and your own (`custom`). */
   providers(): Promise<ProviderSummary[]> { return this.transport.json("/v1/providers", this.operator()); }
   /** The tenant's agents, each with the key it was made with (null for one made without) and its name. */
-  listAgents(): Promise<AgentSummary[]> { return this.transport.json("/v1/agents", this.operator()); }
+  listAgents(options: { metadata?: Record<string, string> } = {}): Promise<AgentSummary[]> {
+    const query = new URLSearchParams(Object.entries(options.metadata ?? {}).map(([key, value]) => [`metadata.${key}`, value]));
+    return this.transport.json(`/v1/agents${query.size ? `?${query}` : ""}`, this.operator());
+  }
+  setAgentMetadata(id: string, metadata: Record<string, unknown>): Promise<RequestRecord> {
+    return this.transport.json(`/v1/agents/${encodeURIComponent(id)}/configuration`, this.operator(), "PATCH", { metadata });
+  }
+  githubRepositories(app: string, options: { cursor?: string; perPage?: number } = {}): Promise<{ items: GitHubRepository[]; nextCursor: string | null }> {
+    const query = new URLSearchParams(Object.entries(options).map(([key, value]) => [key, String(value)]));
+    return this.transport.json(`/v1/github-apps/${encodeURIComponent(app)}/repositories?${query}`, this.operator());
+  }
+  githubRepository(app: string, owner: string, name: string): Promise<GitHubRepository> {
+    return this.transport.json(`/v1/github-apps/${encodeURIComponent(app)}/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`, this.operator());
+  }
   /**
    * A new volume. With `key`, the tenant's volume for that key: made the first time, the same one (`existing: true`)
    * every time after, for as long as it lives. With `idempotencyKey`, a retry within a day gets the same answer.
@@ -1791,17 +1852,20 @@ export class AgentRuntime {
     return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/context/reset`, this.operator(), "POST", options, true);
   }
   /** An existing agent's credentials, by its id or the key it was made with, its configuration untouched (404 when there is none). */
-  /** An existing agent's credentials, by key or id, with its `configHash`. */
   agentCredentials(keyOrId: string): Promise<SessionCredentials & { configHash?: string }> { return this.transport.json(`/v1/agents/${encodeURIComponent(keyOrId)}/credentials`, this.operator()); }
   definitions(): Promise<Definition[]> { return this.transport.json("/v1/definitions", this.operator()); }
   deleteDefinition(id: string): Promise<{ deleted: boolean }> { return this.transport.json(`/v1/definitions/${encodeURIComponent(id)}`, this.operator(), "DELETE", undefined, false); }
   mounts(agentId: string): Promise<Mount[]> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/mounts`, this.operator()); }
   /** Replace an agent's mounts: a removed one at once, the rest from its next turn, which is told of them. */
   setMounts(agentId: string, mounts: MountInput[]): Promise<Mount[]> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/mounts`, this.operator(), "PUT", { mounts }, false); }
-  /**
-   * Every source of an agent's tools (its application, file tools, built-ins, MCP servers, OpenAPI
-   * specs) and what each offers the model. `schemas` includes input schemas; `refresh` lists MCP servers now.
-   */
+  /** A page of this conversation tree in [from,to), in epoch milliseconds. Follow next, including empty pages. */
+  sessions(agentId: string, options: { from: number; to: number; cursor?: string; limit?: number; children?: boolean; endUser?: string }): Promise<{ agentId: string | null; entries: { index: number; message: unknown }[]; next: string | null }> {
+    const query = new URLSearchParams(Object.entries(options).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)]));
+    return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/sessions?${query}`, this.operator());
+  }
+  dreaming(agentId: string): Promise<DreamingStatus | null> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/dreaming`, this.operator()); }
+  configureDreaming(agentId: string, config: DreamingConfig): Promise<DreamingStatus> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/dreaming`, this.operator(), "PUT", config, false); }
+  dreamNow(agentId: string): Promise<{queued: boolean}> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/dreaming/run`, this.operator(), "POST", {}, false); }
   /**
    * A token a browser reads one agent with (`@camelai/run/watch`): mint one per user, after your
    * own access checks. It reads only that agent's events, state, history and inputs (or `scopes`), for
@@ -1810,12 +1874,15 @@ export class AgentRuntime {
   browserToken(agentId: string, options: { ttlSeconds?: number; scopes?: ("events" | "state" | "history" | "inputs" | "children")[]; events?: string[]; redact?: "usage.cost"[]; subject?: string } = {}): Promise<{ token: string; expiresAt: number; agentId: string; url?: string }> {
     return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/browser-tokens`, this.operator(), "POST", options, false);
   }
-  /** Who the API key is: `tenant` is your tenant's id, which serveTools and verifyRuntimeToken take. */
   /** Who the API key is (`tenant`), and `defaultModel`, the model an agent gets when it names none. */
   me(): Promise<{ tenant: string; via: string; login?: string; defaultModel: string }> { return this.transport.json("/v1/me", this.operator()); }
   /** Pending inputs in priority order, with a cursor and filtered counts. */
   inbox(options: InboxOptions = {}): Promise<InboxPage> { return this.transport.json(`/v1/inbox?${queryOf({ ...options })}`, this.operator()); }
   answerInbox(answers: InboxAnswer[], requestId: string): Promise<{ outcomes: InboxOutcome[] }> { return this.transport.json("/v1/inbox/answers", this.operator(), "POST", { answers, requestId }); }
+  /**
+   * Every source of an agent's tools (its application, file tools, built-ins, MCP servers, OpenAPI
+   * specs) and what each offers the model. `schemas` includes input schemas; `refresh` lists MCP servers now.
+   */
   async toolSources(agentId: string, options: { schemas?: boolean; refresh?: boolean } = {}): Promise<ToolSource[]> {
     const query = [options.schemas && "schemas=true", options.refresh && "refresh=true"].filter(Boolean).join("&");
     return (await this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}${query ? `?${query}` : ""}`, this.operator())).toolSources;
@@ -1848,6 +1915,19 @@ export class AgentRuntime {
   /** Delete a run now, before its retention ends (a running one stops). */
   deleteRun(id: string): Promise<{ deleted: true }> { return this.transport.json(`/v1/runs/${encodeURIComponent(id)}`, this.operator(), "DELETE", undefined, true); }
   /** A run's messages: its input, the model's turns and tool results. */
+  usage(options: UsageOptions = {}): Promise<GroupedUsage> { return this.readUsage("/v1/usage", options); }
+  agentUsage(id: string, options: UsageOptions = {}): Promise<GroupedUsage> { return this.readUsage(`/v1/agents/${encodeURIComponent(id)}/usage`, options); }
+  private readUsage(path: string, options: UsageOptions): Promise<GroupedUsage> {
+    const query = new URLSearchParams({ groupBy: (options.groupBy ?? ["agent"]).join(",") });
+    if (options.days !== undefined) query.set("days", String(options.days));
+    if (options.rollup !== undefined) query.set("rollup", String(options.rollup));
+    for (const key of ["limit", "cursor", "workspaceId"] as const) if (options[key] !== undefined) query.set(key, String(options[key]));
+    return this.transport.json(`${path}?${query}`, this.operator());
+  }
+  runLog(id: string, options: { limit?: number; cursor?: string } = {}): Promise<RunLog> {
+    const query = new URLSearchParams(Object.entries(options).map(([k,v]) => [k,String(v)]));
+    return this.transport.json(`/v1/runs/${encodeURIComponent(id)}/log?${query}`, this.operator());
+  }
   runMessages(id: string): Promise<AgentHistory> { return this.transport.json(`/v1/runs/${encodeURIComponent(id)}/messages`, this.operator()); }
   /**
    * A run's event stream, to its end (its `response` frame): reconnecting with Last-Event-ID where the connection drops,
@@ -2103,6 +2183,7 @@ export class AgentClient {
   readonly tools: Tools;
   private server: ToolServer;
   private readonly transport: Transport;
+  private readonly tenantKey?: string;
   /** The last event taken from the stream: a reconnect resumes after it (a new client starts from a snapshot). */
   private cursor = 0;
   private readonly options: AgentOptions;
@@ -2150,12 +2231,17 @@ export class AgentClient {
     this.options = options;
     this.transport = new Transport(runtime);
     this.openFile = runtime.openFile;
+    this.tenantKey = runtime.apiKey;
     this.pollMs = runtime.pollMs ?? 30_000;
     this.files = new AgentFiles(this.transport, this.session.token, this.path());
   }
 
   private path(suffix = "") { return `/clients/${this.session.id}${suffix}`; }
   private http(suffix: string, method = "GET", body?: unknown, retry = true) { return this.transport.json(this.path(suffix), this.session.token, method, body, retry); }
+  private triggerHttp(suffix: string, method = "GET", body?: unknown, retry = true) {
+    if (!this.tenantKey) throw new AgentError("Trigger management requires a tenant API key", 403);
+    return this.transport.json(`/v1/agents/${this.id}${suffix}`, this.tenantKey, method, body, retry);
+  }
   private report(error: unknown) { this.options.onError?.(error instanceof Error ? error : new Error(String(error))); }
 
   async connect() {
@@ -2430,6 +2516,14 @@ export class AgentClient {
     } finally { this.active.delete(key); }
   }
 
+  private submitRequest(id: string, method: RequestMethod, params: Record<string, unknown>) {
+    if (method === "prompt" && params.endUser !== undefined) {
+      if (!this.tenantKey) throw new AgentError("endUser requires a tenant API key", 403);
+      return this.transport.json(`/v1/agents/${this.id}/prompt`, this.tenantKey, "POST", { ...params, requestId: id }, true);
+    }
+    return this.transport.json(this.path("/requests"), this.session.token, "POST", { id, method, params }, true);
+  }
+
   /**
    * Send a request and wait for its outcome, however long the run takes: there is no timeout unless
    * `timeoutMs` or `signal` says so, and either only stops the wait (the request goes on).
@@ -2443,7 +2537,7 @@ export class AgentClient {
     if (this.lazy && this.listeners.size) await this.connect();
     const deferred = this.waiter(id, options, "Request timed out; it may still be running: requestStatus() or waitForRequest() observe it");
     try {
-      const record = await this.transport.json(this.path("/requests"), this.session.token, "POST", { id, method, params }, true);
+      const record = await this.submitRequest(id, method, params);
       if (record.outcome) this.settle(id, record.outcome);
       return await this.outcome(id, deferred.promise);
     } catch (error) {
@@ -2505,8 +2599,8 @@ export class AgentClient {
    * budget: it ends before its next model request once it has spent that; the agent's spendLimit is unchanged.
    * `output: { schema }` (a JSON Schema for an object) asks for structured output: the run ends with an answer that fits it, as `output`.
    */
-  async prompt(text: string, options?: RunRequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; whileRunning?: "queue" | "steer"; spendLimit?: { usd: number }; runLimits?: { maxResponses?: number; maxSeconds?: number }; output?: { schema: Record<string, unknown> }; /** @deprecated Ignored: every run sees the agent's history. For a run without it, use `createRun` (POST /v1/runs). */ history?: "full" | "none" }) {
-    const result = await this.message("prompt", text, options, { ...(options?.actor ? { actor: options.actor } : {}), ...(options?.whileRunning === "steer" ? { whileRunning: "steer" } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}), ...(options?.spendLimit ? { spendLimit: options.spendLimit } : {}), ...(options?.runLimits ? { runLimits: options.runLimits } : {}), ...(options?.output ? { output: options.output } : {}), ...(options?.history === "none" ? { history: "none" } : {}) });
+  async prompt(text: string, options?: RunRequestOptions & { endUser?: string; files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; whileRunning?: "queue" | "steer"; spendLimit?: { usd: number }; runLimits?: { maxResponses?: number; maxSeconds?: number }; output?: { schema: Record<string, unknown> }; /** @deprecated Ignored: every run sees the agent's history. For a run without it, use `createRun` (POST /v1/runs). */ history?: "full" | "none" }) {
+    const result = await this.message("prompt", text, options, { ...(options?.endUser !== undefined ? { endUser: options.endUser } : {}), ...(options?.actor ? { actor: options.actor } : {}), ...(options?.whileRunning === "steer" ? { whileRunning: "steer" } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}), ...(options?.spendLimit ? { spendLimit: options.spendLimit } : {}), ...(options?.runLimits ? { runLimits: options.runLimits } : {}), ...(options?.output ? { output: options.output } : {}), ...(options?.history === "none" ? { history: "none" } : {}) });
     // A steered message's request completes as the running turn takes it, naming the turn: its outcome is the turn's. So
     // does a prompt that ran in another's turn, on an agent whose queue batches (`batchedInto`).
     const into = !isRecord(result) || "reply" in result ? undefined
@@ -2518,20 +2612,20 @@ export class AgentClient {
   /**
    * Hand a message to the running turn (`whileRunning: "steer"`) and return as soon as the runtime has it, without waiting
    * for the turn: `accepted`, the running turn reads it after its current step; `taken`, it has read it already
-   * (`steeredInto` names the turn, whose request has the turn's outcome); `queued`, no turn was running, so it starts one.
+   * (`steeredInto` names the turn, whose request has the turn's outcome); `queued`, no turn with the same payer selection could take it, so it starts one.
    * A `steer_taken` event on the agent's stream says when the model has it. A taken steer no longer counts against the
    * agent's open requests, however long its turn goes on.
    */
-  async steerMessage(text: string, options?: RequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; allowDisconnected?: boolean }): Promise<SteerReceipt> {
+  async steerMessage(text: string, options?: RequestOptions & { endUser?: string; files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; allowDisconnected?: boolean }): Promise<SteerReceipt> {
     if (this.closed || this.closing || this.fatal) throw this.fatal ?? new AgentError("Client closed");
     const id = options?.idempotencyKey ?? globalThis.crypto.randomUUID();
     if (!REQUEST_ID.test(id)) throw new AgentError(`An idempotency key is 1 to 80 letters, digits, _ and -: ${JSON.stringify(id.slice(0, 100))} is not`, 400);
     const files = options?.files?.length ? await this.attach(id, options.files) : undefined;
     const params = {
-      text, ...(files ? { files } : {}), whileRunning: "steer", ...(options?.actor ? { actor: options.actor } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}),
+      text, ...(options?.endUser !== undefined ? { endUser: options.endUser } : {}), ...(files ? { files } : {}), whileRunning: "steer", ...(options?.actor ? { actor: options.actor } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}),
       ...(options?.from ? { from: options.from } : {}), ...(options?.metadata ? { metadata: options.metadata } : {}),
     };
-    const record = await this.transport.json(this.path("/requests"), this.session.token, "POST", { id, method: "prompt", params }, true) as RequestRecord;
+    const record = await this.submitRequest(id, "prompt", params) as RequestRecord;
     if (record.outcome) this.settle(id, record.outcome);
     return steerReceipt(record);
   }
@@ -2540,17 +2634,17 @@ export class AgentClient {
    * Send a message and return as soon as the runtime has it (202), without waiting for its run: `{ id, state }`, the
    * request's id and whether it runs or is queued. Follow it with `waitForRequest(id)`, the stream, or a webhook.
    */
-  async submit(text: string, options?: RequestOptions & { files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; spendLimit?: { usd: number }; runLimits?: { maxResponses?: number; maxSeconds?: number }; output?: { schema: Record<string, unknown> }; /** @deprecated Ignored: every run sees the agent's history. For a run without it, use `createRun` (POST /v1/runs). */ history?: "full" | "none"; allowDisconnected?: boolean }): Promise<{ id: string; state: string }> {
+  async submit(text: string, options?: RequestOptions & { endUser?: string; files?: Attachment[]; actor?: string; from?: Sender; metadata?: Record<string, string>; spendLimit?: { usd: number }; runLimits?: { maxResponses?: number; maxSeconds?: number }; output?: { schema: Record<string, unknown> }; /** @deprecated Ignored: every run sees the agent's history. For a run without it, use `createRun` (POST /v1/runs). */ history?: "full" | "none"; allowDisconnected?: boolean }): Promise<{ id: string; state: string }> {
     if (this.closed || this.closing || this.fatal) throw this.fatal ?? new AgentError("Client closed");
     const id = options?.idempotencyKey ?? globalThis.crypto.randomUUID();
     if (!REQUEST_ID.test(id)) throw new AgentError(`An idempotency key is 1 to 80 letters, digits, _ and -: ${JSON.stringify(id.slice(0, 100))} is not`, 400);
     const files = options?.files?.length ? await this.attach(id, options.files) : undefined;
     const params = {
-      text, ...(files ? { files } : {}), ...(options?.actor ? { actor: options.actor } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}),
+      text, ...(options?.endUser !== undefined ? { endUser: options.endUser } : {}), ...(files ? { files } : {}), ...(options?.actor ? { actor: options.actor } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}),
       ...(options?.spendLimit ? { spendLimit: options.spendLimit } : {}), ...(options?.runLimits ? { runLimits: options.runLimits } : {}), ...(options?.output ? { output: options.output } : {}), ...(options?.history === "none" ? { history: "none" } : {}),
       ...(options?.from ? { from: options.from } : {}), ...(options?.metadata ? { metadata: options.metadata } : {}),
     };
-    const record = await this.transport.json(this.path("/requests"), this.session.token, "POST", { id, method: "prompt", params }, true) as RequestRecord;
+    const record = await this.submitRequest(id, "prompt", params) as RequestRecord;
     if (record.outcome) this.settle(id, record.outcome);
     return { id: record.id, state: record.state };
   }
@@ -2622,8 +2716,8 @@ export class AgentClient {
     return this.http(`/history?${query}`);
   }
   continue(options?: RunRequestOptions & { actor?: string }) { return this.request("continue", { ...(options?.actor ? { actor: options.actor } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}) }, options); }
-  /** The legacy steer request: a message held for the running turn. New code: `prompt(text, { whileRunning: "steer" })`. */
-  steer(text: string, options?: { from?: Sender; files?: Attachment[]; metadata?: Record<string, string> }) { return this.message("steer", text, options); }
+  /** Hold idle input for the next run; an explicit payer uses prompt steering. */
+  steer(text: string, options?: { endUser?: string; from?: Sender; files?: Attachment[]; metadata?: Record<string, string> }) { return options?.endUser !== undefined ? this.prompt(text, { ...options, whileRunning: "steer" }) : this.message("steer", text, options); }
   /** Change the prompt, thinking level, tools, model ("provider/model-id"), maxOutputTokens, temperature, dataCollection or language (null removes any of the last four) between runs. */
   async configure(options: { systemPrompt?: string; thinkingLevel?: ThinkingLevel; tools?: Tools; mcp?: ToolServer; model?: string; maxOutputTokens?: number | null; temperature?: number | null; dataCollection?: "deny" | null; language?: string | null }) {
     const { tools, mcp, ...rest } = options;
@@ -2660,13 +2754,19 @@ export class AgentClient {
   }
   /**
    * Wake this agent later: with `text` it gets a prompt, with `code` it runs sandboxed
-   * code against your tools. `everySeconds` (at least 60) repeats it. Every wake-up sees the agent's history (`history`
-   * is deprecated and ignored).
+   * code against your tools. `everySeconds` (at least 60) repeats it. Use sessionMode: "fresh" to start from the definition for each run.
+   * `history` is deprecated and ignored.
    */
-  schedule(input: { text?: string; code?: string; /** @deprecated Ignored: every wake-up sees the agent's history. */ history?: "full" | "none"; at?: string | Date; inSeconds?: number; everySeconds?: number; calendar?: CalendarSchedule; email?: ScheduleEmail }): Promise<Schedule> {
+  schedule(input: { text?: string; code?: string; /** @deprecated Ignored: every wake-up sees the agent's history. */ history?: "full" | "none"; at?: string | Date; inSeconds?: number; everySeconds?: number; mounts?: MountInput[]; cron?: {expression:string; timeZone:string}; sessionMode?: "continue" | "fresh"; spendLimit?: {usd:number}; calendar?: CalendarSchedule; email?: ScheduleEmail }): Promise<Schedule> {
     return this.http("/schedules", "POST", { ...input, ...(input.at instanceof Date ? { at: input.at.toISOString() } : {}) }, false);
   }
+  createTrigger(input: TriggerInput): Promise<Trigger & { url: string }> { return this.triggerHttp("/triggers", "POST", input, false); }
+  triggers(): Promise<Trigger[]> { return this.triggerHttp("/triggers"); }
+  deleteTrigger(id: string) { return this.triggerHttp(`/triggers/${encodeURIComponent(id)}`, "DELETE", undefined, false); }
+  rotateTrigger(id: string): Promise<{url:string}> { return this.triggerHttp(`/triggers/${encodeURIComponent(id)}/rotate`, "POST", {}, false); }
+  triggerDeliveries(id: string): Promise<TriggerDelivery[]> { return this.triggerHttp(`/triggers/${encodeURIComponent(id)}/deliveries`); }
   schedules(): Promise<Schedule[]> { return this.http("/schedules"); }
+  runSchedule(id: string): Promise<{agent:string; requestId:string; record:unknown}> { return this.http(`/schedules/${encodeURIComponent(id)}/run`, "POST", {}, false); }
   unschedule(id: string) { return this.http(`/schedules/${encodeURIComponent(id)}`, "DELETE", undefined, false); }
   /** The agent's process (when loaded) and whether it is busy: `busy`, `activeRun`, `queuedRuns`, as GET /v1/agents/{id} and its state say too. */
   status() { return this.request("status"); }
@@ -2743,3 +2843,12 @@ export { Agents, Agent, Runs } from "./agents.ts";
 export { HistoryFormatError, toPiMessages, type HistoryFormat, type ImportMessages } from "./history-formats.ts";
 export { fileBytes, formatProblems, Project, Projects, publishTool, type Problem, type ProjectFile, type ProjectVersion, type PublishOptions, type PublishResult } from "./projects.ts";
 export type { AgentsOptions, AgentConfig, Run, RunFailure, RunInput, RunOptions, RunStream, StreamPart, StatelessRunConfig, InputValue, AnswerOptions, OutputSchema, OutputOf, StandardOutputSchema } from "./agents.ts";
+
+/** An incoming webhook starts work on this agent. The URL is returned only on create or rotation. */
+export interface TriggerInput {
+ name:string; prompt:string; mode?:"continue"|"fresh"; budget:{usd:number};
+ verify?:{type:"none"|"hmac"|"github"|"stripe"|"slack";secret?:string;header?:string;algorithm?:"sha256"|"sha1";prefix?:string;timestampHeader?:string;toleranceSeconds?:number};
+ headers?:string[]; deliveryIdHeader?:string; filter?:{path:string;equals:string|number|boolean|null}; rateLimit?:number;
+}
+export interface Trigger extends TriggerInput {id:string;agent:string}
+export interface TriggerDelivery {id:string;status:"queued"|"submitted"|"failed"|"rejected"|"filtered"|"duplicate"|"limited";verified:boolean;deduped:boolean;runId:string|null;agentId:string|null;error:string|null;createdAt:number;attempts?:number;nextAt?:number;count?:number}

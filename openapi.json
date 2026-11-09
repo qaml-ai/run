@@ -68,6 +68,10 @@
                   "execute"
                 ]
               },
+              "endUser": {
+                "type": "string",
+                "description": "The explicit payer override for this run"
+              },
               "actor": {
                 "type": "string"
               },
@@ -133,6 +137,10 @@
                   "resume",
                   "execute"
                 ]
+              },
+              "endUser": {
+                "type": "string",
+                "description": "The explicit payer override for this run"
               },
               "actor": {
                 "type": "string"
@@ -284,6 +292,10 @@
                   "execute"
                 ]
               },
+              "endUser": {
+                "type": "string",
+                "description": "With an end user's credit refusal: whose credit (the payer)"
+              },
               "actor": {
                 "type": "string"
               },
@@ -363,10 +375,6 @@
               "bucket": {
                 "type": "string",
                 "description": "With an end user's credit refusal: the bucket refused (builder, bot:42, default)"
-              },
-              "endUser": {
-                "type": "string",
-                "description": "With an end user's credit refusal: whose credit (the subject)"
               },
               "uncertain": {
                 "type": "boolean",
@@ -458,7 +466,8 @@
                   "question",
                   "approval",
                   "form",
-                  "url"
+                  "url",
+                  "decision"
                 ]
               },
               "expiresAt": {
@@ -520,7 +529,8 @@
                   "declined",
                   "cancelled",
                   "expired",
-                  "superseded"
+                  "superseded",
+                  "withdrawn"
                 ]
               }
             },
@@ -2570,7 +2580,7 @@
           },
           "endUser": {
             "type": "string",
-            "description": "With END_USER_CREDIT: whose credit refused the work (the subject)"
+            "description": "With END_USER_CREDIT: whose credit refused the work (the payer)"
           },
           "bucket": {
             "type": "string",
@@ -3225,6 +3235,7 @@
             "items": {
               "type": "string",
               "enum": [
+                "dreaming.failed",
                 "run.started",
                 "run.completed",
                 "run.failed",
@@ -3295,6 +3306,7 @@
             "items": {
               "type": "string",
               "enum": [
+                "dreaming.failed",
                 "run.started",
                 "run.completed",
                 "run.failed",
@@ -3354,6 +3366,7 @@
             "items": {
               "type": "string",
               "enum": [
+                "dreaming.failed",
                 "run.started",
                 "run.completed",
                 "run.failed",
@@ -3563,6 +3576,11 @@
       "AgentSummary": {
         "type": "object",
         "properties": {
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Tenant-owned JSON object, at most 16384 UTF-8 bytes. Replaced whole when supplied; omitted preserves it. Not sent to the model. List filtering: ?metadata.type=camelcode-project matches top-level strings exactly."
+          },
           "id": {
             "type": "string"
           },
@@ -3661,6 +3679,7 @@
           }
         },
         "required": [
+          "metadata",
           "id",
           "key",
           "name",
@@ -3749,6 +3768,10 @@
       "RequestRecord": {
         "type": "object",
         "properties": {
+          "endUser": {
+            "type": "string",
+            "description": "The tenant-selected payer override for this run"
+          },
           "id": {
             "type": "string"
           },
@@ -3908,6 +3931,11 @@
       "AgentInput": {
         "type": "object",
         "properties": {
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Tenant-owned JSON object, at most 16384 UTF-8 bytes. Replaced whole when supplied; omitted preserves it. Not sent to the model. List filtering: ?metadata.type=camelcode-project matches top-level strings exactly."
+          },
           "workspaceId": {
             "type": [
               "string",
@@ -4218,6 +4246,7 @@
           "x_search",
           "schedule",
           "ask_user",
+          "request_decision",
           "delegate",
           "generate_image",
           "agents",
@@ -4465,6 +4494,12 @@
       "PromptInput": {
         "type": "object",
         "properties": {
+          "endUser": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "Charge this prompt to an existing end user of this tenant instead of the agent subject. Tenant API key only. A steer joins only a turn with the same endUser selection. Child tasks, their notifications and messages inherit the run payer; child tool identity stays the owner. Later prompts without it use the agent subject"
+          },
           "text": {
             "type": "string",
             "description": "The message. It may be left out when the message attaches audio, whose transcript is then the message"
@@ -4513,7 +4548,7 @@
               "queue",
               "steer"
             ],
-            "description": "What happens if the agent is working on a turn when this arrives. queue (default): it runs as the next turn. steer: the running turn takes it after its current step. The 202 says so at once (steer: \"accepted\"; \"queued\" when no turn could take it), and this request completes as soon as the turn takes the message (steeredInto names the turn, whose own request has its outcome; a steer_taken event marks it), so steered messages never wait for the turn's end, nor count against the agent's queue once taken. If the turn ends first, it runs as a turn of its own. With no turn running, both start one"
+            "description": "What happens if the agent is working on a turn when this arrives. queue (default): it runs as the next turn. steer: a running turn with the same endUser selection takes it after its current step; a different payer queues a separate turn. The 202 says so at once (steer: \"accepted\"; \"queued\" when no turn could take it), and this request completes as soon as the turn takes the message (steeredInto names the turn, whose own request has its outcome; a steer_taken event marks it), so steered messages never wait for the turn's end, nor count against the agent's queue once taken. If the turn ends first, it runs as a turn of its own. With no turn running, both start one"
           },
           "spendLimit": {
             "allOf": [
@@ -4527,7 +4562,7 @@
           },
           "bucket": {
             "type": "string",
-            "description": "With end-user credits on (/v1/end-user-settings): the bucket of the agent's subject this run spends from, instead of the agent's. Only the tenant may set it"
+            "description": "With end-user credits on (/v1/end-user-settings): the bucket of this run's payer (endUser, else the agent subject) it spends from, instead of the agent's. Only the tenant may set it"
           },
           "runLimits": {
             "type": "object",
@@ -5783,6 +5818,11 @@
       "ConfigureInput": {
         "type": "object",
         "properties": {
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Tenant-owned JSON object, at most 16384 UTF-8 bytes. Replaced whole when supplied; omitted preserves it. Not sent to the model. List filtering: ?metadata.type=camelcode-project matches top-level strings exactly."
+          },
           "requestId": {
             "type": "string",
             "minLength": 1
@@ -6136,7 +6176,8 @@
               "question",
               "approval",
               "form",
-              "url"
+              "url",
+              "decision"
             ],
             "description": "question: ask_user's questions; approval: a call the runtime or a tool wants approved; form: fields a tool asks for; url: a page a tool asks the user to open"
           },
@@ -6198,6 +6239,69 @@
               "by",
               "at"
             ]
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "urgent",
+              "high",
+              "normal",
+              "low"
+            ]
+          },
+          "blocking": {
+            "type": "boolean"
+          },
+          "key": {
+            "type": "string"
+          },
+          "version": {
+            "type": "number"
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "number"
+                },
+                "contentType": {
+                  "type": "string"
+                },
+                "caption": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "version"
+              ]
+            }
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "recommendation": {
+            "type": "object",
+            "properties": {
+              "answer": {},
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason"
+            ]
+          },
+          "applyRecommendationOnExpiry": {
+            "type": "boolean"
           },
           "createdAt": {
             "type": "number"
@@ -6486,21 +6590,18 @@
                 {
                   "type": "object",
                   "properties": {
-                    "inputId": {
-                      "type": "string",
-                      "description": "Use this id with the per-agent input answer route; id identifies the inbox row"
-                    },
-                    "priority": {
-                      "type": "string",
-                      "enum": [
-                        "urgent",
-                        "high",
-                        "normal",
-                        "low"
+                    "key": {
+                      "type": [
+                        "string",
+                        "null"
                       ]
                     },
-                    "blocking": {
-                      "type": "boolean"
+                    "version": {
+                      "type": "integer"
+                    },
+                    "inputId": {
+                      "type": "string",
+                      "description": "Compatibility alias of id. Both identify the answerable input on agent; use (agent, id) as the row key"
                     },
                     "subject": {
                       "type": [
@@ -6516,26 +6617,17 @@
                       "items": {
                         "type": "string"
                       }
-                    },
-                    "key": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "version": {
-                      "type": "integer"
                     }
                   },
                   "required": [
-                    "inputId",
                     "priority",
                     "blocking",
+                    "key",
+                    "version",
+                    "inputId",
                     "subject",
                     "root",
-                    "lineage",
-                    "key",
-                    "version"
+                    "lineage"
                   ]
                 }
               ]
@@ -6595,6 +6687,48 @@
       "Schedule": {
         "type": "object",
         "properties": {
+          "mounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MountInput"
+            },
+            "maxItems": 16
+          },
+          "cron": {
+            "type": "object",
+            "properties": {
+              "expression": {
+                "type": "string"
+              },
+              "timeZone": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "expression",
+              "timeZone"
+            ]
+          },
+          "sessionMode": {
+            "type": "string",
+            "enum": [
+              "continue",
+              "fresh"
+            ]
+          },
+          "spendLimit": {
+            "type": "object",
+            "properties": {
+              "usd": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000
+              }
+            },
+            "required": [
+              "usd"
+            ]
+          },
           "calendar": {
             "$ref": "#/components/schemas/CalendarSchedule"
           },
@@ -6702,6 +6836,48 @@
       "ScheduleInput": {
         "type": "object",
         "properties": {
+          "mounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MountInput"
+            },
+            "maxItems": 16
+          },
+          "cron": {
+            "type": "object",
+            "properties": {
+              "expression": {
+                "type": "string"
+              },
+              "timeZone": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "expression",
+              "timeZone"
+            ]
+          },
+          "sessionMode": {
+            "type": "string",
+            "enum": [
+              "continue",
+              "fresh"
+            ]
+          },
+          "spendLimit": {
+            "type": "object",
+            "properties": {
+              "usd": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000
+              }
+            },
+            "required": [
+              "usd"
+            ]
+          },
           "calendar": {
             "$ref": "#/components/schemas/CalendarSchedule"
           },
@@ -6906,6 +7082,151 @@
         "required": [
           "revoked",
           "left"
+        ]
+      },
+      "GroupedUsage": {
+        "type": "object",
+        "properties": {
+          "since": {
+            "type": "number"
+          },
+          "groupBy": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "agent",
+                "definition",
+                "endUser",
+                "model",
+                "day"
+              ]
+            }
+          },
+          "rollup": {
+            "type": "boolean"
+          },
+          "totals": {
+            "type": "object",
+            "properties": {
+              "responses": {
+                "type": "number"
+              },
+              "input": {
+                "type": "number"
+              },
+              "output": {
+                "type": "number"
+              },
+              "cacheRead": {
+                "type": "number"
+              },
+              "cacheWrite": {
+                "type": "number"
+              },
+              "cost": {
+                "type": "number",
+                "description": "Usage cost in USD: model calls use provider-reported cost or a catalog estimate, excluding model credit funding; tool-ranking costs already include their funding"
+              },
+              "platformResponses": {
+                "type": "number",
+                "description": "Responses that ran on a key that is not the tenant's own"
+              },
+              "platformCost": {
+                "type": "number",
+                "description": "Cost in USD on platform keys, including configured provider credit funding costs; prepaid tenants pay it from credit"
+              }
+            },
+            "required": [
+              "responses",
+              "input",
+              "output",
+              "cacheRead",
+              "cacheWrite",
+              "cost",
+              "platformResponses",
+              "platformCost"
+            ]
+          },
+          "next": {
+            "type": "string"
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "responses": {
+                  "type": "number"
+                },
+                "input": {
+                  "type": "number"
+                },
+                "output": {
+                  "type": "number"
+                },
+                "cacheRead": {
+                  "type": "number"
+                },
+                "cacheWrite": {
+                  "type": "number"
+                },
+                "cost": {
+                  "type": "number",
+                  "description": "Usage cost in USD: model calls use provider-reported cost or a catalog estimate, excluding model credit funding; tool-ranking costs already include their funding"
+                },
+                "platformResponses": {
+                  "type": "number",
+                  "description": "Responses that ran on a key that is not the tenant's own"
+                },
+                "platformCost": {
+                  "type": "number",
+                  "description": "Cost in USD on platform keys, including configured provider credit funding costs; prepaid tenants pay it from credit"
+                },
+                "agent": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "definition": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "endUser": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "model": {
+                  "type": "string"
+                },
+                "day": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "responses",
+                "input",
+                "output",
+                "cacheRead",
+                "cacheWrite",
+                "cost",
+                "platformResponses",
+                "platformCost"
+              ]
+            }
+          }
+        },
+        "required": [
+          "since",
+          "groupBy",
+          "rollup",
+          "totals",
+          "groups"
         ]
       },
       "Usage": {
@@ -9787,6 +10108,61 @@
           "deliveredAt"
         ]
       },
+      "GitHubRepositories": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GitHubRepository"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor"
+        ]
+      },
+      "GitHubRepository": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "number"
+          },
+          "name": {
+            "type": "string"
+          },
+          "fullName": {
+            "type": "string"
+          },
+          "private": {
+            "type": "boolean"
+          },
+          "htmlUrl": {
+            "type": "string"
+          },
+          "defaultBranch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "fullName",
+          "private",
+          "htmlUrl",
+          "defaultBranch"
+        ]
+      },
       "GitHubApp": {
         "type": "object",
         "properties": {
@@ -9940,6 +10316,18 @@
           }
         },
         "additionalProperties": false
+      },
+      "VolumeInput": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string",
+            "description": "Your name for the volume (1–200 letters, digits and ._:-): the first create with a key makes it, every later one answers with it (existing: true), for as long as it lives. A deleted one's key makes no other"
+          }
+        }
       },
       "Definition": {
         "type": "object",
@@ -11371,7 +11759,7 @@
           },
           "endUser": {
             "type": "string",
-            "description": "With an end user's credit refusal: whose credit (the subject)"
+            "description": "With an end user's credit refusal: whose credit (the payer)"
           },
           "errorClass": {
             "type": "string",
@@ -11752,6 +12140,89 @@
             ],
             "additionalProperties": false
           }
+        ]
+      },
+      "RunLog": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Run"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "truncated": {
+                    "type": "boolean",
+                    "enum": [
+                      true
+                    ]
+                  },
+                  "originalBytes": {
+                    "type": "number"
+                  },
+                  "preview": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "truncated",
+                  "originalBytes",
+                  "preview"
+                ]
+              }
+            ]
+          },
+          "durationMs": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "index": {
+                  "type": "number"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "message"
+                  ]
+                },
+                "at": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "message": {},
+                "truncated": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "index",
+                "type",
+                "at"
+              ]
+            }
+          },
+          "next": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "run",
+          "durationMs",
+          "events"
         ]
       },
       "EndUserSettings": {
@@ -13968,18 +14439,6 @@
           }
         ]
       },
-      "VolumeInput": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "key": {
-            "type": "string",
-            "description": "Your name for the volume (1–200 letters, digits and ._:-): the first create with a key makes it, every later one answers with it (existing: true), for as long as it lives. A deleted one's key makes no other"
-          }
-        }
-      },
       "Snapshot": {
         "type": "object",
         "properties": {
@@ -14953,6 +15412,598 @@
                         "email"
                       ]
                     }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/hooks/{token}": {
+      "post": {
+        "security": [],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "token",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Verified challenge",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "202": {
+            "description": "Delivery accepted",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/hooks": {
+      "post": {
+        "security": [],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Verified challenge",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "202": {
+            "description": "Delivery accepted",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/share-links": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "expiresIn": {
+                    "anyOf": [
+                      {
+                        "type": "number",
+                        "enum": [
+                          86400
+                        ]
+                      },
+                      {
+                        "type": "number",
+                        "enum": [
+                          604800
+                        ]
+                      },
+                      {
+                        "type": "number",
+                        "enum": [
+                          2592000
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The link, with its secret shown once",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "url": {
+                      "type": "string"
+                    },
+                    "expiresAt": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "url",
+                    "expiresAt"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Live and revoked links, without secrets",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "createdAt": {
+                        "type": "number"
+                      },
+                      "expiresAt": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "revokedAt": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "joins": {
+                        "type": "number"
+                      },
+                      "lastJoinedAt": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "createdAt",
+                      "expiresAt",
+                      "revokedAt",
+                      "joins",
+                      "lastJoinedAt"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/share-links/{link}": {
+      "delete": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "link",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Link revoked; members stay",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "deleted"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/members": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Members and today’s spend in USD",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "email": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "role": {
+                        "type": "string",
+                        "enum": [
+                          "owner",
+                          "guest"
+                        ]
+                      },
+                      "addedAt": {
+                        "type": "number"
+                      },
+                      "removedAt": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "dailyCapMicros": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "spentToday": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "name",
+                      "email",
+                      "role",
+                      "addedAt",
+                      "removedAt",
+                      "dailyCapMicros",
+                      "spentToday"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/members/{member}": {
+      "patch": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "member",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "dailyCapMicros": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "removed": {
+                    "type": "boolean",
+                    "enum": [
+                      false
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "email": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "role": {
+                      "type": "string",
+                      "enum": [
+                        "owner",
+                        "guest"
+                      ]
+                    },
+                    "addedAt": {
+                      "type": "number"
+                    },
+                    "removedAt": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "dailyCapMicros": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "spentToday": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "email",
+                    "role",
+                    "addedAt",
+                    "removedAt",
+                    "dailyCapMicros",
+                    "spentToday"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "member",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Member removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "deleted"
                   ]
                 }
               }
@@ -16005,6 +17056,16 @@
           {
             "schema": {
               "type": "string",
+              "description": "Exact match on a top-level metadata string. Any metadata.<key> is supported; multiple filters are ANDed."
+            },
+            "required": false,
+            "description": "Exact match on a top-level metadata string. Any metadata.<key> is supported; multiple filters are ANDed.",
+            "name": "metadata.type",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
               "description": "Only agents in this workspace, or unassigned for agents in none"
             },
             "required": false,
@@ -16621,6 +17682,627 @@
         }
       }
     },
+    "/v1/agents/{id}/dreaming": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dream configuration and last result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "properties": {
+                    "config": {
+                      "type": "object",
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean"
+                        },
+                        "volumeId": {
+                          "type": "string"
+                        },
+                        "schedule": {
+                          "type": "object",
+                          "properties": {
+                            "time": {
+                              "type": "string"
+                            },
+                            "timeZone": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "time",
+                            "timeZone"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "analyzerModel": {
+                          "type": "string"
+                        },
+                        "organizerModel": {
+                          "type": "string"
+                        },
+                        "endUser": {
+                          "type": "string"
+                        },
+                        "acrossUsers": {
+                          "type": "boolean"
+                        },
+                        "budgetUsd": {
+                          "type": "number",
+                          "exclusiveMinimum": 0
+                        },
+                        "instructions": {
+                          "type": "string",
+                          "maxLength": 16000
+                        }
+                      },
+                      "required": [
+                        "enabled",
+                        "volumeId",
+                        "schedule",
+                        "budgetUsd",
+                        "instructions"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "since": {
+                      "type": "number"
+                    },
+                    "dueAt": {
+                      "type": "number"
+                    },
+                    "running": {
+                      "type": "boolean"
+                    },
+                    "checkpoint": {},
+                    "failedNights": {
+                      "type": "number"
+                    },
+                    "lastResult": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "completed",
+                            "failed",
+                            "budget_reached",
+                            "deferred"
+                          ]
+                        },
+                        "from": {
+                          "type": "number"
+                        },
+                        "to": {
+                          "type": "number"
+                        },
+                        "summary": {
+                          "type": "string"
+                        },
+                        "error": {
+                          "type": "string"
+                        },
+                        "failures": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "from",
+                        "to"
+                      ]
+                    },
+                    "results": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "completed",
+                              "failed",
+                              "budget_reached",
+                              "deferred"
+                            ]
+                          },
+                          "from": {
+                            "type": "number"
+                          },
+                          "to": {
+                            "type": "number"
+                          },
+                          "summary": {
+                            "type": "string"
+                          },
+                          "error": {
+                            "type": "string"
+                          },
+                          "failures": {
+                            "type": "array",
+                            "items": {}
+                          }
+                        },
+                        "required": [
+                          "status",
+                          "from",
+                          "to"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "config",
+                    "since",
+                    "dueAt",
+                    "running",
+                    "failedNights",
+                    "lastResult",
+                    "results"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "volumeId": {
+                    "type": "string"
+                  },
+                  "schedule": {
+                    "type": "object",
+                    "properties": {
+                      "time": {
+                        "type": "string"
+                      },
+                      "timeZone": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "time",
+                      "timeZone"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "analyzerModel": {
+                    "type": "string"
+                  },
+                  "organizerModel": {
+                    "type": "string"
+                  },
+                  "endUser": {
+                    "type": "string"
+                  },
+                  "acrossUsers": {
+                    "type": "boolean"
+                  },
+                  "budgetUsd": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "instructions": {
+                    "type": "string",
+                    "maxLength": 16000
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "volumeId",
+                  "schedule",
+                  "budgetUsd",
+                  "instructions"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Dream configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "config": {
+                      "type": "object",
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean"
+                        },
+                        "volumeId": {
+                          "type": "string"
+                        },
+                        "schedule": {
+                          "type": "object",
+                          "properties": {
+                            "time": {
+                              "type": "string"
+                            },
+                            "timeZone": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "time",
+                            "timeZone"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "analyzerModel": {
+                          "type": "string"
+                        },
+                        "organizerModel": {
+                          "type": "string"
+                        },
+                        "endUser": {
+                          "type": "string"
+                        },
+                        "acrossUsers": {
+                          "type": "boolean"
+                        },
+                        "budgetUsd": {
+                          "type": "number",
+                          "exclusiveMinimum": 0
+                        },
+                        "instructions": {
+                          "type": "string",
+                          "maxLength": 16000
+                        }
+                      },
+                      "required": [
+                        "enabled",
+                        "volumeId",
+                        "schedule",
+                        "budgetUsd",
+                        "instructions"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "since": {
+                      "type": "number"
+                    },
+                    "dueAt": {
+                      "type": "number"
+                    },
+                    "running": {
+                      "type": "boolean"
+                    },
+                    "checkpoint": {},
+                    "failedNights": {
+                      "type": "number"
+                    },
+                    "lastResult": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "completed",
+                            "failed",
+                            "budget_reached",
+                            "deferred"
+                          ]
+                        },
+                        "from": {
+                          "type": "number"
+                        },
+                        "to": {
+                          "type": "number"
+                        },
+                        "summary": {
+                          "type": "string"
+                        },
+                        "error": {
+                          "type": "string"
+                        },
+                        "failures": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "from",
+                        "to"
+                      ]
+                    },
+                    "results": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "completed",
+                              "failed",
+                              "budget_reached",
+                              "deferred"
+                            ]
+                          },
+                          "from": {
+                            "type": "number"
+                          },
+                          "to": {
+                            "type": "number"
+                          },
+                          "summary": {
+                            "type": "string"
+                          },
+                          "error": {
+                            "type": "string"
+                          },
+                          "failures": {
+                            "type": "array",
+                            "items": {}
+                          }
+                        },
+                        "required": [
+                          "status",
+                          "from",
+                          "to"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "config",
+                    "since",
+                    "dueAt",
+                    "running",
+                    "failedNights",
+                    "lastResult",
+                    "results"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/dreaming/run": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Dream queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "queued": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "queued"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/sessions": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "to",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            },
+            "required": false,
+            "name": "children",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "endUser",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A bounded transcript page from this agent and its descendants, filtered to [from,to). Follow next until null; pages may be empty",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "agentId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "entries": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "index": {
+                            "type": "number"
+                          },
+                          "message": {}
+                        },
+                        "required": [
+                          "index"
+                        ]
+                      }
+                    },
+                    "next": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "agentId",
+                    "entries",
+                    "next"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/agents/{id}/history": {
       "get": {
         "security": [
@@ -17211,7 +18893,8 @@
                 "declined",
                 "cancelled",
                 "expired",
-                "superseded"
+                "superseded",
+                "withdrawn"
               ]
             },
             "required": false,
@@ -17510,7 +19193,8 @@
                 "question",
                 "approval",
                 "form",
-                "url"
+                "url",
+                "decision"
               ]
             },
             "required": false,
@@ -17608,7 +19292,8 @@
                 "question",
                 "approval",
                 "form",
-                "url"
+                "url",
+                "decision"
               ]
             },
             "required": false,
@@ -17672,7 +19357,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The latest 100 scheduled email deliveries",
+            "description": "The latest 100 scheduled runs and their email delivery",
             "content": {
               "application/json": {
                 "schema": {
@@ -17683,15 +19368,36 @@
                       "id": {
                         "type": "string"
                       },
-                      "state": {
+                      "schedule": {
                         "type": "string"
                       },
-                      "email": {
-                        "type": "object",
-                        "additionalProperties": {}
+                      "agent": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
                       },
                       "createdAt": {
                         "type": "number"
+                      },
+                      "error": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "state": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "email": {
+                        "type": [
+                          "object",
+                          "null"
+                        ],
+                        "additionalProperties": {}
                       },
                       "sentAt": {
                         "type": [
@@ -17705,7 +19411,25 @@
                           "null"
                         ]
                       },
-                      "error": {
+                      "runId": {
+                        "type": "string"
+                      },
+                      "cost": {
+                        "type": "number"
+                      },
+                      "endedAt": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "emailState": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "emailError": {
                         "type": [
                           "string",
                           "null"
@@ -17714,12 +19438,19 @@
                     },
                     "required": [
                       "id",
+                      "schedule",
+                      "agent",
+                      "createdAt",
+                      "error",
                       "state",
                       "email",
-                      "createdAt",
                       "sentAt",
                       "messageId",
-                      "error"
+                      "runId",
+                      "cost",
+                      "endedAt",
+                      "emailState",
+                      "emailError"
                     ]
                   }
                 }
@@ -17815,6 +19546,74 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Schedule"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/schedules/{scheduleId}/run": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "scheduleId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "The scheduled run",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "agent": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    },
+                    "record": {}
+                  },
+                  "required": [
+                    "agent",
+                    "requestId"
+                  ]
                 }
               }
             }
@@ -18089,17 +19888,139 @@
         }
       }
     },
+    "/v1/agents/{id}/usage": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "days",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "groupBy",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            },
+            "required": false,
+            "name": "rollup",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "workspaceId",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Agent usage",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupedUsage"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/usage": {
       "get": {
         "parameters": [
           {
             "schema": {
-              "type": "string",
-              "description": "1–365, default 30"
+              "type": "string"
             },
             "required": false,
-            "description": "1–365, default 30",
             "name": "days",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "groupBy",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            },
+            "required": false,
+            "name": "rollup",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "cursor",
             "in": "query"
           },
           {
@@ -18115,11 +20036,18 @@
         ],
         "responses": {
           "200": {
-            "description": "Token usage per UTC day and model",
+            "description": "Token usage per UTC day and model, or requested dimensions",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Usage"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Usage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/GroupedUsage"
+                    }
+                  ]
                 }
               }
             }
@@ -21210,6 +23138,510 @@
         }
       }
     },
+    "/v1/agents/{id}/triggers": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Triggers",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {}
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "prompt": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 8000
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "continue",
+                      "fresh"
+                    ],
+                    "default": "continue"
+                  },
+                  "verify": {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "none",
+                          "hmac",
+                          "github",
+                          "stripe",
+                          "slack"
+                        ]
+                      },
+                      "secret": {
+                        "type": "string",
+                        "minLength": 16,
+                        "maxLength": 4096
+                      },
+                      "header": {
+                        "type": "string",
+                        "pattern": "^[a-zA-Z0-9-]{1,100}$"
+                      },
+                      "algorithm": {
+                        "type": "string",
+                        "enum": [
+                          "sha256",
+                          "sha1"
+                        ],
+                        "default": "sha256"
+                      },
+                      "prefix": {
+                        "type": "string",
+                        "maxLength": 40,
+                        "default": ""
+                      },
+                      "timestampHeader": {
+                        "type": "string",
+                        "pattern": "^[a-zA-Z0-9-]{1,100}$"
+                      },
+                      "toleranceSeconds": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 3600,
+                        "default": 300
+                      }
+                    },
+                    "default": {
+                      "type": "none",
+                      "algorithm": "sha256",
+                      "prefix": "",
+                      "toleranceSeconds": 300
+                    },
+                    "required": [
+                      "type"
+                    ]
+                  },
+                  "headers": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[a-zA-Z0-9-]{1,100}$"
+                    },
+                    "maxItems": 20,
+                    "default": []
+                  },
+                  "deliveryIdHeader": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9-]{1,100}$"
+                  },
+                  "filter": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200
+                      },
+                      "equals": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "boolean"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "path",
+                      "equals"
+                    ]
+                  },
+                  "rateLimit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 600,
+                    "default": 60
+                  },
+                  "budget": {
+                    "type": "object",
+                    "properties": {
+                      "usd": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "maximum": 10000
+                      }
+                    },
+                    "required": [
+                      "usd"
+                    ]
+                  }
+                },
+                "required": [
+                  "name",
+                  "prompt",
+                  "budget"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Trigger and one-time URL",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/triggers/{triggerId}": {
+      "delete": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "triggerId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "deleted"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/triggers/{triggerId}/rotate": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "triggerId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One-time URL",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "url": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "url"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/triggers/{triggerId}/deliveries": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "triggerId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deliveries",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {}
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/github-apps/{app}/repositories": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The App's id (gha_…) or name"
+            },
+            "required": true,
+            "description": "The App's id (gha_…) or name",
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "perPage",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of installation repositories; follow nextCursor until null, including empty pages",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubRepositories"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/github-apps/{app}/repositories/{owner}/{name}": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The App's id (gha_…) or name"
+            },
+            "required": true,
+            "description": "The App's id (gha_…) or name",
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "owner",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "name",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Repository the installation can access; 404 if unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubRepository"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/github-apps": {
       "get": {
         "responses": {
@@ -21445,6 +23877,133 @@
                   },
                   "required": [
                     "deleted"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/apply": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "volumes": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "$ref": "#/components/schemas/VolumeInput"
+                    }
+                  },
+                  "definitions": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "object",
+                      "additionalProperties": {}
+                    }
+                  },
+                  "agents": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "object",
+                      "additionalProperties": {}
+                    }
+                  },
+                  "dryRun": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Atomic provisioning result or dry-run diff",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "dryRun": {
+                      "type": "boolean"
+                    },
+                    "volumes": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "definitions": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "agents": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "changes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "resource": {
+                            "type": "string"
+                          },
+                          "action": {
+                            "type": "string",
+                            "enum": [
+                              "create",
+                              "update",
+                              "unchanged"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "resource",
+                          "action"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "dryRun",
+                    "volumes",
+                    "definitions",
+                    "agents",
+                    "changes"
                   ]
                 }
               }
@@ -23911,6 +26470,60 @@
               "text/event-stream": {
                 "schema": {
                   "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{id}/log": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The run's id (run_…)"
+            },
+            "required": true,
+            "description": "The run's id (run_…)",
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Durable run log with messages, tool calls, errors, usage and timing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunLog"
                 }
               }
             }

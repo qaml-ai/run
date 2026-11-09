@@ -1,4 +1,4 @@
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import { Api, ApiError, enc } from "./api.ts";
@@ -21,6 +21,7 @@ Setup
   init [key] [--model m]           Write an agent.yaml manifest here
 
 Deploy
+  apply file.json [--dry-run]      Atomically provision keyed resources
   deploy [file…] [--apply] [--dry-run]
                                    Upsert each manifest's definition by its key and make its agents;
                                    --apply also moves live agents to the new revision between turns
@@ -28,7 +29,7 @@ Deploy
 Agents (an agent is its key or its id, client_…)
   agents list
   agents get <agent>               Configuration, definition revision and tool sources
-  agents create <key> [--definition key|id] [--model m] [--prompt text] [--name n]
+  agents create <key> [--definition key|id] [--model m] [--prompt text] [--name n] [--metadata JSON]
   agents configure <agent> [--model m] [--prompt text] [--prompt-append text] [--thinking level]
   agents fork <agent> [--key k] [--name n] [--at message]
                                    A new agent with its configuration, history and files; --at ends the
@@ -40,20 +41,24 @@ Agents (an agent is its key or its id, client_…)
                                    one: for an agent whose runs fail with context_too_large. Its history
                                    and files stay
   agents delete <agent> --yes      Stop it and purge its history and files
-  run <agent> <message…> [--wait s] [--no-wait] [--from user] [--steer] [--allow-disconnected]
+  run <agent> <message…> [--wait s] [--no-wait] [--from user] [--end-user user] [--steer] [--allow-disconnected]
   runs get <agent> <requestId> [--wait s]
 
 Stateless runs (a configuration and a message in, the result out; nothing carried over, no agent kept)
   run --stateless <message…> [--definition key|id] [--model m] [--prompt text] [--thinking level]
                   [--request-id key] [--wait s] [--no-wait]
   runs get <runId> [--wait s]
+  usage [--by agent,model] [--days n] [--rollup]
+  run-log <runId>
   history <agent> [--limit n]
   abort <agent>
   inputs [agent]                   Questions and approvals waiting on someone
   inbox-answer <json>              Batch {requestId, answers} with inbox IDs and versions
   answer <agent> <inputId> <value> true/false, text, JSON, or "decline"
+  triggers list|add|delete|rotate|deliveries <agent> [triggerId] [--input JSON]
   schedules list <agent>
-  schedules add <agent> --text t (--in s | --at iso) [--every s]
+  schedules add <agent> --text t (--in s | --at iso | --cron expr --time-zone zone) [--every s]
+  schedules run <agent> <scheduleId>
   schedules delete <agent> <scheduleId>
 
 Definitions (a definition is its key or its id, def_…)
@@ -68,17 +73,20 @@ MCP
 
 Options
   --json                           Print JSON (the default when stdout is not a terminal)
-  --api-key <key>, --url <url>     Instead of CAMELAI_API_KEY / CAMELAI_BASE_URL / the saved login
+  --api-key <key>, --url <url>     Instead of CAMELRUN_API_KEY / CAMELRUN_URL / the saved login
 
 Docs: https://run.camelai.com/llms.txt`;
 
 const OPTIONS = {
+  cursor: { type: "string" }, by: { type: "string" }, days: { type: "string" }, rollup: { type: "boolean" },
   json: { type: "boolean" }, help: { type: "boolean", short: "h" }, version: { type: "boolean", short: "v" },
   "api-key": { type: "string" }, url: { type: "string" },
   apply: { type: "boolean" }, "dry-run": { type: "boolean" }, available: { type: "boolean" }, force: { type: "boolean" }, yes: { type: "boolean", short: "y" },
-  model: { type: "string" }, prompt: { type: "string" }, "prompt-append": { type: "string" }, thinking: { type: "string" }, name: { type: "string" }, definition: { type: "string" },
-  wait: { type: "string" }, "no-wait": { type: "boolean" }, from: { type: "string" }, steer: { type: "boolean" }, "allow-disconnected": { type: "boolean" }, "request-id": { type: "string" },
+  model: { type: "string" }, prompt: { type: "string" }, "prompt-append": { type: "string" }, thinking: { type: "string" }, name: { type: "string" }, metadata: { type: "string" }, definition: { type: "string" },
+  wait: { type: "string" }, "no-wait": { type: "boolean" }, from: { type: "string" }, "end-user": { type: "string" }, steer: { type: "boolean" }, "allow-disconnected": { type: "boolean" }, "request-id": { type: "string" },
   limit: { type: "string" }, key: { type: "string" }, text: { type: "string" }, in: { type: "string" }, at: { type: "string" }, every: { type: "string" }, history: { type: "string" },
+  input: { type: "string" },
+  cron: { type: "string" }, "time-zone": { type: "string" }, "session-mode": { type: "string" }, "spend-limit": { type: "string" },
   stateless: { type: "boolean" }, summary: { type: "string" }, keep: { type: "string" },
 } as const;
 
@@ -121,6 +129,17 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
         print({ ...me, url: client.url }, () => `${me.login ?? me.tenant} (tenant ${me.tenant}) on ${client.url}\nDefault model: ${me.defaultModel}`);
         return 0;
       }
+      case "usage": {
+        const query = new URLSearchParams();
+        if (flags.by) query.set("groupBy", flags.by);
+        if (flags.days) query.set("days", String(flags.days));
+        if (flags.limit) query.set("limit", flags.limit);
+        if (flags.cursor) query.set("cursor", flags.cursor);
+        if (flags.by && flags.rollup) query.set("rollup", "true");
+        const result = await api().get(`/v1/usage?${query}`);
+        print(result, () => JSON.stringify(result, null, 2));
+        return 0;
+      }
       case "models": {
         const models: any[] = await api().get(`/v1/models${flags.available ? "?available=true" : ""}`);
         print(models.map(({ id, name, available, contextWindow, reasoning, cost, toolCallStreaming }) => ({ id, name, available, contextWindow, reasoning, cost, toolCallStreaming })),
@@ -133,6 +152,12 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
         if (DEFAULT_FILES.some(name => existsSync(`${io.cwd}/${name}`)) && !flags.force) throw new UsageError("A manifest is already here (--force overwrites agent.yaml)");
         writeFileSync(path, template(key, flags.model));
         print({ file: path, key }, () => `Wrote ${path}. Edit it, then: camelrun deploy`);
+        return 0;
+      }
+      case "apply": {
+        if (args.length !== 1) throw new UsageError("Usage: camelrun apply file.json [--dry-run]");
+        const manifest = JSON.parse(readFileSync(args[0], "utf8"));
+        print(await api().call("POST", "/v1/apply", { ...manifest, ...(flags["dry-run"] ? { dryRun: true } : {}) }));
         return 0;
       }
       case "deploy": {
@@ -152,8 +177,17 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
         }
         const [agent, ...words] = args;
         if (!agent || !words.length) throw new UsageError("Usage: camelrun run <agent> <message…>");
-        const result = await ops.run(api(), agent, words.join(" "), { wait: waitSeconds(flags), from: flags.from, steer: flags.steer, allowDisconnected: flags["allow-disconnected"], requestId: flags["request-id"] });
+        const result = await ops.run(api(), agent, words.join(" "), { wait: waitSeconds(flags), from: flags.from, endUser: flags["end-user"], steer: flags.steer, allowDisconnected: flags["allow-disconnected"], requestId: flags["request-id"] });
         return printRun(result, print, io);
+      }
+      case "run-log": {
+        if (!args[0]) throw new UsageError("Usage: camelrun run-log <runId>");
+        const query = new URLSearchParams();
+        if (flags.limit) query.set("limit", flags.limit);
+        if (flags.cursor) query.set("cursor", flags.cursor);
+        const result = await api().get(`/v1/runs/${encodeURIComponent(args[0])}/log?${query}`);
+        print(result, () => JSON.stringify(result, null, 2));
+        return 0;
       }
       case "runs": {
         const [sub, agent, requestId] = args;
@@ -205,8 +239,9 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
         let value: unknown = raw;
         try { value = JSON.parse(raw); } catch { /* text */ }
         const result = await ops.answer(api(), agent, inputId, value, { from: flags.from, wait: waitSeconds(flags) });
-        return "requestId" in result ? printRun(result, print, io) : (print(result, () => result.note), 0);
+        return "requestId" in result ? printRun(result, print, io) : (print(result, () => result.note ?? "Decision answered."), 0);
       }
+      case "triggers": return await triggers(args, flags, api, print);
       case "schedules": return await schedules(args, flags, api, print, io.err);
       default: throw new UsageError(`Unknown command: ${command}. Run camelrun --help`);
     }
@@ -218,14 +253,14 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
 }
 
 async function login(flags: Flags, io: Io, print: (value: unknown, human?: () => string) => void) {
-  let apiKey = flags["api-key"] || io.env.CAMELAI_API_KEY;
+  let apiKey = flags["api-key"] || io.env.CAMELRUN_API_KEY || io.env.CAMELAI_API_KEY;
   if (!apiKey) {
-    if (!process.stdin.isTTY) throw new UsageError("Pass --api-key art_… (or set CAMELAI_API_KEY). Create one at https://run.camelai.com/console/tokens. Coding agents: read https://run.camelai.com/SKILL.md");
+    if (!process.stdin.isTTY) throw new UsageError("Pass --api-key art_… (or set CAMELRUN_API_KEY). Create one at https://run.camelai.com/console/tokens. Coding agents: read https://run.camelai.com/SKILL.md");
     const prompt = createInterface({ input: process.stdin, output: process.stderr });
     apiKey = (await prompt.question("API key (create one at https://run.camelai.com/console/tokens): ")).trim();
     prompt.close();
   }
-  const url = flags.url || io.env.CAMELAI_BASE_URL || io.env.CAMELAI_URL || DEFAULT_URL;
+  const url = flags.url || io.env.CAMELRUN_URL || io.env.CAMELAI_BASE_URL || io.env.CAMELAI_URL || DEFAULT_URL;
   const me = await new Api({ apiKey, url }).me();
   const path = save({ apiKey, url }, io.env);
   print({ tenant: me.tenant, url, saved: path }, () => `Logged in as ${me.login ?? me.tenant} on ${url} (key saved to ${path})`);
@@ -237,7 +272,9 @@ async function agents(args: string[], flags: Flags, api: () => Api, print: (valu
   const client = api();
   switch (sub) {
     case "list": case undefined: {
-      const list: any[] = await client.get("/v1/agents");
+      const filters = flags.metadata ? JSON.parse(flags.metadata) as Record<string, string> : {};
+      const query = new URLSearchParams(Object.entries(filters).map(([key, value]) => [`metadata.${key}`, value]));
+      const list: any[] = await client.get(`/v1/agents?${query}`);
       print(list, () => list.length ? table(list, ["key", "id", "model", "running", "connected"]) : "No agents yet: camelrun deploy, or camelrun agents create <key>");
       return 0;
     }
@@ -249,13 +286,13 @@ async function agents(args: string[], flags: Flags, api: () => Api, print: (valu
     }
     case "create": {
       if (!target) throw new UsageError("Usage: camelrun agents create <key> [--definition d] [--model m] [--prompt text]");
-      const created = await ops.upsertAgent(client, target, { definition: flags.definition, model: flags.model, systemPrompt: flags.prompt, systemPromptAppend: flags["prompt-append"], name: flags.name });
+      const created = await ops.upsertAgent(client, target, { definition: flags.definition, model: flags.model, systemPrompt: flags.prompt, systemPromptAppend: flags["prompt-append"], name: flags.name, ...(flags.metadata ? { metadata: JSON.parse(flags.metadata) } : {}) });
       print(created, () => `${created.key}: ${created.id}${created.reconfigured ? " (reconfigured)" : ""}`);
       return 0;
     }
     case "configure": {
       if (!target) throw new UsageError("Usage: camelrun agents configure <agent> [--model m] [--prompt text] [--prompt-append text] [--thinking level]");
-      const changes = Object.fromEntries(Object.entries({ model: flags.model, systemPrompt: flags.prompt, systemPromptAppend: flags["prompt-append"], thinkingLevel: flags.thinking }).filter(([, value]) => value !== undefined));
+      const changes = Object.fromEntries(Object.entries({ model: flags.model, systemPrompt: flags.prompt, systemPromptAppend: flags["prompt-append"], thinkingLevel: flags.thinking, ...(flags.metadata ? { metadata: JSON.parse(flags.metadata) } : {}) }).filter(([, value]) => value !== undefined));
       if (!Object.keys(changes).length) throw new UsageError("Nothing to change: pass --model, --prompt, --prompt-append or --thinking");
       const result = await ops.configure(client, target, changes);
       print(result, () => result.status === "failed" ? `Failed: ${result.error?.message}` : result.status === "running" ? `Queued behind its current run (request ${result.requestId})` : `Configured ${target}`);
@@ -315,7 +352,7 @@ async function definitions(args: string[], flags: Flags, api: () => Api, print: 
 
 async function schedules(args: string[], flags: Flags, api: () => Api, print: (value: unknown, human?: () => string) => void, warn: (text: string) => void) {
   const [sub, agent, scheduleId] = args;
-  if (!agent) throw new UsageError("Usage: camelrun schedules list|add|delete <agent> …");
+  if (!agent) throw new UsageError("Usage: camelrun schedules list|add|run|delete <agent> …");
   const client = api();
   const id = await client.agentId(agent);
   switch (sub) {
@@ -325,12 +362,17 @@ async function schedules(args: string[], flags: Flags, api: () => Api, print: (v
       return 0;
     }
     case "add": {
-      if (!flags.text || (!flags.in && !flags.at)) throw new UsageError("Usage: camelrun schedules add <agent> --text t (--in seconds | --at iso) [--every seconds]");
+      if (!flags.text || (!flags.in && !flags.at && !flags.cron)) throw new UsageError("Usage: camelrun schedules add <agent> --text t (--in seconds | --at iso | --cron expr --time-zone zone) [--every seconds]");
       // Deprecated and ignored: every wake-up sees the agent's history.
       if (flags.history !== undefined) warn("Warning: --history is deprecated and ignored: every wake-up sees the agent's history.");
-      const body = { text: flags.text, ...(flags.in ? { inSeconds: Number(flags.in) } : { at: flags.at }), ...(flags.every ? { everySeconds: Number(flags.every) } : {}) };
+      const body = { text: flags.text, ...(flags.cron ? {cron:{expression:flags.cron,timeZone:flags["time-zone"] ?? "UTC"}} : {}), ...(flags["session-mode"] ? {sessionMode:flags["session-mode"]} : {}), ...(flags["spend-limit"] ? {spendLimit:{usd:Number(flags["spend-limit"])}} : {}), ...(flags.in ? { inSeconds: Number(flags.in) } : { at: flags.at }), ...(flags.every ? { everySeconds: Number(flags.every) } : {}) };
       const created = await client.call("POST", `/v1/agents/${enc(id)}/schedules`, body);
       print(created, () => `${created.id}: due ${new Date(created.dueAt).toISOString()}`);
+      return 0;
+    }
+    case "run": {
+      if (!scheduleId) throw new UsageError("Give a schedule id");
+      print(await client.call("POST", `/v1/agents/${enc(id)}/schedules/${enc(scheduleId)}/run`, {}));
       return 0;
     }
     case "delete": {
@@ -380,3 +422,16 @@ function describeDeploy(result: ops.DeployResult) {
   return lines.join("\n");
 }
 
+
+async function triggers(args:string[],flags:Flags,api:()=>Api,print:(value:unknown)=>void) {
+ const [sub,agent,id]=args;
+ if(!agent)throw new UsageError("Usage: camelrun triggers list|add|delete|rotate|deliveries <agent> [triggerId] [--input JSON]");
+ const client=api(), resolved=await client.agentId(agent),base=`/v1/agents/${enc(resolved)}/triggers`;
+ if(sub==='list')return (print(await client.get(base)),0);
+ if(sub==='add'){if(!flags.input)throw new UsageError("Use --input with a trigger JSON object");return (print(await client.call('POST',base,JSON.parse(String(flags.input)))),0);}
+ if(!id)throw new UsageError("A trigger id is required");
+ if(sub==='delete')return (print(await client.call('DELETE',`${base}/${enc(id)}`)),0);
+ if(sub==='rotate')return (print(await client.call('POST',`${base}/${enc(id)}/rotate`,{})),0);
+ if(sub==='deliveries')return (print(await client.get(`${base}/${enc(id)}/deliveries`)),0);
+ throw new UsageError("Unknown trigger command");
+}

@@ -105,7 +105,8 @@ export function imageServer(ctx: SpendContext, session: Session, sources: Source
       if (call.run !== saving.id) saving = { id: call.run, left: TOOL_FILE_LIMITS.runBytes };
       const files = new ToolFiles({ volumes, tenant: header.tenant, agent: header.id, mounts, tool: "generate_image", run: saving, onWrite: ctx.toolContext(session).onWrite });
       const budget = run ? await budgetLeft(ctx, session, run.id) : undefined;
-      const { identity, keyScope } = header;
+      const { keyScope } = header;
+      const identity = billingIdentity(session, run);
       return generateImage(imager, {
         tenant: header.tenant, ...(keyScope ? { keyScope } : {}), ...(budget !== undefined ? { budget } : {}), files,
         hold: usd => endUserHold(ctx, session, run, usd, "image"),
@@ -140,7 +141,8 @@ export function decisionServer(ctx: SpendContext, session: Session, sources: Sou
       const { header } = session;
       const run = runningRun(session);
       const budget = run ? await budgetLeft(ctx, session, run.id) : undefined;
-      const { identity, keyScope } = header;
+      const { keyScope } = header;
+      const identity = billingIdentity(session, run);
       return decideTool(decider, {
         tenant: header.tenant, ...(keyScope ? { keyScope } : {}), ...(budget !== undefined ? { budget } : {}), ...(header.config.dataCollection ? { dataCollection: header.config.dataCollection } : {}),
         hold: usd => endUserHold(ctx, session, run, usd, "decision"),
@@ -168,7 +170,8 @@ export function judgeFor(ctx: SpendContext, session: Session): Judge | undefined
   // the agent has since refused to send (`src/client-sessions/configuration.ts` writes the header after the rebuild).
   return (input, signal) => {
     const { header } = session;
-    const { identity, keyScope } = header;
+    const { keyScope } = header;
+    const identity = billingIdentity(session, runningRun(session));
     // An agent that denies data collection, where the provider cannot pass that on: nothing is sent, and its judged calls
     // ask the person. `decide` refuses this too (decisions.ts), but only after a budget read and a credit hold.
     if (header.config.dataCollection === "deny" && !decider.options.provider.dataPolicy) return Promise.resolve({ ...UNJUDGED, reason: "unjudgeable" });
@@ -202,7 +205,7 @@ export function judgeFor(ctx: SpendContext, session: Session): Judge | undefined
  * (`untranscribed`), so a voice note from a channel still reaches the agent. A spend limit refuses either way. Files
  * come back with their transcript and (`cost`) what it cost, for the run's budget; the rest as they were.
  */
-export async function transcribeAttached(ctx: SpendContext, session: Session, requestId: string, files: (FileRef & { transcribe?: boolean })[], run: { actor?: string; budget?: number; bucket?: string }): Promise<(FileRef & { cost?: number })[]> {
+export async function transcribeAttached(ctx: SpendContext, session: Session, requestId: string, files: (FileRef & { transcribe?: boolean })[], run: { actor?: string; budget?: number; bucket?: string; endUser?: string }): Promise<(FileRef & { cost?: number })[]> {
   const plain = files.map(({ transcribe: _transcribe, ...file }) => file as FileRef & { cost?: number });
   let chosen = files.flatMap((file, index) => file.transcribe ?? essence(file.contentType).startsWith("audio/") ? [index] : []);
   if (!chosen.length) return plain;
@@ -236,10 +239,11 @@ export async function transcribeAttached(ctx: SpendContext, session: Session, re
   const budget = Math.min(run.budget ?? Infinity, left);
   const estimate = audio.reduce((total, { header }) => total + transcriber.cost(header.seconds), 0);
   if (estimate > budget) throw new HttpError(402, `Transcribing this message's audio costs about $${estimate.toFixed(4)}, more than the $${Math.max(0, budget).toFixed(4)} left of ${budget === left ? "this agent's" : "this run's"} spend limit`, "SPEND_LIMIT");
-  const { identity, keyScope } = session.header;
+  const { keyScope } = session.header;
+  const identity = billingIdentity(session, run);
   const facts = { requestId, ...(run.actor ? { actor: run.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) };
   // Its end user's credit holds the estimate before any audio is sent, and pays what the transcripts cost.
-  const held = audio.length ? await endUserHold(ctx, session, { id: requestId, ...(run.bucket ? { bucket: run.bucket } : {}) } as RequestRecord, estimate, "transcription") : undefined;
+  const held = audio.length ? await endUserHold(ctx, session, { id: requestId, endUser: run.endUser, ...(run.bucket ? { bucket: run.bucket } : {}) } as RequestRecord, estimate, "transcription") : undefined;
   let total = 0;
   const done = await Promise.allSettled(audio.map(async ({ index, bytes, header }) => {
     try {
@@ -271,17 +275,19 @@ export function modelPayer(ctx: SpendContext, session: Session, run: RequestReco
   return session.header.config.model.api === "openai-codex-responses" ? undefined : payer(ctx, session, run);
 }
 
-/**
- * Who pays for the agent's work, and from which bucket: its subject (an end user of the tenant's), from the running
- * run's own bucket, else the agent's, else the default. Undefined for an agent with no subject: its tenant pays.
- */
+/** Billing attribution alone; tool authorization keeps the agent's identity. */
+export function billingIdentity(session: Session, run: { endUser?: string } | undefined) {
+  return run?.endUser ? { ...session.header.identity, subject: run.endUser } : session.header.identity;
+}
+
+/** The run's endUser, else the agent's subject, spends from this run's bucket. */
 export function payer(ctx: SpendContext, session: Session, run: RequestRecord | undefined): { id: string; bucket: string } | undefined {
-  const id = session.header.identity?.subject;
+  const id = run?.endUser ?? session.header.identity?.subject;
   return id === undefined || !ctx.options.endUsers ? undefined : { id, bucket: bucketOf(ctx, session, run) };
 }
 
 /**
- * The bucket a run of the agent spends from: its own, else the agent's, else the one the tenant's latest run of it named
+ * The bucket a run of the agent spends from: its own, else the agent's, else the one the tenant's latest run without endUser named
  * (`runBucket`), so a run the runtime starts (a schedule's, a sub-agent's notice, a channel's or a voice session's
  * message) spends where the agent's do. Only with none of them the default, said once per load for a tenant that meters.
  */
@@ -366,8 +372,9 @@ export function nativeUsageEffect(ctx: SpendContext, session: Session, entry: im
   if (!message || !billed(message)) return undefined;
   const usage = responseUsage(ctx, session, message, true);
   const via = endpoint(ctx, session) ? `${session.header.config.model.provider}/` : "";
-  const request = [...session.running.values()].find(record => RUN_METHODS.includes(record.method));
-  const { identity, keyScope } = session.header;
+  const request = runningRun(session);
+  const { keyScope } = session.header;
+  const identity = billingIdentity(session, request);
   const payload: UsageRecord = { usage, provider: via + (message as any).provider, model: (message as any).model,
     timestamp: message.timestamp, platform: !!session.platformKey, kind: summary ? "compaction" : "turn",
     ...(request ? { requestId: request.id, ...(request.actor ? { actor: request.actor } : {}) } : {}),
@@ -424,7 +431,7 @@ export async function turnLimit(ctx: SpendContext, session: Session): Promise<st
 }
 
 /** Why a run may not start: a model run's spend limit (a monthly cap or spent credit), or for any run, spent credit. */
-export async function runLimit(ctx: SpendContext, session: Session, method: string, bucket?: string): Promise<HttpError | undefined> {
+export async function runLimit(ctx: SpendContext, session: Session, method: string, bucket?: string, endUser?: string): Promise<HttpError | undefined> {
   const tenant = session.header.tenant;
   const refused = (refusal: Refusal | undefined, code: string, limit?: RunStop["limit"]) => typeof refusal === "string" ? Object.assign(new HttpError(402, refusal, code), { stopLimit: limit }) : refusal;
   if (MODEL_RUNS.includes(method)) {
@@ -432,7 +439,7 @@ export async function runLimit(ctx: SpendContext, session: Session, method: stri
     const limited = agent ? refused(agent, "SPEND_LIMIT", "agent") : refused(await ctx.options.spendLimit?.(tenant), "SPEND_LIMIT", "tenant");
     if (limited) return limited;
     // Its end user has nothing left in the run's bucket.
-    const payer = modelPayer(ctx, session, bucket ? { bucket } as RequestRecord : undefined);
+    const payer = modelPayer(ctx, session, { bucket, endUser } as RequestRecord);
     const broke = payer && await ctx.options.endUsers?.refusal(tenant, payer.id, payer.bucket);
     if (!broke) return undefined;
     // Said here, as the run is refused (its queued start's refusal never reaches an HTTP answer), and once.
@@ -536,12 +543,13 @@ export function endpoint(ctx: SpendContext, session: Session) {
  */
 export function endUserCharge(ctx: SpendContext, agent: string, usage: UsageRecord) {
   const session = ctx.sessions.get(agent), endUsers = ctx.options.endUsers;
-  const user = session && payer(ctx, session, runningRun(session));
+  const run = session && (usage.requestId ? session.requests.get(usage.requestId) : runningRun(session));
+  const user = session && payer(ctx, session, run);
   const usd = Number(usage.usage?.cost?.total ?? 0);
   if (!session || !user || !endUsers || !(usd > 0)) return;
   const call = usage.searches ? "web_search" : usage.renders ? "web_fetch" : "tool";
   const tenant = session.header.tenant, raw = Math.round(usd * MICROS), key = `charge:${randomUUID()}`;
-  const metadata = { call, agent, ...(usage.provider ? { provider: usage.provider } : {}) };
+  const metadata = { call, agent, ...(run ? { requestId: run.id } : {}), ...(usage.provider ? { provider: usage.provider } : {}) };
   void (async () => {
     for (let delay = 1000, until = Date.now() + END_USER_CHARGE_RETRY_MS; ; delay = Math.min(delay * 2, 30_000)) {
       try { return await endUsers.charge(tenant, user.id, user.bucket, raw, key, metadata); }

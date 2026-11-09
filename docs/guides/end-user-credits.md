@@ -11,18 +11,38 @@ them, their stateless runs, transcriptions, images, web searches and the rest. Y
 still pay camelRun for raw usage as before (see [Pricing](../pricing.md)); end-user
 balances are your ledger of your users, and camelRun never moves money for them.
 
+For a shared agent, a tenant API key can send `POST /v1/agents/{id}/prompt` with
+`{"text":"Help with this brief","endUser":"collaborator","bucket":"bot:42"}`.
+`endUser` must already exist in your tenant (create it with a credit entry or an
+end-user update). That prompt's allowance, balance, holds and usage belong to the
+named user. Without it, the agent's subject pays. Child tasks (including messages
+sent to existing children) and their notifications use the sending run's payer
+and bucket. A child's tool identity stays the owner's: billing never grants a
+collaborator's MCP or computer permissions. Work outside a prompt's run, such as
+background compaction or `continue`, bills the agent's subject.
+
+Later prompts do not inherit the payer or an override payer's bucket. Browser,
+OAuth and agent tokens cannot set `endUser`. A tenant can set it on a steer: the
+steer joins a running turn only with the same `endUser` selection (including
+omission); otherwise it queues its own turn. Batches keep different
+`endUser` selections apart. A raw `steer` sent while idle waits for the next
+prompt; it joins only a matching payer, otherwise runs separately afterward.
+With a tenant-key SDK client, pass `endUser` to
+TypeScript `agent.run` or `agent.send`, or `end_user` to their Python equivalents.
+The CLI accepts `camelrun run <agent> <message> --end-user collaborator`.
+
 ## The model
 
 - **End user**: the `subject` of an agent (set when you upsert it) or of a call
   (`POST /v1/runs`, `/v1/transcriptions`, `/v1/images`). Children of an agent
-  (delegate, spawn) act for its subject too. Work with no subject is not metered:
-  you pay for it, as today.
+  (delegate, spawn) bill the payer of the run that starts their task. Work with
+  neither a subject nor a prompt payer is not metered: you pay for it, as today.
 - **Bucket**: the part of your product that spends, such as `builder` or `bot:42`. An
   agent spends from its `bucket`; a stateless run or call names its own. A run sent
   with your API key (`POST /v1/agents/{id}/prompt`) may name another; an agent's own
-  token cannot. A run that names none (one you send without, a schedule's, a
-  sub-agent's notice, a channel's message, or a voice session's `ask_agent`) spends from the
-  agent's bucket, else the one your latest run of the agent named, and only with
+  token cannot. A run that names none (one you send without, a schedule's,
+  a channel's message, or a voice session's `ask_agent`) spends from the
+  agent's bucket, else the one your latest run without `endUser` named, and only with
   neither from `default` (logged as `end_user_default_bucket`).
 - **Daily allowance**: free spend per bucket per UTC day, spent first. Set by bucket
   name, by prefix (`"bot:*"`) or for every bucket (`"*"`); a bucket takes its own

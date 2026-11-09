@@ -71,3 +71,25 @@ test("ask_user: a question without options is answered in the person's own words
   assert.deepEqual(questionsInput([{ question: "What next?", header: "Next", options: [] }])[0].allowOther, true);
   assert.throws(() => questionsInput([{ question: "Q?", header: "H", options: [{ label: "only" }] }]), /2 to 4 options, each with a label, or none/);
 });
+
+test('Workers ask_user has exactly the Node schema and conditional description', async () => {
+  const { makeAskUser } = await import('../src/human.ts');
+  const { builtinDefinitions } = await import('../../../src/builtins.ts');
+  for (const builtins of [['ask_user'], ['ask_user', 'request_decision']]) {
+    const node = builtinDefinitions(builtins)[0];
+    const worker = makeAskUser(undefined, builtins);
+    assert.deepEqual(worker.parameters, node.parameters);
+    assert.equal(worker.description, node.description);
+  }
+});
+
+
+test("a guest approval fixes the same owner audience for answers and the inbox", () => {
+  const owner = { id: "member:owner", role: "owner" as const };
+  const guest = { id: "member:guest", role: "guest" as const };
+  const approval = bindHumanInput({ question: "Remove?", kind: "approval", createdAt: 1000 }, "run", guest.id,
+    { approvers: [guest.id, "ops"] }, null, guest, { owner, members: [owner, guest] });
+  assert.deepEqual(approval.responders.audience, [owner.id, "ops"]);
+  assert.deepEqual(approval.inboxResponders, [owner.id, "ops"]);
+  assert.equal(approval.fixedResponders, true);
+});

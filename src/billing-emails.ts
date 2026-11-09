@@ -2,7 +2,7 @@
 export interface BillingEmail { subject: string; html: string; text: string; headers?: { Name: string; Value: string }[] }
 export interface BillingEmailInput {
   kind: "confirmation" | "low" | "depleted" | "problems" | "receipts";
-  payment?: { notice?: string; amount?: number; fee?: number; total?: number; card?: { brand: string; last4: string }; used?: number; monthlyLimit?: number; invoiceUrl?: string; resetsAt?: number };
+  payment?: { notice?: string; agent?: string; reason?: string; failedNights?: number; amount?: number; fee?: number; total?: number; card?: { brand: string; last4: string }; used?: number; monthlyLimit?: number; invoiceUrl?: string; resetsAt?: number };
   tenant: string;
   email: string;
   origin: string;
@@ -60,6 +60,14 @@ export function billingEmail(input: BillingEmailInput): BillingEmail {
     if (payment?.used !== undefined && payment.monthlyLimit !== undefined) details.push(["This month", `${dollars(payment.used)} of ${dollars(payment.monthlyLimit)}`]);
     if (notice === "limit" && payment?.resetsAt) details.push(["Resumes", new Date(payment.resetsAt).toISOString().slice(0, 10) + " UTC"]);
     footer = `You're receiving this because ${input.email} gets ${receipt ? "top-up receipts" : "top-up issue alerts"} for ${input.tenant}.`;
+  }
+  if (payment?.notice === "dreaming") {
+    subject = "camelRun dreaming needs attention";
+    heading = "Memory consolidation has failed for three nights";
+    sentence = "The last published memory is unchanged. Check the failure reason and update the dreaming configuration before the next attempt.";
+    details = [["Agent", payment.agent ?? ""], ["Failure", payment.reason ?? "Unknown failure"], ["Failed nights", String(payment.failedNights ?? 3)]];
+    cta = "Open console"; link = `${origin}/console/`;
+    footer = `You're receiving this because ${input.email} gets operational problem alerts for ${input.tenant}.`;
   }
   const e = escape;
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light"><meta name="supported-color-schemes" content="light"><meta name="x-apple-disable-message-reformatting"><title>${e(subject)}</title>

@@ -175,7 +175,8 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
                  "AGENT_IMAGES_URL": f"http://127.0.0.1:{self.transcriber.server_port}",
                  **({"AGENT_RUNTIME": os.environ["AGENT_RUNTIME"]} if "AGENT_RUNTIME" in os.environ else {})},
         )
-        ready = json.loads(await asyncio.wait_for(self.host.stdout.readline(), 15))
+        # Schema migrations and cold imports can exceed 15 seconds on a busy Sprite.
+        ready = json.loads(await asyncio.wait_for(self.host.stdout.readline(), 60))
         # Keep reading the host's log, so it never writes into a closed pipe as it shuts down.
         self.logs = asyncio.create_task(self.host.stdout.read())
         self.url = f"http://127.0.0.1:{ready['address']['port']}"
@@ -1678,6 +1679,64 @@ class RateLimitRetryTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(refusals), 8)
         finally:
             await runtime.close()
+
+
+class PromptPayerTest(unittest.IsolatedAsyncioTestCase):
+    async def test_async_payer_uses_tenant_key(self):
+        calls = []
+        def answer(request):
+            body = json.loads(request.content)
+            calls.append((request.url.path, request.headers["Authorization"], body))
+            return httpx.Response(200, json={"id": body.get("requestId", body.get("id")), "state": "completed", "outcome": {"result": {"reply": "done"}}})
+        client = AgentClient("http://localhost", {"id": "client_" + "a" * 40, "token": "agent-test"}, [], attach=False, connection="lazy", api_key="tenant-test")
+        await client.http.aclose()
+        client.http = httpx.AsyncClient(transport=httpx.MockTransport(answer))
+        try:
+            await client.prompt("one", end_user="guest", idempotency_key="one")
+            await client.submit("two", end_user="guest", idempotency_key="two")
+            await client.steer_message("steer", end_user="guest", idempotency_key="steer")
+            await client.prompt("default", idempotency_key="default")
+            self.assertEqual([(path, token, body.get("endUser")) for path, token, body in calls], [
+                (f"/v1/agents/{client.id}/prompt", "Bearer tenant-test", "guest"),
+                (f"/v1/agents/{client.id}/prompt", "Bearer tenant-test", "guest"),
+                (f"/v1/agents/{client.id}/prompt", "Bearer tenant-test", "guest"),
+                (f"/clients/{client.id}/requests", "Bearer agent-test", None)])
+            self.assertEqual(calls[0][2]["requestId"], "one")
+            self.assertEqual(calls[2][2]["whileRunning"], "steer")
+            await client.steer("held")
+            self.assertEqual(calls[4][0], f"/clients/{client.id}/requests")
+            self.assertEqual(calls[4][2]["method"], "steer")
+            await client.steer("paid", end_user="guest")
+            self.assertEqual(calls[5][0], f"/v1/agents/{client.id}/prompt")
+            self.assertEqual(calls[5][2]["endUser"], "guest")
+            self.assertEqual(calls[5][2]["whileRunning"], "steer")
+            client._api_key = None
+            with self.assertRaisesRegex(AgentError, "tenant API key"):
+                await client.submit("no", end_user="guest")
+            self.assertEqual(len(calls), 6)
+        finally:
+            await client.close(drain=0)
+
+    async def test_sync_payer_uses_tenant_key(self):
+        calls = []
+        def answer(request):
+            body = json.loads(request.content)
+            calls.append((request.url.path, request.headers["Authorization"], body))
+            return httpx.Response(200, json={"id": body.get("requestId", body.get("id")), "state": "completed", "outcome": {"result": {"reply": "done"}}})
+        client = sync.AgentClient("http://localhost", {"id": "client_" + "a" * 40, "token": "agent-test"}, api_key="tenant-test")
+        client.http.close()
+        client.http = httpx.Client(transport=httpx.MockTransport(answer))
+        try:
+            client.prompt("one", end_user="guest", idempotency_key="one")
+            client.prompt("default", idempotency_key="default")
+            self.assertEqual(calls[0][:2], (f"/v1/agents/{client.id}/prompt", "Bearer tenant-test"))
+            self.assertEqual(calls[0][2]["endUser"], "guest")
+            self.assertEqual(calls[1][1], "Bearer agent-test")
+            client._api_key = None
+            with self.assertRaisesRegex(AgentError, "tenant API key"):
+                client.prompt("no", end_user="guest")
+        finally:
+            client.http.close()
 
 
 class ReconnectHintTest(unittest.IsolatedAsyncioTestCase):

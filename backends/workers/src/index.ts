@@ -1,4 +1,11 @@
 import { inboxAnswers, inboxReceipt, inboxAgentFailure, sweepInboxReceipts, type InboxOutcome } from "../../../shared/inbox-answers.ts";
+import { workerDreaming } from "./dreaming.ts";
+import { handleHook, hookPath } from "../../../src/core/trigger-ingress.ts";
+import { workerTriggers, triggerRoutes } from "./triggers.ts";
+import { apply } from './apply.ts';
+import { pruneScheduleRuns } from '../../../src/core/schedule-runs.ts';
+import { SharedAgents, ShareLinkInput, MemberInput } from '../../../src/shared-agents.ts';
+import { database } from './postgres.ts';
 import { inboxQuery, readInbox, InboxQueryError } from '../../../shared/inbox.ts';
 import { withSql as inboxSql, database as inboxDatabase } from './postgres.ts';
 import { sweepInputMirrors } from "./input-mirror.ts";
@@ -119,6 +126,7 @@ function summary(entry: DirectoryEntry) {
     ...(entry.parentAgentId ? { parentAgentId: entry.parentAgentId, parentRunId: entry.parentRunId } : {}),
     id: entry.id,
     key: entry.key,
+    metadata: entry.config.metadata ?? {},
     name: entry.config.name ?? "",
     type: entry.config.type ?? "agent",
     model: entry.config.model,
@@ -165,6 +173,12 @@ function scopedConfiguration(input: unknown) {
       );
 }
 
+function shareInput<T>(schema: { safeParse(value: unknown): { success: true; data: T } | { success: false } }, value: unknown): T {
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) throw new ApiError(400, 'Invalid share settings', 'INVALID_REQUEST');
+  return parsed.data;
+}
+
 function httpFailure(error: unknown, env: Env): Response {
   const limited = admissionError(error);
   if (limited) return limited;
@@ -181,6 +195,12 @@ function httpFailure(error: unknown, env: Env): Response {
 
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    if(request.method==='POST'&&hookPath(new URL(request.url).pathname)) {
+      try {
+        const result=await handleHook(request,request.headers.get('cf-connecting-ip')??'unknown',()=>workerTriggers(env));
+        return Response.json(result.body,{status:result.code,headers:{'Cache-Control':'no-store'}});
+      } catch(error) { return httpFailure(error,env); }
+    }
     const recovery = resumeWebhookDeliveries(env);
     if (recovery) ctx.waitUntil(recovery.catch(error => failure(env, "webhook_recovery_failed", error)));
     try {
@@ -310,6 +330,14 @@ const worker = {
       if (auth) {
         const computers = await handleComputerRequest(request, env, auth);
         if (computers) return computers;
+        if (match?.[1] === "v1/agents" && match[3] === "/usage") {
+          const usage = await moneyRoutes(request, env, auth, ctx);
+          if (usage) return usage;
+        }
+      }
+      if (auth) {
+        const trigger = await triggerRoutes(request,env,auth.tenantId);
+        if (trigger) return trigger;
       }
       if (!match) {
         if (!auth) throw new ApiError(403, "Account key required", "FORBIDDEN");
@@ -337,25 +365,25 @@ const worker = {
           const response = await decisionRoute(request, decisions);
           if (response) { ctx.waitUntil(sendMoneyWebhooks(env)); return response; }
         }
+        if (path === "/v1/apply" && request.method === "POST") return apply(request, env, auth);
         const control = await controlRoutes(request, env, auth);
         if (control) return control;
         if (path === "/v1/inbox/answers" && request.method === "POST") {
           const input = inboxAnswers(await body(request, 1024 * 1024));
           const sql = inboxDatabase(env);
           return json(await inboxReceipt(sql, auth.tenantId, input, async () => {
-            const rows = (await sql.query("select id,agent,input from agent_inputs where tenant=$1 and id=any($2::text[])", [auth.tenantId, input.answers.map(a => a.id)])).rows;
             const groups = new Map<string, typeof input.answers>();
-            for (const answer of input.answers) { const row = rows.find(r => r.id === answer.id); if (row) groups.set(row.agent, [...groups.get(row.agent) ?? [], { ...answer, id: row.input.workersInputId ?? row.id }]); }
-            const outcomes: InboxOutcome[] = [];
+            for (const answer of input.answers) groups.set(answer.agent, [...groups.get(answer.agent) ?? [], answer]);
+            const outcomes: (InboxOutcome & { agent: string })[] = [];
             for (const [agent, answers] of groups) {
               try {
                 const response = await forward(new Request(request.url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answers }) }), env, agent, "/inbox-answers", ctx);
                 if (!response.ok && ![403, 404].includes(response.status)) throw new ApiError(response.status, "Inbox authority unavailable");
-                const result = response.ok ? await response.json() as { outcomes: InboxOutcome[] } : { outcomes: answers.map(a => ({ id: a.id, outcome: response.status === 404 ? "unknown" as const : "forbidden" as const, status: response.status })) };
-                for (const outcome of result.outcomes) { const row = rows.find(r => r.agent === agent && (r.input.workersInputId ?? r.id) === outcome.id); outcomes.push({ ...outcome, id: row.id }); }
-              } catch (error) { for (const row of rows.filter(r => r.agent === agent)) outcomes.push(inboxAgentFailure(row.id, error)); }
+                const result = response.ok ? await response.json() as { outcomes: InboxOutcome[] } : { outcomes: answers.map(a => inboxAgentFailure(a.id, { status: response.status })) };
+                outcomes.push(...result.outcomes.map(outcome => ({ ...outcome, agent })));
+              } catch (error) { outcomes.push(...answers.map(answer => ({ ...inboxAgentFailure(answer.id, error), agent }))); }
             }
-            return input.answers.map(a => outcomes.find(o => o.id === a.id) ?? { id: a.id, outcome: "unknown" as const, status: 404 });
+            return input.answers.map(a => outcomes.find(o => o.agent === a.agent && o.id === a.id)!);
           }));
         }
         if ((path === "/v1/inputs" || path === "/v1/inbox") && request.method === "GET") {
@@ -382,6 +410,10 @@ const worker = {
           return json(
             modelCatalog(env, url.searchParams.get("provider") ?? undefined),
           );
+        if (path === "/v1/agents" && request.method === "POST") {
+          const input = await body(request.clone(), 17 * 1024 * 1024) as { prompt?: { endUser?: unknown } };
+          if (input?.prompt?.endUser !== undefined && !["operator", "api"].includes(auth.kind)) throw new HttpError(403, "Only a tenant key can choose a run payer");
+        }
         if (path === "/v1/agents") {
           const directory = new Directory(env, auth.tenantId);
           if (request.method === "GET")
@@ -429,7 +461,7 @@ const worker = {
       }
       if (!entry || entry.config.type === "run") throw new ApiError(404, "Unknown agent", "NOT_FOUND");
       const tail = match[3] || "/";
-      if (tail === "/configuration-target" || tail === "/upsert") throw new ApiError(404, "Not found", "NOT_FOUND");
+      if (tail === "/configuration-target" || tail === "/upsert" || tail === "/conversation-children") throw new ApiError(404, "Not found", "NOT_FOUND");
       // Internal computer operations are reachable only through the service
       // binding. Public cleanup must use the account-scoped confirmation route.
       if (tail === "/__computer" && env.TEST_MODE !== "1")
@@ -452,6 +484,30 @@ const worker = {
           "Agent initialization is pending; retry creation",
           "INITIALIZATION_PENDING",
         );
+      const shareRoute = /^\/(share-links|members)(?:\/([^/]+))?$/.exec(tail);
+      if (shareRoute) {
+        if (!auth || auth.kind === 'oauth' || match[1] !== 'v1/agents') throw new ApiError(403, 'An owner API key or console session is required', 'FORBIDDEN');
+        const shared = new SharedAgents(database(env));
+        const [, resource, item] = shareRoute;
+        const tenant = entry.tenantId, agent = entry.id;
+        if (resource === 'share-links') {
+          if (!item && request.method === 'POST') return json(await shared.create(tenant, agent, shareInput(ShareLinkInput, await body(request, 4096, true)), env.AGENT_PUBLIC_URL || url.origin), 201);
+          if (!item && request.method === 'GET') return json(await shared.links(tenant, agent));
+          if (item && request.method === 'DELETE') { await shared.revoke(tenant, agent, item); return json({ deleted: true }); }
+        } else {
+          if (!item && request.method === 'GET') return json(await shared.members(tenant, agent));
+          if (item && request.method === 'PATCH') {
+            await shared.change(tenant, agent, item, shareInput(MemberInput, await body(request, 4096)));
+            return json((await shared.members(tenant, agent)).find(m => m.id === item));
+          }
+          if (item && request.method === 'DELETE') {
+            await shared.change(tenant, agent, item, 'remove');
+            await env.AGENTS.getByName(agent).removeMember(item);
+            return json({ deleted: true });
+          }
+        }
+        throw new ApiError(404, 'Unknown API route', 'NOT_FOUND');
+      }
       if (tail === "/mcp" && match[1] === "v1/agents") {
         const definition = entry.config.definition
           ? await resolveDefinition(env, entry.tenantId, entry.config.definition).catch(() => undefined)
@@ -543,7 +599,7 @@ const worker = {
         if (!auth) scopedConfiguration(params);
         rejectWorkflow(params);
         if (auth) {
-          const allowed = new Set(["model", "systemPrompt", "systemPromptAppend", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "queue", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "builtins", "decide", "delegate", "mcpServers"]);
+          const allowed = new Set(["metadata", "model", "systemPrompt", "systemPromptAppend", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "queue", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "builtins", "decide", "delegate", "mcpServers"]);
           const unknown = Object.keys(params).find(field => !allowed.has(field));
           if (unknown) throw new BadRequest(`Unsupported field: ${unknown}`);
         }
@@ -583,17 +639,23 @@ const worker = {
       )
         throw new ApiError(404, "Not found");
       if (tail === "/_input-mirror") throw new ApiError(404, "Not found");
+      if (["/sessions", "/dreaming", "/dreaming/run"].includes(tail) && (!auth || match[1] !== "v1/agents"))
+        throw new ApiError(403, "A tenant key is required", "FORBIDDEN");
       const lifecycle = !browser
-        ? await agentLifecycleRoutes(request, env, entry, tail, auth?.kind !== "oauth")
+        ? await agentLifecycleRoutes(request, env, entry, tail, auth?.kind !== "oauth", work => ctx.waitUntil(work))
         : undefined;
       if (lifecycle) return lifecycle;
+      if (request.method === "POST" && ["/prompt", "/requests"].includes(tail)) {
+        const payerInput = await body(request.clone(), (tail === "/prompt" ? 7 : 6) * 1024 * 1024) as { endUser?: unknown; params?: { endUser?: unknown } };
+        if ((payerInput?.endUser !== undefined || payerInput?.params?.endUser !== undefined) && (!auth || !["operator", "api"].includes(auth.kind))) throw new HttpError(403, "Only a tenant key can choose a run payer");
+      }
       if (tail === "/requests" && request.method === "POST") {
-        const input = (await request.clone().json()) as { method?: string; params?: Record<string, unknown> };
-        if (!auth && input.method === "configure") scopedConfiguration(input.params);
-        if (input.method !== "configure" && input.params?.bucket !== undefined &&
-          (!auth || !["prompt", "continue"].includes(input.method ?? "")))
+        const input = (await body(request.clone(), 6 * 1024 * 1024)) as { method?: string; params?: Record<string, unknown> };
+        if (!auth && input?.method === "configure") scopedConfiguration(input.params);
+        if (input?.method !== "configure" && input?.params?.bucket !== undefined &&
+          (!auth || !["prompt", "steer", "continue"].includes(input.method ?? "")))
           throw new HttpError(auth ? 400 : 403, auth
-            ? "bucket is for a model run (prompt, continue)"
+            ? "bucket is for a model run (prompt, steer, continue)"
             : "Only the tenant can choose a run's bucket");
       }
       if (tail === "/inputs" || tail.startsWith("/inputs/")) {
@@ -611,6 +673,10 @@ const worker = {
         const input = await body(request, 6 * 1024 * 1024) as Record<string, unknown>;
         request = new Request(request.url, { method: 'POST', headers: request.headers, body: JSON.stringify({ ...input, requestId: request.headers.get('idempotency-key') }) });
       }
+      const trustedHeaders = new Headers(request.headers);
+      trustedHeaders.delete("x-camel-shared-owner");
+      if (auth?.kind === "console" && tail === "/prompt") trustedHeaders.set("x-camel-shared-owner", "1");
+      request = new Request(request, { headers: trustedHeaders });
       const response = tail === "/events" && wantsEventStream(request)
         ? await bridgeEvents(request, request => forward(request, env, entry!.id, tail, ctx), bridgeOptions(env))
         : tail === "/events"
@@ -658,8 +724,11 @@ const worker = {
   },
   async scheduled(_controller: ScheduledController, env: Env) {
     return withMoneyMetrics(env, async () => {
+    try { await (await workerTriggers(env)).scan(); }
+    catch(error) { failure(env,"trigger_scan_failed",error); }
     try {
-      if (_controller.cron === "* * * * *") { await sweepInputMirrors(env); await inboxSql(env, sql => sweepInboxReceipts(sql)); return; }
+      await withSql(env,sql=>pruneScheduleRuns(sql)).catch(error=>failure(env,"schedule_retention_failed",error));
+      if (_controller.cron === "* * * * *") { await sweepInputMirrors(env); await inboxSql(env, sql => sweepInboxReceipts(sql)); await workerDreaming(env).scan(); return; }
       await maintenance(env);
       await moneyMaintenance(env);
       await publishScheduleEmails(env);

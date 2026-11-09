@@ -9,7 +9,7 @@ export default defineConfig({
   base: "/console/",
   plugins: [react()],
   define: { "import.meta.env.VITE_CONSOLE_BUILD": JSON.stringify(process.env.AGENT_RELEASE ?? `build-${Date.now().toString(36)}`) },
-  resolve: { alias: { "@": fileURLToPath(new URL("./web", import.meta.url)) } },
+  resolve: { alias: { "@camelai/run-react": fileURLToPath(new URL("../packages/react/src/index.tsx", import.meta.url)), "@camelai/run/chat": fileURLToPath(new URL("../clients/chat.ts", import.meta.url)), "@camelai/run/markdown": fileURLToPath(new URL("../clients/markdown.ts", import.meta.url)), "@": fileURLToPath(new URL("./web", import.meta.url)) } },
   css: { postcss: { plugins: [tailwind()] } },
   // Fonts stay files: inlined as data: URIs, the console's CSP (fonts from 'self') would block them.
   // admin.html is the team's ops dashboard (src/admin-site.ts), served at a path of the runtime's hostname (run.camelai.com/ops)

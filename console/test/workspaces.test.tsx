@@ -54,6 +54,8 @@ beforeEach(() => {
     if (path === "/v1/workspaces") return json(state.workspaces);
     if (path === "/v1/workspace-memberships") return json(state.memberships);
     if (path.startsWith("/v1/agents") && !/^\/v1\/agents\/[^?]/.test(path)) return listAgents(path);
+    if (/^\/v1\/agents\/[^/]+\/history/.test(path)) return json({ entries: [], next: null });
+    if (/^\/v1\/agents\/[^/]+\/inputs/.test(path)) return json([]);
     if (path === "/v1/definitions") return json([{ id: "d_desk", name: "Desk agent", revision: 3, createdAt: 1, updatedAt: 1 }, { id: "d_free", name: "Free agent", revision: 1, createdAt: 1, updatedAt: 1 }]);
     if (path === "/v1/channels") return json([{ id: "c1", type: "slack", name: "Desk Slack", definition: "d_desk", access: { public: true, allow: [] }, limits: {}, account: {}, credentials: {}, createdAt: 1 }]);
     if (path.startsWith("/v1/usage")) return json({ since: 0, totals: totals(100), days: [], workspaces: [{ id: "ws_desk", name: "Trading Desk", ...totals(60) }, { id: null, name: "Unassigned", ...totals(40) }] });
@@ -68,7 +70,7 @@ function Agents() {
   const billing = useApi<any>(undefined);
   return <AgentsPage hasAgents={state.agents.length > 0} billing={billing} />;
 }
-const names = () => screen.getAllByRole("link").map(link => link.textContent).filter(text => text?.includes("bot"));
+const names = () => screen.getAllByRole("link").map(link => link.getAttribute("aria-label") ?? link.textContent).filter(text => text?.includes("bot"));
 
 describe("workspaces index", () => {
   it("shows a card per workspace with spend and members, and Unassigned with the fix", async () => {
@@ -133,7 +135,7 @@ describe("agents list", () => {
   it("shows each agent's workspace with all selected, and asks the server for ?ws='s", async () => {
     go("/console/agents");
     render(<Agents />);
-    await screen.findByRole("columnheader", { name: "Workspace" });
+    await screen.findByRole("link", { name: "desk-bot" });
     await waitFor(() => expect(names()).toEqual(["desk-bot", "desk-bot / helper", "loose-bot", "lab-bot"]));
     expect(screen.getAllByRole("button", { name: "Assign…" }).length).toBe(2);
     expect(agentPaths.at(-1)).toBe("/v1/agents?limit=50");
@@ -149,10 +151,10 @@ describe("agents list", () => {
   it("searches and filters on the server, with last activity and recent failures", async () => {
     go("/console/agents");
     render(<Agents />);
-    await screen.findByRole("columnheader", { name: "Last active" });
-    const row = (name: string) => screen.getByRole("link", { name }).closest("tr")!;
+    await screen.findByRole("link", { name: "desk-bot" });
+    const row = (name: string) => screen.getByRole("link", { name });
     await waitFor(() => expect(within(row("lab-bot")).getByText("5m ago")).toBeTruthy());
-    expect(within(row("lab-bot")).getByText("Failed")).toBeTruthy();
+    expect(within(row("lab-bot")).getByText("Error")).toBeTruthy();
     expect(within(row("loose-bot")).getByText("3d ago")).toBeTruthy();
     expect(within(row("desk-bot")).getByText("now")).toBeTruthy();
 
@@ -192,7 +194,7 @@ describe("agents list", () => {
   it("moves the selected agents to a workspace in one go", async () => {
     go("/console/agents");
     render(<Agents />);
-    await screen.findByRole("columnheader", { name: "Workspace" });
+    await screen.findByRole("link", { name: "desk-bot" });
     fireEvent.click(await screen.findByRole("checkbox", { name: "Select loose-bot" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Select lab-bot" }));
     const bar = screen.getByRole("region", { name: "Selected agents" });

@@ -302,7 +302,7 @@ test("each sender is rate limited, and told once", async t => {
   const { channel, secret } = await r.createChannel({ access: { public: true }, limits: { perSenderPerMinute: 2 } });
   for (const text of ["one", "two", "three", "four"]) await r.deliver(channel, secret, from(ada, text));
   await until(() => r.tg.sent(ada.id).filter(text => text.startsWith("echo:")).length === 2, "two replies");
-  await sleep(500);
+  await until(() => r.tg.sent(ada.id).some(text => text.includes("too quickly")), "rate-limit notice");
   const sent = r.tg.sent(ada.id);
   assert.equal(sent.filter(text => text.includes("too quickly")).length, 1);
   assert.equal(sent.length, 3);

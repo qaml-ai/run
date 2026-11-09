@@ -1,3 +1,7 @@
+import { transcriptDescendants, transcriptScope } from "./session-transcripts.ts";
+import { workerDreaming } from "./dreaming.ts";
+import { sessionTranscripts } from "../../../shared/session-transcripts.ts";
+import { runLog, logOptions, LOG_PAGE_BYTES } from "../../../shared/run-log.ts";
 import { Directory, type AuthContext, type ControlEnv, type DirectoryEntry, type DirectoryFailure } from "./control.ts";
 import { agentToken, ApiError, configuration, digest } from "./api-contract.ts";
 import { body, boundedText, object } from "./validation.ts";
@@ -37,7 +41,7 @@ export function runView(record: Record, retentionMs: number) {
 }
 
 export async function statelessRoutes(request: Request, env: ControlEnv, auth: AuthContext): Promise<Response | undefined> {
-  const url = new URL(request.url), match = /^\/v1\/runs(?:\/(run_[a-f0-9]{40})(\/events|\/messages|\/abort)?)?$/.exec(url.pathname);
+  const url = new URL(request.url), match = /^\/v1\/runs(?:\/(run_[a-f0-9]{40})(\/events|\/messages|\/abort|\/log)?)?$/.exec(url.pathname);
   if (!match) return;
   const directory = new Directory(env, auth.tenantId);
   let entry: DirectoryEntry & { run?: RunInfo };
@@ -88,6 +92,11 @@ export async function statelessRoutes(request: Request, env: ControlEnv, auth: A
   if (match[2] === "/messages" && request.method === "GET") return call(env, entry.id, `/history?run=${encodeURIComponent(runId)}&retentionMs=${entry.run.retentionMs}`);
   const record = await payload(await call(env, entry.id, `/requests/${runId}?wait=${Math.min(25,Number(url.searchParams.get("wait") ?? 0))}`)) as Record;
   if (record.endedAt && record.endedAt + entry.run.retentionMs <= Date.now()) throw new ApiError(404, "Run retention expired", "NOT_FOUND");
+  if (match[2] === "/log" && request.method === "GET") {
+    const options = logOptions(url.searchParams);
+    const history = await payload(await call(env, entry.id, `/history?run=${encodeURIComponent(runId)}&retentionMs=${entry.run.retentionMs}&after=${options.after}&limit=${options.limit}&maxBytes=${LOG_PAGE_BYTES}`));
+    return json(runLog(runView(record, entry.run.retentionMs), history, options));
+  }
   if (match[2] === "/events" && request.method === "GET") {
     const headers = new Headers(request.headers);
     headers.set("x-camel-events-path", url.pathname);
@@ -104,7 +113,23 @@ export async function statelessRoutes(request: Request, env: ControlEnv, auth: A
   throw new ApiError(405, "Method not allowed");
 }
 
-export async function agentLifecycleRoutes(request: Request, env: ControlEnv & FileBindings, entry: DirectoryEntry, tail: string, includeToken = true): Promise<Response | undefined> {
+export async function agentLifecycleRoutes(request: Request, env: ControlEnv & FileBindings, entry: DirectoryEntry, tail: string, includeToken = true, background?: (work: Promise<unknown>) => void): Promise<Response | undefined> {
+  if (tail === "/dreaming" || tail === "/dreaming/run") {
+    const service=workerDreaming(env);
+    if(tail === "/dreaming" && request.method === "GET") return json(await service.get(entry.tenantId,entry.id));
+    if(tail === "/dreaming" && request.method === "PUT") return json(await service.configure(entry.tenantId,entry.id,await body(request)));
+    if(tail === "/dreaming/run" && request.method === "POST") {
+      const queued=await service.now(entry.tenantId,entry.id);
+      background?.((async()=>{for(let i=0;i<15;i++){await service.scan();await new Promise(resolve=>setTimeout(resolve,1000));}})());
+      return json(queued,202);
+    }
+  }
+  if (tail === "/sessions" && request.method === "GET") {
+    const q = new URL(request.url).searchParams;
+    if (q.has("children") && !["true", "false"].includes(q.get("children")!)) throw new ApiError(400, "Invalid children");
+    try { return json(await sessionTranscripts({ descendants: (tenant, root) => transcriptDescendants(env, tenant, root), scope:id=>transcriptScope(env,id), query: (sql, values) => withSql(env, db => db.query(sql, values)), page: async (id, after, limit) => payload(await call(env, id, `/history?after=${after}&limit=${limit}&maxBytes=1000000`)) }, entry.tenantId, entry.id, { from: Number(q.get("from") ?? NaN), to: Number(q.get("to") ?? NaN), cursor: q.get("cursor") ?? undefined, limit: q.has("limit") ? Number(q.get("limit")) : undefined, children: q.get("children") !== "false", endUser:q.get("endUser") ?? undefined })); }
+    catch (error) { if ((error as any).status === 400) throw new ApiError(400, (error as Error).message); throw error; }
+  }
   if (tail === "/export" && request.method === "GET") return json({ config: visibleConfiguration(entry.config), ...(await payload(await call(env, entry.id, "/history"))) });
   if (tail !== "/fork" || request.method !== "POST") return;
   const input = object(await body(request), ["key", "name", "atMessage", "ttlSeconds", "subject", "context", "systemPromptAppend", "modelHeaders"]);
