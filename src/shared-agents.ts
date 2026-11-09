@@ -12,6 +12,13 @@ const linkColumns = 'id, created_at as "createdAt", expires_at as "expiresAt", r
 const memberColumns = `m.id, m.name, m.email, m.role, m.added_at as "addedAt", m.removed_at as "removedAt", m.daily_cap as "dailyCapMicros", coalesce(d.charge, 0) as "spentToday"`;
 const id = (prefix: string) => prefix + randomBytes(8).toString('hex');
 
+/** S4 guest routes must also check membership; admission rechecks after asynchronous preparation. */
+export async function requireActiveMember(sql: Sql, tenant: string, agent: string, actor?: string) {
+  if (!actor?.startsWith('member:')) return;
+  const found = await sql.query('select 1 from agent_members where tenant=$1 and agent=$2 and id=$3 and removed_at is null', [tenant, agent, actor.slice(7)]);
+  if (!found.rows.length) throw new HttpError(403, 'Membership is no longer active');
+}
+
 /** Shared SQL policy for both HTTP backends. No link secret leaves the create response. */
 export class SharedAgents {
   private db: Db;
@@ -57,11 +64,11 @@ export class SharedAgents {
     const result = await this.db.query(`update agent_members set
       removed_at=case when $4 then coalesce(removed_at,$5) when $6 then null else removed_at end,
       daily_cap=case when $7 then $8 else daily_cap end, revision=revision+1
-      where tenant=$1 and agent=$2 and id=$3 and (role='guest' or not ($4 or $6)) returning id`,
+      where tenant=$1 and agent=$2 and id=$3 and role='guest' returning id`,
       [tenant,agent,member,remove,Date.now(),!remove && input.removed === false,!remove && 'dailyCapMicros' in input,!remove && input.dailyCapMicros != null ? input.dailyCapMicros : null]);
     if (!result.rowCount) {
       const owner = (await this.db.query('select 1 from agent_members where tenant=$1 and agent=$2 and id=$3 and role=\'owner\'', [tenant,agent,member])).rows.length;
-      throw new HttpError(owner ? 400 : 404, owner ? 'The owner cannot be removed or restored' : 'Unknown member');
+      throw new HttpError(owner ? 400 : 404, owner ? 'Only guests can have a daily cap, be removed or be restored' : 'Unknown member');
     }
   }
 }

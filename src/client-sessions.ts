@@ -1,3 +1,4 @@
+import { requireActiveMember } from "./shared-agents.ts";
 import { rejectWorkflow } from "./builtins.ts";
 import { currentModel, modelReference } from "./virtual-models.ts";
 import type { Message } from "@earendil-works/pi-ai";
@@ -1403,7 +1404,7 @@ export class ClientSessions {
     return [...requests.values()].map(visible);
   }
 
-  /** S5 will attach member identities to guest streams; today no guest stream route exists. */
+  /** S4 guest routes must check membership; admission rechecks it after preparation. S5 tags guest streams. */
   async removeMember(id: string, tenant: string, member: string) {
     if (!await this.owns(id, tenant)) return;
     const session = await this.load(id);
@@ -1784,6 +1785,7 @@ export class ClientSessions {
         bucket = session.requests.get(params.suspension)?.bucket;
       }
     } catch (error) { throw new HttpError(400, errorText(error)); }
+    if (params.notice === undefined && (CANCELLABLE.includes(body.method) || body.method === "steer")) await requireActiveMember(this.db, session.header.tenant, session.header.id, actor);
     // A child's notification (`notice`) is the runtime's alone. Its child's run was counted and checked already, and it is
     // never refused at a limit: it lands without a turn instead (`landNotice`).
     const notice = params.notice !== undefined;
@@ -1856,6 +1858,7 @@ export class ClientSessions {
         const again = existing();
         if (again) return taken(again);
       }
+      if (params.notice === undefined && (CANCELLABLE.includes(body.method) || body.method === "steer")) await requireActiveMember(this.db, session.header.tenant, session.header.id, actor);
       const record = this.upsertRequest(session, {
         startedAt: Date.now(), ...(body.method === "prompt" && typeof body.params.text === "string" ? { prompt: body.params.text } : {}),
         ...(body.method === "execute" && typeof body.params.code === "string" ? { code: body.params.code } : {}),

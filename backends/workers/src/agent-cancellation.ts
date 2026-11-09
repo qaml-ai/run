@@ -95,6 +95,7 @@ async function abortRequestWork(this: AgentRuntime, record: RequestRecord) {
 }
 
 export async function removeMemberImpl(this: AgentRuntime, member: string) {
+  // S4 guest routes must check membership; admission rechecks it after preparation.
   // S5 attaches member identities to guest sockets and adds periodic revision checks.
   for (const socket of this.ctx.getWebSockets()) {
     if (socket.deserializeAttachment()?.member === member) socket.close(1008, JSON.stringify({ reason: "removed" }));

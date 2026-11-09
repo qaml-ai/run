@@ -25,7 +25,9 @@ contractTest('shared-agents', 'native', 'owner links, membership and caps stay p
   assert.equal(owner.role, 'owner');
   assert.match(owner.id, /^m_[a-f0-9]{16}$/);
   assert.equal((await r.call(`${base}/members/${owner.id}`, { method: 'DELETE' })).status, 400);
-  assert.equal((await r.call(`${base}/members/${owner.id}`, { method: 'PATCH', body: { dailyCapMicros: 1 } })).status, 200);
+  assert.equal((await r.call(`${base}/members/${owner.id}`, { method: 'PATCH', body: { dailyCapMicros: 1 } })).status, 400);
+  assert.equal((await r.call(`${base}/members/${owner.id}`, { method: 'PATCH', body: { dailyCapMicros: null } })).status, 400);
+  assert.equal((await r.call(`${base}/members`)).json[0].dailyCapMicros, null);
   await r.sharedAgentsQuery(`insert into agent_members (id,tenant,agent,person,role,name,email,link,added_at) select 'm_0123456789abcdef',tenant,agent,'fixture-guest','guest','Dana','dana@example.test',id,$2 from agent_share_links where id=$1`, [made.json.id, Date.now()]);
   const member = 'm_0123456789abcdef';
   await r.sharedAgentsQuery(`insert into agent_member_days (member,day,charge) values ($1,(now() at time zone 'UTC')::date,1250000)`, [member]);
@@ -73,6 +75,16 @@ for (const mode of ['each', 'batch'] as const) contractTest('shared-agents', 'na
     assert.equal((await r.call(`${base}/prompt`, { body: { text: requestId, requestId, actor } })).status, 202);
   }
   assert.equal((await r.call(`${base}/members/${member}`, { method: 'DELETE' })).status, 200);
+  for (const identity of [{ actor: `member:${member}` }, { from: { id: `member:${member}` } }]) {
+    const refused = await r.call(`${base}/prompt`, { body: { text: 'after removal', ...identity } });
+    assert.equal(refused.status, 403, refused.text);
+    assert.equal(refused.json.code, 'FORBIDDEN');
+  }
+  for (const [route, body] of [['continue', { actor: `member:${member}` }], ['execute', { code: '1', actor: `member:${member}` }]] as const) {
+    const refused = await r.call(`${base}/${route}`, { body });
+    assert.equal(refused.status, 403, refused.text);
+    assert.equal(refused.json.code, 'FORBIDDEN');
+  }
   for (const queued of ['removed-queue', 'removed-queue-2']) {
     const cancelled = await until(async () => { const record = (await r.call(`${base}/requests/${queued}`)).json; return record.state === 'completed' && record; }, 'the removed member’s queued run to cancel');
     assert.equal(cancelled.outcome.result.code, 'cancelled');
@@ -133,4 +145,22 @@ contractTest('shared-agents', 'native', 'failed membership cleanup leaves deleti
   await r.sharedAgentsQuery('alter table agent_members drop constraint reject_removal');
   assert.equal((await r.call(`/v1/agents/${agent}`, { method: 'DELETE' })).status, 200);
   assert.ok((await r.sharedAgentsQuery('select removed_at from agent_members where agent=$1', [agent])).rows.every(row => row.removed_at));
+}, { timeout: 90_000 });
+
+contractTest('shared-agents', 'native', 'a sub-agent cannot be shared', async t => {
+  const { toolCall, toolResults } = await import('../support.ts');
+  const r = await createContractFixture(t, { respond: body => {
+    if (JSON.stringify(body.messages).includes('SHARED_CHILD')) return { role: 'assistant', content: 'done' };
+    if (body.messages.at(-1).role === 'tool') return { role: 'assistant', content: toolResults(body).at(-1) };
+    return toolCall('spawn_agent', { instructions: 'SHARED_CHILD', task: 'finish' }, 'spawn_child');
+  } });
+  const parent = (await r.call('/v1/agents', { body: { builtins: ['agents'], delegate: { instructions: true } } })).json.id;
+  const result = await r.prompt(parent, 'start a child');
+  const child = result.outcome.result.toolCalls.find((call: any) => call.agentId)?.agentId;
+  assert.ok(child, 'the runtime created a real sub-agent');
+  const refused = await r.call(`/v1/agents/${child}/share-links`, { body: {} });
+  assert.equal(refused.status, 400, refused.text);
+  assert.match(refused.json.error, /Sub-agents cannot be shared/);
+  assert.equal((await r.sharedAgentsQuery('select 1 from agent_share_links where agent=$1', [child])).rows.length, 0);
+  assert.equal((await r.sharedAgentsQuery('select 1 from agent_members where agent=$1', [child])).rows.length, 0);
 }, { timeout: 90_000 });
