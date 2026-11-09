@@ -43,6 +43,7 @@ export const PAGES: { section: string; path: string; about: string }[] = [
   { section: "Guides", path: "guides/multi-agent.md", about: "sub-agents: the delegate built-in hands tasks to other agents, in parallel; their limits, cancelling, crash safety and progress events, and how they map to the OpenAI Agents SDK and LangGraph" },
   { section: "Guides", path: "guides/channels.md", about: "Slack, Telegram, GitHub, email and any service that sends webhooks" },
   { section: "Guides", path: "guides/github-apps.md", about: "storing a GitHub App's key in camelRun (or making the App from a manifest) so agents get installation tokens it mints, scoped to repositories and permissions: MCP servers, OpenAPI sources, computer egress and GitHub channels" },
+  { section: "Guides", path: "guides/vault.md", about: "write-only secrets, host-bound egress and per-agent network access" },
   { section: "Guides", path: "guides/migrating.md", about: "coming from the OpenAI Agents SDK or LangGraph: sessions, handoffs (not supported) and sub-agents, guardrails, tracing, structured output and the rest mapped, with what camelRun does not have" },
   { section: "Guides", path: "guides/mcp-server.md", about: "every agent as an MCP server with one tool, message: connecting Claude or Cursor to an agent" },
   { section: "Guides", path: "guides/aws.md", about: "an agent reads your AWS account through an MCP server you run yourself: one Lambda, identity tokens instead of a secret, reads only, what enabling writes needs" },

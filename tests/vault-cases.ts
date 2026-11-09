@@ -28,3 +28,21 @@ export async function vaultApiCase(t: {after(fn:()=>Promise<void>|void):void}, s
   assert.equal((await r.call(workspace,{method:"DELETE"})).status,200);
   assert.ok(!r.logs.join("\n").includes("write-only-value"));
 }
+
+export async function vaultHostRulesCase(t: {after(fn:()=>Promise<void>|void):void}, start: Start) {
+  const r = await start(t, () => ({ role: "assistant", content: "ok" }), {});
+  const allowedHosts = ["httpbin.org", "postman-echo.com", "herokuapp.com", "foo.herokuapp.com", "github.io", "*.foo.herokuapp.com"];
+  const created = await r.call("/v1/secrets/HOST_POLICY", { method: "POST", body: { value: "host-policy-value", allowedHosts } });
+  assert.equal(created.status, 200, created.text);
+  // Unrestricted still validates its host rules; Node deliberately refuses limited networking.
+  const definition = await r.call("/v1/definitions", { body: { name: "Private suffix hosts", networking: { type: "unrestricted", allowedHosts } } });
+  assert.equal(definition.status, 201, definition.text);
+  assert.deepEqual(definition.json.networking.allowedHosts, allowedHosts);
+  for (const host of ["com", "co.uk", "*.com", "*.co.uk", "*.httpbin.org", "*.postman-echo.com", "*.herokuapp.com", "*.github.io", "127.0.0.1", "metadata.internal"]) {
+    const secret = await r.call("/v1/secrets/HOST_POLICY", { method: "PATCH", body: { allowedHosts: [host] } });
+    assert.equal(secret.status, 400, `${host}: ${secret.text}`);
+    const policy = await r.call(`/v1/definitions/${definition.json.id}`, { method: "PATCH", body: { networking: { type: "unrestricted", allowedHosts: [host] } } });
+    assert.equal(policy.status, 400, `${host}: ${policy.text}`);
+  }
+  assert.deepEqual((await r.call(`/v1/definitions/${definition.json.id}`)).json.networking.allowedHosts, allowedHosts);
+}

@@ -277,6 +277,27 @@ test("limited gateway checks the destination even for an authenticated grant and
   assert.equal(await response.text(),"[hidden]"); assert.equal(response.headers.get("location"),"https://evil.com/?key=[hidden]");
 });
 
+test("limited gateway allows exact private-suffix hosts without allowing their neighbors", async () => {
+  const { networkingInput } = await import("../../../src/core/vault.ts");
+  const hosts = ["httpbin.org", "postman-echo.com", "foo.herokuapp.com"];
+  const networking = networkingInput({ type: "limited", allowedHosts: hosts });
+  let sent = 0;
+  const deps = { networking, credential: async () => ({ token: "vault-host-value", refused() {} }), send: async (request: Request) => {
+    sent++;
+    assert.equal(request.headers.get("authorization"), "Bearer vault-host-value");
+    return new Response("vault-host-value");
+  } };
+  for (const host of hosts) {
+    const response = await forwardEgress(new Request(`https://${host}/`), { host, auth: { type: "vault", name: "TOKEN" } }, deps);
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), "[hidden]");
+  }
+  for (const host of ["other.herokuapp.com", "sub.httpbin.org", "other.com"]) {
+    assert.equal((await forwardEgress(new Request(`https://${host}/`), { host: "*" }, deps)).status, 403);
+  }
+  assert.equal(sent, hosts.length);
+});
+
 test('GitHub packfiles and header-only request streams bypass the vault and masking',async()=>{
   const bytes=new Uint8Array([80,65,67,75,0,255,0,1]);
   const pack=new Response(bytes,{headers:{'content-type':'application/x-git-upload-pack-result',etag:'"pack"','content-length':String(bytes.length)}});

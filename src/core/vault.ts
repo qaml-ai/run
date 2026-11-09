@@ -19,7 +19,8 @@ export function hostRules(value: unknown): string[] {
   return [...new Set(value.map(v => {
     if (typeof v !== "string") throw bad("Invalid allowed host");
     const rule = v.toLowerCase().replace(/\.$/, ""), host = rule.startsWith("*.") ? rule.slice(2) : rule;
-    const result = parse(host, { allowPrivateDomains: true });
+    // Exact private-suffix hosts are destinations too; only wildcards must stay below them.
+    const result = parse(host, { allowPrivateDomains: rule.startsWith("*.") });
     if (!/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]*$/.test(host) || host.length > 253 || !result.domain || !result.isIcann && !result.isPrivate || /(^|\.)(localhost|local|internal|localdomain|home|lan|test|invalid|example)$/.test(host))
       throw bad("Use a public hostname, not a public suffix or private address");
     return rule;
