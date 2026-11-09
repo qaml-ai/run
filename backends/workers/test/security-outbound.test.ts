@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type RequestListener } from "node:http";
 import { Outbound, OutboundBlocked } from "../src/security-outbound.ts";
+import { PublicOutbound } from "../src/public-outbound.ts";
 
 async function server(handler: RequestListener) {
   const listener = createServer(handler);
@@ -17,6 +18,19 @@ async function server(handler: RequestListener) {
   };
 }
 const outbound = () => new Outbound({ allowHttp: true, allow: ["127.0.0.1/32"] });
+
+test("limited public outbound checks redirect destinations and explicit MCP exceptions", async () => {
+  const networking = { type: "limited" as const, allowedHosts: ["example.com"], allowPackageManagers: false, allowMcpServers: false };
+  let calls = 0;
+  const policy = new PublicOutbound({ networking, resolve: async () => ["93.184.216.34"], transport: async () => {
+    calls++; return new Response(null, { status: 302, headers: { location: "https://other.com/file" } });
+  } });
+  await assert.rejects(policy.fetch("https://example.com", { maxRedirects: 1 }), /Network destination is not allowed/);
+  assert.equal(calls, 1);
+  const mcp = new PublicOutbound({ networking: { ...networking, allowMcpServers: true }, mcpHosts: ["other.com"], resolve: async () => ["93.184.216.34"] });
+  assert.equal((await mcp.reachable("https://other.com")).hostname, "other.com");
+  await assert.rejects(policy.reachable("https://other.com"), /Network destination is not allowed/);
+});
 
 test("source outbound caps the response body, including webhook replies", async t => {
   const receiver = await server((_request, response) => response.end(Buffer.alloc(64 * 1024 + 1)));

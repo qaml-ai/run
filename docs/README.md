@@ -31,6 +31,7 @@ model-written code in a sandbox, and wakes agents when there is work.
    - [Agents for many users](guides/multi-user.md): per-user agents, identity, spend
    - [Webhooks](guides/webhooks.md): run and input events, signatures, delivery
    - [Models and keys](guides/models-and-keys.md): the catalog, your own keys and endpoints, key scopes, spend limits
+   - [Vault](guides/vault.md): write-only secrets and network access
    - [Definitions](guides/definitions.md): reusable configurations and rolling out changes
    - [Schedules](guides/schedules.md): cron and calendar timing, fresh runs, per-run budgets and email reports
    - [Channels](guides/channels.md): Slack, Telegram, GitHub, email and any service that sends webhooks

@@ -202,6 +202,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
                 requestId: run.id === "background" ? undefined : run.id,
                 spendLimit: (params?.spendLimit as { usd?: number } | undefined)
                   ?.usd,
+                networking: conf.config.networking,
                 builtins: conf.config.builtins,
                 webSearch: conf.config.webSearch,
                 keyScope: conf.config.keyScope,

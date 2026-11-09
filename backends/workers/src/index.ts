@@ -1,3 +1,4 @@
+import { vaultRoutes } from "./vault.ts";
 import { workerDreaming } from "./dreaming.ts";
 import { handleHook, hookPath } from "../../../src/core/trigger-ingress.ts";
 import { workerTriggers, triggerRoutes } from "./triggers.ts";
@@ -381,6 +382,8 @@ const worker = {
         if (definition) return definition;
         const channel = await channelRoutes(request, env, auth.tenantId, ctx);
         if (channel) return channel;
+        const vault = await vaultRoutes(request, env, auth);
+        if (vault) return vault;
         const githubApp = await githubAppRoutes(request, env, auth);
         if (githubApp) return githubApp;
         const provider = await providerRoutes(request, env, auth);
@@ -580,7 +583,7 @@ const worker = {
         if (!auth) scopedConfiguration(params);
         rejectWorkflow(params);
         if (auth) {
-          const allowed = new Set(["metadata", "model", "systemPrompt", "systemPromptAppend", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "queue", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "builtins", "decide", "delegate", "mcpServers"]);
+          const allowed = new Set(["metadata", "model", "systemPrompt", "systemPromptAppend", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "queue", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "builtins", "decide", "delegate", "mcpServers", "networking"]);
           const unknown = Object.keys(params).find(field => !allowed.has(field));
           if (unknown) throw new BadRequest(`Unsupported field: ${unknown}`);
         }
