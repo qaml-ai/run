@@ -54,6 +54,7 @@ Stateless runs (a configuration and a message in, the result out; nothing carrie
   abort <agent>
   inputs [agent]                   Questions and approvals waiting on someone
   answer <agent> <inputId> <value> true/false, text, JSON, or "decline"
+  triggers list|add|delete|rotate|deliveries <agent> [triggerId] [--input JSON]
   schedules list <agent>
   schedules add <agent> --text t (--in s | --at iso | --cron expr --time-zone zone) [--every s]
   schedules run <agent> <scheduleId>
@@ -83,6 +84,7 @@ const OPTIONS = {
   model: { type: "string" }, prompt: { type: "string" }, "prompt-append": { type: "string" }, thinking: { type: "string" }, name: { type: "string" }, metadata: { type: "string" }, definition: { type: "string" },
   wait: { type: "string" }, "no-wait": { type: "boolean" }, from: { type: "string" }, "end-user": { type: "string" }, steer: { type: "boolean" }, "allow-disconnected": { type: "boolean" }, "request-id": { type: "string" },
   limit: { type: "string" }, key: { type: "string" }, text: { type: "string" }, in: { type: "string" }, at: { type: "string" }, every: { type: "string" }, history: { type: "string" },
+  input: { type: "string" },
   cron: { type: "string" }, "time-zone": { type: "string" }, "session-mode": { type: "string" }, "spend-limit": { type: "string" },
   stateless: { type: "boolean" }, summary: { type: "string" }, keep: { type: "string" },
 } as const;
@@ -232,6 +234,7 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
         const result = await ops.answer(api(), agent, inputId, value, { from: flags.from, wait: waitSeconds(flags) });
         return "requestId" in result ? printRun(result, print, io) : (print(result, () => result.note ?? "Decision answered."), 0);
       }
+      case "triggers": return await triggers(args, flags, api, print);
       case "schedules": return await schedules(args, flags, api, print, io.err);
       default: throw new UsageError(`Unknown command: ${command}. Run camelrun --help`);
     }
@@ -412,3 +415,16 @@ function describeDeploy(result: ops.DeployResult) {
   return lines.join("\n");
 }
 
+
+async function triggers(args:string[],flags:Flags,api:()=>Api,print:(value:unknown)=>void) {
+ const [sub,agent,id]=args;
+ if(!agent)throw new UsageError("Usage: camelrun triggers list|add|delete|rotate|deliveries <agent> [triggerId] [--input JSON]");
+ const client=api(), resolved=await client.agentId(agent),base=`/v1/agents/${enc(resolved)}/triggers`;
+ if(sub==='list')return (print(await client.get(base)),0);
+ if(sub==='add'){if(!flags.input)throw new UsageError("Use --input with a trigger JSON object");return (print(await client.call('POST',base,JSON.parse(String(flags.input)))),0);}
+ if(!id)throw new UsageError("A trigger id is required");
+ if(sub==='delete')return (print(await client.call('DELETE',`${base}/${enc(id)}`)),0);
+ if(sub==='rotate')return (print(await client.call('POST',`${base}/${enc(id)}/rotate`,{})),0);
+ if(sub==='deliveries')return (print(await client.get(`${base}/${enc(id)}/deliveries`)),0);
+ throw new UsageError("Unknown trigger command");
+}
