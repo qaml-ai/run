@@ -22,3 +22,15 @@ test('cron lists, steps, weekday aliases and leap days',()=>{
  assert.equal(next('0 0 29 2 *','2026-01-01Z'),'2028-02-29T00:00:00.000Z');
  assert.equal(next('0 0 * * 7','2026-11-07T00:00Z'),'2026-11-08T00:00:00.000Z');
 });
+
+test('fresh schedules enforce five-minute spacing and reject code budgets',()=>{
+ const fresh={text:'x',sessionMode:'fresh'};
+ for(const expression of ['* * * * *','*/4 * * * *','0,58 * * * *'])
+  assert.throws(()=>scheduleInput({...fresh,cron:{expression,timeZone:'UTC'}}),/five minutes/);
+ for(const expression of ['*/5 * * * *','0 9 * * 1-5'])
+  assert.ok(scheduleInput({...fresh,cron:{expression,timeZone:'UTC'}}));
+ assert.throws(()=>scheduleInput({...fresh,inSeconds:0,everySeconds:299}),/five minutes/);
+ assert.ok(scheduleInput({...fresh,inSeconds:0,everySeconds:300}));
+ assert.ok(scheduleInput({text:'x',inSeconds:0,everySeconds:60}));
+ assert.throws(()=>scheduleInput({code:'1',inSeconds:0,spendLimit:{usd:1}}),/Code schedules/);
+});

@@ -1,4 +1,4 @@
-import { cronInput, nextCron, type Cron } from "./core/cron.ts";
+import { cronInput, nextCron, freshCronAllowed, type Cron } from "./core/cron.ts";
 import { calendarInput, nextCalendar, type Calendar } from "./calendar.ts";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
@@ -85,6 +85,7 @@ export class Scheduler {
   stop() { if (this.timer) clearInterval(this.timer); this.timer = undefined; }
 
   async create(input: { agent: string; tenant: string; text?: string; code?: string; history?: string; dueAt: number; everySeconds?: number; calendar?: Calendar; cron?: Cron; sessionMode?: "continue" | "fresh"; spendLimit?: { usd: number }; mounts?: {volumeId?:string;path?:string;mode?:"ro"|"rw";workspace?:boolean;subpath?:string;notify?:boolean}[]; email?: ScheduleEmail }, claim?: Claim): Promise<Schedule> {
+    validateScheduleMode(input);
     if (input.sessionMode === "fresh" && !(await this.db.query("select 1 from agents where id=$1 and tenant=$2 and header->'definition' is not null", [input.agent,input.tenant])).rowCount) throw new HttpError(400, "Fresh schedules require an agent definition");
     if (input.calendar) { input = { ...input, calendar: calendarInput(input.calendar) }; if (input.everySeconds !== undefined) throw new Error("Use calendar or everySeconds, not both"); }
     if (input.email) { if (!this.emailEnabled) throw new Error("Scheduled email is not enabled on this runtime"); input = { ...input, email: scheduleEmail(input.email) }; if (input.code !== undefined) throw new Error("Email delivery requires a text schedule"); }
@@ -221,6 +222,12 @@ function nextOccurrence(due: { dueAt: number; everySeconds?: number; calendar?: 
   return due.dueAt + Math.max(1, Math.ceil((now - due.dueAt + 1) / step)) * step;
 }
 
+export function validateScheduleMode(input: {code?: unknown; spendLimit?: unknown; sessionMode?: string; everySeconds?: number; cron?: Cron}) {
+  if (input.code !== undefined && input.spendLimit !== undefined) throw new Error('Code schedules do not support spendLimit');
+  if (input.sessionMode === 'fresh' && (input.everySeconds !== undefined && input.everySeconds < 300 || input.cron && !freshCronAllowed(input.cron)))
+    throw new Error('Fresh schedules must be at least five minutes apart');
+}
+
 /** Parse `{ text | code, history?, at? (ISO time or ms), inSeconds?, everySeconds? }` into a due time. */
 export function scheduleInput(body: any, now = Date.now()) {
   if (!body || typeof body !== "object") throw new Error("Send { text | code, history?, at | inSeconds, everySeconds? }");
@@ -230,6 +237,7 @@ export function scheduleInput(body: any, now = Date.now()) {
   if (mounts && body.sessionMode !== 'fresh') throw new Error('Schedule mounts require fresh mode');
   const cron = body.cron === undefined ? undefined : cronInput(body.cron);
   if (cron && [body.calendar, body.at, body.inSeconds, body.everySeconds].some(value => value !== undefined)) throw new Error('cron cannot be combined with other timing fields');
+  validateScheduleMode({...body,cron});
   const calendar = body.calendar === undefined ? undefined : calendarInput(body.calendar);
   if (calendar && [body.at, body.inSeconds, body.everySeconds].some(value => value !== undefined)) throw new Error("calendar cannot be combined with at, inSeconds or everySeconds");
   const email = body.email === undefined ? undefined : scheduleEmail(body.email);

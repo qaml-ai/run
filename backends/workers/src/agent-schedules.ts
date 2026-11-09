@@ -12,12 +12,12 @@ export type ScheduleToolsHost = {
 const definitions = [
   {
     name: 'schedule',
-    description: "Schedule a message with calendar, cron, or interval timing. spendLimit caps each run in USD.",
+    description: "Schedule a wake-up for yourself: at the time given, you receive `text` as a new message and can act on it. Give inSeconds or at (an ISO time); everySeconds (at least 60) repeats it. Or give calendar: local HH:MM, IANA timeZone and optional daysOfWeek (Sunday 0 to Saturday 6), respecting daylight saving time. Do not combine calendar with other timing fields. Returns its id. Or cron: a 5-field cron expression with timeZone (IANA), in place of calendar.",
     parameters: { type: 'object', additionalProperties: false, required: ['text'], properties: {
       text: { type: 'string', minLength: 1, maxLength: 32_000, description: 'The message you will receive' },
-      cron: {type:'object',additionalProperties:false,required:['expression','timeZone'],properties:{expression:{type:'string'},timeZone:{type:'string'}}},
+      cron: {type:'object',description:'A 5-field cron expression, e.g. "0 9 * * 1-5".',additionalProperties:false,required:['expression','timeZone'],properties:{expression:{type:'string'},timeZone:{type:'string',description:'IANA time zone for cron and calendar times.'}}},
       spendLimit: {type:'object',additionalProperties:false,required:['usd'],properties:{usd:{type:'number',minimum:0,maximum:1000000}}},
-      calendar: { type: 'object', additionalProperties: false, required: ['time', 'timeZone'], properties: { time: { type: 'string' }, timeZone: { type: 'string' }, daysOfWeek: { type: 'array', items: { type: 'integer', minimum: 0, maximum: 6 } } } },
+      calendar: { type: 'object', additionalProperties: false, required: ['time', 'timeZone'], properties: { time: { type: 'string' }, timeZone: { type: 'string', description: 'IANA time zone for cron and calendar times.' }, daysOfWeek: { type: 'array', items: { type: 'integer', minimum: 0, maximum: 6 } } } },
       inSeconds: { type: 'number', minimum: 0 }, at: { type: 'string', description: 'ISO 8601 time' }, everySeconds: { type: 'integer', minimum: 60 },
       history: { type: 'string', enum: ['full', 'none'], description: "Ignored; every run sees the agent's history" },
     } },

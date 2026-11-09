@@ -126,7 +126,7 @@ export function tools(api: () => Api, options: { local?: LocalFiles } = {}): Too
       systemPrompt: z.string().optional().describe("Not with a definition, which owns the prompt"),
       systemPromptAppend: z.string().optional().describe("Text after the prompt, e.g. this agent's own context"),
       name: z.string().optional(),
-      builtins: z.array(z.enum(["web_fetch", "web_search", "x_search", "schedule", "ask_user", "request_decision", "generate_image"])).optional().describe("Without a definition: tools the runtime answers itself"),
+      builtins: z.array(z.enum(["web_fetch", "web_search", "x_search", "schedule", "ask_user", "generate_image"])).optional().describe("Without a definition: tools the runtime answers itself"),
     },
     ({ key, ...config }) => ops.upsertAgent(api(), key, config), { ...destructive, idempotentHint: true });
   tool("configure_agent", "Configure agent", "Change one agent's model, system prompt, prompt addition or thinking level between its runs, replacing the current values; its history is kept.", {
@@ -162,7 +162,6 @@ export function tools(api: () => Api, options: { local?: LocalFiles } = {}): Too
     "Send an agent a message and wait for its run: the reply, the input it waits on, or why it failed. A run still going after `wait` seconds comes back as running; call get_run. The agent acts with the tools it was given (such as web search and its MCP servers), and the run uses the account's model credit.",
     {
       agent, message: z.string(), wait,
-      endUser: z.string().optional().describe("Existing end user to charge for this prompt; requires a tenant API key and cannot accompany steer"),
       from: z.string().optional().describe("Who is sending, as a user id in the application"),
       steer: z.boolean().optional().describe("If a run is going, have it read this after its current step instead of queuing it"),
       allowDisconnected: z.boolean().optional().describe("Run even though the application serving its attached tools is not connected; those calls then fail"),
@@ -192,13 +191,13 @@ export function tools(api: () => Api, options: { local?: LocalFiles } = {}): Too
     const client = api();
     return client.get(`/v1/agents/${enc(await client.agentId(agent))}/schedules`);
   }, read);
-  tool("add_schedule", "Add schedule", "Schedule a message with calendar, cron, or interval timing. sessionMode defaults to continue; fresh starts from the definition. spendLimit caps each run in USD.", {
+  tool("add_schedule", "Add schedule", "Wake an agent later with a message: once (inSeconds or at), or repeatedly (everySeconds, at least 60; or calendar for a local time and weekdays). Optionally email the successful final report to a verified recipient. Each wake-up is a run that uses the account's model credit. Or cron: a 5-field cron expression with timeZone (IANA), in place of calendar.", {
     agent, text: z.string(),
     mounts: z.array(z.union([z.object({volumeId:z.string(),path:z.string(),mode:z.enum(["ro","rw"]),subpath:z.string().optional(),notify:z.boolean().optional()}),z.object({workspace:z.boolean(),path:z.string().optional()})])).max(16).optional(),
-    cron: z.object({expression:z.string(),timeZone:z.string()}).optional(),
+    cron: z.object({expression:z.string(),timeZone:z.string().describe("IANA time zone for cron and calendar times.")}).optional().describe('A 5-field cron expression, e.g. "0 9 * * 1-5".'),
     sessionMode: z.enum(["continue","fresh"]).optional(),
     spendLimit: z.object({usd:z.number().min(0).max(1000000)}).optional(),
-    calendar: z.object({ time: z.string().describe("Local HH:MM"), timeZone: z.string().describe("IANA zone, e.g. America/Chicago"), daysOfWeek: z.array(z.number().int().min(0).max(6)).optional().describe("Sunday 0 through Saturday 6; omit for daily") }).optional().describe("Cannot combine with other timing fields"),
+    calendar: z.object({ time: z.string().describe("Local HH:MM"), timeZone: z.string().describe("IANA time zone for cron and calendar times."), daysOfWeek: z.array(z.number().int().min(0).max(6)).optional().describe("Sunday 0 through Saturday 6; omit for daily") }).optional().describe("Cannot combine with other timing fields"),
     email: z.object({ to: z.email(), subject: z.string().min(1).max(200), format: z.enum(["text", "markdown", "html"]).optional().describe("Reply format; defaults to markdown. HTML is sent as supplied, with a generated plain-text alternative.") }).optional().describe("Email the final report to your sign-in email or a verified billing recipient"),
     inSeconds: z.number().optional(), at: z.string().optional().describe("ISO time"), everySeconds: z.number().int().min(60).optional(),
   }, async ({ agent, ...schedule }) => {

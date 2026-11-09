@@ -1773,7 +1773,7 @@ export class ClientSessions {
     if (rawActor !== undefined && !isRun) throw new HttpError(400, "actor is only for runs (prompt, continue, execute)");
     const isMessage = ["prompt", "steer"].includes(body.method);
     if (params.from !== undefined && !isMessage) throw new HttpError(400, "from is only for messages (prompt, steer)");
-    if (params.metadata !== undefined && !isMessage) throw new HttpError(400, "metadata is only for messages (prompt, steer)");
+    if (params.metadata !== undefined && !isMessage && body.method !== "execute") throw new HttpError(400, "metadata is only for messages or execute");
     if (params.images !== undefined) throw new HttpError(400, "Attach images as files: files: [{ name, data (base64), contentType }]");
     if (params.whileRunning !== undefined && (body.method !== "prompt" || !["queue", "steer"].includes(params.whileRunning))) throw new HttpError(400, "whileRunning is queue or steer, for a prompt");
     // A run's own budget: it only ever lowers what the run may spend, so whoever may run the agent may set it.
@@ -2067,6 +2067,10 @@ export class ClientSessions {
     if (params?.spendLimit !== undefined) {
       const { spendLimit, ...rest } = params;
       (session.runLimits ??= new Map()).set(record.id, spendLimit.usd);
+      params = rest;
+    }
+    if (method === "execute" && params?.metadata !== undefined) {
+      const { metadata: _metadata, ...rest } = params;
       params = rest;
     }
     // So are its own run limits (turnLimit, overrun).

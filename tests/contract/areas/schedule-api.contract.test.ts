@@ -68,9 +68,35 @@ contractTest("schedules", "tests/schedule-api.test.ts:55", "cron run-now preserv
  assert.equal((await r.call(path)).json[0].dueAt,schedule.dueAt);
  await until(async()=>{
   const deliveries=(await r.call(`/v1/agents/${agent}/schedule-deliveries`)).json;
-  return deliveries.length===2 && deliveries.every((d:any)=>d.record?.state==='completed');
+  return deliveries.length===2 && deliveries.every((d:any)=>d.state==='completed');
  },'scheduled runs complete');
  assert.notEqual((await r.call(`${path}/${schedule.id}/run`,{body:{},token:OTHER_OPERATOR})).status,202);
  assert.equal((await r.call(`${path}/invalid/run`,{body:{}})).status,404);
  assert.equal((await r.call(path,{body:{text:'x',cron:{expression:'* * * * * *',timeZone:'UTC'}}})).status,400);
+});
+
+contractTest("schedules", "tests/schedule-api.test.ts", "run-now rejects a different tenant without firing and validates unsafe schedules", async (t,f)=>{
+ const r=await useFixture(f,()=>({role:'assistant',content:'done'}));
+ const agent=(await r.call('/v1/agents',{body:{}})).json.id, path=`/v1/agents/${agent}/schedules`;
+ const schedule=(await r.call(path,{body:{text:'Private task',inSeconds:3600}})).json;
+ const response=await r.call(`${path}/${schedule.id}/run`,{token:OTHER_OPERATOR,body:{}});
+ assert.ok([403,404].includes(response.status),JSON.stringify(response));
+ assert.deepEqual((await r.call(`/v1/agents/${agent}/schedule-deliveries`)).json,[]);
+ assert.equal(r.model.bodies.length,0);
+ assert.equal((await r.call(path,{body:{code:'1',inSeconds:3600,spendLimit:{usd:1}}})).status,400);
+ for(const timing of [{everySeconds:60,inSeconds:3600},{cron:{expression:'* * * * *',timeZone:'UTC'}}])
+  assert.equal((await r.call(path,{body:{text:'x',sessionMode:'fresh',...timing}})).status,400);
+});
+
+contractTest("schedules", "tests/schedule-api.test.ts", "code schedules retain their terminal outcome",async(t,f)=>{
+ const r=await useFixture(f,()=>({role:'assistant',content:'done'}));
+ const agent=(await r.call('/v1/agents',{body:{}})).json.id,path=`/v1/agents/${agent}/schedules`;
+ const made=await r.call(path,{body:{code:'console.log(42)',inSeconds:3600}});
+ assert.equal(made.status,201,JSON.stringify(made.json));
+ const run=await r.call(`${path}/${made.json.id}/run`,{body:{}});
+ assert.equal(run.status,202,JSON.stringify(run.json));
+ await until(async()=>{
+  const rows=(await r.call(`/v1/agents/${agent}/schedule-deliveries`)).json;
+  return rows.some((row:any)=>row.runId===run.json.requestId && row.endedAt && row.state==='completed');
+ },'code outcome recorded');
 });

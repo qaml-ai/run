@@ -441,7 +441,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
       if (/^\/schedules\/[^/]+\/run$/.test(path) && request.method === "POST") {
         const schedule=await this.ctx.storage.get<Schedule>(`schedule:${decodeURIComponent(path.split('/')[2])}`);
         if(!schedule) throw new HttpError(404,'Unknown schedule');
-        return json(await deliverScheduledRun(this.env,schedule,`schedule-run-${crypto.randomUUID()}`),202);
+        return json(await deliverScheduledRun(this.env,schedule,`schedule-run-${crypto.randomUUID()}`,input=>this.submit(input),work=>this.ctx.waitUntil(work)),202);
       }
       if (path.startsWith("/schedules/") && request.method === "DELETE") {
         const deleted = await this.ctx.storage.delete(

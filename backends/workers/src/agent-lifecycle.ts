@@ -1,3 +1,4 @@
+import { flushScheduleOutcomes } from './schedule-outcomes.ts';
 import { HttpError } from "./errors.ts";
 import { expireDecisions } from "./inbox-decisions.ts";
 import { restageInputMirrors } from "./agent-input-mirror.ts";
@@ -9,7 +10,7 @@ import { withMoneyMetrics } from "./money-metrics.ts";
 import { BadRequest } from "./validation.ts";
 import { calendarPrompt } from "../../../src/calendar.ts";
 import { ComputerService } from "./computers/service.ts";
-import { newSchedule, deliverScheduledRun, queueScheduleEmail, publishScheduleEmails, type StoredSchedule as Schedule } from "./schedules.ts";
+import { newSchedule, deliverScheduledRun, type StoredSchedule as Schedule } from "./schedules.ts";
 import { nextOccurrence, retryable, RETRY_DELAYS_MS } from "./schedule-policy.ts";
 import { metric, errorClass } from "./observability.ts";
 import { TERMINAL_EVENTS_PREFIX } from "./event-log.ts";
@@ -126,6 +127,7 @@ export async function armImpl(this: AgentRuntime,
       ...[...schedules.values()].map((item) => item.retryAt ?? item.dueAt),
       inputAdmissionDeadline(records),
       retry ?? Infinity,
+      (await this.ctx.storage.list({prefix:"schedule-outcome:",limit:1})).size ? Date.now()+60_000 : Infinity,
       pendingBilling ? Date.now() + 5000 : Infinity,
       pendingEvents ? Date.now() + 1000 : Infinity,
       records.some(record => record.method === 'configure' && record.state !== 'completed') ? Date.now() + 1000 : Infinity,
@@ -244,6 +246,7 @@ export async function wakeImpl(this: AgentRuntime) {
     if (await this.ctx.storage.get("deleted")) {
       await this.flushBilling();
       await this.flushTerminalEvents();
+    this.ctx.waitUntil(flushScheduleOutcomes(this));
       return;
     }
     for (const socket of this.ctx.getWebSockets()) {
@@ -279,6 +282,7 @@ export async function wakeImpl(this: AgentRuntime) {
     await restageInputMirrors(this);
     await this.flushBilling();
     await this.flushTerminalEvents();
+    this.ctx.waitUntil(flushScheduleOutcomes(this));
     const expire = this.admission.then(() => this.closeHumanInputs("expired"));
     this.admission = expire.catch(() => {});
     await expire;
@@ -312,8 +316,7 @@ export async function wakeImpl(this: AgentRuntime) {
       if ((schedule.retryAt ?? schedule.dueAt) > now) continue;
       try {
         const occurrence = `schedule-${schedule.id}-${schedule.dueAt}`;
-        await deliverScheduledRun(this.env, schedule, occurrence);
-        if (schedule.email) await publishScheduleEmails(this.env);
+        await deliverScheduledRun(this.env, schedule, occurrence, input=>this.submit(input), work=>this.ctx.waitUntil(work));
         if (schedule.cron || schedule.calendar || schedule.everySeconds) {
           delete schedule.retryAt;
           schedule.failures = 0;

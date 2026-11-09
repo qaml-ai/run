@@ -43,3 +43,10 @@ export function nextCron(cron: Cron, after: number): number {
   }
   throw new Error('No cron occurrence within eight years');
 }
+
+/** Every possible minute pair, including wraparound between hours, must be five minutes apart for fresh mode. */
+export function freshCronAllowed(cron: Cron): boolean {
+  const {values:[minutes,hours]} = fields(cron.expression);
+  const times = [...hours].flatMap(hour => [...minutes].map(minute => hour * 60 + minute)).sort((a,b)=>a-b);
+  return times.every((time,index) => (index ? time-times[index-1] : time+1440-times[times.length-1]) >= 5);
+}

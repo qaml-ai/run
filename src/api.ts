@@ -1,3 +1,4 @@
+import { readScheduleRuns } from './core/schedule-runs.ts';
 import { SharedAgents, ShareLinkInput, MemberInput, ShareLink, CreatedShareLink, Member } from './shared-agents.ts';
 import { inboxQuery, readInbox, InboxQueryError } from '../shared/inbox.ts';
 import { rejectWorkflow } from "./builtins.ts";
@@ -840,9 +841,8 @@ export function api(context: ApiContext) {
     });
   }
 
-  route(createRoute({ method: "get", path: "/v1/agents/{id}/schedule-deliveries", request: { params: agentId }, responses: { 200: reply("The latest 100 scheduled runs and their email delivery", z.array(z.object({id:z.string(),schedule:z.string(),agent:z.string().nullable(),createdAt:z.number(),error:z.string().nullable(),state:z.string().nullable(),email:z.record(z.string(),z.unknown()).nullable(),sentAt:z.number().nullable(),messageId:z.string().nullable(),record:z.unknown().optional()}))) } }), async c => {
-    const rows = (await accounts.db.query('select r.id,r.schedule,r.run_agent as agent,r.created_at as "createdAt",r.error,d.state,d.email,d.sent_at as "sentAt",d.message_id as "messageId" from schedule_runs r left join schedule_deliveries d on d.id=r.id where r.tenant=$1 and r.agent=$2 order by r.created_at desc limit 100', [c.var.principal.tenant,c.req.param("id")])).rows;
-    return json(c,200,await Promise.all(rows.map(async row => ({...row, record:row.agent ? await context.requestAnywhere?.(row.agent,c.var.principal.tenant,row.id,0).catch(error=>{if([404,410].includes((error as {status?:number}).status ?? 0))return null;throw error;}) : null}))));
+  route(createRoute({ method: "get", path: "/v1/agents/{id}/schedule-deliveries", request: { params: agentId }, responses: { 200: reply("The latest 100 scheduled runs and their email delivery", z.array(z.object({id:z.string(),schedule:z.string(),agent:z.string().nullable(),createdAt:z.number(),error:z.string().nullable(),state:z.string().nullable(),email:z.record(z.string(),z.unknown()).nullable(),sentAt:z.number().nullable(),messageId:z.string().nullable(),runId:z.string(),cost:z.number(),endedAt:z.number().nullable(),emailState:z.string().nullable(),emailError:z.string().nullable()}))) } }), async c => {
+    return json(c,200,await readScheduleRuns(accounts.db,c.var.principal.tenant,c.req.param("id")!));
   });
   const scheduler = () => {
     if (!context.scheduler) throw new HttpError(404, "Unknown agent route");

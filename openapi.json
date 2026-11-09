@@ -18192,7 +18192,30 @@
                           "null"
                         ]
                       },
-                      "record": {}
+                      "runId": {
+                        "type": "string"
+                      },
+                      "cost": {
+                        "type": "number"
+                      },
+                      "endedAt": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "emailState": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "emailError": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
                     },
                     "required": [
                       "id",
@@ -18203,7 +18226,12 @@
                       "state",
                       "email",
                       "sentAt",
-                      "messageId"
+                      "messageId",
+                      "runId",
+                      "cost",
+                      "endedAt",
+                      "emailState",
+                      "emailError"
                     ]
                   }
                 }

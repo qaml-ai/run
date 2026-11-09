@@ -65,9 +65,22 @@ test( "cron run-now preserves timing and fresh runs isolate history", async t=>{
  assert.equal((await r.call(path)).json[0].dueAt,schedule.dueAt);
  await until(async()=>{
   const deliveries=(await r.call(`/v1/agents/${agent}/schedule-deliveries`)).json;
-  return deliveries.length===2 && deliveries.every((d:any)=>d.record?.state==='completed');
+  return deliveries.length===2 && deliveries.every((d:any)=>d.state==='completed');
  },'scheduled runs complete');
  assert.notEqual((await r.call(`${path}/${schedule.id}/run`,{body:{},token:OTHER_OPERATOR})).status,202);
  assert.equal((await r.call(`${path}/invalid/run`,{body:{}})).status,404);
  assert.equal((await r.call(path,{body:{text:'x',cron:{expression:'* * * * * *',timeZone:'UTC'}}})).status,400);
+});
+
+test('continue schedules submit without the outcome table and code outcomes are recorded',async t=>{
+ const r=await runtime(t,()=>({role:'assistant',content:'done'}));
+ const agent=(await r.call('/v1/agents',{body:{}})).json.id,path=`/v1/agents/${agent}/schedules`;
+ const schedule=(await r.call(path,{body:{text:'Run without reporting table',inSeconds:3600}})).json;
+ await r.db.query('alter table schedule_runs rename to schedule_runs_pending_migration');
+ try {assert.equal((await r.call(`${path}/${schedule.id}/run`,{body:{}})).status,202);}
+ finally {await r.db.query('alter table schedule_runs_pending_migration rename to schedule_runs');}
+ const code=(await r.call(path,{body:{code:'console.log(42)',inSeconds:3600}})).json;
+ const run=await r.call(`${path}/${code.id}/run`,{body:{}});
+ assert.equal(run.status,202,JSON.stringify(run.json));
+ await until(async()=> (await r.call(`/v1/agents/${agent}/schedule-deliveries`)).json.some((row:any)=>row.runId===run.json.requestId&&row.endedAt&&row.state==='completed'),'code outcome');
 });

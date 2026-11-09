@@ -2447,7 +2447,7 @@ and returns HTTP 202 with `{agent, requestId, record}`. It does not change the
 next scheduled time. Every call starts a new occurrence. Read the request at
 `GET /v1/agents/{agent}/requests/{requestId}`. The schedule owner's
 `GET /v1/agents/{agent}/schedule-deliveries` lists the latest 100 occurrences,
-with their run agent, request record (including outcome), and optional email
+with their run agent, stored outcome and cost, and optional email
 state. History may expire before the delivery metadata.
 
 The agent-local `schedule` builtin continues its own session; fresh mode is
@@ -2457,6 +2457,19 @@ TypeScript: `agent.runSchedule(id)`. Python: `agent.run_schedule(id)`.
 CLI: `camelrun schedules add <agent> --text 'Report' --cron '0 9 * * 1-5'
 --time-zone America/Chicago --session-mode fresh --spend-limit 1`, then
 `camelrun schedules run <agent> <scheduleId>`.
+
+Fresh schedules must be at least five minutes apart: `everySeconds` must be 300
+or more, and cron expressions cannot select minutes less than five minutes apart.
+Each schedule can have at most 200 unexpired run agents. A trigger above that cap
+fails with `This schedule already has 200 live run agents; delete or wait for a run agent to expire`.
+Run agents expire after seven days. Delivery summaries for all session modes are
+removed after 30 days, in batches of at most 500 rows.
+
+`GET /v1/agents/{id}/schedule-deliveries` returns stored run summaries: `runId`,
+`agent`, `state`, `error`, `cost` (USD), `createdAt`, and `endedAt`. Email status is
+separate in `emailState` and `emailError`. It no longer embeds the full `record`.
+Use the run's agent and request ID to read its history while the agent is retained.
+Code schedules cannot set `spendLimit`.
 
 ---
 

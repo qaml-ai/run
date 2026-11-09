@@ -52,7 +52,7 @@ Stateless runs (a configuration and a message in, the result out; nothing carrie
   inputs [agent]                   Questions and approvals waiting on someone
   answer <agent> <inputId> <value> true/false, text, JSON, or "decline"
   schedules list <agent>
-  schedules add <agent> --text t (--in s | --at iso) [--every s]
+  schedules add <agent> --text t (--in s | --at iso | --cron expr --time-zone zone) [--every s]
   schedules run <agent> <scheduleId>
   schedules delete <agent> <scheduleId>
 
@@ -310,7 +310,7 @@ async function definitions(args: string[], flags: Flags, api: () => Api, print: 
 
 async function schedules(args: string[], flags: Flags, api: () => Api, print: (value: unknown, human?: () => string) => void, warn: (text: string) => void) {
   const [sub, agent, scheduleId] = args;
-  if (!agent) throw new UsageError("Usage: camelrun schedules list|add|delete <agent> …");
+  if (!agent) throw new UsageError("Usage: camelrun schedules list|add|run|delete <agent> …");
   const client = api();
   const id = await client.agentId(agent);
   switch (sub) {
@@ -320,7 +320,7 @@ async function schedules(args: string[], flags: Flags, api: () => Api, print: (v
       return 0;
     }
     case "add": {
-      if (!flags.text || (!flags.in && !flags.at && !flags.cron)) throw new UsageError("Usage: camelrun schedules add <agent> --text t (--in seconds | --at iso) [--every seconds]");
+      if (!flags.text || (!flags.in && !flags.at && !flags.cron)) throw new UsageError("Usage: camelrun schedules add <agent> --text t (--in seconds | --at iso | --cron expr --time-zone zone) [--every seconds]");
       // Deprecated and ignored: every wake-up sees the agent's history.
       if (flags.history !== undefined) warn("Warning: --history is deprecated and ignored: every wake-up sees the agent's history.");
       const body = { text: flags.text, ...(flags.cron ? {cron:{expression:flags.cron,timeZone:flags["time-zone"] ?? "UTC"}} : {}), ...(flags["session-mode"] ? {sessionMode:flags["session-mode"]} : {}), ...(flags["spend-limit"] ? {spendLimit:{usd:Number(flags["spend-limit"])}} : {}), ...(flags.in ? { inSeconds: Number(flags.in) } : { at: flags.at }), ...(flags.every ? { everySeconds: Number(flags.every) } : {}) };
