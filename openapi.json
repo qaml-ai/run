@@ -4446,7 +4446,7 @@
                 "additionalProperties": {}
               }
             ],
-            "description": "Each request carries a JWT the runtime signs, naming the tenant, agent, subject, context and actor (no definition); verify it against /.well-known/jwks.json. The only auth an agent's own server takes"
+            "description": "Runtime identity sends a signed JWT; verify it against /.well-known/jwks.json. Vault auth resolves a stored secret for the server's allowed host. No credential values may be supplied here."
           }
         },
         "required": [

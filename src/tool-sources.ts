@@ -434,7 +434,7 @@ export class ToolSources {
       return { url: spec.url, headers, token: async () => {
         if (!this.options.vault) throw new Error("Vault is unavailable");
         return this.options.vault.open(context.tenant, auth, new URL(spec.url), "header");
-      }, vault: true, scope: `${context.agent}:vault` };
+      }, vault: true, scope: `${context.agent}:vault:${JSON.stringify(auth)}` };
     }
     const exchange = this.exchanged(context, spec);
     // The credential is the agent's own (the endpoint decides per caller), so the agent has its own session too.

@@ -82,9 +82,11 @@ export class Vault {
 
 /** The gateway is the only caller. Redact bytes as well as text, including encoded echoes. */
 export async function maskResponse(response: Response, values: string[]): Promise<Response> {
+  values = values.filter(value => value.length > 0);
+  if (!values.length) return response;
   const encoder = new TextEncoder();
   const base64 = (v: string) => btoa(Array.from(encoder.encode(v), c => String.fromCharCode(c)).join(""));
-  const forms = [...new Set(values.flatMap(v => [v, encodeURIComponent(v), base64(v), base64(`x-access-token:${v}`)]))].sort((a,b) => b.length-a.length);
+  const forms = [...new Set(values.flatMap(v => [v, JSON.stringify(v).slice(1, -1), encodeURIComponent(v), base64(v), base64(`x-access-token:${v}`)]))].sort((a,b) => b.length-a.length);
   const needles = forms.map(v => encoder.encode(v));
   const replacement = encoder.encode("[hidden]");
   let pending = new Uint8Array(0);

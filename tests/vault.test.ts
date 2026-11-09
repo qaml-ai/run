@@ -58,6 +58,13 @@ test("network rules grant package hosts and MCP hosts only when explicitly enabl
   assert.ok(networkAllows({...p,allowMcpServers:true},new URL("https://mcp.example.net"),["mcp.example.net"]));
 });
 
+test("vault response masking covers JSON-escaped echoes", async () => {
+  const value = 'key-"slash\\secret';
+  const response = await maskResponse(new Response(JSON.stringify({ value })), [value]);
+  assert.deepEqual(await response.json(), { value: "[hidden]" });
+  assert.equal(await (await maskResponse(new Response("unchanged"), [""])).text(), "unchanged");
+});
+
 test("vault proxy preserves binary request bytes without a placeholder", async () => {
   const bytes=new Uint8Array([0,255,254,128,1]);
   const v=vault();

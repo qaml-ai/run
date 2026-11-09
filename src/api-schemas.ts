@@ -521,8 +521,8 @@ const McpServer = z.object({
 /** An agent's or run's own MCP server: a definition's fields, but no credentials (see the tools guide). */
 const InlineMcpServerInput = z.looseObject({
   ...mcpServerFields,
-  auth: z.union([VaultAuth, z.looseObject({ type: z.literal("runtime", { error: "An agent's or run's own MCP servers carry no credentials: give auth { type: \"runtime\" } or none, and no headers. A server that needs a token or headers goes in a definition" }) })]).optional()
-    .openapi({ description: "Each request carries a JWT the runtime signs, naming the tenant, agent, subject, context and actor (no definition); verify it against /.well-known/jwks.json. The only auth an agent's own server takes" }),
+  auth: z.union([VaultAuth, z.looseObject({ type: z.literal("runtime") })], { error: "An agent's or run's own MCP servers carry no credentials: give auth { type: \"runtime\" } or none, and no headers. A server that needs a token or headers goes in a definition" }).optional()
+    .openapi({ description: "Runtime identity sends a signed JWT; verify it against /.well-known/jwks.json. Vault auth resolves a stored secret for the server's allowed host. No credential values may be supplied here." }),
 }).openapi("InlineMcpServerInput", { description: "An MCP server of the agent's (or run's) own, as a definition's is, but with no credentials: no headers and no bearer token (a 400 says to use a definition, which seals them once). Not listed when saved: a server that cannot be listed shows in a run's sourceErrors" });
 
 const workspaceId = z.string().nullable().optional().openapi({ description: "Workspace for spend attribution. New agents inherit their definition workspace when omitted. null leaves them unassigned. Later moves keep earlier usage in its original workspace." });

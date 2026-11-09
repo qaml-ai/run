@@ -3,6 +3,27 @@
 Migration: `124_vault_secrets.sql` (free on origin/main fetched November 9).
 No production writes, push or PR.
 
+## Validation on Sprites
+
+- Node and Workers typechecks pass. OpenAPI/docs regenerated; both llms.txt
+  checks pass.
+- Vault API contract passes on Node and Workers. Inline MCP contract passes all
+  four cases on each backend.
+- Targeted tests pass: vault 7, vault API 2, MCP 9, definitions 16, TypeScript SDK
+  13, Python SDK 65, Workers gateway 16, source discovery 3, MCP transport 3,
+  outbound security 4.
+- Final eight-shard full suite (`1a0ac648` working-tree snapshot) exits 0 on all
+  shards. It was not a clean first pass: `tests/background-agents.test.ts:103`
+  timed out waiting for a child-completion notification. The runner's built-in
+  isolated retry passed all 11 tests and emitted a flaky-file warning. The same
+  case passed the earlier full run; its code is unchanged by this branch.
+- The earlier full run caught an inline-MCP validation-message regression. It
+  is fixed and verified by the targeted test, both-backend contract, and final
+  full run. No failed job was manually rerun to obtain green status.
+
+Full-run logs: `~/runs/20261109-073224-82639-N.log` on the corresponding Sprites;
+shards 1–8 used rt-pool-6, 19, 20, 21, 24, 8, 10 and 12 respectively.
+
 ## Implemented
 
 - Tenant/workspace write-only vault CRUD, existing key sealing, names-only lists,
@@ -11,14 +32,15 @@ No production writes, push or PR.
   injection policy with explicit query/body opt-in.
 - Shared Workers gateway for exchange, GitHub App and vault auth. Attached
   computer placeholders, host checks, manual redirects and streaming response
-  masking, including values split across chunks. Binary bodies remain binary
+  masking, including JSON-escaped echoes and values split across chunks. Binary bodies remain binary
   unless they contain an explicit placeholder. Vault substitution bodies are
   capped at 8 MiB.
 - Vault references for remote MCP and OpenAPI sources. Per-request resolution,
   destination checks, response masking. Vault MCP refuses legacy SSE transport.
 - Workers native computers use internet-disabled HTTPS interception for limited
   networking. Network policy also checks built-in web requests and remote source
-  hosts. Attached external computers are unavailable under limited networking.
+  hosts, legacy MCP endpoints and downloaded MCP attachments. Attached external
+  computers are unavailable under limited networking.
 - Node/Sprites rejects limited networking. It supports vault APIs and remote
   source credentials, but does not have the Workers computer placeholder gateway.
 - TypeScript/Python vault methods, network configuration, API schemas, guide and
@@ -32,9 +54,11 @@ only. No deployed container or real external MCP credential test was run. The
 new contract covers CRUD on both backends; the gateway tests exercise forwarding
 with a test transport. Existing Workers DNS checks are not connection-pinned.
 Network policy covers native computer egress, web tools and configured remote
-sources; platform file-import/image/voice fetches have not been audited for
-per-agent allowlist coverage. Those remain a gate before treating limited
-networking as a complete agent-wide boundary.
+sources. The Workers image tool reads mounted files; caller-uploaded URL
+attachments, model/media provider requests and separately hosted tools remain
+host-managed traffic outside this computer boundary. No full agent-wide network
+boundary is claimed. Computer secret attachments use definitions; direct agents
+can attach vault references to their MCP sources.
 
 ## camel-bots compatibility
 
@@ -55,6 +79,7 @@ Descriptions (templates retain their source interpolation):
 ```text
 Network access is limited to allowed hosts.
  Vault placeholders are in environment variables: ${settings.secrets.map(s => s.name).join(", ")}.
+camel-vault-${secretName(name)}-placeholder
 ```
 
 Runtime errors that can reach a tool response:
@@ -73,6 +98,7 @@ Unattached secret placeholder
 Vault request body exceeds 8 MiB
 Authenticated MCP requests cannot change origin
 Authenticated source redirects are not allowed
+Authenticated source requests cannot change origin
 Vault MCP request failed
 Vault source request failed
 Vault credentials require streamable HTTP MCP
@@ -83,3 +109,25 @@ Limited networking is unavailable on the Node/Sprites backend
 No new model tools or system-prompt instructions were added. Existing egress
 credential errors and tenant-only configuration errors retain their templates;
 `networking` is now a tenant-only field.
+
+Additional new validation/unavailability text (normally returned to API callers):
+
+```text
+Secret names use 1–64 uppercase letters, digits and underscores
+allowedHosts must contain at most 64 public DNS names
+Invalid allowed host
+Use a public hostname, not a public suffix or private address
+Vault auth is {type: vault, name, workspace?}
+Invalid networking policy
+${key} must be boolean
+Invalid workspace
+Secret is {value, allowedHosts, locations?}
+This runtime has no secrets key
+Secret already exists
+Secret value is required
+Secret value must be 4–8192 single-line characters
+Secret locations are header, query or body
+Use an API token or the console for vault secrets
+computer.secrets must contain at most 64 vault references
+Secret names must be unique
+```

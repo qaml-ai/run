@@ -9,6 +9,7 @@ import { textual } from './file-policy.ts';
 import { legacyMcpRequest } from "./legacy-mcp.ts";
 import { pacedProgress, progressEvent, silenceDeadline, type Progress, type ToolProgressEvent } from "./mcp-progress.ts";
 import { Outbound } from "./security-outbound.ts";
+import { PublicOutbound } from "./public-outbound.ts";
 import { ownAudience, mcpToolName } from "./source-input-policy.ts";
 import { gateToolCall, type JudgeInput, type Judged } from "./tool-judge.ts";
 import { approvalFor } from "./tool-call-policy.ts";
@@ -317,9 +318,11 @@ class RemoteMcp {
   private runtimeHeaders: (api?: ToolExecutionApi, approval?: ToolInputReply["approval"]) => Promise<Record<string, string>>;
   private refused?: () => void;
   private identity?: SourceIdentity;
-  constructor(env: Env, source: RemoteSource, headers: Record<string, string>, runtimeHeaders: (api?: ToolExecutionApi, approval?: ToolInputReply["approval"]) => Promise<Record<string, string>>, refused?: () => void, identity?: SourceIdentity) {
+  private checkNetwork?: (url: URL) => void;
+  constructor(env: Env, source: RemoteSource, headers: Record<string, string>, runtimeHeaders: (api?: ToolExecutionApi, approval?: ToolInputReply["approval"]) => Promise<Record<string, string>>, refused?: () => void, identity?: SourceIdentity, checkNetwork?: (url: URL) => void) {
     this.env = env; this.source = source; this.headers = headers; this.runtimeHeaders = runtimeHeaders;
     this.refused = refused; this.identity = identity;
+    this.checkNetwork = checkNetwork;
   }
   private async rpc(method: string, params: unknown, notification = false, signal?: AbortSignal, api?: ToolExecutionApi, approval?: ToolInputReply["approval"], onProgress?: (progress: Progress) => void): Promise<any> {
     const id = crypto.randomUUID();
@@ -335,6 +338,7 @@ class RemoteMcp {
     const legacy = async () => {
       if (this.source.auth?.type === "vault") throw new Error("Vault credentials require streamable HTTP MCP");
       const response = await legacyMcpRequest(this.source.url!, request, { ...this.headers, ...await this.runtimeHeaders(api, approval) }, async (url, init) => {
+        this.checkNetwork?.(new URL(url));
         await outbound(this.env).reachable(url);
         const result = await fetch(url, { ...init, redirect: "manual" });
         if (result.status >= 300 && result.status < 400) { await result.body?.cancel(); throw new Error("Legacy MCP redirects are not allowed"); }
@@ -450,6 +454,14 @@ export type SourceIdentity = (api?: ToolExecutionApi) => Promise<{ issuer: strin
 export async function sourceTools(env: Env, tenant: string, definition: string | undefined, config: { mcpServers?: RemoteSource[]; openApi?: RemoteSource[]; networking?: Networking }, approve?: SourceApproval, identity?: SourceIdentity, report?: (failures: SourceFailure[]) => void, judge?: (input: JudgeInput, api: ToolExecutionApi, context: Context) => Promise<Judged>): Promise<ToolRegistration[]> {
   const result: ToolRegistration[] = [];
   const failures: SourceFailure[] = [];
+  const mcpHosts = (config.mcpServers ?? []).map(s => new URL(s.url!).hostname);
+  const checkNetwork = (url: URL) => {
+    if (config.networking && !networkAllows(config.networking, url, mcpHosts)) throw new Error("Network destination is not allowed");
+  };
+  const split = (value?: string) => value?.split(",").map(s => s.trim()).filter(Boolean);
+  const downloads = new PublicOutbound({ networking: config.networking, mcpHosts,
+    allowHttp: env.TEST_MODE === "1" && env.AGENT_OUTBOUND_ALLOW_HTTP !== "false",
+    allow: env.TEST_MODE === "1" ? split(env.AGENT_OUTBOUND_ALLOW_CIDRS ?? "127.0.0.1/32,::1/128") : [], block: split(env.AGENT_OUTBOUND_BLOCK_CIDRS) });
   for (const kind of ["mcpServers", "openApi"] as const) for (const source of config[kind] ?? []) {
     if (config.networking && !networkAllows(config.networking, new URL((source.url ?? source.baseUrl)!), (config.mcpServers ?? []).map(s => new URL(s.url!).hostname))) {
       failures.push({ kind: kind === "mcpServers" ? "mcp" : "openapi", source: source.name, message: "Network destination is not allowed" }); continue;
@@ -486,7 +498,7 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
       return { reply: {} };
     };
     if (kind === "mcpServers") {
-      const client = new RemoteMcp(env, source, headers, runtimeHeaders, exchange?.refused ?? github?.refused, identity);
+      const client = new RemoteMcp(env, source, headers, runtimeHeaders, exchange?.refused ?? github?.refused, identity, checkNetwork);
       // An unavailable server cannot prevent loading or using the agent's other tools.
       let listed: ToolDefinition[];
       try { listed = await client.list(); } catch (error) { failures.push({ kind: "mcp", source: source.name, message: sourceError(error, headers, source.url) }); continue; }
@@ -502,7 +514,7 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
           const resolved = await resolveFiles(args, tool.inputSchema ?? tool.parameters, files, undefined, sent);
           const meta = Object.keys(sent.values).length ? { 'camelrun/files': sent.values } : undefined;
           const answer = api ? await withToolInputs(reply => client.call(name, resolved, context?.abortSignal, api, reply, meta), api, context, { name: `${source.name}__${name}`, args }, approval.reply) : await client.call(name, resolved, context?.abortSignal);
-          return savedContent(answer, files, takesFiles(source) ? url => outbound(env).fetch(url, { timeoutMs: 20_000, maxBytes: TOOL_FILE_LIMITS.responseBytes, maxRedirects: 5, signal: context?.abortSignal }) : undefined);
+          return savedContent(answer, files, takesFiles(source) ? url => downloads.fetch(url, { timeoutMs: 20_000, maxBytes: TOOL_FILE_LIMITS.responseBytes, maxRedirects: 5, signal: context?.abortSignal }) : undefined);
         }, source.auth?.type === "runtime" ? async (...args) => {
           const spawn = (await identity?.(args[2]))?.spawn;
           if (!spawn) throw new Error("Sub-agents are not enabled on this runtime");
@@ -550,8 +562,11 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
             } else { body = typeof args.body === 'string' ? args.body : JSON.stringify(args.body); sent['Content-Type'] = operation.bodyType?.includes('*') ? 'application/octet-stream' : operation.bodyType ?? 'application/octet-stream'; }
           }
         }
+        if (config.networking && !networkAllows(config.networking, url, (config.mcpServers ?? []).map(s => new URL(s.url!).hostname))) throw new Error("Network destination is not allowed");
+        if (source.auth?.type === "vault" && url.origin !== new URL(source.baseUrl!).origin) throw new Error("Authenticated source requests cannot change origin");
         await outbound(env).reachable(url);
-        const response = await fetchWithoutRedirects(network().fetch, url, { method: operation.method, headers: sent, body, signal: AbortSignal.any([AbortSignal.timeout(source.timeoutMs ?? 30_000), ...(context?.abortSignal ? [context.abortSignal] : [])]) });
+        let response = await fetchWithoutRedirects(network().fetch, url, { method: operation.method, headers: sent, body, signal: AbortSignal.any([AbortSignal.timeout(source.timeoutMs ?? 30_000), ...(context?.abortSignal ? [context.abortSignal] : [])]) });
+        if (source.auth?.type === "vault") response = await maskResponse(response, [sent.Authorization.replace(/^Bearer /, "")]);
         // A token the API turned away is not used again: the next call mints another.
         if (github && response.status === 401) github.refused();
         const contentType = response.headers.get('content-type')?.split(';')[0] ?? '';
