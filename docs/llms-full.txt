@@ -627,6 +627,36 @@ A self-hosted runtime charges nothing unless its operator sets up billing; see
 
 ---
 
+<!-- https://run.camelai.com/docs/guides/agents.md -->
+
+# Application metadata
+
+Set `metadata` to a JSON object on `POST /v1/agents`, or replace it with
+`PATCH /v1/agents/{id}/configuration`. It is tenant-owned application data,
+not model instructions. It is limited to 16,384 bytes of serialized UTF-8 JSON.
+Omitting it preserves the current value (including on keyed upserts);
+`{}` clears it. Top-level `name` and `type` retain their existing meanings.
+
+Agent list and detail responses return `metadata` (an empty object for older
+agents). Both backends also return `lastActiveAt` and `lastError` in lists.
+Use `GET /v1/agents?metadata.type=camelcode-project` for exact, case-sensitive
+matches on top-level string fields. Multiple metadata filters are ANDed;
+numbers, arrays and nested objects are not string matches. Filtering happens
+before pagination and is indexed. Existing list calls still return an array.
+
+TypeScript: `agents.createAgent({ metadata: { type: "camelcode-project" } })`,
+`agents.listAgents({ metadata: { type: "camelcode-project" } })`, and
+`agents.setAgentMetadata(id, { repos: ["acme/app"] })`. Updates return a
+configuration request; poll it for completion.
+
+Python's `AgentRuntime.create_agent` and `Agents.upsert` accept `metadata`;
+`runtime.list_agents(metadata={"type": "camelcode-project"})` filters it and
+`runtime.set_agent_metadata(id, {...})` replaces it. The CLI accepts
+`--metadata '{"type":"camelcode-project"}'` with `agents create`,
+`agents configure`, and `agents list`.
+
+---
+
 <!-- https://run.camelai.com/docs/guides/projects.md -->
 
 # Projects
@@ -7545,6 +7575,38 @@ webhooks and mints the agents' tokens. See [Channels](https://run.camelai.com/do
 Account export lists your Apps, masked (`github-apps.json`); deleting the
 account deletes them.
 
+## List repositories without copying the App key
+
+An account API token can read the repositories of its registered App:
+
+- `GET /v1/github-apps/{app}/repositories?perPage=100&cursor=...`
+  returns `{ items, nextCursor }`. Follow `nextCursor` until it is null, including
+  when a page has no items. Pages cross installations; suspended installations
+  are skipped. `perPage` is 1–100 (default 100).
+- `GET /v1/github-apps/{app}/repositories/{owner}/{name}` checks that the App's
+  installation can access this repository. A public repository without an
+  installation is not enough. Unavailable repositories return 404.
+
+Repository cursors follow GitHub's live installation and repository pages; they
+do not identify a fixed snapshot. Changes to installations or repository access
+between requests can skip or repeat items. Deduplicate by repository `id` and
+restart the listing when you need a fresh inventory. Keep `perPage` unchanged
+while following a cursor.
+
+Each item has `id`, `name`, `fullName`, `private`, `htmlUrl`, and
+`defaultBranch`. These are App permissions, not the signed-in user's GitHub
+permissions. Enforce your application's membership policy before exposing them.
+
+The runtime reads the tenant's encrypted App credentials and mints installation
+tokens with only metadata read permission. It never returns the private key or
+installation token. Registration and egress grants continue to use the same
+App; these read APIs do not change grants or repository permissions.
+
+TypeScript: `runtime.githubRepositories("code", { cursor, perPage: 100 })`
+and `runtime.githubRepository("code", "acme", "app")`.
+Python: `runtime.github_repositories("code", cursor=cursor)` and
+`runtime.github_repository("code", "acme", "app")`.
+
 ---
 
 <!-- https://run.camelai.com/docs/guides/migrating.md -->
@@ -9178,6 +9240,55 @@ Each reads `CAMELAI_API_KEY` (and `CAMELAI_BASE_URL` for a runtime of your own).
 `npm run demo:clients` runs the release board and inventory examples against a
 temporary local runtime with scripted code, calling no model.
 
+
+### Usage breakdowns and retained run logs
+
+TypeScript: call `agents.usage({ groupBy: ["agent", "model"], rollup: true })`,
+`agents.agentUsage(id)`, or `agents.runs.log(runId)`.
+Python: call `agents.usage(group_by=["agent", "model"], rollup=True)` or
+`agents.runs.log(run_id)`. Pass `agent=id` to usage to filter one agent.
+The lower-level Python runtime preserves its daily account totals when no
+grouping is requested.
+
+REST: `GET /v1/usage?groupBy=agent,model&rollup=true` returns
+`{since, groupBy, rollup, totals, groups}`. Dimensions are agent, definition,
+endUser, model and UTC day, in any combination. Costs are USD and include
+signed reconciliation adjustments. Attribution begins with migration 127.
+`GET /v1/agents/{id}/usage` filters an agent. With rollup enabled, it filters
+a root and includes its descendants; other dimensions keep their own values.
+The default account usage response is unchanged.
+
+`GET /v1/runs/{id}/log` returns `{run, durationMs, events}`. Each event contains
+a message in history order, its index and its timestamp (null if unavailable).
+Messages include model tool calls and tool results; the run contains errors,
+usage and start/end times. This is reconstructed from durable messages, not a
+transient streaming trace, and expires with the run. CLI equivalents:
+`camelrun usage --by agent,model --rollup` and `camelrun run-log <runId>`.
+
+
+Grouped usage uses daily aggregates retained for 400 UTC days. Expired rows are
+excluded from reads and deleted in batches by each backend's maintenance loop.
+Account-level daily totals keep their existing retention. `days` must be an
+integer from 1 to 365 (default 30). Deleted agents' usage remains readable by
+their tenant while its aggregates exist.
+
+Set `limit` from 1 to 500 (default 100) and pass the returned `next` as
+`cursor` to read grouped usage pages. Keep the other query parameters unchanged.
+`totals` covers the complete filtered result, not just the page. TypeScript
+accepts `limit`, `cursor`, and `workspaceId`; Python accepts `limit`,
+`cursor`, and `workspace_id`.
+
+Run logs take `limit` from 1 to 100 (default 50) and the returned `next` as
+`cursor`. Each response is at most 256 KiB; each message at most 16 KiB and the
+run summary at most 32 KiB. Oversized values become
+`{truncated: true, originalBytes, preview}`; the event and page also report
+`truncated: true`. A page boundary never discards the next message. Pass
+these options to `runs.log(id, options)` in TypeScript or `runs.log(id, **options)`
+in Python. Tool arguments and results can contain credentials or other sensitive
+data echoed by tools; log access requires the tenant's credential.
+
+CLI `camelrun usage` without `--by` returns the legacy daily report.
+
 ---
 
 <!-- https://run.camelai.com/docs/reference/cli.md -->
@@ -9907,6 +10018,7 @@ wait out `Retry-After` and retry. `GET /v1/billing` has the account's run limit
 | An agent's key (`Idempotency-Key` on `POST /v1/agents`, the SDKs' `upsert(key)`) | 1–80 characters of `A-Z a-z 0-9 _ -` |
 | Lifetime (`ttlSeconds`) | 60 s to 31,622,400 s (366 days), or `null`: until deleted. Default: until deleted for an agent made with a key; 1 day for one made without |
 | Create body (`POST /v1/agents`, with `initialMessages`) | 18 MiB |
+| Application `metadata` | JSON object, at most 16,384 UTF-8 bytes; top-level string fields can be filtered in the agent list |
 | Imported history (`initialMessages`) | 16 MB of JSON (`HISTORY_TOO_LARGE`, 413) |
 | `systemPrompt`, `systemPromptAppend` | 32,000 characters each |
 | `modelHeaders` | at most 20 headers, 8 KB in all; never auth headers |

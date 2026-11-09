@@ -1,3 +1,4 @@
+import { groupedUsage, usageOptions, usageDays, ownsUsageAgent, pruneUsageDetails } from "../../../shared/usage-details.ts";
 import { accountLifecycleRoutes, accountDeletions, resumeAccountDeletions, type AccountLifecycleEnv } from "./account-lifecycle.ts";
 import { consumeAccountDeletion } from "./account-deletion-queue.ts";
 import { keyServices, type KeyEnv } from './security-services.ts';
@@ -52,7 +53,7 @@ export async function authenticateMoney(request: Request, env: MoneyEnv): Promis
 }
 export async function moneyRoutes(request: Request, env: MoneyEnv, auth: AuthContext, ctx: ExecutionContext): Promise<Response | undefined> {
   const path = new URL(request.url).pathname;
-  if (!/^\/v1\/(?:me|limits|billing|providers|key-scopes|api-keys|tokens|tenants|sessions|oauth|account|usage|webhooks|usage-webhook|workspaces|workspace-memberships|end-user-settings|end-users)/.test(path)) return;
+  if (!/^\/v1\/(?:me|limits|billing|providers|key-scopes|api-keys|tokens|tenants|sessions|oauth|account|usage|webhooks|usage-webhook|workspaces|workspace-memberships|end-user-settings|end-users)/.test(path) && !/^\/v1\/agents\/[^/]+\/usage$/.test(path)) return;
   try { return await routeMoney(request, env, auth, ctx); }
   finally {
     // The source mail worker notices outbox rows after mutations. Keep delivery
@@ -85,10 +86,18 @@ async function routeMoney(request: Request, env: MoneyEnv, auth: AuthContext, ct
   if (endUser) { if (request.method !== "GET") await publishPending(env as WebhookEnv); return endUser; }
   const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { 'cache-control': 'no-store' } });
   const setter = principal.tokenId ? `token:${principal.tokenId}` : principal.via === 'oauth' ? `oauth:${'grantId' in principal ? principal.grantId : undefined}` : principal.via;
-  if (path === '/v1/usage' && request.method === 'GET') {
-    const query = new URL(request.url).searchParams, days = Math.min(365, Math.max(1, Number(query.get('days') ?? 30) || 30));
+  if ((path === '/v1/usage' || /^\/v1\/agents\/[^/]+\/usage$/.test(path)) && request.method === 'GET') {
+    const query = new URL(request.url).searchParams, days = usageDays(query);
     const workspace = query.get('workspaceId') ?? undefined;
     if (workspace && workspace !== 'unassigned') await new Workspaces(s.keys.accounts.db).get(tenant, workspace);
+    const agent = path === '/v1/usage' ? undefined : decodeURIComponent(path.split('/')[3]);
+    if (agent && !await ownsUsageAgent(s.keys.accounts.db, tenant, agent)) throw new HttpError(404, "Unknown agent");
+    if (agent || query.has('groupBy') || query.has('rollup')) {
+      let options;
+      try { options = usageOptions(query); } catch (error) { throw new HttpError(400, (error as Error).message); }
+      await s.keys.accounts.flushUsage();
+      return json(await groupedUsage(s.keys.accounts.db, tenant, Date.now() - days * 86400000, options, agent, workspace));
+    }
     const usage = await s.keys.accounts.usage(tenant, Date.now() - days * 86400000, workspace);
     ctx.waitUntil(publishPending(env as WebhookEnv));
     return json(usage);
@@ -162,6 +171,7 @@ export async function consumeAccountDeletionMessage(env: MoneyEnv, message: Mess
 }
 export async function moneyMaintenance(env: MoneyEnv) {
   const s = await services(env);
+  await pruneUsageDetails(s.keys.accounts.db);
   await sweepAdmission(env);
   await expireMoneyIdempotency(env);
   await billingMaintenance(s.keys.accounts.billing);

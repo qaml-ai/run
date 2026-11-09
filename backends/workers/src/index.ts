@@ -122,6 +122,7 @@ function summary(entry: DirectoryEntry) {
     ...(entry.parentAgentId ? { parentAgentId: entry.parentAgentId, parentRunId: entry.parentRunId } : {}),
     id: entry.id,
     key: entry.key,
+    metadata: entry.config.metadata ?? {},
     name: entry.config.name ?? "",
     type: entry.config.type ?? "agent",
     model: entry.config.model,
@@ -319,6 +320,10 @@ const worker = {
       if (auth) {
         const computers = await handleComputerRequest(request, env, auth);
         if (computers) return computers;
+        if (match?.[1] === "v1/agents" && match[3] === "/usage") {
+          const usage = await moneyRoutes(request, env, auth, ctx);
+          if (usage) return usage;
+        }
       }
       if (!match) {
         if (!auth) throw new ApiError(403, "Account key required", "FORBIDDEN");
@@ -561,7 +566,7 @@ const worker = {
         if (!auth) scopedConfiguration(params);
         rejectWorkflow(params);
         if (auth) {
-          const allowed = new Set(["model", "systemPrompt", "systemPromptAppend", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "queue", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "builtins", "decide", "delegate", "mcpServers"]);
+          const allowed = new Set(["metadata", "model", "systemPrompt", "systemPromptAppend", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "queue", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "builtins", "decide", "delegate", "mcpServers"]);
           const unknown = Object.keys(params).find(field => !allowed.has(field));
           if (unknown) throw new BadRequest(`Unsupported field: ${unknown}`);
         }

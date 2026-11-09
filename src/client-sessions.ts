@@ -24,7 +24,7 @@ import { joins, CANCELLABLE_METHODS as CANCELLABLE } from "../shared/queue-mode.
 import type { CommitEffect } from "../shared/append-log.ts";
 import { fileStorage, type Storage } from "../shared/storage.ts";
 import { FRAME_BYTES, outcomeEnding, type ClientEvent, type Outcome, type RequestMethod, type RequestRecord, type TurnSnapshot } from "../shared/client-protocol.ts";
-import { agentMetadata, type AgentMetadata } from "../shared/agent-metadata.ts";
+import { applicationMetadata, agentMetadata, type AgentMetadata } from "../shared/agent-metadata.ts";
 import { scheduleInput } from "./scheduler.ts";
 import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readJson } from "./http.ts";
 import { limitRefused } from "./limit-hits.ts";
@@ -114,7 +114,7 @@ export function loadDecision(request: RequestRecord, maxResumes = MAX_RESUMES): 
 const MAX_OPEN_REQUESTS = 32;
 const REQUEST_METHODS = [...RUN_METHODS, "status", "abort", "steer", "configure"];
 /** A configuration's fields only an upsert (the tenant making the agent again with its key) sets: see `reconfiguration`. */
-const UPSERT_KEYS = ["provisionHash", "name", "type", "tools", "fileTools", "codeMode", "toolsHash"];
+const UPSERT_KEYS = ["metadata", "provisionHash", "name", "type", "tools", "fileTools", "codeMode", "toolsHash"];
 
 /** Settled records kept for idempotent retries once the journal is folded. */
 const RETAINED_SETTLED = 256;
@@ -1582,9 +1582,9 @@ export class ClientSessions {
     });
     app.post(`${agent}/metadata`, async c => {
       const session = c.var.session;
-      session.header.metadata = agentMetadata(await readJson(body(c), 4096));
+      session.header.metadata = { ...agentMetadata(await readJson(body(c), 4096)), application: session.header.metadata?.application };
       await this.writeHeader(session);
-      return json(c, 200, session.header.metadata);
+      return json(c, 200, { name: session.header.metadata?.name, type: session.header.metadata?.type });
     });
     app.delete(agent, async c => {
       await this.delete(c.var.session.header.id);
@@ -1723,7 +1723,8 @@ export class ClientSessions {
     if (applying && (!trusted || !this.options.definitionFor || Object.keys(body.params).length !== 1 || typeof body.params.definition?.id !== "string")) throw new HttpError(400, "Apply a definition with PATCH /v1/definitions/<id> and apply: \"all\"");
     try {
       if (body.method === "configure" && !applying) {
-        const { spendLimit: _limit, bucket: _bucket, provisionHash: _hash, name: _name, type: _type, toolsHash: _tools, mounts: _mounts, builtins, delegate, mcpServers, decide, ...update } = body.params;
+        const { spendLimit: _limit, bucket: _bucket, provisionHash: _hash, name: _name, type: _type, metadata: _metadata, toolsHash: _tools, mounts: _mounts, builtins, delegate, mcpServers, decide, ...update } = body.params;
+        if (_metadata !== undefined) applicationMetadata(_metadata);
         const checked = configurationUpdate(update, this.options.modelEndpoints?.(session.header.tenant), await this.options.customProviders?.(session.header.tenant, configuration.scopeAfter(session.header, update)));
         // A model, thinking level, maxOutputTokens or temperature that leaves the agent asking its model for what it refuses is refused now.
         const refusal = configurationRefusal(session.header.config, checked);
@@ -1786,7 +1787,8 @@ export class ClientSessions {
     if (rawActor !== undefined && !isRun) throw new HttpError(400, "actor is only for runs (prompt, continue, execute)");
     const isMessage = ["prompt", "steer"].includes(body.method);
     if (params.from !== undefined && !isMessage) throw new HttpError(400, "from is only for messages (prompt, steer)");
-    if (params.metadata !== undefined && !isMessage && body.method !== "execute") throw new HttpError(400, "metadata is only for messages or execute");
+    const acceptsRequestMetadata = isMessage || body.method === "execute";
+    if (params.metadata !== undefined && !acceptsRequestMetadata && body.method !== "configure") throw new HttpError(400, "metadata is only for messages, execute or tenant configuration");
     if (params.images !== undefined) throw new HttpError(400, "Attach images as files: files: [{ name, data (base64), contentType }]");
     if (params.whileRunning !== undefined && (body.method !== "prompt" || !["queue", "steer"].includes(params.whileRunning))) throw new HttpError(400, "whileRunning is queue or steer, for a prompt");
     // A run's own budget: it only ever lowers what the run may spend, so whoever may run the agent may set it.
@@ -1810,7 +1812,7 @@ export class ClientSessions {
     try {
       if (params.output !== undefined) params.output = outputInput(params.output);
       if (params.from !== undefined) params.from = senderInput(params.from);
-      const chain = delegation.delegation(this.delegationContext, session.header.id, body.id, params.metadata).chain;
+      const chain = delegation.delegation(this.delegationContext, session.header.id, body.id, acceptsRequestMetadata ? params.metadata : undefined).chain;
       membershipAgent = chain[0] ?? session.header.id;
       if (MODEL_RUNS.includes(body.method)) sharedAgent = await this.options.sharedAgents?.get(membershipAgent, session.header.tenant) ?? null;
       const shared = sharedAgent;
@@ -1819,7 +1821,7 @@ export class ClientSessions {
         if (member !== "owner" && !sender) throw new HttpError(403, "Unknown shared agent member");
         if (sender) { params.from = sender; params.actor = sender.id; }
       }
-      if (params.metadata !== undefined) params.metadata = metadataInput(params.metadata);
+      if (acceptsRequestMetadata && params.metadata !== undefined) params.metadata = metadataInput(params.metadata);
       // The sender acts, unless the application names someone else.
       actor = member && params.from?.role ? params.from.id : actorInput(rawActor) ?? (isRun ? params.from?.id : undefined);
       // A signed child turn inherits the initiating member from the root's live membership.
@@ -1939,7 +1941,7 @@ export class ClientSessions {
       const record = this.upsertRequest(session, {
         startedAt: Date.now(), ...(body.method === "prompt" && typeof body.params.text === "string" ? { prompt: body.params.text } : {}),
         ...(body.method === "execute" && typeof body.params.code === "string" ? { code: body.params.code } : {}),
-        id: body.id, method: body.method, fingerprint, state: "running", ...(queued ? { params } : {}), sharedAgent, ...(params.from ? { sender: params.from } : {}), ...(actor ? { actor } : {}), ...(endUser ? { endUser } : {}), ...(bucket ? { bucket } : {}), ...(params.metadata ? { metadata: params.metadata } : {}),
+        id: body.id, method: body.method, fingerprint, state: "running", ...(queued ? { params } : {}), sharedAgent, ...(params.from ? { sender: params.from } : {}), ...(actor ? { actor } : {}), ...(endUser ? { endUser } : {}), ...(bucket ? { bucket } : {}), ...(acceptsRequestMetadata && params.metadata ? { metadata: params.metadata } : {}),
         ...(body.method === "resume" ? { suspension: params.suspension } : {}),
       });
       // Recovery sorts by arrival time, with log order breaking ties. Keep the released holds behind their trigger.

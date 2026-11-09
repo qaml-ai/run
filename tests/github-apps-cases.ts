@@ -58,6 +58,44 @@ const noSecrets = (text: string, github: FakeGitHubApp) => {
 };
 
 export const cases: Record<string, (t: T, start: Start) => Promise<void>> = {
+  "repository listing pages across installations and access uses stored read-only credentials": async (t, start) => {
+    const { r, github } = await setup(t, start);
+    await createApp(r, github);
+    for (const path of ["/v1/github-apps/code/repositories", "/v1/github-apps/code/repositories/acme/app"]) {
+      assert.equal((await r.call(path, { token: "other-operator-token-at-least-24-chars" })).status, 404);
+    }
+    const names: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const page = await r.call("/v1/github-apps/code/repositories?perPage=1" + (cursor ? "&cursor=" + cursor : ""));
+      assert.equal(page.status, 200, page.text);
+      noSecrets(page.text, github);
+      assert.ok(!page.text.includes("must-not-return"));
+      names.push(...page.json.items.map((repo: any) => repo.fullName));
+      cursor = page.json.nextCursor;
+    } while (cursor);
+    assert.deepEqual(names, ["acme/app", "acme/other", "solo/tool"]);
+    const check = await r.call("/v1/github-apps/code/repositories/acme/app");
+    assert.equal(check.status, 200, check.text);
+    assert.equal(check.json.fullName, "acme/app");
+    assert.equal((await r.call("/v1/github-apps/code/repositories/acme/missing")).status, 404);
+    assert.equal((await r.call("/v1/github-apps/code/repositories?cursor=invalid")).status, 400);
+    assert.equal((await r.call("/v1/github-apps/code/repositories?perPage=101")).status, 400);
+    assert.ok(github.minted().every(token => JSON.stringify(token.permissions) === JSON.stringify({ metadata: "read" })));
+  },
+  "repository reads reject malformed paths and invalid pagination without minting tokens": async (t, start) => {
+    const { r, github } = await setup(t, start);
+    await createApp(r, github);
+    for (const path of ['/v1/github-apps/%', '/v1/github-apps/%/repositories',
+      '/v1/github-apps/code/repositories/%/app', '/v1/github-apps/code/repositories/acme/%C3',
+      ...['cursor=', 'cursor=0:0:1', 'cursor=1:100:1', 'cursor=1:0:0', 'perPage=0', 'perPage=1.5', 'perPage=nope']
+        .map(query => `/v1/github-apps/code/repositories?${query}`)]) {
+      const response = await r.call(path);
+      assert.equal(response.status, 400, `${path}: ${response.text}`);
+      noSecrets(response.text, github);
+    }
+    assert.equal(github.minted().length, 0);
+  },
   "an App is checked with GitHub, kept sealed and shown masked; it is renamed, its key rotated, and deleted": async (t, start) => {
     const { r, github } = await setup(t, start);
     const refused = async (body: unknown, status: number, message: RegExp, method = "POST", path = "/v1/github-apps") => {

@@ -28,7 +28,7 @@ Deploy
 Agents (an agent is its key or its id, client_…)
   agents list
   agents get <agent>               Configuration, definition revision and tool sources
-  agents create <key> [--definition key|id] [--model m] [--prompt text] [--name n]
+  agents create <key> [--definition key|id] [--model m] [--prompt text] [--name n] [--metadata JSON]
   agents configure <agent> [--model m] [--prompt text] [--prompt-append text] [--thinking level]
   agents fork <agent> [--key k] [--name n] [--at message]
                                    A new agent with its configuration, history and files; --at ends the
@@ -47,6 +47,8 @@ Stateless runs (a configuration and a message in, the result out; nothing carrie
   run --stateless <message…> [--definition key|id] [--model m] [--prompt text] [--thinking level]
                   [--request-id key] [--wait s] [--no-wait]
   runs get <runId> [--wait s]
+  usage [--by agent,model] [--days n] [--rollup]
+  run-log <runId>
   history <agent> [--limit n]
   abort <agent>
   inputs [agent]                   Questions and approvals waiting on someone
@@ -73,10 +75,11 @@ Options
 Docs: https://run.camelai.com/llms.txt`;
 
 const OPTIONS = {
+  cursor: { type: "string" }, by: { type: "string" }, days: { type: "string" }, rollup: { type: "boolean" },
   json: { type: "boolean" }, help: { type: "boolean", short: "h" }, version: { type: "boolean", short: "v" },
   "api-key": { type: "string" }, url: { type: "string" },
   apply: { type: "boolean" }, "dry-run": { type: "boolean" }, available: { type: "boolean" }, force: { type: "boolean" }, yes: { type: "boolean", short: "y" },
-  model: { type: "string" }, prompt: { type: "string" }, "prompt-append": { type: "string" }, thinking: { type: "string" }, name: { type: "string" }, definition: { type: "string" },
+  model: { type: "string" }, prompt: { type: "string" }, "prompt-append": { type: "string" }, thinking: { type: "string" }, name: { type: "string" }, metadata: { type: "string" }, definition: { type: "string" },
   wait: { type: "string" }, "no-wait": { type: "boolean" }, from: { type: "string" }, "end-user": { type: "string" }, steer: { type: "boolean" }, "allow-disconnected": { type: "boolean" }, "request-id": { type: "string" },
   limit: { type: "string" }, key: { type: "string" }, text: { type: "string" }, in: { type: "string" }, at: { type: "string" }, every: { type: "string" }, history: { type: "string" },
   cron: { type: "string" }, "time-zone": { type: "string" }, "session-mode": { type: "string" }, "spend-limit": { type: "string" },
@@ -122,6 +125,17 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
         print({ ...me, url: client.url }, () => `${me.login ?? me.tenant} (tenant ${me.tenant}) on ${client.url}\nDefault model: ${me.defaultModel}`);
         return 0;
       }
+      case "usage": {
+        const query = new URLSearchParams();
+        if (flags.by) query.set("groupBy", flags.by);
+        if (flags.days) query.set("days", String(flags.days));
+        if (flags.limit) query.set("limit", flags.limit);
+        if (flags.cursor) query.set("cursor", flags.cursor);
+        if (flags.by && flags.rollup) query.set("rollup", "true");
+        const result = await api().get(`/v1/usage?${query}`);
+        print(result, () => JSON.stringify(result, null, 2));
+        return 0;
+      }
       case "models": {
         const models: any[] = await api().get(`/v1/models${flags.available ? "?available=true" : ""}`);
         print(models.map(({ id, name, available, contextWindow, reasoning, cost, toolCallStreaming }) => ({ id, name, available, contextWindow, reasoning, cost, toolCallStreaming })),
@@ -155,6 +169,15 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
         if (!agent || !words.length) throw new UsageError("Usage: camelrun run <agent> <message…>");
         const result = await ops.run(api(), agent, words.join(" "), { wait: waitSeconds(flags), from: flags.from, endUser: flags["end-user"], steer: flags.steer, allowDisconnected: flags["allow-disconnected"], requestId: flags["request-id"] });
         return printRun(result, print, io);
+      }
+      case "run-log": {
+        if (!args[0]) throw new UsageError("Usage: camelrun run-log <runId>");
+        const query = new URLSearchParams();
+        if (flags.limit) query.set("limit", flags.limit);
+        if (flags.cursor) query.set("cursor", flags.cursor);
+        const result = await api().get(`/v1/runs/${encodeURIComponent(args[0])}/log?${query}`);
+        print(result, () => JSON.stringify(result, null, 2));
+        return 0;
       }
       case "runs": {
         const [sub, agent, requestId] = args;
@@ -232,7 +255,9 @@ async function agents(args: string[], flags: Flags, api: () => Api, print: (valu
   const client = api();
   switch (sub) {
     case "list": case undefined: {
-      const list: any[] = await client.get("/v1/agents");
+      const filters = flags.metadata ? JSON.parse(flags.metadata) as Record<string, string> : {};
+      const query = new URLSearchParams(Object.entries(filters).map(([key, value]) => [`metadata.${key}`, value]));
+      const list: any[] = await client.get(`/v1/agents?${query}`);
       print(list, () => list.length ? table(list, ["key", "id", "model", "running", "connected"]) : "No agents yet: camelrun deploy, or camelrun agents create <key>");
       return 0;
     }
@@ -244,13 +269,13 @@ async function agents(args: string[], flags: Flags, api: () => Api, print: (valu
     }
     case "create": {
       if (!target) throw new UsageError("Usage: camelrun agents create <key> [--definition d] [--model m] [--prompt text]");
-      const created = await ops.upsertAgent(client, target, { definition: flags.definition, model: flags.model, systemPrompt: flags.prompt, systemPromptAppend: flags["prompt-append"], name: flags.name });
+      const created = await ops.upsertAgent(client, target, { definition: flags.definition, model: flags.model, systemPrompt: flags.prompt, systemPromptAppend: flags["prompt-append"], name: flags.name, ...(flags.metadata ? { metadata: JSON.parse(flags.metadata) } : {}) });
       print(created, () => `${created.key}: ${created.id}${created.reconfigured ? " (reconfigured)" : ""}`);
       return 0;
     }
     case "configure": {
       if (!target) throw new UsageError("Usage: camelrun agents configure <agent> [--model m] [--prompt text] [--prompt-append text] [--thinking level]");
-      const changes = Object.fromEntries(Object.entries({ model: flags.model, systemPrompt: flags.prompt, systemPromptAppend: flags["prompt-append"], thinkingLevel: flags.thinking }).filter(([, value]) => value !== undefined));
+      const changes = Object.fromEntries(Object.entries({ model: flags.model, systemPrompt: flags.prompt, systemPromptAppend: flags["prompt-append"], thinkingLevel: flags.thinking, ...(flags.metadata ? { metadata: JSON.parse(flags.metadata) } : {}) }).filter(([, value]) => value !== undefined));
       if (!Object.keys(changes).length) throw new UsageError("Nothing to change: pass --model, --prompt, --prompt-append or --thinking");
       const result = await ops.configure(client, target, changes);
       print(result, () => result.status === "failed" ? `Failed: ${result.error?.message}` : result.status === "running" ? `Queued behind its current run (request ${result.requestId})` : `Configured ${target}`);
