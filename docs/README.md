@@ -13,6 +13,7 @@ model-written code in a sandbox, and wakes agents when there is work.
 3. **Guides**
    - [Scheduled agents and email reports](guides/schedules.md)
    - [Workspaces](guides/workspaces.md): group agents and definitions and see model and tool spend by project
+   - [Application metadata](guides/agents.md): project data in agent lists and indexed filtering
    - [Projects](guides/projects.md): an agent builds a bot, site or report; your app checks and publishes versions
    - [Computers](guides/computers.md): native Linux computers, remote browsers and Cloudflare Tunnel; forking a computer into sub-agents
    - [Tools](guides/tools.md): writing tools, attached and served tools, identity, MCP and OpenAPI sources, built-ins
@@ -30,6 +31,7 @@ model-written code in a sandbox, and wakes agents when there is work.
    - [Webhooks](guides/webhooks.md): run and input events, signatures, delivery
    - [Models and keys](guides/models-and-keys.md): the catalog, your own keys and endpoints, key scopes, spend limits
    - [Definitions](guides/definitions.md): reusable configurations and rolling out changes
+   - [Schedules](guides/schedules.md): cron and calendar timing, fresh runs, per-run budgets and email reports
    - [Channels](guides/channels.md): Slack, Telegram, GitHub, email and any service that sends webhooks
    - [Agents as MCP servers](guides/mcp-server.md): connect Claude or Cursor to an agent
    - [Coming from the OpenAI Agents SDK or LangGraph](guides/migrating.md): each concept mapped, and what camelRun does not have

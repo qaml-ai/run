@@ -1,4 +1,5 @@
 // Generated from src/model-attempts.ts; infrastructure imports only.
+import { recordUsageDetails, resolveUsageAttribution } from "../../../shared/usage-details.ts";
 import { applyWorkspaceUsage } from "./workspaces.ts";
 import { createHash } from "node:crypto";
 import { Accounts, applyUsageRows, lockBalances, type Totals } from "./accounts.ts";
@@ -115,9 +116,10 @@ export class ModelAttempts {
       const prepaid = await this.accounts.billing.mode(tenant) === "prepaid";
       // Keep the input estimate for calls with evidence of usage but no final token counts.
       const inputTokens = Number(event.estimate?.inputTokens);
+      const usageAttribution = await resolveUsageAttribution(this.db, { tenant, agent, timestamp: event.at, requestId: event.context?.requestId });
       const inserted = await this.db.query(`insert into model_attempts (id,tenant,agent,provider,model,kind,platform,catalog_priced,prepaid,key_hash,context,started_at,updated_at,next_check_at,end_user,end_user_bucket,estimated_input_tokens)
         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12,$13,$14,$15,$16) on conflict (id) do nothing returning tenant,agent,provider,model`,
-        [event.id, tenant, agent, event.provider, event.model, event.kind, platform, catalogPriced, prepaid, event.keyHash, JSON.stringify({ ...event.context, ...(event.reconciliationEligible === undefined ? {} : { reconciliationEligible: event.reconciliationEligible }), ...(event.reconciliationDisabled || event.keyHash === hash("") ? { reconciliationDisabled: event.reconciliationDisabled ?? "Empty provider credential has no reconciliation; reported usage is final" } : {}) }), event.at, Date.now() + 300_000,
+        [event.id, tenant, agent, event.provider, event.model, event.kind, platform, catalogPriced, prepaid, event.keyHash, JSON.stringify({ ...event.context, usageAttribution, ...(event.reconciliationEligible === undefined ? {} : { reconciliationEligible: event.reconciliationEligible }), ...(event.reconciliationDisabled || event.keyHash === hash("") ? { reconciliationDisabled: event.reconciliationDisabled ?? "Empty provider credential has no reconciliation; reported usage is final" } : {}) }), event.at, Date.now() + 300_000,
           metered ? event.endUser!.id : null, metered ? event.endUser!.bucket : null, Number.isFinite(inputTokens) && inputTokens > 0 ? Math.min(Math.round(inputTokens), 2_000_000_000) : null]);
       // New attempts already returned their identity. A replay still reads the
       // committed row after ON CONFLICT waited for its concurrent inserter.
@@ -323,6 +325,7 @@ export class ModelAttempts {
       }
       if (!replaced) {
         await applyUsageRows(sql, [{ tenant, day: quote.day, model: quote.model, ...delta }]);
+        await recordUsageDetails(sql, [{ ...(row.context?.usageAttribution ? { attribution: row.context.usageAttribution } : {}), tenant, agent, requestId: row.context?.requestId, endUser: row.context?.identity?.subject ?? row.end_user ?? null, timestamp: Number(row.started_at), day: quote.day, model: quote.model, ...delta }]);
         await applyWorkspaceUsage(sql, [{ tenant, agent, timestamp: Number(row.started_at), day: quote.day, model: quote.model, ...delta }]);
       }
       if (adjustment) {

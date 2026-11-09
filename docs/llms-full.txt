@@ -627,6 +627,36 @@ A self-hosted runtime charges nothing unless its operator sets up billing; see
 
 ---
 
+<!-- https://run.camelai.com/docs/guides/agents.md -->
+
+# Application metadata
+
+Set `metadata` to a JSON object on `POST /v1/agents`, or replace it with
+`PATCH /v1/agents/{id}/configuration`. It is tenant-owned application data,
+not model instructions. It is limited to 16,384 bytes of serialized UTF-8 JSON.
+Omitting it preserves the current value (including on keyed upserts);
+`{}` clears it. Top-level `name` and `type` retain their existing meanings.
+
+Agent list and detail responses return `metadata` (an empty object for older
+agents). Both backends also return `lastActiveAt` and `lastError` in lists.
+Use `GET /v1/agents?metadata.type=camelcode-project` for exact, case-sensitive
+matches on top-level string fields. Multiple metadata filters are ANDed;
+numbers, arrays and nested objects are not string matches. Filtering happens
+before pagination and is indexed. Existing list calls still return an array.
+
+TypeScript: `agents.createAgent({ metadata: { type: "camelcode-project" } })`,
+`agents.listAgents({ metadata: { type: "camelcode-project" } })`, and
+`agents.setAgentMetadata(id, { repos: ["acme/app"] })`. Updates return a
+configuration request; poll it for completion.
+
+Python's `AgentRuntime.create_agent` and `Agents.upsert` accept `metadata`;
+`runtime.list_agents(metadata={"type": "camelcode-project"})` filters it and
+`runtime.set_agent_metadata(id, {...})` replaces it. The CLI accepts
+`--metadata '{"type":"camelcode-project"}'` with `agents create`,
+`agents configure`, and `agents list`.
+
+---
+
 <!-- https://run.camelai.com/docs/guides/projects.md -->
 
 # Projects
@@ -2354,6 +2384,122 @@ as text: a question's numbered options, the call to approve, the URL, a
 confirmation. The next message from someone allowed to answer, if it fits (an
 option's number or label, `approve`/`yes` or `deny`/`no`, `done`), is the answer;
 anything else is a new message. See [Channels](https://run.camelai.com/docs/guides/channels.md).
+
+---
+
+<!-- https://run.camelai.com/docs/guides/schedules.md -->
+
+# Scheduled agents and email reports
+
+Open an agent in the console and select **Schedules**. Enter its task, choose
+Daily or Weekdays, set the local time and IANA time zone, and optionally add an
+email recipient and subject. The agent needs no application process to stay
+connected when it uses built-in tools. Its instructions and saved files are
+available at every wake-up; each run is recorded in its history.
+
+For example, `POST /v1/agents/{id}/schedules`:
+
+```json
+{
+  "text": "Research today's developments, save the report, and return the complete report with source links.",
+  "calendar": {
+    "time": "08:00",
+    "timeZone": "America/Chicago",
+    "daysOfWeek": [1, 2, 3, 4, 5]
+  },
+  "email": { "to": "reader@example.com", "subject": "Daily research", "format": "markdown" }
+}
+```
+
+Omit `daysOfWeek` to run daily. Sunday is 0 and Saturday is 6. Calendar schedules
+keep their local time through daylight saving changes. Each calendar wake-up includes
+its scheduled UTC time and local edition date, so report dates do not depend on
+what the model infers from search results. A missing local time is
+skipped; a repeated local time runs once. Missed occurrences are skipped after
+recovery. Calendar cannot be combined with `at`, `inSeconds`, or `everySeconds`;
+those existing one-off and interval options continue to work.
+
+Email delivery sends the successful run's complete final reply. Choose `email.format`
+to match what the agent returns:
+
+- `markdown` (default): basic HTML formatting for headings, lists, tables and source
+  links, with the original Markdown as the plain-text alternative. Raw HTML is
+  escaped and images remain links.
+- `html`: sends the agent's HTML unchanged, including its own styling or template,
+  and generates a plain-text alternative. The platform adds no layout or branding.
+- `text`: sends only plain text, without HTML or Markdown conversion.
+
+The format is also selectable in the console. Custom templates belong in the
+agent's instructions or saved files; the platform does not require a particular
+report layout. Have the agent
+include its report in that reply, not just a saved-file path. Failed or empty
+runs are not emailed. Delivery state is visible in the Schedules tab and at
+`GET /v1/agents/{id}/schedule-deliveries`. Delivery waits durably for the run to
+finish and retries transient mail errors. SES delivery is at least once: a lost
+send acknowledgement can cause a duplicate. The email recipient is configured
+by the owner through the API or console, not by the agent's scheduling tool.
+Use your sign-in email or a verified recipient from Billing → email alerts.
+Operator-configured tenants can use other recipients. Suppressed addresses are
+refused, and recipient eligibility is checked again before each delivery.
+
+On self-hosted runtimes, scheduled email uses the SES account-mail configuration
+(`AGENT_ACCOUNT_EMAIL_FROM`, with provider `ses`, and its region and configuration
+set). Without it, schedules with email are refused. Existing schedules without
+email are unaffected. TypeScript accepts `calendar` and `email` in `schedule()`;
+Python accepts the same dictionaries. The MCP `add_schedule` tool accepts both fields. The schedule builtin also accepts
+`calendar` for the agent's own wake-ups.
+
+### Cron, fresh sessions, and run now
+
+Use `cron: {"expression":"0 9 * * 1-5","timeZone":"America/Chicago"}`
+for weekday mornings. Cron has five numeric fields: minute, hour, day of month,
+month, weekday (Sunday 0 or 7). Lists, ranges and positive steps are supported.
+When both day fields are restricted, either can match. Do not combine cron with
+calendar, at, inSeconds, or everySeconds. Missing DST minutes are skipped;
+repeated DST minutes fire twice. Existing calendar schedules still fire once
+in a repeated hour. Missed occurrences are skipped after delivery.
+
+`sessionMode` defaults to `continue`, including on existing schedules. With
+`fresh`, the owner must have a definition. Each occurrence creates a separate
+agent from the definition's current revision, including its configured tool
+credentials and mounts. Optional schedule `mounts` override the definition's
+mounts for fresh runs. Definition changes apply to later runs. The run's agent
+appears in the agent list and expires seven days after creation; its history is
+available through its normal agent routes until then. Deleting a schedule does
+not delete previously created run agents.
+
+`spendLimit: {"usd": 1}` caps each occurrence using the runtime's existing
+per-request spend enforcement. It applies to both session modes; reaching it
+returns the existing spend-limit outcome. Account and agent limits also apply.
+
+`POST /v1/agents/{agent}/schedules/{schedule}/run` starts an occurrence immediately
+and returns HTTP 202 with `{agent, requestId, record}`. It does not change the
+next scheduled time. Every call starts a new occurrence. Read the request at
+`GET /v1/agents/{agent}/requests/{requestId}`. The schedule owner's
+`GET /v1/agents/{agent}/schedule-deliveries` lists the latest 100 occurrences,
+with their run agent, stored outcome and cost, and optional email
+state. History may expire before the delivery metadata.
+
+The agent-local `schedule` builtin continues its own session; fresh mode is
+configured through the owner API, SDK, CLI, or MCP `add_schedule`.
+
+TypeScript: `agent.runSchedule(id)`. Python: `agent.run_schedule(id)`.
+CLI: `camelrun schedules add <agent> --text 'Report' --cron '0 9 * * 1-5'
+--time-zone America/Chicago --session-mode fresh --spend-limit 1`, then
+`camelrun schedules run <agent> <scheduleId>`.
+
+Fresh schedules must be at least five minutes apart: `everySeconds` must be 300
+or more, and cron expressions cannot select minutes less than five minutes apart.
+Each schedule can have at most 200 unexpired run agents. A trigger above that cap
+fails with `This schedule already has 200 live run agents; delete or wait for a run agent to expire`.
+Run agents expire after seven days. Delivery summaries for all session modes are
+removed after 30 days, in batches of at most 500 rows.
+
+`GET /v1/agents/{id}/schedule-deliveries` returns stored run summaries: `runId`,
+`agent`, `state`, `error`, `cost` (USD), `createdAt`, and `endedAt`. Email status is
+separate in `emailState` and `emailError`. It no longer embeds the full `record`.
+Use the run's agent and request ID to read its history while the agent is retained.
+Code schedules cannot set `spendLimit`.
 
 ---
 
@@ -7429,6 +7575,38 @@ webhooks and mints the agents' tokens. See [Channels](https://run.camelai.com/do
 Account export lists your Apps, masked (`github-apps.json`); deleting the
 account deletes them.
 
+## List repositories without copying the App key
+
+An account API token can read the repositories of its registered App:
+
+- `GET /v1/github-apps/{app}/repositories?perPage=100&cursor=...`
+  returns `{ items, nextCursor }`. Follow `nextCursor` until it is null, including
+  when a page has no items. Pages cross installations; suspended installations
+  are skipped. `perPage` is 1–100 (default 100).
+- `GET /v1/github-apps/{app}/repositories/{owner}/{name}` checks that the App's
+  installation can access this repository. A public repository without an
+  installation is not enough. Unavailable repositories return 404.
+
+Repository cursors follow GitHub's live installation and repository pages; they
+do not identify a fixed snapshot. Changes to installations or repository access
+between requests can skip or repeat items. Deduplicate by repository `id` and
+restart the listing when you need a fresh inventory. Keep `perPage` unchanged
+while following a cursor.
+
+Each item has `id`, `name`, `fullName`, `private`, `htmlUrl`, and
+`defaultBranch`. These are App permissions, not the signed-in user's GitHub
+permissions. Enforce your application's membership policy before exposing them.
+
+The runtime reads the tenant's encrypted App credentials and mints installation
+tokens with only metadata read permission. It never returns the private key or
+installation token. Registration and egress grants continue to use the same
+App; these read APIs do not change grants or repository permissions.
+
+TypeScript: `runtime.githubRepositories("code", { cursor, perPage: 100 })`
+and `runtime.githubRepository("code", "acme", "app")`.
+Python: `runtime.github_repositories("code", cursor=cursor)` and
+`runtime.github_repository("code", "acme", "app")`.
+
 ---
 
 <!-- https://run.camelai.com/docs/guides/migrating.md -->
@@ -8132,7 +8310,8 @@ what changed without keeping a manifest. It is opaque: compare it, never parse i
 | `agent.send(text, options)`, `agent.wait(id)` | `await send(text, …)`, `await wait(id)` | send a message without waiting: resolves once the runtime has taken it, with `{id, state}` (`POST …/prompt`'s 202); `wait(id)` is its `Run` later, from this process or another. For work queues and webhooks that should not hold a connection for the whole run |
 | `agent.steer(text, options)` | `steer(text, …)` | hand the running turn a message (else start one), answered as soon as the runtime has it: `{id, status: "accepted" \| "taken" \| "queued", steeredInto?}`. `wait: true` (`wait=True`) resolves with the run that took it instead, as `run(text, { whileRunning: "steer" })` |
 | `agent.configure({ model, instructions, thinkingLevel, tools, maxOutputTokens, temperature, language })` | `configure(…)` | change it between runs; `null` (`None`) removes `maxOutputTokens`, `temperature` or `language` |
-| `agent.schedule({ text, inSeconds, at, everySeconds, calendar, email })` | `schedule(…)` | wake it later; `schedules()`, `unschedule(id)` |
+| `agent.schedule({ text, inSeconds, at, everySeconds, calendar, cron, sessionMode, spendLimit, mounts, email })` | `schedule(…)` | wake it later; `schedules()`, `unschedule(id)`; [schedule options](https://run.camelai.com/docs/guides/schedules.md) |
+| `agent.runSchedule(id)` | `run_schedule(id)` | run a schedule now; returns its agent, requestId and request record |
 | `agent.files` | `agent.files` | `list`, `download`, `upload`, `link` by the paths the agent sees |
 | `agent.abort({ queued })` | `abort(queued=)` | stop the agent: its running turn, and the runs queued behind it (each fails with code `cancelled`); `queued: "keep"` stops the running turn only. Resolves with `{aborted, cancelled}` |
 | `agent.resetContext({ summary, keepMessages })` | `reset_context(summary=, keep_messages=)` | replace what the model is sent with its system message, a summary and its last `keepMessages` messages (0 to 20), without loading the old context: how an agent whose runs fail with `context_too_large` runs again ([Long conversations](https://run.camelai.com/docs/concepts.md#long-conversations)). History and files stay. Resolves with `{reset, keptMessages, before, after}`; also `runtime.resetContext(agentId, …)` |
@@ -8950,6 +9129,55 @@ Each reads `CAMELAI_API_KEY` (and `CAMELAI_BASE_URL` for a runtime of your own).
 `npm run demo:clients` runs the release board and inventory examples against a
 temporary local runtime with scripted code, calling no model.
 
+
+### Usage breakdowns and retained run logs
+
+TypeScript: call `agents.usage({ groupBy: ["agent", "model"], rollup: true })`,
+`agents.agentUsage(id)`, or `agents.runs.log(runId)`.
+Python: call `agents.usage(group_by=["agent", "model"], rollup=True)` or
+`agents.runs.log(run_id)`. Pass `agent=id` to usage to filter one agent.
+The lower-level Python runtime preserves its daily account totals when no
+grouping is requested.
+
+REST: `GET /v1/usage?groupBy=agent,model&rollup=true` returns
+`{since, groupBy, rollup, totals, groups}`. Dimensions are agent, definition,
+endUser, model and UTC day, in any combination. Costs are USD and include
+signed reconciliation adjustments. Attribution begins with migration 127.
+`GET /v1/agents/{id}/usage` filters an agent. With rollup enabled, it filters
+a root and includes its descendants; other dimensions keep their own values.
+The default account usage response is unchanged.
+
+`GET /v1/runs/{id}/log` returns `{run, durationMs, events}`. Each event contains
+a message in history order, its index and its timestamp (null if unavailable).
+Messages include model tool calls and tool results; the run contains errors,
+usage and start/end times. This is reconstructed from durable messages, not a
+transient streaming trace, and expires with the run. CLI equivalents:
+`camelrun usage --by agent,model --rollup` and `camelrun run-log <runId>`.
+
+
+Grouped usage uses daily aggregates retained for 400 UTC days. Expired rows are
+excluded from reads and deleted in batches by each backend's maintenance loop.
+Account-level daily totals keep their existing retention. `days` must be an
+integer from 1 to 365 (default 30). Deleted agents' usage remains readable by
+their tenant while its aggregates exist.
+
+Set `limit` from 1 to 500 (default 100) and pass the returned `next` as
+`cursor` to read grouped usage pages. Keep the other query parameters unchanged.
+`totals` covers the complete filtered result, not just the page. TypeScript
+accepts `limit`, `cursor`, and `workspaceId`; Python accepts `limit`,
+`cursor`, and `workspace_id`.
+
+Run logs take `limit` from 1 to 100 (default 50) and the returned `next` as
+`cursor`. Each response is at most 256 KiB; each message at most 16 KiB and the
+run summary at most 32 KiB. Oversized values become
+`{truncated: true, originalBytes, preview}`; the event and page also report
+`truncated: true`. A page boundary never discards the next message. Pass
+these options to `runs.log(id, options)` in TypeScript or `runs.log(id, **options)`
+in Python. Tool arguments and results can contain credentials or other sensitive
+data echoed by tools; log access requires the tenant's credential.
+
+CLI `camelrun usage` without `--by` returns the legacy daily report.
+
 ## Provision several resources
 
 Use `POST /v1/apply` or `runtime.apply(manifest)` to create keyed volumes, definitions, and agents together. `camelrun apply file.json --dry-run` validates without saving. References are objects such as `{"$ref":"volumes.project"}`. Existing agents must be unchanged; reconfigure them through the existing configuration API. See [Provision an application](https://run.camelai.com/docs/reference/apply.md) for the transaction boundary.
@@ -9238,6 +9466,17 @@ key in your shell's environment or an ignored file such as `.env.local`. A key
 or a connected app can create and delete every agent in the account. Give a
 coding agent a key of its own, or connect it with OAuth, so you can revoke it
 alone.
+
+## Scheduled runs
+
+`camelrun schedules add <agent> --text 'Report' --cron '0 9 * * 1-5'
+--time-zone America/Chicago --session-mode fresh --spend-limit 1` creates a
+weekday schedule. Omit `--session-mode` to continue the same agent. Existing
+`--in`, `--at` and `--every` timing flags still work.
+
+`camelrun schedules run <agent> <scheduleId>` runs it immediately without moving
+the next occurrence. See [Schedules](https://run.camelai.com/docs/guides/schedules.md) for retention and
+run history.
 
 ## Provision several resources
 
@@ -9676,6 +9915,7 @@ wait out `Retry-After` and retry. `GET /v1/billing` has the account's run limit
 | An agent's key (`Idempotency-Key` on `POST /v1/agents`, the SDKs' `upsert(key)`) | 1–80 characters of `A-Z a-z 0-9 _ -` |
 | Lifetime (`ttlSeconds`) | 60 s to 31,622,400 s (366 days), or `null`: until deleted. Default: until deleted for an agent made with a key; 1 day for one made without |
 | Create body (`POST /v1/agents`, with `initialMessages`) | 18 MiB |
+| Application `metadata` | JSON object, at most 16,384 UTF-8 bytes; top-level string fields can be filtered in the agent list |
 | Imported history (`initialMessages`) | 16 MB of JSON (`HISTORY_TOO_LARGE`, 413) |
 | `systemPrompt`, `systemPromptAppend` | 32,000 characters each |
 | `modelHeaders` | at most 20 headers, 8 KB in all; never auth headers |

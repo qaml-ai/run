@@ -10,7 +10,7 @@ import { configurationRefusal, configurationUpdate } from "../session-config.ts"
 import { validateDefinitions } from "../tool-policy.ts";
 import { canonical } from "../../shared/durable-json.ts";
 import type { Storage } from "../../shared/storage.ts";
-import { agentMetadata, type AgentMetadata } from "../../shared/agent-metadata.ts";
+import { applicationMetadata, agentMetadata, type AgentMetadata } from "../../shared/agent-metadata.ts";
 import { HttpError } from "../http.ts";
 import { VolumeService } from "../volumes.ts";
 import type { Db } from "../db.ts";
@@ -86,6 +86,7 @@ function reconfiguration(header: SessionHeader, definitions: ToolDefinition[], c
     maxOutputTokens: config.maxOutputTokens ?? null, temperature: config.temperature ?? null, dataCollection: config.dataCollection ?? null, name: metadata.name ?? null, type: metadata.type ?? null,
     // A language only when the upsert gives one (null clears it): an upsert from an SDK that predates it, which drops the
     // field, leaves the language set by PATCH .../configuration.
+    ...metadata.application !== undefined ? { metadata: metadata.application } : {},
     ...config.language !== undefined ? { language: config.language } : {},
     // Its queue likewise: an upsert that leaves it out keeps the one set by PATCH .../configuration.
     ...config.queue !== undefined ? { queue: config.queue } : {},
@@ -134,12 +135,15 @@ export function agentId(tenant: string, key: string) {
  * idempotency check, so a retry after the definition changed returns the same agent.
  */
 export async function create(ctx: ConfigurationContext, definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; bucket?: string; toolsHash?: string; remount?: boolean; defaultModel?: boolean; idleTtlMs?: number; builtins?: string[]; delegate?: DelegateSettings; mcpServers?: McpServerSpec[]; decide?: boolean; parent?: SessionHeader["parent"]; fork?: { id: string; from: ForkedFrom; messages: AgentMessage[]; turns: number[]; model: Message[] }; admit?: (unchanged: boolean) => Promise<unknown>; run?: RunSettings } = {}, steps = new Steps()): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
-  metadata = agentMetadata(metadata);
+  const applicationProvided = metadata?.application !== undefined;
+  try { metadata = agentMetadata(metadata); } catch (error) { throw new HttpError(400, (error as Error).message); }
   validateDefinitions(definitions);
   // The caller's key, shown in listings; an agent made without one gets a key nothing else knows.
   const key = given ?? randomUUID();
   if (!validId(key)) throw new HttpError(400, "Invalid provisioning idempotency key");
   const { id, token, existing } = await steps.time("lookup", keyed(ctx, tenant, key));
+  const previousMetadata = (ctx.sessions.get(id)?.header ?? existing?.value)?.metadata;
+  if (metadata.application === undefined && previousMetadata?.application !== undefined) metadata = { ...metadata, application: previousMetadata.application };
   // A stateless run's key names one run: the same request again is that run, as it is; another request is refused.
   const sameRun = (header: SessionHeader) => {
     if (header.tenant !== tenant || header.run?.fingerprint !== access.run!.fingerprint) throw new HttpError(409, "This Idempotency-Key was used for another run; use another key", "IDEMPOTENCY_CONFLICT");
@@ -156,10 +160,10 @@ export async function create(ctx: ConfigurationContext, definitions: ToolDefinit
   // Atomic provisioning may omit a previously assigned subject on an unchanged retry.
   if (applying() && identity?.subject === undefined && known?.identity?.subject !== undefined)
     identity = { ...identity, subject: known.identity.subject };
-  const provisionHash = hash(canonical({ ...origin ? { definition: origin.provision } : { definitions, config: safeConfig, ...(Object.keys(metadata).length ? { metadata } : {}), ...(mounts !== undefined ? { mounts } : {}), ...own }, ...(identity ? { identity } : {}) }));
+  const provisionHash = hash(canonical({ ...origin ? { definition: origin.provision } : { definitions, config: safeConfig, ...(Object.keys(metadata).length ? { metadata } : {}), ...(mounts !== undefined ? { mounts } : {}), ...own }, ...(metadata.application !== undefined ? { applicationMetadata: metadata.application } : {}), ...(identity ? { identity } : {}) }));
   // The same key for an existing agent updates it: create or reconfigure (the last upsert wins).
   // An upsert that names no model (nor its definition) leaves the agent's: the runtime's default is for agents being made.
-  const changes = (header: SessionHeader) => ({ reconfigure: { ...reconfiguration(header, definitions, safeConfig, metadata, mounts, origin, identity, provisionHash, own, access.remount, access.defaultModel), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}), ...(access.bucket !== undefined && access.bucket !== header.bucket ? { bucket: access.bucket } : {}) } });
+  const changes = (header: SessionHeader) => ({ reconfigure: { ...reconfiguration(header, definitions, safeConfig, applicationProvided ? metadata : { ...metadata, application: undefined }, mounts, origin, identity, provisionHash, own, access.remount, access.defaultModel), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}), ...(access.bucket !== undefined && access.bucket !== header.bucket ? { bucket: access.bucket } : {}) } });
   // An agent's own sources are its builtins (and their settings) and MCP servers; one made from a definition has the definition's.
   const sources: Sources | undefined = origin ? origin.sources : Object.keys(own).length ? own : undefined;
   // The caller counts the create (its rate limit) now, told whether the key's agent has this configuration already:
@@ -310,6 +314,7 @@ export type AgentListQuery = {
   subAgents?: "only" | "exclude";
   /** Part of its name, key or id, ignoring case. */
   q?: string;
+  metadata?: Record<string, string>;
   /** Just this agent (GET /v1/agents/{id}'s summary). */
   id?: string;
 };
@@ -329,6 +334,7 @@ export async function list(ctx: ConfigurationContext, tenant: string, query: Age
   const params: unknown[] = [tenant, now];
   const where = ["a.tenant = $1", "not a.revoked", "(a.expires_at is null or a.expires_at > $2)", "a.header->'run' is null"];
   const param = (value: unknown) => { params.push(value); return `$${params.length}`; };
+  if (query.metadata && Object.keys(query.metadata).length) where.push(`coalesce(a.header::jsonb->'metadata'->'application', a.header::jsonb->'config'->'metadata', '{}'::jsonb) @> ${param(JSON.stringify(query.metadata))}::jsonb`);
   if (query.id !== undefined) where.push(`a.id = ${param(query.id)}`);
   if (query.cursor !== undefined) where.push(`a.id > ${param(decodeCursor(query.cursor))}`);
   if (query.workspaceId === "unassigned") where.push("w.workspace is null");
@@ -344,7 +350,7 @@ export async function list(ctx: ConfigurationContext, tenant: string, query: Age
   }
   const limit = query.limit === undefined ? undefined : Math.min(Math.max(1, query.limit), AGENT_PAGE_MAX);
   const { rows } = await ctx.db.query(`
-    select a.id, a.header->>'key' as key, a.name, a.type, a.model, a.expires_at, a.resume_failures, a.resume_after, a.header->'parent'->>'agentId' as parent, a.header->>'provisionHash' as config_hash,
+    select coalesce(a.header::jsonb->'metadata'->'application', '{}'::jsonb) as application_metadata, a.id, a.header->>'key' as key, a.name, a.type, a.model, a.expires_at, a.resume_failures, a.resume_after, a.header->'parent'->>'agentId' as parent, a.header->>'provisionHash' as config_hash,
       a.last_active_at, a.last_error_at, a.last_error_class, w.workspace, n.node is not null as served
     from agents a
     left join actor_owners o on o.actor = a.id
@@ -359,7 +365,7 @@ export async function list(ctx: ConfigurationContext, tenant: string, query: Age
     const running = ctx.supervisor.agents.has(row.id) || (!local && row.served);
     // The configuration it has: equal hashes, equal configurations (an upsert of it changes nothing).
     const configHash = (local?.header.provisionHash ?? row.config_hash) as string;
-    return { id: row.id as string, key: row.key as string | null, name: row.name as string, type: row.type as string, model: row.model as string, configHash, connected: !!response && !response.destroyed, running: running as boolean, expiresAt: row.expires_at as number | null,
+    return { metadata: row.application_metadata as Record<string, unknown>, id: row.id as string, key: row.key as string | null, name: row.name as string, type: row.type as string, model: row.model as string, configHash, connected: !!response && !response.destroyed, running: running as boolean, expiresAt: row.expires_at as number | null,
       resume: row.resume_failures ? { failures: row.resume_failures as number, after: Number(row.resume_after) } : null, ...(row.parent ? { parentAgentId: row.parent as string } : {}),
       workspaceId: (row.workspace ?? null) as string | null,
       lastActiveAt: row.last_active_at === null ? null : Number(row.last_active_at),
@@ -477,7 +483,7 @@ export async function configure(ctx: ConfigurationContext, session: Session, par
   const applied = params.definition !== undefined ? await definitionUpdate(ctx, session, params.definition) : undefined;
   // An upsert's own fields (see `reconfiguration`): what the agent is called, and the configuration it now matches.
   // Of its target, only what the agent does not have already is applied.
-  const { provisionHash, name, type, toolsHash: declared, ...asked } = params;
+  const { provisionHash, name, type, metadata: application, toolsHash: declared, ...asked } = params;
   // The hash of the tools as the application declared them: given by an upsert, else of a configure's own mcp.tools.
   const toolsHash = declared ?? (asked.mcp?.tools !== undefined ? hash(JSON.stringify(asked.mcp.tools)) : undefined);
   const { mounts, ...wanted } = asked;
@@ -487,7 +493,7 @@ export async function configure(ctx: ConfigurationContext, session: Session, par
   const sources = reSourced ? ownSources(session.header.sources, { builtins, delegate, mcpServers, decide }, inlineServers(ctx, session.header.tenant)) : session.header.sources;
   // An upsert with remount: true sets its mounts here, between turns; the agent's next start describes them.
   if (mounts !== undefined) await sessionTools.remount(ctx.toolsContext, session, mounts);
-  const changed = provisionHash === undefined || reSourced || mounts !== undefined || Object.keys(given).length > 0 || (name !== undefined && name !== (session.header.metadata?.name ?? null)) || (type !== undefined && type !== (session.header.metadata?.type ?? null));
+  const changed = (application !== undefined && canonical(application) !== canonical(session.header.metadata?.application ?? {})) || provisionHash === undefined || reSourced || mounts !== undefined || Object.keys(given).length > 0 || (name !== undefined && name !== (session.header.metadata?.name ?? null)) || (type !== undefined && type !== (session.header.metadata?.type ?? null));
   const { keyScope, ...update } = (applied?.update ?? configurationUpdate(given, ctx.options.modelEndpoints?.(session.header.tenant), await ctx.options.customProviders?.(session.header.tenant, scopeAfter(session.header, given)))) as ReturnType<typeof configurationUpdate> & { fileTools?: boolean; codeMode?: boolean };
   if (update.model) update.model = await withOpenRouterDetails(update.model);
   // Checked again as it applies, after the configuration queued before it (a definition's own change is not: its calls leave out what does not apply).
@@ -520,6 +526,7 @@ export async function configure(ctx: ConfigurationContext, session: Session, par
   }
   if (provisionHash !== undefined) session.header.provisionHash = provisionHash;
   if (toolsHash !== undefined) session.header.toolsHash = toolsHash;
+  if (application !== undefined) session.header.metadata = { ...session.header.metadata, application: applicationMetadata(application) };
   if (name !== undefined || type !== undefined) {
     const metadata = { ...session.header.metadata, ...name !== undefined ? { name } : {}, ...type !== undefined ? { type } : {} };
     session.header.metadata = Object.fromEntries(Object.entries(metadata).filter(([, value]) => value !== null)) as AgentMetadata;

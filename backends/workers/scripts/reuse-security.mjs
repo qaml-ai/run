@@ -9,6 +9,7 @@ for (const name of ["accounts.ts", "tenants.ts", "key-scopes.ts", "model-provide
   let text = await source(name);
   text = text.replaceAll('"./db.ts"', '"./postgres.ts"').replaceAll('"./http.ts"', '"./errors.ts"');
   if (name === "accounts.ts") text = text
+    .replace('"../shared/usage-details.ts"', '"../../../shared/usage-details.ts"')
     .replace('"./anthropic-federation.ts"', '"./security-host.ts"')
     .replace('"./client-sessions/state.ts"', '"./money-host.ts"')
     .replace('"./azure-openai.ts"', '"./security-host.ts"')
