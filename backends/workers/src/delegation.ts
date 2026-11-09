@@ -71,6 +71,8 @@ export interface DelegationHost {
    * attaches nothing, a fork (forkComputer's) starts the child's computers from the parent's snapshots.
    */
   inheritComputer?(parent: string, child: string, computer?: 'none' | 'share' | ChildComputerFork): Promise<void>;
+  /** This agent has a native computer (it declares one, or shares its parent's): what a child's own machine needs. */
+  hasComputer?(): Promise<boolean>;
   /** Snapshot the parent's computers for a fork: once per batch (one call's children share it). Throws FORK_UNSUPPORTED or NO_SESSION. */
   forkComputer?(batch: string): Promise<ChildComputerFork>;
   /** A made child's work ended (its delegate call answered): its computers stop billing. */
@@ -374,6 +376,9 @@ export class Delegation {
           const childConf: Configuration = childConfig(config, resolved?.config, run.params);
           // No computer: no native computer settings either (egress grants and their credentials stay the parent's).
           if (choice === 'none') delete childConf.computer;
+          // Its own machine (fresh, fork) from a parent that has one: a child whose configuration declares none gets the
+          // default computer. A parent without a computer gives none.
+          else if (choice !== 'share' && !resolved?.id && childConf.computer === undefined && await this.host.hasComputer?.()) childConf.computer = {};
           const made = resolved?.id ? resolved : await this.host.create({ ...childConf, name: admitted.name, type: 'subagent', ttlSeconds: MULTI_AGENT_LIMITS.childTtlSeconds }, key, { agent: id, run: run.id, place: { ...place, ...(admitted.payer !== undefined ? { payer: admitted.payer } : {}) } });
           let fork: ChildComputerFork | undefined;
           try { fork = await forking; }

@@ -16,7 +16,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord";
 import { PiHarness } from "agents/harness/pi";
 import { startStuck } from "./agent-lifecycle.ts";
-import { computerOwner, computerDisabled } from "../../../src/core/computer-share.ts";
+import { computerOwner, computerDisabled, hasComputer } from "../../../src/core/computer-share.ts";
 import { withSql as shareSql } from "./postgres.ts";
 import { computerTool } from "./computers/tool.ts";
 import { computerSetup } from "./computers/agent-setup.ts";
@@ -223,9 +223,20 @@ export async function enabledToolsImpl(this: AgentRuntime,
       new Set(this.workspaceToolNames),
       config,
       await this.computerNames(),
-      this.env,
+      await this.hasNativeComputer(config),
     );
   }
+
+/**
+ * This agent has a native computer: the deployment binds them, and the agent shares its parent's or its configuration
+ * declares `computer`. Read each turn (a share is recorded after the child is made); without one the `computer` tool is
+ * neither offered nor listed, and nothing starts a container for it.
+ */
+export async function hasNativeComputerImpl(this: AgentRuntime, config?: AgentConfiguration) {
+  if (!this.env.COMPUTER_CONTAINERS) return false;
+  const conf = await this.config();
+  return shareSql(this.env, sql => hasComputer(sql, conf.tenantId, conf.id, (config ?? conf.config).computer !== undefined));
+}
 
 export function createHarness(this: AgentRuntime): PiHarness {
   return new PiHarness({

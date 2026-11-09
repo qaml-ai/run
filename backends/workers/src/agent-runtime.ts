@@ -45,7 +45,7 @@ import { currentRunImpl, recordsImpl, markBeganImpl, observeImpl, requestForInpu
 import { removeMemberImpl, abortRequestsImpl, resumeKeptQueueImpl, cancelRequestImpl, resumeCancellationImpl, restoreCancellationsImpl, abortExecutionsImpl, markCancelledRequestsImpl, cancelHostIntentImpl, cancelHumanInputsImpl, startHostRequestImpl, restoreHostAdmissionsImpl } from "./agent-cancellation.ts";
 import { releaseConfigurationWaitersImpl, configureRequestImpl, acceptConfigurationRequestImpl, applyConfigurationRequestImpl, requireApplicationImpl, admitImpl, createConfigurationQueue } from "./agent-admission.ts";
 import { imageToolsImpl, sourceIdentityImpl, fileRequestIdImpl } from "./agent-attachments.ts";
-import { computerNamesImpl, refreshComputerToolsImpl, enabledToolsImpl, createDecisions, createModels, createHarness } from "./agent-tools.ts";
+import { computerNamesImpl, refreshComputerToolsImpl, enabledToolsImpl, hasNativeComputerImpl, createDecisions, createModels, createHarness } from "./agent-tools.ts";
 import { agentSpendImpl, admitRequestImpl, endUserLimitImpl, requestUsageImpl, usageViewImpl, usageForRequestImpl, flushBillingImpl, createLimits } from "./agent-billing.ts";
 import { admitDelegateWakeImpl, receiveAgentMessageImpl, receiveAgentProgressImpl, hasBackgroundChildImpl, createNotifications, createDelegation } from "./agent-delegation.ts";
 import { replayedRequestImpl, requestResponseImpl, activityImpl, stateImpl, historyImpl, fetchImpl, fetchRequestImpl } from "./agent-http.ts";
@@ -212,6 +212,10 @@ export class AgentRuntime extends AgentContext {
   }
   computerNames() {
     return computerNamesImpl.call(this);
+  }
+
+  hasNativeComputer(config?: AgentConfiguration) {
+    return hasNativeComputerImpl.call(this, config);
   }
 
   refreshComputerTools() {

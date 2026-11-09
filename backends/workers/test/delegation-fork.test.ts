@@ -5,7 +5,7 @@ import { Delegation, type ChildComputerFork, type DelegatedChild, type Delegatio
 // computer: "fork": the parent's snapshot is taken while the child is made (both take seconds on Cloudflare), and a
 // fork that cannot be taken still fails the call with nothing kept.
 
-function world(fork: () => Promise<ChildComputerFork>, options: { definition?: Record<string, unknown>; existing?: boolean; parent?: Record<string, unknown> } = {}) {
+function world(fork: () => Promise<ChildComputerFork>, options: { definition?: Record<string, unknown>; existing?: boolean; parent?: Record<string, unknown>; hasComputer?: boolean } = {}) {
   const values = new Map<string, unknown>();
   let transaction = Promise.resolve<unknown>(undefined);
   const storage = {
@@ -28,6 +28,7 @@ function world(fork: () => Promise<ChildComputerFork>, options: { definition?: R
     target: async () => { if (!options.definition) throw new Error('unexpected target'); return { config: options.definition as never, ...(options.existing ? {id: "existing-worker"} : {}) }; },
     forkComputer: async () => { order.push('fork started'); const value = await fork(); order.push('fork taken'); return value; },
     inheritComputer: async (_parent, _child, computer) => { inherited.push(computer); },
+    hasComputer: async () => options.hasComputer ?? true,
     fetch: async (_id, request) => {
       const url = new URL(request.url);
       if (url.pathname === '/events') {
@@ -101,6 +102,24 @@ test('an explicit fresh gives an instructions child the parent\'s computer setti
   await start(none, { agent: 'worker', computer: 'none' });
   assert.equal('computer' in none.created[0], false);
   assert.deepEqual(none.inherited, ['none']);
+});
+
+test('a machine of its own for a definition that declares none: the default computer from a parent that has one, nothing from one that has none', async () => {
+  const definition = { model: 'test/echo', systemPrompt: 'worker' };
+  for (const computer of ['fresh', 'fork']) {
+    const given = world(async () => snapshot, { definition });
+    await start(given, { agent: 'worker', computer });
+    assert.deepEqual(given.created[0].computer, {}, `${computer}: the child declares the default computer`);
+    const without = world(async () => snapshot, { definition, parent: { computer: undefined }, hasComputer: false });
+    await start(without, { agent: 'worker', computer });
+    assert.equal(without.created[0].computer, undefined, `${computer}: a parent without a computer gives none`);
+  }
+  const inline = world(async () => snapshot, { parent: { computer: undefined }, hasComputer: false });
+  await start(inline, { instructions: 'helper', computer: 'fresh' });
+  assert.equal(inline.created[0].computer, undefined);
+  const shared = world(async () => snapshot, { definition, hasComputer: true });
+  await start(shared, { agent: 'worker' });
+  assert.equal('computer' in shared.created[0], false, 'a sharing child uses its parent\'s machine and declares nothing');
 });
 
 for (const existing of [false, true]) test(`${existing ? 'existing' : 'definition'} delegation keeps the target's own credentials`, async () => {

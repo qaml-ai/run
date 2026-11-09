@@ -131,16 +131,30 @@ test(
       }
     });
     try {
-      const create = await fetch(`${server.url}/v1/agents`, {
+      const post = (path: string, body: object) => fetch(`${server.url}${path}`, {
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,
           "content-type": "application/json",
         },
-        body: JSON.stringify({ model: "test/echo" }),
+        body: JSON.stringify(body),
       });
+      // An agent has a computer only when its definition declares one: `computer: {}` is the default computer.
+      const defined = await post("/v1/definitions", { name: "Computer", computer: {} });
+      assert.equal(defined.status, 201, await defined.clone().text());
+      const definition = ((await defined.json()) as { id: string; computer: object });
+      assert.deepEqual(definition.computer, {});
+      const create = await post("/v1/agents", { definition: definition.id, model: "test/echo" });
       assert.equal(create.status, 201, await create.clone().text());
       const { id, token: agentToken } = (await create.json()) as { id: string; token: string };
+      // Without one, the deployment's containers are not this agent's: its computer route starts nothing.
+      const plain = await post("/v1/agents", { model: "test/echo" });
+      assert.equal(plain.status, 201, await plain.clone().text());
+      const plainId = ((await plain.json()) as { id: string }).id;
+      const refused = await post(`/experimental/agents/${plainId}/computer`, { provider: "container", op: "exec", argv: ["true"] });
+      assert.equal(refused.status, 409, await refused.clone().text());
+      assert.match(JSON.stringify(await refused.json()), /This agent has no computer: add `computer` to its definition/);
+      assert.doesNotMatch(server.logs(), /containerName = /, "nothing started a container for it");
       const call = async (
         provider: string,
         request: object,
@@ -309,7 +323,7 @@ test(
           // Fork: two other agents' computers start from one snapshot of this running computer (the fork RPCs).
           const children: string[] = [];
           for (const name of ["fork-a", "fork-b"]) {
-            const made = await fetch(`${server.url}/v1/agents`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ model: "test/echo", name }) });
+            const made = await fetch(`${server.url}/v1/agents`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ definition: definition.id, model: "test/echo", name }) });
             assert.equal(made.status, 201, await made.clone().text());
             children.push(((await made.json()) as { id: string }).id);
           }
@@ -460,12 +474,14 @@ test("computer egress: git clone and push through the runtime's credential gatew
   t.after(() => close(exchange.server));
 
   // A scripted model: the parent spawns one inline child, which answers at once.
+  const offered: { text: string; tools: string[] }[] = [];
   const model = await listen(async (request, response) => {
     let raw = ""; for await (const chunk of request) raw += chunk;
     const body = JSON.parse(raw), text = JSON.stringify(body.messages);
-    const delta = (text.includes("FORK_CHILD") || text.includes("SHARE_CHILD")) || body.messages.at(-1).role === "tool" || text.includes("agent_notification")
+    offered.push({ text, tools: (body.tools ?? []).map((tool: any) => tool.function?.name ?? tool.name) });
+    const delta = (text.includes("FORK_CHILD") || text.includes("SHARE_CHILD") || text.includes("PLAIN_CHILD") || text.includes("NO_SPAWN")) || body.messages.at(-1).role === "tool" || text.includes("agent_notification")
       ? { role: "assistant", content: "done" }
-      : { role: "assistant", tool_calls: [{ index: 0, id: "spawn-1", type: "function", function: { name: "spawn_agent", arguments: JSON.stringify({ instructions: text.includes("REQUEST_SHARE") ? "SHARE_CHILD" : "FORK_CHILD", task: "Work on the computer", name: "worker", ...(text.includes("REQUEST_SHARE") ? {} : { computer: "fresh" }) }) } }] };
+      : { role: "assistant", tool_calls: [{ index: 0, id: "spawn-1", type: "function", function: { name: "spawn_agent", arguments: JSON.stringify({ instructions: text.includes("REQUEST_PLAIN") ? "PLAIN_CHILD" : text.includes("REQUEST_SHARE") ? "SHARE_CHILD" : "FORK_CHILD", task: "Work on the computer", name: "worker", ...(text.includes("REQUEST_SHARE") || text.includes("REQUEST_PLAIN") ? {} : { computer: "fresh" }) }) } }] };
     response.writeHead(200, { "content-type": "text/event-stream" });
     response.write(`data: ${JSON.stringify({ id: "m", object: "chat.completion.chunk", choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`);
     response.end(`data: ${JSON.stringify({ id: "m", object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" in delta ? "tool_calls" : "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0 } })}\n\ndata: [DONE]\n\n`);
@@ -581,6 +597,41 @@ test("computer egress: git clone and push through the runtime's credential gatew
   }
   await api(`/v1/agents/${sharedChild}`, { method: "DELETE" });
   assert.match((await sh(sharedLead.id, "cat /workspace/shared.txt")).stdout, /parent/);
+
+  // Only an agent that has a computer is offered the tool: this deployment's containers alone give none.
+  const toolsOf = async (marker: string, not = "\0") => {
+    for (const deadline = Date.now() + 60_000; Date.now() < deadline; await new Promise(resolve => setTimeout(resolve, 100))) {
+      const seen = offered.find(entry => entry.text.includes(marker) && !entry.text.includes(not));
+      if (seen) return seen.tools;
+    }
+    throw new Error(`the model never saw ${marker}`);
+  };
+  const coderDefinition = await api("/v1/definitions", { body: { name: "Coder", computer: {} } });
+  assert.deepEqual(coderDefinition.computer, {}, "computer: {} declares the default computer");
+  const coder = await api("/v1/agents", { body: { definition: coderDefinition.id } });
+  await api(`/v1/agents/${coder.id}/prompt`, { body: { text: "NO_SPAWN coder" } });
+  assert.ok((await toolsOf("NO_SPAWN coder")).includes("computer"), "an agent whose definition declares a computer gets the tool");
+  const plainDefinition = await api("/v1/definitions", { body: { name: "Messenger", builtins: ["agents"], delegate: { instructions: true } } });
+  const messenger = await api("/v1/agents", { body: { definition: plainDefinition.id } });
+  await api(`/v1/agents/${messenger.id}/prompt`, { body: { text: "NO_SPAWN messenger" } });
+  const messengerTools = await toolsOf("NO_SPAWN messenger");
+  assert.ok(messengerTools.includes("spawn_agent") && !messengerTools.includes("computer"), JSON.stringify(messengerTools));
+  const noComputer = await computer(messenger.id, { op: "exec", command: "echo should-not-run" }, [409]);
+  assert.match(JSON.stringify(noComputer), /This agent has no computer: add `computer` to its definition/);
+  // Its children default to none, as with any parent that has no computer.
+  const plainParent = await api("/v1/agents", { body: { definition: plainDefinition.id } });
+  await api(`/v1/agents/${plainParent.id}/prompt`, { body: { text: "REQUEST_PLAIN" } });
+  let plainChild: string | undefined;
+  for (let i = 0; i < 100 && !plainChild; i++) {
+    const children = await api(`/v1/agents/${plainParent.id}/children`);
+    plainChild = children.children?.[0]?.agentId ?? children.children?.[0]?.id;
+    if (!plainChild) await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.ok(plainChild);
+  assert.deepEqual((await fixture.db.query("select owner from computer_shares where agent=$1", [plainChild])).rows, [{ owner: null }]);
+  await computer(plainChild, { op: "exec", command: "echo should-not-run" }, [409]);
+  assert.ok(!(await toolsOf("PLAIN_CHILD", "REQUEST_PLAIN")).includes("computer"), "a child without a computer is not offered the tool");
+  assert.ok((await toolsOf("SHARE_CHILD", "REQUEST_SHARE")).includes("computer"), "a child sharing its parent's computer is");
 
   const capped = await api("/v1/agents", { body: { definition: definition.id, computerLimit: 1 } });
   await sh(capped.id, "echo root > /workspace/root.txt");

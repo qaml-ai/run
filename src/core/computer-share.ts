@@ -13,6 +13,16 @@ export async function computerDisabled(sql: Sql, tenant: string, agent: string):
   const row = (await sql.query("select owner from computer_shares where tenant=$1 and agent=$2", [tenant, agent])).rows[0];
   return !!row && row.owner === null;
 }
+/**
+ * Whether an agent has a computer of its own kind (the Workers native one): it shares its parent's (a row with an
+ * owner), or its configuration declares `computer` (`declared`: its definition's, or the one its parent gave it). A
+ * NULL owner is none, whatever is declared. Nothing else gives an agent a computer: not the deployment offering them.
+ */
+export async function hasComputer(sql: Sql, tenant: string, agent: string, declared: boolean): Promise<boolean> {
+  const row = (await sql.query("select owner from computer_shares where tenant=$1 and agent=$2", [tenant, agent])).rows[0];
+  return row ? row.owner !== null : declared;
+}
+export const NO_COMPUTER = "This agent has no computer: add `computer` to its definition";
 export async function disableComputer(sql: Sql, tenant: string, child: string) {
   await sql.query("insert into computer_shares(tenant,agent,owner) values($1,$2,null) on conflict (agent) do nothing", [tenant, child]);
 }
