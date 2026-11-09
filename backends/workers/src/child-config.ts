@@ -32,9 +32,10 @@ export function childSecurity(parent: Record<string, any>, target: Record<string
     ...(target.computer.egress ? { egress: target.computer.egress.filter((g: any) => !g.auth || (parent.computer?.egress ?? []).some((p: any) => JSON.stringify(p) === JSON.stringify(g))) } : {}),
   };
   const sources = Object.fromEntries(['mcpServers', 'openApi'].filter(k => target[k]).map(k => [k, target[k].filter((s: any) => {
+    const inherited = (parent[k] ?? []).some((p: any) => JSON.stringify([p.url, p.baseUrl, p.auth, p.headers, p.sealed]) === JSON.stringify([s.url, s.baseUrl, s.auth, s.headers, s.sealed]));
+    if ((Object.keys(s.headers ?? {}).length || s.sealed) && !inherited) return false;
     if (s.auth?.type === 'vault') return permitted(s.auth);
-    if (s.auth?.type === 'runtime' || !(s.auth || Object.keys(s.headers ?? {}).length || s.sealed)) return true;
-    return (parent[k] ?? []).some((p: any) => JSON.stringify([p.url, p.baseUrl, p.auth, p.headers, p.sealed]) === JSON.stringify([s.url, s.baseUrl, s.auth, s.headers, s.sealed]));
+    return !s.auth || s.auth.type === 'runtime' || inherited;
   })]));
   return { ...(networking ? { networking } : {}), ...(computer ? { computer } : {}), ...sources };
 }

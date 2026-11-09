@@ -50,3 +50,15 @@ test('existing delegation targets cannot bypass a parent boundary',async()=>{
   assert.throws(()=>assertChildSecurity(parent,{...parent,computer:{secrets:[{type:'vault',name:'OTHER'}]}}),/exceeds/);
   assert.doesNotThrow(()=>assertChildSecurity(parent,{networking:{...parent.networking,allowedHosts:['api.example.com']}}));
 });
+
+
+test('runtime and vault auth cannot smuggle a target definition’s static credentials into a child',async()=>{
+  const {childSecurity}=await import('../src/child-config.ts');
+  const parent={computer:{secrets:[{type:'vault',name:'TOKEN'}]}};
+  const target={mcpServers:[
+    {name:'runtime',url:'https://example.com',auth:{type:'runtime'},sealed:{ciphertext:'other'}},
+    {name:'vault',url:'https://example.com',auth:{type:'vault',name:'TOKEN'},headers:{'x-api-key':'other-secret'}},
+    {name:'identity',url:'https://example.com',auth:{type:'runtime'}},
+  ]};
+  assert.deepEqual(childSecurity(parent,target).mcpServers,[target.mcpServers[2]]);
+});

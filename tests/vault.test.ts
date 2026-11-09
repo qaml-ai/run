@@ -92,6 +92,10 @@ test('request bodies stream without a cap unless the attached reference opts int
   assert.equal((await result.request.arrayBuffer()).byteLength,huge.length);
   assert.equal(opened,0);
   await assert.rejects(vaultRequest(new Request('https://api.stripe.com',{method:'POST',body:huge}),[{type:'vault',name:'TOKEN',inBody:true}],lazy,'a'),(e:any)=>e.status===413);
+  const headerVault=vault(); await headerVault.put('a','TOKEN',{value:'header-secret',allowedHosts:['api.stripe.com']},'',true);
+  const withHeader=await vaultRequest(new Request('https://api.stripe.com',{method:'POST',body:huge,headers:{authorization:secretPlaceholder('TOKEN')}}),[{type:'vault',name:'TOKEN'}],headerVault,'a');
+  assert.equal(withHeader.request.headers.get('authorization'),'header-secret');
+  assert.equal((await withHeader.request.arrayBuffer()).byteLength,huge.length);
   const v=vault();await v.put('a','TOKEN',{value:'body-secret',allowedHosts:['api.stripe.com'],locations:['body']},'',true);
   const body=await vaultRequest(new Request('https://api.stripe.com',{method:'POST',body:secretPlaceholder('TOKEN'),headers:{'content-length':String(secretPlaceholder('TOKEN').length)}}),[{type:'vault',name:'TOKEN',inBody:true}],v,'a');
   assert.equal(body.request.headers.get('content-length'),null);
@@ -102,6 +106,8 @@ test('binary responses bypass masking and unchanged text keeps validators',async
   const bytes=new Uint8Array([0,255,1,2,3]);
   const pack=new Response(bytes,{headers:{'content-type':'application/x-git-upload-pack-result',etag:'"pack"','content-length':'5'}});
   assert.equal(await maskResponse(pack,['long-secret']),pack);
+  const empty=await maskResponse(new Response(null,{status:204,headers:{'content-type':'text/plain',etag:'empty'}}),['long-secret']);
+  assert.equal(empty.status,204);assert.equal(empty.body,null);assert.equal(empty.headers.get('etag'),'empty');
   const original=new Response('public text',{headers:{'content-type':'text/plain',etag:'"text"','content-length':'11'}});
   const unchanged=await maskResponse(original,['long-secret']);
   assert.equal(unchanged.headers.get('etag'),'"text"');assert.equal(unchanged.headers.get('content-length'),'11');assert.equal(await unchanged.text(),'public text');

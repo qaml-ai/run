@@ -19,7 +19,7 @@ const anonymous = await fetch(new URL(`${repo.pathname}/info/refs?service=git-up
 await anonymous.body?.cancel();
 assert([401,403,404].includes(anonymous.status), 'Use a private repository to verify GitHub App authentication');
 const api = async (path, body) => {
-  const r = await fetch(new URL(path,base), {method:body?'POST':'GET',headers:{authorization:`Bearer ${process.env.CAMELAI_API_KEY}`,'content-type':'application/json'},...(body?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(180_000),redirect:'error'});
+  const r = await fetch(new URL(path,base), {method:body?'POST':'GET',headers:{authorization:`Bearer ${process.env.CAMELAI_API_KEY}`,'content-type':'application/json'},...(body?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(180_000),redirect:'manual'});
   assert(r.ok, `Pilot API returned HTTP ${r.status}`);
   return r.json();
 };

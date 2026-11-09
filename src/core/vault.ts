@@ -111,11 +111,12 @@ export async function maskResponse(response: Response, values: string[]): Promis
   const headerChanged = [...response.headers].some(([k,v]) => headers.get(k) !== v) || hide(response.statusText) !== response.statusText;
   // Validators and fixed lengths can only be preserved after knowing whether text changed.
   if (response.headers.has("content-length") || response.headers.has("etag")) {
+    const bodyless = response.body === null;
     const original = new Uint8Array(await response.arrayBuffer());
     const filtered = filter(original, true);
-    if (!changed && !headerChanged) return new Response(original, {status:response.status,statusText:response.statusText,headers:response.headers});
+    if (!changed && !headerChanged) return new Response(bodyless ? null : original, {status:response.status,statusText:response.statusText,headers:response.headers});
     for (const key of ["content-length", "content-encoding", "etag", "content-md5"]) headers.delete(key);
-    return new Response(filtered, {status:response.status,statusText:hide(response.statusText),headers});
+    return new Response(bodyless ? null : filtered, {status:response.status,statusText:hide(response.statusText),headers});
   }
   const stream = response.body?.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) { controller.enqueue(filter(chunk, false)); },
