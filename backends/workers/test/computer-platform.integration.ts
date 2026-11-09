@@ -142,7 +142,7 @@ test('browser tools need no shell command and provider calls retain the remainin
   await assert.rejects(service.call(agent, 'computer_exec', {}, 'invalid'), /Invalid computer command/);
 });
 
-test('a Lambda exec checks only its machine, sharing refuses a resume, and the owner can resume', async t => {
+test('a Lambda exec checks only its machine, shares first use and idle resume, and refuses explicit stops', async t => {
   const { ComputerService } = await import('../src/computers/service.ts');
   const { shareComputer } = await import('../../../src/core/computer-share.ts');
   const fixture = await startFixture(); t.after(() => fixture.stop());
@@ -159,17 +159,21 @@ test('a Lambda exec checks only its machine, sharing refuses a resume, and the o
     return (await response.json() as any).id as string;
   };
   const owner = await create(), child = await create(), other = await create();
-  for (const agent of [owner, other]) { await service.create({ agent, provider: 'lambda' }); await service.call(agent, 'computer_start', {}, `start-${agent}`); }
+  for (const agent of [owner, other]) await service.create({ agent, provider: 'lambda' });
   await shareComputer(fixture.db as any, 'camelrun-proto-local', owner, child);
   await service.call(child, 'computer_exec', { command: 'true' }, 'shared-running');
   assert.deepEqual(checked, [owner]);
   running = false;
-  await assert.rejects(service.call(child, 'computer_exec', { command: 'true' }, 'shared-stopped'), /parent's machine is stopped/);
-  assert.equal(commands.length, 1);
-  await service.call(owner, 'computer_exec', { command: 'true' }, 'owner-resume');
+  await service.call(child, 'computer_exec', { command: 'true' }, 'shared-idle-resume');
   assert.equal(commands.length, 2);
+  assert.equal((await fixture.db.query('select agent from computer_leases')).rows[0].agent, owner);
+  await service.call(owner, 'computer_exec', { command: 'true' }, 'owner-resume');
+  assert.equal(commands.length, 3);
+  await service.call(owner, 'computer_stop', {}, 'explicit-stop');
+  await assert.rejects(service.call(child, 'computer_exec', { command: 'true' }, 'shared-stopped'), (error: any) => error.code === 'COMPUTER_STOPPED');
+  await service.call(owner, 'computer_start', {}, 'restart');
   const connection = (await service.status(owner)).connection.id;
   await fixture.db.query('update computer_leases set expires_at=1 where connection=$1', [connection]);
   await assert.rejects(service.call(child, 'computer_exec', { command: 'true' }, 'expired'), /parent's machine is stopped/);
-  assert.equal(commands.length, 2);
+  assert.equal(commands.length, 3);
 });

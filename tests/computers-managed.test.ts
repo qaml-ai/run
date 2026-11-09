@@ -342,3 +342,18 @@ test("switching the default to Lambda keeps existing Boat sessions on Boat", asy
     assert.equal((await f.row("b")).provider, "lambda");
   } finally { f.done(); }
 });
+
+
+test("a sharing child's first exec starts and bills its owner's managed computer, but never undoes a stop", async () => {
+  const f = await fixture({ extraAgents: ['child'] });
+  try {
+    await f.connect();
+    await f.db.query("insert into computer_shares(tenant,agent,owner) values('payg','child','a')");
+    assert.equal((await f.service.call('payg', 'child', 'computer_exec', { command: 'true' }, 'first') as any).exitCode, 0);
+    assert.equal(f.state.creates, 1);
+    assert.equal((await f.row()).agent, 'a');
+    await f.stop();
+    await assert.rejects(f.service.call('payg', 'child', 'computer_exec', { command: 'true' }, 'stopped'), (error: any) => error.code === 'COMPUTER_STOPPED');
+    assert.equal(f.state.creates, 1);
+  } finally { f.done(); }
+});

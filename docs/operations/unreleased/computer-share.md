@@ -13,3 +13,6 @@ no extra slot. New starts at the cap are refused without stopping running machin
 Give each sharing child its own directory or git worktree. If the parent's machine
 stops, a child is told to finish and report back. Background `spawn_agent` workers
 keep their machines for later messages; only completed `delegate` tasks release them.
+
+Shared use starts an unused parent machine and resumes it after idle suspension.
+An explicit stop, deletion or expired lease still refuses the child's call.

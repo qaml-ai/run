@@ -332,6 +332,13 @@ export class Computers {
     const shared = connection.agent !== agent;
     if (shared && ["computer_start", "computer_stop"].includes(name)) throw new HttpError(409, SHARED_COMPUTER_CONTROL);
     if (shared) requestKey = `${agent}:${requestKey}`;
+    if (shared && name !== "computer_status") {
+      // First use may start the owner's unused connection. A past session or explicit stop is never restarted.
+      const history = await this.options.db.query(`select 1 from managed_computers where connection=$1
+        union all select 1 from computer_leases where connection=$1
+        union all select 1 from computer_operations where connection=$1 and result @> '{"stopped":true}'::jsonb limit 1`, [connection.id]);
+      if (!history.rowCount) await this.call(tenant, connection.agent, "computer_start", {}, `shared-first-use:${connection.id}`);
+    }
     if (connection.managed) {
       if (!SHELL.concat(COMMON).some(t => t.name === name)) throw new HttpError(400, "Tool not supported by this computer");
       const input = JSON.stringify([name, args]);
@@ -362,8 +369,8 @@ export class Computers {
         // A forked connection's every new session starts from its seed, the parent's disk as it was at the fork.
         const from = await this.seedOf(c);
         await transaction(this.options.db, db => reserveComputer(db, tenant, c.agent, c.id, this.now() + c.lease_seconds * 1000, this.now(), this.options.tenantComputerLimit?.(tenant)));
-        const session = id(), now = this.now(), workspace = await new Workspaces(this.options.db).current(tenant, "agent", agent, sql);
-        lease = (await sql.query("insert into computer_leases(id,tenant,agent,connection,workspace,provider,state,created_at,expires_at) values($1,$2,$3,$4,$5,$6,'starting',$7,$8) returning *", [session, tenant, agent, c.id, workspace?.workspace ?? null, c.provider, now, now+c.lease_seconds*1000])).rows[0];
+        const session = id(), now = this.now(), workspace = await new Workspaces(this.options.db).current(tenant, "agent", c.agent, sql);
+        lease = (await sql.query("insert into computer_leases(id,tenant,agent,connection,workspace,provider,state,created_at,expires_at) values($1,$2,$3,$4,$5,$6,'starting',$7,$8) returning *", [session, tenant, c.agent, c.id, workspace?.workspace ?? null, c.provider, now, now+c.lease_seconds*1000])).rows[0];
         let creator: ComputerDriver | undefined, allocated = false;
         try {
           const ref = await this.useProvider(c, p => { creator = p; return p.create(session, c.lease_seconds, async ref => { allocated = true; await sql.query("update computer_leases set reference=$2 where id=$1", [session, this.options.accounts.seal(`computer-lease:${session}`, JSON.stringify(ref))]); }, { ...from ? { from } : {}, forkable: connectionForkable(c) }); });

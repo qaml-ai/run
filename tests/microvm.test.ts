@@ -171,7 +171,7 @@ test("a suspended MicroVM frees capacity and cannot auto-resume past the tree ca
   } finally { await f.pg.close(); }
 });
 
-test("exec inspects only its own MicroVM; a sharer cannot resume it but its owner can", async () => {
+test("exec inspects only its own MicroVM; a sharer resumes idle suspension but not termination", async () => {
   const f = await fixture();
   try {
     const machines = f.make();
@@ -181,10 +181,15 @@ test("exec inspects only its own MicroVM; a sharer cannot resume it but its owne
     await f.db.query("insert into managed_computers(id,tenant,agent,connection,created_at,machine) values('other','tenant','other-root','other-connection',1,'broken')");
     f.vm.state = 'SUSPENDED';
     const before = f.requests.length, calls = f.calls.length;
-    await assert.rejects(machines.run('vm1', 'true', 60, 'shared', true), /parent's machine is stopped/);
-    assert.equal(f.requests.length, before, 'no proxy call can resume the shared machine');
-    assert.deepEqual(f.calls.slice(calls).map(call => call.input.microvmIdentifier), ['vm1']);
+    f.advance(301000); // The child thinks longer than the configured idle window.
+    assert.equal((await machines.run('vm1', 'true', 60, 'shared', true)).exitCode, 0);
+    assert.ok(f.requests.length > before, 'shared traffic resumes the owner machine');
+    assert.equal((await f.db.query("select count(*) as n from computer_slots where expires_at>0")).rows[0].n, 1);
     assert.equal((await machines.run('vm1', 'true', 60, 'owner')).exitCode, 0);
     assert.ok(f.calls.slice(calls).every(call => call.input.microvmIdentifier === 'vm1'));
+    f.vm.state = 'TERMINATED';
+    const stopped = f.requests.length;
+    await assert.rejects(machines.run('vm1', 'true', 60, 'stopped', true), (error: any) => error.code === 'COMPUTER_STOPPED');
+    assert.equal(f.requests.length, stopped);
   } finally { await f.pg.close(); }
 });

@@ -174,11 +174,17 @@ export function microvmMachines(options: { db: Db; outbound: Outbound; settings:
       return found;
     },
     async run(id, command, timeoutSeconds, requestKey = randomUUID(), shared = false) {
-      const vm = await get(id), at = now();
+      let vm;
+      try { vm = await get(id); }
+      catch (error) {
+        if (shared && (error as { status?: number }).status === 404) throw new HttpError(409, SHARED_COMPUTER_STOPPED, "COMPUTER_STOPPED");
+        throw error;
+      }
+      const at = now();
       const row = (await db.query("select id from managed_computers where machine=$1 and provider='lambda'", [id])).rows[0];
       if (!row) throw new Error("Unknown MicroVM owner");
       const current = await record(row.id, vm, at);
-      if (shared && (paused(vm.state) || vm.state === "TERMINATED" || vm.state === "TERMINATING"))
+      if (shared && (vm.state === "TERMINATED" || vm.state === "TERMINATING"))
         throw new HttpError(409, SHARED_COMPUTER_STOPPED, "COMPUTER_STOPPED");
       await transaction(db, async sql => {
         await reserveComputer(sql, current.row.tenant, current.row.agent, current.row.connection,

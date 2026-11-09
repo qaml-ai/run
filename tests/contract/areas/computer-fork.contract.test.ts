@@ -287,3 +287,24 @@ contractTest('computers', SOURCE, 'a finished background fork worker retains its
   await until(async () => readBack.includes('saved-work'), 'worker reads its saved files after send_message');
   assert.match(readBack, /saved-work/);
 });
+
+contractTest('computers', SOURCE, 'sharing starts the unused parent machine once and refuses an explicit parent stop', async t => {
+  const boat = await fakeBoatServer(); t.after(() => boat.close());
+  const r = await createContractFixture(t, { env: boatEnv(boat.url), respond: body => {
+    const results = turnResults(body);
+    if (systemText(body).includes('FIRST_USE_CHILD')) return results.length
+      ? { role: 'assistant', content: results[0] }
+      : toolCall('computer_exec', { command: 'echo shared-first-use' }, 'exec');
+    if (!results.length) return toolCall('delegate', { instructions: 'FIRST_USE_CHILD', task: 'Use the computer' }, 'first');
+    if (results.length === 1) return toolCall('computer_stop', {}, 'stop');
+    if (results.length === 2) return toolCall('delegate', { instructions: 'FIRST_USE_CHILD', task: 'Use the stopped computer' }, 'second');
+    return { role: 'assistant', content: results.join('\n') };
+  } });
+  const parent = (await r.call('/v1/agents', { body: { builtins: ['delegate'], delegate: { instructions: true }, computerLimit: 1 } })).json.id;
+  await connect(r, parent);
+  const run = await r.prompt(parent, 'Delegate before starting the computer');
+  assert.equal(run.status, 'completed', JSON.stringify(run.outcome));
+  assert.match(run.outcome.result.reply, /shared-first-use/);
+  assert.match(run.outcome.result.reply, /parent's machine is stopped/);
+  assert.equal(boat.state.creates, 1, 'first use starts only the owner machine; the stop is never undone');
+});

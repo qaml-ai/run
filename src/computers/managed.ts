@@ -342,7 +342,7 @@ export class ManagedComputers {
 
   private async command(connection: any, tenant: string, agent: string, name: string, args: Record<string, any>, requestKey: string, files?: Pick<ToolContext, "mounts" | "onWrite">, shared = false) {
     const row = await this.open(connection.id);
-    if (!row?.machine || Number(row.deadline) <= this.options.now()) throw new HttpError(409, shared ? SHARED_COMPUTER_STOPPED : "Call computer_start before using the computer");
+    if (!row?.machine || Number(row.deadline) <= this.options.now()) throw new HttpError(409, shared ? SHARED_COMPUTER_STOPPED : "Call computer_start before using the computer", shared ? "COMPUTER_STOPPED" : undefined);
     const command = fileCommand(name, args) ?? args.command;
     if (typeof command !== "string" || !command || command.length > 32000) throw new HttpError(400, "Invalid command");
     const timeout = args.timeoutSeconds ?? MANAGED.defaultCommandSeconds;

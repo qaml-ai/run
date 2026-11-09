@@ -764,10 +764,19 @@ test('computer.idle "sleep": a machine that idles out saves its disk, and the ne
   assert.equal(definition.computer.idle, "sleep");
   const agent = await api("/v1/agents", { definition: definition.id });
   const computer = (request: object) => api(`/experimental/agents/${agent.id}/computer`, { provider: "container", ...request });
-  await computer({ op: "write", path: "kept.txt", content: "still here" });
+  const child = await api('/v1/agents', { definition: definition.id });
+  await fixture.db.query('insert into computer_shares(tenant,agent,owner) values($1,$2,$3)', ['camelrun-proto-local', child.id, agent.id]);
+  const readChild = (operation: object = { op: 'read', path: 'kept.txt' }) => fetch(fixture.url + `/experimental/agents/${child.id}/computer`, {
+    method: 'POST', headers: { authorization: `Bearer ${fixture.token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ provider: 'container', ...operation }),
+  });
+  const firstUse = await readChild({ op: 'write', path: 'kept.txt', content: 'still here' });
+  assert.equal(firstUse.status, 200, await firstUse.text());
   // The DO's alarm puts it to sleep at the idle point; wait past it.
   await new Promise(resolve => setTimeout(resolve, 25_000));
-  const resumed = await computer({ op: "read", path: "kept.txt" });
+  const resumedResponse = await readChild();
+  assert.equal(resumedResponse.status, 200);
+  const resumed = await resumedResponse.json() as any;
   assert.equal(resumed.content, "still here");
   assert.equal(resumed.computer?.restoredFrom, "sleep", JSON.stringify(resumed));
   // An idle alarm firing during exec must not queue the next exec behind that command.
@@ -776,12 +785,6 @@ test('computer.idle "sleep": a machine that idles out saves its disk, and the ne
   await computer({ op: "exec", command: "touch /workspace/release", timeoutMs: 5000 });
   assert.equal((await long).exitCode, 0);
 
-  const child = await api('/v1/agents', { definition: definition.id });
-  await fixture.db.query('insert into computer_shares(tenant,agent,owner) values($1,$2,$3)', ['camelrun-proto-local', child.id, agent.id]);
-  const readChild = () => fetch(fixture.url + `/experimental/agents/${child.id}/computer`, {
-    method: 'POST', headers: { authorization: `Bearer ${fixture.token}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ provider: 'container', op: 'read', path: 'kept.txt' }),
-  });
   await computer({ op: 'sleep' });
   assert.match(await (await readChild()).text(), /parent's machine is stopped/);
   assert.equal((await computer({ op: 'read', path: 'kept.txt' })).content, 'still here', 'the owner can resume');
