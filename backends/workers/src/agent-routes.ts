@@ -1,4 +1,4 @@
-import { runLog } from "../../../shared/run-log.ts";
+import { runLog, logOptions, LOG_PAGE_BYTES } from "../../../shared/run-log.ts";
 import { Directory, type AuthContext, type ControlEnv, type DirectoryEntry, type DirectoryFailure } from "./control.ts";
 import { agentToken, ApiError, configuration, digest } from "./api-contract.ts";
 import { body, boundedText, object } from "./validation.ts";
@@ -90,8 +90,9 @@ export async function statelessRoutes(request: Request, env: ControlEnv, auth: A
   const record = await payload(await call(env, entry.id, `/requests/${runId}?wait=${Math.min(25,Number(url.searchParams.get("wait") ?? 0))}`)) as Record;
   if (record.endedAt && record.endedAt + entry.run.retentionMs <= Date.now()) throw new ApiError(404, "Run retention expired", "NOT_FOUND");
   if (match[2] === "/log" && request.method === "GET") {
-    const history = await payload(await call(env, entry.id, `/history?run=${encodeURIComponent(runId)}&retentionMs=${entry.run.retentionMs}`));
-    return json(runLog(runView(record, entry.run.retentionMs), history));
+    const options = logOptions(url.searchParams);
+    const history = await payload(await call(env, entry.id, `/history?run=${encodeURIComponent(runId)}&retentionMs=${entry.run.retentionMs}&after=${options.after}&limit=${options.limit}&maxBytes=${LOG_PAGE_BYTES}`));
+    return json(runLog(runView(record, entry.run.retentionMs), history, options));
   }
   if (match[2] === "/events" && request.method === "GET") {
     const headers = new Headers(request.headers);

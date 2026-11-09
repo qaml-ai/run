@@ -74,7 +74,7 @@ Options
 Docs: https://run.camelai.com/llms.txt`;
 
 const OPTIONS = {
-  by: { type: "string" }, days: { type: "string" }, rollup: { type: "boolean" },
+  cursor: { type: "string" }, by: { type: "string" }, days: { type: "string" }, rollup: { type: "boolean" },
   json: { type: "boolean" }, help: { type: "boolean", short: "h" }, version: { type: "boolean", short: "v" },
   "api-key": { type: "string" }, url: { type: "string" },
   apply: { type: "boolean" }, "dry-run": { type: "boolean" }, available: { type: "boolean" }, force: { type: "boolean" }, yes: { type: "boolean", short: "y" },
@@ -124,9 +124,12 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
         return 0;
       }
       case "usage": {
-        const query = new URLSearchParams({ groupBy: String(flags.by ?? "agent") });
+        const query = new URLSearchParams();
+        if (flags.by) query.set("groupBy", flags.by);
         if (flags.days) query.set("days", String(flags.days));
-        if (flags.rollup) query.set("rollup", "true");
+        if (flags.limit) query.set("limit", flags.limit);
+        if (flags.cursor) query.set("cursor", flags.cursor);
+        if (flags.by && flags.rollup) query.set("rollup", "true");
         const result = await api().get(`/v1/usage?${query}`);
         print(result, () => JSON.stringify(result, null, 2));
         return 0;
@@ -167,7 +170,10 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
       }
       case "run-log": {
         if (!args[0]) throw new UsageError("Usage: camelrun run-log <runId>");
-        const result = await api().get(`/v1/runs/${encodeURIComponent(args[0])}/log`);
+        const query = new URLSearchParams();
+        if (flags.limit) query.set("limit", flags.limit);
+        if (flags.cursor) query.set("cursor", flags.cursor);
+        const result = await api().get(`/v1/runs/${encodeURIComponent(args[0])}/log?${query}`);
         print(result, () => JSON.stringify(result, null, 2));
         return 0;
       }

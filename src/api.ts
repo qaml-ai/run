@@ -1,4 +1,4 @@
-import { groupedUsage, usageOptions } from "../shared/usage-details.ts";
+import { groupedUsage, usageOptions, usageDays, ownsUsageAgent } from "../shared/usage-details.ts";
 import { SharedAgents, ShareLinkInput, MemberInput, ShareLink, CreatedShareLink, Member } from './shared-agents.ts';
 import { inboxQuery, readInbox, InboxQueryError } from '../shared/inbox.ts';
 import { rejectWorkflow } from "./builtins.ts";
@@ -348,8 +348,8 @@ export function api(context: ApiContext) {
     await next();
   });
   app.use("/v1/agents/:id/*", async (c, next) => {
-    // credentials takes a key as well as an id, and looks it up within the tenant itself.
-    if (!c.req.path.endsWith("/credentials") && !await clients.owns(c.req.param("id")!, c.var.principal.tenant, true)) throw new HttpError(404, "Unknown agent");
+    // Credentials and retained usage perform their own tenant-scoped ownership checks.
+    if (!/^\/v1\/agents\/[^/]+\/(?:credentials|usage)$/.test(c.req.path) && !await clients.owns(c.req.param("id")!, c.var.principal.tenant, true)) throw new HttpError(404, "Unknown agent");
     await next();
   });
   // Idempotency-Key on every POST: an agent's is its own key (create or upsert), and a prompt's its request's id.
@@ -933,19 +933,21 @@ export function api(context: ApiContext) {
     responses: { 200: reply("Agent usage", schema.GroupedUsage) },
   }), async c => {
     const tenant = c.var.principal.tenant, id = c.req.param("id")!;
-    if (!await clients.owns(id, tenant)) throw new HttpError(404, "Unknown agent");
+    if (!await ownsUsageAgent(accounts.db, tenant, id)) throw new HttpError(404, "Unknown agent");
     let options;
     try { options = usageOptions(new URL(c.req.url).searchParams); } catch (error) { throw new HttpError(400, (error as Error).message); }
-    const days = Math.min(365, Math.max(1, Number(c.req.query("days") ?? 30) || 30));
+    const days = usageDays(new URL(c.req.url).searchParams);
+    const workspace = c.req.query("workspaceId");
+    if (workspace && workspace !== "unassigned") await new Workspaces(accounts.db).get(tenant, workspace);
     await accounts.flushUsage();
-    return json(c, 200, await groupedUsage(accounts.db, tenant, Date.now() - days * 86400000, options, id));
+    return json(c, 200, await groupedUsage(accounts.db, tenant, Date.now() - days * 86400000, options, id, c.req.query("workspaceId")));
   });
 
   route(createRoute({
-    method: "get", path: "/v1/usage", request: { query: z.object({ days: z.string().optional().openapi({ description: "1–365, default 30" }), groupBy: z.string().optional(), rollup: z.enum(["true", "false"]).optional(), workspaceId: z.string().optional().openapi({ description: "Filter by workspace id, or unassigned. Omit for the account total." }) }) },
+    method: "get", path: "/v1/usage", request: { query: z.object({ ...schema.GroupedUsageQuery.shape, workspaceId: z.string().optional().openapi({ description: "Filter by workspace id, or unassigned. Omit for the account total." }) }) },
     responses: { 200: reply("Token usage per UTC day and model, or requested dimensions", z.union([schema.Usage, schema.GroupedUsage])) },
   }), async c => {
-    const days = Math.min(365, Math.max(1, Number(c.req.query("days") ?? 30) || 30));
+    const days = usageDays(new URL(c.req.url).searchParams);
     const workspace = c.req.query("workspaceId");
     if (workspace && workspace !== "unassigned") await new Workspaces(accounts.db).get(c.var.principal.tenant, workspace);
     if (c.req.query("groupBy") !== undefined || c.req.query("rollup") !== undefined) {

@@ -443,7 +443,7 @@ export class Runs {
   /** Delete a run's result, events and messages now, before its retention ends. */
   delete(id: string) { return this.runtime.deleteRun(id); }
   /** A run's messages: its input, the model's turns and tool results. */
-  log(id: string) { return this.runtime.runLog(id); }
+  log(id: string, options: { limit?: number; cursor?: string } = {}) { return this.runtime.runLog(id, options); }
   async messages(id: string): Promise<RecordedMessage[]> { return (await this.runtime.runMessages(id)).messages; }
   /** A run's raw event stream, to its end; see `stream` for one already read into text, tool calls and the result. */
   events(id: string, options: { lastEventId?: number; signal?: AbortSignal } = {}): AsyncGenerator<RunFrame> { return this.runtime.runEvents(id, options); }

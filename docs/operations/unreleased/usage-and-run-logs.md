@@ -21,3 +21,16 @@ agents.agentUsage(id) and agents.runs.log(id).
 Python: agents.usage(group_by=["agent"], rollup=True) and
 agents.runs.log(id); pass agent=id to filter usage.
 CLI: camelrun usage --by agent,model --rollup and camelrun run-log <runId>.
+
+
+Migration 125 aggregates repeated usage into one row per day and attribution
+tuple. Details are retained for 400 UTC days, excluded when expired, and removed
+in batches during maintenance. Grouped reports take limit (1 to 500, default
+100) and cursor (the prior page's next). Totals cover every filtered group.
+Deleted agents' retained usage remains readable by their own tenant.
+
+Run logs take limit (1 to 100, default 50) and cursor. Pages are at most 256 KiB;
+messages are at most 16 KiB, and run summaries at most 32 KiB. Oversized values
+are replaced with a truncated marker, their original byte count and a preview.
+Tool arguments and results can include sensitive data echoed by tools.
+CLI usage without --by keeps the legacy daily response.

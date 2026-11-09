@@ -1,3 +1,4 @@
+import { pruneUsageDetails } from "../shared/usage-details.ts";
 import { SharedAgents } from "./shared-agents.ts";
 import { withOpenRouterDetails } from "./openrouter-model.ts";
 import { modelReference } from "./virtual-models.ts";
@@ -1484,7 +1485,10 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   const sweepTimer = setInterval(() => void sweepTails(db).catch(error => console.error(JSON.stringify({ type: "tail_sweep_failed", error: errorText(error) }))), 60 * 60_000);
   sweepTimer.unref();
   // Deleted and expired agents' data, purged by whichever nodes get to it first.
-  const purgeTimer = setInterval(() => void clients.sweep(), config.purgeMs);
+  const purgeTimer = setInterval(() => {
+    void clients.sweep();
+    void pruneUsageDetails(db).catch(error => console.error(JSON.stringify({ type: "usage_retention_failed", error: errorText(error) })));
+  }, config.purgeMs);
   purgeTimer.unref();
   // Chunks nothing refers to any more, and deleted volumes' objects, collected a tenant at a time by whichever node is free.
   // Off unless AGENT_GC_ENABLED; with AGENT_GC_DRY_RUN it only logs what it would delete. What it needs (pins, which chunks

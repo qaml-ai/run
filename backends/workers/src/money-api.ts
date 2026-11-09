@@ -1,4 +1,4 @@
-import { groupedUsage, usageOptions } from "../../../shared/usage-details.ts";
+import { groupedUsage, usageOptions, usageDays, ownsUsageAgent, pruneUsageDetails } from "../../../shared/usage-details.ts";
 import { accountLifecycleRoutes, accountDeletions, resumeAccountDeletions, type AccountLifecycleEnv } from "./account-lifecycle.ts";
 import { consumeAccountDeletion } from "./account-deletion-queue.ts";
 import { keyServices, type KeyEnv } from './security-services.ts';
@@ -87,11 +87,11 @@ async function routeMoney(request: Request, env: MoneyEnv, auth: AuthContext, ct
   const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { 'cache-control': 'no-store' } });
   const setter = principal.tokenId ? `token:${principal.tokenId}` : principal.via === 'oauth' ? `oauth:${'grantId' in principal ? principal.grantId : undefined}` : principal.via;
   if ((path === '/v1/usage' || /^\/v1\/agents\/[^/]+\/usage$/.test(path)) && request.method === 'GET') {
-    const query = new URL(request.url).searchParams, days = Math.min(365, Math.max(1, Number(query.get('days') ?? 30) || 30));
+    const query = new URL(request.url).searchParams, days = usageDays(query);
     const workspace = query.get('workspaceId') ?? undefined;
     if (workspace && workspace !== 'unassigned') await new Workspaces(s.keys.accounts.db).get(tenant, workspace);
     const agent = path === '/v1/usage' ? undefined : decodeURIComponent(path.split('/')[3]);
-    if (agent && !(await s.keys.accounts.db.query("select 1 from agents where tenant=$1 and id=$2 and not revoked and coalesce((header->>'deleted')::boolean,false)=false", [tenant, agent])).rows.length) throw new HttpError(404, "Unknown agent");
+    if (agent && !await ownsUsageAgent(s.keys.accounts.db, tenant, agent)) throw new HttpError(404, "Unknown agent");
     if (agent || query.has('groupBy') || query.has('rollup')) {
       let options;
       try { options = usageOptions(query); } catch (error) { throw new HttpError(400, (error as Error).message); }
@@ -171,6 +171,7 @@ export async function consumeAccountDeletionMessage(env: MoneyEnv, message: Mess
 }
 export async function moneyMaintenance(env: MoneyEnv) {
   const s = await services(env);
+  await pruneUsageDetails(s.keys.accounts.db);
   await sweepAdmission(env);
   await expireMoneyIdempotency(env);
   await billingMaintenance(s.keys.accounts.billing);

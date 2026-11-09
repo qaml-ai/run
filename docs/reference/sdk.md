@@ -979,3 +979,27 @@ Messages include model tool calls and tool results; the run contains errors,
 usage and start/end times. This is reconstructed from durable messages, not a
 transient streaming trace, and expires with the run. CLI equivalents:
 `camelrun usage --by agent,model --rollup` and `camelrun run-log <runId>`.
+
+
+Grouped usage uses daily aggregates retained for 400 UTC days. Expired rows are
+excluded from reads and deleted in batches by each backend's maintenance loop.
+Account-level daily totals keep their existing retention. `days` must be an
+integer from 1 to 365 (default 30). Deleted agents' usage remains readable by
+their tenant while its aggregates exist.
+
+Set `limit` from 1 to 500 (default 100) and pass the returned `next` as
+`cursor` to read grouped usage pages. Keep the other query parameters unchanged.
+`totals` covers the complete filtered result, not just the page. TypeScript
+accepts `limit`, `cursor`, and `workspaceId`; Python accepts `limit`,
+`cursor`, and `workspace_id`.
+
+Run logs take `limit` from 1 to 100 (default 50) and the returned `next` as
+`cursor`. Each response is at most 256 KiB; each message at most 16 KiB and the
+run summary at most 32 KiB. Oversized values become
+`{truncated: true, originalBytes, preview}`; the event and page also report
+`truncated: true`. A page boundary never discards the next message. Pass
+these options to `runs.log(id, options)` in TypeScript or `runs.log(id, **options)`
+in Python. Tool arguments and results can contain credentials or other sensitive
+data echoed by tools; log access requires the tenant's credential.
+
+CLI `camelrun usage` without `--by` returns the legacy daily report.
