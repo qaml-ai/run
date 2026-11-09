@@ -1,5 +1,5 @@
 {
-  "revision": "5a751f5a",
+  "revision": "Same commit as this report",
   "date": "2026-11-09",
   "environment": {
     "runtime": "workerd 1.20261103.1",
@@ -22,40 +22,40 @@
   "result": {
     "concurrentChildren": 64,
     "v8Flags": "--max-old-space-size=96 --max-semi-space-size=2",
-    "elapsedMs": 67209,
+    "elapsedMs": 63508,
     "baselineHeap": {
-      "usedSize": 50435044,
+      "usedSize": 50428364,
       "totalSize": 56201216,
-      "embedderHeapUsedSize": 193448,
+      "embedderHeapUsedSize": 193368,
       "backingStorageSize": 1815084
     },
     "peakHeap": {
-      "usedSize": 85807960,
-      "totalSize": 90767360,
-      "embedderHeapUsedSize": 5517792,
-      "backingStorageSize": 2465462
+      "usedSize": 86130340,
+      "totalSize": 91029504,
+      "embedderHeapUsedSize": 5776072,
+      "backingStorageSize": 2041997
     },
-    "peakHeapBytes": 93791214,
-    "childFetches": 449,
+    "peakHeapBytes": 93948409,
+    "childFetches": 468,
     "activeFetches": 0,
-    "maxActiveFetches": 57,
+    "maxActiveFetches": 56,
     "eventStreams": 0,
     "alarmFires": 0,
     "rpc": {
-      "total": 577,
+      "total": 596,
       "active": 0,
       "peak": 60,
       "methods": {
         "PUT /configuration": 64,
         "POST /requests": 64,
-        "GET /requests/:id": 385,
+        "GET /requests/:id": 404,
         "POST /__computer": 64
       }
     },
-    "nextAlarm": 1794320015592,
+    "nextAlarm": 1794320228727,
     "relayStreams": 0,
     "fallbackSweeps": 8,
-    "fallbackRequests": 385,
+    "fallbackRequests": 404,
     "pushedEvents": 640,
     "pushedCompletions": 64,
     "maxFallbackConcurrent": 6,
@@ -148,5 +148,16 @@
     "delegationPush": "No new model-facing text."
   },
   "migration": "124_definition_revisions.sql; known number collision; renumber at merge",
-  "camelBots": "No changes required; spend_limit code and stopped fields preserved."
+  "camelBots": "No changes required; spend_limit code and stopped fields preserved.",
+  "validation": {
+    "nodeFullSuite": "8/8 shards; 2703 passed, 3 skipped, 0 failed; one shard retried after its Sprite restarted",
+    "workersUnitSuite": "653/653 passed",
+    "smallParity": "Node 7/7, Workers 5/5",
+    "spendLimits": "Node 2/2, Workers 2/2",
+    "workersDelegationIntegration": "3/3",
+    "workersPolicy": "33/33",
+    "typecheck": "Root and Workers passed",
+    "docs": "Generation and llms.txt checks passed",
+    "delegationContractsBothBackends": "multi-agent 9/9 and background-agents 11/11 on both Node and Workers"
+  }
 }

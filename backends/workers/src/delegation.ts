@@ -96,12 +96,6 @@ export const CHILD_FALLBACK_MS = 5000;
 const prefix = 'delegation:';
 type ChildCharge = { requestId: string; usd: number; at: number };
 const chargePrefix = 'delegation-charge:';
-const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
-  if (signal?.aborted) return reject(signal.reason);
-  const stop = () => { clearTimeout(timer); reject(signal?.reason); };
-  const timer = setTimeout(() => { signal?.removeEventListener('abort', stop); resolve(); }, ms);
-  signal?.addEventListener('abort', stop, { once: true });
-});
 function finiteBudget(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
@@ -174,6 +168,7 @@ export class Delegation {
     if (!child || child.id !== event.agentId || child.requestId !== event.requestId) return { accepted: false };
     this.measurements.pushedEvents++;
     if (event.event.type === 'event' && child.status === 'running') await this.host.emit({ type: 'event', requestId: child.parentRequestId, event: { type: 'subagent_event', toolCallId: child.toolCallId, agentId: child.id, requestId: child.requestId, event: event.event.event } });
+    this.signalChange('*');
     if (event.record?.state === 'completed') {
       if (child.status === 'running') this.measurements.pushedCompletions++;
       await this.complete(child, event.record);
@@ -570,7 +565,7 @@ export class Delegation {
       const response = await this.host.fetch(child.id, new Request(`https://agent/requests/${child.requestId}`));
       const record = response.ok ? await response.json() as { began?: number; state?: string } : undefined;
       if (!record || record.began || record.state === 'completed') break;
-      await sleep(1000, signal);
+      await this.waitChange('*', AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(Math.max(1, deadline - Date.now()))])).catch(error => { if (signal?.aborted) throw error; });
     }
     const key = `message-${identity.slice(0, 48)}`, existing = await this.host.storage.get<DelegatedChild>(prefix + key);
     const answer = (value: DelegatedChild) => ({ sent: true, to: child.name, agentId: child.id, into: value.folded ? 'its running turn' : 'a new turn: its answer comes as a notification' });
