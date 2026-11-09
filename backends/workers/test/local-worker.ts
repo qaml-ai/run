@@ -125,7 +125,8 @@ export class LocalWorker {
       void exited.then(finish);
       listener.listen(this.port, "127.0.0.1", () => finish());
     });
-    for (let attempt = 0; attempt < 480; attempt++) {
+    // A cold native-computer fixture builds its image before workerd can answer health checks.
+    for (let attempt = 0; attempt < 1200; attempt++) {
       if (this.stopping) throw new Error("Local Worker startup was cancelled");
       if (child.exitCode !== null || child.signalCode !== null)
         throw await exited;

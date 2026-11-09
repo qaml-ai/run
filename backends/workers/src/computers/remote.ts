@@ -56,15 +56,15 @@ export function remoteDriver(env: RemoteBindings, tenant: string, agent: string,
     if (!namespace) throw new HttpError(503, 'Cloudflare Containers are not configured');
     return {
       async create(id, _seconds, _allocated, options) {
-        const computer = namespace.getByName(id), setup = payerSetup({ tenant, agent });
+        const computer = namespace.getByName(id), setup = { ...payerSetup({ tenant, agent }), externalPermit: true };
         // A fork's session starts from the snapshot: the handle is plain data any computer DO can start from.
         if (options?.from) await computer.startFromSnapshot(containerHandle(options.from), setup);
         else await computer.operate({ op: 'exec', argv: ['true'] }, setup);
         return { id };
       },
-      call: (ref, _op, args) => namespace.getByName(ref.id).operate({ op: 'exec', argv: ['bash', '-lc', args.command], timeoutMs: Math.min(args.timeoutSeconds * 1000, 120_000) }, payerSetup({ tenant, agent })),
+      call: (ref, _op, args) => namespace.getByName(ref.id).operate({ op: 'exec', argv: ['bash', '-lc', args.command], timeoutMs: Math.min(args.timeoutSeconds * 1000, 120_000) }, { ...payerSetup({ tenant, agent }), externalPermit: true }),
       async snapshot(ref, label) {
-        const taken = await namespace.getByName(ref.id).takeSnapshot(label.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 80), payerSetup({ tenant, agent }));
+        const taken = await namespace.getByName(ref.id).takeSnapshot(label.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 80), { ...payerSetup({ tenant, agent }), externalPermit: true });
         return { provider: 'container', id: taken.id, image: taken.image, sizeBytes: taken.size, createdAt: taken.createdAt, expiresAt: taken.expiresAt };
       },
       // Cloudflare has no Worker API to delete a snapshot; it expires 30 days after its latest restore.

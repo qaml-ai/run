@@ -130,6 +130,7 @@ export interface AgentConfig {
    * (none for an agent without tools): for a tool-less agent, or one with a few tools of its own.
    */
   codeMode?: boolean;
+  computerLimit?: number;
   /** Where the agent's volumes are mounted, for its prompt's summary of its environment; `workspace` marks its own. */
   mounts?: { path: string; instructions?: string; mode: "ro" | "rw"; workspace?: boolean; computer?: boolean }[];
   initialMessages?: AgentMessage[];

@@ -16,6 +16,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord";
 import { PiHarness } from "agents/harness/pi";
 import { startStuck } from "./agent-lifecycle.ts";
+import { computerOwner, computerDisabled } from "../../../src/core/computer-share.ts";
+import { withSql as shareSql } from "./postgres.ts";
 import { computerTool } from "./computers/tool.ts";
 import { computerSetup } from "./computers/agent-setup.ts";
 import { askHuman, makeAskUser, humanInputExtension } from "./human.ts";
@@ -473,7 +475,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
         });
         registry.install({
           name: "camel.linux",
-          tools: [computerTool(this.env, this.ctx.id.toString(), async () => computerSetup(this.env, await this.config()), { ...conf.config.computer, networking: conf.config.networking })],
+          tools: await shareSql(this.env, sql => computerDisabled(sql, conf.tenantId, conf.id)) ? [] : [computerTool(this.env, this.ctx.id.toString(), async () => computerSetup(this.env, await this.config()), { ...conf.config.computer, networking: conf.config.networking }, async () => { const owner = await shareSql(this.env, sql => computerOwner(sql, conf.tenantId, conf.id)); return { id: this.env.AGENTS.idFromName(owner).toString(), shared: owner !== conf.id }; })],
         });
         const sandbox = new SessionCodemodeSandbox({ remote: this.sandboxRemote });
         registry.install({

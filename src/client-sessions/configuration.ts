@@ -83,7 +83,7 @@ function reconfiguration(header: SessionHeader, definitions: ToolDefinition[], c
   return {
     ...remounted ? { mounts } : {},
     provisionHash, ...keepModel ? {} : { model: modelReference(config.model) }, thinkingLevel: config.thinkingLevel ?? "off",
-    systemPromptAppend: config.systemPromptAppend ?? "", fileTools: config.fileTools !== false, codeMode: config.codeMode !== false, runLimits: config.runLimits ?? null,
+    systemPromptAppend: config.systemPromptAppend ?? "", fileTools: config.fileTools !== false, codeMode: config.codeMode !== false, runLimits: config.runLimits ?? null, ...(config.computerLimit !== undefined ? { computerLimit: config.computerLimit } : {}),
     maxOutputTokens: config.maxOutputTokens ?? null, temperature: config.temperature ?? null, dataCollection: config.dataCollection ?? null, name: metadata.name ?? null, type: metadata.type ?? null,
     // A language only when the upsert gives one (null clears it): an upsert from an SDK that predates it, which drops the
     // field, leaves the language set by PATCH .../configuration.
@@ -108,6 +108,7 @@ function upsertChanges(header: SessionHeader, target: Record<string, any>) {
   if (target.codeMode !== undefined && target.codeMode !== (current.codeMode !== false)) changes.codeMode = target.codeMode;
   if ("systemPrompt" in target && differs(current.systemPrompt, target.systemPrompt)) changes.systemPrompt = target.systemPrompt;
   if ("modelHeaders" in target && differs(current.modelHeaders, target.modelHeaders)) changes.modelHeaders = target.modelHeaders;
+  if ("computerLimit" in target && differs(current.computerLimit, target.computerLimit)) changes.computerLimit = target.computerLimit;
   if ("runLimits" in target && differs(current.runLimits, target.runLimits)) changes.runLimits = target.runLimits;
   for (const key of ["maxOutputTokens", "temperature", "dataCollection", "language", "queue"] as const) if (key in target && differs(current[key], target[key])) changes[key] = target[key] as never;
   if (target.tools !== undefined && differs(header.definitions, target.tools)) changes.tools = target.tools;
@@ -424,7 +425,7 @@ export async function inspect(ctx: ConfigurationContext, id: string, tenant: str
     ...(session.header.config.fileTools === false ? { fileTools: false } : {}), ...(session.header.config.codeMode === false ? { codeMode: false } : {}), mounts: session.header.mounts ?? [], keyScope: session.header.keyScope ?? null, bucket: session.header.bucket ?? null, modelHeaders: session.header.config.modelHeaders ?? null,
     humanInput: session.header.sources?.humanInput ?? null, builtins: session.header.sources?.builtins ?? [], delegate: session.header.sources?.delegate ?? null, mcpServers: (session.header.sources?.mcpServers ?? []).map(mcpServerView), decide: session.header.sources?.decide ?? null,
     ...(session.header.parent ? { parentAgentId: session.header.parent.agentId, parentRunId: session.header.parent.runId } : {}),
-    spendLimit: await ctx.spendOf(session).then(spend => spend && { usd: spend.usd, spent: spend.spent }), runLimits: session.header.config.runLimits ?? null,
+    spendLimit: await ctx.spendOf(session).then(spend => spend && { usd: spend.usd, spent: spend.spent }), runLimits: session.header.config.runLimits ?? null, ...(session.header.config.computerLimit !== undefined ? { computerLimit: session.header.config.computerLimit } : {}),
     maxOutputTokens: session.header.config.maxOutputTokens ?? null, temperature: session.header.config.temperature ?? null, dataCollection: session.header.config.dataCollection ?? null, language: session.header.config.language ?? null,
     queue: session.header.config.queue ?? null,
     ...(session.header.forkedFrom ? { forkedFrom: session.header.forkedFrom } : {}),

@@ -1,3 +1,5 @@
+import { SHARED_COMPUTER_STOPPED } from "../core/computer-share.ts";
+import { reserveComputer, releaseComputer, computerToolError } from "../core/computer-limit.ts";
 import { microvmMachines, MICROVM_HOUR, MICROVM_MAX_SECONDS, type MicrovmSettings } from "./microvm.ts";
 import { fileReceipts } from "./providers.ts";
 import { randomUUID } from "node:crypto";
@@ -58,7 +60,7 @@ export interface ManagedMachines extends ForkDriver<string> {
   remove(machine: string): Promise<void>;
   /** The machines of this runtime on this account, what they cost as of now; `computer` narrows it to one row's. */
   list(computer?: string): Promise<Machine[]>;
-  run(machine: string, command: string, timeoutSeconds: number, requestKey?: string): Promise<{ exitCode: number; stdout: string; stderr: string; truncated: boolean }>;
+  run(machine: string, command: string, timeoutSeconds: number, requestKey?: string, shared?: boolean): Promise<{ exitCode: number; stdout: string; stderr: string; truncated: boolean }>;
 }
 
 /**
@@ -173,6 +175,7 @@ export class ManagedComputers {
     endUsers?(): Pick<EndUserCredits, "reserve" | "extend" | "settleHold" | "release" | "renew"> | undefined;
     credit?(): Pick<CreditHolds, "available"> | undefined;
     /** Who pays for the agent's current run, where the tenant meters its end users. */
+    tenantComputerLimit?: (tenant: string) => number | undefined;
     payer?(agent: string): { id: string; bucket: string } | undefined;
     provider?: "lambda" | "boat";
     priceAtCost?: boolean;
@@ -191,7 +194,7 @@ export class ManagedComputers {
     if (this.options.machines) return this.options.machines(apiKey, provider as "lambda" | "boat");
     if (provider === "boat") return boatMachines(apiKey, this.options.outbound, this.options.runtime, machineSetup(), this.options.boatUrl);
     if (!this.options.microvm?.image) throw new Error("AGENT_MICROVM_IMAGE is required for managed computers");
-    return this.lambda ??= microvmMachines({ db: this.db, outbound: this.options.outbound, runtime: this.options.runtime, settings: this.options.microvm, now: this.options.now });
+    return this.lambda ??= microvmMachines({ db: this.db, outbound: this.options.outbound, runtime: this.options.runtime, settings: this.options.microvm, now: this.options.now, tenantComputerLimit: this.options.tenantComputerLimit });
   }
   private hour(row?: { provider?: string }) {
     const price = this.options.accounts.billing.pricing.computerHour;
@@ -235,7 +238,7 @@ export class ManagedComputers {
     await machines.dropSnapshot?.(ref);
   }
 
-  async call(connection: any, tenant: string, agent: string, name: string, args: Record<string, any>, requestKey: string, hash: string, files?: Pick<ToolContext, "mounts" | "onWrite">, receiptsOnly = false, from?: SnapshotRef) {
+  async call(connection: any, tenant: string, agent: string, name: string, args: Record<string, any>, requestKey: string, hash: string, files?: Pick<ToolContext, "mounts" | "onWrite">, receiptsOnly = false, from?: SnapshotRef, shared = false) {
     const { db } = this;
     if (name === "computer_status") return publicSession(await this.open(connection.id));
     const inserted = (await db.query("insert into computer_operations(connection,key,input_hash,state,tenant) values($1,$2,$3,'pending',$4) on conflict do nothing", [connection.id, requestKey, hash, tenant])).rowCount;
@@ -248,13 +251,13 @@ export class ManagedComputers {
     try {
       const value = name === "computer_start" ? await this.start(connection, tenant, agent, from)
         : name === "computer_stop" ? await this.stopOpen(connection.id)
-        : await this.command(connection, tenant, agent, name, args, requestKey, files);
+        : await this.command(connection, tenant, agent, name, args, requestKey, files, shared);
       const result = receiptsOnly ? fileReceipts(value) : value;
       await db.query("update computer_operations set state='completed',result=$3 where connection=$1 and key=$2", [connection.id, requestKey, JSON.stringify(result)]);
       return result;
     } catch (error) {
       await db.query("update computer_operations set state='uncertain' where connection=$1 and key=$2", [connection.id, requestKey]);
-      throw error;
+      throw computerToolError(error);
     }
   }
 
@@ -265,7 +268,9 @@ export class ManagedComputers {
     if (row?.machine && (row.provider !== "lambda" || row.microvm?.ready || !row.microvm) && Number(row.deadline) > now) return publicSession(row);
     if (row && Number(row.deadline) <= now) { if (row.provider === "lambda") await this.stopRow(row); else await this.end(row); row = undefined; }
     if (!this.options.enabled) throw new HttpError(403, "Managed computers are not available on this runtime. Do not retry in this turn; tell the user.");
-    row ??= await this.newRow(connection, tenant, agent);
+    await transaction(this.db, sql => reserveComputer(sql, tenant, agent, connection.id, now + connection.lease_seconds * 1000, now, this.options.tenantComputerLimit?.(tenant)));
+    try { row ??= await this.newRow(connection, tenant, agent); }
+    catch (error) { await releaseComputer(this.db, tenant, connection.id); throw error; }
     const machines = this.machines(await this.keyFor(row), row.provider), started = Date.now();
     for (let attempt = 0; ; attempt++) {
       try {
@@ -335,9 +340,9 @@ export class ManagedComputers {
     return this.open(connection.id);
   }
 
-  private async command(connection: any, tenant: string, agent: string, name: string, args: Record<string, any>, requestKey: string, files?: Pick<ToolContext, "mounts" | "onWrite">) {
+  private async command(connection: any, tenant: string, agent: string, name: string, args: Record<string, any>, requestKey: string, files?: Pick<ToolContext, "mounts" | "onWrite">, shared = false) {
     const row = await this.open(connection.id);
-    if (!row?.machine || Number(row.deadline) <= this.options.now()) throw new HttpError(409, "Call computer_start before using the computer");
+    if (!row?.machine || Number(row.deadline) <= this.options.now()) throw new HttpError(409, shared ? SHARED_COMPUTER_STOPPED : "Call computer_start before using the computer", shared ? "COMPUTER_STOPPED" : undefined);
     const command = fileCommand(name, args) ?? args.command;
     if (typeof command !== "string" || !command || command.length > 32000) throw new HttpError(400, "Invalid command");
     const timeout = args.timeoutSeconds ?? MANAGED.defaultCommandSeconds;
@@ -348,15 +353,16 @@ export class ManagedComputers {
     const deadline = await this.keep(connection, row, machines);
     const seconds = Math.max(1, Math.min(timeout, Math.floor((deadline - this.options.now()) / 1000)));
     try {
-      const value = await this.runIn(machines, row, command, seconds, requestKey);
+      const value = await this.runIn(machines, row, command, seconds, requestKey, shared);
       return storable(value);
     } catch (error) {
+      if (error instanceof HttpError && (error.code === "COMPUTER_LIMIT" || error.code === "COMPUTER_STOPPED")) throw error;
       throw new HttpError(502, "Computer command failed; outcome may be uncertain");
     }
   }
 
-  private async runIn(machines: ManagedMachines, row: any, command: string, seconds: number, requestKey?: string) {
-    const done = await machines.run(row.machine, command, seconds, requestKey);
+  private async runIn(machines: ManagedMachines, row: any, command: string, seconds: number, requestKey?: string, shared = false) {
+    const done = await machines.run(row.machine, command, seconds, requestKey, shared);
     if (!done.stderr.startsWith(`${NO_UNIT}\n`)) return done;
     // Without its unit a background process outlives its command: counted, with no content.
     this.log("computer_unit_fallback", { tenant: row.tenant, computer: row.id });
@@ -375,6 +381,7 @@ export class ManagedComputers {
         const want = Math.ceil((target - deadline) / 1000 * this.options.accounts.billing.pricing.computerHour / 3600);
         if ((await users.extend(row.tenant, row.end_user, row.bucket, row.hold, want, now)).refused) { this.log("computer_hold_refused", { tenant: row.tenant, computer: row.id }); return deadline; }
       }
+      await transaction(this.db, sql => reserveComputer(sql, row.tenant, row.agent, connection.id, target, now, this.options.tenantComputerLimit?.(row.tenant)));
       await machines.extend(row.machine, Math.ceil((target - now) / 1000));
       await this.db.query("update managed_computers set deadline=$2 where id=$1 and deadline<$2", [row.id, target]);
       return target;
@@ -404,6 +411,8 @@ export class ManagedComputers {
   /** The row ends: no machine is there, or no more of it is ours to run. What it cost goes to its end user, once: the ledger key is its own. */
   private async end(row: { id: string }) {
     await this.db.query("update managed_computers set ended_at=$2 where id=$1 and ended_at is null", [row.id, this.options.now()]);
+    const ended = (await this.db.query("select tenant,connection from managed_computers where id=$1", [row.id])).rows[0];
+    if (ended) await releaseComputer(this.db, ended.tenant, ended.connection);
     await this.settle(row.id).catch(() => this.log("computer_settle_failed", { computer: row.id }));
   }
 

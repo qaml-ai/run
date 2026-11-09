@@ -81,6 +81,16 @@ export function microvmDriver(env: MicrovmBindings, tenant: string, send: Fetche
   };
   return {
     refused: error => [401, 403, 429].includes(Number((error as { status?: number })?.status)),
+    async running(ref) {
+      let vm;
+      try { vm = await api('GetMicrovm', { microvmIdentifier: ref.id }); }
+      catch (error) {
+        if ((error as { status?: number }).status === 404) throw new HttpError(409, 'Computer is stopped', 'COMPUTER_STOPPED');
+        throw error;
+      }
+      if (['TERMINATED', 'TERMINATING'].includes(vm.state)) throw new HttpError(409, 'Computer is stopped', 'COMPUTER_STOPPED');
+      return !['SUSPENDING', 'SUSPENDED'].includes(vm.state);
+    },
     async create(id, seconds, allocated) {
       const vm = await api('RunMicrovm', { imageIdentifier: env.MICROVM_IMAGE,
         ...(env.MICROVM_IMAGE_VERSION ? { imageVersion: env.MICROVM_IMAGE_VERSION } : {}),

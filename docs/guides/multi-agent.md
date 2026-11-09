@@ -61,7 +61,7 @@ The model gets a `delegate` tool that lists the agents with what each is for
 | `instructions` | Instead of `agent`, with `instructions: true` in the settings: who a sub-agent the model designs itself is and how it works, on its own model. It gets them with its task, as its first message |
 | `task` | What to do. The sub-agent sees only this, not the conversation |
 | `output` | A JSON Schema for an object: the answer comes back in that shape (see [Structured output](structured-output.md)) |
-| `computer` | `"none"` (default, unless the definition the sub-agent is made from declares its own computer): no computer; `"fresh"`: a new computer with the parent's connection settings; `"fork"`: a copy of the parent's computer disk, one snapshot for all the children of the response (see [Forking a computer](computers.md#forking-a-computer)) |
+| `computer` | `"share"` (default with a parent computer): the parent's machine; `"none"` (default without one): no computer; `"fresh"`: a new computer with the parent's connection settings; `"fork"`: a copy of the parent's computer disk, one snapshot for all the children of the response (see [Forking a computer](computers.md#forking-a-computer)) |
 
 The call's result is `{ agentId, requestId, status, text, output?, error? }`.
 `status` is `completed`, `input_required` (the sub-agent waits on a person) or
@@ -156,10 +156,23 @@ account's code slots, so its children can run code. `delegate`'s
 
 ### Computers
 
-A sub-agent gets no computer unless asked: left out, `computer` is `"none"`.
-The exception is a child made from a definition whose configuration declares
-its own computer (Workers backend), which keeps it. Ask for `"fresh"` or `"fork"` to
-give a child a computer.
+A sub-agent shares its parent's computer by default (`computer: "share"`). It uses
+exactly the same connection, provider, session and filesystem, concurrently with
+the parent. Grandchildren share the same machine. Only the parent can start,
+stop or replace it; a child's `computer_start` or `computer_stop` is refused.
+Give each child its own directory or git worktree. Never switch branches in a
+checkout another agent is using. If the parent's machine stops, the child must
+finish and report back; only the parent can restart it.
+A child's first use starts the parent's machine if it has never been started, and
+resumes it after idle suspension. An explicit stop, deletion or expired lease
+refuses the child's call; the child should finish and report back.
+Children's computer activity counts toward the parent's idle policy. The machine
+is billed to its owner as before; sharing creates no new machine or charge.
+
+Without a parent computer, the default is `"none"`. A child made from a definition
+that declares its own computer keeps it. Existing named agents and tool spawn
+directive targets keep their own computers. Use `"none"` explicitly to opt out,
+`"fresh"` for a new machine, or `"fork"` for a separate copy of the parent's disk.
 
 If the parent has a [computer connection](computers.md), a child made with
 `computer: "fresh"` gets a separate connection with the same provider, credentials, managed
@@ -167,19 +180,31 @@ setting, lease and daily limits. This covers inline and definition children,
 `delegate` and `spawn_agent`. Existing named agents and
 agents targeted by tool spawn directives keep their own connections.
 
-The child calls `computer_start` to start its own session. No machine or session
-is shared, and grandchildren inherit too. Set `subagents: false` when attaching
+The child calls `computer_start` to start its own session. With `"fresh"`, no machine or session
+is shared, and grandchildren share the child's new machine by default. Set `subagents: false` when attaching
 the parent's computer to opt out. Each connection is billed independently under
 the usual rules, using the child's account and the current run's payer and bucket.
 
-Deleting or expiring the child stops its session and detaches its connection;
-finishing or aborting a turn leaves the agent alive and its connection attached.
+Deleting or expiring the child stops its session and detaches its connection.
+When a `delegate` child finishes its task, its machine stops and releases its
+slot; the agent and its connection remain available for a later task. Background
+`spawn_agent` children keep their machines until stopped, expired or deleted, so
+you can message a finished worker again.
 Delete a child you no longer need, or have it call `computer_stop` after saving
 its results. Deleting the parent also deletes the children the runtime made.
 
-The parent cannot mount a child's computer. Children exchange files through
+For separate computers, the parent cannot mount a child's computer. Children exchange files through
 shared volumes: copy results from `/computer` to a volume both agents mount.
 Parent mounts of child computers are a possible follow-up.
+
+Each root agent tree may run **4 machines concurrently** by default. Set
+`computerLimit` on its definition or agent (an integer from 1 to 64) to override
+the tenant default. Operators set the tenant default with `computerLimit` in the
+tenants file, or `PUT /v1/tenants/{id}/limits` for a self-serve tenant. Descendants
+use the root's cap. Shared children use no additional slot. Forks and fresh
+computers count only while running; stopped or saved machines do not count.
+At the cap, a new start is refused: use `computer: "share"` or wait for a child
+to finish and release its machine. The cap never stops a running machine.
 
 ### Limits
 

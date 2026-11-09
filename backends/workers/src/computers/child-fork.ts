@@ -1,3 +1,6 @@
+import { computerOwner, computerDisabled, disableComputer, shareComputer } from "../../../../src/core/computer-share.ts";
+import { Directory } from "../control.ts";
+import { withSql } from "../postgres.ts";
 import { HttpError } from "../errors.ts";
 import { computerStarting, FORK_LIMITS, noSession } from "../../../../src/core/computer-fork.ts";
 import type { ChildComputerFork } from "../delegation.ts";
@@ -14,6 +17,7 @@ export const nativeComputer = (env: Env, agent: string) => env.AGENTS.idFromName
  * with neither, NO_SESSION. A connection whose provider cannot fork answers FORK_UNSUPPORTED.
  */
 export async function forkChildComputers(env: Env, tenant: string, parent: string, batch: string, setup: () => Promise<OperateSetup>, serialize: <T>(run: () => Promise<T>) => Promise<T>): Promise<ChildComputerFork> {
+  parent = await withSql(env, sql => computerOwner(sql, tenant, parent));
   let connection: ChildComputerFork["connection"], missing: unknown;
   try {
     const taken = await serialize(() => new ComputerService(env, tenant).forkSnapshot(parent, batch));
@@ -73,8 +77,19 @@ async function seedNative(env: Env, agent: string, native: NonNullable<ChildComp
 }
 
 /** Give a child just made the computers its call chose: a fork's seeds, none, or (undefined) a fresh copy of the parent's connection. */
-export async function attachChildComputers(env: Env, tenant: string, parent: string, child: string, computer?: "none" | ChildComputerFork) {
-  if (computer === "none") return;
+export async function attachChildComputers(env: Env, tenant: string, parent: string, child: string, computer?: "none" | "share" | ChildComputerFork) {
+  if (computer === "none") { await withSql(env, sql => disableComputer(sql, tenant, child)); return; }
+  if (computer === "share") {
+    const entry = await new Directory(env, tenant).get(parent);
+    const disabled = await withSql(env, sql => computerDisabled(sql, tenant, parent));
+    const attached = await new ComputerService(env, tenant).hasConnection(parent);
+    if (disabled || (!attached && (!env.COMPUTER_CONTAINERS || (entry?.config?.codeMode === false && !entry?.config?.computer)))) {
+      await withSql(env, sql => disableComputer(sql, tenant, child));
+      return;
+    }
+    await withSql(env, sql => shareComputer(sql, tenant, parent, child));
+    return;
+  }
   await inheritComputer(env, tenant, parent, child, undefined, computer?.connection);
   // A replay never replaces a child's disk: one already seeded keeps it.
   if (computer?.native && env.COMPUTER_CONTAINERS && !(await env.COMPUTER_CONTAINERS.getByName(nativeComputer(env, child)).forkedFrom())) await seedNative(env, child, computer.native);
@@ -85,6 +100,7 @@ export async function attachChildComputers(env: Env, tenant: string, parent: str
  * computer calls) and its native computer is released (container, handles, the parent's snapshot reference).
  */
 export async function releaseChildComputers(env: Env & { AGENTS: { getByName(name: string): { fetch(request: Request): Promise<Response> } } }, tenant: string, child: string) {
+  if (await withSql(env, sql => computerOwner(sql, tenant, child)) !== child) return;
   const failures: unknown[] = [];
   try {
     const response = await env.AGENTS.getByName(child).fetch(new Request("https://computer.internal/__computer", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tenant, operation: "release" }) }));

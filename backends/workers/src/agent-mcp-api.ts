@@ -1,4 +1,4 @@
-export const VERSION = "0.22.1";
+export const VERSION = "0.23.0";
 // Generated from packages/cli/src/{api,ops}.ts by scripts/reuse-agent-mcp.mjs.
 /**
  * A refused call: the runtime's `error` message, with the HTTP status and its `code` when it gave one. The message
@@ -10,6 +10,17 @@ export class ApiError extends Error {
   readonly code?: string;
   readonly cliHint?: string;
   constructor(status: number, message: string, code?: string, cliHint?: string) { super(message); this.status = status; this.code = code; this.cliHint = cliHint; }
+}
+
+/** Computer choice on inline and definition child tasks. */
+export type ComputerChoice = "share" | "fork" | "fresh" | "none";
+export interface ChildTask {
+  agent?: string;
+  instructions?: string;
+  task: string;
+  name?: string;
+  computer?: ComputerChoice;
+  output?: Record<string, unknown>;
 }
 
 export interface Credentials {
@@ -88,7 +99,9 @@ export interface RunSummary {
   /** The agent's id; none for a stateless run, whose `requestId` is its run's id (run_…). */
   agent?: string; requestId: string;
   /** running: it has not ended yet (poll it with `camelrun runs get`, or the get_run tool). */
-  status: "running" | "completed" | "input_required" | "failed";
+  status: "running" | "completed" | "input_required" | "paused" | "failed";
+  stoppedReason?: "budget_reached";
+  limit?: string;
   text?: string;
   /** errorClass, providerStatus, retryable and model: how a model call failed it, where one did. */
   error?: { code: string; message: string; errorClass?: string; providerStatus?: number; retryable?: boolean; model?: string };
@@ -110,9 +123,9 @@ export function summarize(agent: string, record: any): RunSummary {
     : result.error ? { code: result.code ?? "model_error", message: result.error, ...result.modelError, ...Object.fromEntries(["limit", "reason", "bucket", "endUser"].flatMap(key => typeof result[key] === "string" ? [[key, result[key]]] : [])) }
     : result.stopped === "spend_limit" ? { code: "spend_limit", message: "The agent reached its spend limit; raise it to go on" }
     : result.stopped === "turn_limit" ? { code: "turn_limit", message: "The run reached its limit of model responses or time; send another message to continue" } : undefined;
-  const status = failure ? "failed" : result.stopped === "input_required" ? "input_required" : "completed";
+  const status = result.stopped === "spend_limit" ? "paused" : failure ? "failed" : result.stopped === "input_required" ? "input_required" : "completed";
   return {
-    ...base, status,
+    ...base, status, ...(result.stopped === "spend_limit" ? { stoppedReason: "budget_reached" as const, limit: result.limit } : {}),
     ...(typeof result.reply === "string" ? { text: result.reply } : {}),
     ...(failure ? { error: failure } : {}),
     ...(result.inputs?.length ? { inputs: result.inputs.map((input: any) => ({ id: input.id, kind: input.kind, ...(input.message ? { message: input.message } : {}), detail: input.detail })) } : {}),

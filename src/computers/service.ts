@@ -10,6 +10,8 @@ import type { ComputerMount } from "../computer-env.ts";
 import type { ComputerTransfers } from "./transfers.ts";
 import { fileCommand, MANAGED, ManagedComputers, managedTools, storable } from "./managed.ts";
 import { fileReceipts, driver, isBrowserProvider, PROVIDERS, type Credentials, type DriverFactory, type ComputerDriver, type Provider, type Reference } from "./providers.ts";
+import { reserveComputer, releaseComputer, computerToolError } from "../core/computer-limit.ts";
+import { computerOwner, shareComputer, SHARED_COMPUTER_CONTROL, SHARED_COMPUTER_STOPPED } from "../core/computer-share.ts";
 import { connectionForkable, FORK_LIMITS, forkableProvider, forkedFrom, forkRows, forkUnsupported, noSession, notForkable, snapshotFailed, snapshotRef, type ForkedFrom, type SnapshotRef } from "../core/computer-fork.ts";
 
 const id = () => `cmp_${randomUUID().replaceAll("-", "")}`;
@@ -26,11 +28,11 @@ const publicConnection = (r: any) => ({ id: r.id, agent: r.agent, provider: r.pr
 const publicLease = (r: any) => r ? ({ id: r.id, provider: r.provider, workspaceId: r.workspace, state: r.state, recoveryRequired: r.state === "uncertain" || r.state === "closing" && !!r.error, createdAt: r.created_at, expiresAt: r.expires_at, closedAt: r.closed_at, ...(r.error ? { error: r.error } : {}) }) : null;
 
 export class Computers {
-  readonly options: { db: Db; accounts: Pick<Accounts, "seal" | "unseal"> & ManagedComputers["options"]["accounts"]; outbound: Outbound; transfers?: ComputerTransfers; driver?: DriverFactory; now?: () => number } & Partial<Pick<ManagedComputers["options"], "enabled" | "runtime" | "endUsers" | "credit" | "payer" | "machines" | "sleep" | "provider" | "microvm" | "priceAtCost" | "boatUrl">>;
+  readonly options: { tenantComputerLimit?: (tenant: string) => number | undefined; db: Db; accounts: Pick<Accounts, "seal" | "unseal"> & ManagedComputers["options"]["accounts"]; outbound: Outbound; transfers?: ComputerTransfers; driver?: DriverFactory; now?: () => number } & Partial<Pick<ManagedComputers["options"], "enabled" | "runtime" | "endUsers" | "credit" | "payer" | "machines" | "sleep" | "provider" | "microvm" | "priceAtCost" | "boatUrl">>;
   readonly managed: ManagedComputers;
   constructor(options: Computers["options"]) {
     this.options = options;
-    this.managed = new ManagedComputers({ db: options.db, accounts: options.accounts, outbound: options.outbound, enabled: !!options.enabled, runtime: options.runtime ?? "", endUsers: options.endUsers, credit: options.credit, payer: options.payer, provider: options.provider, microvm: options.microvm, priceAtCost: options.priceAtCost, machines: options.machines, sleep: options.sleep, boatUrl: options.boatUrl, now: () => this.now() });
+    this.managed = new ManagedComputers({ tenantComputerLimit: options.tenantComputerLimit, db: options.db, accounts: options.accounts, outbound: options.outbound, enabled: !!options.enabled, runtime: options.runtime ?? "", endUsers: options.endUsers, credit: options.credit, payer: options.payer, provider: options.provider, microvm: options.microvm, priceAtCost: options.priceAtCost, machines: options.machines, sleep: options.sleep, boatUrl: options.boatUrl, now: () => this.now() });
   }
   private now() { return this.options.now?.() ?? Date.now(); }
   private async lock<T>(tenant: string, agent: string, fn: (sql: DbClient) => Promise<T>) {
@@ -44,6 +46,7 @@ export class Computers {
     }
   }
   async revision(tenant: string, agent: string) {
+    agent = await computerOwner(this.options.db, tenant, agent);
     const mount = await this.filesystem(tenant, agent);
     return `${(await this.options.db.query("select id from computer_connections where tenant=$1 and agent=$2", [tenant, agent])).rows[0]?.id ?? ""}:${mount?.id ?? ""}`;
   }
@@ -103,8 +106,14 @@ export class Computers {
    * took, `forkSnapshot`) attaches a connection whose sessions start from that snapshot, whatever the parent's `subagents`.
    * The seed is locked (FOR SHARE) until the child's transaction ends, so a drop cannot take it meanwhile.
    */
-  async inherit(tenant: string, parent: string, child: string, sql: Sql, computer?: "none" | { seed: string }) {
+  async inherit(tenant: string, parent: string, child: string, sql: Sql, computer?: "none" | "share" | { seed: string }) {
     if (computer === "none") return;
+    if (computer === "share") {
+      const owner = await computerOwner(sql, tenant, parent);
+      if ((await sql.query("select 1 from computer_connections where tenant=$1 and agent=$2", [tenant, owner])).rowCount) await shareComputer(sql, tenant, parent, child);
+      return;
+    }
+    parent = await computerOwner(sql, tenant, parent);
     const seed = computer?.seed ? await forkRows.attachable(sql, computer.seed, tenant) : undefined;
     if (computer?.seed && !seed) throw new HttpError(409, "The fork's snapshot is gone; fork again");
     const c = (await sql.query(seed ? "select * from computer_connections where tenant=$1 and id=$2 and agent not like 'removed:%' for share" : "select * from computer_connections where tenant=$1 and agent=$2 and subagents for share", [tenant, seed ? seed.connection : parent])).rows[0];
@@ -263,12 +272,14 @@ export class Computers {
     try { return await fn(value); } finally { await value.dispose?.(); }
   }
   private async connection(tenant: string, agent: string, sql: any = this.options.db) {
+    agent = await computerOwner(sql, tenant, agent);
     const row = (await sql.query("select c.* from computer_connections c join agents a on a.id=c.agent and a.tenant=c.tenant where c.tenant=$1 and c.agent=$2 and not a.revoked and a.purged_at is null and (a.expires_at is null or a.expires_at>$3)", [tenant, agent, this.now()])).rows[0];
     if (!row) throw new HttpError(404, "No computer connected to this agent");
     return row;
   }
   private async latest(connection: string, sql: any = this.options.db) { return (await sql.query("select * from computer_leases where connection=$1 order by sequence desc limit 1", [connection])).rows[0]; }
   async tools(tenant: string, agent: string) {
+    agent = await computerOwner(this.options.db, tenant, agent);
     const c = (await this.options.db.query("select provider,managed from computer_connections where tenant=$1 and agent=$2", [tenant, agent])).rows[0];
     if (c?.managed) return this.options.enabled ? managedTools(COMMON, SHELL, tool, text) : [];
     return c ? [...COMMON, ...(isBrowserProvider(c.provider) ? BROWSER : SHELL)] : [];
@@ -287,6 +298,7 @@ export class Computers {
     try { await this.useProvider(connection, p => p.close(reference)); }
     catch { await sql.query("update computer_leases set error='Cleanup failed; retrying' where id=$1", [lease.id]); throw new HttpError(502, "Computer cleanup failed; it will be retried"); }
     await sql.query("update computer_leases set state='closed',closed_at=$2,reference=null,error=null where id=$1", [lease.id, this.now()]);
+    await releaseComputer(sql, connection.tenant, connection.id);
   }
   async remove(tenant: string, connectionId: string) {
     const c = (await this.options.db.query("select * from computer_connections where tenant=$1 and id=$2", [tenant, connectionId])).rows[0];
@@ -305,20 +317,39 @@ export class Computers {
   }
   async confirmCleanup(tenant: string, agent: string) {
     return this.lock(tenant, agent, async sql => {
-      const c = await this.connection(tenant, agent, sql), lease = await this.latest(c.id, sql);
+      const c = await this.connection(tenant, agent, sql);
+      if (c.agent !== agent) throw new HttpError(409, SHARED_COMPUTER_CONTROL);
+      const lease = await this.latest(c.id, sql);
       if (!lease || !["uncertain", "closing"].includes(lease.state)) throw new HttpError(409, "Only a failed creation or cleanup can be confirmed manually");
       await sql.query("update computer_leases set state='closed',closed_at=$2,reference=null,error=null where id=$1", [lease.id, this.now()]);
+      await releaseComputer(sql, tenant, c.id);
       return { confirmed: true };
     });
   }
   async call(tenant: string, agent: string, name: string, args: Record<string, any>, requestKey: string, files?: Pick<ToolContext, "mounts" | "onWrite">, receiptsOnly = false) {
     if (!COMPUTER_TOOLS.has(name)) throw new HttpError(400, "Unknown computer tool");
-    const connection = await this.connection(tenant, agent);
+    let connection;
+    try { connection = await this.connection(tenant, agent); }
+    catch (error) {
+      if ((error as HttpError).status === 404 && await computerOwner(this.options.db, tenant, agent) !== agent)
+        throw new HttpError(409, SHARED_COMPUTER_STOPPED, "COMPUTER_STOPPED");
+      throw error;
+    }
+    const shared = connection.agent !== agent;
+    if (shared && ["computer_start", "computer_stop"].includes(name)) throw new HttpError(409, SHARED_COMPUTER_CONTROL);
+    if (shared) requestKey = `${agent}:${requestKey}`;
+    if (shared && name !== "computer_status") {
+      // First use may start the owner's unused connection. A past session or explicit stop is never restarted.
+      const history = await this.options.db.query(`select 1 from managed_computers where connection=$1
+        union all select 1 from computer_leases where connection=$1
+        union all select 1 from computer_operations where connection=$1 and result @> '{"stopped":true}'::jsonb limit 1`, [connection.id]);
+      if (!history.rowCount) await this.call(tenant, connection.agent, "computer_start", {}, `shared-first-use:${connection.id}`);
+    }
     if (connection.managed) {
       if (!SHELL.concat(COMMON).some(t => t.name === name)) throw new HttpError(400, "Tool not supported by this computer");
       const input = JSON.stringify([name, args]);
       if (input.length > 40000) throw new HttpError(400, "Computer tool input too large");
-      return this.managed.call(connection, tenant, agent, name, args, requestKey, createHash("sha256").update(input).digest("hex"), files, receiptsOnly, name === "computer_start" ? await this.seedOf(connection) : undefined);
+      return this.managed.call(connection, tenant, connection.agent, name, args, requestKey, createHash("sha256").update(input).digest("hex"), files, receiptsOnly, name === "computer_start" ? await this.seedOf(connection) : undefined, shared);
     }
     return this.lock(tenant, agent, async sql => {
       const c = await this.connection(tenant, agent, sql);
@@ -335,6 +366,7 @@ export class Computers {
       let lease = await this.latest(c.id, sql);
       if (name === "computer_status") return publicLease(lease);
       if (name === "computer_stop") { await this.stop(c, lease, sql); return { stopped: true }; }
+      if (shared && (!lease || lease.state !== "active" || lease.expires_at <= this.now())) throw new HttpError(409, SHARED_COMPUTER_STOPPED, "COMPUTER_STOPPED");
       if (lease && lease.state !== "closed" && lease.expires_at <= this.now()) { await this.stop(c, lease, sql); lease = undefined; }
       if (name === "computer_start") {
         if (lease && lease.state !== "closed") { if (lease.state !== "active") throw new HttpError(409, "This computer is waiting on an earlier operation, which may need its owner to confirm cleanup in the Computers console. Do not retry in this turn; tell the user."); return publicLease(lease); }
@@ -342,8 +374,9 @@ export class Computers {
         if (Number(used) + c.lease_seconds*1000 > c.daily_seconds*1000) throw new HttpError(429, "Computer daily time budget reached");
         // A forked connection's every new session starts from its seed, the parent's disk as it was at the fork.
         const from = await this.seedOf(c);
-        const session = id(), now = this.now(), workspace = await new Workspaces(this.options.db).current(tenant, "agent", agent, sql);
-        lease = (await sql.query("insert into computer_leases(id,tenant,agent,connection,workspace,provider,state,created_at,expires_at) values($1,$2,$3,$4,$5,$6,'starting',$7,$8) returning *", [session, tenant, agent, c.id, workspace?.workspace ?? null, c.provider, now, now+c.lease_seconds*1000])).rows[0];
+        await transaction(this.options.db, db => reserveComputer(db, tenant, c.agent, c.id, this.now() + c.lease_seconds * 1000, this.now(), this.options.tenantComputerLimit?.(tenant)));
+        const session = id(), now = this.now(), workspace = await new Workspaces(this.options.db).current(tenant, "agent", c.agent, sql);
+        lease = (await sql.query("insert into computer_leases(id,tenant,agent,connection,workspace,provider,state,created_at,expires_at) values($1,$2,$3,$4,$5,$6,'starting',$7,$8) returning *", [session, tenant, c.agent, c.id, workspace?.workspace ?? null, c.provider, now, now+c.lease_seconds*1000])).rows[0];
         let creator: ComputerDriver | undefined, allocated = false;
         try {
           const ref = await this.useProvider(c, p => { creator = p; return p.create(session, c.lease_seconds, async ref => { allocated = true; await sql.query("update computer_leases set reference=$2 where id=$1", [session, this.options.accounts.seal(`computer-lease:${session}`, JSON.stringify(ref))]); }, { ...from ? { from } : {}, forkable: connectionForkable(c) }); });
@@ -352,6 +385,7 @@ export class Computers {
           // A provider that refused the credentials made nothing: no machine to reconcile, and a fixed key can start again.
           if (!allocated && creator?.refused?.(error)) {
             await sql.query("update computer_leases set state='closed',closed_at=$2,error='Provider refused the credentials' where id=$1", [session, this.now()]);
+            await releaseComputer(sql, tenant, c.id);
             throw new HttpError(502, "The computer provider refused its credentials, and nothing was created. Do not retry in this turn. Tell the user that its owner needs to reconnect the computer with a working key in the Computers console.");
           }
           await sql.query("update computer_leases set state='uncertain',error='Creation outcome unknown' where id=$1", [session]); throw new HttpError(502, "Computer could not be created, and the provider may have made a machine. Do not retry in this turn. Tell the user the computer is unavailable and that its owner may need to check the provider account and confirm cleanup in the Computers console.");
@@ -386,7 +420,7 @@ export class Computers {
         return result;
       } catch (error) {
         if (name !== "computer_status") await sql.query("update computer_operations set state='uncertain' where connection=$1 and key=$2", [c.id, requestKey]);
-        throw error;
+        throw computerToolError(error);
       }
     });
   }

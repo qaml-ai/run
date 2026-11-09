@@ -1,3 +1,6 @@
+import { SHARED_COMPUTER_STOPPED } from "../core/computer-share.ts";
+import { HttpError } from "../core/http-error.ts";
+import { reserveComputer, suspendComputer, beginComputerUse, endComputerUse } from "../core/computer-limit.ts";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
 import { SignatureV4 } from "@smithy/signature-v4";
@@ -75,7 +78,7 @@ export function observe(previous: Observation | undefined, vm: any, now: number)
 }
 export const microvmCost = (o: Observation) => o.seconds * MICROVM_HOUR / 3600 + 2 * (o.suspends * 0.0038 + o.resumes * 0.00155 + o.suspendedSeconds * 0.08 / (30 * 86400));
 
-export function microvmMachines(options: { db: Db; outbound: Outbound; settings: MicrovmSettings; runtime: string; api?: MicrovmApi; now?: () => number; sleep?: (ms: number) => Promise<void> }): ManagedMachines {
+export function microvmMachines(options: { db: Db; outbound: Outbound; settings: MicrovmSettings; runtime: string; api?: MicrovmApi; now?: () => number; sleep?: (ms: number) => Promise<void>; tenantComputerLimit?: (tenant: string) => number | undefined }): ManagedMachines {
   const { db, outbound, settings } = options, now = options.now ?? Date.now, wait = options.sleep ?? sleep;
   const api = options.api ?? microvmApi(settings.region, outbound);
   const tokens = new Map<string, { until: number; headers: Record<string, string> }>();
@@ -86,6 +89,7 @@ export function microvmMachines(options: { db: Db; outbound: Outbound; settings:
     if (!row) throw new Error("Unknown MicroVM owner");
     const state = row.microvm ?? {}, observation = observe(state.observation, vm, at);
     await sql.query("update managed_computers set microvm=$2,machine=$3 where id=$1", [computer, JSON.stringify({ ...state, observation, endpoint: vm.endpoint }), vm.microvmId]);
+    if (paused(vm.state) || vm.state === "TERMINATED") await suspendComputer(sql, row.tenant, row.connection, at);
     return { row, observation };
   });
   const token = async (id: string) => {
@@ -169,28 +173,43 @@ export function microvmMachines(options: { db: Db; outbound: Outbound; settings:
       }
       return found;
     },
-    async run(id, command, timeoutSeconds, requestKey = randomUUID()) {
-      const vm = await get(id), at = now();
+    async run(id, command, timeoutSeconds, requestKey = randomUUID(), shared = false) {
+      let vm;
+      try { vm = await get(id); }
+      catch (error) {
+        if (shared && (error as { status?: number }).status === 404) throw new HttpError(409, SHARED_COMPUTER_STOPPED, "COMPUTER_STOPPED");
+        throw error;
+      }
+      const at = now();
       const row = (await db.query("select id from managed_computers where machine=$1 and provider='lambda'", [id])).rows[0];
       if (!row) throw new Error("Unknown MicroVM owner");
-      await record(row.id, vm, at);
-      // Hash arbitrary operation keys into the agent's path-safe key space.
-      const key = createHash("sha256").update(requestKey).digest("hex");
-      const until = now() + (timeoutSeconds + 60) * 1000;
-      let response;
-      // Retrying the POST after a dropped response is safe: the agent stores the key before starting.
-      for (let attempt = 0; ; attempt++) {
-        try { response = await proxy(id, vm.endpoint, "/exec", { command, timeoutSeconds, requestKey: key }); break; }
-        catch (error) { if (attempt === 1) throw error; await wait(1000); }
-      }
-      await record(row.id, { ...vm, state: "RUNNING" });
-      while (response.status === 202 && now() < until) {
-        try { response = await proxy(id, vm.endpoint, `/exec/${key}?wait=25`); }
-        catch { response = await proxy(id, vm.endpoint, `/exec/${key}?wait=25`); }
-      }
-      const result = response.value;
-      if (response.status !== 200 || !Number.isInteger(result.exitCode) || typeof result.stdout !== "string" || typeof result.stderr !== "string" || typeof result.truncated !== "boolean") throw new Error("Incomplete MicroVM command result");
-      return { exitCode: result.exitCode, stdout: result.stdout.slice(0, 65536), stderr: result.stderr.slice(0, 65536), truncated: result.truncated || result.stdout.length > 65536 || result.stderr.length > 65536 };
+      const current = await record(row.id, vm, at);
+      if (shared && (vm.state === "TERMINATED" || vm.state === "TERMINATING"))
+        throw new HttpError(409, SHARED_COMPUTER_STOPPED, "COMPUTER_STOPPED");
+      await transaction(db, async sql => {
+        await reserveComputer(sql, current.row.tenant, current.row.agent, current.row.connection,
+          Number(current.row.deadline), now(), options.tenantComputerLimit?.(current.row.tenant));
+        await beginComputerUse(sql, current.row.tenant, current.row.connection, now() + (timeoutSeconds + 60) * 1000);
+      });
+      try {
+        // Hash arbitrary operation keys into the agent's path-safe key space.
+        const key = createHash("sha256").update(requestKey).digest("hex");
+        const until = now() + (timeoutSeconds + 60) * 1000;
+        let response;
+        // Retrying the POST after a dropped response is safe: the agent stores the key before starting.
+        for (let attempt = 0; ; attempt++) {
+          try { response = await proxy(id, vm.endpoint, "/exec", { command, timeoutSeconds, requestKey: key }); break; }
+          catch (error) { if (attempt === 1) throw error; await wait(1000); }
+        }
+        await record(row.id, { ...vm, state: "RUNNING" });
+        while (response.status === 202 && now() < until) {
+          try { response = await proxy(id, vm.endpoint, `/exec/${key}?wait=25`); }
+          catch { response = await proxy(id, vm.endpoint, `/exec/${key}?wait=25`); }
+        }
+        const result = response.value;
+        if (response.status !== 200 || !Number.isInteger(result.exitCode) || typeof result.stdout !== "string" || typeof result.stderr !== "string" || typeof result.truncated !== "boolean") throw new Error("Incomplete MicroVM command result");
+        return { exitCode: result.exitCode, stdout: result.stdout.slice(0, 65536), stderr: result.stderr.slice(0, 65536), truncated: result.truncated || result.stdout.length > 65536 || result.stderr.length > 65536 };
+      } finally { await endComputerUse(db, current.row.tenant, current.row.connection); }
     },
   };
 }

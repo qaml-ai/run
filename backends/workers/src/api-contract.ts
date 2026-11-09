@@ -1,3 +1,4 @@
+import { computerLimit } from "../../../src/core/computer-limit.ts";
 import { networkingInput, type Networking } from "../../../src/core/vault.ts";
 import { BadRequest, object } from "./validation.ts";
 
@@ -27,6 +28,7 @@ export interface AgentConfiguration {
   systemPromptAppend?: string;
   fileTools?: boolean;
   codeMode?: boolean;
+  computerLimit?: number;
   name?: string;
   metadata?: Record<string, unknown>;
   idleTtlSeconds?: number | null;
@@ -103,7 +105,7 @@ export function configuration(input: unknown, defaultModel: string, operation: "
   rejectWorkflow(input);
   let fields: Record<string, unknown>;
   try {
-    fields = object(input, ["model", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "metadata", "name", "type", "thinkingLevel", "mcp", "ttlSeconds", "idleTtlSeconds", "builtins", "webSearch", "delegate", "decide", "mounts", "maxOutputTokens", "temperature", "dataCollection", "language", "modelHeaders", "runLimits", "queue", "initialMessages", "importMessages", "definition", "subject", "context", "keyScope", "spendLimit", "bucket", "humanInput", "subagents", "workspaceId", "remount", "prompt", "mcpServers", "openApi", "definitionRevision", "definitionOverrides", "computer", "networking"]);
+    fields = object(input, ["model", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "metadata", "name", "type", "thinkingLevel", "mcp", "ttlSeconds", "idleTtlSeconds", "builtins", "webSearch", "delegate", "decide", "mounts", "maxOutputTokens", "temperature", "dataCollection", "language", "modelHeaders", "computerLimit", "runLimits", "queue", "initialMessages", "importMessages", "definition", "subject", "context", "keyScope", "spendLimit", "bucket", "humanInput", "subagents", "workspaceId", "remount", "prompt", "mcpServers", "openApi", "definitionRevision", "definitionOverrides", "computer", "networking"]);
   } catch (error) {
     if (error instanceof BadRequest && error.message.startsWith("Unsupported field: "))
       throw new BadRequest(`Unknown agent field: ${error.message.slice("Unsupported field: ".length).split(", ")[0]}`);
@@ -146,6 +148,7 @@ export function configuration(input: unknown, defaultModel: string, operation: "
   if (fields.temperature !== undefined) config.temperature = temperatureInput(fields.temperature);
   if (fields.dataCollection !== undefined) config.dataCollection = dataCollectionInput(fields.dataCollection);
   if (fields.modelHeaders !== undefined) config.modelHeaders = modelHeadersInput(fields.modelHeaders);
+  if (fields.computerLimit !== undefined) config.computerLimit = computerLimit(fields.computerLimit);
   if (fields.runLimits !== undefined) config.runLimits = runLimitsInput(fields.runLimits);
   if (fields.language !== undefined) { try { config.language = languageInput(fields.language); } catch (error) { throw new ApiError(400, (error as Error).message); } }
   if (fields.queue !== undefined) { try { config.queue = queueInput(fields.queue); } catch (error) { throw new ApiError(400, (error as Error).message); } }

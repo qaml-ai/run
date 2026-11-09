@@ -124,8 +124,10 @@ test("new sessions carry the role's idle-in-transaction timeout, so no transacti
 
 test("two processes starting at once apply each migration exactly once", async () => {
   const { db, url } = await testDatabase({ migrate: false });
+  // Other test schemas alter the shared database role while this full migration runs. Give those locks time
+  // to clear: this checks two migration runners, not the short lock-timeout retry path (which can report a suffix).
   const script = `import { databaseFromEnvironment, migrate } from ${JSON.stringify(new URL("../src/db.ts", import.meta.url).href)};
-    const db = await databaseFromEnvironment(); console.log(JSON.stringify(await migrate(db))); await db.end();`;
+    const db = await databaseFromEnvironment(); console.log(JSON.stringify(await migrate(db, undefined, { lockTimeoutMs: 30_000 }))); await db.end();`;
   const run = () => promisify(execFile)(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", "--input-type=module", "-e", script],
     { env: { PATH: process.env.PATH, AGENT_DATABASE_URL: url } });
   const outputs = (await Promise.all([run(), run()])).map(({ stdout }) => JSON.parse(stdout));

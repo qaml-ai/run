@@ -4,6 +4,8 @@ import { HttpError } from "./errors.ts";
 import { inputView } from "./decision-inputs.ts";
 import { decisionInputs, answerDecisions } from "./inbox-decisions.ts";
 import { repairInputMirrors } from "./agent-input-mirror.ts";
+import { computerOwner, computerDisabled, SHARED_COMPUTER_CONTROL } from "../../../src/core/computer-share.ts";
+import { withSql as shareSql } from "./postgres.ts";
 import { computerSetup } from "./computers/agent-setup.ts";
 import { forkComputerInto } from "./computers/child-fork.ts";
 import { modelCompactionSettings } from "./model-context.ts";
@@ -728,7 +730,13 @@ export async function fetchRequestImpl(this: AgentRuntime,
         if (!namespace)
           return json({ error: "Optional computer is not configured" }, 501);
         return json(
-          await namespace.getByName(this.ctx.id.toString()).operate(input as never, await computerSetup(this.env, await this.config())),
+          await (async () => {
+            const conf = await this.config();
+            if (await shareSql(this.env, sql => computerDisabled(sql, conf.tenantId, conf.id))) throw new BadRequest("This agent has no computer");
+            const owner = await shareSql(this.env, sql => computerOwner(sql, conf.tenantId, conf.id));
+            if (owner !== conf.id && ["sleep", "restore"].includes(input.op)) throw new BadRequest(SHARED_COMPUTER_CONTROL);
+            return namespace.getByName(this.env.AGENTS.idFromName(owner).toString()).operate(input as never, await computerSetup(this.env, conf));
+          })(),
         );
       }
       if (

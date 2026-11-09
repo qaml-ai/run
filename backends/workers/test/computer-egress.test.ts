@@ -237,6 +237,17 @@ test("a forked child boots from the parent's snapshot (its seed), with this comp
   assert.ok(calls.some(call => call[0] === "exec" && (call[1] as string[]).join(" ").includes("update-ca-certificates")));
 });
 
+test("a sharing child's JSONB settings preserve the running machine despite reordered object keys", async () => {
+  const { calls, box, store } = container();
+  const key = JSON.stringify([[{ host: "github.com", auth: { type: "exchange", url: "https://app.example/token" } }], { tenant: "a", agent: "parent", definition: "lead" }, null]);
+  const reordered = JSON.stringify([[{ auth: { url: "https://app.example/token", type: "exchange" }, host: "github.com" }], { definition: "lead", agent: "parent", tenant: "a" }, null]);
+  const network = { key, egress: [], idleMs: 60_000 };
+  await operate(new ContainerProvider(box as never, store, undefined, Date.now, network), { op: "exec", command: "true" });
+  calls.length = 0;
+  await operate(new ContainerProvider(box as never, store, undefined, Date.now, { ...network, key: reordered }), { op: "exec", command: "true" });
+  assert.equal(calls.some(call => call[0] === "destroy" || call[0] === "start"), false);
+});
+
 test("exec takes a shell command, run with bash -lc, as well as an argv list", async () => {
   const { calls, box, store } = container();
   await operate(new ContainerProvider(box as never, store), { op: "exec", command: "cd /workspace && git status | head -3" });

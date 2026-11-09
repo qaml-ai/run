@@ -451,6 +451,8 @@ export interface CreateAgentOptions extends AgentOptions {
   fileTools?: boolean;
   /** false: no codemode; the model calls every tool directly, and a tool-less agent's prompt is little more than its instructions. */
   codeMode?: boolean;
+  /** Concurrent machines per root tree, 1–64; default 4 or tenant default. */
+  computerLimit?: number;
   name?: string;
   type?: string;
   /**
@@ -576,6 +578,8 @@ export interface DefinitionInput {
   fileTools?: boolean;
   /** false: its agents get no codemode, and call every tool directly. */
   codeMode?: boolean;
+  /** Concurrent machines per root tree, 1–64; default 4 or tenant default. */
+  computerLimit?: number;
   limits?: { ttlSeconds?: number | null; idleTtlSeconds?: number | null }; mounts?: unknown[]; builtins?: Builtin[];
   /** false: its agents get no decide tool, which every agent has by default. */
   decide?: boolean;
@@ -1140,7 +1144,7 @@ const AGENT_KEY = /^[A-Za-z0-9_-]{1,80}$/;
 const REQUEST_ID = AGENT_KEY;
 /** A create request's fields, from the options given. */
 function provisioning(options: CreateAgentOptions) {
-  const fields = ["networking", "metadata", "workspaceId", "subject", "context", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "definition", "definitionRevision", "humanInput", "mounts", "remount", "model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "queue", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "decide", "delegate", "mcpServers", "prompt"] as const;
+  const fields = ["networking", "metadata", "workspaceId", "subject", "context", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "definition", "definitionRevision", "humanInput", "mounts", "remount", "model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "queue", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "computerLimit", "builtins", "decide", "delegate", "mcpServers", "prompt"] as const;
   return withMultiAgent(Object.fromEntries(fields.filter(field => options[field] !== undefined).map(field => [field, options[field]])));
 }
 /** `delegate` settings bring their builtin: given the settings without delegate or agents, delegate is added. */
@@ -2020,6 +2024,8 @@ export interface RunRequest {
   fileTools?: boolean; mounts?: MountInput[];
   /** codemode. Default: on for a run with tools, off for a tool-less one. */
   codeMode?: boolean;
+  /** Concurrent machines per root tree, 1–64; default 4 or tenant default. */
+  computerLimit?: number;
   output?: { schema: Record<string, unknown> };
   workspaceId?: string | null;
   keyScope?: string; modelHeaders?: Record<string, string>;

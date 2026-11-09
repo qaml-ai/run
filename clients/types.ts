@@ -6,6 +6,8 @@
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
+export type { ComputerChoice, ChildTask } from "../shared/computer-choice.ts";
+
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface TextContent { type: "text"; text: string }

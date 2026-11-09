@@ -107,7 +107,7 @@ export async function converse(call: Call, message: string, requestId: string, e
 
 /** A run's end as the tool's result: the reply, or the runtime's (or the model's) error. */
 function finished(run: RunSummary): CallToolResult {
-  if (run.status === "failed") return text(run.error!.message, true, { requestId: run.requestId, error: run.error });
+  if (run.status === "failed" || run.status === "paused") return text(run.error!.message, true, { requestId: run.requestId, error: run.error, ...(run.status === "paused" ? { status: run.status, stoppedReason: run.stoppedReason, limit: run.limit } : {}) });
   return text(run.text || "(The agent ended its turn without a reply.)", false, { requestId: run.requestId });
 }
 

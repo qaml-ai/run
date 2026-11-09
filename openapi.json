@@ -4158,6 +4158,12 @@
             "type": "string",
             "description": "With end-user credits on (/v1/end-user-settings): the bucket of its subject's credit its runs spend from (its daily allowance first, then their balance). Default \"default\""
           },
+          "computerLimit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 64,
+            "description": "Concurrent running machines per root agent tree; default 4 or the tenant default. Shared children use no additional slot"
+          },
           "runLimits": {
             "$ref": "#/components/schemas/RunLimits"
           },
@@ -4960,6 +4966,12 @@
                   "usd",
                   "spent"
                 ]
+              },
+              "computerLimit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 64,
+                "description": "Concurrent running machines per root agent tree; default 4 or the tenant default. Shared children use no additional slot"
               },
               "runLimits": {
                 "allOf": [
@@ -6039,6 +6051,12 @@
               "null"
             ],
             "description": "The bucket of its subject's credit its runs spend from, applied at once; null: \"default\""
+          },
+          "computerLimit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 64,
+            "description": "Concurrent running machines per root agent tree; default 4 or the tenant default. Shared children use no additional slot"
           },
           "runLimits": {
             "type": [
@@ -9536,6 +9554,9 @@
           "limits": {
             "type": "object",
             "properties": {
+              "computerLimit": {
+                "type": "integer"
+              },
               "maxStorageGb": {
                 "type": "number"
               },
@@ -9658,6 +9679,14 @@
             "minimum": 1,
             "maximum": 1000,
             "description": "Scripts (codemode calls) the tenant may run at once on one node, in place of its usage tier's; null returns to the tier's"
+          },
+          "computerLimit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "maximum": 64
           },
           "decisionConcurrency": {
             "type": [
@@ -10630,6 +10659,12 @@
           "limits": {
             "$ref": "#/components/schemas/DefinitionLimits"
           },
+          "computerLimit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 64,
+            "description": "Concurrent running machines per root agent tree; default 4 or the tenant default. Shared children use no additional slot"
+          },
           "runLimits": {
             "allOf": [
               {
@@ -11153,6 +11188,12 @@
           },
           "limits": {
             "$ref": "#/components/schemas/DefinitionLimits"
+          },
+          "computerLimit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 64,
+            "description": "Concurrent running machines per root agent tree; default 4 or the tenant default. Shared children use no additional slot"
           },
           "runLimits": {
             "allOf": [
@@ -11795,6 +11836,15 @@
               }
             ]
           },
+          "computerLimit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "maximum": 64,
+            "description": "Concurrent running machines per root agent tree; default 4 or the tenant default. Shared children use no additional slot"
+          },
           "runLimits": {
             "allOf": [
               {
@@ -12409,6 +12459,12 @@
           "bucket": {
             "type": "string",
             "description": "With end-user credits on (/v1/end-user-settings): the bucket of the subject's credit the run spends from. Default \"default\""
+          },
+          "computerLimit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 64,
+            "description": "Concurrent running machines per root agent tree; default 4 or the tenant default. Shared children use no additional slot"
           },
           "runLimits": {
             "allOf": [

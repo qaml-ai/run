@@ -1,3 +1,4 @@
+import { computerLimit } from "./core/computer-limit.ts";
 import { networkingInput } from "./core/vault.ts";
 import { passthroughModel } from "./openrouter-model.ts";
 import { VIRTUAL_PROVIDER, virtualModel } from "./virtual-models.ts";
@@ -246,6 +247,7 @@ export function sessionConfig(input: any, defaultModel: AgentConfig['model'], de
     ...(input.systemPrompt !== undefined || defaultPrompt !== undefined ? { systemPrompt: input.systemPrompt !== undefined ? input.systemPrompt : defaultPrompt } : {}),
     ...(input.thinkingLevel !== undefined ? { thinkingLevel: input.thinkingLevel } : {}),
     ...(input.systemPromptAppend !== undefined ? { systemPromptAppend: input.systemPromptAppend } : {}),
+    ...(input.computerLimit !== undefined ? { computerLimit: input.computerLimit } : {}),
     ...(input.runLimits !== undefined ? { runLimits: input.runLimits } : {}),
     ...(input.maxOutputTokens !== undefined ? { maxOutputTokens: input.maxOutputTokens } : {}),
     ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
@@ -270,9 +272,9 @@ export function sessionConfig(input: any, defaultModel: AgentConfig['model'], de
  * Scoped credentials can change behavior, tools and the model, but never a model
  * endpoint or credentials: a model can only be named from Pi's catalog.
  */
-export function configurationUpdate(input: any, endpoints?: ModelEndpoints, custom?: CustomProviders): Pick<AgentConfig, 'systemPrompt' | 'systemPromptAppend' | 'thinkingLevel' | 'modelHeaders' | 'runLimits' | 'maxOutputTokens' | 'temperature' | 'dataCollection' | 'language' | 'queue' | 'networking'> & { tools?: AgentConfig['tools']; model?: AgentConfig['model']; keyScope?: string | null } {
+export function configurationUpdate(input: any, endpoints?: ModelEndpoints, custom?: CustomProviders): Pick<AgentConfig, 'systemPrompt' | 'systemPromptAppend' | 'thinkingLevel' | 'modelHeaders' | 'computerLimit' | 'runLimits' | 'maxOutputTokens' | 'temperature' | 'dataCollection' | 'language' | 'queue' | 'networking'> & { tools?: AgentConfig['tools']; model?: AgentConfig['model']; keyScope?: string | null } {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid configuration');
-  for (const key of Object.keys(input)) if (!['systemPrompt', 'systemPromptAppend', 'thinkingLevel', 'mcp', 'model', 'keyScope', 'modelHeaders', 'tools', 'fileTools', 'codeMode', 'runLimits', 'maxOutputTokens', 'temperature', 'dataCollection', 'language', 'queue', 'networking'].includes(key)) throw new Error(`Unsupported scoped configuration field: ${key}`);
+  for (const key of Object.keys(input)) if (!['systemPrompt', 'systemPromptAppend', 'thinkingLevel', 'mcp', 'model', 'keyScope', 'modelHeaders', 'tools', 'fileTools', 'codeMode', 'computerLimit', 'runLimits', 'maxOutputTokens', 'temperature', 'dataCollection', 'language', 'queue', 'networking'].includes(key)) throw new Error(`Unsupported scoped configuration field: ${key}`);
   if (input.networking !== undefined) {
     input = { ...input, networking: networkingInput(input.networking) };
     if (input.networking.type === 'limited') throw new HttpError(400, 'Limited networking is unavailable on the Node/Sprites backend');
@@ -282,6 +284,7 @@ export function configurationUpdate(input: any, endpoints?: ModelEndpoints, cust
   if (input.keyScope !== undefined && input.keyScope !== null) checkScope(input.keyScope);
   // Replaced whole; null or {} removes them.
   if (input.modelHeaders !== undefined) input = { ...input, modelHeaders: modelHeadersInput(input.modelHeaders) };
+  if (input.computerLimit !== undefined) input = { ...input, computerLimit: computerLimit(input.computerLimit) };
   if (input.runLimits !== undefined) input = { ...input, runLimits: runLimitsInput(input.runLimits) };
   if (input.maxOutputTokens !== undefined) input = { ...input, maxOutputTokens: maxOutputTokensInput(input.maxOutputTokens) };
   if (input.temperature !== undefined) input = { ...input, temperature: temperatureInput(input.temperature) };

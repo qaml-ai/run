@@ -10,24 +10,23 @@
 import { HttpError } from "./http-error.ts";
 import type { Sql } from "./host.ts";
 
-export const COMPUTER_CHOICES = ["fork", "fresh", "none"] as const;
+export const COMPUTER_CHOICES = ["share", "fork", "fresh", "none"] as const;
 /**
- * fork: a copy of the parent's disk; fresh: a new, empty machine with the parent's settings; none (the default, unless
- * the definition the sub-agent is made from declares its own computer): no computer.
+ * share: the parent's machine (default when available); fork: a disk copy; fresh: an empty machine; none: no computer.
  */
 export type ComputerChoice = typeof COMPUTER_CHOICES[number];
 
 /** The `computer` argument of delegate and spawn_agent as the model sees it. */
 export const COMPUTER_ARGUMENT = Object.freeze({
   type: "string", enum: [...COMPUTER_CHOICES],
-  description: "Only if you have a computer: fork gives the sub-agent its own copy of your computer's disk as it is now (repos, installed packages, build caches; not running processes), so it can build and test on its own branch; its writes never reach yours. fresh: a new, empty computer, started only when the sub-agent first uses it: choose it when the task may need a shell. none (default unless the agent you start declares one): no computer.",
+  description: "share (default when you have a computer): the sub-agent uses your machine and filesystem at the same time as you; only you can start or stop it. fork (only if you have a computer): its own copy of your machine's disk as it is now (repos, packages, caches; not running processes), so it can build and test alone; its writes never reach yours. fresh: its own new, empty machine, started when it first uses it. none (default without a computer): no machine. An agent that declares its own computer keeps it by default. Children sharing a machine work at the same time in the same files: give each its own directory or git worktree, and never switch branches in a checkout another agent uses.",
 });
 
-/** A call's `computer` argument: none when left out, fresh when it is and the definition the child is made from declares a computer of its own. */
+/** A call's `computer` argument: share when left out, fresh when it is and the definition the child is made from declares a computer of its own. */
 export function computerChoice(value: unknown, declared = false): ComputerChoice {
-  if (value === undefined || value === null) return declared ? "fresh" : "none";
+  if (value === undefined || value === null) return declared ? "fresh" : "share";
   if (typeof value === "string" && (COMPUTER_CHOICES as readonly string[]).includes(value)) return value as ComputerChoice;
-  throw new HttpError(400, 'computer must be "fork", "fresh" or "none"');
+  throw new HttpError(400, 'computer must be "share", "fork", "fresh" or "none"');
 }
 
 /**

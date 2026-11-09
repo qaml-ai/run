@@ -10,6 +10,17 @@ export class ApiError extends Error {
   constructor(status: number, message: string, code?: string, cliHint?: string) { super(message); this.status = status; this.code = code; this.cliHint = cliHint; }
 }
 
+/** Computer choice on inline and definition child tasks. */
+export type ComputerChoice = "share" | "fork" | "fresh" | "none";
+export interface ChildTask {
+  agent?: string;
+  instructions?: string;
+  task: string;
+  name?: string;
+  computer?: ComputerChoice;
+  output?: Record<string, unknown>;
+}
+
 export interface Credentials {
   url: string;
   /** An API or OAuth token; without one, requests go with `headers` alone (the console's session cookie). */

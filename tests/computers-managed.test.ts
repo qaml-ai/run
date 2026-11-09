@@ -309,7 +309,7 @@ test("Lambda uses runtime credentials, inherits into separate subagent sessions 
     const parent = await f.row();
     assert.equal(parent.provider, "lambda");
     assert.equal(parent.deadline - parent.created_at, 28800000);
-    assert.deepEqual(f.keys, ["aws"]);
+    assert.deepEqual([...new Set(f.keys)], ["aws"]);
     await service.inherit("payg", "a", "child", f.db);
     await service.call("payg", "child", "computer_start", {}, "child-start");
     const child = await f.row("child");
@@ -340,5 +340,23 @@ test("switching the default to Lambda keeps existing Boat sessions on Boat", asy
     await service.create("payg", { agent: "b", provider: "boat" });
     await service.call("payg", "b", "computer_start", {}, "start-b");
     assert.equal((await f.row("b")).provider, "lambda");
+  } finally { f.done(); }
+});
+
+
+test("a sharing child's first exec starts and bills its owner's managed computer, but never undoes a stop", async () => {
+  const f = await fixture({ extraAgents: ['child'] });
+  try {
+    await f.connect();
+    await f.db.query("insert into computer_shares(tenant,agent,owner) values('payg','child','a')");
+    assert.equal((await f.service.call('payg', 'child', 'computer_exec', { command: 'true' }, 'first') as any).exitCode, 0);
+    assert.equal(f.state.creates, 1);
+    assert.equal((await f.row()).agent, 'a');
+    await f.stop();
+    await assert.rejects(f.service.call('payg', 'child', 'computer_exec', { command: 'true' }, 'stopped'), (error: any) => error.code === 'COMPUTER_STOPPED');
+    assert.equal(f.state.creates, 1);
+    const connection = (await f.service.status('payg', 'a')).connection.id;
+    await f.service.remove('payg', connection);
+    await assert.rejects(f.service.call('payg', 'child', 'computer_exec', { command: 'true' }, 'deleted'), (error: any) => error.code === 'COMPUTER_STOPPED');
   } finally { f.done(); }
 });

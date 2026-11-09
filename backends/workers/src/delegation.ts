@@ -70,7 +70,7 @@ export interface DelegationHost {
    * Copy an eligible parent connection before a newly created child starts. `computer` is the call's choice: "none"
    * attaches nothing, a fork (forkComputer's) starts the child's computers from the parent's snapshots.
    */
-  inheritComputer?(parent: string, child: string, computer?: 'none' | ChildComputerFork): Promise<void>;
+  inheritComputer?(parent: string, child: string, computer?: 'none' | 'share' | ChildComputerFork): Promise<void>;
   /** Snapshot the parent's computers for a fork: once per batch (one call's children share it). Throws FORK_UNSUPPORTED or NO_SESSION. */
   forkComputer?(batch: string): Promise<ChildComputerFork>;
   /** A made child's work ended (its delegate call answered): its computers stop billing. */
@@ -120,7 +120,7 @@ export class Delegation {
   private fallback?: ReturnType<typeof setTimeout>;
   private sweepRunning = false;
   private readonly completions = new Map<string, Promise<void>>();
-  readonly measurements = { relayStreams: 0, fallbackSweeps: 0, fallbackRequests: 0, pushedEvents: 0, pushedCompletions: 0, maxFallbackConcurrent: 0 };
+  readonly measurements = { relayStreams: 0, fallbackSweeps: 0, fallbackRequests: 0, pushedEvents: 0, pushedCompletions: 0, recoveredCompletions: 0, maxFallbackConcurrent: 0 };
   private signalChange(key: string) {
     for (const name of [key, '*']) {
       for (const wake of this.changed.get(name) ?? []) wake();
@@ -163,7 +163,7 @@ export class Delegation {
             const response = await this.host.fetch(child.id, new Request(`https://agent/requests/${child.requestId}`));
             const record: ChildRun = response.ok ? await response.json() : { state: 'completed', status: 'failed', error: 'The sub-agent was deleted before it answered' };
             if (!response.ok && ![404, 410].includes(response.status)) continue;
-            if (record.state === 'completed') await this.complete(child, record);
+            if (record.state === 'completed') await this.complete(child, record, 'recovery');
           } catch { /* The next sweep retries a lost callback or unavailable child. */ } finally { active--; }
         }
       }));
@@ -178,8 +178,7 @@ export class Delegation {
     if (event.event.type === 'event' && child.status === 'running') await this.host.emit({ type: 'event', requestId: child.parentRequestId, event: { type: 'subagent_event', toolCallId: child.toolCallId, agentId: child.id, requestId: child.requestId, event: event.event.event } });
     this.signalChange('*');
     if (event.record?.state === 'completed') {
-      if (child.status === 'running') this.measurements.pushedCompletions++;
-      await this.complete(child, event.record);
+      await this.complete(child, event.record, 'push');
     }
     return { accepted: true };
   }
@@ -370,7 +369,7 @@ export class Delegation {
           await this.checkCancellation(admitted, signal);
           const resolved = target ? await this.host.target(target) : undefined;
           if (resolved?.id && place.chain.includes(resolved.id)) throw new HttpError(400, 'This agent is already working on the delegation chain');
-          // Left out, a definition that declares its own computer keeps it; every other child starts with none.
+          // Left out, a definition that declares its own computer keeps it; other children share their parent computer.
           choice = computerChoice(args.computer, !resolved?.id && !!resolved?.config?.computer);
           const childConf: Configuration = childConfig(config, resolved?.config, run.params);
           // No computer: no native computer settings either (egress grants and their credentials stay the parent's).
@@ -383,8 +382,8 @@ export class Delegation {
             if (!resumed?.id && !resolved?.id && made.id) await this.host.remove?.(made.id).catch(() => {});
             throw error;
           }
+          if (!resolved?.id) await this.host.inheritComputer?.(id, made.id!, choice === 'none' || choice === 'share' ? choice : fork);
           Object.assign(admitted, await this.update(admitted, { id: made.id! }));
-          if (!resolved?.id) await this.host.inheritComputer?.(id, admitted.id, choice === 'none' ? 'none' : fork);
           await this.checkCancellation(admitted, signal);
           const metadata = { [PARENT_KEYS.agent]: id, [PARENT_KEYS.run]: run.id, [PARENT_KEYS.toolCall]: toolCallId, [PARENT_KEYS.depth]: String(place.depth), [PARENT_KEYS.maxDepth]: String(place.maxDepth), [PARENT_KEYS.chain]: place.chain.join(',') };
           const signed = { ...metadata, [PARENT_KEYS.signature]: await signature(this.host.secret, admitted.id, admitted.requestId, String(place.depth), String(place.maxDepth), place.chain.join(',')) };
@@ -450,7 +449,7 @@ export class Delegation {
       if (child.background && child.status === 'input_required') await this.resumePaused(child);
     } catch { this.following.add(child.key); this.scheduleFallback(); }
   }
-  private async complete(child: DelegatedChild, record: ChildRun) {
+  private async complete(child: DelegatedChild, record: ChildRun, source: 'push' | 'recovery') {
     const finished = await this.host.storage.transaction(async tx => {
       const current = await tx.get<DelegatedChild>(prefix + child.key) ?? child;
       if (current.status !== 'running') return { child: current, changed: false };
@@ -461,7 +460,9 @@ export class Delegation {
       if (!value.background) value = await this.settleInTransaction(tx, value, value.parentRequestId);
       return { child: value, changed: !folded };
     });
-    if (finished.changed && !child.background && child.made && child.id) this.host.waitUntil(this.host.releaseComputer?.(child.id).catch(() => {}) ?? Promise.resolve());
+    // Count the transaction winner: a late push may arrive after recovery already completed this child.
+    if (finished.changed) this.measurements[source === 'push' ? 'pushedCompletions' : 'recoveredCompletions']++;
+    if (finished.changed && !child.background && child.made && child.id && finished.child.status !== 'input_required') this.host.waitUntil(this.host.releaseComputer?.(child.id).catch(() => {}) ?? Promise.resolve());
     if (finished.changed) await this.host.emit({ type: 'event', requestId: child.parentRequestId, event: { type: 'subagent_end', toolCallId: child.toolCallId, agentId: child.id, requestId: child.requestId, name: child.name, status: finished.child.status, ...(child.background ? { background: true } : {}), ...(finished.child.error ? { error: finished.child.error } : {}) } });
     this.signalChange(child.key);
     await this.afterCompletion(finished.child);

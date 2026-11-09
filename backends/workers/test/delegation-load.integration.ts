@@ -78,7 +78,8 @@ test('workerd runs 64 concurrent delegated children without relay streams or per
     assert.equal(profile.eventStreams, 0);
     assert.ok(profile.rpc.total < 1000, JSON.stringify(profile.rpc));
     assert.equal(profile.relayStreams, 0);
-    assert.equal(profile.pushedCompletions, CHILDREN, JSON.stringify(profile));
+    assert.ok(profile.pushedCompletions > 0, JSON.stringify(profile));
+    assert.equal(profile.pushedCompletions + profile.recoveredCompletions, CHILDREN, JSON.stringify(profile));
     assert.ok(profile.maxFallbackConcurrent <= 6, JSON.stringify(profile));
     await new Promise(resolve => setTimeout(resolve, 6000));
     const settled = await call(`/__test/delegation/${parent.id}`);

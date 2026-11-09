@@ -26,6 +26,7 @@ export interface Tenant {
   githubId?: number;
   /** Agents this tenant may have busy at once across the fleet (and hosted on any one node); overrides its usage tier and AGENT_MAX_AGENTS_PER_TENANT. */
   maxAgents?: number;
+  computerLimit?: number;
   /** Read-only event-stream subscribers (browser tabs) its agents may have at once on a node; default 1024. */
   maxWatchers?: number;
   /** Definitions this tenant may have; overrides AGENT_MAX_DEFINITIONS_PER_TENANT (default 5,000 for a tenant of this file). */
@@ -125,6 +126,7 @@ export class Tenants {
       if (tenant.github !== undefined && (typeof tenant.github !== "string" || !/^[A-Za-z0-9-]{1,39}$/.test(tenant.github))) throw new Error(`Tenant ${tenant.id} has an invalid github login`);
       if (tenant.githubId !== undefined && (!Number.isSafeInteger(tenant.githubId) || tenant.githubId < 1)) throw new Error(`Tenant ${tenant.id} has an invalid githubId: the GitHub account's numeric id`);
       if (tenant.githubId !== undefined && tenants.some(other => other !== tenant && other.githubId === tenant.githubId)) throw new Error(`Tenant ${tenant.id} has another tenant's githubId`);
+      if (tenant.computerLimit !== undefined && (!Number.isInteger(tenant.computerLimit) || tenant.computerLimit < 1 || tenant.computerLimit > 64)) throw new Error("computerLimit must be an integer from 1 to 64");
       if (tenant.maxAgents !== undefined && (!Number.isSafeInteger(tenant.maxAgents) || tenant.maxAgents < 1)) throw new Error(`Tenant ${tenant.id} has an invalid maxAgents: a positive integer, or absent for the default`);
       if (tenant.maxWatchers !== undefined && (!Number.isSafeInteger(tenant.maxWatchers) || tenant.maxWatchers < 1)) throw new Error(`Tenant ${tenant.id} has an invalid maxWatchers: a positive integer, or absent for the default`);
       if (tenant.maxDefinitions !== undefined && (!Number.isSafeInteger(tenant.maxDefinitions) || tenant.maxDefinitions < 1)) throw new Error(`Tenant ${tenant.id} has an invalid maxDefinitions: a positive integer, or absent for the default`);
@@ -148,6 +150,7 @@ export class Tenants {
       if (tenant.modelEndpoints !== undefined) validEndpoints(tenant.id, tenant.modelEndpoints);
       next.set(tenant.id, {
         id: tenant.id, tokenSha256: tenant.tokenSha256, apiKeys: { ...(tenant.apiKeys ?? {}) }, ...(tenant.github ? { github: tenant.github } : {}), ...(tenant.githubId !== undefined ? { githubId: tenant.githubId } : {}),
+        ...(tenant.computerLimit !== undefined ? { computerLimit: tenant.computerLimit } : {}),
         ...(tenant.maxAgents !== undefined ? { maxAgents: tenant.maxAgents } : {}), ...(tenant.maxWatchers !== undefined ? { maxWatchers: tenant.maxWatchers } : {}), ...(tenant.maxDefinitions !== undefined ? { maxDefinitions: tenant.maxDefinitions } : {}), ...(tenant.maxMonthlyCost !== undefined ? { maxMonthlyCost: tenant.maxMonthlyCost } : {}),
         ...(tenant.maxVoiceSessions !== undefined ? { maxVoiceSessions: tenant.maxVoiceSessions } : {}), ...(tenant.maxStorageGb !== undefined ? { maxStorageGb: tenant.maxStorageGb } : {}),
         ...(tenant.maxAgentCreatesPerMinute !== undefined ? { maxAgentCreatesPerMinute: tenant.maxAgentCreatesPerMinute } : {}),
@@ -197,6 +200,7 @@ export class Tenants {
   maxAgents(id: string) { return this.byId.get(id)?.maxAgents; }
   maxWatchers(id: string) { return this.byId.get(id)?.maxWatchers; }
   maxDefinitions(id: string) { return this.byId.get(id)?.maxDefinitions; }
+  computerLimit(id: string) { return this.byId.get(id)?.computerLimit; }
   maxVoiceSessions(id: string) { return this.byId.get(id)?.maxVoiceSessions; }
   /** The tenant's own rate limit (a minute) for agent creates or runs, if its entry sets one. */
   /** The most one run of an admin tenant's agents may take, as its entry sets it (absent: no limit). */

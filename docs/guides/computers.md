@@ -11,33 +11,30 @@ camelRun workspace files.
 
 ## Sub-agents
 
-By default, each sub-agent the runtime creates gets its own computer connection
-when its parent has one. This applies to `spawn_agent` and `delegate`, including
-children made from definitions. The
-connection has the same provider, provider credentials, managed setting and
-lease and daily limits. It starts without a session: the child calls
-`computer_start` when it needs a machine. It never uses its parent's session.
-Grandchildren inherit the same way.
+By default, a new sub-agent shares its parent's computer connection and running
+session. It sees the same files and runs concurrently with the parent. Its
+computer activity keeps the machine active, and billing stays with the parent.
+Grandchildren share the same machine. Shared children cannot start, stop or
+replace the parent's machine.
 
-Set `"subagents": false` in `POST /v1/computers` to turn this off for that
-connection. The optional field defaults to `true` and appears in connection
-responses. It applies at child creation; attaching later does not change
-existing children. Named targets that run an existing agent keep that agent's
-own connection. Tool spawn directives also target existing agents and keep
-their connections.
+Without a parent computer, children get none. Definitions that declare their
+own computer and existing named or directive targets keep their computers.
+Use `computer: "none"` to opt out, or `"fresh"` or `"fork"` for a separate machine.
+A fresh connection inherits the provider, credentials, managed setting, lease
+and daily limits. `"subagents": false` on the parent's connection disables this
+fresh-connection inheritance. It does not disable sharing or an explicit fork.
 
-Each connection is billed as usual, independently: managed compute uses the
-child's account and end-user bucket, and bring-your-own compute uses the same
-provider account. There is no new shared computer budget or cap.
+Separate child machines are billed independently. When a `delegate` child
+finishes, its machine stops and releases its slot; its connection stays for a
+later task. Background `spawn_agent` workers keep their computers so they can
+be messaged again. Deleting or expiring the child also stops and detaches its own
+computer. A shared child's completion or deletion leaves the parent's machine
+running.
 
-A child's connection is detached and its session stopped when the child is
-deleted or expires, through the same cleanup as any detach. Cleanup failures
-are retried, and metering history stays. Sub-agents live for a day unless deleted
-earlier. A `delegate` child's session stops when its call answers or is refused,
-so it bills nothing more; its connection stays. A call that is stopped, or whose
-parent moves to another node, leaves the child's session to end at its lease or
-when the child is deleted, since a replay may still use it. A `spawn_agent` child keeps its session
-until it calls `computer_stop`, its session expires, or it is deleted.
+Each root agent tree may run four machines concurrently by default. Set
+`computerLimit` on its definition or agent (1–64) to override the tenant default.
+Shared children use no additional slot. Stopped and saved machines do not count.
+New starts at the cap are refused; running machines are never stopped by it.
 
 ### Forking a computer
 
@@ -47,9 +44,10 @@ installed packages and build caches, as they are at the call. Give `delegate` or
 
 | `computer` | The child's computer |
 | --- | --- |
+| `"share"` (default with a parent computer) | the parent's running machine and filesystem |
 | `"fresh"` | a new, empty computer with the parent's connection settings, as above |
 | `"fork"` | a copy of the parent's disk, taken now. Running processes are not copied |
-| `"none"` (default, unless the definition the child is made from declares its own computer) | no computer |
+| `"none"` (default without a parent computer) | no computer |
 
 ```json
 { "instructions": "You fix one flaky test on a branch.", "task": "Fix tests/cluster.test.ts and push a branch", "computer": "fork" }

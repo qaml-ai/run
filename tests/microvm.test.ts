@@ -7,9 +7,17 @@ import { MICROVM_HOUR, microvmApi, microvmCost, microvmMachines, observe, type M
 
 async function fixture() {
   const pg = new PGlite();
-  await pg.exec(`create table managed_computers (id text primary key, tenant text, machine text, provider text default 'lambda', created_at bigint, ended_at bigint, microvm jsonb);
+  await pg.exec(`create table agents(id text primary key, tenant text, header jsonb);
+    insert into agents values('root','tenant','{"config":{"computerLimit":1}}');
+    create table tenants(id text primary key,limits jsonb);
+    create table computer_slots(tenant text,machine text,root text,expires_at bigint,acquired_at bigint default 0,in_flight integer default 0,busy_until bigint default 0,primary key(tenant,machine));
+    create table computer_leases(tenant text,agent text,connection text,state text,expires_at bigint,closed_at bigint);
+    create table managed_computers (id text primary key, tenant text, agent text default 'root', connection text default 'connection', deadline bigint default 99999999, machine text, provider text default 'lambda', created_at bigint, ended_at bigint, microvm jsonb);
     insert into managed_computers(id,tenant,created_at) values ('computer','tenant',1000000);`);
-  const query = async (sql: string, params?: unknown[]) => { const r = await pg.query(sql, params); return { rows: r.rows, rowCount: r.affectedRows ?? r.rows.length }; };
+  const query = async (sql: string, params?: unknown[]) => {
+    // This fixture has a single connection; PGlite does not implement advisory locks.
+    if (sql.startsWith('select pg_advisory_xact_lock')) return { rows: [], rowCount: 0 };
+    const r = await pg.query(sql, params); return { rows: r.rows, rowCount: r.affectedRows ?? r.rows.length }; };
   const db = { query, connect: async () => ({ query, release() {}, on() {}, off() {} }) } as unknown as Db;
   let now = 1000000, loseCreate = false, failResume = false, losePost = false, polls = 0, jobs = 0;
   const calls: { op: string; input: any }[] = [], requests: { path: string; options: any }[] = [];
@@ -144,4 +152,44 @@ test("the REST client signs the Lambda path and maps AWS refusal headers without
       if (before[key] === undefined) delete process.env[key]; else process.env[key] = before[key];
     }
   }
+});
+
+test("a suspended MicroVM frees capacity and cannot auto-resume past the tree cap", async () => {
+  const f = await fixture();
+  try {
+    const machines = f.make();
+    await machines.create("computer", "tenant", 7200);
+    f.vm.state = "SUSPENDED";
+    await machines.list();
+    assert.equal(Number((await f.db.query("select expires_at from computer_slots where machine='connection'")).rows[0].expires_at), 0);
+    await f.db.query("insert into computer_slots(tenant,machine,root,expires_at) values('tenant','sibling','root',99999999)");
+    const before = f.requests.length;
+    await assert.rejects(machines.run("vm1", "echo forbidden", 60), /concurrent computer limit/);
+    assert.equal(f.requests.length, before, "no traffic resumes the machine at capacity");
+    await f.db.query("delete from computer_slots where machine='sibling'");
+    assert.equal((await machines.run("vm1", "echo allowed", 60)).exitCode, 0);
+  } finally { await f.pg.close(); }
+});
+
+test("exec inspects only its own MicroVM; a sharer resumes idle suspension but not termination", async () => {
+  const f = await fixture();
+  try {
+    const machines = f.make();
+    await machines.create('computer', 'tenant', 7200);
+    // This unrelated broken machine must never be queried, nor participate in root's cap.
+    await f.db.query("insert into agents values('other-root','tenant','{}')");
+    await f.db.query("insert into managed_computers(id,tenant,agent,connection,created_at,machine) values('other','tenant','other-root','other-connection',1,'broken')");
+    f.vm.state = 'SUSPENDED';
+    const before = f.requests.length, calls = f.calls.length;
+    f.advance(301000); // The child thinks longer than the configured idle window.
+    assert.equal((await machines.run('vm1', 'true', 60, 'shared', true)).exitCode, 0);
+    assert.ok(f.requests.length > before, 'shared traffic resumes the owner machine');
+    assert.equal((await f.db.query("select count(*) as n from computer_slots where expires_at>0")).rows[0].n, 1);
+    assert.equal((await machines.run('vm1', 'true', 60, 'owner')).exitCode, 0);
+    assert.ok(f.calls.slice(calls).every(call => call.input.microvmIdentifier === 'vm1'));
+    f.vm.state = 'TERMINATED';
+    const stopped = f.requests.length;
+    await assert.rejects(machines.run('vm1', 'true', 60, 'stopped', true), (error: any) => error.code === 'COMPUTER_STOPPED');
+    assert.equal(f.requests.length, stopped);
+  } finally { await f.pg.close(); }
 });
