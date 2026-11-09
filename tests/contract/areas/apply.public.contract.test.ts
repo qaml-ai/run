@@ -118,11 +118,12 @@ contractTest('apply', 'tests/apply.test.ts:8', 'concurrent applies share ids and
     assert.equal(result.json.changes[0].action, 'unchanged');
   }
   assert.equal((await r.call(`/v1/agents/${made.json.agents.person}/credentials`)).json.configHash, before.json.configHash);
+  const volumesBefore = (await r.call('/v1/volumes')).json.length;
   const fresh = await Promise.all(Array.from({ length: 2 }, () => r.call('/v1/apply', { body: manifest })));
   for (const result of fresh) assert.equal(result.status, 200, result.text);
   assert.deepEqual(fresh[0].json.agents, fresh[1].json.agents);
   assert.equal((await r.call('/v1/definitions')).json.length, 1);
-  assert.equal((await r.call('/v1/volumes')).json.length, 1);
+  assert.equal((await r.call('/v1/volumes')).json.length, volumesBefore + 1, 'one shared project volume in addition to the person agent workspace');
   assert.equal((await r.call('/v1/agents')).json.length, 2);
 });
 
