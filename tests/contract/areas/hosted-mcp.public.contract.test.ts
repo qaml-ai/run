@@ -1,3 +1,4 @@
+import { assertToolSchema } from '../../tool-schema-assertions.ts';
 import { portedTest } from "../ported.ts";
 const test = portedTest("mcp", "tests/hosted-mcp.test.ts");
 import assert from "node:assert/strict";
@@ -52,6 +53,7 @@ test("the hosted MCP endpoint runs the CLI's tools as the caller, and reads no f
   const names = listed.map(tool => tool.name);
   // Every tool says, for clients that confirm before acting, whether it changes, destroys or reaches beyond the account.
   for (const tool of listed) {
+    assertToolSchema(tool.name, tool.inputSchema);
     assert.ok(tool.title && tool.description, tool.name);
     for (const hint of ["readOnlyHint", "destructiveHint", "openWorldHint"] as const) assert.equal(typeof tool.annotations?.[hint], "boolean", `${tool.name} ${hint}`);
     if (tool.annotations!.readOnlyHint) assert.equal(tool.annotations!.destructiveHint, false, tool.name);
