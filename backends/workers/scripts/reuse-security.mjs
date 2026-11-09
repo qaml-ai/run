@@ -91,6 +91,7 @@ outputs.set("admission-errors.ts", generated("http.ts", [
 ].join("\n\n")));
 outputs.set("postgres-policy.ts", generated("db.ts", [
   'import type { Db, Sql } from "./postgres.ts";',
+  'import { applyScope } from "../../../shared/apply-scope.ts";',
   'import { clock } from "./money-host.ts";',
   '// Host diagnostics and jitter; the transaction and error policy below are from src/.',
   'const random = () => ({ float: Math.random });',

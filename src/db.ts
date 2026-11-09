@@ -1,3 +1,4 @@
+import { applyScope } from "../shared/apply-scope.ts";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -350,6 +351,8 @@ async function concurrently(db: Db, name: string, text: string, lockTimeoutMs: n
  * writes, or only what may be done twice: one whose other effects may not (Storage's, metered) passes `rerun: false`.
  */
 export async function transaction<T>(db: Db, work: (sql: Sql) => Promise<T>, options: { rerun?: boolean } = {}): Promise<T> {
+  const scoped = applyScope.getStore();
+  if (scoped) return work(scoped.sql);
   if (options.rerun === false) return transactionOnce(db, work);
   for (let attempt = 1; ; attempt++) {
     try { return await transactionOnce(db, work); }
@@ -381,4 +384,20 @@ async function transactionOnce<T>(db: Db, work: (sql: Sql) => Promise<T>): Promi
     client.off("error", lost);
     client.release(broken);
   }
+}
+
+/** Request-scoped apply transactions reuse existing services without changing other requests. */
+export function applyDatabase(db: Db): Db {
+  return new Proxy(db, { get(target, property) {
+    if (property === "query") {
+      // Capture this function now: callers may wrap/replace db.query after reading it.
+      const query = target.query.bind(target);
+      return (text: string, values?: unknown[]) => {
+        const scoped = applyScope.getStore();
+        return scoped ? scoped.sql.query(text, values) : query(text, values);
+      };
+    }
+    const value = Reflect.get(target, property);
+    return typeof value === "function" ? value.bind(target) : value;
+  } });
 }

@@ -1,3 +1,4 @@
+import { applying } from "../shared/apply-scope.ts";
 import { SharedAgents } from "./shared-agents.ts";
 import { withOpenRouterDetails } from "./openrouter-model.ts";
 import { modelReference } from "./virtual-models.ts";
@@ -29,7 +30,7 @@ import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts
 import type { LogTail, Storage, StorageMeter } from "../shared/storage.ts";
 import { StorageUsage } from "./storage-usage.ts";
 import { postgresTail, sweepTails } from "./log-tail.ts";
-import { databaseFromEnvironment, listenFromEnvironment, migrate, type Db } from "./db.ts";
+import { applyDatabase, databaseFromEnvironment, listenFromEnvironment, migrate, type Db } from "./db.ts";
 import { MemoryRetirement } from "./memory-retirement.ts";
 import { network, REAL_CLOCK, REAL_NETWORK, REAL_RANDOM, runFor, type Clock, type Network, type Random } from "./node-context.ts";
 import { Ownership, probeNode } from "./ownership.ts";
@@ -213,7 +214,7 @@ export async function nodeDeps(config: NodeConfig): Promise<NodeDeps> {
   const v8 = new V8Exec(config.v8);
   const codeSandbox = Object.assign((options: Parameters<CodeSandboxes>[0]) => new PiV8Sandbox({ ...options, pool: v8 }), { close: () => v8.close() });
   const sandbox = await checkSandbox({ sandboxes: codeSandbox, required: config.sandboxRequired });
-  const db = await databaseFromEnvironment(env);
+  const db = applyDatabase(await databaseFromEnvironment(env));
   const address = await taskAddress(env);
   return {
     tenants, secrets, db, sharedAgents: new SharedAgents(db), listen: handlers => listenFromEnvironment(handlers, env), sandbox, address, codeSandbox, readCgroupMemory: cgroupMemory,
@@ -617,7 +618,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     outcome.upsert = !!reconfigure;
     const warnings = await warningsFor(tenant, made ? made.sources : builtins && { builtins });
     if (warnings.length) made_.warnings = warnings;
-    if (!reconfigure) return made_;
+    if (!reconfigure || applying()) return made_;
     // The key's agent exists: bring it to this configuration between its turns. Every upsert queues its own request, so
     // the last one sent wins; one whose configuration the agent has already changes nothing when it runs.
     const reconfigured = await steps.time("configure", submitAnywhere(made_.id, tenant, { id: `upsert-${randomUUID()}`, method: "configure", params: reconfigure as Record<string, unknown> }));
@@ -1298,7 +1299,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
     await rateLimits.run(tenant);
   };
-  app.route("/", api({ computers, accounts, endUsers, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return modelReference(chosen); }, keyScopes, webhooks, scheduler, accountDeletions, githubApps, ...(config.idempotencyLockMs !== undefined ? { idempotencyLockMs: config.idempotencyLockMs } : {}), channels, volumes, definitions, links, fileUrls, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: config.verifyKeys,
+  app.route("/", api({ applyDb: db, computers, accounts, endUsers, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return modelReference(chosen); }, keyScopes, webhooks, scheduler, accountDeletions, githubApps, ...(config.idempotencyLockMs !== undefined ? { idempotencyLockMs: config.idempotencyLockMs } : {}), channels, volumes, definitions, links, fileUrls, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: config.verifyKeys,
     rateLimits, clientAddress: c => requestClient(c).address, runRetentionSeconds, requestAnywhere, ...(voice ? { voice } : {}),
     transcriptions: {
       transcriber, outbound: outbound.withoutOrigins(),

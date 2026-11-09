@@ -278,3 +278,7 @@ key in your shell's environment or an ignored file such as `.env.local`. A key
 or a connected app can create and delete every agent in the account. Give a
 coding agent a key of its own, or connect it with OAuth, so you can revoke it
 alone.
+
+## Provision several resources
+
+Use `POST /v1/apply` or `runtime.apply(manifest)` to create keyed volumes, definitions, and agents together. `camelrun apply file.json --dry-run` validates without saving. References are objects such as `{"$ref":"volumes.project"}`. Existing agents must be unchanged; reconfigure them through the existing configuration API. See [Provision an application](apply.md) for the transaction boundary.

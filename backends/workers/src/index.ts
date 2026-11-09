@@ -1,3 +1,4 @@
+import { apply } from './apply.ts';
 import { SharedAgents, ShareLinkInput, MemberInput } from '../../../src/shared-agents.ts';
 import { database } from './postgres.ts';
 import { inboxQuery, readInbox, InboxQueryError } from '../../../shared/inbox.ts';
@@ -344,6 +345,7 @@ const worker = {
           const response = await decisionRoute(request, decisions);
           if (response) { ctx.waitUntil(sendMoneyWebhooks(env)); return response; }
         }
+        if (path === "/v1/apply" && request.method === "POST") return apply(request, env, auth);
         const control = await controlRoutes(request, env, auth);
         if (control) return control;
         if ((path === "/v1/inputs" || path === "/v1/inbox") && request.method === "GET") {

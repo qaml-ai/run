@@ -32,3 +32,7 @@ Coding agents working in this app: see `AGENTS.md`.
 Tools in `route.ts` run inside this server, so they need a long-running process (`next dev`,
 `next start`, a container). On serverless hosting, serve them with `serveTools` (with your `tenant`) from
 `@camelai/run/server` and name them in a definition (`agent: { definition: "def_…" }`).
+
+## Provision several resources
+
+Use `POST /v1/apply` or `runtime.apply(manifest)` to create keyed volumes, definitions, and agents together. `camelrun apply file.json --dry-run` validates without saving. References are objects such as `{"$ref":"volumes.project"}`. Existing agents must be unchanged; reconfigure them through the existing configuration API. See the apply API reference for the transaction boundary.

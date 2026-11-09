@@ -1,3 +1,4 @@
+import { applying } from "../shared/apply-scope.ts";
 import { createHash, randomBytes } from "node:crypto";
 import type { AppendLog } from "../shared/append-log.ts";
 import type { Storage } from "../shared/storage.ts";
@@ -280,7 +281,7 @@ export class VolumeService {
     const made = await this.readHeader(id);
     if (!made || made.tenant !== tenant) throw new HttpError(409, `Volume ${id} already exists`);
     if (made.deleted) throw new HttpError(409, `The volume for key ${input.key} was deleted; use another key`);
-    return { ...await this.call(id, tenant, "info"), existing: true };
+    return { ...(applying() ? this.summary(made) : await this.call(id, tenant, "info")), existing: true };
   }
   /** The id of a tenant's volume for `key` (POST /v1/volumes with a key). */
   static keyed(tenant: string, key: string) { return `vol_${sha256(`volume-key:${tenant}:${key}`).slice(0, 24)}`; }

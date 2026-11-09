@@ -693,6 +693,10 @@ class _RuntimeCalls:
     # Make agents from one with create_agent(definition=id). Fields use the REST names (systemPrompt, mcpServers, runLimits...)
     # or their Python spelling (system_prompt, mcp_servers, run_limits...). An MCP server's auth is {"type": "bearer", "token"},
     # {"type": "runtime"} or {"type": "exchange", "url", "audience"?} (a credential fetched from an endpoint of yours).
+    def apply(self, manifest):
+        """Atomically provision keyed resources; dryRun previews changes without saving."""
+        return self._rest("POST", "/v1/apply", manifest)
+
     def create_definition(self, **fields):
         return self._rest("POST", "/v1/definitions", _with_multi_agent(fields), retry=False)
 

@@ -1,3 +1,4 @@
+import { applyScope } from "../../../shared/apply-scope.ts";
 import pg, { Client } from "pg";
 import { transaction as policyTransaction } from "./postgres-policy.ts";
 import { profileConnect, profileSql } from "./db-profile.ts";
@@ -32,6 +33,8 @@ export async function withSql<T>(
   env: PostgresEnv,
   run: (sql: Sql) => Promise<T>,
 ): Promise<T> {
+  const scoped = applyScope.getStore();
+  if (scoped) return run(scoped.sql);
   const client = new Client({
     connectionString: env.HYPERDRIVE.connectionString,
     connectionTimeoutMillis: 5_000,
@@ -82,5 +85,7 @@ export async function transaction<T>(
   run: (sql: Sql) => Promise<T>,
   options: { rerun?: boolean } = {},
 ): Promise<T> {
+  const scoped = applyScope.getStore();
+  if (scoped) return run(scoped.sql);
   return policyTransaction("HYPERDRIVE" in target ? database(target) : target, run, options);
 }

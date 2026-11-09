@@ -1,3 +1,4 @@
+import { applying } from "../../../shared/apply-scope.ts";
 import type { FileBindings } from "./files.ts";
 import type { TenantAdmission } from "./tenant.ts";
 import {
@@ -145,7 +146,7 @@ export class Directory {
   }
   /** The directory stages a replacement before the DO accepts it. Readers keep the applied configuration. */
   private async applied(entry: DirectoryEntry): Promise<DirectoryEntry> {
-    if (entry.initialized || entry.deleted) return entry;
+    if (applying() || entry.initialized || entry.deleted) return entry;
     const response = await this.env.AGENTS.getByName(entry.id).fetch(new Request("https://agent/configuration"));
     if (!response.ok) return entry;
     const current = await response.json() as Pick<DirectoryEntry, "id" | "tenantId" | "config" | "revision" | "expiresAt">;
@@ -191,6 +192,11 @@ export class Directory {
     const resolvedModel = await validateAgentModel(this.env, this.tenantId, config, { reference: previousConfig?.model, model: previousEntry?.resolvedModel, defaultModel: fields.model === undefined });
     // An agent whose first configuration never applied (initialized false: the apply failed) is still being
     // created: a retry applies it as a creation, since there is no configuration on the agent to queue a change on.
+    if (applying() && previousEntry) {
+      const mounts = fields.mounts === undefined ? previousEntry.config.mounts : await (await import("./file-mounts.ts")).prepareMounts(this.env, this.tenantId, id, fields.mounts);
+      if (previousEntry.configHash !== await digest(canonical({ ...config, mounts }))) throw new ApiError(409, "Atomic apply cannot reconfigure an existing agent; use its configuration endpoint");
+      return previousEntry;
+    }
     if (queueConfiguration && previousEntry?.initialized) {
       for (const field of ['subject', 'context', 'definition'] as const)
         if (canonical(config[field] ?? null) !== canonical(previousEntry.config[field] ?? null))
@@ -216,7 +222,7 @@ export class Directory {
       const updated = reconfigured.state === 'completed' ? await this.get(id) : previousEntry;
       return { ...(updated ?? previousEntry), reconfigured };
     }
-    const release = config.type !== "run" && !previousEntry?.initialized
+    const release = !applying() && config.type !== "run" && !previousEntry?.initialized
       ? await reserveAgentCreation(this.env as import("./agent.ts").Env, this.tenantId, id)
       : async () => {};
     let rate: RateLimitState | undefined;
@@ -299,7 +305,7 @@ export class Directory {
         throw new ApiError(403, "Agent belongs to another tenant", "FORBIDDEN");
       return next;
     });
-    if (!entry.initialized) {
+    if (!entry.initialized && !applying()) {
       const response = await this.env.AGENTS.getByName(id).fetch(
         new Request("https://agent/configuration", {
           method: "PUT",

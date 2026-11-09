@@ -1,3 +1,5 @@
+import { applyRoutes } from "./apply-api.ts";
+import type { Db } from "./db.ts";
 import { SharedAgents, ShareLinkInput, MemberInput, ShareLink, CreatedShareLink, Member } from './shared-agents.ts';
 import { inboxQuery, readInbox, InboxQueryError } from '../shared/inbox.ts';
 import { rejectWorkflow } from "./builtins.ts";
@@ -71,6 +73,7 @@ import { legacyCoverage, LegacyCoverageCursorError, legacyLogLister } from "./le
  * below are the OpenAPI document served at /v1/openapi.json.
  */
 export interface ApiContext {
+  applyDb?: Db;
   computers?: Computers;
   accounts: Accounts;
   billingAlerts?: { service: BillingAlerts; emailEnabled: boolean };
@@ -1399,6 +1402,7 @@ export function api(context: ApiContext) {
 
   channelRoutes(route, () => context.channels);
   githubAppRoutes(route, () => context.githubApps);
+  applyRoutes(route, context);
   definitionRoutes(route, () => context);
   workspaceRoutes(route, () => accounts.db);
   computerRoutes(route, () => context.computers, operatorOnly);

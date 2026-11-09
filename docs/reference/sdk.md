@@ -954,3 +954,7 @@ Needs runtime 0.3.0 or later (run.camelai.com has it).
 Each reads `CAMELAI_API_KEY` (and `CAMELAI_BASE_URL` for a runtime of your own).
 `npm run demo:clients` runs the release board and inventory examples against a
 temporary local runtime with scripted code, calling no model.
+
+## Provision several resources
+
+Use `POST /v1/apply` or `runtime.apply(manifest)` to create keyed volumes, definitions, and agents together. `camelrun apply file.json --dry-run` validates without saving. References are objects such as `{"$ref":"volumes.project"}`. Existing agents must be unchanged; reconfigure them through the existing configuration API. See [Provision an application](apply.md) for the transaction boundary.
