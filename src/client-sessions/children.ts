@@ -514,6 +514,7 @@ async function recordEnding(ctx: ChildrenContext, row: { id: string; tenant?: st
     }
     return done;
   });
+  if (ended?.made && status !== "input_required") await ctx.options.computers?.release(ended.tenant, ended.child);
   return ended ?? (await ctx.db.query("select * from agent_children where id = $1", [row.id])).rows[0];
 }
 

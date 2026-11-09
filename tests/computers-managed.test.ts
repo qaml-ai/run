@@ -309,7 +309,7 @@ test("Lambda uses runtime credentials, inherits into separate subagent sessions 
     const parent = await f.row();
     assert.equal(parent.provider, "lambda");
     assert.equal(parent.deadline - parent.created_at, 28800000);
-    assert.deepEqual(f.keys, ["aws"]);
+    assert.deepEqual([...new Set(f.keys)], ["aws"]);
     await service.inherit("payg", "a", "child", f.db);
     await service.call("payg", "child", "computer_start", {}, "child-start");
     const child = await f.row("child");

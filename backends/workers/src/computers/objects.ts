@@ -1,8 +1,12 @@
+import { keyServices } from "../security-services.ts";
+import { reserveComputer, releaseComputer } from "../../../../src/core/computer-limit.ts";
+import { transaction, withSql } from "../postgres.ts";
 import { DurableObject } from "cloudflare:workers";
 import {
   ContainerProvider,
   computerSpec,
   operate,
+  sameComputerNetwork,
   type ComputerNetwork,
   type ComputerRequest,
   type ComputerSnapshot,
@@ -22,7 +26,7 @@ type ComputerObjectEnv = KeyEnv & WebhookEnv & { COMPUTER_IMAGE?: string; COMPUT
  * What the agent sends with an operation: its definition's computer settings and identity, and, for a sub-agent, the
  * name of its parent's computer object, which the runtime takes from the signed parent link.
  */
-export type OperateSetup = ComputerSetup & { parent?: string };
+export type OperateSetup = ComputerSetup & { parent?: string; externalPermit?: boolean };
 type EgressBinding = (options: { props: EgressProps }) => Fetcher;
 /** Who pays for an operation's container time: the identity's tenant and agent. */
 function payerOf(setup?: OperateSetup): ComputerPayer | undefined {
@@ -38,6 +42,7 @@ function payerOf(setup?: OperateSetup): ComputerPayer | undefined {
 // without one (the cloud probe) runs unmetered.
 export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
   private queue: Promise<unknown> = Promise.resolve();
+  private active = new Set<Promise<unknown>>();
   private network(setup?: OperateSetup): ComputerNetwork {
     const idleMs = (setup?.settings.idleSeconds ?? COMPUTER_LIMITS.idleSeconds.default) * 1000;
     const grants = setup?.settings.egress ?? [], instance = setup?.settings.instance, idle = setup?.settings.idle;
@@ -60,13 +65,28 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
       schedule: at => this.ctx.storage.setAlarm(at),
     });
   }
-  private provider(setup?: OperateSetup) {
+  private async releasePermit() {
+    const permit = await this.ctx.storage.get<{ tenant: string; machine: string }>("computer:permit");
+    if (permit) {
+      await withSql(this.env, sql => releaseComputer(sql, permit.tenant, permit.machine));
+      await this.ctx.storage.delete("computer:permit");
+    }
+  }
+  private provider(setup?: OperateSetup, activityMs = 0) {
     if (!this.ctx.container)
       throw new Error("Computer container binding unavailable");
     const spec = { ...computerSpec(this.env), ...(setup?.settings.instance ? { instance: setup.settings.instance } : {}) };
     const network = this.network(setup), meter = this.meter(), payer = payerOf(setup);
     const bound: ProviderMeter = {
-      admit: async () => { if (payer) await meter.admit(payer); },
+      admit: async () => {
+        if (!payer) return;
+        await meter.admit(payer);
+        if (setup?.externalPermit) return;
+        await transaction(this.env, async sql => reserveComputer(sql, payer.tenant, payer.agent,
+          `native:${payer.agent}`, Date.now() + Math.max(network.idleMs, activityMs), Date.now(),
+          (await keyServices(this.env)).accounts.tenants.computerLimit(payer.tenant)));
+        await this.ctx.storage.put("computer:permit", { tenant: payer.tenant, machine: `native:${payer.agent}` });
+      },
       // Unmetered starts still end any earlier session.
       started: (instance, idleMs) => payer ? meter.started(payer, instance, idleMs) : meter.stopped(),
       // A running container with no open session (a DO that died mid-start, or one started unmetered) is billed from
@@ -75,7 +95,7 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
         if (payer && this.ctx.container?.running && !(await meter.isOpen())) await meter.started(payer, spec.instance, network.idleMs, cpuUsec ?? 0);
         else await meter.used(cpuUsec);
       },
-      stopped: (cpuUsec) => meter.stopped(cpuUsec),
+      stopped: async (cpuUsec) => { await this.releasePermit(); await meter.stopped(cpuUsec); },
     };
     return new ContainerProvider(this.ctx.container, this.ctx.storage, spec, Date.now, network, bound, at => this.wake(at));
   }
@@ -85,18 +105,35 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
     if (current === null || current > at) await this.ctx.storage.setAlarm(at);
   }
   private serial<T>(run: () => Promise<T>) {
-    const result = this.queue.then(run);
+    const result = this.queue.then(async () => { await Promise.allSettled([...this.active]); return run(); });
     this.queue = result.catch(() => {});
     return result;
   }
-  operate(request: ComputerRequest, setup?: OperateSetup) {
-    return this.serial(async () => {
-      const timeout =
-        request.op === "exec" ? (request.timeoutMs ?? 30_000) : 30_000;
-      if (!Number.isInteger(timeout) || timeout < 1 || timeout > COMPUTER_LIMITS.execMs)
-        throw new Error("Invalid computer timeout");
-      return operate(this.provider(setup), request, AbortSignal.timeout(timeout));
+  async operate(request: ComputerRequest, setup?: OperateSetup) {
+    const timeout = request.op === "exec" ? (request.timeoutMs ?? 30_000) : 30_000;
+    if (!Number.isInteger(timeout) || timeout < 1 || timeout > COMPUTER_LIMITS.execMs) throw new Error("Invalid computer timeout");
+    if (["sleep", "restore", "snapshot"].includes(request.op)) return this.serial(() => operate(this.provider(setup), request, AbortSignal.timeout(timeout)));
+    // Startup and configuration changes stay serialized; running commands share the live container.
+    let running!: Promise<unknown>;
+    const begin = this.queue.then(async () => {
+      if (this.ctx.container?.running && !sameComputerNetwork(await this.ctx.storage.get<string>("network") ?? "", this.network(setup).key)) await Promise.allSettled([...this.active]);
+      const provider = this.provider(setup, timeout);
+      await provider.ready();
+      running = operate(provider, request, AbortSignal.timeout(timeout));
+      this.active.add(running);
+      void running.finally(async () => {
+        this.active.delete(running);
+        const payer = payerOf(setup);
+        const settled = this.queue.then(async () => {
+          if (payer && !setup?.externalPermit && !this.active.size) await withSql(this.env, sql => sql.query("update computer_slots set expires_at=$3 where tenant=$1 and machine=$2", [payer.tenant, `native:${payer.agent}`, Date.now() + (setup?.settings.idleSeconds ?? COMPUTER_LIMITS.idleSeconds.default) * 1000]));
+        });
+        this.queue = settled.catch(() => {});
+        await settled;
+      }).catch(() => {});
     });
+    this.queue = begin.catch(() => {});
+    await begin;
+    return running;
   }
   // Forking (native-fork.ts). Errors a caller acts on cross RPC as values: an HttpError's code does not survive it.
   /** The parent's side: the snapshot every child of `batch` starts from, taken (or reused) now. */
@@ -187,6 +224,7 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
         console.error(JSON.stringify({ type: "computer_idle_sleep_failed", error: error instanceof Error ? error.message.slice(0, 200) : "unknown" }));
         return undefined;
       });
+      if (!this.ctx.container?.running) await this.releasePermit();
       await this.meter().alarm(!!this.ctx.container?.running);
       await provider?.dropStale().catch(() => {});
       if (next !== undefined) await this.wake(next);

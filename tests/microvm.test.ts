@@ -7,9 +7,17 @@ import { MICROVM_HOUR, microvmApi, microvmCost, microvmMachines, observe, type M
 
 async function fixture() {
   const pg = new PGlite();
-  await pg.exec(`create table managed_computers (id text primary key, tenant text, machine text, provider text default 'lambda', created_at bigint, ended_at bigint, microvm jsonb);
+  await pg.exec(`create table agents(id text primary key, tenant text, header jsonb);
+    insert into agents values('root','tenant','{"config":{"computerLimit":1}}');
+    create table tenants(id text primary key,limits jsonb);
+    create table computer_slots(tenant text,machine text,root text,expires_at bigint,in_flight integer default 0,busy_until bigint default 0,primary key(tenant,machine));
+    create table computer_leases(tenant text,agent text,connection text,state text,expires_at bigint);
+    create table managed_computers (id text primary key, tenant text, agent text default 'root', connection text default 'connection', deadline bigint default 99999999, machine text, provider text default 'lambda', created_at bigint, ended_at bigint, microvm jsonb);
     insert into managed_computers(id,tenant,created_at) values ('computer','tenant',1000000);`);
-  const query = async (sql: string, params?: unknown[]) => { const r = await pg.query(sql, params); return { rows: r.rows, rowCount: r.affectedRows ?? r.rows.length }; };
+  const query = async (sql: string, params?: unknown[]) => {
+    // This fixture has a single connection; PGlite does not implement advisory locks.
+    if (sql.startsWith('select pg_advisory_xact_lock')) return { rows: [], rowCount: 0 };
+    const r = await pg.query(sql, params); return { rows: r.rows, rowCount: r.affectedRows ?? r.rows.length }; };
   const db = { query, connect: async () => ({ query, release() {}, on() {}, off() {} }) } as unknown as Db;
   let now = 1000000, loseCreate = false, failResume = false, losePost = false, polls = 0, jobs = 0;
   const calls: { op: string; input: any }[] = [], requests: { path: string; options: any }[] = [];
@@ -144,4 +152,21 @@ test("the REST client signs the Lambda path and maps AWS refusal headers without
       if (before[key] === undefined) delete process.env[key]; else process.env[key] = before[key];
     }
   }
+});
+
+test("a suspended MicroVM frees capacity and cannot auto-resume past the tree cap", async () => {
+  const f = await fixture();
+  try {
+    const machines = f.make();
+    await machines.create("computer", "tenant", 7200);
+    f.vm.state = "SUSPENDED";
+    await machines.list();
+    assert.equal(Number((await f.db.query("select expires_at from computer_slots where machine='connection'")).rows[0].expires_at), 0);
+    await f.db.query("insert into computer_slots(tenant,machine,root,expires_at) values('tenant','sibling','root',99999999)");
+    const before = f.requests.length;
+    await assert.rejects(machines.run("vm1", "echo forbidden", 60), /concurrent computer limit/);
+    assert.equal(f.requests.length, before, "no traffic resumes the machine at capacity");
+    await f.db.query("delete from computer_slots where machine='sibling'");
+    assert.equal((await machines.run("vm1", "echo allowed", 60)).exitCode, 0);
+  } finally { await f.pg.close(); }
 });

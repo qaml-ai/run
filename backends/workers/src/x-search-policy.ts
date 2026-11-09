@@ -37,7 +37,7 @@ export class XSearch {
   readonly options: XSearchOptions;
   constructor(options: XSearchOptions) { this.options = options; }
 
-  async search(context: { tenant: string; agent: string }, args: Record<string, unknown>, signal: AbortSignal) {
+  async search(context: { tenant: string; agent: string; requestId?: string }, args: Record<string, unknown>, signal: AbortSignal) {
     const query = typeof args.query === "string" ? args.query.trim() : "";
     if (!query || query.length > X_SEARCH.queryCharacters) throw new Error(`x_search needs a query of 1–${X_SEARCH.queryCharacters} characters`);
     const allowed = handles(args.allowedHandles, "allowedHandles"), excluded = handles(args.excludedHandles, "excludedHandles");
@@ -71,7 +71,7 @@ export class XSearch {
     const inputTokens = count(usage.input_tokens), cachedInputTokens = Math.min(inputTokens, count(object(usage.input_tokens_details).cached_tokens));
     const outputTokens = count(usage.output_tokens), details = object(usage.server_side_tool_usage_details);
     this.options.onSearch?.(context.tenant, context.agent, {
-      provider: "xai", model: "x_search", platform: key.platform, searches: 1,
+      ...(context.requestId ? { requestId: context.requestId } : {}), provider: "xai", model: "x_search", platform: key.platform, searches: 1,
       usage: { input: inputTokens - cachedInputTokens, cacheRead: cachedInputTokens, output: outputTokens, cost: { total: costUsd } },
     });
     // Even an incomplete/failed response may have spent money. Account before checking its content.

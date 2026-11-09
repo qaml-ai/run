@@ -11,6 +11,8 @@ export interface ComputerDriver extends ForkDriver<Reference> {
   create(id: string, seconds: number, allocated?: (ref: Reference) => Promise<void>, options?: { from?: SnapshotRef; forkable?: boolean }): Promise<Reference>;
   call(ref: Reference, operation: string, args: Record<string, any>): Promise<unknown>;
   close(ref: Reference): Promise<void>;
+  /** Query without resuming a saved machine; providers with automatic resume expose this. */
+  running?(ref: Reference): Promise<boolean>;
   dispose?(): void | Promise<void>;
   /** Whether a create failed because the provider refused the credentials (401 or 403), so it made nothing. */
   refused?(error: unknown): boolean;

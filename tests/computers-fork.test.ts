@@ -146,7 +146,7 @@ test("bring-your-own Boat forks through saved snapshots on the provider account"
 });
 
 test("the shared fork policy: choices, batches, route input and a bounded start with one retry", async () => {
-  assert.equal(computerChoice(undefined), "none", "left out, a sub-agent gets no computer");
+  assert.equal(computerChoice(undefined), "share", "left out, a sub-agent shares its parent computer when present");
   assert.equal(computerChoice(null, true), "fresh", "left out, a definition that declares a computer keeps it");
   assert.equal(computerChoice("fresh"), "fresh");
   assert.equal(computerChoice("none", true), "none");
@@ -163,4 +163,51 @@ test("the shared fork policy: choices, batches, route input and a bounded start 
   assert.deepEqual([tries, undone], [2, 1]);
   await assert.rejects(boundedStart(() => new Promise(resolve => setTimeout(resolve, 200)), { waitMs: 20 }), (error: HttpError) => error.status === 503 && error.code === "COMPUTER_STARTING");
   await assert.rejects(boundedStart(async () => { throw new Error("over limits"); }, { waitMs: 50 }), /over limits/, "a failure is not retried");
+});
+
+test("sharing keeps one managed connection, owner billing, idle activity and grandchildren", async t => {
+  const f = await fixture({ extraAgents: ["child", "grandchild", "empty"] });
+  t.after(f.done);
+  await f.connect();
+  await start(f.service, "a");
+  await f.service.inherit("payg", "a", "child", f.db, "share");
+  await f.service.inherit("payg", "child", "grandchild", f.db, "share");
+  await f.service.inherit("payg", "empty", "b", f.db, "share");
+  await assert.rejects(f.service.status("payg", "b"), /No computer/);
+  await exec(f.service, "a", "put shared parent");
+  assert.equal((await exec(f.service, "grandchild", "get shared")).stdout, "parent");
+  await exec(f.service, "child", "put shared child");
+  assert.equal((await exec(f.service, "a", "get shared")).stdout, "child");
+  for (const name of ["computer_start", "computer_stop"]) await assert.rejects(f.service.call("payg", "child", name, {}, name), /parent's machine/);
+  const deadline = Number((await f.row()).deadline);
+  f.advance(4_000_000);
+  await exec(f.service, "grandchild", "get shared", "keep-alive");
+  assert.ok(Number((await f.row()).deadline) > deadline, "child activity extends the owner idle deadline");
+  const owner = await f.service.status("payg", "a");
+  assert.equal((await f.service.status("payg", "grandchild")).session!.id, owner.session!.id);
+  await f.service.release("payg", "child");
+  await f.service.removeAgent("payg", "child");
+  assert.equal((await f.service.status("payg", "a")).session!.state, "active");
+  const rows = (await f.db.query("select agent from managed_computers")).rows;
+  assert.deepEqual(rows.map(row => row.agent), ["a"]);
+  assert.equal((await f.service.list("payg")).length, 1);
+});
+
+test('tree computer cap admits concurrent starts atomically and releases stopped capacity', async t => {
+  const f = await fixture({ extraAgents: ['c1', 'c2'] });
+  t.after(f.done);
+  await f.db.query("update agents set header=header::jsonb || $2::jsonb where id=$1", ['a', JSON.stringify({ config: { computerLimit: 2 } })]);
+  for (const child of ['c1', 'c2']) await f.db.query("update agents set header=header::jsonb || $2::jsonb where id=$1", [child, JSON.stringify({ parent: { agentId: 'a' } })]);
+  await f.connect();
+  for (const child of ['c1', 'c2']) await f.service.inherit('payg', 'a', child, f.db);
+  await start(f.service, 'a');
+  const results = await Promise.allSettled(['c1', 'c2'].map(child => start(f.service, child)));
+  assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
+  const refusedResult = results.find(result => result.status === 'rejected') as PromiseRejectedResult;
+  assert.match(refusedResult.reason.message, /Use computer: "share" or wait for a child/);
+  const winner = ['c1', 'c2'][results.findIndex(result => result.status === 'fulfilled')];
+  const loser = ['c1', 'c2'][results.findIndex(result => result.status === 'rejected')];
+  await f.service.release('payg', winner);
+  await start(f.service, loser);
+  assert.equal((await f.service.status('payg', loser)).session!.state, 'active');
 });

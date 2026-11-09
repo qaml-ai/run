@@ -1,3 +1,5 @@
+import { computerOwner } from "../../../../src/core/computer-share.ts";
+import { withSql } from "../postgres.ts";
 import { Directory, type ControlEnv } from "../control.ts";
 import type { Config } from "../agent-types.ts";
 import type { OperateSetup } from "./objects.ts";
@@ -23,6 +25,12 @@ export const parentCacheSize = () => parents.size;
  * parent's computer object, by the name the parent's own computer tool uses (the parent agent's object id).
  */
 export async function computerSetup(env: ControlEnv & { AGENT_PUBLIC_URL?: string; AGENTS: { idFromName(name: string): DurableObjectId } }, conf: Config): Promise<OperateSetup> {
+  const owner = await withSql(env, sql => computerOwner(sql, conf.tenantId, conf.id));
+  if (owner !== conf.id) {
+    const entry = await new Directory(env, conf.tenantId).get(owner);
+    if (!entry) throw new Error("The parent's machine is no longer available");
+    conf = { ...conf, id: owner, config: entry.config as Config["config"] };
+  }
   const settings = (conf.config.computer ?? {}) as ComputerSettings;
   const issuer = env.AGENT_PUBLIC_URL || conf.runtimeOrigin || "";
   if (settings.egress?.some(grant => grant.auth) && !issuer) throw new Error("Runtime public URL is not configured");

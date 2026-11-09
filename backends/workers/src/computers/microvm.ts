@@ -81,6 +81,10 @@ export function microvmDriver(env: MicrovmBindings, tenant: string, send: Fetche
   };
   return {
     refused: error => [401, 403, 429].includes(Number((error as { status?: number })?.status)),
+    async running(ref) {
+      const vm = await api('GetMicrovm', { microvmIdentifier: ref.id });
+      return !['SUSPENDING', 'SUSPENDED', 'TERMINATED'].includes(vm.state);
+    },
     async create(id, seconds, allocated) {
       const vm = await api('RunMicrovm', { imageIdentifier: env.MICROVM_IMAGE,
         ...(env.MICROVM_IMAGE_VERSION ? { imageVersion: env.MICROVM_IMAGE_VERSION } : {}),

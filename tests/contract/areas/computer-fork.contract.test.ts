@@ -151,3 +151,104 @@ contractTest("computers", SOURCE, "computer fork is refused where the provider c
   assert.equal((await r.call(`/v1/agents/${child}/computer`)).status, 404);
   assert.equal(boat.state.snapshots.length, 0);
 });
+
+for (const explicit of [false, true]) contractTest("computers", SOURCE, `shared child uses the parent's session concurrently and cannot control it (${explicit ? 'share' : 'default'})`, async t => {
+  const boat = await fakeBoatServer();
+  t.after(() => boat.close());
+  let childResult = '';
+  const r = await createContractFixture(t, { env: boatEnv(boat.url), respond: body => {
+    const results = turnResults(body);
+    if (systemText(body).includes('SHARE_PARENT')) {
+      if (!results.length) return toolCall('computer_start', {}, 'start');
+      if (results.length === 1) return toolCall('computer_exec', { command: 'echo parent > shared.txt' }, 'write');
+      if (results.length === 2) return toolCall('spawn_agent', { instructions: 'SHARE_CHILD', task: 'Read shared.txt and signal completion', ...(explicit ? { computer: 'share' } : {}) }, 'spawn');
+      if (results.length === 3) return toolCall('computer_exec', { command: 'echo ready > parent-ready; for i in $(seq 1 100); do test -f child-done && break; sleep 0.1; done; cat child-done', timeoutSeconds: 30 }, 'concurrent');
+      return { role: 'assistant', content: results[3] };
+    }
+    if (firstUser(body).includes('SHARE_CHILD')) {
+      if (!results.length) return toolCall('computer_stop', {}, 'stop');
+      if (results.length === 1) return toolCall('computer_start', {}, 'start');
+      if (results.length === 2) return toolCall('computer_exec', { command: 'for i in $(seq 1 100); do test -f parent-ready && break; sleep 0.1; done; cat shared.txt; echo child > child-done', timeoutSeconds: 30 }, 'read');
+      childResult = results.join('\n');
+      return { role: 'assistant', content: childResult };
+    }
+    return { role: 'assistant', content: 'ok' };
+  } });
+  const parent = (await r.call('/v1/agents', { body: { systemPrompt: 'SHARE_PARENT', builtins: ['agents'], delegate: { instructions: true } } })).json.id;
+  assert.equal((await connect(r, parent)).status, 201);
+  const run = await r.prompt(parent, 'Share the computer');
+  assert.equal(run.status, 'completed', JSON.stringify(run.outcome));
+  assert.match(run.outcome.result.reply, /child/);
+  await until(async () => !!childResult, 'shared child finished');
+  assert.match(childResult, /parent's machine/);
+  assert.equal((childResult.match(/parent's machine/g) ?? []).length, 2);
+  assert.match(childResult, /parent/);
+  const child = run.outcome.result.toolCalls.find((call: any) => call.agentId)?.agentId;
+  assert.ok(child);
+  const before = (await r.call(`/v1/agents/${parent}/computer`)).json;
+  const shared = (await r.call(`/v1/agents/${child}/computer`)).json;
+  assert.equal(shared.connection.id, before.connection.id);
+  assert.equal(shared.session.id, before.session.id);
+  assert.equal(boat.state.creates, 1);
+  assert.equal((await r.call(`/v1/agents/${child}`, { method: 'DELETE' })).status, 200);
+  assert.equal((await r.call(`/v1/agents/${parent}/computer`)).json.session.state, 'active');
+});
+
+for (const connected of [false, true]) contractTest('computers', SOURCE, `code-mode delegate defaults to ${connected ? 'sharing' : 'no attachment'}`, async t => {
+  const boat = await fakeBoatServer();
+  t.after(() => boat.close());
+  const r = await createContractFixture(t, { env: boatEnv(boat.url), respond: body => {
+    const results = turnResults(body);
+    if (firstUser(body).includes('CODE_SHARE_CHILD')) {
+      if (!connected) return { role: 'assistant', content: 'no attachment' };
+      return results.length ? { role: 'assistant', content: results[0] } : toolCall('computer_exec', { command: 'cat shared.txt' }, 'read');
+    }
+    if (connected && !results.length) return toolCall('computer_start', {}, 'start');
+    if (connected && results.length === 1) return toolCall('computer_exec', { command: 'echo shared-content > shared.txt' }, 'write');
+    if (results.length === (connected ? 2 : 0)) return toolCall('codemode', { code: 'return await tools.delegate({ instructions: "CODE_SHARE_CHILD", task: "Read the shared file" });' }, 'delegate');
+    return { role: 'assistant', content: results.at(-1) };
+  } });
+  const parent = (await r.call('/v1/agents', { body: { builtins: ['delegate'], delegate: { instructions: true } } })).json.id;
+  if (connected) assert.equal((await connect(r, parent)).status, 201);
+  const run = await r.prompt(parent, 'Delegate in code mode');
+  assert.equal(run.status, 'completed', JSON.stringify(run.outcome));
+  assert.match(run.outcome.result.reply, connected ? /shared-content/ : /no attachment/);
+  const child = run.outcome.result.toolCalls.find((call: any) => call.agentId)?.agentId;
+  assert.ok(child);
+  const status = await r.call(`/v1/agents/${child}/computer`);
+  assert.equal(status.status, connected ? 200 : 404);
+  if (connected) assert.equal(status.json.connection.agent, parent);
+});
+
+for (const override of [false, true]) contractTest('computers', SOURCE, `tree cap: tenant default, sharing and released slots (${override ? 'agent override' : 'tenant default'})`, async t => {
+  const boat = await fakeBoatServer();
+  t.after(() => boat.close());
+  const r = await createContractFixture(t, { env: boatEnv(boat.url), respond: body => {
+    const results = turnResults(body);
+    if (firstUser(body).includes('CAP_FRESH')) return results.length ? { role: 'assistant', content: results[0] } : toolCall('computer_start', {}, 'start');
+    if (firstUser(body).includes('CAP_SHARE')) return results.length ? { role: 'assistant', content: results[0] } : toolCall('computer_exec', { command: 'echo shared-ok' }, 'exec');
+    if (!results.length) return toolCall('computer_start', {}, 'start');
+    if (results.length === 1) return toolCall('delegate', { instructions: 'CAP_FRESH', task: 'Start your fresh computer', computer: 'fresh' }, 'fresh1');
+    if (results.length === 2) return toolCall('delegate', { instructions: 'CAP_SHARE', task: 'Use the parent computer', computer: 'share' }, 'share');
+    if (results.length === 3) return toolCall('delegate', { instructions: 'CAP_FRESH', task: 'Start after the previous child finished', computer: 'fresh' }, 'fresh2');
+    return { role: 'assistant', content: results.slice(1).join('\n---\n') };
+  } });
+  const { token } = await r.seedTenant('cap-test', { config: { computerLimit: 1 } });
+  const call = (path: string, args: any = {}) => r.call(path, { ...args, token });
+  const definition = await call('/v1/definitions', { body: { name: 'Capped', builtins: ['delegate'], delegate: { instructions: true }, ...(override ? { computerLimit: 1 } : {}) } });
+  assert.equal(definition.status, 201, definition.text);
+  const made = await call('/v1/agents', { body: { definition: definition.json.id, ...(override ? { computerLimit: 2 } : {}) } });
+  assert.equal(made.status, 201, made.text);
+  assert.equal((await connect({ call }, made.json.id)).status, 201);
+  const run = await r.prompt(made.json.id, 'Check capacity', token);
+  assert.equal(run.status, 'completed', JSON.stringify(run.outcome));
+  assert.match(run.outcome.result.reply, /shared-ok/);
+  if (override) {
+    assert.doesNotMatch(run.outcome.result.reply, /reached its concurrent computer limit/);
+    assert.equal(boat.state.creates, 3, 'both sequential children start after the prior child releases its slot');
+  } else {
+    assert.ok(JSON.parse(run.outcome.result.reply.split('\n---\n')[0]).text.includes('This agent tree has reached its concurrent computer limit. Use computer: "share" or wait for a child to finish and release its machine.'));
+    assert.equal(boat.state.creates, 1, 'refused children start no extra machines');
+  }
+  for (const value of [0, 65, 1.5]) assert.equal((await call('/v1/agents', { body: { computerLimit: value } })).status, 400);
+});

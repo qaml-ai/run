@@ -7,6 +7,10 @@
 
 AgentRuntime and AgentClient are the lower-level interface it is built on.
 """
+from typing import Literal
+
+ComputerChoice = Literal["share", "fork", "fresh", "none"]
+
 import asyncio
 import base64
 from collections.abc import Mapping
@@ -31,7 +35,7 @@ __version__ = "0.18.1"
 
 __all__ = [
     "AgentSummary", "GitHubRepository", "Agents", "Agent", "Run", "RunInput", "InputDetail", "Mount", "WorkspaceMount", "RunStream", "StreamPart", "Runs", "StatelessRunStream",
-    "tool", "Tool", "ToolContext", "InputRequired", "RuntimeIdentity", "identity_from_claims", "spawn_agent", "SpawnAgent", "agent_notice",
+    "ComputerChoice", "tool", "Tool", "ToolContext", "InputRequired", "RuntimeIdentity", "identity_from_claims", "spawn_agent", "SpawnAgent", "agent_notice",
     "AgentError", "RunError", "CREDIT_REASONS", "EndUserCreditFailure", "end_user_credit",
     "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Volume", "Transcriptions", "Images", "EndUsers", "Voice", "Voices", "DEFAULT_URL",
     "serve_tools", "verify_runtime_token", "verify_file_url", "RuntimeTokenError", "TestRuntime", "verify_webhook", "WebhookVerificationError",
@@ -979,7 +983,7 @@ class AgentRuntime(_RuntimeCalls):
             raise
         return then(value) if then else value
 
-    async def create_agent(self, *, tools, workspace_id=_DEFAULT, system_prompt=None, name=None, type=None, metadata=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, on_input=None, builtins=None, delegate=None, subagents=False, prompt=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, idle_ttl_seconds=None):
+    async def create_agent(self, *, tools, workspace_id=_DEFAULT, system_prompt=None, name=None, type=None, metadata=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, computer_limit=None, model_headers=None, on_input=None, builtins=None, delegate=None, subagents=False, prompt=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, idle_ttl_seconds=None):
         """Provision an agent. `model` is "provider/model-id", e.g. "anthropic/claude-sonnet-5-5".
         `definition` makes it from a definition (GET /v1/definitions), which supplies the model, system prompt,
         thinking level and tool sources; `tools` are added as the agent's attached MCP server.
@@ -1000,7 +1004,7 @@ class AgentRuntime(_RuntimeCalls):
             raise AgentError("No API key: set CAMELAI_API_KEY (or pass api_key). Create one at https://run.camelai.com/console/tokens")
         # subject: who the agent acts for; context: claims for its tool servers' identity tokens. Set only here.
         body = _provisioning(tools, definition=definition, name=name, type=type, metadata=metadata, system_prompt=system_prompt, model=model, thinking_level=thinking_level,
-                             workspace_id=workspace_id, mounts=mounts, subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits, model_headers=model_headers, builtins=builtins,
+                             workspace_id=workspace_id, mounts=mounts, subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits, computer_limit=computer_limit, model_headers=model_headers, builtins=builtins,
                              delegate=delegate, prompt=prompt, initial_messages=initial_messages, import_messages=import_messages, max_output_tokens=max_output_tokens, temperature=temperature, data_collection=data_collection, language=language, mcp_servers=mcp_servers)
         # A key of the caller's makes the agent durable (it lives until deleted); one the SDK makes up, only so a retried
         # create finds the same agent, keeps a scratch agent's day, said explicitly since any key would make it durable.
@@ -1448,11 +1452,11 @@ class Voice:
 
 
 def _provisioning(tools, *, workspace_id=_DEFAULT, definition=None, name=None, type=None, metadata=None, system_prompt=None, model=None, thinking_level=None, mounts=None, remount=None,
-                  subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, system_prompt_append=None, file_tools=None, builtins=None,
+                  subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, computer_limit=None, model_headers=None, system_prompt_append=None, file_tools=None, builtins=None,
                   delegate=None, prompt=None, code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, bucket=None, queue=None):
     """A create request's body: the tools as the attached MCP server's tools/list, and the fields given."""
     optional = {"metadata": metadata, "definition": definition, "name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level,
-                "mounts": mounts, "remount": remount, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit, "runLimits": run_limits, "modelHeaders": model_headers,
+                "mounts": mounts, "remount": remount, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit, "runLimits": run_limits, "computerLimit": computer_limit, "modelHeaders": model_headers,
                 "systemPromptAppend": system_prompt_append, "fileTools": file_tools, "codeMode": code_mode, "builtins": builtins, "delegate": delegate, "mcpServers": mcp_servers, "prompt": prompt,
                 "initialMessages": initial_messages, "importMessages": import_messages, "maxOutputTokens": max_output_tokens, "temperature": temperature, "dataCollection": data_collection, "language": language, "bucket": bucket, "queue": queue}
     if workspace_id is not _DEFAULT:
@@ -2974,7 +2978,7 @@ class Runs:
 
     @staticmethod
     def _request(input, *, workspace_id=_DEFAULT, instructions=None, instructions_append=None, model=None, definition=None, thinking_level=None, output=None, builtins=None, delegate=None,
-                 file_tools=None, mounts=None, files=None, user=None, metadata=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None,
+                 file_tools=None, mounts=None, files=None, user=None, metadata=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, computer_limit=None,
                  model_headers=None, name=None, retention_seconds=None, code_mode=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, bucket=None):
         parts = [{"type": "text", "text": input}] if input else []
         for file in files or []:
@@ -2991,7 +2995,7 @@ class Runs:
         fields = {"input": input if len(parts) == 1 and parts[0]["type"] == "text" else parts, "systemPrompt": instructions, "systemPromptAppend": instructions_append, "model": model, "definition": definition,
                   "thinkingLevel": thinking_level, "output": _output_request(output), "builtins": builtins, "delegate": delegate, "mcpServers": mcp_servers, "fileTools": file_tools, "mounts": mounts,
                   "from": _sender(user) if user else None, "metadata": metadata, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit,
-                  "runLimits": run_limits, "modelHeaders": model_headers, "name": name, "retentionSeconds": retention_seconds, "codeMode": code_mode,
+                  "runLimits": run_limits, "computerLimit": computer_limit, "modelHeaders": model_headers, "name": name, "retentionSeconds": retention_seconds, "codeMode": code_mode,
                   "maxOutputTokens": max_output_tokens, "temperature": temperature, "dataCollection": data_collection, "language": language, "bucket": bucket}
         if workspace_id is not _DEFAULT:
             fields["workspaceId"] = workspace_id
@@ -3082,7 +3086,7 @@ class Agents:
         return await self.runs.run(input, **options)
 
     async def upsert(self, key, *, workspace_id=_DEFAULT, model=None, instructions=None, tools=None, definition=None, thinking_level=None, subject=None, context=None,
-                     key_scope=None, spend_limit=None, run_limits=None, model_headers=None, mounts=None, remount=None, name=None, metadata=None, instructions_append=None, file_tools=None,
+                     key_scope=None, spend_limit=None, run_limits=None, computer_limit=None, model_headers=None, mounts=None, remount=None, name=None, metadata=None, instructions_append=None, file_tools=None,
                      builtins=None, delegate=None, subagents=False, on_event=None, on_input=None, on_error=None, attach=None, takeover=False, connection=None,
                      code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, bucket=None,
                      queue=None):
@@ -3109,7 +3113,7 @@ class Agents:
         prompts that wait while a turn runs together as its next turn (see Batching in the concepts guide)."""
         tools = list(tools or [])
         session = await self.runtime.upsert_agent(key, workspace_id=workspace_id, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
-                                                  subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits,
+                                                  subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits, computer_limit=computer_limit,
                                                   model_headers=model_headers, mounts=mounts, remount=remount, name=name, metadata=metadata, system_prompt_append=instructions_append, file_tools=file_tools, builtins=builtins,
                                                   delegate=delegate, code_mode=code_mode, initial_messages=initial_messages, import_messages=import_messages,
                                                   max_output_tokens=max_output_tokens, temperature=temperature, data_collection=data_collection, language=language, mcp_servers=mcp_servers, bucket=bucket,

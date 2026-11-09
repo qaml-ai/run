@@ -6,8 +6,9 @@ import { balancer, cluster, fakeEcs, fakeModel, sleep, token, toolMessages, unti
 
 // A periodic sweep too slow to matter: what moves a turn below is the leaving node telling its peers. Tool calls wait on
 // the test, so they get two minutes rather than 15 s (a loaded runner is slow to retire a node). AGENT_HOSTING=inline
-// runs them as on ECS.
-const QUIET = { AGENT_ORPHAN_SWEEP_MS: "600000", AGENT_TOOL_TIMEOUT_MS: "120000", ...(process.env.AGENT_HOSTING ? { AGENT_HOSTING: process.env.AGENT_HOSTING } : {}) };
+// runs them as on ECS. These tests exercise an explicit handoff, not lease expiry: a loaded runner must not
+// self-fence on the cluster helper's 1.5-second lease before the handoff signal reaches its peer.
+const QUIET = { AGENT_LEASE_TTL_MS: "30000", AGENT_ORPHAN_SWEEP_MS: "600000", AGENT_TOOL_TIMEOUT_MS: "120000", ...(process.env.AGENT_HOSTING ? { AGENT_HOSTING: process.env.AGENT_HOSTING } : {}) };
 type Node = Awaited<ReturnType<Awaited<ReturnType<typeof cluster>>["start"]>> & { ecs?: Awaited<ReturnType<typeof fakeEcs>> };
 type T = Parameters<typeof cluster>[0];
 

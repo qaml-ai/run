@@ -20,6 +20,7 @@ export const TenantLimitsInput = z.object({
     codeCpuMs: z.number().int().min(1).max(30000).nullable().optional(),
     codeMaxTimeoutMs: z.number().int().min(1).max(120000).nullable().optional(),
     codeConcurrency: z.number().int().min(1).max(1000).nullable().optional(),
+    computerLimit: z.number().int().min(1).max(64).nullable().optional(),
     decisionConcurrency: z.number().int().min(1).max(1000).nullable().optional(),
     codeEngine: z.null({ error: "codeEngine was removed with QuickJS: code runs on V8 only. Leave it out, or send null to clear one set before" }).optional(),
 }).strict();

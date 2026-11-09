@@ -1,4 +1,5 @@
 import { workspacePath } from "../validation.ts";
+import { canonical } from "../../../../shared/durable-json.ts";
 import { COMPUTER_LIMITS, EGRESS_ENV, TRUST_COMMAND, type EgressGrant } from "./egress.ts";
 import { boundedStart, FORK_LIMITS } from "../../../../src/core/computer-fork.ts";
 import type { NativeForkAnswer, NativeForkOrigin, NativeForkedFrom } from "./native-fork.ts";
@@ -22,6 +23,12 @@ export type ComputerNetwork = {
   /** What idling out does (a definition's `computer.idle`): "stop" (the default) loses the disk; "sleep" saves it first. */
   idle?: "stop" | "sleep";
 };
+/** Postgres JSONB can reorder the owner's settings when a sharing child reads them. */
+export function sameComputerNetwork(left: string, right: string): boolean {
+  if (left === right) return true;
+  try { return canonical(JSON.parse(left)) === canonical(JSON.parse(right)); }
+  catch { return false; }
+}
 export interface ComputerProvider {
   exec(
     argv: string[],
@@ -379,12 +386,14 @@ export class ContainerProvider implements ComputerProvider {
     if (!image) throw new Error("Computer image is not configured");
     return image;
   }
-  protected async ready() {
+  async ready() {
     // Every operation is admitted, as web calls are: a session spends while it runs.
     await this.meter?.admit();
     // Grants changed since this container started: replace it, so no host stays reachable that the definition dropped.
-    if (this.container.running && (await this.store.get<string>("network") ?? "") !== this.network.key)
+    if (this.container.running && !sameComputerNetwork(await this.store.get<string>("network") ?? "", this.network.key)) {
       await this.stop();
+      await this.meter?.admit();
+    }
     const starting = await this.store.get<StartPlan | null>(STARTING_KEY);
     if (starting && this.container.running) await this.awaitStarting(starting);
     else if (!this.container.running) {
@@ -575,7 +584,7 @@ export class ContainerProvider implements ComputerProvider {
       );
     signal.throwIfAborted();
     await this.meter?.admit();
-    if (this.container.running) await this.stop();
+    if (this.container.running) { await this.stop(); await this.meter?.admit(); }
     // A restore that does not come up throws here: no caller gets a blank computer it thinks was restored.
     const plan: StartPlan = { from: { containerSnapshot: { id: snapshot.id } }, init: ["true"], image: snapshot.image };
     await this.bootReady(plan);

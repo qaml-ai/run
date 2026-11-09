@@ -87,8 +87,8 @@ async function egressImageWithoutSocketMatch(t: { after(fn: () => Promise<void>)
 
 test(
   "the native computer: a container its Durable Object drives (durable_object scheduling policy) in local Docker",
-  // On a sprite with a cold image cache, pulling and building every image inside this test took 206 s of the old 240.
-  { timeout: 360_000, skip: requireDocker ? false : unavailable },
+  // Cold image builds can take five minutes before this test exercises the running containers.
+  { timeout: 600_000, skip: requireDocker ? false : unavailable },
   async (t) => {
     assert.equal(unavailable, undefined, unavailable);
     const egressImage = await egressImageWithoutSocketMatch(t);
@@ -463,9 +463,9 @@ test("computer egress: git clone and push through the runtime's credential gatew
   const model = await listen(async (request, response) => {
     let raw = ""; for await (const chunk of request) raw += chunk;
     const body = JSON.parse(raw), text = JSON.stringify(body.messages);
-    const delta = text.includes("FORK_CHILD") || body.messages.at(-1).role === "tool" || text.includes("agent_notification")
+    const delta = (text.includes("FORK_CHILD") || text.includes("SHARE_CHILD")) || body.messages.at(-1).role === "tool" || text.includes("agent_notification")
       ? { role: "assistant", content: "done" }
-      : { role: "assistant", tool_calls: [{ index: 0, id: "spawn-1", type: "function", function: { name: "spawn_agent", arguments: JSON.stringify({ instructions: "FORK_CHILD", task: "Work in a fork", name: "worker", computer: "fresh" }) } }] };
+      : { role: "assistant", tool_calls: [{ index: 0, id: "spawn-1", type: "function", function: { name: "spawn_agent", arguments: JSON.stringify({ instructions: text.includes("REQUEST_SHARE") ? "SHARE_CHILD" : "FORK_CHILD", task: "Work on the computer", name: "worker", ...(text.includes("REQUEST_SHARE") ? {} : { computer: "fresh" }) }) } }] };
     response.writeHead(200, { "content-type": "text/event-stream" });
     response.write(`data: ${JSON.stringify({ id: "m", object: "chat.completion.chunk", choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`);
     response.end(`data: ${JSON.stringify({ id: "m", object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" in delta ? "tool_calls" : "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0 } })}\n\ndata: [DONE]\n\n`);
@@ -553,6 +553,48 @@ test("computer egress: git clone and push through the runtime's credential gatew
   assert.match(forked.stdout, /^badge\n/);
   assert.match(forked.stdout, /origin\/main/);
   assert.ok(exchanges.some(entry => entry.claims.agent === child), "the child's egress credential is its own");
+
+  // A default child uses the same native disk, provider setup and billing identity.
+  const sharedLead = await api("/v1/agents", { body: { definition: definition.id, computerLimit: 1 } });
+  await sh(sharedLead.id, "echo parent > /workspace/shared.txt");
+  const sharedRun = await api(`/v1/agents/${sharedLead.id}/prompt`, { body: { text: "REQUEST_SHARE" } });
+  let sharedChild: string | undefined;
+  for (let i = 0; i < 100 && !sharedChild; i++) {
+    const children = await api(`/v1/agents/${sharedLead.id}/children`);
+    sharedChild = children.children?.[0]?.agentId ?? children.children?.[0]?.id;
+    if (!sharedChild) await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.ok(sharedChild, JSON.stringify(sharedRun));
+  const ownership = (await fixture.db.query("select * from computer_shares where agent=$1", [sharedChild])).rows;
+  assert.equal(ownership[0]?.owner, sharedLead.id, JSON.stringify({ ownership, sharedChild, sharedLead }));
+  const sharedRead = await sh(sharedChild, "cat /workspace/shared.txt");
+  assert.match(sharedRead.stdout, /parent/, JSON.stringify(sharedRead));
+  const [parentWork, childWork] = await Promise.all([
+    sh(sharedLead.id, "touch /workspace/parent-ready; for i in $(seq 1 100); do test -f /workspace/child-ready && break; sleep 0.1; done; cat /workspace/child-ready"),
+    sh(sharedChild, "for i in $(seq 1 100); do test -f /workspace/parent-ready && break; sleep 0.1; done; echo child > /workspace/child-ready"),
+  ]);
+  assert.equal(childWork.exitCode, 0);
+  assert.match(parentWork.stdout, /child/);
+  for (const op of ["sleep", "restore"]) {
+    const denied = await computer(sharedChild, { op, ...(op === "restore" ? { name: "saved" } : {}) }, [400]);
+    assert.match(JSON.stringify(denied), /parent's machine/);
+  }
+  await api(`/v1/agents/${sharedChild}`, { method: "DELETE" });
+  assert.match((await sh(sharedLead.id, "cat /workspace/shared.txt")).stdout, /parent/);
+
+  const capped = await api("/v1/agents", { body: { definition: definition.id, computerLimit: 1 } });
+  await sh(capped.id, "echo root > /workspace/root.txt");
+  await api(`/v1/agents/${capped.id}/prompt`, { body: { text: "start" } });
+  let cappedChild: string | undefined;
+  for (let i = 0; i < 100 && !cappedChild; i++) {
+    const children = await api(`/v1/agents/${capped.id}/children`);
+    cappedChild = children.children?.[0]?.agentId ?? children.children?.[0]?.id;
+    if (!cappedChild) await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.ok(cappedChild);
+  const capRefusal = await computer(cappedChild, { op: "exec", command: "echo should-not-run" }, [409]);
+  assert.match(JSON.stringify(capRefusal), /concurrent computer limit/);
+  assert.match((await sh(capped.id, "cat /workspace/root.txt")).stdout, /root/);
 
   // A child's fork never changes its parent's machine; a computer that never ran has nothing to fork.
   await sh(child!, "touch /workspace/child-only");

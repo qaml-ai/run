@@ -69,19 +69,19 @@ test('a fork that cannot be taken fails the call, and the child made meanwhile i
 // A sub-agent gets no computer unless asked; a definition that declares its own computer keeps it.
 const start = (w: ReturnType<typeof world>, args: Record<string, unknown>) => new Delegation(w.host).start({ task: 'help', ...args }, 'spawn-call', new AbortController().signal, true);
 
-test('left out, an instructions child gets no computer settings and no computer', async () => {
+test('left out, an instructions child shares its parent computer', async () => {
   const w = world(async () => snapshot);
   await start(w, { instructions: 'helper' });
   assert.equal(w.created.length, 1);
-  assert.equal('computer' in w.created[0], false);
-  assert.deepEqual(w.inherited, ['none']);
+  assert.deepEqual(w.created[0].computer, { hosts: ['example.com'] });
+  assert.deepEqual(w.inherited, ['share']);
 });
 
-test('left out, a definition without computer settings gets none', async () => {
+test('left out, a definition without computer settings shares', async () => {
   const w = world(async () => snapshot, { definition: { model: 'test/echo', systemPrompt: 'worker' } });
   await start(w, { agent: 'worker' });
   assert.equal('computer' in w.created[0], false);
-  assert.deepEqual(w.inherited, ['none']);
+  assert.deepEqual(w.inherited, ['share']);
 });
 
 test('left out, a definition that declares a computer keeps it', async () => {

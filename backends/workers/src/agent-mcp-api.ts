@@ -1,4 +1,4 @@
-export const VERSION = "0.22.1";
+export const VERSION = "0.23.0";
 // Generated from packages/cli/src/{api,ops}.ts by scripts/reuse-agent-mcp.mjs.
 /**
  * A refused call: the runtime's `error` message, with the HTTP status and its `code` when it gave one. The message
@@ -10,6 +10,17 @@ export class ApiError extends Error {
   readonly code?: string;
   readonly cliHint?: string;
   constructor(status: number, message: string, code?: string, cliHint?: string) { super(message); this.status = status; this.code = code; this.cliHint = cliHint; }
+}
+
+/** Computer choice on inline and definition child tasks. */
+export type ComputerChoice = "share" | "fork" | "fresh" | "none";
+export interface ChildTask {
+  agent?: string;
+  instructions?: string;
+  task: string;
+  name?: string;
+  computer?: ComputerChoice;
+  output?: Record<string, unknown>;
 }
 
 export interface Credentials {

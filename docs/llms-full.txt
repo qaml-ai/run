@@ -864,33 +864,29 @@ camelRun workspace files.
 
 ## Sub-agents
 
-By default, each sub-agent the runtime creates gets its own computer connection
-when its parent has one. This applies to `spawn_agent` and `delegate`, including
-children made from definitions. The
-connection has the same provider, provider credentials, managed setting and
-lease and daily limits. It starts without a session: the child calls
-`computer_start` when it needs a machine. It never uses its parent's session.
-Grandchildren inherit the same way.
+By default, a new sub-agent shares its parent's computer connection and running
+session. It sees the same files and runs concurrently with the parent. Its
+computer activity keeps the machine active, and billing stays with the parent.
+Grandchildren share the same machine. Shared children cannot start, stop or
+replace the parent's machine.
 
-Set `"subagents": false` in `POST /v1/computers` to turn this off for that
-connection. The optional field defaults to `true` and appears in connection
-responses. It applies at child creation; attaching later does not change
-existing children. Named targets that run an existing agent keep that agent's
-own connection. Tool spawn directives also target existing agents and keep
-their connections.
+Without a parent computer, children get none. Definitions that declare their
+own computer and existing named or directive targets keep their computers.
+Use `computer: "none"` to opt out, or `"fresh"` or `"fork"` for a separate machine.
+A fresh connection inherits the provider, credentials, managed setting, lease
+and daily limits. `"subagents": false` on the parent's connection disables this
+fresh-connection inheritance. It does not disable sharing or an explicit fork.
 
-Each connection is billed as usual, independently: managed compute uses the
-child's account and end-user bucket, and bring-your-own compute uses the same
-provider account. There is no new shared computer budget or cap.
+Separate child machines are billed independently. When a runtime-made child
+finishes, its machine stops and releases its slot; its connection stays for a
+later task. Deleting or expiring the child also stops and detaches its own
+computer. A shared child's completion or deletion leaves the parent's machine
+running.
 
-A child's connection is detached and its session stopped when the child is
-deleted or expires, through the same cleanup as any detach. Cleanup failures
-are retried, and metering history stays. Sub-agents live for a day unless deleted
-earlier. A `delegate` child's session stops when its call answers or is refused,
-so it bills nothing more; its connection stays. A call that is stopped, or whose
-parent moves to another node, leaves the child's session to end at its lease or
-when the child is deleted, since a replay may still use it. A `spawn_agent` child keeps its session
-until it calls `computer_stop`, its session expires, or it is deleted.
+Each root agent tree may run four machines concurrently by default. Set
+`computerLimit` on its definition or agent (1–64) to override the tenant default.
+Shared children use no additional slot. Stopped and saved machines do not count.
+New starts at the cap are refused; running machines are never stopped by it.
 
 ### Forking a computer
 
@@ -900,9 +896,10 @@ installed packages and build caches, as they are at the call. Give `delegate` or
 
 | `computer` | The child's computer |
 | --- | --- |
+| `"share"` (default with a parent computer) | the parent's running machine and filesystem |
 | `"fresh"` | a new, empty computer with the parent's connection settings, as above |
 | `"fork"` | a copy of the parent's disk, taken now. Running processes are not copied |
-| `"none"` (default, unless the definition the child is made from declares its own computer) | no computer |
+| `"none"` (default without a parent computer) | no computer |
 
 ```json
 { "instructions": "You fix one flaky test on a branch.", "task": "Fix tests/cluster.test.ts and push a branch", "computer": "fork" }
@@ -6553,7 +6550,7 @@ The model gets a `delegate` tool that lists the agents with what each is for
 | `instructions` | Instead of `agent`, with `instructions: true` in the settings: who a sub-agent the model designs itself is and how it works, on its own model. It gets them with its task, as its first message |
 | `task` | What to do. The sub-agent sees only this, not the conversation |
 | `output` | A JSON Schema for an object: the answer comes back in that shape (see [Structured output](https://run.camelai.com/docs/guides/structured-output.md)) |
-| `computer` | `"none"` (default, unless the definition the sub-agent is made from declares its own computer): no computer; `"fresh"`: a new computer with the parent's connection settings; `"fork"`: a copy of the parent's computer disk, one snapshot for all the children of the response (see [Forking a computer](https://run.camelai.com/docs/guides/computers.md#forking-a-computer)) |
+| `computer` | `"share"` (default with a parent computer): the parent's machine; `"none"` (default without one): no computer; `"fresh"`: a new computer with the parent's connection settings; `"fork"`: a copy of the parent's computer disk, one snapshot for all the children of the response (see [Forking a computer](https://run.camelai.com/docs/guides/computers.md#forking-a-computer)) |
 
 The call's result is `{ agentId, requestId, status, text, output?, error? }`.
 `status` is `completed`, `input_required` (the sub-agent waits on a person) or
@@ -6648,10 +6645,17 @@ account's code slots, so its children can run code. `delegate`'s
 
 ### Computers
 
-A sub-agent gets no computer unless asked: left out, `computer` is `"none"`.
-The exception is a child made from a definition whose configuration declares
-its own computer (Workers backend), which keeps it. Ask for `"fresh"` or `"fork"` to
-give a child a computer.
+A sub-agent shares its parent's computer by default (`computer: "share"`). It uses
+exactly the same connection, provider, session and filesystem, concurrently with
+the parent. Grandchildren share the same machine. Only the parent can start,
+stop or replace it; a child's `computer_start` or `computer_stop` is refused.
+Children's computer activity counts toward the parent's idle policy. The machine
+is billed to its owner as before; sharing creates no new machine or charge.
+
+Without a parent computer, the default is `"none"`. A child made from a definition
+that declares its own computer keeps it. Existing named agents and tool spawn
+directive targets keep their own computers. Use `"none"` explicitly to opt out,
+`"fresh"` for a new machine, or `"fork"` for a separate copy of the parent's disk.
 
 If the parent has a [computer connection](https://run.camelai.com/docs/guides/computers.md), a child made with
 `computer: "fresh"` gets a separate connection with the same provider, credentials, managed
@@ -6659,19 +6663,29 @@ setting, lease and daily limits. This covers inline and definition children,
 `delegate` and `spawn_agent`. Existing named agents and
 agents targeted by tool spawn directives keep their own connections.
 
-The child calls `computer_start` to start its own session. No machine or session
-is shared, and grandchildren inherit too. Set `subagents: false` when attaching
+The child calls `computer_start` to start its own session. With `"fresh"`, no machine or session
+is shared, and grandchildren share the child's new machine by default. Set `subagents: false` when attaching
 the parent's computer to opt out. Each connection is billed independently under
 the usual rules, using the child's account and the current run's payer and bucket.
 
-Deleting or expiring the child stops its session and detaches its connection;
-finishing or aborting a turn leaves the agent alive and its connection attached.
+Deleting or expiring the child stops its session and detaches its connection.
+When a runtime-made child finishes its task, its machine stops and releases its
+slot; the agent and its connection remain available for a later task.
 Delete a child you no longer need, or have it call `computer_stop` after saving
 its results. Deleting the parent also deletes the children the runtime made.
 
-The parent cannot mount a child's computer. Children exchange files through
+For separate computers, the parent cannot mount a child's computer. Children exchange files through
 shared volumes: copy results from `/computer` to a volume both agents mount.
 Parent mounts of child computers are a possible follow-up.
+
+Each root agent tree may run **4 machines concurrently** by default. Set
+`computerLimit` on its definition or agent (an integer from 1 to 64) to override
+the tenant default. Operators set the tenant default with `computerLimit` in the
+tenants file, or `PUT /v1/tenants/{id}/limits` for a self-serve tenant. Descendants
+use the root's cap. Shared children use no additional slot. Forks and fresh
+computers count only while running; stopped or saved machines do not count.
+At the cap, a new start is refused: use `computer: "share"` or wait for a child
+to finish and release its machine. The cap never stops a running machine.
 
 ### Limits
 

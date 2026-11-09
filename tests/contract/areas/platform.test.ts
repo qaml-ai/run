@@ -77,10 +77,10 @@ for (const builtin of ['delegate', 'agents']) for (const subagents of [true, fal
   await r.call(`/v1/agents/${child}`, { method: 'DELETE' });
   assert.ok(!(await r.call('/v1/computers')).json.some((c: any) => c.agent === child));
 });
-// A sub-agent gets no computer unless asked: left out, the computer argument is none, whatever the parent's connection allows.
+// Children share their parent computer unless explicitly opted out.
 for (const builtin of ['delegate', 'agents']) for (const [name, target, computer, has] of [
-  ['an instructions child has no computer by default', { instructions: 'You check one thing.' }, undefined, false],
-  ['a definition child without computer settings has none by default', { agent: 'worker' }, undefined, false],
+  ['an instructions child shares the computer by default', { instructions: 'You check one thing.' }, undefined, true],
+  ['a definition child shares the computer by default', { agent: 'worker' }, undefined, true],
   ['an explicit none gives a child no computer', { instructions: 'You check one thing.' }, 'none', false],
   ['an explicit fresh gives a child a computer', { instructions: 'You check one thing.' }, 'fresh', true],
 ] as const) contractTest("computers", "tests/computers-api.test.ts", `${builtin}: ${name}`, async (t, r) => {

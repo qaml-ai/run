@@ -4,6 +4,7 @@ import type { Db } from "./db.ts";
 import type { RunLimits, ToolDefinition } from "./protocol.ts";
 import type { RequestRecord } from "../shared/client-protocol.ts";
 import { errorText } from "./protocol.ts";
+import { computerLimit } from "./core/computer-limit.ts";
 import { configurationUpdate, modelSettingsRefusal, queueSettingInput, resolveModel, runLimitsInput, type CustomProviders } from "./session-config.ts";
 import type { QueueSetting } from "../shared/queue-mode.ts";
 import { HttpError } from "./http.ts";
@@ -53,6 +54,7 @@ export interface DefinitionSpec {
   fileTools?: boolean;
   /** false: agents get no code mode, and call every tool directly (AgentConfig.codeMode). */
   codeMode?: boolean;
+  computerLimit?: number;
   /** Built-in tools to enable: web_fetch, web_search, x_search, schedule, ask_user, delegate, agents. */
   builtins?: string[];
   /** The search providers web_search tries, in order, instead of the runtime's (AGENT_WEB_SEARCH_PROVIDERS). */
@@ -82,9 +84,9 @@ export interface ApplyResult { agent: string; requestId: string; status: "update
 /** Agent parameters from a definition, as `createAgent` takes them. */
 export type AgentParams = Record<string, unknown> & { tools?: ToolDefinition[] };
 
-const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "limits", "runLimits", "queue", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "decide", "applyOnUpdate"] as const;
+const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "computerLimit", "limits", "runLimits", "queue", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "decide", "applyOnUpdate"] as const;
 /** Configuration an agent made from a definition may set as its own, which applying the definition leaves. */
-export const OVERRIDES = ["model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "runLimits", "queue"] as const;
+export const OVERRIDES = ["model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "computerLimit", "runLimits", "queue"] as const;
 const PROVISION_FIELDS = ["name", "type", "ttlSeconds", "idleTtlSeconds", "mounts", "tools", "initialMessages", "systemPromptAppend"];
 /** Definitions a self-serve tenant may have; a tenant of the tenants file has its own limit (`maxDefinitions` option). */
 export const MAX_DEFINITIONS = 200;
@@ -340,6 +342,7 @@ export class Definitions {
     if (spec.applyOnUpdate !== undefined && typeof spec.applyOnUpdate !== "boolean") throw new HttpError(400, "applyOnUpdate must be true or false");
     if (spec.decide !== undefined) decideInput(spec.decide);
     if (spec.applyOnUpdate === false) delete spec.applyOnUpdate;
+    computerLimit(spec.computerLimit);
     if (spec.runLimits !== undefined && !runLimitsInput(spec.runLimits)) delete spec.runLimits;
     if (spec.queue !== undefined) { const queue = queueSettingInput(spec.queue); if (queue) spec.queue = queue; else delete spec.queue; }
     if (spec.mounts !== undefined && (!Array.isArray(spec.mounts) || spec.mounts.length > 16)) throw new HttpError(400, "mounts must be an array of at most 16");

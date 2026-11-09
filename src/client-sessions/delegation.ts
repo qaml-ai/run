@@ -135,7 +135,7 @@ export async function delegate(ctx: DelegationContext, session: Session, setting
     return { ...jsonResult(value), ...(status === "completed" ? {} : { isError: true }) };
   } finally {
     // The child ended (answered, or refused before it ran): its computer, keyed by the child, stops, so it bills nothing more.
-    if (child?.made && child.done) void ctx.options.computers?.release(tenant, child.agent);
+    if (child?.made && child.done) await ctx.options.computers?.release(tenant, child.agent);
     untap?.();
     // A lost owner leaves the child for replay. A script ending stops only this nested call's child, and so does its
     // agent's process dying: that turn ends there (no replay goes on with the script), so a child left would run unread.
@@ -200,14 +200,14 @@ export function childPlace(ctx: DelegationContext, session: Session, run: Reques
  * SUBAGENT_PROMPT on the parent's model (the model's instructions come with its task). It acts for whom its parent acts, with the same keys.
  */
 /**
- * The computer a delegate or spawn_agent call gives the child it makes (its `computer` argument, none when left out:
+ * The computer a delegate or spawn_agent call gives the child it makes (its `computer` argument, share when left out:
  * a definition here never declares a computer of its own): undefined for fresh (the parent's connection settings),
  * "none", or `{ seed }`, a fork snapshot of the parent's computer taken
  * now and shared by every child of this call (one model response or script). A fork is for a new sub-agent only.
  */
-export async function childComputer(ctx: DelegationContext, session: Session, run: RequestRecord, call: ToolCall, made: boolean): Promise<"none" | { seed: string } | undefined> {
+export async function childComputer(ctx: DelegationContext, session: Session, run: RequestRecord, call: ToolCall, made: boolean): Promise<"none" | "share" | { seed: string } | undefined> {
   const choice = computerChoice(call.args.computer);
-  if (choice === "none") return "none";
+  if (choice === "none" || choice === "share") return choice;
   if (choice === "fresh") return undefined;
   if (!made) throw new HttpError(400, 'computer: "fork" makes a new sub-agent with a copy of your computer: give instructions or a definition target, not an existing agent');
   const computers = ctx.options.computers;
@@ -215,7 +215,7 @@ export async function childComputer(ctx: DelegationContext, session: Session, ru
   return { seed: (await computers.forkSnapshot(session.header.tenant, session.header.id, forkBatch(run.id, call.messageIndex, call.toolCallId!))).id };
 }
 
-export async function makeChild(ctx: DelegationContext, session: Session, run: RequestRecord, target: AgentTarget | undefined, key: string, toolCallId: string, place: { depth: number; maxDepth: number; chain: string[] }, computer?: "none" | { seed: string }) {
+export async function makeChild(ctx: DelegationContext, session: Session, run: RequestRecord, target: AgentTarget | undefined, key: string, toolCallId: string, place: { depth: number; maxDepth: number; chain: string[] }, computer?: "none" | "share" | { seed: string }) {
   const { header } = session, tenant = header.tenant;
   const web = (header.sources?.builtins ?? []).filter(builtin => builtin === "web_search" || builtin === "web_fetch");
   // An inline child has its parent's model: as it is (its endpoint too), or by name on the tenant's own providers, which take only names.

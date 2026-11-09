@@ -7,7 +7,7 @@ export function replacementConfiguration(current: AgentConfiguration, input: Rec
   if (input.definition !== undefined) return params;
   const defaults = {
     codeMode: true, fileTools: true, thinkingLevel: 'off', systemPromptAppend: '',
-    maxOutputTokens: null, temperature: null, dataCollection: null, runLimits: null, modelHeaders: null,
+    maxOutputTokens: null, temperature: null, dataCollection: null, runLimits: null, computerLimit: null, modelHeaders: null,
   };
   for (const [field, value] of Object.entries(defaults))
     if (input[field] === undefined && current[field as keyof AgentConfiguration] !== undefined) params[field] = value;

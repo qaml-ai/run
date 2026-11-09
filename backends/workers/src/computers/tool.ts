@@ -60,7 +60,7 @@ export const computerParameters = union([
  * `setup` gives each operation the definition's computer settings and the agent's identity (for egress credentials and
  * metering). `settings` words the description.
  */
-export function computerTool(bindings: ComputerBindings, agentId: string, setup?: () => Promise<OperateSetup | undefined>, settings?: ComputerSettings) {
+export function computerTool(bindings: ComputerBindings, agentId: string, setup?: () => Promise<OperateSetup | undefined>, settings?: ComputerSettings, owner?: () => Promise<{ id: string; shared: boolean }>) {
   return defineTool({
     name: "computer",
     parameters: computerParameters,
@@ -73,7 +73,9 @@ export function computerTool(bindings: ComputerBindings, agentId: string, setup?
       if (!namespace)
         throw new Error(`Optional ${provider} computer is not configured`);
       if ("path" in request) request.path = computerPath(request.path);
-      const result = await namespace.getByName(agentId).operate(request as never, await setup?.());
+      const target = await owner?.();
+      if (target?.shared && ["sleep", "restore"].includes(request.op)) throw new Error("This is the parent's machine. A sharing child cannot stop or replace it.");
+      const result = await namespace.getByName(target?.id ?? agentId).operate(request as never, await setup?.());
       return { output: [{ type: "text", text: JSON.stringify(result) }] };
     },
   });
