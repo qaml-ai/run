@@ -5,7 +5,7 @@ import { once } from 'node:events';
 import { startFixture } from './fixture.ts';
 
 test('Worker computer API keeps credentials private, scopes tenants, and persists fake Lambda commands', async t => {
-  let starts = 0, execs = 0;
+  let starts = 0, execs = 0, terminated = false;
   const server = createServer(async (request, response) => {
     let raw = ''; for await (const chunk of request) raw += chunk;
     const value = raw ? JSON.parse(raw) : undefined;
@@ -16,7 +16,10 @@ test('Worker computer API keeps credentials private, scopes tenants, and persist
     else if (pathname.endsWith('/auth-token')) response.end(JSON.stringify({ authToken: { authorization: 'fixture-proxy' } }));
     else if (pathname === '/health') response.end('{"ok":true}');
     else if (pathname === '/exec') { execs++; assert.equal(value.command, 'echo done'); response.end(JSON.stringify({ exitCode: 0, stdout: 'done', stderr: '', truncated: false })); }
-    else if (pathname.endsWith('/vm-fixture')) response.end('{"state":"TERMINATED"}');
+    else if (pathname.endsWith('/vm-fixture')) {
+      if (request.method === 'DELETE') terminated = true;
+      response.end(JSON.stringify({ state: terminated ? 'TERMINATED' : 'RUNNING' }));
+    }
     else { response.statusCode = 404; response.end('{}'); }
   });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
