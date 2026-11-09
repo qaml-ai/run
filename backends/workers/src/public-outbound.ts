@@ -1,9 +1,10 @@
+import { networkAllows, type Networking } from "../../../src/core/vault.ts";
 import { Outbound as AddressGuard } from './security-outbound.ts';
 import type { FetchOptions, Outbound } from './web-policy-host.ts';
 import { HttpError } from './errors.ts';
 
 type Transport = (url: string | URL, options?: RequestInit) => Promise<Response>;
-type PublicOutboundOptions = { testMode?: boolean; allowHttp?: boolean; allow?: string[]; block?: string[]; transport?: Transport; resolve?: (hostname: string) => Promise<string[]> };
+type PublicOutboundOptions = { networking?: Networking; mcpHosts?: string[]; testMode?: boolean; allowHttp?: boolean; allow?: string[]; block?: string[]; transport?: Transport; resolve?: (hostname: string) => Promise<string[]> };
 
 /** DNS is checked before every hop. Workers fetch remains the connection transport;
  * unlike the Node guard, this API cannot pin a checked DNS answer to the connection. */
@@ -23,6 +24,7 @@ export class PublicOutbound implements Outbound {
   private transport(url: string | URL, options: RequestInit = {}) { return (this.options.transport ?? fetch)(url, options); }
   async reachable(value: string | URL): Promise<URL> {
     const url = this.addressPolicy.check(value);
+    if (this.options.networking && !networkAllows(this.options.networking, url, this.options.mcpHosts)) throw new HttpError(403, "Network destination is not allowed");
     // Workers DNS does not read /etc/hosts. Check localhost's loopback meaning
     // through the same address policy before handing it to the transport.
     if (/^(?:.*\.)?localhost\.?$/i.test(url.hostname)) {

@@ -106,7 +106,8 @@ test("node-loss resumes preserve growing backoff; the loss after the limit fails
   let finish = false;
   const model = await fakeModel(t, () => finish ? { role: "assistant", content: "new turn finished" } : undefined);
   const sweepMs = 500;
-  const env = { ...model.env, AGENT_ORPHAN_SWEEP_MS: String(sweepMs), AGENT_LEASE_TTL_MS: "6000", AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_USAGE_WEBHOOK_RETRY_MS: "100", AGENT_SECRETS_KEY: randomBytes(32).toString("hex") };
+  // Only intentional node deaths should consume resumes, even when a loaded runner pauses heartbeat renewal.
+  const env = { ...model.env, AGENT_ORPHAN_SWEEP_MS: String(sweepMs), AGENT_LEASE_TTL_MS: "18000", AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_USAGE_WEBHOOK_RETRY_MS: "100", AGENT_SECRETS_KEY: randomBytes(32).toString("hex") };
   let node = await c.start("a", env);
   const registered = await fetch(`${node.url}/v1/webhooks`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ url: hookUrl, events: ["run.failed"] }) });
   assert.equal(registered.status, 201);

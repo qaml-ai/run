@@ -31,11 +31,14 @@ model-written code in a sandbox, and wakes agents when there is work.
    - [Agents for many users](guides/multi-user.md): per-user agents, identity, spend
    - [Webhooks](guides/webhooks.md): run and input events, signatures, delivery
    - [Models and keys](guides/models-and-keys.md): the catalog, your own keys and endpoints, key scopes, spend limits
+   - [Vault](guides/vault.md): write-only secrets and network access
    - [Definitions](guides/definitions.md): reusable configurations and rolling out changes
    - [Schedules](guides/schedules.md): cron and calendar timing, fresh runs, per-run budgets and email reports
    - [Channels](guides/channels.md): Slack, Telegram, GitHub, email and any service that sends webhooks
    - [Agents as MCP servers](guides/mcp-server.md): connect Claude or Cursor to an agent
    - [Coming from the OpenAI Agents SDK or LangGraph](guides/migrating.md): each concept mapped, and what camelRun does not have
+   - [Dreaming](guides/dreaming.md): nightly consolidation into a memory volume
+   - [Session transcripts](guides/session-transcripts.md): time-filtered pages from an agent and its descendants
    - [Exporting your data](guides/export.md): the account export, and moving to a self-hosted runtime
 4. **[Production checklist](production.md)**
 5. **Reference**

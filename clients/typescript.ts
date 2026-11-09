@@ -412,6 +412,7 @@ export interface InputAnswer { action: "accept" | "decline" | "cancel"; content?
 export type { ThinkingLevel };
 export interface CreateAgentOptions extends AgentOptions {
   definitionRevision?: number;
+  networking?: Networking;
   /** Tenant-owned JSON, at most 16 KB. Omitted on upsert preserves it. */
   metadata?: Record<string, unknown>;
   /** Account workspace for spend attribution; null leaves it unassigned. */
@@ -520,7 +521,10 @@ export interface DelegateSettings {
  * (MCP servers) a short-lived credential the runtime fetches from `url`, an endpoint of yours: it is asked with an
  * identity token (aud `audience`, else `url`) and answers `{ token, expiresAt | expiresIn }`. See docs/guides/tools.md.
  */
-export type SourceAuth = { type: "bearer"; token: string } | { type: "runtime" } | { type: "exchange"; url: string; audience?: string };
+export type VaultAuth = { type: "vault"; name: string; workspace?: string; inBody?: boolean };
+export type Networking = { type: "unrestricted" | "limited"; allowedHosts?: string[]; allowPackageManagers?: boolean; allowMcpServers?: boolean };
+export type SecretInput = { value?: string; allowedHosts?: string[]; locations?: ("header" | "query" | "body")[] };
+export type SourceAuth = VaultAuth | { type: "bearer"; token: string } | { type: "runtime" } | { type: "exchange"; url: string; audience?: string };
 /**
  * Options every tool source takes. Deprecated `exposure`: direct allows both and always declares the tools to the
  * model; codemode allows code only; both allows either, subject to the direct-tool budget.
@@ -533,7 +537,7 @@ export type SourceAuth = { type: "bearer"; token: string } | { type: "runtime" }
  * Not listed when saved: one that cannot be listed shows in a run's `sourceErrors`.
  */
 export interface InlineMcpServer {
-  name: string; url: string; auth?: { type: "runtime" }; audience?: string; allowTools?: string[]; denyTools?: string[]; exposure?: "direct" | "codemode" | "both"; timeoutMs?: number; fileArguments?: "on" | "off";
+  name: string; url: string; auth?: { type: "runtime" } | VaultAuth; audience?: string; allowTools?: string[]; denyTools?: string[]; exposure?: "direct" | "codemode" | "both"; timeoutMs?: number; fileArguments?: "on" | "off";
   /** Which tools the user approves before each call. */
   approval?: { default?: "never" | "always" | "destructive" | "judged"; tools?: Record<string, "never" | "always" | "judged"> };
 }
@@ -545,6 +549,8 @@ export interface InlineMcpServer {
 interface SourceOptions { name: string; headers?: Record<string, string>; auth?: SourceAuth; audience?: string; allowTools?: string[]; denyTools?: string[]; exposure?: "direct" | "codemode" | "both"; timeoutMs?: number; fileArguments?: "on" | "off" }
 export interface DefinitionInput {
   humanInput?: HumanInputSettings;
+  networking?: Networking;
+  computer?: { egress?: { host: string; auth?: SourceAuth; scheme?: "bearer" | "basic" }[]; secrets?: VaultAuth[]; idleSeconds?: number; idle?: "sleep" | "stop"; instance?: string };
   name: string;
   /** What its agents are for: shown to models as the description of each agent's MCP tool (/v1/agents/:id/mcp). */
   description?: string;
@@ -807,6 +813,27 @@ export interface AgentFile { path: string; version: number; size: number; update
  */
 export interface CalendarSchedule { time: string; timeZone: string; daysOfWeek?: number[] }
 export interface ScheduleEmail { to: string; subject: string; format?: "text" | "markdown" | "html" }
+export interface DreamingConfig {
+  enabled: boolean;
+  volumeId: string;
+  schedule: { time: string; timeZone: string };
+  analyzerModel?: string;
+  organizerModel?: string;
+  budgetUsd: number;
+  instructions: string;
+  endUser?: string;
+  acrossUsers?: boolean;
+}
+export interface DreamingStatus {
+  config: DreamingConfig;
+  since: number;
+  dueAt: number;
+  running: boolean;
+  checkpoint: {from: number; to: number; cursor?: string; offset?: number; fragment?: number} | null;
+  failedNights: number;
+  lastResult: { status: string; from: number; to: number; summary?: string; error?: string } | null;
+  results: NonNullable<DreamingStatus["lastResult"]>[];
+}
 export interface Schedule { mounts?: MountInput[]; cron?: {expression:string; timeZone:string}; sessionMode?: "continue" | "fresh"; spendLimit?: {usd:number}; calendar?: CalendarSchedule; email?: ScheduleEmail; id: string; agent: string; text?: string; code?: string; /** @deprecated Never set: every wake-up sees the agent's history. */ history?: "none"; dueAt: number; everySeconds?: number; createdAt: number; failures?: number; lastError?: string; lastErrorAt?: number }
 /**
  * A steered message as the runtime took it (`steerMessage`, `agent.steer`): `accepted`, the running turn reads it after
@@ -1111,7 +1138,7 @@ const AGENT_KEY = /^[A-Za-z0-9_-]{1,80}$/;
 const REQUEST_ID = AGENT_KEY;
 /** A create request's fields, from the options given. */
 function provisioning(options: CreateAgentOptions) {
-  const fields = ["metadata", "workspaceId", "subject", "context", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "definition", "definitionRevision", "humanInput", "mounts", "remount", "model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "queue", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "decide", "delegate", "mcpServers", "prompt"] as const;
+  const fields = ["networking", "metadata", "workspaceId", "subject", "context", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "definition", "definitionRevision", "humanInput", "mounts", "remount", "model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "queue", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "decide", "delegate", "mcpServers", "prompt"] as const;
   return withMultiAgent(Object.fromEntries(fields.filter(field => options[field] !== undefined).map(field => [field, options[field]])));
 }
 /** `delegate` settings bring their builtin: given the settings without delegate or agents, delegate is added. */
@@ -1797,6 +1824,11 @@ export class AgentRuntime {
    * Definitions: reusable agent configurations with their tool sources (MCP servers, OpenAPI
    * specs, built-ins). Make agents from one with `createAgent({ definition: id })`.
    */
+  listSecrets(workspace?: string): Promise<string[]> { return this.transport.json(this.vaultPath(workspace), this.operator(), "GET"); }
+  createSecret(name: string, input: SecretInput, workspace?: string): Promise<{name: string}> { return this.transport.json(`${this.vaultPath(workspace)}/${encodeURIComponent(name)}`, this.operator(), "POST", input, false); }
+  updateSecret(name: string, input: SecretInput, workspace?: string): Promise<{name: string}> { return this.transport.json(`${this.vaultPath(workspace)}/${encodeURIComponent(name)}`, this.operator(), "PATCH", input, false); }
+  deleteSecret(name: string, workspace?: string): Promise<{deleted: boolean}> { return this.transport.json(`${this.vaultPath(workspace)}/${encodeURIComponent(name)}`, this.operator(), "DELETE", undefined, false); }
+  private vaultPath(workspace?: string) { return workspace ? `/v1/workspaces/${encodeURIComponent(workspace)}/secrets` : "/v1/secrets"; }
   createDefinition(input: DefinitionInput): Promise<Definition> { return this.transport.json("/v1/definitions", this.operator(), "POST", withMultiAgent(input), false); }
   /**
    * The definition for `key`, set to `input` whole: made if there is none, else a new revision if `input` changes it. The same key is the same definition.
@@ -1841,6 +1873,14 @@ export class AgentRuntime {
   mounts(agentId: string): Promise<Mount[]> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/mounts`, this.operator()); }
   /** Replace an agent's mounts: a removed one at once, the rest from its next turn, which is told of them. */
   setMounts(agentId: string, mounts: MountInput[]): Promise<Mount[]> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/mounts`, this.operator(), "PUT", { mounts }, false); }
+  /** A page of this conversation tree in [from,to), in epoch milliseconds. Follow next, including empty pages. */
+  sessions(agentId: string, options: { from: number; to: number; cursor?: string; limit?: number; children?: boolean; endUser?: string }): Promise<{ agentId: string | null; entries: { index: number; message: unknown }[]; next: string | null }> {
+    const query = new URLSearchParams(Object.entries(options).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)]));
+    return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/sessions?${query}`, this.operator());
+  }
+  dreaming(agentId: string): Promise<DreamingStatus | null> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/dreaming`, this.operator()); }
+  configureDreaming(agentId: string, config: DreamingConfig): Promise<DreamingStatus> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/dreaming`, this.operator(), "PUT", config, false); }
+  dreamNow(agentId: string): Promise<{queued: boolean}> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/dreaming/run`, this.operator(), "POST", {}, false); }
   /**
    * A token a browser reads one agent with (`@camelai/run/watch`): mint one per user, after your
    * own access checks. It reads only that agent's events, state, history and inputs (or `scopes`), for

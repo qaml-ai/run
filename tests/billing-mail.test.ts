@@ -222,3 +222,11 @@ test("unsubscribe is tenant-scoped, fences queued mail and old confirmation, and
   assert.equal(await alerts.confirm(renewed.token!, later), true);
   assert.equal((await alerts.get("alice")).recipients[0].status, "verified");
 });
+
+test('dreaming failure uses the operational-problem email with an escaped reason',()=>{
+  const mail=billingEmail({kind:'problems',tenant:'tenant',email:'a@example.test',origin:'https://example.test',payment:{notice:'dreaming',agent:'agent',reason:'provider failed <script>',failedNights:3}});
+  assert.ok(mail.subject.includes('dreaming'));
+  assert.ok(mail.text.includes('provider failed <script>'));
+  assert.ok(mail.html.includes('provider failed &lt;script&gt;'));
+  assert.ok(!mail.subject.includes('top-up'));
+});

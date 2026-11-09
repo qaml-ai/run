@@ -39,7 +39,7 @@ export function selectFileTools<T extends FileToolDefinition>(
   config: { codeMode?: boolean; fileTools?: boolean },
 ): { tools: T[]; modelTools: T[] } {
   // These internal tools and the decide setting do not make a bare agent a tool-using agent.
-  const internal = new Set(['host_execute', 'final_output', 'decide']);
+  const internal = new Set(['host_execute', 'final_output', 'decide', 'report_progress', 'send_message']);
   const bare = config.codeMode === false && config.fileTools === false &&
     !tools.some(tool => !fileNames.has(tool.name) && !internal.has(tool.name));
   const files = bare ? [] : fileToolsFor(tools.filter(tool => fileNames.has(tool.name)), config.fileTools, config.codeMode);

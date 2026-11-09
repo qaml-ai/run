@@ -24,6 +24,7 @@ export function isShell(html: string, text: string) {
 
 export interface WebRenderOptions {
   outbound: Outbound;
+  targetOutbound?: Outbound;
   /** Firecrawl's scrape endpoint (AGENT_FIRECRAWL_SCRAPE_URL overrides it, for tests). */
   endpoint?: string;
   /** The tenant's key for Firecrawl, and whether it is the platform's rather than the tenant's own; it throws when that key may not be used now (spent credit). */
@@ -42,9 +43,9 @@ export class WebRender {
    * the outbound guard refuses, or Firecrawl failing. The URL is checked with the guard first (scheme,
    * and every address its host resolves to), so Firecrawl is never asked for a page the runtime could not fetch.
    */
-  async render(context: { tenant: string; agent: string }, url: string, signal: AbortSignal): Promise<{ title?: string; markdown: string } | undefined> {
+  async render(context: { tenant: string; agent: string; requestId?: string }, url: string, signal: AbortSignal): Promise<{ title?: string; markdown: string } | undefined> {
     const { outbound } = this.options;
-    try { await outbound.reachable(url); } catch { return undefined; }
+    try { await (this.options.targetOutbound ?? outbound).reachable(url); } catch { return undefined; }
     // A key refused (spent credit) leaves the page unrendered, as having none does.
     const key = await this.options.key(context.tenant, "firecrawl").catch(() => undefined);
     if (!key) return undefined;
@@ -62,7 +63,7 @@ export class WebRender {
       const body = await response.json() as { data?: { markdown?: unknown; metadata?: { title?: unknown } } };
       const markdown = typeof body?.data?.markdown === "string" ? body.data.markdown.trim() : "";
       if (!markdown) return undefined;
-      this.options.onRender?.(context.tenant, context.agent, { provider: "firecrawl", model: "web_fetch", usage: { cost: { total: this.options.price / MICROS } }, platform: key.platform, renders: 1 });
+      this.options.onRender?.(context.tenant, context.agent, { ...(context.requestId ? { requestId: context.requestId } : {}), provider: "firecrawl", model: "web_fetch", usage: { cost: { total: this.options.price / MICROS } }, platform: key.platform, renders: 1 });
       const title = body.data?.metadata?.title;
       return { ...(typeof title === "string" && title ? { title } : {}), markdown };
     } catch (error) {

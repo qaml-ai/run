@@ -473,7 +473,11 @@ const githubAppAuthFields = {
 // Loose: the runtime checks the rest itself (core/github-apps.ts), with the same messages on every backend.
 const GitHubAppAuth = z.looseObject({ type: z.literal("github-app"), ...githubAppAuthFields, app: z.string() })
   .openapi("GitHubAppAuth", { description: "An installation token the runtime mints itself from one of the tenant's GitHub Apps, scoped to the repositories and permissions given, sent as Authorization: Bearer and kept in memory until five minutes before it expires. Nothing is stored; see the GitHub Apps guide" });
+const VaultAuth = z.object({ type: z.literal("vault"), name: z.string(), workspace: z.string().optional(), inBody: z.boolean().optional() }).openapi("VaultAuth");
+const Networking = z.object({ type: z.enum(["unrestricted", "limited"]), allowedHosts: z.array(z.string()).optional(), allowPackageManagers: z.boolean().optional(), allowMcpServers: z.boolean().optional() }).openapi("Networking");
+const Computer = z.object({ secrets: z.array(VaultAuth).optional(), egress: z.array(z.object({ host: z.string(), auth: z.union([VaultAuth, GitHubAppAuth, z.object({ type: z.literal("exchange"), url: z.string(), audience: z.string().optional() })]).optional(), scheme: z.enum(["bearer", "basic"]).optional() })).optional(), idleSeconds: z.number().optional(), idle: z.enum(["stop", "sleep"]).optional(), instance: z.string().optional() });
 const SourceAuthInput = z.union([
+  VaultAuth,
   z.object({ type: z.literal("bearer"), token: z.string() }).openapi({ description: "A bearer token; stored encrypted and never returned" }),
   z.object({ type: z.literal("runtime") }).openapi({ description: "Each request carries a JWT the runtime signs (EdDSA, two minutes, audience the server's URL) naming the tenant, agent, subject, context and actor; verify it against /.well-known/jwks.json" }),
   z.strictObject({
@@ -484,7 +488,8 @@ const SourceAuthInput = z.union([
   GitHubAppAuth,
 ], { error: "auth is { type: \"bearer\", token }, { type: \"runtime\" }, { type: \"github-app\", app, ... } or (an MCP server's) { type: \"exchange\", url, audience? }" }).openapi("SourceAuthInput");
 const SourceAuth = z.object({
-  type: z.enum(["bearer", "runtime", "exchange", "github-app"]),
+  type: z.enum(["bearer", "runtime", "exchange", "github-app", "vault"]),
+  name: z.string().optional(), workspace: z.string().optional(),
   url: z.string().optional().openapi({ description: "With type exchange: the endpoint the runtime fetches the server's credential from" }),
   audience: z.string().optional().openapi({ description: "With type exchange: the aud of the token the endpoint is asked with, when not its url" }),
   ...githubAppAuthFields,
@@ -519,8 +524,8 @@ const McpServer = z.object({
 /** An agent's or run's own MCP server: a definition's fields, but no credentials (see the tools guide). */
 const InlineMcpServerInput = z.looseObject({
   ...mcpServerFields,
-  auth: z.looseObject({ type: z.literal("runtime", { error: "An agent's or run's own MCP servers carry no credentials: give auth { type: \"runtime\" } or none, and no headers. A server that needs a token or headers goes in a definition" }) }).optional()
-    .openapi({ description: "Each request carries a JWT the runtime signs, naming the tenant, agent, subject, context and actor (no definition); verify it against /.well-known/jwks.json. The only auth an agent's own server takes" }),
+  auth: z.union([VaultAuth, z.looseObject({ type: z.literal("runtime") })], { error: "An agent's or run's own MCP servers carry no credentials: give auth { type: \"runtime\" } or none, and no headers. A server that needs a token or headers goes in a definition" }).optional()
+    .openapi({ description: "Runtime identity sends a signed JWT; verify it against /.well-known/jwks.json. Vault auth resolves a stored secret for the server's allowed host. No credential values may be supplied here." }),
 }).openapi("InlineMcpServerInput", { description: "An MCP server of the agent's (or run's) own, as a definition's is, but with no credentials: no headers and no bearer token (a 400 says to use a definition, which seals them once). Not listed when saved: a server that cannot be listed shows in a run's sourceErrors" });
 
 const workspaceId = z.string().nullable().optional().openapi({ description: "Workspace for spend attribution. New agents inherit their definition workspace when omitted. null leaves them unassigned. Later moves keep earlier usage in its original workspace." });
@@ -536,6 +541,7 @@ const ApplicationMetadata = z.record(z.string(), z.unknown()).openapi({ descript
 
 export const AgentInput = z.object({
   humanInput: z.strictObject({ unattended: z.literal("decline").optional(), expiresInSeconds: z.number().int().min(60).max(2592000).optional(), approvers: z.array(z.string()).max(100).optional() }).optional(),
+  networking: Networking.optional(),
   metadata: ApplicationMetadata.optional(),
   workspaceId,
   mcp: z.object({ tools: z.array(z.unknown()) }).optional().openapi({ description: "The application's attached MCP server: its tools/list, whose tools the agent calls back through the application's connection. The SDKs send it" }),
@@ -1106,6 +1112,8 @@ const OpenApi = z.object({
   auth: SourceAuth.optional(),
 }).openapi("OpenApi");
 const definitionFields = {
+  networking: Networking,
+  computer: Computer,
   description: z.string().trim().min(1).max(1000).openapi({ description: "What its agents are for, in a sentence or two: shown to models as the description of each agent's MCP tool (/v1/agents/{id}/mcp)" }),
   model: z.string().openapi({ description: "A model id from GET /v1/models; the runtime default when omitted" }),
   systemPrompt: z.string().trim().min(1).max(32_000),
@@ -1167,6 +1175,7 @@ export const DefinitionUpdated = Definition.extend({
 export const DefinitionAgent = z.object({ id: z.string(), revision: z.number() }).openapi("DefinitionAgent");
 
 export const ConfigureInput = z.object({
+  networking: Networking.optional(),
   metadata: ApplicationMetadata.optional(),
   requestId: z.string().min(1).optional(),
   model: z.string().optional().openapi({ description: "Model id from GET /v1/models" }),

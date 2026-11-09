@@ -1,3 +1,5 @@
+import { vaultRoutes } from "./vault.ts";
+import { workerDreaming } from "./dreaming.ts";
 import { handleHook, hookPath } from "../../../src/core/trigger-ingress.ts";
 import { workerTriggers, triggerRoutes } from "./triggers.ts";
 import { apply } from './apply.ts';
@@ -380,6 +382,8 @@ const worker = {
         if (definition) return definition;
         const channel = await channelRoutes(request, env, auth.tenantId, ctx);
         if (channel) return channel;
+        const vault = await vaultRoutes(request, env, auth);
+        if (vault) return vault;
         const githubApp = await githubAppRoutes(request, env, auth);
         if (githubApp) return githubApp;
         const provider = await providerRoutes(request, env, auth);
@@ -441,7 +445,7 @@ const worker = {
       }
       if (!entry || entry.config.type === "run") throw new ApiError(404, "Unknown agent", "NOT_FOUND");
       const tail = match[3] || "/";
-      if (tail === "/configuration-target" || tail === "/upsert") throw new ApiError(404, "Not found", "NOT_FOUND");
+      if (tail === "/configuration-target" || tail === "/upsert" || tail === "/conversation-children") throw new ApiError(404, "Not found", "NOT_FOUND");
       // Internal computer operations are reachable only through the service
       // binding. Public cleanup must use the account-scoped confirmation route.
       if (tail === "/__computer" && env.TEST_MODE !== "1")
@@ -579,7 +583,7 @@ const worker = {
         if (!auth) scopedConfiguration(params);
         rejectWorkflow(params);
         if (auth) {
-          const allowed = new Set(["metadata", "model", "systemPrompt", "systemPromptAppend", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "queue", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "builtins", "decide", "delegate", "mcpServers"]);
+          const allowed = new Set(["metadata", "model", "systemPrompt", "systemPromptAppend", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "queue", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "builtins", "decide", "delegate", "mcpServers", "networking"]);
           const unknown = Object.keys(params).find(field => !allowed.has(field));
           if (unknown) throw new BadRequest(`Unsupported field: ${unknown}`);
         }
@@ -619,8 +623,10 @@ const worker = {
       )
         throw new ApiError(404, "Not found");
       if (tail === "/_input-mirror") throw new ApiError(404, "Not found");
+      if (["/sessions", "/dreaming", "/dreaming/run"].includes(tail) && (!auth || match[1] !== "v1/agents"))
+        throw new ApiError(403, "A tenant key is required", "FORBIDDEN");
       const lifecycle = !browser
-        ? await agentLifecycleRoutes(request, env, entry, tail, auth?.kind !== "oauth")
+        ? await agentLifecycleRoutes(request, env, entry, tail, auth?.kind !== "oauth", work => ctx.waitUntil(work))
         : undefined;
       if (lifecycle) return lifecycle;
       if (request.method === "POST" && ["/prompt", "/requests"].includes(tail)) {
@@ -706,7 +712,7 @@ const worker = {
     catch(error) { failure(env,"trigger_scan_failed",error); }
     try {
       await withSql(env,sql=>pruneScheduleRuns(sql)).catch(error=>failure(env,"schedule_retention_failed",error));
-      if (_controller.cron === "* * * * *") { await sweepInputMirrors(env); return; }
+      if (_controller.cron === "* * * * *") { await sweepInputMirrors(env); await workerDreaming(env).scan(); return; }
       await maintenance(env);
       await moneyMaintenance(env);
       await publishScheduleEmails(env);

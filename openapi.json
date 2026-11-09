@@ -3235,6 +3235,7 @@
             "items": {
               "type": "string",
               "enum": [
+                "dreaming.failed",
                 "run.started",
                 "run.completed",
                 "run.failed",
@@ -3305,6 +3306,7 @@
             "items": {
               "type": "string",
               "enum": [
+                "dreaming.failed",
                 "run.started",
                 "run.completed",
                 "run.failed",
@@ -3364,6 +3366,7 @@
             "items": {
               "type": "string",
               "enum": [
+                "dreaming.failed",
                 "run.started",
                 "run.completed",
                 "run.failed",
@@ -3959,6 +3962,9 @@
             },
             "additionalProperties": false
           },
+          "networking": {
+            "$ref": "#/components/schemas/Networking"
+          },
           "metadata": {
             "type": "object",
             "additionalProperties": {},
@@ -4189,6 +4195,33 @@
           }
         },
         "additionalProperties": false
+      },
+      "Networking": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "unrestricted",
+              "limited"
+            ]
+          },
+          "allowedHosts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "allowPackageManagers": {
+            "type": "boolean"
+          },
+          "allowMcpServers": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "type"
+        ]
       },
       "MaxOutputTokens": {
         "type": "integer",
@@ -4454,20 +4487,27 @@
             "description": "Whether the model may send the agent's files to its tools ({\"$file\": path}), and the runtime saves files they link to. Default on with auth \"runtime\", off otherwise: another party's server could be sent any file the agent can read"
           },
           "auth": {
-            "type": "object",
-            "properties": {
-              "type": {
-                "type": "string",
-                "enum": [
-                  "runtime"
-                ]
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VaultAuth"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "runtime"
+                    ]
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": {}
               }
-            },
-            "required": [
-              "type"
             ],
-            "additionalProperties": {},
-            "description": "Each request carries a JWT the runtime signs, naming the tenant, agent, subject, context and actor (no definition); verify it against /.well-known/jwks.json. The only auth an agent's own server takes"
+            "description": "Runtime identity sends a signed JWT; verify it against /.well-known/jwks.json. Vault auth resolves a stored secret for the server's allowed host. No credential values may be supplied here."
           }
         },
         "required": [
@@ -4476,6 +4516,30 @@
         ],
         "additionalProperties": {},
         "description": "An MCP server of the agent's (or run's) own, as a definition's is, but with no credentials: no headers and no bearer token (a 400 says to use a definition, which seals them once). Not listed when saved: a server that cannot be listed shows in a run's sourceErrors"
+      },
+      "VaultAuth": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "vault"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "workspace": {
+            "type": "string"
+          },
+          "inBody": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "type",
+          "name"
+        ]
       },
       "SpendLimitInput": {
         "type": "object",
@@ -5281,8 +5345,15 @@
               "bearer",
               "runtime",
               "exchange",
-              "github-app"
+              "github-app",
+              "vault"
             ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "workspace": {
+            "type": "string"
           },
           "url": {
             "type": "string",
@@ -5862,6 +5933,9 @@
       "ConfigureInput": {
         "type": "object",
         "properties": {
+          "networking": {
+            "$ref": "#/components/schemas/Networking"
+          },
           "metadata": {
             "type": "object",
             "additionalProperties": {},
@@ -10283,6 +10357,85 @@
             "type": "number",
             "description": "Increases with every change"
           },
+          "networking": {
+            "$ref": "#/components/schemas/Networking"
+          },
+          "computer": {
+            "type": "object",
+            "properties": {
+              "secrets": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/VaultAuth"
+                }
+              },
+              "egress": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "host": {
+                      "type": "string"
+                    },
+                    "auth": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/components/schemas/VaultAuth"
+                        },
+                        {
+                          "$ref": "#/components/schemas/GitHubAppAuth"
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "enum": [
+                                "exchange"
+                              ]
+                            },
+                            "url": {
+                              "type": "string"
+                            },
+                            "audience": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "type",
+                            "url"
+                          ]
+                        }
+                      ]
+                    },
+                    "scheme": {
+                      "type": "string",
+                      "enum": [
+                        "bearer",
+                        "basic"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "host"
+                  ]
+                }
+              },
+              "idleSeconds": {
+                "type": "number"
+              },
+              "idle": {
+                "type": "string",
+                "enum": [
+                  "stop",
+                  "sleep"
+                ]
+              },
+              "instance": {
+                "type": "string"
+              }
+            }
+          },
           "description": {
             "type": "string",
             "minLength": 1,
@@ -10481,6 +10634,49 @@
           "createdAt",
           "updatedAt"
         ]
+      },
+      "GitHubAppAuth": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "github-app"
+            ]
+          },
+          "app": {
+            "type": "string"
+          },
+          "installation": {
+            "type": "integer",
+            "description": "With type github-app: the installation to mint for, when known; else found from repositories or owner, or the App's only installation"
+          },
+          "owner": {
+            "type": "string",
+            "description": "With type github-app: the user or organization whose installation to use"
+          },
+          "repositories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 500,
+            "description": "With type github-app: owner/name of each repository the token may reach (one owner); every repository of the installation when left out"
+          },
+          "permissions": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "With type github-app: the token's permissions, each \"read\", \"write\" or \"admin\", e.g. {\"contents\": \"write\", \"pull_requests\": \"write\"}; the installation's own when left out"
+          }
+        },
+        "required": [
+          "type",
+          "app"
+        ],
+        "additionalProperties": {},
+        "description": "An installation token the runtime mints itself from one of the tenant's GitHub Apps, scoped to the repositories and permissions given, sent as Authorization: Bearer and kept in memory until five minutes before it expires. Nothing is stored; see the GitHub Apps guide"
       },
       "DefinitionLimits": {
         "type": "object",
@@ -10684,6 +10880,85 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 120
+          },
+          "networking": {
+            "$ref": "#/components/schemas/Networking"
+          },
+          "computer": {
+            "type": "object",
+            "properties": {
+              "secrets": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/VaultAuth"
+                }
+              },
+              "egress": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "host": {
+                      "type": "string"
+                    },
+                    "auth": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/components/schemas/VaultAuth"
+                        },
+                        {
+                          "$ref": "#/components/schemas/GitHubAppAuth"
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "enum": [
+                                "exchange"
+                              ]
+                            },
+                            "url": {
+                              "type": "string"
+                            },
+                            "audience": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "type",
+                            "url"
+                          ]
+                        }
+                      ]
+                    },
+                    "scheme": {
+                      "type": "string",
+                      "enum": [
+                        "bearer",
+                        "basic"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "host"
+                  ]
+                }
+              },
+              "idleSeconds": {
+                "type": "number"
+              },
+              "idle": {
+                "type": "string",
+                "enum": [
+                  "stop",
+                  "sleep"
+                ]
+              },
+              "instance": {
+                "type": "string"
+              }
+            }
           },
           "description": {
             "type": "string",
@@ -10974,6 +11249,9 @@
       "SourceAuthInput": {
         "anyOf": [
           {
+            "$ref": "#/components/schemas/VaultAuth"
+          },
+          {
             "type": "object",
             "properties": {
               "type": {
@@ -11036,49 +11314,6 @@
             "$ref": "#/components/schemas/GitHubAppAuth"
           }
         ]
-      },
-      "GitHubAppAuth": {
-        "type": "object",
-        "properties": {
-          "type": {
-            "type": "string",
-            "enum": [
-              "github-app"
-            ]
-          },
-          "app": {
-            "type": "string"
-          },
-          "installation": {
-            "type": "integer",
-            "description": "With type github-app: the installation to mint for, when known; else found from repositories or owner, or the App's only installation"
-          },
-          "owner": {
-            "type": "string",
-            "description": "With type github-app: the user or organization whose installation to use"
-          },
-          "repositories": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "maxItems": 500,
-            "description": "With type github-app: owner/name of each repository the token may reach (one owner); every repository of the installation when left out"
-          },
-          "permissions": {
-            "type": "object",
-            "additionalProperties": {
-              "type": "string"
-            },
-            "description": "With type github-app: the token's permissions, each \"read\", \"write\" or \"admin\", e.g. {\"contents\": \"write\", \"pull_requests\": \"write\"}; the installation's own when left out"
-          }
-        },
-        "required": [
-          "type",
-          "app"
-        ],
-        "additionalProperties": {},
-        "description": "An installation token the runtime mints itself from one of the tenant's GitHub Apps, scoped to the repositories and permissions given, sent as Authorization: Bearer and kept in memory until five minutes before it expires. Nothing is stored; see the GitHub Apps guide"
       },
       "OpenApiInput": {
         "type": "object",
@@ -11214,6 +11449,98 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 120
+          },
+          "networking": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Networking"
+              },
+              {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              }
+            ]
+          },
+          "computer": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "secrets": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/VaultAuth"
+                }
+              },
+              "egress": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "host": {
+                      "type": "string"
+                    },
+                    "auth": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/components/schemas/VaultAuth"
+                        },
+                        {
+                          "$ref": "#/components/schemas/GitHubAppAuth"
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "enum": [
+                                "exchange"
+                              ]
+                            },
+                            "url": {
+                              "type": "string"
+                            },
+                            "audience": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "type",
+                            "url"
+                          ]
+                        }
+                      ]
+                    },
+                    "scheme": {
+                      "type": "string",
+                      "enum": [
+                        "bearer",
+                        "basic"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "host"
+                  ]
+                }
+              },
+              "idleSeconds": {
+                "type": "number"
+              },
+              "idle": {
+                "type": "string",
+                "enum": [
+                  "stop",
+                  "sleep"
+                ]
+              },
+              "instance": {
+                "type": "string"
+              }
+            }
           },
           "description": {
             "type": [
@@ -17657,6 +17984,627 @@
         }
       }
     },
+    "/v1/agents/{id}/dreaming": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dream configuration and last result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "properties": {
+                    "config": {
+                      "type": "object",
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean"
+                        },
+                        "volumeId": {
+                          "type": "string"
+                        },
+                        "schedule": {
+                          "type": "object",
+                          "properties": {
+                            "time": {
+                              "type": "string"
+                            },
+                            "timeZone": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "time",
+                            "timeZone"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "analyzerModel": {
+                          "type": "string"
+                        },
+                        "organizerModel": {
+                          "type": "string"
+                        },
+                        "endUser": {
+                          "type": "string"
+                        },
+                        "acrossUsers": {
+                          "type": "boolean"
+                        },
+                        "budgetUsd": {
+                          "type": "number",
+                          "exclusiveMinimum": 0
+                        },
+                        "instructions": {
+                          "type": "string",
+                          "maxLength": 16000
+                        }
+                      },
+                      "required": [
+                        "enabled",
+                        "volumeId",
+                        "schedule",
+                        "budgetUsd",
+                        "instructions"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "since": {
+                      "type": "number"
+                    },
+                    "dueAt": {
+                      "type": "number"
+                    },
+                    "running": {
+                      "type": "boolean"
+                    },
+                    "checkpoint": {},
+                    "failedNights": {
+                      "type": "number"
+                    },
+                    "lastResult": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "completed",
+                            "failed",
+                            "budget_reached",
+                            "deferred"
+                          ]
+                        },
+                        "from": {
+                          "type": "number"
+                        },
+                        "to": {
+                          "type": "number"
+                        },
+                        "summary": {
+                          "type": "string"
+                        },
+                        "error": {
+                          "type": "string"
+                        },
+                        "failures": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "from",
+                        "to"
+                      ]
+                    },
+                    "results": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "completed",
+                              "failed",
+                              "budget_reached",
+                              "deferred"
+                            ]
+                          },
+                          "from": {
+                            "type": "number"
+                          },
+                          "to": {
+                            "type": "number"
+                          },
+                          "summary": {
+                            "type": "string"
+                          },
+                          "error": {
+                            "type": "string"
+                          },
+                          "failures": {
+                            "type": "array",
+                            "items": {}
+                          }
+                        },
+                        "required": [
+                          "status",
+                          "from",
+                          "to"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "config",
+                    "since",
+                    "dueAt",
+                    "running",
+                    "failedNights",
+                    "lastResult",
+                    "results"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "volumeId": {
+                    "type": "string"
+                  },
+                  "schedule": {
+                    "type": "object",
+                    "properties": {
+                      "time": {
+                        "type": "string"
+                      },
+                      "timeZone": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "time",
+                      "timeZone"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "analyzerModel": {
+                    "type": "string"
+                  },
+                  "organizerModel": {
+                    "type": "string"
+                  },
+                  "endUser": {
+                    "type": "string"
+                  },
+                  "acrossUsers": {
+                    "type": "boolean"
+                  },
+                  "budgetUsd": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "instructions": {
+                    "type": "string",
+                    "maxLength": 16000
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "volumeId",
+                  "schedule",
+                  "budgetUsd",
+                  "instructions"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Dream configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "config": {
+                      "type": "object",
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean"
+                        },
+                        "volumeId": {
+                          "type": "string"
+                        },
+                        "schedule": {
+                          "type": "object",
+                          "properties": {
+                            "time": {
+                              "type": "string"
+                            },
+                            "timeZone": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "time",
+                            "timeZone"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "analyzerModel": {
+                          "type": "string"
+                        },
+                        "organizerModel": {
+                          "type": "string"
+                        },
+                        "endUser": {
+                          "type": "string"
+                        },
+                        "acrossUsers": {
+                          "type": "boolean"
+                        },
+                        "budgetUsd": {
+                          "type": "number",
+                          "exclusiveMinimum": 0
+                        },
+                        "instructions": {
+                          "type": "string",
+                          "maxLength": 16000
+                        }
+                      },
+                      "required": [
+                        "enabled",
+                        "volumeId",
+                        "schedule",
+                        "budgetUsd",
+                        "instructions"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "since": {
+                      "type": "number"
+                    },
+                    "dueAt": {
+                      "type": "number"
+                    },
+                    "running": {
+                      "type": "boolean"
+                    },
+                    "checkpoint": {},
+                    "failedNights": {
+                      "type": "number"
+                    },
+                    "lastResult": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "completed",
+                            "failed",
+                            "budget_reached",
+                            "deferred"
+                          ]
+                        },
+                        "from": {
+                          "type": "number"
+                        },
+                        "to": {
+                          "type": "number"
+                        },
+                        "summary": {
+                          "type": "string"
+                        },
+                        "error": {
+                          "type": "string"
+                        },
+                        "failures": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "from",
+                        "to"
+                      ]
+                    },
+                    "results": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "completed",
+                              "failed",
+                              "budget_reached",
+                              "deferred"
+                            ]
+                          },
+                          "from": {
+                            "type": "number"
+                          },
+                          "to": {
+                            "type": "number"
+                          },
+                          "summary": {
+                            "type": "string"
+                          },
+                          "error": {
+                            "type": "string"
+                          },
+                          "failures": {
+                            "type": "array",
+                            "items": {}
+                          }
+                        },
+                        "required": [
+                          "status",
+                          "from",
+                          "to"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "config",
+                    "since",
+                    "dueAt",
+                    "running",
+                    "failedNights",
+                    "lastResult",
+                    "results"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/dreaming/run": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Dream queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "queued": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "queued"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/sessions": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "to",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            },
+            "required": false,
+            "name": "children",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "endUser",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A bounded transcript page from this agent and its descendants, filtered to [from,to). Follow next until null; pages may be empty",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "agentId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "entries": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "index": {
+                            "type": "number"
+                          },
+                          "message": {}
+                        },
+                        "required": [
+                          "index"
+                        ]
+                      }
+                    },
+                    "next": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "agentId",
+                    "entries",
+                    "next"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/agents/{id}/history": {
       "get": {
         "security": [
@@ -23169,6 +24117,500 @@
                       "enum": [
                         true
                       ]
+                    }
+                  },
+                  "required": [
+                    "deleted"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/secrets": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Secret names only; values are write-only",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/secrets/{name}": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "name",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  },
+                  "allowedHosts": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "locations": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "header",
+                        "query",
+                        "body"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Secret names only; values are write-only",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "name",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  },
+                  "allowedHosts": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "locations": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "header",
+                        "query",
+                        "body"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Secret names only; values are write-only",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "name",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Secret names only; values are write-only",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "deleted"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workspaces/{workspace}/secrets": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspace",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Secret names only; values are write-only",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workspaces/{workspace}/secrets/{name}": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspace",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "name",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  },
+                  "allowedHosts": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "locations": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "header",
+                        "query",
+                        "body"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Secret names only; values are write-only",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspace",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "name",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  },
+                  "allowedHosts": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "locations": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "header",
+                        "query",
+                        "body"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Secret names only; values are write-only",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspace",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "name",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Secret names only; values are write-only",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean"
                     }
                   },
                   "required": [
