@@ -506,7 +506,7 @@ export interface CreateAgentOptions extends AgentOptions {
  * delegate (sub-agents: needs `delegate` settings), or agents (sub-agents in the background: spawn_agent, wait_agent and
  * list_agents, with the same settings).
  */
-export type Builtin = "file_link" | "file_import" | "web_fetch" | "web_search" | "x_search" | "schedule" | "ask_user" | "request_decision" | "delegate" | "generate_image" | "agents" | "decide";
+export type Builtin = "file_link" | "file_import" | "web_fetch" | "web_search" | "x_search" | "schedule" | "monitor" | "ask_user" | "request_decision" | "delegate" | "generate_image" | "agents" | "decide";
 /**
  * A delegate target: a definition's key or id, as a string or `{ definition }`, or an existing agent's key
  * (`{ agent }`, which keeps its own history across calls). `name` is what the model calls it (default: the key); `description`
@@ -2267,6 +2267,10 @@ export class AgentClient {
     if (!this.tenantKey) throw new AgentError("Trigger management requires a tenant API key", 403);
     return this.transport.json(`/v1/agents/${this.id}${suffix}`, this.tenantKey, method, body, retry);
   }
+  private monitorHttp(suffix: string, method = "GET", body?: unknown, retry = true) {
+    if (!this.tenantKey) throw new AgentError("Monitor management requires a tenant API key", 403);
+    return this.transport.json(`/v1/agents/${this.id}/monitors${suffix}`, this.tenantKey, method, body, retry);
+  }
   private report(error: unknown) { this.options.onError?.(error instanceof Error ? error : new Error(String(error))); }
 
   async connect() {
@@ -2785,6 +2789,14 @@ export class AgentClient {
   schedule(input: { text?: string; code?: string; /** @deprecated Ignored: every wake-up sees the agent's history. */ history?: "full" | "none"; at?: string | Date; inSeconds?: number; everySeconds?: number; mounts?: MountInput[]; cron?: {expression:string; timeZone:string}; sessionMode?: "continue" | "fresh"; spendLimit?: {usd:number}; calendar?: CalendarSchedule; email?: ScheduleEmail }): Promise<Schedule> {
     return this.http("/schedules", "POST", { ...input, ...(input.at instanceof Date ? { at: input.at.toISOString() } : {}) }, false);
   }
+  /** Start a monitor: a check script the runtime runs every `everySeconds` (default 300, at least 60), waking the agent only when it returns `fire: true`. */
+  createMonitor(input: MonitorInput): Promise<Monitor> { return this.monitorHttp("", "POST", input, false); }
+  monitors(): Promise<Monitor[]> { return this.monitorHttp(""); }
+  /** One monitor, by id or name. */
+  monitor(idOrName: string): Promise<Monitor> { return this.monitorHttp(`/${encodeURIComponent(idOrName)}`); }
+  stopMonitor(idOrName: string): Promise<{ stopped: boolean }> { return this.monitorHttp(`/${encodeURIComponent(idOrName)}`, "DELETE", undefined, false); }
+  /** The monitor's latest checks, oldest first. */
+  monitorChecks(idOrName: string): Promise<MonitorCheck[]> { return this.monitorHttp(`/${encodeURIComponent(idOrName)}/checks`); }
   createTrigger(input: TriggerInput): Promise<Trigger & { url: string }> { return this.triggerHttp("/triggers", "POST", input, false); }
   triggers(): Promise<Trigger[]> { return this.triggerHttp("/triggers"); }
   deleteTrigger(id: string) { return this.triggerHttp(`/triggers/${encodeURIComponent(id)}`, "DELETE", undefined, false); }
@@ -2870,6 +2882,14 @@ export { fileBytes, formatProblems, Project, Projects, publishTool, type Problem
 export type { AgentsOptions, AgentConfig, Run, RunFailure, RunInput, RunOptions, RunStream, StreamPart, StatelessRunConfig, InputValue, AnswerOptions, OutputSchema, OutputOf, StandardOutputSchema } from "./agents.ts";
 
 /** An incoming webhook starts work on this agent. The URL is returned only on create or rotation. */
+/** A monitor to start: `code` is a check script that reads `state` and returns `{ fire, value?, state?, nextSeconds? }`. */
+export interface MonitorInput { name: string; code: string; everySeconds?: number; mode?: "once" | "repeat"; expiresInSeconds?: number; budget?: { usd: number } }
+export interface Monitor {
+  id: string; name: string; everySeconds: number; mode: "once" | "repeat"; code: string; status: "active" | "paused" | "stopped"; reason?: string;
+  createdAt: number; expiresAt: number; nextCheckAt: number; checks: number; fires: number; consecutiveErrors: number;
+  lastCheckAt?: number; lastFiredAt?: number; lastError?: string; value?: unknown; budget?: { usd: number };
+}
+export interface MonitorCheck { at: number; fired: boolean; error?: string }
 export interface TriggerInput {
  name:string; prompt:string; mode?:"continue"|"fresh"; budget:{usd:number};
  verify?:{type:"none"|"hmac"|"github"|"stripe"|"slack";secret?:string;header?:string;algorithm?:"sha256"|"sha1";prefix?:string;timestampHeader?:string;toleranceSeconds?:number};
