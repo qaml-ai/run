@@ -49,12 +49,17 @@ export async function emitImpl(this: AgentRuntime,
         if (announcement) await stageWebhook(tx, announcement);
         for (const row of mirrors) await stageInputMirror(tx, row);
         committed = { owner, record };
-        const live = { cursor: next, events: [], turn: await tx.get<LiveTurn>("live-turn"), partial: this.partial };
-        if (value.type === "event" && value.event?.type === "agent_start" && live.turn?.requestId !== value.requestId)
-          live.turn = { requestId: value.requestId, count: 0, bytes: 0, messages: [] };
-        followLiveTurn(live, value, JSON.stringify(value), false);
-        if (live.turn) await tx.put("live-turn", live.turn);
-        else await tx.delete("live-turn");
+        // Only local message boundaries change the snapshot. Child transcript
+        // frames must not repeatedly load/copy the parent's complete turn.
+        if (value.type === "response" || (value.type === "event" &&
+          ["agent_start", "turn_opened", "message_retracted", "message_end"].includes(value.event?.type))) {
+          const live = { cursor: next, events: [], turn: await tx.get<LiveTurn>("live-turn"), partial: this.partial };
+          if (value.type === "event" && value.event?.type === "agent_start" && live.turn?.requestId !== value.requestId)
+            live.turn = { requestId: value.requestId, count: 0, bytes: 0, messages: [] };
+          followLiveTurn(live, value, JSON.stringify(value), false);
+          if (live.turn) await tx.put("live-turn", live.turn);
+          else await tx.delete("live-turn");
+        }
         this.eventLog.append(next, event);
         this.recentEvents.append(next, event);
         return next;

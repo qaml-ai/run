@@ -25,6 +25,7 @@ export class LocalWorker {
   readonly url: string;
   private child?: ChildProcess;
   private output = "";
+  logLimit = 16_000;
   private port: number;
   private inspectorPort = 0;
   private storage: string;
@@ -103,7 +104,7 @@ export class LocalWorker {
     });
     let output = "";
     const save = (data: Buffer) => {
-      output = (output + data.toString()).slice(-16_000);
+      output = (output + data.toString()).slice(-this.logLimit);
       this.output = output;
     };
     child.stdout!.on("data", save);

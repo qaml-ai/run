@@ -35,6 +35,7 @@ test('workerd runs 64 concurrent delegated children without relay streams or per
   t.after(() => { provider.closeAllConnections(); return new Promise<void>(resolve => provider.close(() => resolve())); });
   const fixture = await startFixture({ modelURL: `http://127.0.0.1:${(provider.address() as any).port}/v1`, entrypoint: fileURLToPath(new URL('./delegation-load-entry.ts', import.meta.url)), vars: { TEST_MODE: '1' } });
   t.after(() => fixture.stop());
+  fixture.worker.logLimit = 1_000_000;
   const call = async (path: string, body?: unknown) => {
     const response = await fetch(fixture.url + path, { method: body ? 'POST' : 'GET', headers: { authorization: `Bearer ${fixture.token}`, 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
     const raw = await response.text();
@@ -67,6 +68,11 @@ test('workerd runs 64 concurrent delegated children without relay streams or per
     assert.equal(record.outcome?.result?.reply, 'all-64-complete', JSON.stringify(record));
     const profile = await call(`/__test/delegation/${parent.id}`);
     assert.equal(profile.children.length, CHILDREN);
+    assert.ok(profile.childStateBytes < 128 * 1024, JSON.stringify(profile));
+    const memoryLogs = fixture.worker.logs().split('\n').filter(line => line.startsWith('{"type":"delegation_memory"')).map(line => JSON.parse(line));
+    assert.ok(memoryLogs.some(row => row.childCount === CHILDREN && row.heapEstimateBytes > 0), JSON.stringify(memoryLogs));
+    assert.ok(memoryLogs.every(row => row.childCount > 32 && row.estimateScope === 'parent_delegation_bookkeeping'));
+    console.log('DELEGATION_MEMORY ' + JSON.stringify(memoryLogs.at(-1)));
     assert.ok(profile.children.every((status: string) => status === 'completed'), JSON.stringify(profile));
     assert.equal(profile.eventStreams, 0);
     assert.ok(profile.rpc.total < 1000, JSON.stringify(profile.rpc));

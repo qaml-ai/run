@@ -1,5 +1,5 @@
 import { batchedEnding, childNotice, MULTI_AGENT_LIMITS, withBatch, type BatchedEnding } from './multi-agent-policy.ts';
-import { childUsageCost, type DelegatedChild } from './delegation.ts';
+import { childUsageCost, readChildPayload, type DelegatedChild } from './delegation.ts';
 import type { MessageSource } from './sender.ts';
 
 export type RuntimeNotice = { source: MessageSource; root: string; costUsd: number; metadata: Record<string, unknown> };
@@ -137,7 +137,7 @@ export class DelegationNotifications {
           // ending to tell (the spawn call answered with its error).
           const otherKey = prefix + sibling.key, existing = await tx.get<PendingNotice>(otherKey);
           if (!existing && !sibling.accepted) continue;
-          const other = existing ?? outboxEntry(sibling);
+          const other = existing ?? outboxEntry(await readChildPayload(tx, sibling));
           if ((other.request.params.endUser ?? null) !== (current.request.params.endUser ?? null) || (other.request.params.bucket ?? null) !== (current.request.params.bucket ?? null)) continue;
           if (other.delivered || other.delivery || other.notice.metadata.kind === 'message') continue;
           await tx.put(`delegation:${sibling.key}`, { ...sibling, landedBy: 'notice' });
