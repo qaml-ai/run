@@ -255,17 +255,23 @@ for (const override of [false, true]) contractTest('computers', SOURCE, `tree ca
 
 contractTest('computers', SOURCE, 'a finished background fork worker retains its machine and files for another message', async t => {
   const boat = await fakeBoatServer(); t.after(() => boat.close());
+  let spawned = false, readBack = '';
   const r = await createContractFixture(t, { env: boatEnv(boat.url), respond: body => {
     const results = turnResults(body);
     if (systemText(body).includes('PERSIST_PARENT')) {
+      if (body.messages.some((message: any) => message.role === 'user' && text(message) === 'REUSE_WORKER'))
+        return results.length ? { role: 'assistant', content: 'sent' } : toolCall('send_message', { to: 'worker', text: 'READ_AGAIN' }, 'reuse');
+      if (spawned) return { role: 'assistant', content: 'started' };
       if (!results.length) return toolCall('computer_start', {}, 'start');
       if (results.length === 1) return toolCall('computer_exec', { command: 'echo parent > parent.txt' }, 'write');
-      if (results.length === 2) return toolCall('spawn_agent', { instructions: 'PERSIST_WORKER', task: 'Save your work', computer: 'fork' }, 'spawn');
+      if (results.length === 2) { spawned = true; return toolCall('spawn_agent', { name: 'worker', instructions: 'PERSIST_WORKER', task: 'Save your work', computer: 'fork' }, 'spawn'); }
       return { role: 'assistant', content: 'started' };
     }
-    if (JSON.stringify(body.messages).includes('READ_AGAIN')) return results.length
-      ? { role: 'assistant', content: results[0] }
-      : toolCall('computer_exec', { command: 'cat worker.txt' }, 'read');
+    if (JSON.stringify(body.messages).includes('READ_AGAIN')) {
+      if (!results.length) return toolCall('computer_exec', { command: 'cat worker.txt' }, 'read');
+      readBack = results[0];
+      return { role: 'assistant', content: readBack };
+    }
     if (!results.length) return toolCall('computer_start', {}, 'start');
     if (results.length === 1) return toolCall('computer_exec', { command: 'echo saved-work > worker.txt' }, 'write');
     return { role: 'assistant', content: 'saved' };
@@ -277,6 +283,7 @@ contractTest('computers', SOURCE, 'a finished background fork worker retains its
   assert.ok(child);
   await until(async () => (await r.call(`/v1/agents/${parent}/children`)).json.children.some((entry: any) => entry.status === 'completed'), 'background worker completion');
   assert.equal((await r.call(`/v1/agents/${child}/computer`)).json.session.state, 'active');
-  const again = await r.prompt(child, 'READ_AGAIN');
-  assert.match(again.outcome.result.reply, /saved-work/);
+  await r.prompt(parent, 'REUSE_WORKER');
+  await until(async () => readBack.includes('saved-work'), 'worker reads its saved files after send_message');
+  assert.match(readBack, /saved-work/);
 });
