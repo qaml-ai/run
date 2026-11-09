@@ -1671,6 +1671,13 @@ export class Voice {
 }
 
 /** Trusted-backend SDK. Only createAgent needs the operator key. */
+export type UsageOptions = { days?: number; groupBy?: ("agent" | "definition" | "endUser" | "model" | "day")[]; rollup?: boolean };
+export interface GroupedUsage {
+  since: number; groupBy: string[]; rollup: boolean;
+  totals: Record<string, number>;
+  groups: (Record<string, string | number | null>)[];
+}
+export interface RunLog { run: StatelessRun; durationMs: number | null; events: { index: number; type: "message"; at: number | null; message: unknown }[] }
 export class AgentRuntime {
   readonly options: RuntimeOptions;
   private readonly transport: Transport;
@@ -1851,6 +1858,15 @@ export class AgentRuntime {
   /** Delete a run now, before its retention ends (a running one stops). */
   deleteRun(id: string): Promise<{ deleted: true }> { return this.transport.json(`/v1/runs/${encodeURIComponent(id)}`, this.operator(), "DELETE", undefined, true); }
   /** A run's messages: its input, the model's turns and tool results. */
+  usage(options: UsageOptions = {}): Promise<GroupedUsage> { return this.readUsage("/v1/usage", options); }
+  agentUsage(id: string, options: UsageOptions = {}): Promise<GroupedUsage> { return this.readUsage(`/v1/agents/${encodeURIComponent(id)}/usage`, options); }
+  private readUsage(path: string, options: UsageOptions): Promise<GroupedUsage> {
+    const query = new URLSearchParams({ groupBy: (options.groupBy ?? ["agent"]).join(",") });
+    if (options.days !== undefined) query.set("days", String(options.days));
+    if (options.rollup !== undefined) query.set("rollup", String(options.rollup));
+    return this.transport.json(`${path}?${query}`, this.operator());
+  }
+  runLog(id: string): Promise<RunLog> { return this.transport.json(`/v1/runs/${encodeURIComponent(id)}/log`, this.operator()); }
   runMessages(id: string): Promise<AgentHistory> { return this.transport.json(`/v1/runs/${encodeURIComponent(id)}/messages`, this.operator()); }
   /**
    * A run's event stream, to its end (its `response` frame): reconnecting with Last-Event-ID where the connection drops,

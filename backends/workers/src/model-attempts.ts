@@ -1,4 +1,5 @@
 // Generated from src/model-attempts.ts; infrastructure imports only.
+import { recordUsageDetails } from "../../../shared/usage-details.ts";
 import { applyWorkspaceUsage } from "./workspaces.ts";
 import { createHash } from "node:crypto";
 import { Accounts, applyUsageRows, lockBalances, type Totals } from "./accounts.ts";
@@ -323,6 +324,7 @@ export class ModelAttempts {
       }
       if (!replaced) {
         await applyUsageRows(sql, [{ tenant, day: quote.day, model: quote.model, ...delta }]);
+        await recordUsageDetails(sql, [{ tenant, agent, requestId: row.context?.requestId, endUser: row.context?.identity?.subject ?? row.end_user ?? null, timestamp: Number(row.started_at), day: quote.day, model: quote.model, ...delta }]);
         await applyWorkspaceUsage(sql, [{ tenant, agent, timestamp: Number(row.started_at), day: quote.day, model: quote.model, ...delta }]);
       }
       if (adjustment) {

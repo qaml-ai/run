@@ -1,3 +1,4 @@
+import { runLog } from "../shared/run-log.ts";
 import { rejectWorkflow } from "./builtins.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { createRoute, z, type RouteConfig } from "@hono/zod-openapi";
@@ -167,6 +168,12 @@ export function runRoutes(route: Route, context: () => RunsContext) {
     request: { params: runPath, headers: z.object({ "last-event-id": z.string().optional().openapi({ description: "Resume after this event id. Without one, or one the stream no longer has, it starts with a snapshot of the run so far" }) }) },
     responses: { 200: { description: "Server-sent events as an agent's (`id: <cursor>`, `data: <ClientEvent>`), after a `ready` frame, ending with the run's `response`. A run that ended a while ago answers with its response alone; its messages are at /messages", content: { "text/event-stream": { schema: z.string() } } } },
   }), c => context().clients.runEvents(c, session(c), c.var.principal.tenant));
+  route(createRoute({ method: "get", path: "/v1/runs/{id}/log", request: { params: runPath }, responses: { 200: reply("Durable run log with messages, tool calls, errors, usage and timing", schema.RunLog) } }), async c => {
+    const tenant = c.var.principal.tenant, id = session(c);
+    const { header, record } = await context().clients.runRecord(id, tenant);
+    const history = await context().clients.agentHistory(id, tenant);
+    return json(c, 200, runLog(runView(record, header.run!.retentionMs), history ?? { messages: [] }));
+  });
   route(createRoute({ method: "get", path: "/v1/runs/{id}/messages", request: { params: runPath }, responses: { 200: reply("The run's messages: its input, the model's turns and tool results", schema.History) } }), async c => {
     const tenant = c.var.principal.tenant, id = session(c);
     await context().clients.runRecord(id, tenant);

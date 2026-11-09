@@ -1,3 +1,4 @@
+import { runLog } from "../../../shared/run-log.ts";
 import { Directory, type AuthContext, type ControlEnv, type DirectoryEntry, type DirectoryFailure } from "./control.ts";
 import { agentToken, ApiError, configuration, digest } from "./api-contract.ts";
 import { body, boundedText, object } from "./validation.ts";
@@ -37,7 +38,7 @@ export function runView(record: Record, retentionMs: number) {
 }
 
 export async function statelessRoutes(request: Request, env: ControlEnv, auth: AuthContext): Promise<Response | undefined> {
-  const url = new URL(request.url), match = /^\/v1\/runs(?:\/(run_[a-f0-9]{40})(\/events|\/messages|\/abort)?)?$/.exec(url.pathname);
+  const url = new URL(request.url), match = /^\/v1\/runs(?:\/(run_[a-f0-9]{40})(\/events|\/messages|\/abort|\/log)?)?$/.exec(url.pathname);
   if (!match) return;
   const directory = new Directory(env, auth.tenantId);
   let entry: DirectoryEntry & { run?: RunInfo };
@@ -88,6 +89,10 @@ export async function statelessRoutes(request: Request, env: ControlEnv, auth: A
   if (match[2] === "/messages" && request.method === "GET") return call(env, entry.id, `/history?run=${encodeURIComponent(runId)}&retentionMs=${entry.run.retentionMs}`);
   const record = await payload(await call(env, entry.id, `/requests/${runId}?wait=${Math.min(25,Number(url.searchParams.get("wait") ?? 0))}`)) as Record;
   if (record.endedAt && record.endedAt + entry.run.retentionMs <= Date.now()) throw new ApiError(404, "Run retention expired", "NOT_FOUND");
+  if (match[2] === "/log" && request.method === "GET") {
+    const history = await payload(await call(env, entry.id, `/history?run=${encodeURIComponent(runId)}&retentionMs=${entry.run.retentionMs}`));
+    return json(runLog(runView(record, entry.run.retentionMs), history));
+  }
   if (match[2] === "/events" && request.method === "GET") {
     const headers = new Headers(request.headers);
     headers.set("x-camel-events-path", url.pathname);

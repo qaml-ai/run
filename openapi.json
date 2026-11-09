@@ -6853,6 +6853,148 @@
           "left"
         ]
       },
+      "GroupedUsage": {
+        "type": "object",
+        "properties": {
+          "since": {
+            "type": "number"
+          },
+          "groupBy": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "agent",
+                "definition",
+                "endUser",
+                "model",
+                "day"
+              ]
+            }
+          },
+          "rollup": {
+            "type": "boolean"
+          },
+          "totals": {
+            "type": "object",
+            "properties": {
+              "responses": {
+                "type": "number"
+              },
+              "input": {
+                "type": "number"
+              },
+              "output": {
+                "type": "number"
+              },
+              "cacheRead": {
+                "type": "number"
+              },
+              "cacheWrite": {
+                "type": "number"
+              },
+              "cost": {
+                "type": "number",
+                "description": "Usage cost in USD: model calls use provider-reported cost or a catalog estimate, excluding model credit funding; tool-ranking costs already include their funding"
+              },
+              "platformResponses": {
+                "type": "number",
+                "description": "Responses that ran on a key that is not the tenant's own"
+              },
+              "platformCost": {
+                "type": "number",
+                "description": "Cost in USD on platform keys, including configured provider credit funding costs; prepaid tenants pay it from credit"
+              }
+            },
+            "required": [
+              "responses",
+              "input",
+              "output",
+              "cacheRead",
+              "cacheWrite",
+              "cost",
+              "platformResponses",
+              "platformCost"
+            ]
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "responses": {
+                  "type": "number"
+                },
+                "input": {
+                  "type": "number"
+                },
+                "output": {
+                  "type": "number"
+                },
+                "cacheRead": {
+                  "type": "number"
+                },
+                "cacheWrite": {
+                  "type": "number"
+                },
+                "cost": {
+                  "type": "number",
+                  "description": "Usage cost in USD: model calls use provider-reported cost or a catalog estimate, excluding model credit funding; tool-ranking costs already include their funding"
+                },
+                "platformResponses": {
+                  "type": "number",
+                  "description": "Responses that ran on a key that is not the tenant's own"
+                },
+                "platformCost": {
+                  "type": "number",
+                  "description": "Cost in USD on platform keys, including configured provider credit funding costs; prepaid tenants pay it from credit"
+                },
+                "agent": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "definition": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "endUser": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "model": {
+                  "type": "string"
+                },
+                "day": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "responses",
+                "input",
+                "output",
+                "cacheRead",
+                "cacheWrite",
+                "cost",
+                "platformResponses",
+                "platformCost"
+              ]
+            }
+          }
+        },
+        "required": [
+          "since",
+          "groupBy",
+          "rollup",
+          "totals",
+          "groups"
+        ]
+      },
       "Usage": {
         "type": "object",
         "properties": {
@@ -11697,6 +11839,54 @@
             ],
             "additionalProperties": false
           }
+        ]
+      },
+      "RunLog": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "$ref": "#/components/schemas/Run"
+          },
+          "durationMs": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "index": {
+                  "type": "number"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "message"
+                  ]
+                },
+                "at": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "message": {}
+              },
+              "required": [
+                "index",
+                "type",
+                "at"
+              ]
+            }
+          }
+        },
+        "required": [
+          "run",
+          "durationMs",
+          "events"
         ]
       },
       "EndUserSettings": {
@@ -18471,6 +18661,70 @@
         }
       }
     },
+    "/v1/agents/{id}/usage": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "days",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "groupBy",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            },
+            "required": false,
+            "name": "rollup",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Agent usage",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupedUsage"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/usage": {
       "get": {
         "parameters": [
@@ -18486,6 +18740,26 @@
           },
           {
             "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "groupBy",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            },
+            "required": false,
+            "name": "rollup",
+            "in": "query"
+          },
+          {
+            "schema": {
               "type": "string",
               "description": "Filter by workspace id, or unassigned. Omit for the account total."
             },
@@ -18497,11 +18771,18 @@
         ],
         "responses": {
           "200": {
-            "description": "Token usage per UTC day and model",
+            "description": "Token usage per UTC day and model, or requested dimensions",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Usage"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Usage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/GroupedUsage"
+                    }
+                  ]
                 }
               }
             }
@@ -24293,6 +24574,44 @@
               "text/event-stream": {
                 "schema": {
                   "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/runs/{id}/log": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The run's id (run_…)"
+            },
+            "required": true,
+            "description": "The run's id (run_…)",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Durable run log with messages, tool calls, errors, usage and timing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunLog"
                 }
               }
             }

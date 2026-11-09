@@ -8896,6 +8896,31 @@ Each reads `CAMELAI_API_KEY` (and `CAMELAI_BASE_URL` for a runtime of your own).
 `npm run demo:clients` runs the release board and inventory examples against a
 temporary local runtime with scripted code, calling no model.
 
+
+### Usage breakdowns and retained run logs
+
+TypeScript: call `agents.usage({ groupBy: ["agent", "model"], rollup: true })`,
+`agents.agentUsage(id)`, or `agents.runs.log(runId)`.
+Python: call `agents.usage(group_by=["agent", "model"], rollup=True)` or
+`agents.runs.log(run_id)`. Pass `agent=id` to usage to filter one agent.
+The lower-level Python runtime preserves its daily account totals when no
+grouping is requested.
+
+REST: `GET /v1/usage?groupBy=agent,model&rollup=true` returns
+`{since, groupBy, rollup, totals, groups}`. Dimensions are agent, definition,
+endUser, model and UTC day, in any combination. Costs are USD and include
+signed reconciliation adjustments. Attribution begins with migration 124.
+`GET /v1/agents/{id}/usage` filters an agent. With rollup enabled, it filters
+a root and includes its descendants; other dimensions keep their own values.
+The default account usage response is unchanged.
+
+`GET /v1/runs/{id}/log` returns `{run, durationMs, events}`. Each event contains
+a message in history order, its index and its timestamp (null if unavailable).
+Messages include model tool calls and tool results; the run contains errors,
+usage and start/end times. This is reconstructed from durable messages, not a
+transient streaming trace, and expires with the run. CLI equivalents:
+`camelrun usage --by agent,model --rollup` and `camelrun run-log <runId>`.
+
 ---
 
 <!-- https://run.camelai.com/docs/reference/cli.md -->

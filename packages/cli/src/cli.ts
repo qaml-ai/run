@@ -47,6 +47,8 @@ Stateless runs (a configuration and a message in, the result out; nothing carrie
   run --stateless <message…> [--definition key|id] [--model m] [--prompt text] [--thinking level]
                   [--request-id key] [--wait s] [--no-wait]
   runs get <runId> [--wait s]
+  usage [--by agent,model] [--days n] [--rollup]
+  run-log <runId>
   history <agent> [--limit n]
   abort <agent>
   inputs [agent]                   Questions and approvals waiting on someone
@@ -72,6 +74,7 @@ Options
 Docs: https://run.camelai.com/llms.txt`;
 
 const OPTIONS = {
+  by: { type: "string" }, days: { type: "string" }, rollup: { type: "boolean" },
   json: { type: "boolean" }, help: { type: "boolean", short: "h" }, version: { type: "boolean", short: "v" },
   "api-key": { type: "string" }, url: { type: "string" },
   apply: { type: "boolean" }, "dry-run": { type: "boolean" }, available: { type: "boolean" }, force: { type: "boolean" }, yes: { type: "boolean", short: "y" },
@@ -120,6 +123,14 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
         print({ ...me, url: client.url }, () => `${me.login ?? me.tenant} (tenant ${me.tenant}) on ${client.url}\nDefault model: ${me.defaultModel}`);
         return 0;
       }
+      case "usage": {
+        const query = new URLSearchParams({ groupBy: String(flags.by ?? "agent") });
+        if (flags.days) query.set("days", String(flags.days));
+        if (flags.rollup) query.set("rollup", "true");
+        const result = await api().get(`/v1/usage?${query}`);
+        print(result, () => JSON.stringify(result, null, 2));
+        return 0;
+      }
       case "models": {
         const models: any[] = await api().get(`/v1/models${flags.available ? "?available=true" : ""}`);
         print(models.map(({ id, name, available, contextWindow, reasoning, cost, toolCallStreaming }) => ({ id, name, available, contextWindow, reasoning, cost, toolCallStreaming })),
@@ -153,6 +164,12 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
         if (!agent || !words.length) throw new UsageError("Usage: camelrun run <agent> <message…>");
         const result = await ops.run(api(), agent, words.join(" "), { wait: waitSeconds(flags), from: flags.from, endUser: flags["end-user"], steer: flags.steer, allowDisconnected: flags["allow-disconnected"], requestId: flags["request-id"] });
         return printRun(result, print, io);
+      }
+      case "run-log": {
+        if (!args[0]) throw new UsageError("Usage: camelrun run-log <runId>");
+        const result = await api().get(`/v1/runs/${encodeURIComponent(args[0])}/log`);
+        print(result, () => JSON.stringify(result, null, 2));
+        return 0;
       }
       case "runs": {
         const [sub, agent, requestId] = args;

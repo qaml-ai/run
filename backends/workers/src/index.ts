@@ -317,6 +317,10 @@ const worker = {
       if (auth) {
         const computers = await handleComputerRequest(request, env, auth);
         if (computers) return computers;
+        if (match?.[1] === "v1/agents" && match[3] === "/usage") {
+          const usage = await moneyRoutes(request, env, auth, ctx);
+          if (usage) return usage;
+        }
       }
       if (!match) {
         if (!auth) throw new ApiError(403, "Account key required", "FORBIDDEN");

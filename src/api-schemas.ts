@@ -859,6 +859,10 @@ export const BrowserToken = z.object({
   expiresAt: z.number(), agentId: z.string(), url: z.string().optional().openapi({ description: "Where the browser reaches the runtime" }),
 }).openapi("BrowserToken");
 
+export const RunLog = z.object({
+  run: Run, durationMs: z.number().nullable(),
+  events: z.array(z.object({ index: z.number(), type: z.literal("message"), at: z.number().nullable(), message: z.unknown() })),
+}).openapi("RunLog");
 export const History = z.looseObject({ messages: z.array(z.unknown()) }).openapi("History");
 export const HistoryPage = z.object({
   entries: z.array(z.object({ index: z.number().openapi({ description: "The message's index in the agent's history" }), message: z.unknown() })).openapi({ description: "Messages, oldest first; whole turns unless a size bound splits them" }),
@@ -1030,6 +1034,11 @@ export const Images = z.object({
   costUsd: z.number().openapi({ description: "What it cost at the runtime's price: charged to prepaid credit when it ran on the platform's key" }),
 }).openapi("Images");
 
+export const GroupedUsageQuery = z.object({ days: z.string().optional(), groupBy: z.string().optional(), rollup: z.enum(["true", "false"]).optional() });
+export const GroupedUsage = z.object({
+  since: z.number(), groupBy: z.array(z.enum(["agent", "definition", "endUser", "model", "day"])), rollup: z.boolean(), totals: Totals,
+  groups: z.array(Totals.extend({ agent: z.string().nullable().optional(), definition: z.string().nullable().optional(), endUser: z.string().nullable().optional(), model: z.string().optional(), day: z.string().optional() })),
+}).openapi("GroupedUsage");
 export const Usage = z.object({
   since: z.number(),
   totals: Totals,
