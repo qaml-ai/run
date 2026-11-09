@@ -3235,6 +3235,7 @@
             "items": {
               "type": "string",
               "enum": [
+                "dreaming.failed",
                 "run.started",
                 "run.completed",
                 "run.failed",
@@ -3305,6 +3306,7 @@
             "items": {
               "type": "string",
               "enum": [
+                "dreaming.failed",
                 "run.started",
                 "run.completed",
                 "run.failed",
@@ -3364,6 +3366,7 @@
             "items": {
               "type": "string",
               "enum": [
+                "dreaming.failed",
                 "run.started",
                 "run.completed",
                 "run.failed",
@@ -17112,6 +17115,12 @@
                         "organizerModel": {
                           "type": "string"
                         },
+                        "endUser": {
+                          "type": "string"
+                        },
+                        "acrossUsers": {
+                          "type": "boolean"
+                        },
                         "budgetUsd": {
                           "type": "number",
                           "exclusiveMinimum": 0
@@ -17125,8 +17134,6 @@
                         "enabled",
                         "volumeId",
                         "schedule",
-                        "analyzerModel",
-                        "organizerModel",
                         "budgetUsd",
                         "instructions"
                       ],
@@ -17141,6 +17148,10 @@
                     "running": {
                       "type": "boolean"
                     },
+                    "checkpoint": {},
+                    "failedNights": {
+                      "type": "number"
+                    },
                     "lastResult": {
                       "type": [
                         "object",
@@ -17152,7 +17163,8 @@
                           "enum": [
                             "completed",
                             "failed",
-                            "budget_reached"
+                            "budget_reached",
+                            "deferred"
                           ]
                         },
                         "from": {
@@ -17188,7 +17200,8 @@
                             "enum": [
                               "completed",
                               "failed",
-                              "budget_reached"
+                              "budget_reached",
+                              "deferred"
                             ]
                           },
                           "from": {
@@ -17221,6 +17234,7 @@
                     "since",
                     "dueAt",
                     "running",
+                    "failedNights",
                     "lastResult",
                     "results"
                   ]
@@ -17285,6 +17299,12 @@
                   "organizerModel": {
                     "type": "string"
                   },
+                  "endUser": {
+                    "type": "string"
+                  },
+                  "acrossUsers": {
+                    "type": "boolean"
+                  },
                   "budgetUsd": {
                     "type": "number",
                     "exclusiveMinimum": 0
@@ -17298,8 +17318,6 @@
                   "enabled",
                   "volumeId",
                   "schedule",
-                  "analyzerModel",
-                  "organizerModel",
                   "budgetUsd",
                   "instructions"
                 ],
@@ -17347,6 +17365,12 @@
                         "organizerModel": {
                           "type": "string"
                         },
+                        "endUser": {
+                          "type": "string"
+                        },
+                        "acrossUsers": {
+                          "type": "boolean"
+                        },
                         "budgetUsd": {
                           "type": "number",
                           "exclusiveMinimum": 0
@@ -17360,8 +17384,6 @@
                         "enabled",
                         "volumeId",
                         "schedule",
-                        "analyzerModel",
-                        "organizerModel",
                         "budgetUsd",
                         "instructions"
                       ],
@@ -17376,6 +17398,10 @@
                     "running": {
                       "type": "boolean"
                     },
+                    "checkpoint": {},
+                    "failedNights": {
+                      "type": "number"
+                    },
                     "lastResult": {
                       "type": [
                         "object",
@@ -17387,7 +17413,8 @@
                           "enum": [
                             "completed",
                             "failed",
-                            "budget_reached"
+                            "budget_reached",
+                            "deferred"
                           ]
                         },
                         "from": {
@@ -17423,7 +17450,8 @@
                             "enum": [
                               "completed",
                               "failed",
-                              "budget_reached"
+                              "budget_reached",
+                              "deferred"
                             ]
                           },
                           "from": {
@@ -17456,6 +17484,7 @@
                     "since",
                     "dueAt",
                     "running",
+                    "failedNights",
                     "lastResult",
                     "results"
                   ]
@@ -17584,6 +17613,14 @@
             },
             "required": false,
             "name": "children",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "endUser",
             "in": "query"
           }
         ],
