@@ -1,3 +1,4 @@
+import { sessionTranscripts } from "../../../shared/session-transcripts.ts";
 import { Directory, type AuthContext, type ControlEnv, type DirectoryEntry, type DirectoryFailure } from "./control.ts";
 import { agentToken, ApiError, configuration, digest } from "./api-contract.ts";
 import { body, boundedText, object } from "./validation.ts";
@@ -105,6 +106,12 @@ export async function statelessRoutes(request: Request, env: ControlEnv, auth: A
 }
 
 export async function agentLifecycleRoutes(request: Request, env: ControlEnv & FileBindings, entry: DirectoryEntry, tail: string, includeToken = true): Promise<Response | undefined> {
+  if (tail === "/sessions" && request.method === "GET") {
+    const q = new URL(request.url).searchParams;
+    if (q.has("children") && !["true", "false"].includes(q.get("children")!)) throw new ApiError(400, "Invalid children");
+    try { return json(await sessionTranscripts({ query: (sql, values) => withSql(env, db => db.query(sql, values)), page: async (id, after, limit) => payload(await call(env, id, `/history?after=${after}&limit=${limit}&maxBytes=1000000`)) }, entry.tenantId, entry.id, { from: Number(q.get("from") ?? NaN), to: Number(q.get("to") ?? NaN), cursor: q.get("cursor") ?? undefined, limit: q.has("limit") ? Number(q.get("limit")) : undefined, children: q.get("children") !== "false" })); }
+    catch (error) { if ((error as any).status === 400) throw new ApiError(400, (error as Error).message); throw error; }
+  }
   if (tail === "/export" && request.method === "GET") return json({ config: visibleConfiguration(entry.config), ...(await payload(await call(env, entry.id, "/history"))) });
   if (tail !== "/fork" || request.method !== "POST") return;
   const input = object(await body(request), ["key", "name", "atMessage", "ttlSeconds", "subject", "context", "systemPromptAppend", "modelHeaders"]);

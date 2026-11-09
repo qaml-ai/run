@@ -1806,6 +1806,11 @@ export class AgentRuntime {
    * Every source of an agent's tools (its application, file tools, built-ins, MCP servers, OpenAPI
    * specs) and what each offers the model. `schemas` includes input schemas; `refresh` lists MCP servers now.
    */
+  /** A page of this conversation tree in [from,to), in epoch milliseconds. Follow next, including empty pages. */
+  sessions(agentId: string, options: { from: number; to: number; cursor?: string; limit?: number; children?: boolean }): Promise<{ agentId: string | null; entries: { index: number; message: unknown }[]; next: string | null }> {
+    const query = new URLSearchParams(Object.entries(options).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)]));
+    return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/sessions?${query}`, this.operator());
+  }
   /**
    * A token a browser reads one agent with (`@camelai/run/watch`): mint one per user, after your
    * own access checks. It reads only that agent's events, state, history and inputs (or `scopes`), for

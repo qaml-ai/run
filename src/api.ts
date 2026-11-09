@@ -1,3 +1,4 @@
+import { sessionTranscripts } from "../shared/session-transcripts.ts";
 import { SharedAgents, ShareLinkInput, MemberInput, ShareLink, CreatedShareLink, Member } from './shared-agents.ts';
 import { inboxQuery, readInbox, InboxQueryError } from '../shared/inbox.ts';
 import { rejectWorkflow } from "./builtins.ts";
@@ -720,6 +721,12 @@ export function api(context: ApiContext) {
   route(createRoute({ method: "get", path: "/v1/agents/{id}/state", request: { params: agentId }, security: readers, responses: { 200: reply("Request state and the stream's cursor; for a browser token, each request only as how it ended", schema.SessionState) } }), async c => {
     const state = await clients.stateFor(c.req.param("id")!, c.var.principal.tenant);
     return json(c, 200, c.var.principal.browser ? { ...state, requests: state.requests.map(readableRequest) } : state);
+  });
+  route(createRoute({ method: "get", path: "/v1/agents/{id}/sessions", request: { params: agentId, query: z.object({ from: z.string(), to: z.string(), cursor: z.string().optional(), limit: z.string().optional(), children: z.enum(["true", "false"]).optional() }) }, responses: { 200: reply("A bounded transcript page from this agent and its descendants, filtered to [from,to). Follow next until null; pages may be empty", z.object({ agentId: z.string().nullable(), entries: z.array(z.object({ index: z.number(), message: z.unknown() })), next: z.string().nullable() })) } }), async c => {
+    const id = c.req.param("id")!, tenant = c.var.principal.tenant;
+    if (!await clients.owns(id, tenant)) throw new HttpError(404, "Unknown agent");
+    try { return json(c, 200, await sessionTranscripts({ query: (sql, values) => accounts.db.query(sql, values), page: (agent, after, limit) => clients.historyPageFor(agent, tenant, { after: String(after), limit: String(limit), maxBytes: "1000000" }) }, tenant, id, { from: Number(c.req.query("from")), to: Number(c.req.query("to")), cursor: c.req.query("cursor"), limit: c.req.query("limit") === undefined ? undefined : Number(c.req.query("limit")), children: c.req.query("children") !== "false" })); }
+    catch (error) { if ((error as any).status === 400) throw new HttpError(400, (error as Error).message); throw error; }
   });
   route(createRoute({
     method: "get", path: "/v1/agents/{id}/history",

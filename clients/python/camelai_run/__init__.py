@@ -599,6 +599,13 @@ class _RuntimeCalls:
     """The operator API's calls that are one request each, shared by the async AgentRuntime and the synchronous one
     (camelai_run.sync): each returns what self._rest returns, an awaitable here and the answer there."""
 
+    def sessions(self, agent_id, *, from_ms, to_ms, cursor=None, limit=100, children=True):
+        """A tenant-authenticated page of a conversation tree in [from_ms,to_ms). Follow next until null."""
+        query = {"from": from_ms, "to": to_ms, "limit": limit, "children": str(children).lower()}
+        if cursor is not None:
+            query["cursor"] = cursor
+        return self._rest("GET", "/v1/agents/" + quote(agent_id, safe="") + "/sessions?" + urlencode(query))
+
     def fork_agent(self, agent_id, *, key=None, name=None, at_message=None, ttl_seconds=_DEFAULT, subject=None, context=None, instructions_append=None, model_headers=_DEFAULT):
         """A new agent with this one's configuration, a copy of its history and a fork of its workspace. Returns its
         credentials and where it came from ({"id", "token", "expiresAt", "forkedFrom": {"agentId", "atMessage"}}).
