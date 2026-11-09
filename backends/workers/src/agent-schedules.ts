@@ -12,9 +12,11 @@ export type ScheduleToolsHost = {
 const definitions = [
   {
     name: 'schedule',
-    description: 'Schedule a wake-up for yourself: at the time given, you receive `text` as a new message and can act on it. Give inSeconds or at (an ISO time); everySeconds (at least 60) repeats it. Or give calendar: local HH:MM, IANA timeZone and optional daysOfWeek (Sunday 0 to Saturday 6), respecting daylight saving time. Do not combine calendar with other timing fields. Returns its id.',
+    description: "Schedule a message with calendar, cron, or interval timing. spendLimit caps each run in USD.",
     parameters: { type: 'object', additionalProperties: false, required: ['text'], properties: {
       text: { type: 'string', minLength: 1, maxLength: 32_000, description: 'The message you will receive' },
+      cron: {type:'object',additionalProperties:false,required:['expression','timeZone'],properties:{expression:{type:'string'},timeZone:{type:'string'}}},
+      spendLimit: {type:'object',additionalProperties:false,required:['usd'],properties:{usd:{type:'number',minimum:0,maximum:1000000}}},
       calendar: { type: 'object', additionalProperties: false, required: ['time', 'timeZone'], properties: { time: { type: 'string' }, timeZone: { type: 'string' }, daysOfWeek: { type: 'array', items: { type: 'integer', minimum: 0, maximum: 6 } } } },
       inSeconds: { type: 'number', minimum: 0 }, at: { type: 'string', description: 'ISO 8601 time' }, everySeconds: { type: 'integer', minimum: 60 },
       history: { type: 'string', enum: ['full', 'none'], description: "Ignored; every run sees the agent's history" },
@@ -27,7 +29,7 @@ const definitions = [
 /** The tool result matches src/builtins.ts; the HTTP schedule view keeps epoch milliseconds. */
 function view(schedule: Schedule) {
   return {
-    id: schedule.id, ...(schedule.calendar ? { calendar: schedule.calendar } : {}),
+    id: schedule.id, cron: schedule.cron, sessionMode: schedule.sessionMode, spendLimit: schedule.spendLimit, ...(schedule.calendar ? { calendar: schedule.calendar } : {}),
     ...(schedule.text !== undefined ? { text: schedule.text } : { code: schedule.code }),
     dueAt: new Date(schedule.dueAt).toISOString(),
     ...(schedule.everySeconds ? { everySeconds: schedule.everySeconds } : {}),

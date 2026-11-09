@@ -1,3 +1,6 @@
+import { calendarPrompt } from '../../../src/calendar.ts';
+import { Directory } from './control.ts';
+import { provisionDefinition } from './definitions.ts';
 import { scheduleInput, MIN_REPEAT_SECONDS, type Schedule, type ScheduleEmail } from './schedule-policy.ts';
 import { HttpError } from './errors.ts';
 import { digest } from './api-contract.ts';
@@ -39,10 +42,11 @@ export async function newSchedule(env:ScheduleEnv,tenant:string,agent:string,raw
     if(!await canScheduleEmail(env,tenant,input.email.to))throw new HttpError(403,'Use your sign-in email or a verified billing recipient for scheduled reports');
   }
   const {history,...rest}=input;
-  return {id:crypto.randomUUID(),agent,tenant,...rest,dueAt:Math.round(input.dueAt),createdAt:Date.now()};
+  return {id:crypto.randomUUID(),agent,tenant,sessionMode:"continue",...rest,dueAt:Math.round(input.dueAt),createdAt:Date.now()};
 }
 export async function scheduleDeliveries(env:ScheduleEnv,tenant:string,agent:string) {
- return (await withSql(env,sql=>sql.query('select id,state,email,created_at as "createdAt",sent_at as "sentAt",message_id as "messageId",error from schedule_deliveries where tenant=$1 and agent=$2 order by created_at desc limit 100',[tenant,agent]))).rows;
+ const rows=(await withSql(env,sql=>sql.query('select r.id,r.schedule,r.run_agent as agent,r.created_at as "createdAt",r.error,d.state,d.email,d.sent_at as "sentAt",d.message_id as "messageId" from schedule_runs r left join schedule_deliveries d on d.id=r.id where r.tenant=$1 and r.agent=$2 order by r.created_at desc limit 100',[tenant,agent]))).rows;
+ return Promise.all(rows.map(async row=>{if(!row.agent)return {...row,record:null};const response=await env.AGENTS.getByName(row.agent).fetch(new Request(`https://agent/requests/${row.id}`));return {...row,record:response.ok?await response.json():null};}));
 }
 export async function queueScheduleEmail(env:ScheduleEnv,schedule:StoredSchedule,id:string) {
  if(!schedule.email)return;
@@ -111,5 +115,31 @@ export async function deliverScheduleEmail(env:ScheduleEnv,id:string) {
   const failed=gone||attempts>=5;
   await withSql(env,sql=>sql.query('update schedule_deliveries set attempts=$3,state=$4,error=$5,next_at=$6,lease=null,lease_until=null where id=$1 and lease=$2',[id,lease,attempts,failed?'failed':'waiting',gone?'Agent no longer exists':'Delivery failed',now+Math.min(3600000,60000*2**(attempts-1))]));
   return failed;
+ }
+}
+
+export async function deliverScheduledRun(env: any, schedule: StoredSchedule, id: string) {
+ await withSql(env,sql=>sql.query('insert into schedule_runs(id,tenant,agent,schedule,run_agent,created_at) values($1,$2,$3,$4,null,$5) on conflict do nothing',[id,schedule.tenant,schedule.agent,schedule.id,Date.now()]));
+ try {
+ let agent=schedule.agent;
+ const prior=(await withSql(env,sql=>sql.query('select run_agent from schedule_runs where id=$1',[id]))).rows[0];
+ if(prior?.run_agent) agent=prior.run_agent;
+ else if(schedule.sessionMode==='fresh') {
+  const directory=new Directory(env,schedule.tenant), source=await directory.get(agent);
+  if(!source?.config.definition)throw new HttpError(400,'Fresh schedules require an agent definition');
+  const made=await directory.upsert(await provisionDefinition(env,schedule.tenant,{definition:source.config.definition,ttlSeconds:604800,...(schedule.mounts?{mounts:schedule.mounts}:{})}),`schedule-${(await digest(id)).slice(0,40)}`);
+  if('failed' in made)throw new HttpError(made.status,made.error);
+  agent=made.id;
+ }
+ await withSql(env,sql=>sql.query('update schedule_runs set run_agent=$2 where id=$1',[id,agent]));
+ await queueScheduleEmail(env,{...schedule,agent},id);
+ const response=await env.AGENTS.getByName(agent).fetch(new Request('https://agent/requests',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id,method:schedule.code===undefined?'prompt':'execute',params:{...(schedule.code===undefined?{text:schedule.calendar?calendarPrompt(schedule.text!,schedule.calendar,schedule.dueAt):schedule.text}:{code:schedule.code}),allowDisconnected:true,...(schedule.spendLimit?{spendLimit:schedule.spendLimit}:{})}})}));
+ const record=await response.json() as any;
+ await withSql(env,sql=>sql.query('update schedule_runs set error=$2 where id=$1',[id,response.ok?null:record.error??'Delivery failed']));
+ if(!response.ok)throw new HttpError(response.status,record.error??'Delivery failed');
+ return {agent,requestId:id,record};
+ } catch(error) {
+  await withSql(env,sql=>sql.query('update schedule_runs set error=$2 where id=$1',[id,error instanceof Error?error.message:String(error)]));
+  throw error;
  }
 }

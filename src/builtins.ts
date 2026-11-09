@@ -1,7 +1,7 @@
 import type { ToolDefinition } from "./protocol.ts";
 import type { Outbound } from "./outbound.ts";
 import type { Calendar } from "./calendar.ts";
-import { scheduleInput, type Scheduler } from "./scheduler.ts";
+import { scheduleInput, type Scheduler, type Schedule } from "./scheduler.ts";
 import type { Claim } from "./ownership.ts";
 import { FRESHNESS, SEARCH, webSearchUnavailable, type WebSearch } from "./web-search.ts";
 import { isShell, type WebRender } from "./web-render.ts";
@@ -118,9 +118,11 @@ const DEFINITIONS: Record<string, ToolDefinition> = {
   },
   schedule: {
     name: "schedule", exposure: "both",
-    description: "Schedule a wake-up for yourself: at the time given, you receive `text` as a new message and can act on it. Give inSeconds or at (an ISO time); everySeconds (at least 60) repeats it. Or give calendar: local HH:MM, IANA timeZone and optional daysOfWeek (Sunday 0 to Saturday 6), respecting daylight saving time. Do not combine calendar with other timing fields. Returns its id.",
+    description: "Schedule a message with calendar, cron, or interval timing. spendLimit caps each run in USD.",
     parameters: { type: "object", additionalProperties: false, required: ["text"], properties: {
       text: { type: "string", minLength: 1, maxLength: 32_000, description: "The message you will receive" },
+      cron: {type:'object',additionalProperties:false,required:['expression','timeZone'],properties:{expression:{type:'string'},timeZone:{type:'string'}}},
+      spendLimit: {type:'object',additionalProperties:false,required:['usd'],properties:{usd:{type:'number',minimum:0,maximum:1000000}}},
       calendar: { type: "object", additionalProperties: false, required: ["time", "timeZone"], properties: { time: { type: "string" }, timeZone: { type: "string" }, daysOfWeek: { type: "array", items: { type: "integer", minimum: 0, maximum: 6 } } } },
       inSeconds: { type: "number", minimum: 0 }, at: { type: "string", description: "ISO 8601 time" }, everySeconds: { type: "integer", minimum: 60 },
       // Accepted so callers that still send it do not fail, as the HTTP API and MCP add_schedule do.
@@ -213,7 +215,7 @@ async function builtinValue(services: BuiltinServices, context: BuiltinContext, 
   const scheduler = services.scheduler;
   if (!scheduler) throw new Error("Schedules are not enabled on this runtime");
   if (name === "schedule") {
-    const input = scheduleInput({ text: args.text, ...(args.calendar !== undefined ? { calendar: args.calendar } : {}), ...(args.at !== undefined ? { at: args.at } : {}), ...(args.inSeconds !== undefined ? { inSeconds: args.inSeconds } : {}), ...(args.everySeconds !== undefined ? { everySeconds: args.everySeconds } : {}) });
+    const input = scheduleInput({ text: args.text, cron: args.cron, spendLimit: args.spendLimit, ...(args.calendar !== undefined ? { calendar: args.calendar } : {}), ...(args.at !== undefined ? { at: args.at } : {}), ...(args.inSeconds !== undefined ? { inSeconds: args.inSeconds } : {}), ...(args.everySeconds !== undefined ? { everySeconds: args.everySeconds } : {}) });
     // Under the agent's claim: a node that lost the agent mid-turn schedules nothing for it.
     const created = await scheduler.create({ agent: context.agent, tenant: context.tenant, ...input }, context.claim);
     return view(created);
@@ -223,8 +225,8 @@ async function builtinValue(services: BuiltinServices, context: BuiltinContext, 
   throw new Error(`Unknown tool ${name}`);
 }
 
-const view = (schedule: { id: string; text?: string; code?: string; dueAt: number; everySeconds?: number; calendar?: Calendar; failures?: number; lastError?: string }) => ({
-  id: schedule.id, ...(schedule.calendar ? { calendar: schedule.calendar } : {}), ...(schedule.text !== undefined ? { text: schedule.text } : { code: schedule.code }), dueAt: new Date(schedule.dueAt).toISOString(),
+const view = (schedule: Schedule) => ({
+  id: schedule.id, cron: schedule.cron, sessionMode: schedule.sessionMode, spendLimit: schedule.spendLimit, ...(schedule.calendar ? { calendar: schedule.calendar } : {}), ...(schedule.text !== undefined ? { text: schedule.text } : { code: schedule.code }), dueAt: new Date(schedule.dueAt).toISOString(),
   ...(schedule.everySeconds ? { everySeconds: schedule.everySeconds } : {}),
   ...(schedule.failures ? { failures: schedule.failures } : {}), ...(schedule.lastError !== undefined ? { lastError: schedule.lastError } : {}),
 });

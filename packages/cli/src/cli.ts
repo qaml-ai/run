@@ -53,6 +53,7 @@ Stateless runs (a configuration and a message in, the result out; nothing carrie
   answer <agent> <inputId> <value> true/false, text, JSON, or "decline"
   schedules list <agent>
   schedules add <agent> --text t (--in s | --at iso) [--every s]
+  schedules run <agent> <scheduleId>
   schedules delete <agent> <scheduleId>
 
 Definitions (a definition is its key or its id, def_…)
@@ -78,6 +79,7 @@ const OPTIONS = {
   model: { type: "string" }, prompt: { type: "string" }, "prompt-append": { type: "string" }, thinking: { type: "string" }, name: { type: "string" }, definition: { type: "string" },
   wait: { type: "string" }, "no-wait": { type: "boolean" }, from: { type: "string" }, "end-user": { type: "string" }, steer: { type: "boolean" }, "allow-disconnected": { type: "boolean" }, "request-id": { type: "string" },
   limit: { type: "string" }, key: { type: "string" }, text: { type: "string" }, in: { type: "string" }, at: { type: "string" }, every: { type: "string" }, history: { type: "string" },
+  cron: { type: "string" }, "time-zone": { type: "string" }, "session-mode": { type: "string" }, "spend-limit": { type: "string" },
   stateless: { type: "boolean" }, summary: { type: "string" }, keep: { type: "string" },
 } as const;
 
@@ -318,12 +320,17 @@ async function schedules(args: string[], flags: Flags, api: () => Api, print: (v
       return 0;
     }
     case "add": {
-      if (!flags.text || (!flags.in && !flags.at)) throw new UsageError("Usage: camelrun schedules add <agent> --text t (--in seconds | --at iso) [--every seconds]");
+      if (!flags.text || (!flags.in && !flags.at && !flags.cron)) throw new UsageError("Usage: camelrun schedules add <agent> --text t (--in seconds | --at iso) [--every seconds]");
       // Deprecated and ignored: every wake-up sees the agent's history.
       if (flags.history !== undefined) warn("Warning: --history is deprecated and ignored: every wake-up sees the agent's history.");
-      const body = { text: flags.text, ...(flags.in ? { inSeconds: Number(flags.in) } : { at: flags.at }), ...(flags.every ? { everySeconds: Number(flags.every) } : {}) };
+      const body = { text: flags.text, ...(flags.cron ? {cron:{expression:flags.cron,timeZone:flags["time-zone"] ?? "UTC"}} : {}), ...(flags["session-mode"] ? {sessionMode:flags["session-mode"]} : {}), ...(flags["spend-limit"] ? {spendLimit:{usd:Number(flags["spend-limit"])}} : {}), ...(flags.in ? { inSeconds: Number(flags.in) } : { at: flags.at }), ...(flags.every ? { everySeconds: Number(flags.every) } : {}) };
       const created = await client.call("POST", `/v1/agents/${enc(id)}/schedules`, body);
       print(created, () => `${created.id}: due ${new Date(created.dueAt).toISOString()}`);
+      return 0;
+    }
+    case "run": {
+      if (!scheduleId) throw new UsageError("Give a schedule id");
+      print(await client.call("POST", `/v1/agents/${enc(id)}/schedules/${enc(scheduleId)}/run`, {}));
       return 0;
     }
     case "delete": {

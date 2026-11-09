@@ -1669,13 +1669,16 @@ class _AgentCalls:
     def set_metadata(self, *, name, type):
         return self._http("/metadata", "POST", {"name": name, "type": type})
 
-    def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None, history=None, calendar=None, email=None):
+    def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None, history=None, calendar=None, email=None, cron=None, session_mode=None, spend_limit=None, mounts=None):
         """Wake this agent later with a prompt (text) or sandboxed code; every_seconds (>= 60) repeats it. history is deprecated and ignored: every wake-up sees the agent's history."""
-        body = {key: value for key, value in {"text": text, "code": code, "history": history, "at": at, "inSeconds": in_seconds, "everySeconds": every_seconds, "calendar": calendar, "email": email}.items() if value is not None}
+        body = {key: value for key, value in {"text": text, "code": code, "history": history, "at": at, "inSeconds": in_seconds, "everySeconds": every_seconds, "calendar": calendar, "email": email, "cron": cron, "sessionMode": session_mode, "spendLimit": spend_limit, "mounts": mounts}.items() if value is not None}
         return self._http("/schedules", "POST", body, retry=False)
 
     def schedules(self):
         return self._http("/schedules")
+
+    def run_schedule(self, schedule_id):
+        return self._http(f"/schedules/{quote(schedule_id, safe='')}/run", "POST", {}, retry=False)
 
     def unschedule(self, schedule_id):
         return self._http(f"/schedules/{quote(schedule_id, safe='')}", "DELETE", None, retry=False)
@@ -2782,12 +2785,15 @@ class Agent:
             raise AgentError("reset_context needs the Agents this agent came from (agents.upsert, get or agent)")
         return await self._agents.runtime.reset_context(self.id, summary=summary, keep_messages=keep_messages)
 
-    async def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None, history=None, calendar=None, email=None):
+    async def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None, history=None, calendar=None, email=None, cron=None, session_mode=None, spend_limit=None, mounts=None):
         """Wake the agent later with a message (text), or run code; every_seconds (at least 60) repeats it. history is deprecated and ignored."""
-        return await self.client.schedule(text=text, code=code, at=at, in_seconds=in_seconds, every_seconds=every_seconds, history=history, calendar=calendar, email=email)
+        return await self.client.schedule(text=text, code=code, at=at, in_seconds=in_seconds, every_seconds=every_seconds, history=history, calendar=calendar, email=email, cron=cron, session_mode=session_mode, spend_limit=spend_limit, mounts=mounts)
 
     async def schedules(self):
         return await self.client.schedules()
+
+    async def run_schedule(self, schedule_id):
+        return await self.client.run_schedule(schedule_id)
 
     async def unschedule(self, schedule_id):
         return await self.client.unschedule(schedule_id)

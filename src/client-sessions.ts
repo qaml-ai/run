@@ -1587,6 +1587,7 @@ export class ClientSessions {
       try { input = scheduleInput(await readJson(body(c), 64 * 1024)); } catch (error) { throw new HttpError(400, errorText(error)); }
       try { return json(c, 201, await scheduler.create({ agent: c.var.session.header.id, tenant, ...input }, c.var.session.claim)); } catch (error) { if (error instanceof LostClaim || error instanceof HttpError) throw error; throw new HttpError(400, errorText(error)); }
     });
+    app.post(`${agent}/schedules/:schedule/run`, async c => json(c,202,await this.scheduler().runNow(c.var.session.header.id,c.req.param("schedule"))));
     app.delete(`${agent}/schedules/:schedule`, async c => {
       if (!await this.scheduler().remove(c.var.session.header.id, c.req.param("schedule"), c.var.session.claim)) throw new HttpError(404, "Unknown schedule");
       return json(c, 200, { deleted: true });

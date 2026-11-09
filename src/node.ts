@@ -1033,9 +1033,26 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   const scheduler = new Scheduler({
     db, node, emailEnabled: !!scheduleMailConfig, canEmail: canScheduleEmail,
     deliver: async (schedule, requestId) => {
-      // Schedules run unattended: without the application, its tools' calls fail as not connected.
-      const request = schedule.code !== undefined ? { method: "execute", params: { code: schedule.code, allowDisconnected: true } } : { method: "prompt", params: { text: schedule.calendar ? calendarPrompt(schedule.text!, schedule.calendar, schedule.dueAt) : schedule.text!, allowDisconnected: true } };
-      await submitAnywhere(schedule.agent, schedule.tenant, { id: requestId, ...request });
+      await db.query('insert into schedule_runs(id,tenant,agent,schedule,run_agent,created_at) values($1,$2,$3,$4,null,$5) on conflict do nothing', [requestId,schedule.tenant,schedule.agent,schedule.id,Date.now()]);
+      try {
+      let agent = schedule.agent;
+      const prior = (await db.query('select run_agent from schedule_runs where id=$1', [requestId])).rows[0];
+      if (prior?.run_agent) agent = prior.run_agent;
+      else if (schedule.sessionMode === "fresh") {
+        const header = (await db.query('select header from agents where id=$1 and tenant=$2', [agent,schedule.tenant])).rows[0]?.header;
+        if (!header?.definition) throw new HttpError(400, 'Fresh schedules require an agent definition');
+        const made = await createAgent(schedule.tenant, {definition:header.definition.id, ttlSeconds:604800, ...(schedule.mounts ? {mounts:schedule.mounts} : {})}, `schedule-${createHash("sha256").update(requestId).digest("hex").slice(0,40)}`);
+        agent = made.id;
+      }
+      await db.query('update schedule_runs set run_agent=$2 where id=$1',[requestId,agent]);
+      const params = {...(schedule.code !== undefined ? {code:schedule.code} : {text:schedule.calendar ? calendarPrompt(schedule.text!,schedule.calendar,schedule.dueAt) : schedule.text!}), allowDisconnected:true, ...(schedule.spendLimit ? {spendLimit:schedule.spendLimit} : {})};
+        const record = await submitAnywhere(agent, schedule.tenant, {id:requestId, method:schedule.code !== undefined ? "execute" : "prompt", params});
+        await db.query('update schedule_runs set error=null where id=$1',[requestId]);
+        return {agent, requestId, record};
+      } catch(error) {
+        await db.query('update schedule_runs set error=$2 where id=$1',[requestId,error instanceof Error ? error.message : String(error)]);
+        throw error;
+      }
     },
     also: now => clients.expireInputs(now),
   });
