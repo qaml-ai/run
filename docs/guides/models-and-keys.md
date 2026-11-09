@@ -332,10 +332,12 @@ ran on. Setting a value starts counting from zero; `null` removes it. A PATCH ap
 shows `spendLimit: {usd, spent}`. An agent at or over its limit gets 402 for new
 `prompt` and `continue` runs, and a running turn ends after the response that
 crossed it (its tool calls run and are recorded), with `stopped: "spend_limit"`:
-the SDKs' `run()` fails with code `spend_limit`. The result's `limit` says which
+the SDKs' `run()` returns `status: "paused"` and `stoppedReason: "budget_reached"`
+without throwing. The legacy code `spend_limit` remains. The result's `limit` says which
 limit it was: `"run"` (the run's own budget, below), `"agent"` (the agent's),
 `"tenant"` (your account's monthly cap) or `"credit"` (your prepaid credit ran out).
-Only you can set it, not the agent's own token.
+Only you can set it, not the agent's own token. Raise the limit if needed, then
+call `agent.client.continue()` to resume from the same history as a new turn.
 
 A run can have a budget of its own: `spendLimit: {"usd": n}` on
 `POST /v1/agents/:id/prompt` (the SDKs' `run`, `stream` and `prompt` take

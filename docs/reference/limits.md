@@ -248,7 +248,7 @@ See [Multi-agent](../guides/multi-agent.md).
 | Limit | Value |
 | --- | --- |
 | Delegation depth (`delegate.maxDepth`) | 2 by default (a parent, its children and theirs); 1–5 |
-| `delegate` calls in flight per run (`delegate.maxParallel`) | 4 by default, 1–16; more wait their turn |
+| `delegate` calls in flight per run (`delegate.maxParallel`) | 4 by default, 1–64; more wait their turn; node and tenant capacity limits still apply |
 | A sub-agent's spend | what its parent's run and agent spend limits have left when it starts, as its run's spend limit; what it spent counts against both |
 | A sub-agent's lifetime | a day (86,400 s), as a scratch agent's; one named by key (`{ agent }`) is yours and keeps its own |
 | A `delegate` task | 100,000 characters; inline `instructions` 32,000 |

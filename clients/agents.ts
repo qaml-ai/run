@@ -39,6 +39,8 @@ export interface AgentsOptions {
 
 /** An agent's configuration: what `upsert` makes it, or changes it to. */
 export interface AgentConfig {
+  humanInput?: import("./typescript.ts").HumanInputSettings;
+  definitionRevision?: number;
   /** Account workspace for spend attribution. */
   workspaceId?: string | null;
   /** A model from the catalog (GET /v1/models) as "provider/model-id", e.g. "anthropic/claude-sonnet-5-5". */
@@ -160,7 +162,9 @@ export interface RunFailure extends Partial<ModelFailure> {
  */
 export interface Run<T = unknown> {
   id: string;
-  status: "completed" | "input_required" | "failed";
+  status: "completed" | "input_required" | "paused" | "failed";
+  stoppedReason?: "budget_reached";
+  limit?: RunResult["limit"];
   /** The final reply's text; "" when it said nothing (or failed first). */
   text: string;
   /** A run with `output`: the answer, which fits its schema (parsed by it, for a zod or other Standard Schema). */
@@ -392,7 +396,7 @@ export class Agents {
 }
 
 /** A stateless run's configuration (an agent's, but for tools that need a connected process) and its input. */
-export interface StatelessRunConfig<S extends OutputSchema = never> extends Pick<AgentConfig, "model" | "instructions" | "instructionsAppend" | "definition" | "delegate" | "mcpServers" | "thinkingLevel" | "maxOutputTokens" | "temperature" | "dataCollection" | "language" | "subject" | "context" | "workspaceId" | "keyScope" | "bucket" | "runLimits" | "modelHeaders" | "mounts" | "name" | "fileTools"> {
+export interface StatelessRunConfig<S extends OutputSchema = never> extends Pick<AgentConfig, "model" | "instructions" | "instructionsAppend" | "definition" | "humanInput" | "delegate" | "mcpServers" | "thinkingLevel" | "maxOutputTokens" | "temperature" | "dataCollection" | "language" | "subject" | "context" | "workspaceId" | "keyScope" | "bucket" | "runLimits" | "modelHeaders" | "mounts" | "name" | "fileTools"> {
   /** codemode. Default: on for a run with tools (builtins, MCP servers, a definition, files), off for a tool-less run. */
   codeMode?: boolean;
   /** What the run is asked. It may be empty when `files` has audio, whose transcript is then the input. */
@@ -469,7 +473,7 @@ export class Runs {
       id: run.id,
       result: async () => {
         const value = await ended();
-        if (value.error && settings.throwOnError !== false) throw new RunError(value);
+        if (value.status !== "paused" && value.error && settings.throwOnError !== false) throw new RunError(value);
         return value;
       },
       async *[Symbol.asyncIterator]() {
@@ -493,7 +497,7 @@ export class Runs {
         }
         const value = await ended();
         yield { type: "done", run: value };
-        if (value.error && settings.throwOnError !== false) throw new RunError(value);
+        if (value.status !== "paused" && value.error && settings.throwOnError !== false) throw new RunError(value);
       },
     };
   }
@@ -530,10 +534,10 @@ async function settled<S extends OutputSchema>(run: StatelessRun, config: Pick<S
     else output = parsed.value;
   }
   const value: Run<OutputOf<S>> = {
-    id: run.id, status: error ? "failed" : run.status === "input_required" ? "input_required" : "completed", text: run.text, ...(output !== undefined ? { output } : {}), inputs: [], error,
+    stoppedReason: run.stoppedReason, limit: run.limit, id: run.id, status: run.status === "paused" ? "paused" : error ? "failed" : run.status === "input_required" ? "input_required" : "completed", text: run.text, ...(output !== undefined ? { output } : {}), inputs: [], error,
     usage: run.usage, ...(run.servedModel ? { servedModel: run.servedModel } : {}), files: run.files, toolErrors: run.toolErrors, toolCalls: run.toolCalls, sourceErrors: run.sourceErrors, raw: null,
   };
-  if (value.error && config.throwOnError !== false) throw new RunError(value);
+  if (value.status !== "paused" && value.error && config.throwOnError !== false) throw new RunError(value);
   return value;
 }
 
@@ -611,7 +615,7 @@ export class Agent {
     });
     const result = this.settle<OutputOf<S>>(id, this.client.prompt(text, promptOptions(id, options)), false, options.output).then(run => {
       push({ type: "done", run });
-      if (run.error && options.throwOnError !== false) failure = new RunError(run);
+      if (run.status !== "paused" && run.error && options.throwOnError !== false) failure = new RunError(run);
       return run;
     }, error => { failure = error; throw error; }).finally(() => { ended = true; unlisten(); wake?.(); });
     result.catch(() => {});
@@ -619,7 +623,7 @@ export class Agent {
       id,
       result: async () => {
         const run = await result;
-        if (run.error && options.throwOnError !== false) throw new RunError(run);
+        if (run.status !== "paused" && run.error && options.throwOnError !== false) throw new RunError(run);
         return run;
       },
       async *[Symbol.asyncIterator]() {
@@ -645,7 +649,7 @@ export class Agent {
       if (!(error instanceof AgentError) || error.status !== 0 || error.requestId !== id || /^Client closed/.test(error.message)) throw error;
       run = { id, status: "failed", text: "", inputs: [], usage: null, files: [], toolErrors: [], toolCalls: [], sourceErrors: [], raw: null, error: { code: error.code ?? "runtime_error", message: error.message, ...(error.uncertain ? { uncertain: true } : {}), ...(error.reason ? { reason: error.reason } : {}), ...(error.bucket ? { bucket: error.bucket } : {}), ...(error.endUser ? { endUser: error.endUser } : {}) } };
     }
-    if (run.error && throwOnError) throw new RunError(run);
+    if (run.status !== "paused" && run.error && throwOnError) throw new RunError(run);
     return run;
   }
 
@@ -665,7 +669,8 @@ export class Agent {
     // A runtime from before structured output ignores the schema and answers in text.
     if (schema && raw && output === undefined && !error && !raw.stopped) error = { code: "output_missing", message: "The run ended without an output: this runtime may not support structured output (output); upgrade it" };
     return {
-      id, status: error ? "failed" : raw?.stopped === "input_required" ? "input_required" : "completed",
+      ...(raw?.stopped === "spend_limit" ? { stoppedReason: "budget_reached" as const, limit: raw.limit } : {}),
+      id, status: raw?.stopped === "spend_limit" ? "paused" : error ? "failed" : raw?.stopped === "input_required" ? "input_required" : "completed",
       text: raw?.reply ?? "", ...(output !== undefined ? { output } : {}), inputs: (raw?.inputs ?? []).map(input => this.input<T>(input, schema)), error,
       usage: raw?.usage ?? null, ...(raw?.servedModel ? { servedModel: raw.servedModel } : {}), files: raw?.files ?? [], toolErrors: raw?.toolErrors ?? [], toolCalls: raw?.toolCalls ?? [], sourceErrors: raw?.sourceErrors ?? [], raw,
     };

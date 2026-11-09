@@ -228,12 +228,15 @@ Python's `agents.runs.stream(input, …)` or `stream(run_id=…)` resolves with 
 
 ### `Run`
 
-`{ id, status, text, output?, inputs, error, usage, files, toolErrors, toolCalls, sourceErrors, raw }`
+`{ id, status, stoppedReason?, limit?, text, output?, inputs, error, usage, files, toolErrors, toolCalls, sourceErrors, raw }`
 (Python: `tool_errors`, `tool_calls`, `source_errors`). `toolCalls` lists every
 tool call the run made, with `ok` or an error `code`, not their arguments or
 results (see [Run outcomes](events.md#run-outcomes)); a `delegate` call has its
 sub-agent's `agentId`, and `usage.subagentCostUsd` is what its sub-agents spent. `status` is `completed`,
-`input_required` or `failed`; `error` is `{ code, message, uncertain? }`.
+`input_required`, `paused` or `failed`; `error` is `{ code, message, uncertain? }`.
+At a spend limit, `stoppedReason` is `budget_reached` (Python: `stopped_reason`),
+`limit` names the budget, and `run()` returns without throwing. Raise the limit
+if needed and use `agent.client.continue()` to start the next turn on its history.
 `output` is a run with `output`'s answer, typed by its schema (`Run<T>`; Python:
 an instance of the pydantic model). See
 [Concepts](../concepts.md#runs) and [Errors](../reference/errors.md#run-failures).

@@ -61,7 +61,9 @@ export interface RunSummary {
   /** The agent's id; none for a stateless run, whose `requestId` is its run's id (run_…). */
   agent?: string; requestId: string;
   /** running: it has not ended yet (poll it with `camelrun runs get`, or the get_run tool). */
-  status: "running" | "completed" | "input_required" | "failed";
+  status: "running" | "completed" | "input_required" | "paused" | "failed";
+  stoppedReason?: "budget_reached";
+  limit?: string;
   text?: string;
   /** errorClass, providerStatus, retryable and model: how a model call failed it, where one did. */
   error?: { code: string; message: string; errorClass?: string; providerStatus?: number; retryable?: boolean; model?: string };
@@ -83,9 +85,9 @@ export function summarize(agent: string, record: any): RunSummary {
     : result.error ? { code: result.code ?? "model_error", message: result.error, ...result.modelError }
     : result.stopped === "spend_limit" ? { code: "spend_limit", message: "The agent reached its spend limit; raise it to go on" }
     : result.stopped === "turn_limit" ? { code: "turn_limit", message: "The run reached its limit of model responses or time; send another message to continue" } : undefined;
-  const status = failure ? "failed" : result.stopped === "input_required" ? "input_required" : "completed";
+  const status = result.stopped === "spend_limit" ? "paused" : failure ? "failed" : result.stopped === "input_required" ? "input_required" : "completed";
   return {
-    ...base, status,
+    ...base, status, ...(result.stopped === "spend_limit" ? { stoppedReason: "budget_reached" as const, limit: result.limit } : {}),
     ...(typeof result.reply === "string" ? { text: result.reply } : {}),
     ...(failure ? { error: failure } : {}),
     ...(result.inputs?.length ? { inputs: result.inputs.map((input: any) => ({ id: input.id, kind: input.kind, ...(input.message ? { message: input.message } : {}), detail: input.detail })) } : {}),
@@ -137,7 +139,7 @@ export async function statelessRun(api: Api, text: string, options: { wait?: num
 /** A stateless run's view as a run summary. */
 export function statelessSummary(run: any): RunSummary {
   return {
-    requestId: run.id, status: run.status, ...(run.text ? { text: run.text } : {}), ...(run.error ? { error: { code: run.error.code, message: run.error.message } } : {}),
+    requestId: run.id, status: run.status, stoppedReason: run.stoppedReason, limit: run.limit, ...(run.text ? { text: run.text } : {}), ...(run.error ? { error: { code: run.error.code, message: run.error.message } } : {}),
     ...(run.toolErrors?.length ? { toolErrors: run.toolErrors } : {}), ...(run.files?.length ? { files: run.files } : {}), ...(run.usage ? { usage: run.usage } : {}),
     ...(run.output !== undefined ? { output: run.output } : {}),
   };

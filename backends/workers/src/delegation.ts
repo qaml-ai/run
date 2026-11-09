@@ -76,7 +76,7 @@ export interface DelegationHost {
   forkComputer?(batch: string): Promise<ChildComputerFork>;
   /** A made child's work ended (its delegate call answered): its computers stop billing. */
   releaseComputer?(child: string): Promise<void>;
-  target(ref: { agent?: string; definition?: string }): Promise<{ id?: string; config: Configuration; description?: string }>;
+  target(ref: { agent?: string; definition?: string; revision?: number }): Promise<{ id?: string; config: Configuration; description?: string }>;
   fetch(id: string, request: Request): Promise<Response>;
   /** Cancel exactly this child request, including a queued request of an existing agent. */
   cancelRequest?(agentId: string, requestId: string): Promise<unknown>;
@@ -586,11 +586,12 @@ export class Delegation {
   }
   async targetDescriptions(settings: DelegateSettings) {
     const descriptions = new Map<string, string>();
+    const key = (target: NonNullable<DelegateSettings['agents']>[number]) => `${target.definition}:${target.revision ?? "latest"}`;
     await Promise.all((settings.agents ?? []).filter(target => target.definition && !target.description).map(async target => {
       const resolved = await this.host.target(target).catch(() => undefined);
-      if (resolved?.description) descriptions.set(target.definition!, resolved.description);
+      if (resolved?.description) descriptions.set(key(target), resolved.description);
     }));
-    return (target: NonNullable<DelegateSettings['agents']>[number]) => target.definition ? descriptions.get(target.definition) : undefined;
+    return (target: NonNullable<DelegateSettings['agents']>[number]) => target.definition ? descriptions.get(key(target)) : undefined;
   }
   /** Only the trusted runtime-auth source registration exposes this callback. */
   async toolSpawn(tool: string, directive: unknown, api: ToolExecutionApi, context: Context): Promise<McpResult> {

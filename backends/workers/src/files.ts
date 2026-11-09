@@ -71,6 +71,7 @@ export interface Mount {
   mode: "ro" | "rw";
   subpath?: string;
   notify?: boolean;
+  instructions?: string;
 }
 const json = (value: unknown, status = 200) =>
   Response.json(value, { status, headers: { "cache-control": "no-store" } });

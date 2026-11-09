@@ -67,7 +67,7 @@ const CASES: { name: string; setup: { settings: Record<string, unknown>; balance
 test("the TypeScript SDK: a queued run refused as it starts is a failed run with code end_user_credit and its reason, not runtime_error", async t => {
   const { endUserCredit } = await import("../../../clients/typescript.ts");
   const { run } = await queuedRefusal(t, CASES[3].setup, true);
-  assert.equal(run.status, "failed");
+  assert.equal(run.status, "paused");
   assert.deepEqual([run.error.code, run.error.limit, run.error.reason, run.error.bucket, run.error.endUser], ["end_user_credit", "end_user", "bucket_limit", "bot:1", "person"], JSON.stringify(run.error));
   assert.deepEqual(endUserCredit(run), { code: "end_user_credit", reason: "bucket_limit", bucket: "bot:1", endUser: "person", message: run.error.message });
 });
@@ -77,7 +77,7 @@ for (const { name, setup, reason, words } of CASES) {
     const { record, event } = await queuedRefusal(t, setup);
     const result = record.outcome.result;
     assert.ok(result, JSON.stringify(record.outcome));
-    assert.deepEqual([record.status, result.code, result.stopped, result.limit, result.reason, result.bucket, result.endUser], ["failed", "end_user_credit", "spend_limit", "end_user", reason, "bot:1", "person"], JSON.stringify(record));
+    assert.deepEqual([record.status, result.code, result.stopped, result.limit, result.reason, result.bucket, result.endUser], ["paused", "end_user_credit", "spend_limit", "end_user", reason, "bot:1", "person"], JSON.stringify(record));
     assert.equal(record.error, result.error, "its words are on the record, for people");
     if (words) assert.match(result.error, words);
     assert.deepEqual([event.data.code, event.data.limit, event.data.reason, event.data.bucket, event.data.endUser], ["end_user_credit", "end_user", reason, "bot:1", "person"], JSON.stringify(event));

@@ -291,7 +291,9 @@ export interface RuntimeOptions {
   /** How often a request still waiting for its result asks for its status, in case the result's event was lost. Default 30 s. */
   pollMs?: number;
 }
+export type HumanInputSettings = { expiresInSeconds?: number; approvers?: string[]; unattended?: "decline" };
 export interface AgentOptions {
+  humanInput?: HumanInputSettings;
   /** The application's tools, served to the agent as an attached MCP server. */
   tools?: Tools;
   /** Or an MCP server of the application's own (see `clients/mcp.ts` for MCP SDK servers). */
@@ -406,6 +408,7 @@ export interface InputDetail {
 export interface InputAnswer { action: "accept" | "decline" | "cancel"; content?: unknown; from?: Sender; actor?: string }
 export type { ThinkingLevel };
 export interface CreateAgentOptions extends AgentOptions {
+  definitionRevision?: number;
   /** Account workspace for spend attribution; null leaves it unassigned. */
   workspaceId?: string | null;
   idempotencyKey?: string;
@@ -499,7 +502,7 @@ export type Builtin = "file_link" | "file_import" | "web_fetch" | "web_search" |
  * (`{ agent }`, which keeps its own history across calls). `name` is what the model calls it (default: the key); `description`
  * what it is for (default: the definition's).
  */
-export type AgentTarget = string | { name?: string; definition: string; description?: string } | { name?: string; agent: string; description?: string };
+export type AgentTarget = string | { name?: string; definition: string; revision?: number; description?: string } | { name?: string; agent: string; description?: string };
 /** Sub-agents: who the model may delegate to, whether it may write a child's instructions itself, and how deep (default 2) and wide (default 4 at once). */
 export interface DelegateSettings {
   agents?: AgentTarget[]; instructions?: boolean; maxDepth?: number; maxParallel?: number;
@@ -536,6 +539,7 @@ export interface InlineMcpServer {
  */
 interface SourceOptions { name: string; headers?: Record<string, string>; auth?: SourceAuth; audience?: string; allowTools?: string[]; denyTools?: string[]; exposure?: "direct" | "codemode" | "both"; timeoutMs?: number; fileArguments?: "on" | "off" }
 export interface DefinitionInput {
+  humanInput?: HumanInputSettings;
   name: string;
   /** What its agents are for: shown to models as the description of each agent's MCP tool (/v1/agents/:id/mcp). */
   description?: string;
@@ -624,14 +628,14 @@ export interface AgentSummary {
   /** Its latest failed run: when, and how (a class such as model_error or spend_limit, never the error's text). */
   lastError?: { at: number; class: string } | null;
 }
-export interface Mount { volumeId: string; path: string; mode: "ro" | "rw"; subpath?: string; notify?: boolean }
+export interface Mount { volumeId: string; path: string; mode: "ro" | "rw"; subpath?: string; notify?: boolean; instructions?: string }
 /**
  * A mount as given: a volume, or the agent's own workspace at /workspace, which is beside the others (after them) by
  * default: `{ workspace: true }` places it, `{ workspace: false }` leaves it out. `path` mounts it elsewhere (absolute
  * and normalized), e.g. `{ workspace: true, path: "/scratch" }` beside a project volume at /workspace: attachments
  * and tool outputs go there.
  */
-export type MountInput = Mount | { workspace: true; path?: string } | { workspace: false };
+export type MountInput = Mount | { workspace: true; path?: string; instructions?: string } | { workspace: false };
 /** Where a fork came from: the agent, and the history index of its last message the fork began with (null: none). */
 export interface ForkedFrom { agentId: string; atMessage: number | null }
 /** What `resetContext` did: the context's range (journal entries and their bytes) before and after it. */
@@ -869,6 +873,8 @@ export class RunError extends AgentError {
 }
 /** What a run produced: its reply, how it stopped, the inputs it waits on and the files it wrote. */
 export interface RunResult {
+  stoppedReason?: "budget_reached";
+  status?: "paused";
   /** The final assistant message's text ("" when it said nothing). */
   reply?: string;
   /** The model's error, or null. */
@@ -1097,7 +1103,7 @@ const AGENT_KEY = /^[A-Za-z0-9_-]{1,80}$/;
 const REQUEST_ID = AGENT_KEY;
 /** A create request's fields, from the options given. */
 function provisioning(options: CreateAgentOptions) {
-  const fields = ["workspaceId", "subject", "context", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "definition", "mounts", "remount", "model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "queue", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "decide", "delegate", "mcpServers", "prompt"] as const;
+  const fields = ["workspaceId", "subject", "context", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "definition", "definitionRevision", "humanInput", "mounts", "remount", "model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "queue", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "decide", "delegate", "mcpServers", "prompt"] as const;
   return withMultiAgent(Object.fromEntries(fields.filter(field => options[field] !== undefined).map(field => [field, options[field]])));
 }
 /** `delegate` settings bring their builtin: given the settings without delegate or agents, delegate is added. */
@@ -1940,8 +1946,10 @@ export interface RunRequest {
 }
 /** A stateless run, as the runtime has it: `running`, then how it ended. */
 export interface StatelessRun {
+  stoppedReason?: "budget_reached";
+  limit?: RunResult["limit"];
   id: string;
-  status: "running" | "completed" | "input_required" | "failed";
+  status: "running" | "completed" | "input_required" | "paused" | "failed";
   text: string;
   output?: unknown;
   error: ({ code: string; message: string; uncertain?: boolean } & Partial<ModelFailure>) | null;

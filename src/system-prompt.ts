@@ -113,7 +113,7 @@ export function environmentSummary(config: Pick<AgentConfig, "mounts" | "model" 
   const mounts = config.mounts ?? [];
   const writable = scratchMount(mounts.filter(mount => !mount.computer));
   const files = !mounts.length ? "Files: none are mounted, so the file tools are unavailable."
-    : `Files: ${mounts.map(mount => `${mount.path} (${mount.mode === "ro" ? "read-only" : "read-write"})`).join(", ")}; relative paths resolve against ${mounts[0].path}.` +
+    : `Files: ${mounts.map(mount => `${mount.path} (${mount.mode === "ro" ? "read-only" : "read-write"})${mount.instructions ? `: ${mount.instructions}` : ""}`).join(", ")}; relative paths resolve against ${mounts[0].path}.` +
       (mounts.some(mount => mount.computer) ? " /computer is your computer’s home directory (~); its files live only as long as the computer session and are gone after it expires. Use cp or mv to save them to a volume." : "") +
       (writable ? ` Attachments are saved under ${writable.path}/uploads/<request>/ and files that tools return under ${writable.path}/tool-outputs/; keep scratch data under ${writable.path}/tmp/.` : "") +
       (config.fileTools === false ? (code ? " Scripts read and write them with the file tools (tools.read, tools.write, tools.ls and so on); the application's own tools may reach other files." : " The application's own tools may reach them.")

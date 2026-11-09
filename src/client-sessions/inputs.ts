@@ -63,6 +63,7 @@ export function approver(by: Responder) {
 export async function suspend(ctx: InputContext, session: Session, call: ToolCall, request: RequestRecord | undefined, result: McpResult) {
   const inputs = ctx.options.inputs;
   let requests: { key?: string; kind: Input["kind"]; message: string; detail: Record<string, unknown> }[] = inputRequests(result, call.name === "ask_user" || call.name === "request_decision");
+  if (requests.some(entry => entry.kind === "approval") && session.header.sources?.humanInput?.unattended === "decline") return { content: [{ type: "text", text: "Approval declined: unattended mode. The tool did not run." }], isError: true };
   const decision = call.name === "request_decision";
   if (decision) requests = requests.map(entry => ({ ...entry, kind: "decision" }));
   const approval = requests.every(entry => entry.kind === "approval");

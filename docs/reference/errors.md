@@ -116,10 +116,10 @@ In more detail:
 
 ## Run failures
 
-A run ends in one of three ways: it answered, it waits on people
-(`stopped: "input_required"`), or it failed. It failed when:
+A run answers, waits on people (`stopped: "input_required"`), pauses at a spend
+limit, or fails. The codes below describe failures and legacy budget-stop fields:
 
-| Code (SDK `RunError.code`) | Outcome | Meaning |
+| Code (`run.error.code`, or SDK `RunError.code` for failures) | Outcome | Meaning |
 | --- | --- | --- |
 | `model_key_missing` | `result.code` (with `result.error`) | No key is set for the agent's model. The error names the model and the remedy: set a key with `PUT /v1/providers/<provider>/key` (or the key scope's entry), or move the agent to a model you can use (`GET /v1/models?available=true`) |
 | `model_key_invalid` | `result.code` (with `result.error`) | The provider refused the key (HTTP 401). The error says the same remedy, then the provider's own words |
@@ -134,6 +134,10 @@ A run ends in one of three ways: it answered, it waits on people
 | (any, with `uncertain`) | `outcome.uncertain: true` | A restart cut the run short where it could not resume (a code execution, or a turn resumed twice already): its tool calls may or may not have taken effect. Check before retrying |
 
 ### End-user credit reasons
+
+A spend-limit stop returns `status: "paused"` and `stoppedReason: "budget_reached"`.
+SDK `run()` returns it without throwing, with the legacy error and limit fields
+still present. Raise the relevant limit or add credit before continuing the agent.
 
 When an end user's credit refuses or stops work, every path says so the same way: a 402's `code: "END_USER_CREDIT"`,
 a run's `code: "end_user_credit"` (refused as it started, stopped mid-way, or a sub-agent's notification refused as it
@@ -177,7 +181,7 @@ A run's `servedModel` (and `run.completed`'s, `run.failed`'s) is the model that 
 `provider/model-id`; retries ask the same model.
 
 A request record (`GET …/requests/:requestId`, `GET …/state`) puts an ended run's
-`status` (`completed`, `input_required` or `failed`, as the SDKs' runs say it),
+`status` (`completed`, `input_required`, `paused` or `failed`, as the SDKs' runs say it),
 `error`, whichever kind, and `stopped` on top. Its `state` says only whether it
 ended (`running`, `completed`): a failed run is `state: "completed"`,
 `status: "failed"`.

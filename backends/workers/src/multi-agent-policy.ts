@@ -15,7 +15,7 @@ export const MULTI_AGENT_LIMITS = Object.freeze({
   /** How deep delegation goes by default (a child's child is depth 2), and the most a setting may allow. */
   maxDepth: 2, depthCeiling: 5,
   /** Delegate calls of one run in flight at once by default (more wait their turn), and the most a setting may allow. */
-  maxParallel: 4, parallelCeiling: 16,
+  maxParallel: 4, parallelCeiling: 64,
   /** Targets in one allowlist. */
   targets: 32,
   /** How long a child the runtime makes lives: a scratch agent's day. */
@@ -57,7 +57,7 @@ export function modelOutputSchema(value: unknown): unknown {
 }
 
 /** A delegate target: a definition (by id or key) or an existing agent (by key), named for the model. */
-export type AgentTarget = { name: string; definition?: string; agent?: string; description?: string };
+export type AgentTarget = { name: string; definition?: string; revision?: number; agent?: string; description?: string };
 export interface DelegateSettings {
   /** Agents the model may start (a definition: a new child each call) or message (an agent: its own history). */
   agents?: AgentTarget[];
@@ -105,13 +105,14 @@ export function targetsInput(value: unknown, field: string): AgentTarget[] {
   const targets = value.map((entry): AgentTarget => {
     const given = typeof entry === "string" ? { definition: entry } : entry;
     if (!given || typeof given !== "object" || Array.isArray(given)) throw new HttpError(400, shape);
-    const { name, definition, agent, description, ...rest } = given as Record<string, unknown>;
+    const { name, definition, revision, agent, description, ...rest } = given as Record<string, unknown>;
     const ref = definition ?? agent;
     if (Object.keys(rest).length || (definition !== undefined) === (agent !== undefined) || typeof ref !== "string" || !KEY.test(ref)) throw new HttpError(400, shape);
+    if (revision !== undefined && (definition === undefined || !Number.isSafeInteger(revision) || Number(revision) < 1)) throw new HttpError(400, "revision requires a definition and a positive integer");
     const shown = name ?? ref;
     if (typeof shown !== "string" || !NAME.test(shown)) throw new HttpError(400, `${field}: a name is 1 to 64 letters, digits, _ and -`);
     if (description !== undefined && (typeof description !== "string" || !description.trim() || description.length > MULTI_AGENT_LIMITS.descriptionChars)) throw new HttpError(400, `${field}: a description is 1 to ${MULTI_AGENT_LIMITS.descriptionChars} characters`);
-    return { name: shown, ...(definition !== undefined ? { definition: definition as string } : { agent: agent as string }), ...(description !== undefined ? { description: (description as string).trim() } : {}) };
+    return { name: shown, ...(revision !== undefined ? { revision: revision as number } : {}), ...(definition !== undefined ? { definition: definition as string } : { agent: agent as string }), ...(description !== undefined ? { description: (description as string).trim() } : {}) };
   });
   const names = targets.map(target => target.name);
   const twice = names.find((name, index) => names.indexOf(name) !== index);

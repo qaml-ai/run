@@ -130,7 +130,7 @@ export interface AgentConfig {
    */
   codeMode?: boolean;
   /** Where the agent's volumes are mounted, for its prompt's summary of its environment; `workspace` marks its own. */
-  mounts?: { path: string; mode: "ro" | "rw"; workspace?: boolean; computer?: boolean }[];
+  mounts?: { path: string; instructions?: string; mode: "ro" | "rw"; workspace?: boolean; computer?: boolean }[];
   initialMessages?: AgentMessage[];
   thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   /** The most the model writes in one response, within its own maximum; null or absent: the model's maximum. */

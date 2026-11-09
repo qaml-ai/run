@@ -59,8 +59,8 @@ export function runView(record: RequestRecord, retentionMs: number) {
     : result.stopped === "spend_limit" ? { code: "spend_limit", message: "The run reached its spend limit" }
     : result.stopped === "turn_limit" ? { code: "turn_limit", message: "The run reached its limit of model responses or time" } : null;
   return {
-    id: record.id, status: !ended ? "running" : error ? "failed" : result.stopped === "input_required" ? "input_required" : "completed",
-    text: typeof result.reply === "string" ? result.reply : "", ...(result.output !== undefined ? { output: result.output } : {}), error,
+    id: record.id, status: !ended ? "running" : result.stopped === "spend_limit" ? "paused" : error ? "failed" : result.stopped === "input_required" ? "input_required" : "completed",
+    ...(result.stopped === "spend_limit" ? { stoppedReason: "budget_reached", limit: result.limit } : {}), text: typeof result.reply === "string" ? result.reply : "", ...(result.output !== undefined ? { output: result.output } : {}), error,
     usage: result.usage ?? null, ...(typeof result.servedModel === "string" ? { servedModel: result.servedModel } : {}), toolCalls: result.toolCalls ?? [], toolErrors: result.toolErrors ?? [], sourceErrors: result.sourceErrors ?? [], files: result.files ?? [],
     ...(record.metadata ? { metadata: record.metadata } : {}), ...(record.startedAt ? { createdAt: record.startedAt } : {}), ...(record.began ? { startedAt: record.began } : {}),
     ...(record.endedAt ? { endedAt: record.endedAt } : {}), expiresAt: ended && record.endedAt ? record.endedAt + retentionMs : null,

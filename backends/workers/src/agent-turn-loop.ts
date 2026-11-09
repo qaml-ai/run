@@ -373,11 +373,12 @@ export async function onHumanImpl(this: AgentRuntime,
           const doc = await tx.doc(HumanInputs);
           for (const [key, input] of bound) {
             const current = doc.requests[key];
-            if (current && !current.policyBound) Object.assign(current, { requestId: input.requestId, responders: input.responders, inboxResponders: input.inboxResponders, ...(input.fixedResponders ? { fixedResponders: true as const } : {}), expiresAt: input.expiresAt, policyBound: true });
+            if (current && !current.policyBound) Object.assign(current, { ...(input.answer !== undefined ? { answer: input.answer, answerDetail: input.answerDetail, state: input.state } : {}), requestId: input.requestId, responders: input.responders, inboxResponders: input.inboxResponders, ...(input.fixedResponders ? { fixedResponders: true as const } : {}), expiresAt: input.expiresAt, policyBound: true });
           }
         }, BACKGROUND_CONTEXT);
       }
-      const inputs = bound.map(([key, input]) =>
+      if (bound.every(([, input]) => input.answer !== undefined)) continue;
+      const inputs = bound.filter(([, input]) => input.answer === undefined).map(([key, input]) =>
         humanInputView(key, input, conf.id, id),
       );
       for (const input of inputs)
@@ -637,6 +638,7 @@ export async function settleImpl(this: AgentRuntime,
         ...(usage.toolCalls?.length ? { toolCalls: usage.toolCalls } : {}),
         ...(usage.toolErrors?.length ? { toolErrors: usage.toolErrors } : {}),
       });
+      if ("result" in outcome && outcome.result && (outcome.result as { stopped?: string } | undefined)?.stopped === "spend_limit") Object.assign(outcome.result, { status: "paused", stoppedReason: "budget_reached" });
       // A prompt Pi placed with others on an agent whose queue batches (batch-queue.ts): Pi settled it with the turn's
       // answer. The turn's first input leads it and lists the others; each other carries the answer, names the first,
       // and has none of the turn's usage, charged once on the first.
@@ -658,7 +660,7 @@ export async function settleImpl(this: AgentRuntime,
           endedAt: await tx.get<number>(`turn-ended:${id}`) ?? Date.now(),
           outcome,
           ...(batchedInto ? { batchedInto } : batch.length ? { batch: batch.slice(1) } : {}),
-          status:
+          status: limit?.stopped === "spend_limit" ? "paused" :
             !limit &&
             runCompleted &&
             (!requestedOutput || outputValue !== undefined)

@@ -139,8 +139,8 @@ export function createDelegation(this: AgentRuntime): Delegation {
     target: async (ref) => {
       const conf = await this.config();
       if (ref.definition) {
-        const definition = await resolveDefinition(this.env, conf.tenantId, ref.definition);
-        return { config: await provisionDefinition(this.env, conf.tenantId, { definition: definition.id }) as never,
+        const definition = await resolveDefinition(this.env, conf.tenantId, ref.definition, ref.revision);
+        return { config: await provisionDefinition(this.env, conf.tenantId, { definition: definition.id, ...(ref.revision !== undefined ? { definitionRevision: ref.revision } : {}) }) as never,
           description: definition.spec.description };
       }
       const entry = await new Directory(this.env, conf.tenantId).get(

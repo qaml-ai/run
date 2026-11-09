@@ -99,7 +99,7 @@ export async function prepareMounts(
       if (
         typeof m.workspace !== "boolean" ||
         Object.keys(m).some(
-          (k) => k !== "workspace" && (m.workspace !== true || k !== "path"),
+          (k) => k !== "workspace" && (m.workspace !== true || !["path", "instructions"].includes(k)),
         )
       )
         throw new FileError("Invalid workspace mount");
@@ -108,6 +108,7 @@ export async function prepareMounts(
           volumeId: own,
           path: m.path ?? "/workspace",
           mode: "rw",
+          ...(m.instructions !== undefined ? { instructions: m.instructions } : {}),
         });
     } else expanded.push(m);
   }
@@ -120,7 +121,7 @@ export async function prepareMounts(
   for (const m of expanded) {
     if (
       Object.keys(m).some(
-        (k) => !["volumeId", "path", "mode", "subpath", "notify"].includes(k),
+        (k) => !["volumeId", "path", "mode", "subpath", "notify", "instructions"].includes(k),
       )
     )
       throw new FileError("Invalid mount");
@@ -130,6 +131,7 @@ export async function prepareMounts(
       throw new FileError("Mount path must be absolute and normalized");
     if (m.mode !== "ro" && m.mode !== "rw")
       throw new FileError("mode must be ro or rw");
+    if (m.instructions !== undefined && (typeof m.instructions !== "string" || m.instructions.length > 4096)) throw new FileError("Mount instructions must be at most 4096 characters");
     if (m.notify !== undefined && typeof m.notify !== "boolean")
       throw new FileError("notify must be a boolean");
     if (!validVolumeId(m.volumeId))
@@ -163,6 +165,7 @@ export async function prepareMounts(
     );
     if (!row) throw new FileError(`Unknown volume ${m.volumeId}`, 404);
     mounts.push({
+      ...(m.instructions !== undefined ? { instructions: m.instructions as string } : {}),
       volumeId: m.volumeId,
       path,
       mode: m.mode,

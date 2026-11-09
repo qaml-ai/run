@@ -384,7 +384,7 @@ export interface ClientSessionOptions {
   /** Signs links to the agent's files (`POST /clients/:id/links`, `present_file`). */
   links?: FileLinks;
   /** A definition's current configuration, to apply to an agent made from it (`configure` with `definition`). */
-  definitionFor?: (tenant: string, id: string) => Promise<DefinitionConfig>;
+  definitionFor?: (tenant: string, id: string, revision?: number) => Promise<DefinitionConfig>;
   /** Tools the runtime calls itself (MCP servers), from the agent's definition. */
   sources?: ToolSources;
   /** Human input (questions, approvals, setup steps) that suspended turns wait on; without it, tools cannot ask. */
@@ -458,8 +458,8 @@ export const MODEL_RUNS = ["prompt", "continue"];
 export const visible = ({ sharedAgent: _sharedAgent, heldForInput: _heldForInput, sender: _sender, params: _params, announce: _announce, handedOff: _handedOff, carried: _carried, notice: _notice, landOnly: _landOnly, ...record }: RequestRecord): RequestRecord => {
   if (record.state !== "completed") return record;
   const ending = outcomeEnding(record.outcome);
-  const status = ending.error !== undefined || ending.stopped === "spend_limit" || ending.stopped === "turn_limit" || ending.stopped === "agent_loop_limit" ? "failed" : ending.stopped === "input_required" ? "input_required" : "completed";
-  return { ...record, ...ending, status };
+  const status = ending.stopped === "spend_limit" ? "paused" : ending.error !== undefined || ending.stopped === "turn_limit" || ending.stopped === "agent_loop_limit" ? "failed" : ending.stopped === "input_required" ? "input_required" : "completed";
+  return { ...record, ...ending, status, ...(ending.stopped === "spend_limit" ? { stoppedReason: "budget_reached" as const } : {}) };
 };
 
 /**
