@@ -166,6 +166,6 @@ contractTest("monitors", "tests/monitors.test.ts:6", "approvals are declined in 
   assert.equal(f.model.bodies.length, 0);
   assert.equal((await f.call(`/v1/agents/${agent}/inputs`)).json?.inputs?.filter((input: any) => input.state === "pending").length ?? 0, 0, "nothing waits on a person");
   await f.call(path, { body: { name: "fires", code: "return { fire: true, value: 1 };" } });
-  await until(() => f.model.bodies.some(body => toolResults(body).some(text => /unattended/.test(text))), "the declined approval in the fired turn");
+  await until(() => f.model.bodies.some(body => toolResults(body).some((text: string) => /unattended/.test(text))), "the declined approval in the fired turn");
   assert.equal(calls, 0, "the gated tool did not run in the fired turn");
 }, { env: { AGENT_OUTBOUND_ALLOW_HTTP: 'true', AGENT_OUTBOUND_ALLOW_CIDRS: '127.0.0.1/32' }, timeout: 120_000 });

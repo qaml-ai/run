@@ -79,8 +79,9 @@ export const allowedInCheck = (tool: string) => !DENIED.test(tool);
 export function checkCode(code: string, state: unknown) {
   return `const state = ${JSON.stringify(state ?? null)};
 let __calls = 0;
-const __counted = new Proxy(tools, { get(target, name) {
-  const member = target[name];
+const __all = tools;
+const __counted = new Proxy({}, { get(_target, name) {
+  const member = __all[name];
   return typeof member !== "function" ? member : (...args) => {
     if (++__calls > ${MONITOR_LIMITS.toolCalls}) throw new Error(${JSON.stringify(`A monitor's check makes at most ${MONITOR_LIMITS.toolCalls} tool calls`)});
     return member(...args);
