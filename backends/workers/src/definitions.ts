@@ -91,7 +91,7 @@ export async function provisionDefinition(env: ControlEnv, tenant: string, input
   if (input.computer !== undefined) throw new ApiError(400, "computer is set in a definition; make the agent from one");
   if (typeof input.definition !== "string") {
     const result = { ...input };
-    for (const field of ["mcpServers", "openApi"] as const) if (input[field] !== undefined) result[field] = await prepareApply(`agent-sources:${canonical([tenant, field, input[field]])}`, () => prepareSources(env, tenant, undefined, field, input[field]));
+    for (const field of ["mcpServers", "openApi"] as const) if (input[field] !== undefined) result[field] = await prepareApply(`agent-sources:${JSON.stringify([tenant, field, input[field]])}`, () => prepareSources(env, tenant, undefined, field, input[field]));
     return result;
   }
   if (input.systemPrompt !== undefined) throw new ApiError(400, "Use systemPromptAppend with a definition");
@@ -159,7 +159,7 @@ export async function definitionRoutes(request: Request, env: ControlEnv, auth: 
   const raw = request.method === "PATCH" ? { ...existing?.spec, ...changes } : changes;
   for (const [field, value] of Object.entries(raw)) if (value === null) delete raw[field];
   const services = await keyServices(env);
-  const spec = await prepareApply(`definition-spec:${canonical([auth.tenantId, id, raw, input, existing?.spec, request.method])}`, async () => {
+  const spec = await prepareApply(`definition-spec:${JSON.stringify([auth.tenantId, id, raw, input, existing?.spec, request.method])}`, async () => {
   const { mcpServers, openApi, description: _description, applyOnUpdate: _applyOnUpdate, limits: _limits, computer, channel: madeFor, ...rest } = raw as Record<string, unknown>;
   const spec = configuration(rest, env.MODEL).config as Definition["spec"];
   if (computer !== undefined) spec.computer = computerSettingsInput(computer, value => sourceUrl(value, env), auth.tenantId);
@@ -226,5 +226,5 @@ export async function definitionRoutes(request: Request, env: ControlEnv, auth: 
     const error = result.error ?? result.outcome?.error;
     applied.push({ agent: agent.id, requestId, status: !response.ok || error ? "failed" : result.state === "completed" ? "updated" : "queued", ...(error ? { error } : {}) });
   }
-  return reply({ ...view(saved), ...await prepareApply(`definition-warnings:${canonical([auth.tenantId, saved.spec])}`, () => builtinWarnings(env, auth.tenantId, saved.spec)), ...(applied.length || input.apply === "all" ? { applied } : {}) }, request.method === "POST" ? 201 : 200);
+  return reply({ ...view(saved), ...await prepareApply(`definition-warnings:${JSON.stringify([auth.tenantId, saved.spec])}`, () => builtinWarnings(env, auth.tenantId, saved.spec)), ...(applied.length || input.apply === "all" ? { applied } : {}) }, request.method === "POST" ? 201 : 200);
 }

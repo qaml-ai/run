@@ -171,7 +171,7 @@ export class Directory {
   ): Promise<DirectoryEntry | DirectoryFailure> {
     const fields = input && typeof input === "object" ? input as Record<string, unknown> : {};
     const defaultModel = fields.model === undefined
-      ? await prepareApply(`default-model:${canonical([this.tenantId, fields.keyScope])}`, () => defaultModelFor(this.env, this.tenantId, typeof fields.keyScope === "string" ? fields.keyScope : undefined))
+      ? await prepareApply(`default-model:${JSON.stringify([this.tenantId, fields.keyScope])}`, () => defaultModelFor(this.env, this.tenantId, typeof fields.keyScope === "string" ? fields.keyScope : undefined))
       : this.env.MODEL;
     const { config, ttlSeconds } = configuration(input, defaultModel);
     const workspaces = new Workspaces(database(this.env));
@@ -190,7 +190,7 @@ export class Directory {
     // An upsert that leaves its queue out keeps the one the agent has, as for its language.
     if (fields.queue === undefined && previousConfig?.queue !== undefined) config.queue = previousConfig.queue;
     if (fields.subject === undefined && previousConfig?.subject) config.subject = previousConfig.subject;
-    const resolvedModel = await prepareApply(`agent-model:${canonical([this.tenantId, config, previousConfig?.model, previousEntry?.resolvedModel, fields.model === undefined])}`,
+    const resolvedModel = await prepareApply(`agent-model:${JSON.stringify([this.tenantId, config, previousConfig?.model, previousEntry?.resolvedModel, fields.model === undefined])}`,
       () => validateAgentModel(this.env, this.tenantId, config, { reference: previousConfig?.model, model: previousEntry?.resolvedModel, defaultModel: fields.model === undefined }));
     // An agent whose first configuration never applied (initialized false: the apply failed) is still being
     // created: a retry applies it as a creation, since there is no configuration on the agent to queue a change on.

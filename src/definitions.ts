@@ -199,7 +199,7 @@ export class Definitions {
 
   /** The MCP servers a save sent, listed now (see `listMcp`). */
   private async listing(tenant: string, id: string, spec: DefinitionSpec, input: DefinitionInput) {
-    return prepareApply(`definition-list:${canonical([tenant, id, spec, input])}`, async () => input.mcpServers !== undefined && spec.mcpServers?.length && this.listMcp ? this.listMcp(tenant, id, spec.mcpServers) : undefined);
+    return prepareApply(`definition-list:${JSON.stringify([tenant, id, spec, input])}`, async () => input.mcpServers !== undefined && spec.mcpServers?.length && this.listMcp ? this.listMcp(tenant, id, spec.mcpServers) : undefined);
   }
 
   /** Replace the given fields; with `revision`, only if the definition is still at that revision. */
@@ -305,7 +305,7 @@ export class Definitions {
 
   /** `current` with `input`'s fields applied, checked as agent configuration is. */
   private async merge(tenant: string, id: string, current: DefinitionSpec, input: DefinitionInput): Promise<DefinitionSpec> {
-    return prepareApply(`definition-spec:${canonical([tenant, id, current, input])}`, () => this.prepareSpec(tenant, id, current, input));
+    return prepareApply(`definition-spec:${JSON.stringify([tenant, id, current, input])}`, () => this.prepareSpec(tenant, id, current, input));
   }
   private async prepareSpec(tenant: string, id: string, current: DefinitionSpec, input: DefinitionInput): Promise<DefinitionSpec> {
     if (!input || typeof input !== "object" || Array.isArray(input)) throw new HttpError(400, "Send a definition object");
