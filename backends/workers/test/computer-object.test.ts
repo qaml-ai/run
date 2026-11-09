@@ -20,7 +20,9 @@ test('an idle alarm waits for the exec deadline without blocking concurrent comm
   const alarms: number[] = [];
   const held = new Promise<void>(resolve => { release = resolve; });
   class Host {
-    constructor(public ctx: unknown, public env: unknown) {}
+    ctx: unknown;
+    env: unknown;
+    constructor(ctx: unknown, env: unknown) { this.ctx = ctx; this.env = env; }
   }
   class Clock extends Date { static now() { return now; } }
   const Computer = runInNewContext(outputText.replace(/\bexport \{\};?\s*$/, '') + '\nContainerComputer', {
