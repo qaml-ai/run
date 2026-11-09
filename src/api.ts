@@ -1,5 +1,7 @@
 import { vaultRoutes } from "./vault-api.ts";
 import type { Vault } from "./core/vault.ts";
+import { handleHook } from "./core/trigger-ingress.ts";
+import { TriggerInput, type Triggers } from "./triggers.ts";
 import { applyRoutes } from "./apply-api.ts";
 import type { Db } from "./db.ts";
 import { groupedUsage, usageOptions, usageDays, ownsUsageAgent } from "../shared/usage-details.ts";
@@ -107,6 +109,7 @@ export interface ApiContext {
   /** A new run's cheap check of its tenant's runs per minute and busy agents, before anything is made. */
   runPrecheck?: RunsContext["runPrecheck"];
   verifyKeys?: boolean;
+  triggers?: Triggers;
   scheduler?: Scheduler;
   channels?: Channels;
   /** A tenant's GitHub Apps (`/v1/github-apps`), which egress grants and tool sources mint tokens from. */
@@ -337,6 +340,13 @@ export function api(context: ApiContext) {
     await context.billingAlerts?.service.unsubscribe(c.req.param("token"));
     return c.body(null, 204);
   });
+  for(const path of ["/v1/hooks/{token}","/v1/hooks"] as const) {
+    route(createRoute({method:"post",path,security:[],...(path.endsWith("}")?{request:{params:z.object({token:z.string()})}}:{}),responses:{200:reply("Verified challenge",z.unknown()),202:reply("Delivery accepted",z.unknown())}}), async c => {
+      if (!context.triggers) throw new HttpError(404,"Unknown hook");
+      const result=await handleHook(c.req.raw,context.clientAddress?.(c)??"unknown",async()=>context.triggers!);
+      return json(c,result.code,result.body);
+    });
+  }
   app.use("/v1/*", async (c, next) => {
     const principal = await authenticate(c, context);
     c.set("principal", principal);
@@ -365,7 +375,7 @@ export function api(context: ApiContext) {
     db: () => clients.db, tenant: c => c.var.principal.tenant, lockMs: context.idempotencyLockMs,
     skip: path => path === "/v1/agents" || path === "/v1/definitions" || path === "/v1/runs" || path === "/v1/transcriptions" || path === "/v1/images" || path === "/v1/speech" || path === "/v1/decisions" || /^\/v1\/agents\/[^/]+\/(?:prompt|fork)$/.test(path),
     // Answers with a secret shown once: API tokens (a new tenant's too), signing secrets, browser tokens, signed links.
-    secret: path => /^\/v1\/(?:tokens|tenants|webhooks|webhooks\/[^/]+\/secret|usage-webhook\/secret|agents\/[^/]+\/(?:browser-tokens|links|share-links|credentials\/rotate)|volumes\/[^/]+\/links)$/.test(path),
+    secret: path => /^\/v1\/(?:tokens|tenants|webhooks|webhooks\/[^/]+\/secret|usage-webhook\/secret|agents\/[^/]+\/(?:triggers|triggers\/[^/]+\/rotate|browser-tokens|links|share-links|credentials\/rotate)|volumes\/[^/]+\/links)$/.test(path),
   }));
 
   const shared = () => new SharedAgents(clients.db);
@@ -1431,6 +1441,14 @@ export function api(context: ApiContext) {
   });
 
   channelRoutes(route, () => context.channels);
+  const triggers=()=>{if(!context.triggers)throw new HttpError(404,"Triggers are not enabled");return context.triggers;};
+  const triggerPath=z.object({id:z.string(),triggerId:z.string()});
+  route(createRoute({method:"get",path:"/v1/agents/{id}/triggers",request:{params:agentId},responses:{200:reply("Triggers",z.array(z.unknown()))}}),async c=>json(c,200,await triggers().list(c.var.principal.tenant,c.req.param("id")!)));
+  route(createRoute({method:"post",path:"/v1/agents/{id}/triggers",request:{params:agentId,body:content(TriggerInput)},responses:{201:reply("Trigger and one-time URL",z.unknown())}}),async c=>json(c,201,await triggers().create(c.var.principal.tenant,c.req.param("id")!,await readJson(c.req.raw.body,64000,{}),origin(context))));
+  route(createRoute({method:"delete",path:"/v1/agents/{id}/triggers/{triggerId}",request:{params:triggerPath},responses:{200:reply("Deleted",schema.Deleted)}}),async c=>json(c,200,await triggers().remove(c.var.principal.tenant,c.req.param("id")!,c.req.param("triggerId")!)));
+  route(createRoute({method:"post",path:"/v1/agents/{id}/triggers/{triggerId}/rotate",request:{params:triggerPath},responses:{200:reply("One-time URL",z.object({url:z.string()}))}}),async c=>json(c,200,await triggers().rotate(c.var.principal.tenant,c.req.param("id")!,c.req.param("triggerId")!,origin(context))));
+  route(createRoute({method:"get",path:"/v1/agents/{id}/triggers/{triggerId}/deliveries",request:{params:triggerPath},responses:{200:reply("Deliveries",z.array(z.unknown()))}}),async c=>json(c,200,await triggers().deliveries(c.var.principal.tenant,c.req.param("id")!,c.req.param("triggerId")!)));
+
   githubAppRoutes(route, () => context.githubApps);
   vaultRoutes(route, () => context.vault);
   applyRoutes(route, context);

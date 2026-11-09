@@ -35,6 +35,7 @@ export const PAGES: { section: string; path: string; about: string }[] = [
   { section: "Guides", path: "guides/multi-user.md", about: "an agent per user or conversation, identity, spend limits and keys per customer" },
   { section: "Guides", path: "guides/end-user-credits.md", about: "charging your own users: a balance per person, daily free allowances by bucket, markup and daily limits, enforced on every model call; grants after a payment, the ledger, running out, webhooks" },
   { section: "Guides", path: "guides/end-user-auto-top-up.md", about: "auto top-up of end users' credit from their saved card: per-person thresholds, balance events and their causes, re-reading before charging, one attempt at a time, the sweep" },
+  { section: "Guides", path: "guides/triggers.md", about: "incoming webhook triggers: verification, filters, delivery logs and fresh runs" },
   { section: "Guides", path: "guides/webhooks.md", about: "run and input events, signatures, delivery" },
   { section: "Guides", path: "guides/models-and-keys.md", about: "the model catalog, your own keys and endpoints, key scopes, model headers, spend limits" },
   { section: "Guides", path: "guides/custom-models.md", about: "any server that speaks OpenAI's or Anthropic's APIs as a provider of your own or of a key scope: hosted APIs, gateways, vLLM, Ollama" },

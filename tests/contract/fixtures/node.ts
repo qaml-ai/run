@@ -11,6 +11,7 @@ import pg from "pg";
 import { migrate } from "../../../src/db.ts";
 import { EndUserCredits } from "../../../src/end-user-credits.ts";
 import { seedJourneyAccount } from "./journey-state.ts";
+import { triggerQuery } from "./trigger-state.ts";
 import { channelQuery } from "./channel-state.ts";
 import { EMAIL_TOPIC, snsSigner } from "./email.ts";
 import { runtime } from "../../runtime-server.ts";
@@ -265,6 +266,7 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
     seedJourneyAccount: input => seedJourneyAccount(db, input),
     sharedAgentsQuery: sharedAgentsQuery(db),
     inputIndex: async (agent: string) => (await db.query("select state, version, priority, priority_rank, blocking, responders from agent_inputs where agent=$1 order by created_at, id", [agent])).rows,
+    triggerQuery: triggerQuery(db),
     channelQuery: channelQuery(db),
     async deliverEmail(raw, receipt = {}) {
       if (!sns) throw new Error("Email channel cases set AGENT_EMAIL_DOMAIN");

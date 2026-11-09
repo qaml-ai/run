@@ -1,3 +1,5 @@
+import { freshAutomationRun } from '../../../src/core/fresh-runs.ts';
+import { workerFreshRunHost } from './fresh-runs.ts';
 import { readScheduleRuns, recordScheduleRun, reserveFreshScheduleRun, scheduleRunMetadata } from '../../../src/core/schedule-runs.ts';
 import { calendarPrompt } from '../../../src/calendar.ts';
 import { Directory } from './control.ts';
@@ -125,16 +127,14 @@ export async function deliverScheduledRun(env: any, schedule: StoredSchedule, id
  let agent=schedule.agent;
  try {
   if(schedule.sessionMode==='fresh') {
-   const prior=await transaction(env,sql=>reserveFreshScheduleRun(sql,source,id));
-   if(prior)agent=prior;
-   else {
-    const directory=new Directory(env,schedule.tenant), sourceAgent=await directory.get(agent);
-    if(!sourceAgent?.config.definition)throw new HttpError(400,'Fresh schedules require an agent definition');
-    const made=await directory.upsert(await provisionDefinition(env,schedule.tenant,{definition:sourceAgent.config.definition,ttlSeconds:604800,...(schedule.mounts?{mounts:schedule.mounts}:{})}),`schedule-${(await digest(id)).slice(0,40)}`);
-    if('failed' in made)throw new HttpError(made.status,made.error);
-    agent=made.id;
-   }
-   await withSql(env,sql=>sql.query('update schedule_runs set run_agent=$2 where id=$1',[id,agent]));
+   const host=await workerFreshRunHost(env);
+   agent=await freshAutomationRun({
+    reserve:()=>transaction(env,sql=>reserveFreshScheduleRun(sql,source,id)),
+    precheck:()=>host.precheck(schedule.tenant),
+    definition:()=>host.definition(schedule.tenant,schedule.agent),
+    upsert:(input,key)=>host.upsert(schedule.tenant,{...input,...(schedule.mounts?{mounts:schedule.mounts}:{})},key),
+    record:async agent=>{await withSql(env,sql=>sql.query('update schedule_runs set run_agent=$2 where id=$1',[id,agent]));},
+   },`schedule-${(await digest(id)).slice(0,40)}`);
   }
   const input={id,method:schedule.code===undefined?'prompt':'execute',params:{...(schedule.code===undefined?{text:schedule.calendar?calendarPrompt(schedule.text!,schedule.calendar,schedule.dueAt):schedule.text}:{code:schedule.code}),metadata:scheduleRunMetadata(source),allowDisconnected:true,...(schedule.spendLimit?{spendLimit:schedule.spendLimit}:{})}};
   let record:any;

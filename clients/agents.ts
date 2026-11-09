@@ -762,6 +762,11 @@ export class Agent {
   }
   /** Wake the agent later with a message (`text`), or run `code`; `everySeconds` (at least 60) repeats it. */
   schedule(input: Parameters<AgentClient["schedule"]>[0]) { return this.client.schedule(input); }
+  createTrigger(input: Parameters<AgentClient["createTrigger"]>[0]) { return this.client.createTrigger(input); }
+  triggers() { return this.client.triggers(); }
+  deleteTrigger(id: string) { return this.client.deleteTrigger(id); }
+  rotateTrigger(id: string) { return this.client.rotateTrigger(id); }
+  triggerDeliveries(id: string) { return this.client.triggerDeliveries(id); }
   schedules() { return this.client.schedules(); }
   unschedule(id: string) { return this.client.unschedule(id); }
   /** Delete the agent, its history and its files, for good. */
