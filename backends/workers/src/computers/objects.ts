@@ -234,12 +234,16 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
    * Put a computer that sleeps when idle to sleep once its idle time is up, settle a session that idled out, retry
    * charges that failed, and drop fork snapshots no child adopted.
    */
+  private async checkAfterActive() {
+    const deadline = Math.max(...this.active.values());
+    await this.ctx.storage.setAlarm(deadline > Date.now() ? deadline : Date.now() + 30_000);
+  }
   async alarm() {
     // Never put a waiter for a long command onto the command queue. Check again after that command,
     // leaving exec admission free for the other agents sharing this container.
-    if (this.active.size) { await this.ctx.storage.setAlarm(Math.max(Date.now() + 30_000, ...this.active.values())); return; }
+    if (this.active.size) { await this.checkAfterActive(); return; }
     const check = this.queue.then(async () => {
-      if (this.active.size) { await this.ctx.storage.setAlarm(Math.max(Date.now() + 30_000, ...this.active.values())); return; }
+      if (this.active.size) { await this.checkAfterActive(); return; }
       const provider = this.ctx.container ? this.provider() : undefined;
       const next = await provider?.sleepIfIdle().catch((error: unknown) => {
         console.error(JSON.stringify({ type: "computer_idle_sleep_failed", error: error instanceof Error ? error.message.slice(0, 200) : "unknown" }));
