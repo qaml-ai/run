@@ -1799,17 +1799,12 @@ export class AgentRuntime {
     return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/context/reset`, this.operator(), "POST", options, true);
   }
   /** An existing agent's credentials, by its id or the key it was made with, its configuration untouched (404 when there is none). */
-  /** An existing agent's credentials, by key or id, with its `configHash`. */
   agentCredentials(keyOrId: string): Promise<SessionCredentials & { configHash?: string }> { return this.transport.json(`/v1/agents/${encodeURIComponent(keyOrId)}/credentials`, this.operator()); }
   definitions(): Promise<Definition[]> { return this.transport.json("/v1/definitions", this.operator()); }
   deleteDefinition(id: string): Promise<{ deleted: boolean }> { return this.transport.json(`/v1/definitions/${encodeURIComponent(id)}`, this.operator(), "DELETE", undefined, false); }
   mounts(agentId: string): Promise<Mount[]> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/mounts`, this.operator()); }
   /** Replace an agent's mounts: a removed one at once, the rest from its next turn, which is told of them. */
   setMounts(agentId: string, mounts: MountInput[]): Promise<Mount[]> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/mounts`, this.operator(), "PUT", { mounts }, false); }
-  /**
-   * Every source of an agent's tools (its application, file tools, built-ins, MCP servers, OpenAPI
-   * specs) and what each offers the model. `schemas` includes input schemas; `refresh` lists MCP servers now.
-   */
   /**
    * A token a browser reads one agent with (`@camelai/run/watch`): mint one per user, after your
    * own access checks. It reads only that agent's events, state, history and inputs (or `scopes`), for
@@ -1818,15 +1813,18 @@ export class AgentRuntime {
   browserToken(agentId: string, options: { ttlSeconds?: number; scopes?: ("events" | "state" | "history" | "inputs" | "children")[]; events?: string[]; redact?: "usage.cost"[]; subject?: string } = {}): Promise<{ token: string; expiresAt: number; agentId: string; url?: string }> {
     return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/browser-tokens`, this.operator(), "POST", options, false);
   }
-  /** Who the API key is: `tenant` is your tenant's id, which serveTools and verifyRuntimeToken take. */
   /** Who the API key is (`tenant`), and `defaultModel`, the model an agent gets when it names none. */
   me(): Promise<{ tenant: string; via: string; login?: string; defaultModel: string }> { return this.transport.json("/v1/me", this.operator()); }
-  /** Pending inputs in priority order, with a cursor and filtered counts. */
   /** Answer using the inbox item's public id and agent. Never use its database row id. */
   answerInbox(item: Pick<InboxItem, "agent" | "id">, answer: InputAnswer): Promise<{ input: AgentInput; request: any | null }> {
     return this.transport.json(`/v1/agents/${encodeURIComponent(item.agent)}/inputs/${encodeURIComponent(item.id)}`, this.operator(), "POST", answer);
   }
+  /** Pending inputs in priority order, with a cursor and filtered counts. */
   inbox(options: InboxOptions = {}): Promise<InboxPage> { return this.transport.json(`/v1/inbox?${queryOf({ ...options })}`, this.operator()); }
+  /**
+   * Every source of an agent's tools (its application, file tools, built-ins, MCP servers, OpenAPI
+   * specs) and what each offers the model. `schemas` includes input schemas; `refresh` lists MCP servers now.
+   */
   async toolSources(agentId: string, options: { schemas?: boolean; refresh?: boolean } = {}): Promise<ToolSource[]> {
     const query = [options.schemas && "schemas=true", options.refresh && "refresh=true"].filter(Boolean).join("&");
     return (await this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}${query ? `?${query}` : ""}`, this.operator())).toolSources;

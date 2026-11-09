@@ -7,7 +7,8 @@ sessions and fail-closed setup. Its Cloudflare option generates OpenNext, runtim
 build configuration. The SDK package includes the frontend guide.
 
 CAMELRUN_API_KEY and CAMELRUN_URL take precedence over the older CAMELAI names in the SDK, CLI and
-starter. Inbox rows expose the answerable id on both backends (inputId remains an alias), answerInbox
+starter. Inbox `id` now equals `inputId` on both backends. On Workers, `id` changes from the
+global inbox row id to the answerable agent input id; use `(agent, id)` for row identity. `answerInbox`
 posts it, and the React kit includes InboxList. AgentChat accepts a top-level subagents prop.
 
 No database migration. camel-bots passes agent explicitly and explicit credentials, so needs no change.

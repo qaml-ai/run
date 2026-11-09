@@ -35,5 +35,5 @@ const handler = async () => {
     },
   });
 };
-let cached: ReturnType<typeof createAgentHandler> | undefined;
-export async function POST(request: Request) { cached ??= await handler(); return cached(request); }
+let cached: ReturnType<typeof handler> | undefined;
+export async function POST(request: Request) { cached ??= handler(); return (await cached)(request); }

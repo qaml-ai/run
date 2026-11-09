@@ -16,4 +16,7 @@ GitHub/OIDC sign-in recipes to configure, and an `AGENTS.md` (with a `CLAUDE.md`
 
 Use `--cloudflare` for OpenNext, Wrangler, runtime environment bindings and a webpack production build.
 The template includes GitHub org-gated OAuth and OIDC; access stays closed until configured.
+OIDC requires `OIDC_ALLOWED_DOMAINS` or `OIDC_ALLOWED_EMAILS` and a verified email claim. Google
+identities also require a matching hosted-domain (`hd`) claim. Cloudflare agents are private per user
+and thread by default; sharing an existing app-owned agent is an explicit route option.
 Canonical server environment names are `CAMELRUN_API_KEY` and `CAMELRUN_URL`; the older CAMELAI names still work.

@@ -191,13 +191,13 @@ function fingerprintOf(setup: AgentSetup): string {
 
 export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: AgentHandlerOptions<A>): AgentHandler {
   if (options.existingAgent !== undefined && options.agent !== undefined) throw new TypeError("Choose existingAgent or agent, not both");
-  if (options.existingAgent === undefined && options.agent === undefined) throw new TypeError("Pass existingAgent to open an agent, or agent to opt into upsert");
+  if (options.existingAgent === undefined && options.agent === undefined) throw new TypeError('Pass existingAgent: "agent-id-or-key" to open an existing agent, or agent: {} (with your configuration) to opt into per-user upsert');
   const apiKey = options.apiKey ?? env("CAMELRUN_API_KEY") ?? env("CAMELAI_API_KEY") ?? env("AGENT_RUNTIME_TOKEN");
   const url = (options.url ?? env("CAMELRUN_URL") ?? env("CAMELAI_BASE_URL") ?? env("CAMELAI_URL") ?? env("AGENT_URL") ?? DEFAULT_URL).replace(/\/+$/, "");
   const doFetch = options.fetch ?? globalThis.fetch.bind(globalThis);
   let agents: Agents | undefined;
   const runtime = () => {
-    if (!apiKey) fail(500, "missing_api_key", "Set apiKey (or the CAMELAI_API_KEY environment variable) on the agent handler");
+    if (!apiKey) fail(500, "missing_api_key", "Set apiKey (or the CAMELRUN_API_KEY environment variable) on the agent handler");
     agents ??= new Agents({ apiKey, url, ...(options.fetch ? { fetch: options.fetch } : {}) });
     return agents;
   };
@@ -260,12 +260,22 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
     if (options.existingAgent !== undefined) {
       const id = typeof options.existingAgent === "function" ? await options.existingAgent(auth, { thread }) : options.existingAgent;
       if (typeof id !== "string" || !KEY.test(id)) fail(500, "invalid_agent_key", "existingAgent must return an agent id or key");
+      const key = `existing:${id}`;
+      const cached = cache.get(key);
+      if (cached && !refresh) {
+        const entry = await cached;
+        entry.used = Date.now();
+        cache.delete(key); cache.set(key, cached);
+        return entry;
+      }
+      // Cache the promise before awaiting it, so concurrent opens share credentials and session state.
       // Never attach tools, create, or update. Credentials also resolve a stable key to its id.
-      const session = await runtime().runtime.agentCredentials(id).catch(error => {
+      return remember(key, runtime().runtime.agentCredentials(id).then(session => ({
+        id: session.id, token: session.token, fingerprint: "existing", used: Date.now(), presented: new Set<string>(), scanned: -1,
+      })).catch(error => {
         if (error instanceof AgentError) return fail(error.status >= 400 && error.status < 500 ? error.status : 502, error.code ?? codeFor(error.status), error.message);
         throw error;
-      });
-      return { id: session.id, token: session.token, fingerprint: "existing", used: Date.now(), presented: new Set(), scanned: -1 };
+      }));
     }
     const key = auth.agentKey ?? await agentKeyFor(auth.userId, thread);
     if (!KEY.test(key)) fail(500, "invalid_agent_key", "authorize returned an agentKey that is not 1 to 80 letters, digits, _ and -");
@@ -284,6 +294,11 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
     const pending = upsert(key, setup, auth);
     // The entry it replaces (a changed setup, or a renewal) no longer serves the agent's tools here.
     if (cached) void Promise.all([cached, pending]).then(([previous, next]) => { if (previous.attached && previous.attached !== next.attached) return previous.attached.close(); }).catch(() => {});
+    return remember(key, pending);
+  }
+
+  /** Share pending opens, retry failed opens, and bound retained session state in either mode. */
+  function remember(key: string, pending: Promise<Cached>): Promise<Cached> {
     cache.delete(key);
     cache.set(key, pending);
     pending.catch(() => { if (cache.get(key) === pending) cache.delete(key); });

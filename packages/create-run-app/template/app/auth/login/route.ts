@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
-import { configured } from "@/lib/auth";
+import { setupError } from "@/lib/auth";
 import { env } from "@/lib/env";
 import { oidc, oidcConfig } from "@/lib/oauth";
 import { STATE_COOKIE, sign, cookieOptions } from "@/lib/session";
 export async function GET() {
-  if (!await configured()) return new Response("Configure authentication first", { status: 503 });
+  const error = await setupError();
+  if (error) return new Response(error, { status: 503 });
   const e = await env(), state = crypto.randomUUID(), nonce = crypto.randomUUID();
   const verifier = oidc.randomPKCECodeVerifier();
   const callback = new URL("/auth/callback", e.APP_URL).href;

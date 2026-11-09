@@ -307,3 +307,50 @@ test("browserToken.scopes chooses what the handler's tokens read, e.g. without e
   assert.equal((await read("history")).status, 200);
   assert.equal((await read("state")).status, 403, "state is not among its scopes");
 });
+
+test("existing mode reads credentials by id or key and never creates or updates", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "hello" }));
+  const created = await r.call('/v1/agents', { body: { systemPrompt: 'Keep this', name: 'Existing' }, headers: { 'Idempotency-Key': 'keep_existing' } });
+  assert.equal(created.status, 201, created.text);
+  for (const id of [created.json.id, 'keep_existing']) {
+    const calls: { method: string; path: string }[] = [];
+    const handler = createAgentHandler({ apiKey: OPERATOR, url: r.base, existingAgent: () => id,
+      authorize: () => ({ userId: 'alice' }), fetch: (url, init) => {
+        calls.push({ method: init?.method ?? 'GET', path: new URL(String(url)).pathname });
+        return fetch(url, init);
+      } });
+    t.after(() => handler.close());
+    const opens = await Promise.all(Array.from({ length: 5 }, () => post(handler, { action: 'token' })));
+    assert.ok(opens.every(open => open.status === 200 && open.json.agentId === created.json.id));
+    assert.equal((await post(handler, { action: 'send', text: 'hello', clientId: 'existing_send_123' })).status, 200);
+    assert.equal(calls.filter(c => c.method === 'GET' && c.path.endsWith('/credentials')).length, 1, 'concurrent and later requests share credentials');
+    assert.ok(!calls.some(c => c.method !== 'GET' && (c.path === '/v1/agents' || c.method === 'PATCH' || c.method === 'PUT')));
+  }
+  assert.throws(() => createAgentHandler({ authorize: () => null }), { message: 'Pass existingAgent: "agent-id-or-key" to open an existing agent, or agent: {} (with your configuration) to opt into per-user upsert' });
+});
+
+test("existing mode separates selected agents and retries failed credential lookups", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "hello" }));
+  const ids: Record<string, string> = {};
+  for (const user of ["alice", "bob"]) ids[user] = (await r.call("/v1/agents", { body: { systemPrompt: user } })).json.id;
+  let failNext = true;
+  const credentials: string[] = [];
+  const handler = createAgentHandler({ apiKey: OPERATOR, url: r.base,
+    authorize: request => ({ userId: request.headers.get("cookie") === "cookie-bob" ? "bob" : "alice" }),
+    existingAgent: auth => ids[auth.userId],
+    fetch: (url, init) => {
+      if (String(url).endsWith("/credentials")) {
+        credentials.push(String(url));
+        if (failNext) { failNext = false; return Promise.resolve(Response.json({ error: "Missing" }, { status: 404 })); }
+      }
+      return fetch(url, init);
+    },
+  });
+  t.after(() => handler.close());
+  assert.equal((await post(handler, { action: "token" })).status, 404);
+  for (let i = 0; i < 2; i++) {
+    assert.equal((await post(handler, { action: "token" })).json.agentId, ids.alice);
+    assert.equal((await post(handler, { action: "token" }, { cookie: "cookie-bob" })).json.agentId, ids.bob);
+  }
+  assert.equal(credentials.length, 3, "one failed lookup, then one cached lookup for each selected agent");
+});

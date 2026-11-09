@@ -65,23 +65,29 @@ if (options.cloudflare) {
   Object.assign(pkg.devDependencies, { "@opennextjs/cloudflare": "^1.20.0", wrangler: "^4.0.0" });
   writeFileSync(manifest, JSON.stringify(pkg, null, 2) + "\n");
   // A Worker cannot keep a local tool server attached after a response ends.
-  writeFileSync(join(target, "app/api/agent/route.ts"), `import { createAgentHandler } from "@camelai/run/server";
+  writeFileSync(join(target, "app/api/agent/route.ts"), `import { agentKeyFor, createAgentHandler } from "@camelai/run/server";
 import { authorize } from "@/lib/auth";
 import { env } from "@/lib/env";
-let cached: ReturnType<typeof createAgentHandler> | undefined;
-export async function POST(request: Request) {
+const handler = async () => {
   const e = await env();
-  cached ??= createAgentHandler({
+  return createAgentHandler({
     apiKey: e.CAMELRUN_API_KEY || e.CAMELAI_API_KEY,
     url: e.CAMELRUN_URL || e.CAMELAI_BASE_URL || e.CAMELAI_URL,
-    authorize,
-    ...(e.AGENT_ID ? { existingAgent: e.AGENT_ID } : { agent: {
+    authorize: async (request, { thread }) => {
+      const user = await authorize(request);
+      return user ? { ...user, subject: user.userId, agentKey: await agentKeyFor(user.userId, thread) } : null;
+    },
+    agent: {
       ...(e.AGENT_DEFINITION ? { definition: e.AGENT_DEFINITION } : { instructions: "You are a helpful assistant." }),
       ...(e.AGENT_MODEL ? { model: e.AGENT_MODEL } : {}),
-    } }),
+    },
+    // To open an app-owned shared agent instead, replace agent above with:
+    // existingAgent: "your-agent-id-or-key",
+    // All admitted users then share its history. Enforce that access policy in authorize.
   });
-  return cached(request);
-}
+};
+let cached: ReturnType<typeof handler> | undefined;
+export async function POST(request: Request) { cached ??= handler(); return (await cached)(request); }
 `);
   writeFileSync(join(target, "app/components/chat.tsx"), `"use client";
 import { AgentChat } from "@camelai/run-react/ui";

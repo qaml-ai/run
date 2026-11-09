@@ -32,10 +32,10 @@ export function forget(env = process.env) {
   return had ? path : undefined;
 }
 
-/** Flags first, then CAMELAI_API_KEY / CAMELAI_BASE_URL (as the SDKs read it; CAMELAI_URL too), then what `camelrun login` saved. */
+/** Flags first, then CAMELRUN_API_KEY / CAMELRUN_URL (with CAMELAI_* fallbacks), then what `camelrun login` saved. */
 export function resolve(flags: { apiKey?: string; url?: string }, env = process.env): Credentials {
   const saved = readSaved(env);
   const apiKey = flags.apiKey || env.CAMELRUN_API_KEY || env.CAMELAI_API_KEY || saved.apiKey;
-  if (!apiKey) throw new Error("No API key: run `camelrun login`, or set CAMELAI_API_KEY. Create one at https://run.camelai.com/console/tokens. Coding agents: read https://run.camelai.com/SKILL.md");
+  if (!apiKey) throw new Error("No API key: run `camelrun login`, or set CAMELRUN_API_KEY. Create one at https://run.camelai.com/console/tokens. Coding agents: read https://run.camelai.com/SKILL.md");
   return { apiKey, url: flags.url || env.CAMELRUN_URL || env.CAMELAI_BASE_URL || env.CAMELAI_URL || saved.url || DEFAULT_URL };
 }

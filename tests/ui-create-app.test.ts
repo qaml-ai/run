@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import ts from "typescript";
+import { runInNewContext } from "node:vm";
+import { agentKeyFor } from "../clients/handler.ts";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -48,10 +51,47 @@ test('Cloudflare generation uses runtime bindings and a standalone webpack root'
   const pkg = JSON.parse(await readFile(join(root, 'web/package.json'), 'utf8'));
   assert.equal(pkg.scripts.build, 'next build --webpack');
   assert.doesNotMatch(await readFile(join(root, 'web/app/api/agent/route.ts'), 'utf8'), /get_weather/);
-  assert.match(await readFile(join(root, 'web/app/api/agent/route.ts'), 'utf8'), /existingAgent: e.AGENT_ID/);
+  assert.doesNotMatch(await readFile(join(root, 'web/app/api/agent/route.ts'), 'utf8'), /e\.AGENT_ID/);
   const config = JSON.parse(await readFile(join(root, 'web/wrangler.jsonc'), 'utf8'));
   assert.equal(config.services[0].service, 'web');
   assert.ok(config.compatibility_flags.includes('nodejs_compat'));
   assert.match(await readFile(join(root, 'web/lib/env.ts'), 'utf8'), /getCloudflareContext/);
   assert.match(await readFile(join(root, 'web/next.config.ts'), 'utf8'), /outputFileTracingRoot: root, turbopack: \{ root \}/);
+});
+
+test("both generated routes share pending initialization; Cloudflare keeps users and threads separate", async t => {
+  const root = await mkdtemp(join(tmpdir(), "create-run-concurrent-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  for (const cloudflare of [false, true]) {
+    const app = join(root, cloudflare ? "worker" : "node");
+    execFileSync(process.execPath, [cli, app, "--no-install", ...(cloudflare ? ["--cloudflare"] : [])]);
+    const source = await readFile(join(app, "app/api/agent/route.ts"), "utf8");
+    let resolveEnv!: (value: Record<string, string>) => void;
+    const pendingEnv = new Promise<Record<string, string>>(resolve => { resolveEnv = resolve; });
+    let reads = 0, creates = 0;
+    let options: any;
+    const mocks: Record<string, unknown> = {
+      "@/lib/env": { env: () => { reads++; return pendingEnv; } },
+      "@/lib/auth": { authorize: async (request: Request) => ({ userId: request.headers.get("user")! }) },
+      "@camelai/run/server": { agentKeyFor, createAgentHandler: (value: unknown) => { creates++; options = value; return async () => new Response("ok"); } },
+      "@camelai/run": { tool: (value: unknown) => value, schema: { Object: () => ({}), String: () => ({}) } },
+    };
+    const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
+    const exports: any = {};
+    runInNewContext(compiled, { exports, require: (name: string) => mocks[name], Response });
+    const first = exports.POST(new Request("https://app.example"));
+    const second = exports.POST(new Request("https://app.example"));
+    assert.equal(reads, 1, "concurrent cold requests share the environment/handler promise");
+    resolveEnv({ AGENT_DEFINITION: "def_example", AGENT_ID: "ignored_shared_agent" });
+    await Promise.all([first, second]);
+    assert.equal(creates, 1);
+    if (cloudflare) {
+      assert.equal(options.existingAgent, undefined);
+      assert.equal(options.agent.definition, "def_example");
+      const auth = (user: string, thread: string | null = null) => options.authorize(new Request("https://app.example", { headers: { user } }), { thread });
+      const alice = await auth("alice"), bob = await auth("bob"), next = await auth("alice", "next");
+      assert.equal(alice.agentKey, await agentKeyFor("alice"));
+      assert.equal(new Set([alice.agentKey, bob.agentKey, next.agentKey]).size, 3);
+    }
+  }
 });
