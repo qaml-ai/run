@@ -78,10 +78,11 @@ if (existsSync(new URL('../../../backends/workers/src/input-mirror.ts', import.m
     const listed = page.items.find((item: any) => item.agent === agent && item.toolCallId === input.toolCallId);
     assert.equal(listed.message, input.message);
     assert.equal(listed.inputId, input.id);
+    assert.equal(listed.id, input.id);
     const alias = (await r.call('/v1/inputs')).json;
     assert.deepEqual(alias, page);
     assert.equal(page.counts.priority.normal, 1);
-    const answer = await r.call(`/v1/agents/${agent}/inputs/${listed.inputId}`, { body: { action: 'accept', content: { answers: { 'Which region?': 'EU' } } } });
+    const answer = await r.call(`/v1/agents/${agent}/inputs/${listed.id}`, { body: { action: 'accept', content: { answers: { 'Which region?': 'EU' } } } });
     assert.equal(answer.status, 202, answer.text);
     await until(async () => !(await r.call('/v1/inbox')).json.items.some((item: any) => item.id === listed.id), 'the answer settles the mirrored input');
   }, { timeout: 90_000 });

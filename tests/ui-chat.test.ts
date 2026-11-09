@@ -254,7 +254,7 @@ test("an agent's question shows on its call, is answered through the store, and 
 test("a failed send stays with its error and can be retried; a refused token stops the chat with an error", async t => {
   const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
   let refuse = true;
-  const handler = createAgentHandler({ apiKey: OPERATOR, url: r.base, browserToken: { url: r.base }, authorize: () => ({ userId: "alice" }), onSend: () => { if (refuse) throw new Response(JSON.stringify({ error: { code: "quota", message: "Out of messages" } }), { status: 429 }); } });
+  const handler = createAgentHandler({ apiKey: OPERATOR, url: r.base, browserToken: { url: r.base }, authorize: () => ({ userId: "alice" }), agent: {}, onSend: () => { if (refuse) throw new Response(JSON.stringify({ error: { code: "quota", message: "Out of messages" } }), { status: 429 }); } });
   t.after(() => handler.close());
   const doFetch: typeof fetch = async (input, init) => String(input) === "/api/agent" ? handler(new Request("https://app.test/api/agent", init)) : fetch(input, init);
   const chat = createAgentChat({ endpoint: "/api/agent", fetch: doFetch });
@@ -271,7 +271,7 @@ test("a failed send stays with its error and can be retried; a refused token sto
   assert.equal(chat.getSnapshot().messages[0].id, id);
   assert.equal(chat.getSnapshot().error, null);
 
-  const nobody = createAgentHandler({ apiKey: OPERATOR, url: r.base, authorize: () => null });
+  const nobody = createAgentHandler({ apiKey: OPERATOR, url: r.base, authorize: () => null, agent: {} });
   const refused = createAgentChat({ endpoint: "/api/agent", fetch: async (_input, init) => nobody(new Request("https://app.test/api/agent", init)) });
   t.after(() => refused.destroy());
   await until(() => refused.getSnapshot().status === "error", "the refusal");
