@@ -422,7 +422,7 @@ const worker = {
       }
       if (!entry || entry.config.type === "run") throw new ApiError(404, "Unknown agent", "NOT_FOUND");
       const tail = match[3] || "/";
-      if (tail === "/configuration-target" || tail === "/upsert") throw new ApiError(404, "Not found", "NOT_FOUND");
+      if (tail === "/configuration-target" || tail === "/upsert" || tail === "/conversation-children") throw new ApiError(404, "Not found", "NOT_FOUND");
       // Internal computer operations are reachable only through the service
       // binding. Public cleanup must use the account-scoped confirmation route.
       if (tail === "/__computer" && env.TEST_MODE !== "1")

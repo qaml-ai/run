@@ -9,6 +9,7 @@ contractTest('history', 'tests/session-transcripts.test.ts:1', 'time-filtered co
   const path = `/v1/agents/${agent}/sessions?from=${from}&to=${Date.now() + 1000}`;
   const first = await f.call(path);
   assert.equal(first.status, 200, first.text);
+  assert.equal((await f.call(`/v1/agents/${agent}/conversation-children`)).status,404);
   assert.equal(first.json.agentId, agent);
   assert.ok(first.json.entries.length >= 2);
   const end = await f.call(`${path}&cursor=${encodeURIComponent(first.json.next)}`);

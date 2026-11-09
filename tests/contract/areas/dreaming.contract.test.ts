@@ -20,9 +20,10 @@ contractTest('history','docs/guides/session-transcripts.md','a run-now dream del
   const provider=await f.call('/v1/providers/dream-test',{method:'PUT',body:{type:'openai-completions',baseUrl:f.model.url,models:[{id:'small',contextWindow:128000,pricing:{input:1,output:1}}]}});
   assert.equal(provider.status,200,provider.text);
   const analyzed: string[]=[];
+  const workerTools: string[][]=[];
   f.setModel(body=>{
     const text=JSON.stringify(body.messages);
-    if(text.includes('Treat transcripts') || text.includes('Treat candidate notes')) assert.ok((body.tools ?? []).every((tool:any) => ['final_output'].includes(tool.function?.name ?? tool.name)), JSON.stringify(body.tools));
+    if(text.includes('Treat transcripts') || text.includes('Treat candidate notes')) workerTools.push((body.tools ?? []).map((tool:any)=>tool.function?.name ?? tool.name));
     if(text.includes('Treat candidate notes')) return toolCall('final_output',{files:[{path:'_index.md',text:'---\ntitle: Memory\n---\nPrefers concise answers. token=demo-hidden-secret-123'}],summary:'Recorded a preference.'},'organizer_output');
     if(text.includes('Treat transcripts')) {analyzed.push(text);return toolCall('final_output',{notes:'Prefers concise answers; source message 0.'},'analyzer_output');}
     return {content:'Acknowledged.'};
@@ -45,6 +46,7 @@ contractTest('history','docs/guides/session-transcripts.md','a run-now dream del
   assert.equal(files.status,200,files.text);
   assert.ok(files.json.files.some((file:any)=>file.path==='/_index.md'));
   assert.ok(analyzed.length);
+  assert.ok(workerTools.every(names=>names.every(name=>['final_output','report_progress'].includes(name))),JSON.stringify(workerTools));
   assert.ok(analyzed.every(text=>!text.includes('demo-hidden-secret-123')));
   assert.ok(!JSON.stringify(files.json).includes('demo-hidden-secret-123'));
 }, {env:{AGENT_OUTBOUND_ALLOW_HTTP:'true',AGENT_OUTBOUND_ALLOW_CIDRS:'127.0.0.1/32'}});

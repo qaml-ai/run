@@ -93,6 +93,7 @@ export class Dreaming {
         }
         const active = row.active;
         if (!active.agent) {
+          if (active.from === active.to) { await save(null,{status:'completed',from:active.from,to:active.to,summary:'No new messages'},active.to); return; }
           const inputs: DreamInput[] = [];
           let cursor: string | undefined;
           do {

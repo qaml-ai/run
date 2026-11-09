@@ -52,6 +52,13 @@ test('durable dreams keep the window on publication failure, resume polling afte
   assert.equal(state.lastResult.status,'budget_reached');
   assert.equal(state.since,completedSince);
   assert.equal(publishes,2,'a budget failure never publishes');
+  runError=undefined; done=false;
+  await restarted.configure('tenant','agent',{...config,enabled:true});
+  await db.query('update agent_dreaming set due_at=0 where agent=$1',['agent']);
+  const previousStarts=starts;
+  await restarted.scan();await restarted.scan();
+  assert.equal(starts,previousStarts+1,'a due enabled job starts without run-now');
+  assert.equal((await restarted.get('tenant','agent'))!.running,true);
 });
 
 test('dream redaction removes credential fields, bearer tokens and private keys',()=>{
