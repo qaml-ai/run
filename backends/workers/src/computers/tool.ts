@@ -18,7 +18,8 @@ export interface ComputerBindings {
   TEST_EGRESS_UPSTREAM?: string;
 }
 const provider = oneOf(["container"]);
-export const computerParameters = union([
+// Providers require an explicit object root, even when every union branch is an object.
+export const computerParameters = Object.assign(union([
   obj({
     provider,
     op: lit("exec"),
@@ -55,7 +56,7 @@ export const computerParameters = union([
     name: str({ pattern: "^[a-zA-Z0-9_-]{1,80}$" }),
   }),
   obj({ provider, op: lit("sleep") }),
-]);
+]), { type: "object" as const });
 /**
  * `setup` gives each operation the definition's computer settings and the agent's identity (for egress credentials and
  * metering). `settings` words the description.
