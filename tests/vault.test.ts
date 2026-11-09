@@ -150,6 +150,7 @@ test('vault echoes are masked without a content type, in octet streams and JavaS
   }
   const pack=new Response(new TextEncoder().encode('secret-value'),{headers:{'content-type':'application/octet-stream'}});
   assert.equal(await maskResponse(pack,['secret-value'],new URL('https://github.com/owner/repo.git/git-upload-pack')),pack);
+  assert.equal(await (await maskResponse(new Response('secret-value'),['secret-value'],new URL('https://example.com/git-upload-pack-echo'))).text(),'[hidden]');
 });
 
 test('vault response with fixed length and ETag streams before a late secret arrives',async()=>{

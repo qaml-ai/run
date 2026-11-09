@@ -88,7 +88,7 @@ export async function maskResponse(response: Response, values: string[], url?: U
   values = values.filter(value => value.length >= 8);
   const contentType = response.headers.get("content-type") ?? "";
   const binary = /^(?:image\/|audio\/|video\/|font\/|application\/(?:x-git-|pdf(?:;|$)|zip(?:;|$)|gzip(?:;|$)|wasm(?:;|$)))/i.test(contentType);
-  const git = url && /\/(?:git-upload-pack|git-receive-pack|info\/refs|objects\/(?:pack\/|[0-9a-f]{2}\/))/.test(url.pathname);
+  const git = url && /(?:\/(?:git-upload-pack|git-receive-pack|info\/refs)|\/objects\/(?:pack\/[^/]+\.(?:pack|idx)|[0-9a-f]{2}\/[0-9a-f]+))$/.test(url.pathname);
   if (!values.length || binary || git) return response;
   const encoder = new TextEncoder();
   const base64 = (v: string) => btoa(Array.from(encoder.encode(v), c => String.fromCharCode(c)).join(""));
