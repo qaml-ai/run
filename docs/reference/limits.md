@@ -317,5 +317,5 @@ state: items may settle between requests.
 `GET /v1/inputs` is an alias of `/v1/inbox` with the same filters and page
 response. Both list only pending, unexpired inputs; `state` is no longer a
 filter. For one agent's settled inputs, use `GET /v1/agents/:id/inputs?state=...`.
-Inbox `id` identifies the globally unique index row. Use `inputId` with the
-per-agent answer route; on Workers these IDs can differ.
+Inbox `id` is the answerable input id on its `agent`; `inputId` is a compatibility
+alias with the same value. Use the pair `(agent, id)` as a list key.

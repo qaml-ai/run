@@ -13,7 +13,9 @@
     "@camelai/run-react": "^{{version}}",
     "next": "^16.0.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "jose": "^6.1.0",
+    "openid-client": "^6.8.0"
   },
   "devDependencies": {
     "@types/node": "^22",

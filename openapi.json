@@ -6470,7 +6470,7 @@
                     },
                     "inputId": {
                       "type": "string",
-                      "description": "Use this id with the per-agent input answer route; id identifies the inbox row"
+                      "description": "Compatibility alias of id. Both identify the answerable input on agent; use (agent, id) as the row key"
                     },
                     "subject": {
                       "type": [
