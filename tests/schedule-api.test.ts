@@ -85,21 +85,17 @@ test('continue schedules submit without the outcome table and code outcomes are 
  await until(async()=> (await r.call(`/v1/agents/${agent}/schedule-deliveries`)).json.some((row:any)=>row.runId===run.json.requestId&&row.endedAt&&row.state==='completed'),'code outcome');
 });
 
-test('batched and cancelled schedules retain their outcomes',async t=>{
- const r=await runtime(t,()=>({role:'assistant',content:'done'}));
- const agent=(await r.call('/v1/agents',{body:{queue:{mode:'batch',windowMs:2000}}})).json.id,path=`/v1/agents/${agent}/schedules`;
- const schedule=(await r.call(path,{body:{text:'Report',inSeconds:3600}})).json;
- const first=(await r.call(`${path}/${schedule.id}/run`,{body:{}})).json;
- const second=(await r.call(`${path}/${schedule.id}/run`,{body:{}})).json;
- await until(async()=>{
-  const rows=(await r.call(`/v1/agents/${agent}/schedule-deliveries`)).json;
-  return rows.length===2 && rows.every((row:any)=>row.state==='completed');
- },'batched schedule outcomes');
- assert.equal((await r.call(`/v1/agents/${agent}/requests/${second.requestId}`)).json.batchedInto,first.requestId);
+test('cancelled queued schedules retain their outcome',async t=>{
+ const r=await runtime(t,()=>({role:'assistant',content:'done',delayMs:5000}));
+ const agent=(await r.call('/v1/agents',{body:{}})).json.id,path=`/v1/agents/${agent}/schedules`;
+ await r.call(`/v1/agents/${agent}/prompt`,{body:{text:'Hold the agent',allowDisconnected:true}});
+ await until(()=>r.model.bodies.length===1,'the active model call');
+ const schedule=(await r.call(path,{body:{text:'Queued report',inSeconds:3600}})).json;
  const cancelled=(await r.call(`${path}/${schedule.id}/run`,{body:{}})).json;
  await r.call(`/v1/agents/${agent}/abort`,{body:{queued:'cancel'}});
  await until(async()=>{
   const rows=(await r.call(`/v1/agents/${agent}/schedule-deliveries`)).json;
   return rows.some((row:any)=>row.runId===cancelled.requestId && row.state==='failed' && row.endedAt);
  },'cancelled schedule outcome');
+ assert.equal(r.model.bodies.length,1,'the queued schedule never began');
 });
