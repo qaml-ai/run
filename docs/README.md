@@ -39,6 +39,7 @@ model-written code in a sandbox, and wakes agents when there is work.
    - [Exporting your data](guides/export.md): the account export, and moving to a self-hosted runtime
 4. **[Production checklist](production.md)**
 5. **Reference**
+   - [Provision an application](reference/apply.md): volumes, definitions and agents in one transaction
    - [Events](reference/events.md): every event on an agent's stream, and a run's outcome
    - [Limits](reference/limits.md)
    - [Errors](reference/errors.md)

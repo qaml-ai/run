@@ -736,6 +736,9 @@ class _RuntimeCalls:
     @staticmethod
     def _vault_path(workspace):
         return "/v1/workspaces/" + _path(workspace) + "/secrets" if workspace else "/v1/secrets"
+    def apply(self, manifest):
+        """Atomically provision keyed resources; dryRun previews changes without saving."""
+        return self._rest("POST", "/v1/apply", manifest)
 
     def create_definition(self, **fields):
         return self._rest("POST", "/v1/definitions", _with_multi_agent(fields), retry=False)

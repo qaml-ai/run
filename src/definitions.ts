@@ -1,4 +1,5 @@
 import { networkingInput, type Networking } from "./core/vault.ts";
+import { prepareApply } from "../shared/apply-scope.ts";
 import { createHash, randomBytes } from "node:crypto";
 import type { Db } from "./db.ts";
 import type { RunLimits, ToolDefinition } from "./protocol.ts";
@@ -164,7 +165,7 @@ export class Definitions {
   async upsert(tenant: string, key: string, input: DefinitionInput): Promise<Definition> {
     rejectWorkflow(input);
     if (!/^[A-Za-z0-9_-]{1,80}$/.test(key)) throw new HttpError(400, "An Idempotency-Key is 1 to 80 letters, digits, _ and -");
-    const id = `def_${createHash("sha256").update(`${tenant}:${key}`).digest("hex").slice(0, 20)}`;
+    const id = definitionId(tenant, key);
     const current = await this.read(tenant, id).catch(error => { if ((error as HttpError).status === 404) return undefined; throw error; });
     if (!current) return this.create(tenant, input, {}, id).catch(async error => {
       // A concurrent upsert of the key made it first: this one updates it.
@@ -200,7 +201,7 @@ export class Definitions {
 
   /** The MCP servers a save sent, listed now (see `listMcp`). */
   private async listing(tenant: string, id: string, spec: DefinitionSpec, input: DefinitionInput) {
-    return input.mcpServers !== undefined && spec.mcpServers?.length && this.listMcp ? this.listMcp(tenant, id, spec.mcpServers) : undefined;
+    return prepareApply(`definition-list:${JSON.stringify([tenant, id, spec, input])}`, async () => input.mcpServers !== undefined && spec.mcpServers?.length && this.listMcp ? this.listMcp(tenant, id, spec.mcpServers) : undefined);
   }
 
   /** Replace the given fields; with `revision`, only if the definition is still at that revision. */
@@ -306,6 +307,9 @@ export class Definitions {
 
   /** `current` with `input`'s fields applied, checked as agent configuration is. */
   private async merge(tenant: string, id: string, current: DefinitionSpec, input: DefinitionInput): Promise<DefinitionSpec> {
+    return prepareApply(`definition-spec:${JSON.stringify([tenant, id, current, input])}`, () => this.prepareSpec(tenant, id, current, input));
+  }
+  private async prepareSpec(tenant: string, id: string, current: DefinitionSpec, input: DefinitionInput): Promise<DefinitionSpec> {
     if (!input || typeof input !== "object" || Array.isArray(input)) throw new HttpError(400, "Send a definition object");
     rejectWorkflow(input);
     for (const key of Object.keys(input)) if (![...FIELDS, "name", "revision", "apply"].includes(key)) throw new HttpError(400, `Unknown definition field: ${key}`);
@@ -375,3 +379,5 @@ function withoutWorkflow(spec: DefinitionSpec): DefinitionSpec {
   const { workflow: _workflow, ...rest } = spec as DefinitionSpec & { workflow?: unknown };
   return { ...rest, ...(rest.builtins ? { builtins: rest.builtins.filter(name => name !== "workflow") } : {}) };
 }
+
+export const definitionId = (tenant: string, key: string) => `def_${createHash("sha256").update(`${tenant}:${key}`).digest("hex").slice(0, 20)}`;

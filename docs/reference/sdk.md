@@ -1005,3 +1005,7 @@ in Python. Tool arguments and results can contain credentials or other sensitive
 data echoed by tools; log access requires the tenant's credential.
 
 CLI `camelrun usage` without `--by` returns the legacy daily report.
+
+## Provision several resources
+
+Use `POST /v1/apply` or `runtime.apply(manifest)` to create keyed volumes, definitions, and agents together. `camelrun apply file.json --dry-run` validates without saving. References are objects such as `{"$ref":"volumes.project"}`. Existing agents must be unchanged; reconfigure them through the existing configuration API. See [Provision an application](apply.md) for the transaction boundary.

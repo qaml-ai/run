@@ -1,3 +1,5 @@
+export type { ApplyManifest, ApplyResult as ManifestApplyResult, ApplyReference } from "../shared/apply.ts";
+import type { ApplyManifest, ApplyResult as ManifestApplyResult } from "../shared/apply.ts";
 import type { AgentEvent, Message, ModelFailure, PresentedFile, ThinkingLevel } from "./types.ts";
 import type { Run } from "./agents.ts";
 import { Type, type TSchema, type Static } from "typebox";
@@ -1744,6 +1746,8 @@ export class AgentRuntime {
     try { await client.connect(); return client; }
     catch (error) { await client.close(); throw error; }
   }
+  /** Provision keyed resources in one transaction. Use dryRun to preview without writes. */
+  apply(manifest: ApplyManifest): Promise<ManifestApplyResult> { return this.transport.json("/v1/apply", this.operator(), "POST", manifest, true); }
   private operator() {
     if (!this.options.apiKey) throw new AgentError("Set apiKey to manage definitions, volumes and mounts");
     return this.options.apiKey;
