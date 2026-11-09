@@ -1,4 +1,4 @@
-import { computerOwner, computerDisabled, disableComputer, shareComputer } from "../../../../src/core/computer-share.ts";
+import { computerOwner, computerDisabled, disableComputer, hasComputer, shareComputer } from "../../../../src/core/computer-share.ts";
 import { Directory } from "../control.ts";
 import { withSql } from "../postgres.ts";
 import { HttpError } from "../errors.ts";
@@ -10,6 +10,12 @@ import { ComputerService, inheritComputer, type ComputerEnv } from "./service.ts
 type Env = ComputerEnv & { AGENTS: { idFromName(name: string): DurableObjectId } };
 /** The native computer DO's name for an agent: its agent DO's id, as computerTool keys it. */
 export const nativeComputer = (env: Env, agent: string) => env.AGENTS.idFromName(agent).toString();
+/** An agent has a native computer: the deployment binds them, and it shares one or its configuration declares `computer` (hasComputer). */
+export async function hasNativeComputer(env: Env, tenant: string, agent: string) {
+  if (!env.COMPUTER_CONTAINERS) return false;
+  const entry = await new Directory(env, tenant).get(agent);
+  return withSql(env, sql => hasComputer(sql, tenant, agent, entry?.config?.computer !== undefined));
+}
 
 /**
  * A fork of the parent's computers for one call (`batch`): its connection's (a snapshot row, in the parent DO's
@@ -24,7 +30,8 @@ export async function forkChildComputers(env: Env, tenant: string, parent: strin
     if (taken) connection = { seed: taken.id, connection: taken.connection, provider: taken.provider, at: taken.at };
   } catch (error) { if ((error as HttpError).code === "NO_SESSION") missing = error; else throw error; }
   let native: ChildComputerFork["native"];
-  if (env.COMPUTER_CONTAINERS) {
+  // An agent without a computer has nothing to copy, and its computer object is never reached.
+  if (env.COMPUTER_CONTAINERS && await hasNativeComputer(env, tenant, parent)) {
     const name = nativeComputer(env, parent);
     const answer = await env.COMPUTER_CONTAINERS.getByName(name).forkSnapshot(batch, await setup());
     if (answer.ok) native = { snapshot: answer.snapshot, origin: { parent: name, agent: parent, batch, at: Date.now() } };
@@ -42,9 +49,12 @@ export async function forkComputerInto(env: Env & { AGENTS: { getByName(name: st
   const service = new ComputerService(env, tenant);
   if (options.connectionOnly && !(await service.hasConnection(source))) throw new HttpError(404, "Unknown computer connection");
   await service.forkTargets(source, agents);
-  // A target's own native disk is never overwritten: a fork goes only to computers that have none yet.
-  if (!options.connectionOnly && env.COMPUTER_CONTAINERS) for (const agent of agents)
+  // A target's own native disk is never overwritten: a fork goes only to computers that have none yet, and only to
+  // agents that have a computer to start from it.
+  if (!options.connectionOnly && env.COMPUTER_CONTAINERS && await hasNativeComputer(env, tenant, source)) for (const agent of agents) {
+    if (!(await hasNativeComputer(env, tenant, agent))) throw new HttpError(409, `Agent ${agent} has no computer: add \`computer\` to its definition`, "NO_COMPUTER");
     if (await env.COMPUTER_CONTAINERS.getByName(nativeComputer(env, agent)).hasDisk()) throw new HttpError(409, `Agent ${agent} already has files on its computer; fork into an agent whose computer has not been used`);
+  }
   let fork: ChildComputerFork;
   if (options.connectionOnly) {
     const taken = await options.serialize(() => service.forkSnapshot(source, `api:${crypto.randomUUID()}`));
@@ -80,10 +90,10 @@ async function seedNative(env: Env, agent: string, native: NonNullable<ChildComp
 export async function attachChildComputers(env: Env, tenant: string, parent: string, child: string, computer?: "none" | "share" | ChildComputerFork) {
   if (computer === "none") { await withSql(env, sql => disableComputer(sql, tenant, child)); return; }
   if (computer === "share") {
-    const entry = await new Directory(env, tenant).get(parent);
+    // Share only what the parent has: an attached connection, or a native computer (declared, or shared to it).
     const disabled = await withSql(env, sql => computerDisabled(sql, tenant, parent));
     const attached = await new ComputerService(env, tenant).hasConnection(parent);
-    if (disabled || (!attached && (!env.COMPUTER_CONTAINERS || (entry?.config?.codeMode === false && !entry?.config?.computer)))) {
+    if (disabled || (!attached && !(await hasNativeComputer(env, tenant, parent)))) {
       await withSql(env, sql => disableComputer(sql, tenant, child));
       return;
     }

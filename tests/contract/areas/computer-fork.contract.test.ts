@@ -197,8 +197,10 @@ for (const explicit of [false, true]) contractTest("computers", SOURCE, `shared 
 for (const connected of [false, true]) contractTest('computers', SOURCE, `code-mode delegate defaults to ${connected ? 'sharing' : 'no attachment'}`, async t => {
   const boat = await fakeBoatServer();
   t.after(() => boat.close());
+  const offered = new Set<string>();
   const r = await createContractFixture(t, { env: boatEnv(boat.url), respond: body => {
     const results = turnResults(body);
+    for (const tool of body.tools ?? []) offered.add(tool.function?.name ?? tool.name);
     if (firstUser(body).includes('CODE_SHARE_CHILD')) {
       if (!connected) return { role: 'assistant', content: 'no attachment' };
       return results.length ? { role: 'assistant', content: results[0] } : toolCall('computer_exec', { command: 'cat shared.txt' }, 'read');
@@ -218,6 +220,10 @@ for (const connected of [false, true]) contractTest('computers', SOURCE, `code-m
   const status = await r.call(`/v1/agents/${child}/computer`);
   assert.equal(status.status, connected ? 200 : 404);
   if (connected) assert.equal(status.json.connection.agent, parent);
+  // An agent that has no computer is offered no computer tool, and neither is its child; one that has is.
+  const computerTools = [...offered].filter(name => name === 'computer' || /^(computer_|browser_)/.test(name));
+  if (connected) assert.ok(computerTools.includes('computer_exec'), JSON.stringify(computerTools));
+  else assert.deepEqual(computerTools, []);
 });
 
 for (const override of [false, true]) contractTest('computers', SOURCE, `tree cap: tenant default, sharing and released slots (${override ? 'agent override' : 'tenant default'})`, async t => {

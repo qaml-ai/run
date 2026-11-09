@@ -162,6 +162,7 @@ export function createDelegation(this: AgentRuntime): Delegation {
       const conf = await this.config();
       await attachChildComputers(this.env, conf.tenantId, parent, child, computer);
     },
+    hasComputer: async () => this.hasNativeComputer(),
     forkComputer: async (batch) => {
       const conf = await this.config();
       return forkChildComputers(this.env, conf.tenantId, conf.id, batch, async () => computerSetup(this.env, conf), run => this.serializeComputer(run));

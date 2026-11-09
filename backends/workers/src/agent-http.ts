@@ -4,7 +4,7 @@ import { HttpError } from "./errors.ts";
 import { inputView } from "./decision-inputs.ts";
 import { decisionInputs, answerDecisions } from "./inbox-decisions.ts";
 import { repairInputMirrors } from "./agent-input-mirror.ts";
-import { computerOwner, computerDisabled, SHARED_COMPUTER_CONTROL } from "../../../src/core/computer-share.ts";
+import { computerOwner, NO_COMPUTER, SHARED_COMPUTER_CONTROL } from "../../../src/core/computer-share.ts";
 import { withSql as shareSql } from "./postgres.ts";
 import { computerSetup } from "./computers/agent-setup.ts";
 import { forkComputerInto } from "./computers/child-fork.ts";
@@ -380,6 +380,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
         if (!namespace) return json({ error: "Optional computer is not configured" }, 501);
         const input = (await body(request)) as { batch: string; into: string[] };
         const conf = await this.config(), parent = this.ctx.id.toString();
+        if (!(await this.hasNativeComputer())) return json({ error: NO_COMPUTER, code: "NO_COMPUTER" }, 409);
         const answer = await namespace.getByName(parent).forkSnapshot(input.batch, await computerSetup(this.env, conf));
         if (!answer.ok) return json(answer, 409);
         const at = Date.now();
@@ -732,7 +733,8 @@ export async function fetchRequestImpl(this: AgentRuntime,
         return json(
           await (async () => {
             const conf = await this.config();
-            if (await shareSql(this.env, sql => computerDisabled(sql, conf.tenantId, conf.id))) throw new BadRequest("This agent has no computer");
+            // No computer, no container: an agent without one is refused before anything starts.
+            if (!(await this.hasNativeComputer())) throw new HttpError(409, NO_COMPUTER, "NO_COMPUTER");
             const owner = await shareSql(this.env, sql => computerOwner(sql, conf.tenantId, conf.id));
             if (owner !== conf.id && ["sleep", "restore"].includes(input.op)) throw new BadRequest(SHARED_COMPUTER_CONTROL);
             return namespace.getByName(this.env.AGENTS.idFromName(owner).toString()).operate(input as never, await computerSetup(this.env, conf));

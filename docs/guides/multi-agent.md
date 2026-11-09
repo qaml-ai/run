@@ -169,7 +169,10 @@ refuses the child's call; the child should finish and report back.
 Children's computer activity counts toward the parent's idle policy. The machine
 is billed to its owner as before; sharing creates no new machine or charge.
 
-Without a parent computer, the default is `"none"`. A child made from a definition
+Without a parent computer, the default is `"none"`. A parent has a computer when a
+connection is attached to it or, on Workers, when its definition declares
+`computer` (`"computer": {}` for the default one) or it was given one as a
+sub-agent; a deployment that offers computers does not give every agent one. A child made from a definition
 that declares its own computer keeps it. Existing named agents and tool spawn
 directive targets keep their own computers. Use `"none"` explicitly to opt out,
 `"fresh"` for a new machine, or `"fork"` for a separate copy of the parent's disk.

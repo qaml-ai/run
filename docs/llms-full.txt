@@ -862,6 +862,33 @@ turns in the same session. Stopping the session or reaching its expiry discards
 that environment; a new session starts empty. These files are separate from
 camelRun workspace files.
 
+## Native computers on Workers
+
+A Workers deployment that binds computer containers (`COMPUTER_CONTAINERS`) can give
+an agent a Linux container of its own, used through the `computer` tool. An agent
+has this computer only when it is declared:
+
+- its definition has `computer`. `"computer": {}` is the default computer; the
+  settings are `instance`, `idleSeconds`, `idle`, `egress` and `secrets`; or
+- it is a sub-agent that was given one: it shares its parent's (`computer: "share"`,
+  the default when the parent has a computer), has a `"fork"` or `"fresh"` machine
+  from a parent that has one, or is made from a definition that declares its own.
+
+```json
+{ "name": "builder", "computer": {} }
+```
+
+An agent without a declared computer is not offered the `computer` tool, by the
+model or from code, starts no container, and its sub-agents default to
+`computer: "none"`. A deployment that offers computers does not give every agent
+one. Calling the computer route of an agent without one answers `409
+NO_COMPUTER`: `This agent has no computer: add computer to its definition`.
+`computer` is set on definitions only; make the agent from one. The tool also
+needs code mode (`codeMode` is not `false`).
+
+On the Node backend there is no native computer: computer tools appear only
+while a computer connection is attached (below).
+
 ## Sub-agents
 
 By default, a new sub-agent shares its parent's computer connection and running
@@ -870,7 +897,10 @@ computer activity keeps the machine active, and billing stays with the parent.
 Grandchildren share the same machine. Shared children cannot start, stop or
 replace the parent's machine.
 
-Without a parent computer, children get none. Definitions that declare their
+Without a parent computer, children get none. On Workers a parent has a computer
+only when one is declared for it ([Native computers on Workers](https://run.camelai.com/docs/guides/computers.md#native-computers-on-workers))
+or a connection is attached; `"fresh"` and `"fork"` from a parent without one
+give the child nothing. Definitions that declare their
 own computer and existing named or directive targets keep their computers.
 Use `computer: "none"` to opt out, or `"fresh"` or `"fork"` for a separate machine.
 A fresh connection inherits the provider, credentials, managed setting, lease
@@ -6690,7 +6720,10 @@ refuses the child's call; the child should finish and report back.
 Children's computer activity counts toward the parent's idle policy. The machine
 is billed to its owner as before; sharing creates no new machine or charge.
 
-Without a parent computer, the default is `"none"`. A child made from a definition
+Without a parent computer, the default is `"none"`. A parent has a computer when a
+connection is attached to it or, on Workers, when its definition declares
+`computer` (`"computer": {}` for the default one) or it was given one as a
+sub-agent; a deployment that offers computers does not give every agent one. A child made from a definition
 that declares its own computer keeps it. Existing named agents and tool spawn
 directive targets keep their own computers. Use `"none"` explicitly to opt out,
 `"fresh"` for a new machine, or `"fork"` for a separate copy of the parent's disk.

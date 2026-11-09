@@ -10,19 +10,20 @@ export function wordedFileTools<T extends FileToolDefinition>(tools: T[], config
   return tools.map(tool => ({ ...tool, description: worded.get(tool.name) ?? tool.description }));
 }
 
-/** Expose computer tools only when their native binding or attachment is configured. */
+/**
+ * Expose computer tools only to an agent that has a computer: the native `computer` tool when `nativeComputer` (the
+ * deployment binds computers and the agent has one: computer-share.ts hasComputer), a connection's tools when attached.
+ */
 export function selectAgentTools<T extends FileToolDefinition>(
   tools: T[],
   fileNames: ReadonlySet<string>,
   config: { codeMode?: boolean; fileTools?: boolean; builtins?: readonly string[] },
   computers: ReadonlySet<string>,
-  nativeBindings: { COMPUTER_CONTAINERS?: unknown },
+  nativeComputer: boolean,
 ): { tools: T[]; modelTools: T[] } {
-  const nativeComputer = config.codeMode !== false &&
-    !!nativeBindings.COMPUTER_CONTAINERS;
   const disabled = new Set([
     'host_execute', 'exec',
-    ...(!nativeComputer ? ['computer'] : []),
+    ...(!nativeComputer || config.codeMode === false ? ['computer'] : []),
     ...(config.codeMode === false ? ['codemode'] : []),
     ...(!config.builtins?.includes('ask_user') ? ['ask_user'] : []),
     ...(!config.builtins?.includes('ask_human') ? ['ask_human'] : []),
