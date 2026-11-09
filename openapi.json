@@ -6540,6 +6540,48 @@
       "Schedule": {
         "type": "object",
         "properties": {
+          "mounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MountInput"
+            },
+            "maxItems": 16
+          },
+          "cron": {
+            "type": "object",
+            "properties": {
+              "expression": {
+                "type": "string"
+              },
+              "timeZone": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "expression",
+              "timeZone"
+            ]
+          },
+          "sessionMode": {
+            "type": "string",
+            "enum": [
+              "continue",
+              "fresh"
+            ]
+          },
+          "spendLimit": {
+            "type": "object",
+            "properties": {
+              "usd": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000
+              }
+            },
+            "required": [
+              "usd"
+            ]
+          },
           "calendar": {
             "$ref": "#/components/schemas/CalendarSchedule"
           },
@@ -6647,6 +6689,48 @@
       "ScheduleInput": {
         "type": "object",
         "properties": {
+          "mounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MountInput"
+            },
+            "maxItems": 16
+          },
+          "cron": {
+            "type": "object",
+            "properties": {
+              "expression": {
+                "type": "string"
+              },
+              "timeZone": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "expression",
+              "timeZone"
+            ]
+          },
+          "sessionMode": {
+            "type": "string",
+            "enum": [
+              "continue",
+              "fresh"
+            ]
+          },
+          "spendLimit": {
+            "type": "object",
+            "properties": {
+              "usd": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000
+              }
+            },
+            "required": [
+              "usd"
+            ]
+          },
           "calendar": {
             "$ref": "#/components/schemas/CalendarSchedule"
           },
@@ -18054,7 +18138,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The latest 100 scheduled email deliveries",
+            "description": "The latest 100 scheduled runs and their email delivery",
             "content": {
               "application/json": {
                 "schema": {
@@ -18065,15 +18149,36 @@
                       "id": {
                         "type": "string"
                       },
-                      "state": {
+                      "schedule": {
                         "type": "string"
                       },
-                      "email": {
-                        "type": "object",
-                        "additionalProperties": {}
+                      "agent": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
                       },
                       "createdAt": {
                         "type": "number"
+                      },
+                      "error": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "state": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "email": {
+                        "type": [
+                          "object",
+                          "null"
+                        ],
+                        "additionalProperties": {}
                       },
                       "sentAt": {
                         "type": [
@@ -18087,7 +18192,25 @@
                           "null"
                         ]
                       },
-                      "error": {
+                      "runId": {
+                        "type": "string"
+                      },
+                      "cost": {
+                        "type": "number"
+                      },
+                      "endedAt": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "emailState": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "emailError": {
                         "type": [
                           "string",
                           "null"
@@ -18096,12 +18219,19 @@
                     },
                     "required": [
                       "id",
+                      "schedule",
+                      "agent",
+                      "createdAt",
+                      "error",
                       "state",
                       "email",
-                      "createdAt",
                       "sentAt",
                       "messageId",
-                      "error"
+                      "runId",
+                      "cost",
+                      "endedAt",
+                      "emailState",
+                      "emailError"
                     ]
                   }
                 }
@@ -18197,6 +18327,74 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Schedule"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/schedules/{scheduleId}/run": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "scheduleId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "The scheduled run",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "agent": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    },
+                    "record": {}
+                  },
+                  "required": [
+                    "agent",
+                    "requestId"
+                  ]
                 }
               }
             }

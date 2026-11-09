@@ -239,12 +239,14 @@ export async function admitImpl(this: AgentRuntime,
       let params;
       const raw = object(request.params, [
         "code",
+        "metadata",
         "timeoutMs",
         "maxOutputCharacters",
         "actor",
         "allowDisconnected",
       ]);
-      const { actor, allowDisconnected, ...code } = raw;
+      const { actor, allowDisconnected, metadata: rawMetadata, ...code } = raw;
+      const metadata = rawMetadata === undefined ? undefined : metadataInput(rawMetadata);
       try {
         params = executionParams(code);
       } catch (error) {
@@ -260,6 +262,7 @@ export async function admitImpl(this: AgentRuntime,
         params,
         actor,
         allowDisconnected,
+        metadata,
       });
       const old = await this.ctx.storage.get<RequestRecord>(reqKey(id));
       if (old && old.fingerprint !== fingerprint)
@@ -282,6 +285,7 @@ export async function admitImpl(this: AgentRuntime,
         fingerprint,
         params: { ...params, ...(actor ? { actor } : {}) },
         ...(actor ? { actor: String(actor) } : {}),
+        ...(metadata ? {metadata} : {}),
         accepted: false,
         state: "queued",
         startedAt: Date.now(),

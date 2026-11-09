@@ -59,3 +59,13 @@ test("email formats preserve custom HTML and send plain text without adding mark
  assert.equal(plain.text,"# Plain <text>");assert.ok(!Object.hasOwn(plain,"html"));
  assert.throws(()=>scheduleInput({text:"x",inSeconds:1,email:{to:"r@example.com",subject:"x",format:"pdf"}}),/format/);
 });
+
+test("email follows the agent returned by delivery, including run-now", async () => {
+ const {db}=await testDatabase();
+ const scheduler=new Scheduler({db,node:"fresh-mail",emailEnabled:true,deliver:async()=>({agent:"fresh-run-agent"})});
+ const schedule=await scheduler.create({agent:"owner",tenant:"alice",text:"Report",dueAt:Date.now()+3600000,email:{to:"r@example.com",subject:"Report"}});
+ await scheduler.runNow("owner",schedule.id);
+ const delivery=(await db.query("select agent from schedule_deliveries")).rows[0];
+ assert.equal(delivery.agent,"fresh-run-agent");
+ assert.equal((await scheduler.list("owner"))[0].dueAt,schedule.dueAt);
+});
