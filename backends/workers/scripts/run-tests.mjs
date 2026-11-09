@@ -31,7 +31,12 @@ const suites = {
     ],
   },
   // A file that takes far longer than the rest can be given a `weight` (its share of a shard; 1 by default).
-  integration: { loader: "./test/compat-register.mjs", suffix: ".integration.ts", cpus: 4, least: 2, memory: 2 * 1024 ** 3, quiet: [] },
+  integration: {
+    loader: "./test/compat-register.mjs", suffix: ".integration.ts", cpus: 4, least: 2, memory: 2 * 1024 ** 3,
+    // This measurement runs 65 DOs in one isolate. Other workerd fixtures skew its
+    // startup/completion timings and memory sampling, so measure it on its own.
+    quiet: ["test/delegation-load.integration.ts"],
+  },
 };
 const [name, ...rest] = process.argv.slice(2);
 const suite = suites[name];

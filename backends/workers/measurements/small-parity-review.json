@@ -18,47 +18,48 @@
     "gc": "96 MiB old-space, 2 MiB semi-space; normal V8 GC only, no forced collections",
     "outgoingCalls": "Parent AGENTS binding calls, including configuration, submission, fallback reads and computer release; queued calls are not simultaneous open relay connections",
     "localDefaultComparison": "Unconstrained local workerd previously reached 202792692 bytes before counting backing storage. The constrained run verifies completion under memory pressure, rather than assuming local GC matches hosted Workers.",
-    "attribution": "Inspector samples cover the entire isolate: parent plus all 64 real child DOs. The previous ~0.7 MB per child was not a parent-only attribution. Serialized child state and the logged bookkeeping estimate are parent-only; they are not full heap measurements."
+    "attribution": "Inspector samples cover the entire isolate: parent plus all 64 real child DOs. The previous ~0.7 MB per child was not a parent-only attribution. Serialized child state and the logged bookkeeping estimate are parent-only; they are not full heap measurements.",
+    "isolation": "The 65-DO load measurement runs alone after the other integration fixtures. Startup and completion have separate 90-second deadlines."
   },
   "result": {
     "concurrentChildren": 64,
     "v8Flags": "--max-old-space-size=96 --max-semi-space-size=2",
-    "elapsedMs": 62628,
+    "elapsedMs": 66723,
     "baselineHeap": {
-      "usedSize": 50558448,
-      "totalSize": 56360960,
-      "embedderHeapUsedSize": 213744,
+      "usedSize": 50828184,
+      "totalSize": 56700928,
+      "embedderHeapUsedSize": 214864,
       "backingStorageSize": 1815084
     },
     "peakHeap": {
-      "usedSize": 86804024,
-      "totalSize": 91197440,
-      "embedderHeapUsedSize": 5499992,
-      "backingStorageSize": 2365996
+      "usedSize": 86531212,
+      "totalSize": 91537408,
+      "embedderHeapUsedSize": 5626152,
+      "backingStorageSize": 2339475
     },
-    "peakHeapBytes": 94670012,
+    "peakHeapBytes": 94496839,
     "childStateBytes": 40430,
     "childPayloadBytes": 17590,
-    "childFetches": 461,
+    "childFetches": 441,
     "activeFetches": 0,
-    "maxActiveFetches": 56,
+    "maxActiveFetches": 57,
     "eventStreams": 0,
     "alarmFires": 0,
     "rpc": {
-      "total": 589,
+      "total": 569,
       "active": 0,
       "peak": 58,
       "methods": {
         "PUT /configuration": 64,
         "POST /requests": 64,
-        "GET /requests/:id": 397,
+        "GET /requests/:id": 377,
         "POST /__computer": 64
       }
     },
-    "nextAlarm": 1794322251725,
+    "nextAlarm": 1794323235438,
     "relayStreams": 0,
-    "fallbackSweeps": 8,
-    "fallbackRequests": 397,
+    "fallbackSweeps": 7,
+    "fallbackRequests": 377,
     "pushedEvents": 640,
     "pushedCompletions": 64,
     "maxFallbackConcurrent": 6,
@@ -107,7 +108,8 @@
     "payloadMemory": "3/3, including legacy rows, complete results, notification batching and no-cache payload access",
     "python": "65/65 passed",
     "postFinalMainMerge": "Root/Workers typechecks, OpenAPI freshness, small-parity contracts (5/5 each) and webhook trigger contracts (10/10 each) passed after merging 5bfad658.",
-    "suiteRevisions": "Node first seven shards: f7bb2c46; replacement shard 6 and final Workers suite: 503eb07d. Final upstream merge 6cf844b8 adds webhook triggers; post-merge focused checks and PR CI validate that integration."
+    "suiteRevisions": "Node first seven shards: f7bb2c46; replacement shard 6 and final Workers suite: 503eb07d. Final upstream merge 6cf844b8 adds webhook triggers; post-merge focused checks and PR CI validate that integration.",
+    "ciLoadTestCorrection": "The initial Workers CI load test exhausted one shared startup/completion deadline under parallel fixture contention. Run the load test alone and bound each phase separately; the standalone Sprite rerun passed."
   },
   "beforeMemoryChange": {
     "result": {
@@ -158,10 +160,10 @@
   },
   "memoryLog": {
     "type": "delegation_memory",
-    "agentId": "client_b70e253f4fcc2f3935a17ab0124b9b69a884f5c7",
-    "requestId": "7fdb69a6-6185-4a8d-80f1-c711996a35a6",
+    "agentId": "client_d9b7116f0c6950debe60596931b36237b46c1985",
+    "requestId": "1c6d8659-8497-4329-98d2-ab30488adfc9",
     "childCount": 64,
-    "heapEstimateBytes": 134546,
+    "heapEstimateBytes": 135016,
     "estimateScope": "parent_delegation_bookkeeping",
     "payloadStorageBytes": 4726
   },
@@ -258,6 +260,52 @@
     "relayStreams": 0,
     "fallbackSweeps": 7,
     "fallbackRequests": 344,
+    "pushedEvents": 640,
+    "pushedCompletions": 64,
+    "maxFallbackConcurrent": 6,
+    "childStatuses": {
+      "completed": 64
+    }
+  },
+  "previousFinalTrial": {
+    "concurrentChildren": 64,
+    "v8Flags": "--max-old-space-size=96 --max-semi-space-size=2",
+    "elapsedMs": 62628,
+    "baselineHeap": {
+      "usedSize": 50558448,
+      "totalSize": 56360960,
+      "embedderHeapUsedSize": 213744,
+      "backingStorageSize": 1815084
+    },
+    "peakHeap": {
+      "usedSize": 86804024,
+      "totalSize": 91197440,
+      "embedderHeapUsedSize": 5499992,
+      "backingStorageSize": 2365996
+    },
+    "peakHeapBytes": 94670012,
+    "childStateBytes": 40430,
+    "childPayloadBytes": 17590,
+    "childFetches": 461,
+    "activeFetches": 0,
+    "maxActiveFetches": 56,
+    "eventStreams": 0,
+    "alarmFires": 0,
+    "rpc": {
+      "total": 589,
+      "active": 0,
+      "peak": 58,
+      "methods": {
+        "PUT /configuration": 64,
+        "POST /requests": 64,
+        "GET /requests/:id": 397,
+        "POST /__computer": 64
+      }
+    },
+    "nextAlarm": 1794322251725,
+    "relayStreams": 0,
+    "fallbackSweeps": 8,
+    "fallbackRequests": 397,
     "pushedEvents": 640,
     "pushedCompletions": 64,
     "maxFallbackConcurrent": 6,

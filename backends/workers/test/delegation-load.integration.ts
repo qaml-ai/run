@@ -7,7 +7,7 @@ import { startFixture } from './fixture.ts';
 const CHILDREN = 64;
 
 // Run against real workerd, including SQL, all child DOs, model transport and Pi.
-test('workerd runs 64 concurrent delegated children without relay streams or per-child polling', { timeout: 180_000 }, async t => {
+test('workerd runs 64 concurrent delegated children without relay streams or per-child polling', { timeout: 240_000 }, async t => {
   // Local workerd does not impose the hosted isolate's memory budget. Force
   // normal V8 GC under a conservative old-space budget; no forced collections.
   const priorFlags = process.env.MINIFLARE_WORKERD_V8_FLAGS;
@@ -55,16 +55,17 @@ test('workerd runs 64 concurrent delegated children without relay streams or per
   void samples.catch(() => {});
   const run = await call(`/v1/agents/${parent.id}/prompt`, { text: 'Start all children' });
   try {
-    const deadline = Date.now() + 90_000;
-    while (started < CHILDREN && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
+    const startupDeadline = Date.now() + 90_000;
+    while (started < CHILDREN && Date.now() < startupDeadline) await new Promise(resolve => setTimeout(resolve, 100));
     assert.equal(started, CHILDREN, fixture.worker.logs());
     assert.equal(peakChildren, CHILDREN);
     console.log('DELEGATION_LOAD_STARTED ' + JSON.stringify({ children: started, elapsedMs: Date.now() - began }));
     // Hold past one recovery sweep, exercising its fixed concurrency bound too.
     await new Promise(resolve => setTimeout(resolve, 5500));
     gate.resolve();
+    const completionDeadline = Date.now() + 90_000;
     let record: any;
-    do { record = await call(`/v1/agents/${parent.id}/requests/${run.id}`); if (record.state === 'completed') break; await new Promise(resolve => setTimeout(resolve, 250)); } while (Date.now() < deadline);
+    do { record = await call(`/v1/agents/${parent.id}/requests/${run.id}`); if (record.state === 'completed') break; await new Promise(resolve => setTimeout(resolve, 250)); } while (Date.now() < completionDeadline);
     assert.equal(record.outcome?.result?.reply, 'all-64-complete', JSON.stringify(record));
     const profile = await call(`/__test/delegation/${parent.id}`);
     assert.equal(profile.children.length, CHILDREN);
