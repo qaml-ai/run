@@ -45,7 +45,10 @@ summarized in [measurements/README.md](measurements/README.md).
 The optional native computer (`computer` tool, `src/computers/objects.ts`) is a
 `ContainerComputer` Durable Object per agent that owns one container through
 `ctx.container`, under Cloudflare Containers' `durable_object` scheduling
-policy; the legacy `Container` class and the Sandbox SDK are not used. Its code
+policy; the legacy `Container` class and the Sandbox SDK are not used. An agent
+has one only when its definition declares `computer` (`{}` for the default) or it
+was given one as a sub-agent (`hasComputer`, `src/core/computer-share.ts`): the
+binding alone gives no agent the tool. Its code
 picks the image (`COMPUTER_IMAGE`: a name in the Wrangler `images` map, built
 from `computers/Dockerfile` and pinned by digest at deploy; default `workspace`)
 and the size (`COMPUTER_INSTANCE`: `lite`, `standard-1` to `standard-4`;
