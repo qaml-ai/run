@@ -6917,6 +6917,9 @@
               "platformCost"
             ]
           },
+          "next": {
+            "type": "string"
+          },
           "groups": {
             "type": "array",
             "items": {
@@ -11845,7 +11848,33 @@
         "type": "object",
         "properties": {
           "run": {
-            "$ref": "#/components/schemas/Run"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Run"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "truncated": {
+                    "type": "boolean",
+                    "enum": [
+                      true
+                    ]
+                  },
+                  "originalBytes": {
+                    "type": "number"
+                  },
+                  "preview": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "truncated",
+                  "originalBytes",
+                  "preview"
+                ]
+              }
+            ]
           },
           "durationMs": {
             "type": [
@@ -11873,7 +11902,10 @@
                     "null"
                   ]
                 },
-                "message": {}
+                "message": {},
+                "truncated": {
+                  "type": "boolean"
+                }
               },
               "required": [
                 "index",
@@ -11881,6 +11913,12 @@
                 "at"
               ]
             }
+          },
+          "next": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -18699,6 +18737,30 @@
             "required": false,
             "name": "rollup",
             "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "workspaceId",
+            "in": "query"
           }
         ],
         "responses": {
@@ -18730,11 +18792,9 @@
         "parameters": [
           {
             "schema": {
-              "type": "string",
-              "description": "1–365, default 30"
+              "type": "string"
             },
             "required": false,
-            "description": "1–365, default 30",
             "name": "days",
             "in": "query"
           },
@@ -18756,6 +18816,22 @@
             },
             "required": false,
             "name": "rollup",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "cursor",
             "in": "query"
           },
           {
@@ -24603,6 +24679,22 @@
             "description": "The run's id (run_…)",
             "name": "id",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
           }
         ],
         "responses": {
