@@ -70,11 +70,11 @@ contractTest("monitors", "tests/monitors.test.ts:3", "a failing check is counted
   assert.equal(failed.consecutiveErrors, 1);
   assert.match(failed.lastError, /boom/);
   assert.ok(failed.nextCheckAt >= before + 600_000, "the next check waits twice the interval");
-  // Not an object with fire: an error too. And the schedule tools are not in a check's sandbox.
-  const shape = (await f.call(path, { body: { name: "shape", code: "return typeof tools.schedule;" } })).json.id;
+  // Not an object with fire: an error too. And the agent's schedule and monitor tools are not in a check's sandbox.
+  const shape = (await f.call(path, { body: { name: "shape", code: "return 5;" } })).json.id;
   assert.match((await settled(f, agent, shape, 1)).lastError, /must return \{ fire: boolean/);
-  const tools = (await f.call(path, { body: { name: "tools", mode: "repeat", code: "return { fire: true, value: { schedule: typeof tools.schedule, start: typeof tools.monitor_start } };" } })).json.id;
-  assert.deepEqual((await settled(f, agent, tools, 1)).value, { schedule: "undefined", start: "undefined" });
+  const tools = (await f.call(path, { body: { name: "tools", mode: "repeat", code: "const names = ALL_TOOLS.map(tool => tool.name ?? tool); return { fire: true, value: { tools: names.length > 0, denied: names.filter(name => /schedule|monitor_/.test(name)) } };" } })).json.id;
+  assert.deepEqual((await settled(f, agent, tools, 1)).value, { tools: true, denied: [] });
   await until(() => events(f).length === 1, "the one fire");
   assert.equal(f.model.bodies.length, 1, "failed checks called no model");
 });
