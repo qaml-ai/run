@@ -61,6 +61,7 @@ export async function startFixture(
     vars?: Record<string, string>;
     /** A local-test entrypoint, e.g. the backend-neutral contract fixture wrapper. */
     entrypoint?: string;
+    scheduled?: boolean;
     signal?: AbortSignal;
   } = {},
 ) {
@@ -199,7 +200,7 @@ export async function startFixture(
   await worker.start();
   if (stopped) throw new Error("Local Worker fixture startup was cancelled");
   finishStartup();
-  if (config.vars.MAIL_TEST_URL && !stopped) {
+  if ((config.vars.MAIL_TEST_URL || options.scheduled) && !stopped) {
     // Wrangler does not advance Cron Triggers itself. Tick the production job
     // for local mail fixtures, including notifications enqueued directly by SQL.
     let pending: Promise<void> | undefined;

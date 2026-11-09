@@ -8,6 +8,7 @@ import { configuredModel } from "../../../src/model.ts";
 import { modelReference } from "../../../src/virtual-models.ts";
 import { tenantsFromEnvironment } from "../../../src/tenants.ts";
 import { seedJourneyAccount } from "./journey-state.ts";
+import { triggerQuery } from "./trigger-state.ts";
 import { channelQuery } from "./channel-state.ts";
 import { dkimSigner } from "./email.ts";
 import { fakeModel, OPERATOR, OTHER_OPERATOR, until, untilRequestState, type T } from "../http.ts";
@@ -75,6 +76,7 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
   const internalOperator = `contract-internal-${randomUUID()}`;
   const server = await startFixture({
     signal: startup.signal,
+    scheduled: options.triggerMaintenance,
     token: internalOperator,
     tenant: "alice",
     tenants: [],
@@ -259,6 +261,7 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
     seedJourneyAccount: input => seedJourneyAccount(server.db, input),
     sharedAgentsQuery: sharedAgentsQuery(server.db),
     inputIndex: async (agent: string) => (await server.db.query("select state, version, priority, priority_rank, blocking, responders from agent_inputs where agent=$1 order by created_at, id", [agent])).rows,
+    triggerQuery: triggerQuery(server.db),
     channelQuery: channelQuery(server.db),
     async deliverEmail(raw, receipt = {}) {
       if (!dkim) throw new Error("Email channel cases set AGENT_EMAIL_DOMAIN");

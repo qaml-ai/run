@@ -1,3 +1,4 @@
+import { applying, prepareApply } from "../../../shared/apply-scope.ts";
 import type { FileBindings } from "./files.ts";
 import type { TenantAdmission } from "./tenant.ts";
 import {
@@ -146,7 +147,7 @@ export class Directory {
   }
   /** The directory stages a replacement before the DO accepts it. Readers keep the applied configuration. */
   private async applied(entry: DirectoryEntry): Promise<DirectoryEntry> {
-    if (entry.initialized || entry.deleted) return entry;
+    if (applying() || entry.initialized || entry.deleted) return entry;
     const response = await this.env.AGENTS.getByName(entry.id).fetch(new Request("https://agent/configuration"));
     if (!response.ok) return entry;
     const current = await response.json() as Pick<DirectoryEntry, "id" | "tenantId" | "config" | "revision" | "expiresAt">;
@@ -171,7 +172,7 @@ export class Directory {
   ): Promise<DirectoryEntry | DirectoryFailure> {
     const fields = input && typeof input === "object" ? input as Record<string, unknown> : {};
     const defaultModel = fields.model === undefined
-      ? await defaultModelFor(this.env, this.tenantId, typeof fields.keyScope === "string" ? fields.keyScope : undefined)
+      ? await prepareApply(`default-model:${JSON.stringify([this.tenantId, fields.keyScope])}`, () => defaultModelFor(this.env, this.tenantId, typeof fields.keyScope === "string" ? fields.keyScope : undefined))
       : this.env.MODEL;
     const { config, ttlSeconds } = configuration(input, defaultModel);
     const workspaces = new Workspaces(database(this.env));
@@ -190,9 +191,16 @@ export class Directory {
     if (fields.language === undefined && previousConfig?.language !== undefined) config.language = previousConfig.language;
     // An upsert that leaves its queue out keeps the one the agent has, as for its language.
     if (fields.queue === undefined && previousConfig?.queue !== undefined) config.queue = previousConfig.queue;
-    const resolvedModel = await validateAgentModel(this.env, this.tenantId, config, { reference: previousConfig?.model, model: previousEntry?.resolvedModel, defaultModel: fields.model === undefined });
+    if (fields.subject === undefined && previousConfig?.subject) config.subject = previousConfig.subject;
+    const resolvedModel = await prepareApply(`agent-model:${JSON.stringify([this.tenantId, config, previousConfig?.model, previousEntry?.resolvedModel, fields.model === undefined])}`,
+      () => validateAgentModel(this.env, this.tenantId, config, { reference: previousConfig?.model, model: previousEntry?.resolvedModel, defaultModel: fields.model === undefined }));
     // An agent whose first configuration never applied (initialized false: the apply failed) is still being
     // created: a retry applies it as a creation, since there is no configuration on the agent to queue a change on.
+    if (applying() && previousEntry) {
+      const mounts = fields.mounts === undefined ? previousEntry.config.mounts : await (await import("./file-mounts.ts")).prepareMounts(this.env, this.tenantId, id, fields.mounts);
+      if (previousEntry.configHash !== await digest(canonical({ ...config, mounts })) || JSON.stringify(previousEntry.resolvedModel) !== JSON.stringify(resolvedModel)) throw new ApiError(409, "Atomic apply cannot reconfigure an existing agent; use its configuration endpoint");
+      return previousEntry;
+    }
     if (queueConfiguration && previousEntry?.initialized) {
       for (const field of ['subject', 'context', 'definition'] as const)
         if (canonical(config[field] ?? null) !== canonical(previousEntry.config[field] ?? null))
@@ -219,7 +227,7 @@ export class Directory {
       const updated = reconfigured.state === 'completed' ? await this.get(id) : previousEntry;
       return { ...(updated ?? previousEntry), reconfigured };
     }
-    const release = config.type !== "run" && !previousEntry?.initialized
+    const release = !applying() && config.type !== "run" && !previousEntry?.initialized
       ? await reserveAgentCreation(this.env as import("./agent.ts").Env, this.tenantId, id)
       : async () => {};
     let rate: RateLimitState | undefined;
@@ -229,9 +237,9 @@ export class Directory {
     // Volume initialization uses its own SQL and DO calls. Keep those outside
     // the directory transaction; preserve the latest mounts under its lock.
     config.mounts=await (await import('./file-mounts.ts')).prepareMounts(this.env,this.tenantId,id,requested===undefined?before?.config.mounts:requested);
-    const admitCreate = config.type !== "run" ? await prepareCreateAdmission(this.env, this.tenantId) : undefined;
+    const admitCreate = config.type !== "run" ? await prepareApply(`create-admission:${this.tenantId}`, () => prepareCreateAdmission(this.env, this.tenantId)) : undefined;
     let createdHere = false;
-    const entry = await transaction(this.env, async (sql) => {
+    let entry = await transaction(this.env, async (sql) => {
       // A transaction-scoped lock covers the absent row as well as concurrent creates.
       await sql.query("select pg_advisory_xact_lock(hashtextextended($1,0))", [
         id,
@@ -303,13 +311,40 @@ export class Directory {
         throw new ApiError(403, "Agent belongs to another tenant", "FORBIDDEN");
       return next;
     });
+    if (!entry.initialized && !applying()) {
+      const initialized = await this.initialize(entry, runtimeOrigin);
+      if ('failed' in initialized) return initialized;
+      entry = initialized;
+    }
+    if (config.workspaceId !== undefined) await workspaces.assign(this.tenantId, "agent", id, config.workspaceId);
+    else if (config.definition) {
+      const inherited = await workspaces.current(this.tenantId, "definition", config.definition);
+      if (inherited) await workspaces.assign(this.tenantId, "agent", id, inherited.workspace, true);
+    }
+    const result: DirectoryEntry = createdHere ? entry : { ...entry, existingAgent: true };
+    if (rate) creationRates.set(result, rate);
+    return result;
+    } finally { await release(); }
+  }
+  /** Initialize exactly the committed revision, never a second upsert or a configuration request. */
+  async initializeCommitted(entry: DirectoryEntry, runtimeOrigin?: string): Promise<DirectoryEntry | DirectoryFailure> {
+    const row = (await withSql(this.env, sql => sql.query(
+      "select header,revoked from agents where id=$1 and tenant=$2", [entry.id, this.tenantId]))).rows[0];
+    const stored = row?.header as DirectoryEntry | undefined;
+    if (!stored || row.revoked || stored.revision !== entry.revision || stored.configHash !== entry.configHash ||
+        JSON.stringify(stored.resolvedModel) !== JSON.stringify(entry.resolvedModel))
+      throw new ApiError(409, "A newer configuration or revocation won; retry");
+    if (stored.initialized) return stored;
+    return this.initialize(stored, runtimeOrigin);
+  }
+  private async initialize(entry: DirectoryEntry, runtimeOrigin?: string): Promise<DirectoryEntry | DirectoryFailure> {
     if (!entry.initialized) {
-      const response = await this.env.AGENTS.getByName(id).fetch(
+      const response = await this.env.AGENTS.getByName(entry.id).fetch(
         new Request("https://agent/configuration", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            id,
+            id: entry.id,
             tenantId: this.tenantId,
             config:entry.config,
             resolvedModel:entry.resolvedModel,
@@ -341,12 +376,12 @@ export class Directory {
       const applied = await withSql(this.env, (sql) =>
         sql.query(
           "update agents set header=jsonb_set(header::jsonb, '{initialized}', 'true'::jsonb)::json where id=$1 and tenant=$2 and revision=$3 and not revoked returning header",
-          [id, this.tenantId, entry.revision],
+          [entry.id, this.tenantId, entry.revision],
         ),
       );
       if (applied.rowCount) Object.assign(entry, applied.rows[0].header);
       if (!applied.rowCount) {
-        const latest = await this.get(id);
+        const latest = await this.get(entry.id);
         if (latest?.initialized && latest.configHash === entry.configHash) return latest;
         return {
           failed: true,
@@ -356,15 +391,7 @@ export class Directory {
         };
       }
     }
-    if (config.workspaceId !== undefined) await workspaces.assign(this.tenantId, "agent", id, config.workspaceId);
-    else if (config.definition) {
-      const inherited = await workspaces.current(this.tenantId, "definition", config.definition);
-      if (inherited) await workspaces.assign(this.tenantId, "agent", id, inherited.workspace, true);
-    }
-    const result: DirectoryEntry = createdHere ? entry : { ...entry, existingAgent: true };
-    if (rate) creationRates.set(result, rate);
-    return result;
-    } finally { await release(); }
+    return entry;
   }
   async remove(id: string): Promise<boolean | DirectoryFailure> {
     const entry = await this.get(id);

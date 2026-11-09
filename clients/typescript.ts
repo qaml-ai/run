@@ -1,3 +1,5 @@
+export type { ApplyManifest, ApplyResult as ManifestApplyResult, ApplyReference } from "../shared/apply.ts";
+import type { ApplyManifest, ApplyResult as ManifestApplyResult } from "../shared/apply.ts";
 import type { AgentEvent, Message, ModelFailure, PresentedFile, ThinkingLevel } from "./types.ts";
 import type { Run } from "./agents.ts";
 import { Type, type TSchema, type Static } from "typebox";
@@ -1759,6 +1761,8 @@ export class AgentRuntime {
     try { await client.connect(); return client; }
     catch (error) { await client.close(); throw error; }
   }
+  /** Provision keyed resources in one transaction. Use dryRun to preview without writes. */
+  apply(manifest: ApplyManifest): Promise<ManifestApplyResult> { return this.transport.json("/v1/apply", this.operator(), "POST", manifest, true); }
   private operator() {
     if (!this.options.apiKey) throw new AgentError("Set apiKey to manage definitions, volumes and mounts");
     return this.options.apiKey;
@@ -2235,6 +2239,10 @@ export class AgentClient {
 
   private path(suffix = "") { return `/clients/${this.session.id}${suffix}`; }
   private http(suffix: string, method = "GET", body?: unknown, retry = true) { return this.transport.json(this.path(suffix), this.session.token, method, body, retry); }
+  private triggerHttp(suffix: string, method = "GET", body?: unknown, retry = true) {
+    if (!this.tenantKey) throw new AgentError("Trigger management requires a tenant API key", 403);
+    return this.transport.json(`/v1/agents/${this.id}${suffix}`, this.tenantKey, method, body, retry);
+  }
   private report(error: unknown) { this.options.onError?.(error instanceof Error ? error : new Error(String(error))); }
 
   async connect() {
@@ -2753,6 +2761,11 @@ export class AgentClient {
   schedule(input: { text?: string; code?: string; /** @deprecated Ignored: every wake-up sees the agent's history. */ history?: "full" | "none"; at?: string | Date; inSeconds?: number; everySeconds?: number; mounts?: MountInput[]; cron?: {expression:string; timeZone:string}; sessionMode?: "continue" | "fresh"; spendLimit?: {usd:number}; calendar?: CalendarSchedule; email?: ScheduleEmail }): Promise<Schedule> {
     return this.http("/schedules", "POST", { ...input, ...(input.at instanceof Date ? { at: input.at.toISOString() } : {}) }, false);
   }
+  createTrigger(input: TriggerInput): Promise<Trigger & { url: string }> { return this.triggerHttp("/triggers", "POST", input, false); }
+  triggers(): Promise<Trigger[]> { return this.triggerHttp("/triggers"); }
+  deleteTrigger(id: string) { return this.triggerHttp(`/triggers/${encodeURIComponent(id)}`, "DELETE", undefined, false); }
+  rotateTrigger(id: string): Promise<{url:string}> { return this.triggerHttp(`/triggers/${encodeURIComponent(id)}/rotate`, "POST", {}, false); }
+  triggerDeliveries(id: string): Promise<TriggerDelivery[]> { return this.triggerHttp(`/triggers/${encodeURIComponent(id)}/deliveries`); }
   schedules(): Promise<Schedule[]> { return this.http("/schedules"); }
   runSchedule(id: string): Promise<{agent:string; requestId:string; record:unknown}> { return this.http(`/schedules/${encodeURIComponent(id)}/run`, "POST", {}, false); }
   unschedule(id: string) { return this.http(`/schedules/${encodeURIComponent(id)}`, "DELETE", undefined, false); }
@@ -2831,3 +2844,12 @@ export { Agents, Agent, Runs } from "./agents.ts";
 export { HistoryFormatError, toPiMessages, type HistoryFormat, type ImportMessages } from "./history-formats.ts";
 export { fileBytes, formatProblems, Project, Projects, publishTool, type Problem, type ProjectFile, type ProjectVersion, type PublishOptions, type PublishResult } from "./projects.ts";
 export type { AgentsOptions, AgentConfig, Run, RunFailure, RunInput, RunOptions, RunStream, StreamPart, StatelessRunConfig, InputValue, AnswerOptions, OutputSchema, OutputOf, StandardOutputSchema } from "./agents.ts";
+
+/** An incoming webhook starts work on this agent. The URL is returned only on create or rotation. */
+export interface TriggerInput {
+ name:string; prompt:string; mode?:"continue"|"fresh"; budget:{usd:number};
+ verify?:{type:"none"|"hmac"|"github"|"stripe"|"slack";secret?:string;header?:string;algorithm?:"sha256"|"sha1";prefix?:string;timestampHeader?:string;toleranceSeconds?:number};
+ headers?:string[]; deliveryIdHeader?:string; filter?:{path:string;equals:string|number|boolean|null}; rateLimit?:number;
+}
+export interface Trigger extends TriggerInput {id:string;agent:string}
+export interface TriggerDelivery {id:string;status:"queued"|"submitted"|"failed"|"rejected"|"filtered"|"duplicate"|"limited";verified:boolean;deduped:boolean;runId:string|null;agentId:string|null;error:string|null;createdAt:number;attempts?:number;nextAt?:number;count?:number}

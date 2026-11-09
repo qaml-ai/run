@@ -1,3 +1,4 @@
+import { prepareApply } from "../../../shared/apply-scope.ts";
 import { ApiError, configuration, digest, type AgentConfiguration } from "./api-contract.ts";
 import { body, object } from "./validation.ts";
 import { Directory, type ControlEnv, type AuthContext, type DirectoryEntry } from "./control.ts";
@@ -79,8 +80,9 @@ export function visibleConfiguration(config: AgentConfiguration) {
   const { definitionOverrides, definitionRevision, ...visible } = withoutOnExpire(withoutWorkflow(config));
   return { ...visible, keyScope: config.keyScope ?? null, modelHeaders: config.modelHeaders ?? null, decide: config.decide ?? null, language: config.language ?? null, runLimits: config.runLimits ?? null, queue: config.queue ?? null, tools: config.mcp?.tools ?? [], mcp: config.mcp ?? { tools: [] }, mcpServers: (config.mcpServers ?? []).map(source => sourceView(source as RemoteSource)), openApi: (config.openApi ?? []).map(source => sourceView(source as RemoteSource)) };
 }
+export const definitionId = async (tenant: string, key: string) => `def_${(await digest(`${tenant}:${key}`)).slice(0, 20)}`;
 export async function resolveDefinition(env: ControlEnv, tenant: string, ref: string): Promise<Definition> {
-  const id = /^def_[a-f0-9]{20}$/.test(ref) ? ref : `def_${(await digest(`${tenant}:${ref}`)).slice(0, 20)}`;
+  const id = /^def_[a-f0-9]{20}$/.test(ref) ? ref : await definitionId(tenant, ref);
   const row = (await withSql(env, sql => sql.query("select * from definitions where tenant=$1 and id=$2", [tenant, id]))).rows[0];
   if (!row) throw new ApiError(404, `Unknown definition ${ref}`, "NOT_FOUND");
   return fromRow(row);
@@ -89,7 +91,7 @@ export async function provisionDefinition(env: ControlEnv, tenant: string, input
   if (input.computer !== undefined) throw new ApiError(400, "computer is set in a definition; make the agent from one");
   if (typeof input.definition !== "string") {
     const result = { ...input };
-    for (const field of ["mcpServers", "openApi"] as const) if (input[field] !== undefined) result[field] = await prepareSources(env, tenant, undefined, field, input[field]);
+    for (const field of ["mcpServers", "openApi"] as const) if (input[field] !== undefined) result[field] = await prepareApply(`agent-sources:${JSON.stringify([tenant, field, input[field]])}`, () => prepareSources(env, tenant, undefined, field, input[field]));
     return result;
   }
   if (input.systemPrompt !== undefined) throw new ApiError(400, "Use systemPromptAppend with a definition");
@@ -146,7 +148,7 @@ export async function definitionRoutes(request: Request, env: ControlEnv, auth: 
   if (input.apply !== undefined && input.apply !== "all") throw new ApiError(400, "apply must be all");
   const key = request.headers.get("Idempotency-Key");
   if (key !== null && !/^[A-Za-z0-9_-]{1,80}$/.test(key)) throw new ApiError(400, "Invalid Idempotency-Key");
-  const id = ref ? (await resolveDefinition(env, auth.tenantId, ref)).id : `def_${(await digest(key === null ? crypto.randomUUID() : `${auth.tenantId}:${key}`)).slice(0, 20)}`;
+  const id = ref ? (await resolveDefinition(env, auth.tenantId, ref)).id : key === null ? `def_${(await digest(crypto.randomUUID())).slice(0, 20)}` : await definitionId(auth.tenantId, key);
   let existing: Definition | undefined;
   try { existing = await resolveDefinition(env, auth.tenantId, id); } catch (error) { if ((error as ApiError).status !== 404) throw error; }
   if (input.revision !== undefined && (request.method === "POST" || input.revision !== existing?.revision)) throw new ApiError(409, "Definition revision changed", "CONFLICT");
@@ -156,11 +158,12 @@ export async function definitionRoutes(request: Request, env: ControlEnv, auth: 
   const changes = Object.fromEntries(Object.entries(input).filter(([key]) => !["name", "revision", "apply", "applyOnUpdate", "description", "limits"].includes(key)));
   const raw = request.method === "PATCH" ? { ...existing?.spec, ...changes } : changes;
   for (const [field, value] of Object.entries(raw)) if (value === null) delete raw[field];
+  const services = await keyServices(env);
+  const spec = await prepareApply(`definition-spec:${JSON.stringify([auth.tenantId, id, raw, input, existing?.spec, request.method])}`, async () => {
   const { mcpServers, openApi, description: _description, applyOnUpdate: _applyOnUpdate, limits: _limits, computer, channel: madeFor, ...rest } = raw as Record<string, unknown>;
   const spec = configuration(rest, env.MODEL).config as Definition["spec"];
   if (computer !== undefined) spec.computer = computerSettingsInput(computer, value => sourceUrl(value, env), auth.tenantId);
   if (raw.model === undefined) delete spec.model;
-  const services = await keyServices(env);
   if (spec.model !== undefined) {
     try {
       const model = resolveModel(spec.model, services.tenants.modelEndpoints(auth.tenantId), await services.modelProviders.resolvable(auth.tenantId));
@@ -194,6 +197,8 @@ export async function definitionRoutes(request: Request, env: ControlEnv, auth: 
   if (input.applyOnUpdate !== undefined && input.applyOnUpdate !== null) { if (typeof input.applyOnUpdate !== "boolean") throw new ApiError(400, "applyOnUpdate must be boolean"); if (input.applyOnUpdate) spec.applyOnUpdate = true; }
   else if (request.method === "PATCH" && existing?.spec.applyOnUpdate) spec.applyOnUpdate = true;
   if (input.applyOnUpdate === null || input.applyOnUpdate === false) delete spec.applyOnUpdate;
+  return spec;
+  });
   const unchanged = existing && name === existing.name && canonical(spec) === canonical(existing.spec);
   const saved = unchanged ? existing! : await transaction(env, async sql => {
     const configuredLimit = Number((env as { AGENT_MAX_DEFINITIONS_PER_TENANT?: string }).AGENT_MAX_DEFINITIONS_PER_TENANT ?? 5000);
@@ -221,5 +226,5 @@ export async function definitionRoutes(request: Request, env: ControlEnv, auth: 
     const error = result.error ?? result.outcome?.error;
     applied.push({ agent: agent.id, requestId, status: !response.ok || error ? "failed" : result.state === "completed" ? "updated" : "queued", ...(error ? { error } : {}) });
   }
-  return reply({ ...view(saved), ...await builtinWarnings(env, auth.tenantId, saved.spec), ...(applied.length || input.apply === "all" ? { applied } : {}) }, request.method === "POST" ? 201 : 200);
+  return reply({ ...view(saved), ...await prepareApply(`definition-warnings:${JSON.stringify([auth.tenantId, saved.spec])}`, () => builtinWarnings(env, auth.tenantId, saved.spec)), ...(applied.length || input.apply === "all" ? { applied } : {}) }, request.method === "POST" ? 201 : 200);
 }

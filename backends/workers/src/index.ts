@@ -1,4 +1,7 @@
 import { workerDreaming } from "./dreaming.ts";
+import { handleHook, hookPath } from "../../../src/core/trigger-ingress.ts";
+import { workerTriggers, triggerRoutes } from "./triggers.ts";
+import { apply } from './apply.ts';
 import { pruneScheduleRuns } from '../../../src/core/schedule-runs.ts';
 import { SharedAgents, ShareLinkInput, MemberInput } from '../../../src/shared-agents.ts';
 import { database } from './postgres.ts';
@@ -191,6 +194,12 @@ function httpFailure(error: unknown, env: Env): Response {
 
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    if(request.method==='POST'&&hookPath(new URL(request.url).pathname)) {
+      try {
+        const result=await handleHook(request,request.headers.get('cf-connecting-ip')??'unknown',()=>workerTriggers(env));
+        return Response.json(result.body,{status:result.code,headers:{'Cache-Control':'no-store'}});
+      } catch(error) { return httpFailure(error,env); }
+    }
     const recovery = resumeWebhookDeliveries(env);
     if (recovery) ctx.waitUntil(recovery.catch(error => failure(env, "webhook_recovery_failed", error)));
     try {
@@ -325,6 +334,10 @@ const worker = {
           if (usage) return usage;
         }
       }
+      if (auth) {
+        const trigger = await triggerRoutes(request,env,auth.tenantId);
+        if (trigger) return trigger;
+      }
       if (!match) {
         if (!auth) throw new ApiError(403, "Account key required", "FORBIDDEN");
         if (
@@ -351,6 +364,7 @@ const worker = {
           const response = await decisionRoute(request, decisions);
           if (response) { ctx.waitUntil(sendMoneyWebhooks(env)); return response; }
         }
+        if (path === "/v1/apply" && request.method === "POST") return apply(request, env, auth);
         const control = await controlRoutes(request, env, auth);
         if (control) return control;
         if ((path === "/v1/inputs" || path === "/v1/inbox") && request.method === "GET") {
@@ -691,6 +705,8 @@ const worker = {
   },
   async scheduled(_controller: ScheduledController, env: Env) {
     return withMoneyMetrics(env, async () => {
+    try { await (await workerTriggers(env)).scan(); }
+    catch(error) { failure(env,"trigger_scan_failed",error); }
     try {
       await withSql(env,sql=>pruneScheduleRuns(sql)).catch(error=>failure(env,"schedule_retention_failed",error));
       if (_controller.cron === "* * * * *") { await sweepInputMirrors(env); await workerDreaming(env).scan(); return; }

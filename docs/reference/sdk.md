@@ -957,6 +957,7 @@ Each reads `CAMELAI_API_KEY` (and `CAMELAI_BASE_URL` for a runtime of your own).
 `npm run demo:clients` runs the release board and inventory examples against a
 temporary local runtime with scripted code, calling no model.
 
+See [incoming webhook triggers](../guides/triggers.md) for the trigger management API and commands.
 
 ### Usage breakdowns and retained run logs
 
@@ -1005,3 +1006,7 @@ in Python. Tool arguments and results can contain credentials or other sensitive
 data echoed by tools; log access requires the tenant's credential.
 
 CLI `camelrun usage` without `--by` returns the legacy daily report.
+
+## Provision several resources
+
+Use `POST /v1/apply` or `runtime.apply(manifest)` to create keyed volumes, definitions, and agents together. `camelrun apply file.json --dry-run` validates without saving. References are objects such as `{"$ref":"volumes.project"}`. Existing agents must be unchanged; reconfigure them through the existing configuration API. See [Provision an application](apply.md) for the transaction boundary.

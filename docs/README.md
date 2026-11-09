@@ -11,6 +11,7 @@ model-written code in a sandbox, and wakes agents when there is work.
    run, processes, people in the loop, idempotency. **[Pricing](pricing.md)**:
    what usage costs, and credit.
 3. **Guides**
+   - [Incoming webhook triggers](guides/triggers.md)
    - [Scheduled agents and email reports](guides/schedules.md)
    - [Workspaces](guides/workspaces.md): group agents and definitions and see model and tool spend by project
    - [Application metadata](guides/agents.md): project data in agent lists and indexed filtering
@@ -40,6 +41,7 @@ model-written code in a sandbox, and wakes agents when there is work.
    - [Exporting your data](guides/export.md): the account export, and moving to a self-hosted runtime
 4. **[Production checklist](production.md)**
 5. **Reference**
+   - [Provision an application](reference/apply.md): volumes, definitions and agents in one transaction
    - [Events](reference/events.md): every event on an agent's stream, and a run's outcome
    - [Limits](reference/limits.md)
    - [Errors](reference/errors.md)

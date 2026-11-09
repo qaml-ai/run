@@ -1,3 +1,4 @@
+import { applying } from "../../shared/apply-scope.ts";
 import { withOpenRouterDetails } from "../openrouter-model.ts";
 import { currentModel, modelReference } from "../virtual-models.ts";
 import type { Message } from "@earendil-works/pi-ai";
@@ -155,6 +156,10 @@ export async function create(ctx: ConfigurationContext, definitions: ToolDefinit
   const { apiKey: _key, ...safeConfig } = config;
   // Its own MCP servers are checked as they are given (ToolSources.inline), or copied from a checked agent (a fork).
   const own = { ...(access.builtins?.length ? { builtins: access.builtins } : {}), ...(access.delegate ? { delegate: access.delegate } : {}), ...(access.mcpServers?.length ? { mcpServers: access.mcpServers } : {}), ...(access.decide !== undefined ? { decide: access.decide } : {}) };
+  const known = ctx.sessions.get(id)?.header ?? existing?.value;
+  // Atomic provisioning may omit a previously assigned subject on an unchanged retry.
+  if (applying() && identity?.subject === undefined && known?.identity?.subject !== undefined)
+    identity = { ...identity, subject: known.identity.subject };
   const provisionHash = hash(canonical({ ...origin ? { definition: origin.provision } : { definitions, config: safeConfig, ...(Object.keys(metadata).length ? { metadata } : {}), ...(mounts !== undefined ? { mounts } : {}), ...own }, ...(metadata.application !== undefined ? { applicationMetadata: metadata.application } : {}), ...(identity ? { identity } : {}) }));
   // The same key for an existing agent updates it: create or reconfigure (the last upsert wins).
   // An upsert that names no model (nor its definition) leaves the agent's: the runtime's default is for agents being made.
@@ -163,8 +168,12 @@ export async function create(ctx: ConfigurationContext, definitions: ToolDefinit
   const sources: Sources | undefined = origin ? origin.sources : Object.keys(own).length ? own : undefined;
   // The caller counts the create (its rate limit) now, told whether the key's agent has this configuration already:
   // an upsert that changes nothing makes nothing.
-  const known = ctx.sessions.get(id)?.header ?? existing?.value;
   await access.admit?.(!!known && known.tenant === tenant && known.provisionHash === provisionHash && !known.revoked && !expired(known.expiresAt));
+  if (applying() && known) {
+    changes(known); // Preserve the ordinary upsert's immutable-field checks.
+    if (known.provisionHash !== provisionHash) throw new HttpError(409, "Atomic apply cannot reconfigure an existing agent; use its configuration endpoint");
+    return { id, token, expiresAt: known.expiresAt, existing: true };
+  }
   if (existing) {
     if (existing.value.tenant !== tenant) throw new HttpError(409, "Idempotency key belongs to another tenant");
     const changed = changes(existing.value);
@@ -185,7 +194,7 @@ export async function create(ctx: ConfigurationContext, definitions: ToolDefinit
   } else {
     // Loads and creates of this agent here wait for this one (see `load`).
     const provisioned = Promise.withResolvers<Session | undefined>();
-    ctx.loading.set(id, provisioned.promise);
+    if (!applying()) ctx.loading.set(id, provisioned.promise);
     const settle = (made?: Session) => {
       provisioned.resolve(made);
       if (ctx.loading.get(id) === provisioned.promise) ctx.loading.delete(id);
@@ -194,10 +203,10 @@ export async function create(ctx: ConfigurationContext, definitions: ToolDefinit
     try {
       // Capacity is reserved before anything is persisted: an agent refused for it leaves nothing behind.
       if (access.run) ctx.creatingRuns.add(id);
-      await steps.time("room", ctx.makeRoom(id, tenant, !!access.run));
+      if (!applying()) await steps.time("room", ctx.makeRoom(id, tenant, !!access.run));
       const granted = ctx.options.volumes ? await steps.time("mounts", ctx.options.volumes.mountsFor(tenant, id, mounts)) : undefined;
       const ownership = ctx.options.ownership;
-      if (ownership) {
+      if (ownership && !applying()) {
         const acquired = await steps.time("claim", ownership.acquire(id));
         if ("owner" in acquired) throw new NotOwner(acquired.owner);
         claim = acquired.claim;
@@ -218,7 +227,7 @@ export async function create(ctx: ConfigurationContext, definitions: ToolDefinit
       if (access.fork) await steps.time("history", ctx.seedFork(id, claim, access.fork));
       // A conditional create: if a concurrent request made this agent first, retry as a load.
       await steps.time("header", ctx.writeHeader(session));
-      ctx.sessions.set(id, session);
+      if (!applying()) ctx.sessions.set(id, session);
       created = true;
       settle(session);
       await Promise.all([
@@ -227,6 +236,8 @@ export async function create(ctx: ConfigurationContext, definitions: ToolDefinit
       ]);
     } catch (error) {
       settle();
+      // Staged sessions own no process reservation or runtime state; SQL rollback is their cleanup.
+      if (applying()) throw error;
       if (!created) {
         ctx.supervisor.unreserve(id);
         if (claim) await ctx.options.ownership!.release(claim).catch(() => {});
@@ -235,12 +246,12 @@ export async function create(ctx: ConfigurationContext, definitions: ToolDefinit
       }
       await ctx.discard(session!);
       throw error;
-    } finally { ctx.creatingRuns.delete(id); }
+    } finally { if (!applying()) ctx.creatingRuns.delete(id); }
   }
   // Creating records the agent: its host starts in the background, so the response does not wait on listing its tool
   // servers, and a prompt sent meanwhile waits on the same start. A start that fails is only logged: the agent exists,
   // and its next request starts it again, answering with the error if it recurs.
-  if (created) void ctx.ensureStarted(session).catch(error => {
+  if (created && !applying()) void ctx.ensureStarted(session).catch(error => {
     if (!session.header.revoked) console.error(JSON.stringify({ type: "agent_start_failed", agent: id, tenant, error: safeError(error) }));
   });
   return { id, token, expiresAt: session.header.expiresAt, configHash: provisionHash, ...changed };
