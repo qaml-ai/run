@@ -50,7 +50,7 @@ type Stored = Pick<Input, "message" | "detail" | "responders"> & {
 export type InputRow = Input & { stored: Stored };
 /** How a call is run again once its inputs are answered: with the approval's proof, and the tool's requests' answers. */
 export type RetryPlan = { argumentsHash: string; approval?: { input: string; by: Responder; at: number }; inputResponses?: Record<string, unknown>; requestState?: string; note: string };
-export type HumanInputSettings = { expiresInSeconds?: number; approvers?: string[] };
+export type HumanInputSettings = { expiresInSeconds?: number; approvers?: string[]; unattended?: "decline" };
 /**
  * The channel an item's change is announced on (`pg_notify`, the tenant as payload), in the transaction that writes it:
  * a node's inbox watchers (`GET /v1/inbox/events`) re-read what changed. Heard by every node; the tenant says whose it was.
@@ -489,8 +489,9 @@ export function expiresAt(settings: HumanInputSettings | undefined, agentExpires
 
 /** A definition's `humanInput` settings, checked. */
 export function humanInputSettings(value: unknown): HumanInputSettings {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => !["expiresInSeconds", "approvers"].includes(key))) throw new HttpError(400, "humanInput is { expiresInSeconds?, approvers? }");
-  const { expiresInSeconds, approvers } = value as Record<string, unknown>;
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => !["expiresInSeconds", "approvers", "unattended"].includes(key))) throw new HttpError(400, "humanInput is { expiresInSeconds?, approvers?, unattended?: \"decline\" }");
+  const { expiresInSeconds, approvers, unattended } = value as Record<string, unknown>;
+  if (unattended !== undefined && unattended !== "decline") throw new HttpError(400, "humanInput.unattended must be decline");
   if (expiresInSeconds !== undefined && (!Number.isInteger(expiresInSeconds) || (expiresInSeconds as number) < 60 || (expiresInSeconds as number) > INPUT_LIMITS.maxExpiresSeconds)) throw new HttpError(400, `humanInput.expiresInSeconds is an integer from 60 to ${INPUT_LIMITS.maxExpiresSeconds}`);
   if (approvers !== undefined && (!Array.isArray(approvers) || approvers.length > 100 || approvers.some(entry => typeof entry !== "string" || !entry.trim() || entry.length > 200))) throw new HttpError(400, "humanInput.approvers is a list of at most 100 ids (an actor, or a channel sender like slack:U0123)");
   return value as HumanInputSettings;

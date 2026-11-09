@@ -195,10 +195,11 @@ export function configuration(input: unknown, defaultModel: string, operation: "
   if (fields.mounts !== undefined) {
     if (!Array.isArray(fields.mounts) || fields.mounts.length > VOLUME_LIMITS.mounts) throw new BadRequest(`At most ${VOLUME_LIMITS.mounts} mounts`);
     config.mounts = fields.mounts.map(raw => {
-      const mount = object(raw, ["volumeId", "path", "mode", "subpath", "workspace", "notify"]);
+      const mount = object(raw, ["volumeId", "path", "mode", "subpath", "workspace", "notify", "instructions"]);
       if ("workspace" in mount) {
-        if (typeof mount.workspace !== "boolean" || Object.keys(mount).some(key => key !== "workspace" && (mount.workspace !== true || key !== "path"))) throw new BadRequest("Invalid workspace mount");
+        if (typeof mount.workspace !== "boolean" || Object.keys(mount).some(key => key !== "workspace" && (mount.workspace !== true || !["path", "instructions"].includes(key)))) throw new BadRequest("Invalid workspace mount");
       } else if (typeof mount.volumeId !== "string" || !["rw", "ro"].includes(String(mount.mode))) throw new BadRequest("Invalid mount");
+      if (mount.instructions !== undefined && (typeof mount.instructions !== "string" || mount.instructions.length > 4096)) throw new BadRequest("Mount instructions must be at most 4096 characters");
       if (mount.notify !== undefined && typeof mount.notify !== "boolean") throw new BadRequest("notify must be a boolean");
       if (mount.path !== undefined && (typeof mount.path !== "string" || !mount.path.startsWith("/") || mount.path.split("/").some(x => x === ".." || x === "."))) throw new BadRequest("Invalid mount path");
       return mount;

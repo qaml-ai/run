@@ -108,6 +108,7 @@ import { Stripe } from "./stripe.ts";
 import { identityInput, RuntimeSigner } from "./identity.ts";
 import { FileUrls } from "./file-arguments.ts";
 import { rejectWorkflow, builtinsInput, builtinWarnings } from "./builtins.ts";
+import { humanInputSettings } from "./inputs.ts";
 import { delegateSettings } from "./multi-agent.ts";
 import { Inputs, inputView } from "./inputs.ts";
 import { BrowserTokens } from "./browser-tokens.ts";
@@ -573,7 +574,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   async function provisionAgent(tenant: string, params: any, key: string | undefined, steps: Steps, outcome: { agent?: string; upsert: boolean }, parent?: { payer?: string; agentId: string; runId: string; toolCallId: string; depth: number; computer?: "none" | { seed: string } }, admit?: (unchanged: boolean) => Promise<unknown>, run?: RunSettings & { ttlMs: number }) {
     rejectWorkflow(params ?? {});
     // The application's tools are its attached MCP server's: the tools/list it declares.
-    const { mcp: _mcp, subject: _subject, context: _context, keyScope, spendLimit: limit, bucket: givenBucket, modelHeaders: headers, builtins: asked, delegate: delegating, mcpServers: servers, decide: deciding, remount, metadata: _metadata, ...rest } = params ?? {};
+    const { mcp: _mcp, subject: _subject, context: _context, keyScope, spendLimit: limit, bucket: givenBucket, modelHeaders: headers, builtins: asked, delegate: delegating, humanInput: _humanInput, mcpServers: servers, decide: deciding, remount, metadata: _metadata, ...rest } = params ?? {};
     if (remount !== undefined && typeof remount !== "boolean") throw new HttpError(400, "remount must be true or false");
     // The application's tools as it declared them, whose hash its connections are told (`toolsHash`).
     const mcpTools = params?.mcp?.tools;
@@ -590,6 +591,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     if (servers !== undefined && params.definition !== undefined) throw new HttpError(400, "mcpServers come from the definition; change them there");
     const mcpServers = servers === undefined ? undefined : toolSources.inline(servers, tenant);
     // With the delegate builtin, who the agent may delegate to.
+    const humanInput = params.humanInput === undefined ? undefined : humanInputSettings(params.humanInput);
     const delegate = delegateSettings(builtins, delegating);
     const spendLimit = limit === undefined ? undefined : spendInput(limit) ?? undefined;
     // Which bucket of its end user's credit its runs spend from (end-user-credits.ts).
@@ -621,8 +623,8 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     // One made without is a scratch agent nothing can find again once its id is lost: it lives a day, unless it says.
     const lifetime = run ? run.ttlMs : ttl === undefined ? (key !== undefined ? null : undefined) : ttl === null ? null : ttl * 1000;
     const { reconfigure, ...made_ } = await clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type, application: _metadata }, tenant, lifetime, params.mounts,
-      made && { definition: made.ref, provision: made.provision, overrides: made.overrides, sources: made.sources }, identity,
-      { keyScope, spendLimit, ...(params.model === undefined && !inherited ? { defaultModel: true } : {}), ...(bucket ? { bucket } : {}), builtins, delegate, mcpServers, ...(decide !== undefined ? { decide } : {}), ...(remount ? { remount } : {}), ...(idle && !run ? { idleTtlMs: idle * 1000 } : {}), ...(parent ? { parent } : {}), ...(run ? { run: { retentionMs: run.retentionMs, fingerprint: run.fingerprint } } : {}), ...(mcpTools !== undefined ? { toolsHash: createHash("sha256").update(JSON.stringify(mcpTools)).digest("hex") } : {}), ...(admit ? { admit } : {}) }, steps);
+      made && { definition: made.ref, provision: made.provision, overrides: made.overrides, sources: humanInput ? { ...made.sources, humanInput } : made.sources }, identity,
+      { keyScope, spendLimit, ...(params.model === undefined && !inherited ? { defaultModel: true } : {}), ...(bucket ? { bucket } : {}), builtins, delegate, humanInput, mcpServers, ...(decide !== undefined ? { decide } : {}), ...(remount ? { remount } : {}), ...(idle && !run ? { idleTtlMs: idle * 1000 } : {}), ...(parent ? { parent } : {}), ...(run ? { run: { retentionMs: run.retentionMs, fingerprint: run.fingerprint } } : {}), ...(mcpTools !== undefined ? { toolsHash: createHash("sha256").update(JSON.stringify(mcpTools)).digest("hex") } : {}), ...(admit ? { admit } : {}) }, steps);
     outcome.agent = made_.id;
     outcome.upsert = !!reconfigure;
     const warningSources = made ? made.sources : builtins && { builtins };
@@ -932,8 +934,8 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
         void journey?.runEnded(agent.tenant, { completed: ending.error === undefined && !ending.stopped, at: record.endedAt });
       } } satisfies SessionHooks;
     },
-    definitionFor: async (tenant, id) => {
-      const { revision, spec } = await definitions.read(tenant, id);
+    definitionFor: async (tenant, id, pinnedRevision) => {
+      const { revision, spec } = await definitions.read(tenant, id, pinnedRevision);
       const config = sessionConfig({ model: spec.model, systemPrompt: spec.systemPrompt, thinkingLevel: spec.thinkingLevel }, spec.model === undefined ? await defaultModelFor(tenant) : model, systemPrompt, tenants.modelEndpoints(tenant), await modelProviders.resolvable(tenant));
       // A definition that names no model leaves its agents' as they are: the runtime's default is for agents being made.
       return { id, revision, ...(spec.description ? { description: spec.description } : {}), config: { ...(spec.model !== undefined ? { model: await withOpenRouterDetails(config.model) } : {}), systemPrompt: config.systemPrompt, thinkingLevel: config.thinkingLevel ?? "off", fileTools: spec.fileTools !== false, codeMode: spec.codeMode !== false, runLimits: spec.runLimits ?? null, maxOutputTokens: spec.maxOutputTokens ?? null, temperature: spec.temperature ?? null, dataCollection: spec.dataCollection ?? null, language: spec.language ?? null, queue: spec.queue ?? null }, sources: sources(spec) };

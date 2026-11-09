@@ -1,5 +1,5 @@
 import { batchedEnding, childNotice, MULTI_AGENT_LIMITS, withBatch, type BatchedEnding } from './multi-agent-policy.ts';
-import { childUsageCost, type DelegatedChild } from './delegation.ts';
+import { childUsageCost, readChildPayload, type DelegatedChild } from './delegation.ts';
 import type { MessageSource } from './sender.ts';
 
 export type RuntimeNotice = { source: MessageSource; root: string; costUsd: number; metadata: Record<string, unknown> };
@@ -73,12 +73,12 @@ export class DelegationNotifications {
   constructor(host: NotificationHost) { this.host = host; }
   async deliver(child: DelegatedChild): Promise<void> {
     const key = prefix + child.key;
-    if (!await this.host.storage.get(key)) await this.host.storage.put(key, outboxEntry(child));
+    if (!await this.host.storage.get(key, { noCache: true })) await this.host.storage.put(key, outboxEntry(child), { noCache: true });
     await this.send(key);
   }
   async deliverMessage(request: NoticeRequest, notice: RuntimeNotice): Promise<unknown> {
     const key = prefix + request.id;
-    if (!await this.host.storage.get(key)) await this.host.storage.put(key, { request, notice } satisfies PendingNotice);
+    if (!await this.host.storage.get(key, { noCache: true })) await this.host.storage.put(key, { request, notice } satisfies PendingNotice, { noCache: true });
     return this.send(key);
   }
   private send(key: string): Promise<unknown> {
@@ -89,7 +89,7 @@ export class DelegationNotifications {
     return sending;
   }
   private async sendPending(key: string) {
-    let pending = await this.host.storage.get<PendingNotice>(key);
+    let pending = await this.host.storage.get<PendingNotice>(key, { noCache: true });
     if (!pending || pending.delivered) {
       // Carried by another notice's turn: a staged copy left by a crash before its discard goes now (discard is idempotent).
       if (pending?.batchedInto && !pending.discarded) await this.discardCarried(key, pending);
@@ -113,7 +113,7 @@ export class DelegationNotifications {
       // expose the answer. A durable outbox owns a notice claim through retry.
       const claim = await this.host.storage.transaction(async tx => {
         // Read again inside the claim: another notice's turn may have carried this one meanwhile (a batch).
-        const current = await tx.get<PendingNotice>(key);
+        const current = await tx.get<PendingNotice>(key, { noCache: true });
         if (!current || current.delivered) return { state: 'carried' as const };
         const child = current.childKey ? await tx.get<DelegatedChild>(`delegation:${current.childKey}`) : undefined;
         if (child?.landedBy === 'wait') return { state: 'waited' as const };
@@ -124,7 +124,7 @@ export class DelegationNotifications {
         // this. Agents' messages, and notices bound to land without a turn (`delivery`), keep their own.
         if (!current.childKey || current.delivery || current.batch !== undefined) {
           const kept: PendingNotice = steer && !current.steer && current.childKey && !current.delivery ? { ...current, steer: true } : current;
-          if (kept !== current) await tx.put(key, kept);
+          if (kept !== current) await tx.put(key, kept, { noCache: true });
           return { state: 'claimed' as const, pending: kept, carried: [] as NoticeRequest[] };
         }
         // Siblings are found by their records, not only their outbox entries: a child that has just ended may not have
@@ -135,34 +135,34 @@ export class DelegationNotifications {
           if (!sibling?.background || !sibling.id || sibling.key === current.childKey || sibling.status === 'running' || sibling.landedBy || sibling.folded) continue;
           // One without an entry is built from its record, if its start was accepted: a child whose start failed has no
           // ending to tell (the spawn call answered with its error).
-          const otherKey = prefix + sibling.key, existing = await tx.get<PendingNotice>(otherKey);
+          const otherKey = prefix + sibling.key, existing = await tx.get<PendingNotice>(otherKey, { noCache: true });
           if (!existing && !sibling.accepted) continue;
-          const other = existing ?? outboxEntry(sibling);
+          const other = existing ?? outboxEntry(await readChildPayload(tx, sibling));
           if ((other.request.params.endUser ?? null) !== (current.request.params.endUser ?? null) || (other.request.params.bucket ?? null) !== (current.request.params.bucket ?? null)) continue;
           if (other.delivered || other.delivery || other.notice.metadata.kind === 'message') continue;
           await tx.put(`delegation:${sibling.key}`, { ...sibling, landedBy: 'notice' });
-          await tx.put(otherKey, { ...other, delivered: true, batchedInto: key });
+          await tx.put(otherKey, { ...other, delivered: true, batchedInto: key }, { noCache: true });
           batch.push(batchedEnding({ text: other.request.params.text, notice: other.notice }, other.request.id));
           carried.push(other.request);
         }
         const next: PendingNotice = { ...current, batch, ...(steer ? { steer: true as const } : {}) };
-        await tx.put(key, next);
+        await tx.put(key, next, { noCache: true });
         return { state: 'claimed' as const, pending: next, carried };
       });
-      if (claim.state === 'carried') return (await this.host.storage.get<PendingNotice>(key))?.receipt;
+      if (claim.state === 'carried') return (await this.host.storage.get<PendingNotice>(key, { noCache: true }))?.receipt;
       if (claim.state === 'waited') {
         await this.host.discard?.(pending.request);
-        await this.host.storage.put(key, { ...pending, delivered: true });
+        await this.host.storage.put(key, { ...pending, delivered: true }, { noCache: true });
         return;
       }
       pending = claim.pending;
       // Carried notices that were staged (exposed as pending requests while a wait could take them) are no longer: done
       // on every send until it is recorded, so a crash between the claim and these discards leaves no staged copy behind.
       if (pending.batch?.length && !pending.carriedDiscarded) {
-        for (const [otherKey, other] of await this.host.storage.list<PendingNotice>({ prefix }))
+        for (const [otherKey, other] of await this.host.storage.list<PendingNotice>({ prefix, noCache: true }))
           if (other?.batchedInto === key) await this.discardCarried(otherKey, other);
         pending = { ...pending, carriedDiscarded: true };
-        await this.host.storage.put(key, pending);
+        await this.host.storage.put(key, pending, { noCache: true });
       }
       if (!pending.delivery && !pending.wake) {
         // Message admission decides against the live logical turn. A pending
@@ -170,33 +170,33 @@ export class DelegationNotifications {
         pending.wake = pending.notice.metadata.kind === 'message'
           ? { allowed: true, hour: Math.floor(Date.now() / 3_600_000) }
           : await this.host.admitWake(pending.notice.root, pending.request.id);
-        await this.host.storage.put(key, pending);
+        await this.host.storage.put(key, pending, { noCache: true });
       }
       const delivery: NoticeDelivery = pending.delivery ?? (pending.wake!.allowed ? { run: true, ...(pending.steer ? { steer: true as const } : {}) } : { run: false, stopped: 'agent_loop_limit', message: `This agent's chain has had ${this.host.wakeLimit ?? MULTI_AGENT_LIMITS.wakesPerHour} turns started by sub-agent notifications and messages this hour, its limit: the message is in its history, but no turn ran. Send a message to go on` });
       const receipt = await this.host.submit(pending.request, withBatch(pending.notice, pending.batch ?? []), delivery);
-      await this.host.storage.put(key, { ...pending, delivered: true, receipt });
+      await this.host.storage.put(key, { ...pending, delivered: true, receipt }, { noCache: true });
       return receipt;
     } catch (error) {
       const status = (error as { status?: number })?.status;
       // Gone parents cannot accept a notification. Other failures stay durable.
-      if (status === 404 || status === 410) { await this.host.storage.put(key, { ...pending, delivered: true }); return; }
+      if (status === 404 || status === 410) { await this.host.storage.put(key, { ...pending, delivered: true }, { noCache: true }); return; }
       await this.host.retry(Date.now() + 1000);
       throw error;
     }
   }
   /** An aborted parent still records queued child endings, without starting another turn. */
   async abortPending() {
-    for (const [key, notice] of await this.host.storage.list<PendingNotice>({ prefix })) {
+    for (const [key, notice] of await this.host.storage.list<PendingNotice>({ prefix, noCache: true })) {
       if (notice.delivered) continue;
       await this.active.get(key);
-      const pending = await this.host.storage.get<PendingNotice>(key);
+      const pending = await this.host.storage.get<PendingNotice>(key, { noCache: true });
       if (!pending || pending.delivered) continue;
-      await this.host.storage.put(key, { ...pending, delivery: { run: false, stopped: 'aborted', message: 'Aborted' } });
+      await this.host.storage.put(key, { ...pending, delivery: { run: false, stopped: 'aborted', message: 'Aborted' } }, { noCache: true });
       await this.send(key);
     }
   }
   async drain() {
-    for (const [key, notice] of await this.host.storage.list<PendingNotice>({ prefix })) {
+    for (const [key, notice] of await this.host.storage.list<PendingNotice>({ prefix, noCache: true })) {
       if (!notice.delivered || (notice.batch?.length && !notice.carriedDiscarded)) await this.send(key);
       else if (notice.batchedInto && !notice.discarded) await this.discardCarried(key, notice);
     }
@@ -208,21 +208,21 @@ export class DelegationNotifications {
   private async stageUnlessCarried(key: string, pending: PendingNotice) {
     // Marked staged on a fresh read, in a transaction: a write of an older copy could undo a batch's claim of it.
     const before = await this.host.storage.transaction(async tx => {
-      const current = await tx.get<PendingNotice>(key);
-      if (current && !current.delivered && !current.staged) await tx.put(key, { ...current, staged: true });
+      const current = await tx.get<PendingNotice>(key, { noCache: true });
+      if (current && !current.delivered && !current.staged) await tx.put(key, { ...current, staged: true }, { noCache: true });
       return current;
     });
     if (!before || before.delivered) { if (before?.batchedInto) await this.discardCarried(key, before); return; }
     await this.host.stage?.(pending.request, pending.notice);
-    const after = await this.host.storage.get<PendingNotice>(key);
+    const after = await this.host.storage.get<PendingNotice>(key, { noCache: true });
     if (after?.delivered && after.batchedInto) await this.discardCarried(key, after);
   }
   /** A carried notice's staged copy, if any, answers as carried; recorded, so a drain need not ask again. */
   private async discardCarried(key: string, entry: PendingNotice) {
     await this.host.discard?.(entry.request, CARRIED, true);
-    if (!entry.discarded) await this.host.storage.put(key, { ...entry, discarded: true });
+    if (!entry.discarded) await this.host.storage.put(key, { ...entry, discarded: true }, { noCache: true });
   }
   async pending() {
-    return [...(await this.host.storage.list<PendingNotice>({ prefix })).values()].some(notice => !notice.delivered);
+    return [...(await this.host.storage.list<PendingNotice>({ prefix, noCache: true })).values()].some(notice => !notice.delivered);
   }
 }

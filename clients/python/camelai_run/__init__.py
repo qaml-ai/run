@@ -1000,7 +1000,7 @@ class AgentRuntime(_RuntimeCalls):
             raise
         return then(value) if then else value
 
-    async def create_agent(self, *, tools, workspace_id=_DEFAULT, system_prompt=None, name=None, type=None, metadata=None, networking=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, on_input=None, builtins=None, delegate=None, subagents=False, prompt=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, idle_ttl_seconds=None):
+    async def create_agent(self, *, tools, workspace_id=_DEFAULT, system_prompt=None, name=None, type=None, metadata=None, networking=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, definition_revision=None, human_input=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, on_input=None, builtins=None, delegate=None, subagents=False, prompt=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, idle_ttl_seconds=None):
         """Provision an agent. `model` is "provider/model-id", e.g. "anthropic/claude-sonnet-5-5".
         `definition` makes it from a definition (GET /v1/definitions), which supplies the model, system prompt,
         thinking level and tool sources; `tools` are added as the agent's attached MCP server.
@@ -1021,7 +1021,7 @@ class AgentRuntime(_RuntimeCalls):
             raise AgentError("No API key: set CAMELAI_API_KEY (or pass api_key). Create one at https://run.camelai.com/console/tokens")
         # subject: who the agent acts for; context: claims for its tool servers' identity tokens. Set only here.
         body = _provisioning(tools, definition=definition, name=name, type=type, metadata=metadata, networking=networking, system_prompt=system_prompt, model=model, thinking_level=thinking_level,
-                             workspace_id=workspace_id, mounts=mounts, subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits, model_headers=model_headers, builtins=builtins,
+                             definition_revision=definition_revision, human_input=human_input, workspace_id=workspace_id, mounts=mounts, subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits, model_headers=model_headers, builtins=builtins,
                              delegate=delegate, prompt=prompt, initial_messages=initial_messages, import_messages=import_messages, max_output_tokens=max_output_tokens, temperature=temperature, data_collection=data_collection, language=language, mcp_servers=mcp_servers)
         # A key of the caller's makes the agent durable (it lives until deleted); one the SDK makes up, only so a retried
         # create finds the same agent, keeps a scratch agent's day, said explicitly since any key would make it durable.
@@ -1468,11 +1468,11 @@ class Voice:
         return self._runtime._rest("DELETE", f"/v1/voice/sessions/{quote(session_id, safe='')}")
 
 
-def _provisioning(tools, *, workspace_id=_DEFAULT, definition=None, name=None, type=None, metadata=None, system_prompt=None, model=None, thinking_level=None, mounts=None, remount=None,
+def _provisioning(tools, *, workspace_id=_DEFAULT, definition=None, definition_revision=None, human_input=None, name=None, type=None, metadata=None, system_prompt=None, model=None, thinking_level=None, mounts=None, remount=None,
                   subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, system_prompt_append=None, file_tools=None, builtins=None,
                   delegate=None, prompt=None, code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, bucket=None, queue=None, networking=None):
     """A create request's body: the tools as the attached MCP server's tools/list, and the fields given."""
-    optional = {"metadata": metadata, "definition": definition, "name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level,
+    optional = {"metadata": metadata, "definitionRevision": definition_revision, "humanInput": human_input, "definition": definition, "name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level,
                 "mounts": mounts, "remount": remount, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit, "runLimits": run_limits, "modelHeaders": model_headers,
                 "systemPromptAppend": system_prompt_append, "fileTools": file_tools, "codeMode": code_mode, "builtins": builtins, "delegate": delegate, "mcpServers": mcp_servers, "prompt": prompt,
                 "initialMessages": initial_messages, "importMessages": import_messages, "maxOutputTokens": max_output_tokens, "temperature": temperature, "dataCollection": data_collection, "language": language, "bucket": bucket, "queue": queue, "networking": networking}
@@ -2497,6 +2497,8 @@ class Run:
     raw: dict | None = field(default=None, repr=False)
     # The model that made its last response, as "provider/model-id" (retries ask the same one); None when it made none.
     served_model: str | None = None
+    stopped_reason: str | None = None
+    limit: str | None = None
 
 
 class Mount(TypedDict):
@@ -2507,6 +2509,7 @@ class Mount(TypedDict):
     mode: str
     subpath: NotRequired[str]
     notify: NotRequired[bool]
+    instructions: NotRequired[str]
 
 
 class WorkspaceMount(TypedDict):
@@ -2515,6 +2518,7 @@ class WorkspaceMount(TypedDict):
     leaves it out."""
     workspace: bool
     path: NotRequired[str]
+    instructions: NotRequired[str]
 
 
 class InputDetail(TypedDict):
@@ -2556,11 +2560,11 @@ def _run_of(request_id, result, output, make_input):
     # A runtime from before structured output ignores the schema and answers in text.
     if output is not None and value is None and not error and not result.get("stopped") and result:
         error = {"code": "output_missing", "message": "The run ended without an output: this runtime may not support structured output (output); upgrade it"}
-    status = "failed" if error else "input_required" if result.get("stopped") == "input_required" else "completed"
+    status = "paused" if result.get("stopped") == "spend_limit" else "failed" if error else "input_required" if result.get("stopped") == "input_required" else "completed"
     return Run(request_id, status, text=result.get("reply") or "", output=value, inputs=[make_input(input) for input in result.get("inputs") or []], error=error,
                usage=result.get("usage"), files=result.get("files") or [], tool_errors=result.get("toolErrors") or [],
                tool_calls=result.get("toolCalls") or [],
-               source_errors=result.get("sourceErrors") or [], raw=result, served_model=result.get("servedModel"))
+               source_errors=result.get("sourceErrors") or [], raw=result, served_model=result.get("servedModel"), stopped_reason="budget_reached" if status == "paused" else None, limit=result.get("limit"))
 
 
 class RunInput(dict):
@@ -2721,7 +2725,7 @@ class RunStream:
 
     async def result(self):
         run = await self._task
-        if run.error and self._throw:
+        if run.status != "paused" and run.error and self._throw:
             raise RunError(run)
         return run
 
@@ -2734,7 +2738,7 @@ class RunStream:
                 yield part
             run = await self._task
             yield StreamPart("done", run=run)
-            if run.error and self._throw:
+            if run.status != "paused" and run.error and self._throw:
                 raise RunError(run)
         finally:
             self._unlisten()
@@ -2805,7 +2809,7 @@ class Agent:
             if error.status != 0 or error.request_id != request_id or str(error).startswith(("Client closed", "Stopped waiting")):
                 raise
             run = Run(request_id, "failed", error={"code": error.code or "runtime_error", "message": str(error), **({"uncertain": True} if error.uncertain else {})})
-        if run.error and throw_on_error:
+        if run.status != "paused" and run.error and throw_on_error:
             raise RunError(run)
         return run
 
@@ -2957,7 +2961,7 @@ def _stateless_run(view, output=None, throw_on_error=True):
             error = {"code": "output_invalid", "message": f"The output does not fit its schema: {invalid}"}
     run = Run(view["id"], "failed" if error else view["status"], text=view.get("text") or "", output=value, error=error, usage=view.get("usage"),
               files=view.get("files") or [], tool_errors=view.get("toolErrors") or [], tool_calls=view.get("toolCalls") or [],
-              source_errors=view.get("sourceErrors") or [], raw=view, served_model=view.get("servedModel"))
+              source_errors=view.get("sourceErrors") or [], raw=view, served_model=view.get("servedModel"), stopped_reason=view.get("stoppedReason"), limit=view.get("limit"))
     if run.error and throw_on_error:
         raise RunError(run)
     return run
@@ -2983,7 +2987,7 @@ class StatelessRunStream:
                 yield part
         run = _stateless_run(await self._runtime.wait_for_run(self.id), self._output, False)
         yield StreamPart("done", run=run)
-        if run.error and self._throw:
+        if run.status != "paused" and run.error and self._throw:
             raise RunError(run)
 
 
@@ -3102,7 +3106,7 @@ class Agents:
         """
         return await self.runs.run(input, **options)
 
-    async def upsert(self, key, *, workspace_id=_DEFAULT, model=None, instructions=None, tools=None, definition=None, thinking_level=None, subject=None, context=None,
+    async def upsert(self, key, *, workspace_id=_DEFAULT, model=None, instructions=None, tools=None, definition=None, definition_revision=None, human_input=None, thinking_level=None, subject=None, context=None,
                      key_scope=None, spend_limit=None, run_limits=None, model_headers=None, mounts=None, remount=None, name=None, metadata=None, instructions_append=None, file_tools=None,
                      builtins=None, delegate=None, subagents=False, on_event=None, on_input=None, on_error=None, attach=None, takeover=False, connection=None,
                      code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, bucket=None,
@@ -3129,7 +3133,7 @@ class Agents:
         of its subject's credit its runs spend from (default "default"). `queue` ({"mode": "batch", "windowMs"?}) runs the
         prompts that wait while a turn runs together as its next turn (see Batching in the concepts guide)."""
         tools = list(tools or [])
-        session = await self.runtime.upsert_agent(key, workspace_id=workspace_id, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
+        session = await self.runtime.upsert_agent(key, workspace_id=workspace_id, tools=tools, definition=definition, definition_revision=definition_revision, human_input=human_input, system_prompt=instructions, model=model, thinking_level=thinking_level,
                                                   subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits,
                                                   model_headers=model_headers, mounts=mounts, remount=remount, name=name, metadata=metadata, system_prompt_append=instructions_append, file_tools=file_tools, builtins=builtins,
                                                   delegate=delegate, code_mode=code_mode, initial_messages=initial_messages, import_messages=import_messages,

@@ -192,6 +192,8 @@ confirmation. The next message from someone allowed to answer, if it fits (an
 option's number or label, `approve`/`yes` or `deny`/`no`, `done`), is the answer;
 anything else is a new message. See [Channels](channels.md).
 
+Set `humanInput: { unattended: "decline" }` on an agent or definition to decline approval requests immediately. The tool does not run. Questions, forms and URL steps still wait for input.
+
 ### Answer the inbox in a batch
 
 `POST /v1/inbox/answers` takes `{requestId, answers}`. Use a new `requestId` for each

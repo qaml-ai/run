@@ -348,11 +348,13 @@ export const Mount = z.object({
   path: z.string().openapi({ description: "Where the agent's file tools see the volume, e.g. /workspace" }),
   mode: z.enum(["ro", "rw"]),
   subpath: z.string().optional().openapi({ description: "Mount only this directory of the volume" }),
+  instructions: z.string().max(4096).optional(),
   notify: z.boolean().optional().openapi({ description: "Prompt the agent when others change files under this mount" }),
 }).openapi("Mount");
 /** A mount as given: a volume, or the agent's own workspace. */
 export const MountInput = z.union([Mount, z.strictObject({
   workspace: z.boolean(),
+  instructions: z.string().max(4096).optional(),
   path: z.string().optional().openapi({ description: "With true: where it is mounted, absolute and normalized (default /workspace), e.g. /scratch beside a project volume at /workspace", example: "/scratch" }),
 }).openapi("WorkspaceMount", {
   description: "The agent's own workspace volume, where attachments, tool outputs and scratch files go. It is mounted at /workspace beside the mounts given (last) unless they leave it out: true places it at this position (at `path`), false leaves it out, and a mount given at /workspace takes its place",
@@ -398,6 +400,7 @@ const AgentTarget = z.union([
   z.string().openapi({ description: "A definition's key or id; the model sees it by that name" }),
   z.strictObject({
     name: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).optional().openapi({ description: "What the model calls it; default: the definition's or agent's key" }),
+    revision: z.number().int().positive().optional(),
     definition: z.string().optional().openapi({ description: "A definition's key or id" }),
     agent: z.string().optional().openapi({ description: "An existing agent's key. The agent keeps its history across calls; a definition makes a new child each call" }),
     description: z.string().max(1000).optional().openapi({ description: "What it is for, for the model; default: the definition's description" }),
@@ -407,7 +410,7 @@ export const DelegateSettings = z.strictObject({
   agents: z.array(AgentTarget).max(32).optional().openapi({ description: "Who the model may delegate to: definitions (a new child agent for each call) and existing agents by key" }),
   instructions: z.boolean().optional().openapi({ description: "Let the model start a child with instructions of its own instead, on its own model" }),
   maxDepth: z.number().int().min(1).max(5).optional().openapi({ description: "How deep delegation may go: a child is depth 1, its child depth 2. Default 2" }),
-  maxParallel: z.number().int().min(1).max(16).optional().openapi({ description: "delegate calls of one run in flight at once (more wait their turn), and the agent's background sub-agents running at once (spawn_agent past it is refused). Default 4" }),
+  maxParallel: z.number().int().min(1).max(64).optional().openapi({ description: "delegate calls of one run in flight at once (more wait their turn), and the agent's background sub-agents running at once (spawn_agent past it is refused). Default 4" }),
   notify: z.enum(["turn", "asap"]).optional().openapi({ description: "When a background sub-agent's ending reaches the agent while its turn runs: turn (default) as a turn of its own once that turn ends; asap at the turn's next step, after the tool results it waits for (a wait_agent in flight still takes it into its result)" }),
 }).openapi("DelegateSettings", { description: "With the delegate or agents builtin: who the model may hand tasks to, and how deep and wide. See the multi-agent guide" });
 export const AbortInput = z.strictObject({
@@ -537,10 +540,12 @@ export const QueueSettingInput = z.strictObject({
 const ApplicationMetadata = z.record(z.string(), z.unknown()).openapi({ description: "Tenant-owned JSON object, at most 16384 UTF-8 bytes. Replaced whole when supplied; omitted preserves it. Not sent to the model. List filtering: ?metadata.type=camelcode-project matches top-level strings exactly." });
 
 export const AgentInput = z.object({
+  humanInput: z.strictObject({ unattended: z.literal("decline").optional(), expiresInSeconds: z.number().int().min(60).max(2592000).optional(), approvers: z.array(z.string()).max(100).optional() }).optional(),
   networking: Networking.optional(),
   metadata: ApplicationMetadata.optional(),
   workspaceId,
   mcp: z.object({ tools: z.array(z.unknown()) }).optional().openapi({ description: "The application's attached MCP server: its tools/list, whose tools the agent calls back through the application's connection. The SDKs send it" }),
+  definitionRevision: z.number().int().positive().optional(),
   definition: z.string().optional().openapi({ description: "Make the agent from this definition (GET /v1/definitions). It supplies the model, system prompt, thinking level, fileTools and tool sources; name, type, ttlSeconds, mounts and initialMessages given here override its defaults. model, thinkingLevel, maxOutputTokens, temperature, language, fileTools, codeMode and runLimits given here are the agent's own: applying the definition later keeps them. systemPrompt cannot be given with a definition; use systemPromptAppend" }),
   name: z.string().optional(),
   type: z.string().optional(),
@@ -635,7 +640,8 @@ export const RequestRecord = z.object({
   outcome: Outcome.optional().openapi({ description: "result.code names a run's failure where it has a name: cancelled (a stop cancelled it before it began), aborted (stopped while it ran), model_stream_stalled (its model stopped answering, past every retry), turn_limit, context_too_large (its stored Pi context range exceeds the runtime byte limit), spend_limit, agent_loop_limit (a sub-agent's notification landed without a turn: its chain reached its wake cap), output_missing, model_key_missing, model_key_invalid. result.stopped is input_required when the turn waits on human input, listed in result.inputs. A run's result also has reply, replyIndex, files, toolErrors and toolCalls: every tool call it made (the first 100), as {tool, toolCallId?, innerCallId?, ok, code?, agentId?} (agentId: the child a delegate or spawn_agent call ran), without arguments or results. result.output is a structured answer, for a prompt sent with output. result.usage.subagentCostUsd is what its children spent, result.usage.imageCostUsd what its generate_image calls spent, and result.usage.decisionCostUsd what its decide calls spent. result.servedModel is the model that made its last response (provider/model-id); result.modelError, when a model call failed it, says how: {errorClass, providerStatus?, retryable, model} (ModelFailure)" }),
   error: z.string().optional().openapi({ description: "An ended request's error, from its outcome: the runtime's (outcome.error) or the model's (outcome.result.error). Absent when it succeeded" }),
   stopped: z.enum(["input_required", "spend_limit", "turn_limit", "agent_loop_limit"]).optional().openapi({ description: "Why an ended run stopped early (outcome.result.stopped)" }),
-  status: z.enum(["completed", "input_required", "failed"]).optional().openapi({ description: "How an ended request ended (state says only that it ended): failed when it has an error or stopped at a spend or turn limit; input_required when it waits on people. Absent while running" }),
+  stoppedReason: z.literal("budget_reached").optional(),
+  status: z.enum(["completed", "input_required", "paused", "failed"]).optional().openapi({ description: "How an ended request ended (state says only that it ended): paused at a spend limit; failed for other errors or turn limits; input_required when it waits on people. Absent while running" }),
 }).openapi("RequestRecord");
 export const AgentCredentials = z.object({
   id: z.string(),
@@ -706,7 +712,9 @@ const RunFailure = z.object({
 }).openapi("RunFailure", { description: "errorClass, providerStatus, retryable and model are there when a model call failed the run (model_error, model_stream_stalled, model_key_invalid…)" });
 export const Run = z.object({
   id: z.string().openapi({ description: "run_…" }),
-  status: z.enum(["running", "completed", "input_required", "failed"]).openapi({ description: "running until it ends; then completed, failed, or input_required (a tool asked for approval or input, which a run cannot wait on: it ends there)" }),
+  stoppedReason: z.literal("budget_reached").optional(),
+  limit: z.enum(["run", "agent", "tenant", "credit", "end_user"]).optional(),
+  status: z.enum(["running", "completed", "input_required", "failed"]).openapi({ description: "running until it ends; then completed, failed (including spend limits), or input_required (a tool asked for approval or input, which a run cannot wait on: it ends there)" }),
   text: z.string().openapi({ description: "The final reply's text (\"\" while running, or when it said nothing)" }),
   output: z.unknown().optional().openapi({ description: "For a run with output: the answer, which fits its schema" }),
   error: RunFailure.nullable(),
@@ -845,7 +853,7 @@ export const ChildAgent = z.object({
   agentId: z.string(),
   name: z.string().openapi({ description: "The parent's name for it: spawn_agent's name (the model's handle), or the delegate target's" }),
   background: z.boolean().openapi({ description: "true: started by spawn_agent (or a tool's spawn directive), its answer a notification; false: a delegate call's, its answer the call's result" }),
-  status: z.enum(["running", "completed", "failed", "aborted", "input_required"]).openapi({ description: "As its latest run says: a message or a resume starts it again" }),
+  status: z.enum(["running", "completed", "failed", "aborted", "input_required", "paused"]).openapi({ description: "As its latest run says: a message or a resume starts it again" }),
   requestId: z.string().openapi({ description: "Its latest run's request, on the child: GET /v1/agents/{agentId}/requests/{requestId}, or its events with ?request=" }),
   toolCallId: z.string().openapi({ description: "The parent's tool call that started that run (spawn_agent, delegate, or send_message)" }),
   startedAt: z.number().openapi({ description: "When the parent first started it (ms since the epoch)" }),
@@ -1132,6 +1140,7 @@ const definitionFields = {
   openApi: z.array(OpenApiInput).max(64).openapi({ description: "OpenAPI specs whose operations the runtime calls for the agent, as tools" }),
   delegate: DelegateSettings,
   humanInput: z.strictObject({
+    unattended: z.literal("decline").optional(),
     expiresInSeconds: z.number().int().min(60).max(30 * 86_400).optional().openapi({ description: "How long an input waits for an answer before the runtime answers for the person: 900 (15 minutes) by default, 60 to 2592000 (30 days), and never past the agent's own expiry" }),
     approvers: z.array(z.string()).max(100).optional().openapi({ description: "Who may answer any input besides the person whose message started the turn: actors, or channel senders like slack:U0123" }),
   }).openapi({ description: "Questions, approvals and setup steps the agent's turns wait on" }),
@@ -1186,6 +1195,7 @@ export const ConfigureInput = z.object({
   runLimits: RunLimits.nullable().optional().openapi({ description: "Replaces the agent's run limits from its next run; null removes them (the runtime's apply). Set here on an agent from a definition, they stay when the definition is applied" }),
   queue: QueueSettingInput.nullable().optional().openapi({ description: "Replaces what it does with prompts that arrive while a turn runs (QueueSetting), from the next turn's start; null: one turn each. Set here on an agent from a definition, it stays when the definition is applied" }),
   modelHeaders: ModelHeaders.nullable().optional().openapi({ description: "Replaces the agent's model headers; null or {} removes them" }),
+  humanInput: z.strictObject({ unattended: z.literal("decline").optional(), expiresInSeconds: z.number().int().min(60).max(2592000).optional(), approvers: z.array(z.string()).max(100).optional() }).optional(),
   builtins: z.array(Builtin).max(12).optional().openapi({ description: "Replaces the agent's builtins; [] removes them. Not for an agent made from a definition, whose builtins are its definition's" }),
   decide: z.boolean().nullable().optional().openapi({ description: "false: no decide tool; true: the tool even with no code mode and no other tools; null: back to the default. Not for an agent made from a definition" }),
   delegate: DelegateSettings.nullable().optional().openapi({ description: "Replaces who the agent may delegate to (with the delegate builtin); null removes it" }),

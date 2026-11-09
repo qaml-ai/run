@@ -1,3 +1,4 @@
+import { mountNotesTooLong } from "../shared/mount-notes.ts";
 import { applying } from "../shared/apply-scope.ts";
 import { createHash, randomBytes } from "node:crypto";
 import type { AppendLog } from "../shared/append-log.ts";
@@ -47,7 +48,7 @@ const TEMPORARY_SNAPSHOT_MS = 15 * 60_000;
 const FOLD_AFTER_RECORDS = 1024;
 const NOTIFY_DELAY_MS = 1000;
 
-export interface Mount { volumeId: string; path: string; mode: "ro" | "rw"; subpath?: string; notify?: boolean }
+export interface Mount { volumeId: string; path: string; mode: "ro" | "rw"; subpath?: string; notify?: boolean; instructions?: string }
 /** `contentType` is absent on files written before content types were recorded. */
 export interface FileEntry { version: number; size: number; chunks: string[]; updatedAt: number; by?: string; contentType?: string }
 export interface Change { seq: number; path: string; kind: "write" | "delete"; version?: number; size?: number; by?: string; at: number }
@@ -236,7 +237,7 @@ class Tree {
  * `{workspace: false}` leaves it out.
  */
 const isWorkspace = (mount: unknown, value = true) => !!mount && typeof mount === "object" && (mount as { workspace?: unknown }).workspace === value &&
-  Object.keys(mount).every(key => key === "workspace" || (value && key === "path"));
+  Object.keys(mount).every(key => key === "workspace" || (value && (key === "path" || key === "instructions")));
 /** A mount given at /workspace itself, which takes the workspace's place. */
 const atWorkspace = (mount: unknown) => { try { return !!mount && typeof mount === "object" && normalizePath((mount as { path?: unknown }).path) === "/workspace"; } catch { return false; } };
 
@@ -918,7 +919,7 @@ export class VolumeService {
    */
   static resolved(agent: string, mounts: unknown[]): unknown[] {
     const own = (path: unknown = "/workspace") => ({ volumeId: VolumeService.workspaceOf(agent), path, mode: "rw" });
-    const listed = mounts.filter(mount => !isWorkspace(mount, false)).map(mount => isWorkspace(mount) ? own((mount as { path?: unknown }).path) : mount);
+    const listed = mounts.filter(mount => !isWorkspace(mount, false)).map(mount => isWorkspace(mount) ? { ...own((mount as { path?: unknown }).path), ...((mount as Mount).instructions !== undefined ? { instructions: (mount as Mount).instructions } : {}) } : mount);
     return mounts.some(mount => isWorkspace(mount) || isWorkspace(mount, false) || atWorkspace(mount)) ? listed : [...listed, own()];
   }
   /** The id of an agent's default workspace volume, stable so re-provisioning finds it. */
@@ -931,7 +932,7 @@ export class VolumeService {
   /** As given to `mountsFor`: the agent's own workspace by where it is (`{workspace: true, path?}`), the rest as they are. */
   static given(agent: string, mounts: Mount[]): unknown[] {
     const own = VolumeService.workspaceOf(agent);
-    return [...mounts.map(mount => mount.volumeId === own && mount.mode === "rw" && !mount.subpath && !mount.notify ? { workspace: true, ...mount.path !== "/workspace" ? { path: mount.path } : {} } : mount),
+    return [...mounts.map(mount => mount.volumeId === own && mount.mode === "rw" && !mount.subpath && !mount.notify && mount.instructions === undefined ? { workspace: true, ...mount.path !== "/workspace" ? { path: mount.path } : {} } : mount),
       ...mounts.some(mount => mount.volumeId === own) ? [] : [{ workspace: false }]];
   }
 
@@ -950,30 +951,34 @@ export class VolumeService {
     if (requested === undefined) return [await workspace()];
     if (!Array.isArray(requested) || requested.length > VOLUME_LIMITS.mounts) throw new HttpError(400, `mounts must be an array of at most ${VOLUME_LIMITS.mounts}`);
     if (requested.filter(input => isWorkspace(input) || isWorkspace(input, false)).length > 1) throw new HttpError(400, "Give {workspace: true} or {workspace: false} once");
+    if (mountNotesTooLong(requested)) throw new HttpError(400, "Mount instructions total must be at most 8192 characters");
     const own = VolumeService.workspaceOf(agent);
     const mounts: Mount[] = [];
     for (const input of VolumeService.resolved(agent, requested)) {
-      if ((input as Mount).volumeId === own && (input as Mount).mode === "rw" && Object.keys(input as object).length === 3) {
+      if ((input as Mount).volumeId === own && (input as Mount).mode === "rw" && Object.keys(input as object).every(key => ["volumeId", "path", "mode", "instructions"].includes(key))) {
         // Exactly as written: a path that normalizes elsewhere is likely a mistake.
         const path = (input as Mount).path;
         let normalized: string | undefined;
         try { normalized = normalizePath(path); } catch {}
         if (path === "/" || normalized !== path) throw new HttpError(400, `The workspace path must be absolute and normalized, like /scratch: ${String(path)}`);
         if (mounts.some(other => within(path, other.path) || within(other.path, path))) throw new HttpError(400, `Mount path ${path} (the agent's own workspace) overlaps another mount; place it elsewhere with {workspace: true, path} or leave it out with {workspace: false}`);
-        mounts.push(await workspace(path));
+        const instructions = (input as Mount).instructions;
+        if (instructions !== undefined && (typeof instructions !== "string" || instructions.length > 4096)) throw new HttpError(400, "Mount instructions must be at most 4096 characters");
+        mounts.push({ ...await workspace(path), ...(instructions !== undefined ? { instructions } : {}) });
         continue;
       }
-      if (!input || typeof input !== "object" || Object.keys(input).some(key => !["volumeId", "path", "mode", "subpath", "notify"].includes(key))) throw new HttpError(400, "A mount is {volumeId, path, mode: \"ro\" | \"rw\", subpath?, notify?}, or {workspace: true, path?} or {workspace: false} to place or leave out the agent's own workspace (at /workspace by default)");
-      const { volumeId, mode, notify } = input as Record<string, unknown>;
+      if (!input || typeof input !== "object" || Object.keys(input).some(key => !["volumeId", "path", "mode", "subpath", "notify", "instructions"].includes(key))) throw new HttpError(400, "A mount is {volumeId, path, mode: \"ro\" | \"rw\", subpath?, notify?}, or {workspace: true, path?} or {workspace: false} to place or leave out the agent's own workspace (at /workspace by default)");
+      const { volumeId, mode, notify, instructions } = input as Record<string, unknown>;
       const path = normalizePath((input as Record<string, unknown>).path, "mount path");
       if (path === "/") throw new HttpError(400, "A mount path needs a name, like /workspace");
       if (mode !== "ro" && mode !== "rw") throw new HttpError(400, "mode must be ro or rw");
+      if (instructions !== undefined && (typeof instructions !== "string" || instructions.length > 4096)) throw new HttpError(400, "Mount instructions must be at most 4096 characters");
       if (notify !== undefined && typeof notify !== "boolean") throw new HttpError(400, "notify must be a boolean");
       if (!validVolumeId(volumeId) || !await this.owns(volumeId, tenant)) throw new HttpError(404, `Unknown volume ${String(volumeId)}`);
       if (mode === "rw" && (await this.db.query('select agent from agent_dreaming where tenant=$1 and volume=$2', [tenant, volumeId])).rows.length) throw new HttpError(400, "Dream memory volumes must be mounted read-only");
       if (mounts.some(other => within(path, other.path) || within(other.path, path))) throw new HttpError(400, `Mount path ${path} overlaps another mount`);
       const subpath = (input as Record<string, unknown>).subpath === undefined ? "/" : normalizePath((input as Record<string, unknown>).subpath, "subpath");
-      mounts.push({ volumeId, path, mode, ...(subpath !== "/" ? { subpath } : {}), ...(notify ? { notify } : {}) });
+      mounts.push({ volumeId, path, mode, ...(instructions !== undefined ? { instructions: instructions as string } : {}), ...(subpath !== "/" ? { subpath } : {}), ...(notify ? { notify } : {}) });
     }
     return mounts;
   }

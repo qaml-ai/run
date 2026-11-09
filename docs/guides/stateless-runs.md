@@ -171,3 +171,5 @@ past either is turned away cheaply (429 `BUSY_AGENT_LIMIT` or `RATE_LIMITED`, wi
   (`tools`, an attached MCP server) need an agent: a run has no process connected.
   Serve them over HTTP (`serveTools`) and name them in a definition instead.
 - The CLI runs one with `camelrun run --stateless "…" [--definition key]`.
+
+A spend limit returns `status: "failed"`, `stoppedReason: "budget_reached"`, and the limit kind. SDK `run()` throws unless `throwOnError` is false (`throw_on_error=False` in Python). Stateless runs cannot resume. The legacy spend-limit error fields remain available. For ongoing work, use an agent: raise its spend limit if needed, then send `continue` to keep its history and proceed with a new turn budget. Account and end-user credit limits still apply.

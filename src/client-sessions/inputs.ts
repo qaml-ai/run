@@ -64,6 +64,8 @@ export function approver(by: Responder) {
 export async function suspend(ctx: InputContext, session: Session, call: ToolCall, request: RequestRecord | undefined, result: McpResult) {
   const inputs = ctx.options.inputs;
   let requests: { key?: string; kind: Input["kind"]; message: string; detail: Record<string, unknown> }[] = inputRequests(result, call.name === "ask_user" || call.name === "request_decision");
+  const unattended = session.header.sources?.humanInput?.unattended === "decline";
+  if (requests.length && requests.every(entry => entry.kind === "approval") && unattended) return { content: [{ type: "text", text: "Approval declined: unattended mode. The tool did not run." }], isError: true };
   const decision = call.name === "request_decision";
   if (decision) requests = requests.map(entry => ({ ...entry, kind: "decision" }));
   const approval = requests.every(entry => entry.kind === "approval");
@@ -89,7 +91,11 @@ export async function suspend(ctx: InputContext, session: Session, call: ToolCal
     approvers: shared ? undefined : header.sources?.humanInput?.approvers, rootAgent: lineage[0], lineage,
     tool: call.name, argumentsHash: hashed, ...(typeof result.requestState === "string" ? { requestState: result.requestState } : {}),
   }, requests, session.claim);
-  for (const row of rows) ctx.publish(session, { type: "event", requestId: request.id, event: { type: "input_required", input: inputView(row) } });
+  for (const row of rows) {
+    if (row.kind === "approval" && unattended) {
+      await inputs.settle(row.id, { action: "decline", content: { reason: "Approval declined: unattended mode. The tool did not run." }, by: {}, at: Date.now() }, "declined");
+    } else ctx.publish(session, { type: "event", requestId: request.id, event: { type: "input_required", input: inputView(row) } });
+  }
   if (decision) return { content: [{ type: "text", text: JSON.stringify({ inputId: rows[0].id }) }], structuredContent: { inputId: rows[0].id } };
   return { content: [{ type: "text", text: "Waiting for the user's input." }], inputRequired: true };
 }

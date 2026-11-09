@@ -30,7 +30,7 @@ import { Delegation } from "./delegation.ts";
 import { decisionService } from "./decision-service.ts";
 import { hostExecutionRequest } from "./host-execution.ts";
 import { DelegationNotifications, DelegationWakeBudget, type RuntimeNotice, type NoticeDelivery, type NoticeRequest, type WakeDecision } from "./delegation-notifications.ts";
-import type { ChildProgressReport } from "./delegation.ts";
+import type { ChildEvent, ChildProgressReport } from "./delegation.ts";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { AgentRunLimits } from "./run-limits.ts";
 import { DurableEventLog, type TerminalDelivery } from "./event-log.ts";
@@ -141,6 +141,8 @@ export class AgentRuntime extends AgentContext {
   receiveAgentProgress(report: ChildProgressReport): Promise<unknown> {
     return receiveAgentProgressImpl.call(this, report);
   }
+
+  receiveChildEvent(event: ChildEvent) { return this.delegation.receive(event); }
 
   hasBackgroundChild(id: string): Promise<boolean> {
     return hasBackgroundChildImpl.call(this, id);
@@ -283,6 +285,8 @@ export class AgentRuntime extends AgentContext {
   readonly webhooks = new AgentWebhooks(this.ctx.storage, this.env);
   /** A channel agent's typing indicator, replies and send_message (agent-channels.ts). */
   readonly channels = new AgentChannels(this.ctx, this.env);
+  delegationPush: Promise<unknown> = Promise.resolve();
+
   emit(event: unknown, delivery?: TerminalDelivery, webhook?: WebhookEvent) {
     return emitImpl.call(this, event, delivery, webhook);
   }

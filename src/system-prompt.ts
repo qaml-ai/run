@@ -1,3 +1,4 @@
+import { mountNotes } from "../shared/mount-notes.ts";
 import type { SystemMessage, Tool } from "@earendil-works/pi-ai";
 import { SENDER_INSTRUCTIONS, SHARED_SENDER_INSTRUCTIONS } from "./sender.ts";
 import { supportsDocuments } from "./files.ts";
@@ -130,6 +131,7 @@ export function environmentSummary(config: Pick<AgentConfig, "mounts" | "model" 
   return [
     "Your environment:",
     `- ${files}`,
+    ...mountNotes(mounts) ? [mountNotes(mounts)] : [],
     `- ${sight}`,
     `- Tools declared to you: ${direct.length ? direct.join(", ") : "none"}.`,
     ...code ? [`- Tools only scripts can call: ${hidden || "none"}.`] : [],

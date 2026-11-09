@@ -74,7 +74,7 @@ for (const [label, background, callId] of [
     w.crash(true);
     void new Delegation(w.host()).start({ instructions: 'helper', task: 'help' }, callId, new AbortController().signal, background);
     await startedOnce(w);
-    const [stored] = [...w.values.values()] as DelegatedChild[];
+    const stored = [...w.values.entries()].find(([key]) => key.startsWith('delegation:'))![1] as DelegatedChild;
     assert.equal(stored.accepted, undefined, 'the parent died before recording the start');
 
     // The restarted parent replays the same tool call. Its budget may have moved meanwhile

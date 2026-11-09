@@ -2385,6 +2385,8 @@ confirmation. The next message from someone allowed to answer, if it fits (an
 option's number or label, `approve`/`yes` or `deny`/`no`, `done`), is the answer;
 anything else is a new message. See [Channels](https://run.camelai.com/docs/guides/channels.md).
 
+Set `humanInput: { unattended: "decline" }` on an agent or definition to decline approval requests immediately. The tool does not run. Questions, forms and URL steps still wait for input.
+
 ### Answer the inbox in a batch
 
 `POST /v1/inbox/answers` takes `{requestId, answers}`. Use a new `requestId` for each
@@ -2701,6 +2703,8 @@ past either is turned away cheaply (429 `BUSY_AGENT_LIMIT` or `RATE_LIMITED`, wi
   (`tools`, an attached MCP server) need an agent: a run has no process connected.
   Serve them over HTTP (`serveTools`) and name them in a definition instead.
 - The CLI runs one with `camelrun run --stateless "…" [--definition key]`.
+
+A spend limit returns `status: "failed"`, `stoppedReason: "budget_reached"`, and the limit kind. SDK `run()` throws unless `throwOnError` is false (`throw_on_error=False` in Python). Stateless runs cannot resume. The legacy spend-limit error fields remain available. For ongoing work, use an agent: raise its spend limit if needed, then send `continue` to keep its history and proceed with a new turn budget. Account and end-user credit limits still apply.
 
 ---
 
@@ -4810,6 +4814,8 @@ with `fileArguments` on is downloaded the same way; from any other server it sta
 `file_import`.
 Without a workspace mount, MCP results keep their existing behavior.
 
+A volume mount may include `instructions` (at most 4,096 characters per mount and 8,192 across all mounts). The agent sees them beside the mount path and read/write mode under `Mount notes from the agent's owner:`. Whitespace is collapsed to keep each note on one line. Delegate children that inherit mounts inherit these instructions.
+
 ---
 
 <!-- https://run.camelai.com/docs/guides/multi-user.md -->
@@ -6124,10 +6130,12 @@ ran on. Setting a value starts counting from zero; `null` removes it. A PATCH ap
 shows `spendLimit: {usd, spent}`. An agent at or over its limit gets 402 for new
 `prompt` and `continue` runs, and a running turn ends after the response that
 crossed it (its tool calls run and are recorded), with `stopped: "spend_limit"`:
-the SDKs' `run()` fails with code `spend_limit`. The result's `limit` says which
+the SDKs' `run()` returns `status: "paused"` and `stoppedReason: "budget_reached"`
+without throwing. The legacy code `spend_limit` remains. The result's `limit` says which
 limit it was: `"run"` (the run's own budget, below), `"agent"` (the agent's),
 `"tenant"` (your account's monthly cap) or `"credit"` (your prepaid credit ran out).
-Only you can set it, not the agent's own token.
+Only you can set it, not the agent's own token. Raise the limit if needed, then
+call `agent.client.continue()` to resume from the same history as a new turn.
 
 A run can have a budget of its own: `spendLimit: {"usd": n}` on
 `POST /v1/agents/:id/prompt` (the SDKs' `run`, `stream` and `prompt` take
@@ -6704,7 +6712,7 @@ parent's limits cover them:
 | Limit | |
 | --- | --- |
 | Depth | A sub-agent's sub-agents count. Delegation stops at `maxDepth` (default 2: a parent, its children and theirs; at most 5). Past it, the call fails and the model does the work itself. Only the runtime places a run in a chain: its child runs' `delegation*` metadata is signed (`delegationSignature`), and a prompt of yours that sends those keys starts a chain of its own. A sub-agent's turn that a notification or message started is where the sub-agent was made: its depth, limit and chain's first agent hold there too |
-| Fan-out | `maxParallel` calls in flight per run (default 4, at most 16) |
+| Fan-out | `maxParallel` calls in flight per run (default 4, at most 64) |
 | Busy agents | A running sub-agent takes one of your account's busy slots. At the limit, the call fails with `BUSY_AGENT_LIMIT` |
 | Spend | Your account's spend limits apply to sub-agents too. A parent's own spend limits (the agent's, and the run's `spendLimit`) bound its sub-agents: each gets what the parent has left as its run's spend limit (shared evenly among sub-agents running at once), and what it spent counts against the parent's. `run.usage.subagentCostUsd` says how much that was |
 | Run rate and run limits | A sub-agent's run counts against your account's run rate. Its definition's `runLimits` apply to it |
@@ -7135,6 +7143,10 @@ parent's task.
 | Shared state between nodes | The task text, and a shared [volume](https://run.camelai.com/docs/guides/files.md#volumes) |
 | `recursion_limit` | `delegate.maxDepth` and the run's `runLimits` |
 | Checkpointed subgraph state | Each sub-agent's own history, read by its id (`run.toolCalls[i].agentId`) |
+
+A definition target can pin a revision: `{ name: "reviewer", definition: "review", revision: 3 }`. New children use that saved revision even after the definition changes. Revisions available before this feature start with the revision current at migration; older revisions cannot be recovered. Deleting the definition deletes its revisions. Rotating or removing a credential purges its sealed value from old revisions; a pin does not preserve retired credentials.
+
+On Workers, child events and completion are pushed to the parent Durable Object. A single recovery sweep runs every five seconds for missed notifications, with at most six child reads in flight. Waiting does not open a relay stream or polling timer for each child. The concurrency ceiling is 64 on both backends; configured capacity and spend limits still apply.
 
 ---
 
@@ -8681,12 +8693,15 @@ Python's `agents.runs.stream(input, …)` or `stream(run_id=…)` resolves with 
 
 ### `Run`
 
-`{ id, status, text, output?, inputs, error, usage, files, toolErrors, toolCalls, sourceErrors, raw }`
+`{ id, status, stoppedReason?, limit?, text, output?, inputs, error, usage, files, toolErrors, toolCalls, sourceErrors, raw }`
 (Python: `tool_errors`, `tool_calls`, `source_errors`). `toolCalls` lists every
 tool call the run made, with `ok` or an error `code`, not their arguments or
 results (see [Run outcomes](https://run.camelai.com/docs/reference/events.md#run-outcomes)); a `delegate` call has its
 sub-agent's `agentId`, and `usage.subagentCostUsd` is what its sub-agents spent. `status` is `completed`,
-`input_required` or `failed`; `error` is `{ code, message, uncertain? }`.
+`input_required`, `paused` or `failed`; `error` is `{ code, message, uncertain? }`.
+At a spend limit, `stoppedReason` is `budget_reached` (Python: `stopped_reason`),
+`limit` names the budget, and `run()` returns without throwing. Raise the limit
+if needed and use `agent.client.continue()` to start the next turn on its history.
 `output` is a run with `output`'s answer, typed by its schema (`Run<T>`; Python:
 an instance of the pydantic model). See
 [Concepts](https://run.camelai.com/docs/concepts.md#runs) and [Errors](https://run.camelai.com/docs/reference/errors.md#run-failures).
@@ -9895,7 +9910,7 @@ carry it out, and `uncertain: true` that nobody can tell whether its work took
 effect (a restart cut it short). The same outcome is at
 `GET …/requests/:requestId` and in `GET …/state`, which is what to trust. There,
 an ended request (`state: "completed"`) also carries `status` (`completed`,
-`input_required` or `failed`), `error` (the runtime's, or the model's from
+`input_required`, `paused` or `failed`), `error` (the runtime's, or the model's from
 `result.error`) and `stopped` on top, so a failed run reads as failed without
 looking inside `result`. `GET …/requests/:requestId?wait=<seconds>` (at most 25)
 waits for a running request: it answers as soon as the request settles, or when
@@ -10064,6 +10079,7 @@ A prompt's `response.outcome.result` (and `GET …/requests/:id`'s `outcome`):
 | `error` | the model's error (a provider refusal after retries), or `null` |
 | `code` | a stable name for `error`, where the runtime gives one: `model_key_missing` (no key for the agent's model), `model_key_invalid` (the provider refused the key), `output_missing` (a structured run ended without its output), `model_stream_stalled` (the model stopped answering mid-request, past every retry), `aborted` (the agent was stopped while the run went), `cancelled` (a stop cancelled the run before it began), `spend_limit`, `turn_limit` |
 | `stopped` | why the run stopped early: `input_required` (it waits on `inputs`), `spend_limit` or `turn_limit` (its model responses or time, see [run limits](https://run.camelai.com/docs/guides/models-and-keys.md#run-limits)), with the reason in `error` |
+| `status`, `stoppedReason` | a spend-limit stop adds `status: "paused"` and `stoppedReason: "budget_reached"`; `limit` keeps the kind of budget that stopped it |
 | `inputs` | when `stopped` is `input_required`: the pending inputs (as `input_required` carries them) |
 | `files` | files the run wrote (at most 100): `{path, version, size, contentType, …}` |
 | `presented` | files the run presented to the user (at most 20) |
@@ -10380,7 +10396,7 @@ See [Multi-agent](https://run.camelai.com/docs/guides/multi-agent.md).
 | Limit | Value |
 | --- | --- |
 | Delegation depth (`delegate.maxDepth`) | 2 by default (a parent, its children and theirs); 1–5 |
-| `delegate` calls in flight per run (`delegate.maxParallel`) | 4 by default, 1–16; more wait their turn |
+| `delegate` calls in flight per run (`delegate.maxParallel`) | 4 by default, 1–64; more wait their turn; node and tenant capacity limits still apply |
 | A sub-agent's spend | what its parent's run and agent spend limits have left when it starts, as its run's spend limit; what it spent counts against both |
 | A sub-agent's lifetime | a day (86,400 s), as a scratch agent's; one named by key (`{ agent }`) is yours and keeps its own |
 | A `delegate` task | 100,000 characters; inline `instructions` 32,000 |
@@ -10573,10 +10589,10 @@ In more detail:
 
 ## Run failures
 
-A run ends in one of three ways: it answered, it waits on people
-(`stopped: "input_required"`), or it failed. It failed when:
+A run answers, waits on people (`stopped: "input_required"`), pauses at a spend
+limit, or fails. The codes below describe failures and legacy budget-stop fields:
 
-| Code (SDK `RunError.code`) | Outcome | Meaning |
+| Code (`run.error.code`, or SDK `RunError.code` for failures) | Outcome | Meaning |
 | --- | --- | --- |
 | `model_key_missing` | `result.code` (with `result.error`) | No key is set for the agent's model. The error names the model and the remedy: set a key with `PUT /v1/providers/<provider>/key` (or the key scope's entry), or move the agent to a model you can use (`GET /v1/models?available=true`) |
 | `model_key_invalid` | `result.code` (with `result.error`) | The provider refused the key (HTTP 401). The error says the same remedy, then the provider's own words |
@@ -10591,6 +10607,10 @@ A run ends in one of three ways: it answered, it waits on people
 | (any, with `uncertain`) | `outcome.uncertain: true` | A restart cut the run short where it could not resume (a code execution, or a turn resumed twice already): its tool calls may or may not have taken effect. Check before retrying |
 
 ### End-user credit reasons
+
+A spend-limit stop returns `status: "paused"` and `stoppedReason: "budget_reached"`.
+SDK `run()` returns it without throwing, with the legacy error and limit fields
+still present. Raise the relevant limit or add credit before continuing the agent.
 
 When an end user's credit refuses or stops work, every path says so the same way: a 402's `code: "END_USER_CREDIT"`,
 a run's `code: "end_user_credit"` (refused as it started, stopped mid-way, or a sub-agent's notification refused as it
@@ -10634,7 +10654,7 @@ A run's `servedModel` (and `run.completed`'s, `run.failed`'s) is the model that 
 `provider/model-id`; retries ask the same model.
 
 A request record (`GET …/requests/:requestId`, `GET …/state`) puts an ended run's
-`status` (`completed`, `input_required` or `failed`, as the SDKs' runs say it),
+`status` (`completed`, `input_required`, `paused` or `failed`, as the SDKs' runs say it),
 `error`, whichever kind, and `stopped` on top. Its `state` says only whether it
 ended (`running`, `completed`): a failed run is `state: "completed"`,
 `status: "failed"`.
