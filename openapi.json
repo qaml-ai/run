@@ -3573,6 +3573,11 @@
       "AgentSummary": {
         "type": "object",
         "properties": {
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Tenant-owned JSON object, at most 16384 UTF-8 bytes. Replaced whole when supplied; omitted preserves it. Not sent to the model. List filtering: ?metadata.type=camelcode-project matches top-level strings exactly."
+          },
           "id": {
             "type": "string"
           },
@@ -3671,6 +3676,7 @@
           }
         },
         "required": [
+          "metadata",
           "id",
           "key",
           "name",
@@ -3922,6 +3928,11 @@
       "AgentInput": {
         "type": "object",
         "properties": {
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Tenant-owned JSON object, at most 16384 UTF-8 bytes. Replaced whole when supplied; omitted preserves it. Not sent to the model. List filtering: ?metadata.type=camelcode-project matches top-level strings exactly."
+          },
           "workspaceId": {
             "type": [
               "string",
@@ -5804,6 +5815,11 @@
       "ConfigureInput": {
         "type": "object",
         "properties": {
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Tenant-owned JSON object, at most 16384 UTF-8 bytes. Replaced whole when supplied; omitted preserves it. Not sent to the model. List filtering: ?metadata.type=camelcode-project matches top-level strings exactly."
+          },
           "requestId": {
             "type": "string",
             "minLength": 1
@@ -9814,6 +9830,61 @@
         "required": [
           "id",
           "deliveredAt"
+        ]
+      },
+      "GitHubRepositories": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GitHubRepository"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor"
+        ]
+      },
+      "GitHubRepository": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "number"
+          },
+          "name": {
+            "type": "string"
+          },
+          "fullName": {
+            "type": "string"
+          },
+          "private": {
+            "type": "boolean"
+          },
+          "htmlUrl": {
+            "type": "string"
+          },
+          "defaultBranch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "fullName",
+          "private",
+          "htmlUrl",
+          "defaultBranch"
         ]
       },
       "GitHubApp": {
@@ -16526,6 +16597,16 @@
           {
             "schema": {
               "type": "string",
+              "description": "Exact match on a top-level metadata string. Any metadata.<key> is supported; multiple filters are ANDed."
+            },
+            "required": false,
+            "description": "Exact match on a top-level metadata string. Any metadata.<key> is supported; multiple filters are ANDed.",
+            "name": "metadata.type",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
               "description": "Only agents in this workspace, or unassigned for agents in none"
             },
             "required": false,
@@ -21773,6 +21854,114 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ChannelEventDelivered"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/github-apps/{app}/repositories": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The App's id (gha_…) or name"
+            },
+            "required": true,
+            "description": "The App's id (gha_…) or name",
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "perPage",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of installation repositories; follow nextCursor until null, including empty pages",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubRepositories"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/github-apps/{app}/repositories/{owner}/{name}": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The App's id (gha_…) or name"
+            },
+            "required": true,
+            "description": "The App's id (gha_…) or name",
+            "name": "app",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "owner",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "name",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Repository the installation can access; 404 if unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubRepository"
                 }
               }
             }

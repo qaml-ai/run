@@ -13,6 +13,7 @@ model-written code in a sandbox, and wakes agents when there is work.
 3. **Guides**
    - [Scheduled agents and email reports](guides/schedules.md)
    - [Workspaces](guides/workspaces.md): group agents and definitions and see model and tool spend by project
+   - [Application metadata](guides/agents.md): project data in agent lists and indexed filtering
    - [Projects](guides/projects.md): an agent builds a bot, site or report; your app checks and publishes versions
    - [Computers](guides/computers.md): native Linux computers, remote browsers and Cloudflare Tunnel; forking a computer into sub-agents
    - [Tools](guides/tools.md): writing tools, attached and served tools, identity, MCP and OpenAPI sources, built-ins

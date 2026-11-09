@@ -30,7 +30,7 @@ from .event_transport import event_stream
 __version__ = "0.18.1"
 
 __all__ = [
-    "Agents", "Agent", "Run", "RunInput", "InputDetail", "Mount", "WorkspaceMount", "RunStream", "StreamPart", "Runs", "StatelessRunStream",
+    "AgentSummary", "GitHubRepository", "Agents", "Agent", "Run", "RunInput", "InputDetail", "Mount", "WorkspaceMount", "RunStream", "StreamPart", "Runs", "StatelessRunStream",
     "tool", "Tool", "ToolContext", "InputRequired", "RuntimeIdentity", "identity_from_claims", "spawn_agent", "SpawnAgent", "agent_notice",
     "AgentError", "RunError", "CREDIT_REASONS", "EndUserCreditFailure", "end_user_credit",
     "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Volume", "Transcriptions", "Images", "EndUsers", "Voice", "Voices", "DEFAULT_URL",
@@ -187,6 +187,25 @@ def identity_from_claims(claims):
                            approval=claims["approval"] if isinstance(claims.get("approval"), dict) else None,
                            request_id=text(claims.get("req")), tool_call_id=text(claims.get("tcid")),
                            parent_agent_id=text(claims.get("par")), root_agent_id=text(claims.get("root")))
+
+
+class AgentSummary(TypedDict):
+    id: str
+    key: str | None
+    name: str
+    type: str
+    metadata: dict[str, Any]
+    lastActiveAt: int | None
+    lastError: dict[str, Any] | None
+
+
+class GitHubRepository(TypedDict):
+    id: int
+    name: str
+    fullName: str
+    private: bool
+    htmlUrl: str
+    defaultBranch: str | None
 
 
 class InputRequired(Exception):
@@ -731,9 +750,22 @@ class _RuntimeCalls:
         """Every provider: the built-in ones with your keys' status, and your own ("custom")."""
         return self._rest("GET", "/v1/providers")
 
-    def list_agents(self):
+    def list_agents(self, *, metadata: dict[str, str] | None = None):
         """The tenant's agents, each with the key it was made with (None for one made without) and its name."""
-        return self._rest("GET", "/v1/agents")
+        return self._rest("GET", "/v1/agents" + ("?" + urlencode({"metadata." + key: value for key, value in metadata.items()}) if metadata else ""))
+
+    def set_agent_metadata(self, agent_id, metadata):
+        """Replace tenant-owned application JSON (at most 16 KB)."""
+        return self._rest("PATCH", f"/v1/agents/{quote(agent_id, safe='')}/configuration", {"metadata": metadata})
+
+    def github_repositories(self, app, *, cursor=None, per_page=100):
+        query = {"perPage": per_page}
+        if cursor is not None:
+            query["cursor"] = cursor
+        return self._rest("GET", f"/v1/github-apps/{quote(app, safe='')}/repositories?" + urlencode(query))
+
+    def github_repository(self, app, owner, name):
+        return self._rest("GET", f"/v1/github-apps/{quote(app, safe='')}/repositories/{quote(owner, safe='')}/{quote(name, safe='')}")
 
     def create_volume(self, *, name=None, key=None, idempotency_key=None):
         """A new volume. With `key`, the tenant's volume for that key: made the first time, the same one ("existing": True)
@@ -915,7 +947,7 @@ class AgentRuntime(_RuntimeCalls):
             raise
         return then(value) if then else value
 
-    async def create_agent(self, *, tools, workspace_id=_DEFAULT, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, on_input=None, builtins=None, delegate=None, subagents=False, prompt=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, idle_ttl_seconds=None):
+    async def create_agent(self, *, tools, workspace_id=_DEFAULT, system_prompt=None, name=None, type=None, metadata=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, on_input=None, builtins=None, delegate=None, subagents=False, prompt=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, idle_ttl_seconds=None):
         """Provision an agent. `model` is "provider/model-id", e.g. "anthropic/claude-sonnet-5-5".
         `definition` makes it from a definition (GET /v1/definitions), which supplies the model, system prompt,
         thinking level and tool sources; `tools` are added as the agent's attached MCP server.
@@ -935,7 +967,7 @@ class AgentRuntime(_RuntimeCalls):
         if not self.api_key:
             raise AgentError("No API key: set CAMELAI_API_KEY (or pass api_key). Create one at https://run.camelai.com/console/tokens")
         # subject: who the agent acts for; context: claims for its tool servers' identity tokens. Set only here.
-        body = _provisioning(tools, definition=definition, name=name, type=type, system_prompt=system_prompt, model=model, thinking_level=thinking_level,
+        body = _provisioning(tools, definition=definition, name=name, type=type, metadata=metadata, system_prompt=system_prompt, model=model, thinking_level=thinking_level,
                              workspace_id=workspace_id, mounts=mounts, subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits, model_headers=model_headers, builtins=builtins,
                              delegate=delegate, prompt=prompt, initial_messages=initial_messages, import_messages=import_messages, max_output_tokens=max_output_tokens, temperature=temperature, data_collection=data_collection, language=language, mcp_servers=mcp_servers)
         # A key of the caller's makes the agent durable (it lives until deleted); one the SDK makes up, only so a retried
@@ -1383,11 +1415,11 @@ class Voice:
         return self._runtime._rest("DELETE", f"/v1/voice/sessions/{quote(session_id, safe='')}")
 
 
-def _provisioning(tools, *, workspace_id=_DEFAULT, definition=None, name=None, type=None, system_prompt=None, model=None, thinking_level=None, mounts=None, remount=None,
+def _provisioning(tools, *, workspace_id=_DEFAULT, definition=None, name=None, type=None, metadata=None, system_prompt=None, model=None, thinking_level=None, mounts=None, remount=None,
                   subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, system_prompt_append=None, file_tools=None, builtins=None,
                   delegate=None, prompt=None, code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, bucket=None, queue=None):
     """A create request's body: the tools as the attached MCP server's tools/list, and the fields given."""
-    optional = {"definition": definition, "name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level,
+    optional = {"metadata": metadata, "definition": definition, "name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level,
                 "mounts": mounts, "remount": remount, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit, "runLimits": run_limits, "modelHeaders": model_headers,
                 "systemPromptAppend": system_prompt_append, "fileTools": file_tools, "codeMode": code_mode, "builtins": builtins, "delegate": delegate, "mcpServers": mcp_servers, "prompt": prompt,
                 "initialMessages": initial_messages, "importMessages": import_messages, "maxOutputTokens": max_output_tokens, "temperature": temperature, "dataCollection": data_collection, "language": language, "bucket": bucket, "queue": queue}
@@ -2977,7 +3009,7 @@ class Agents:
         return await self.runs.run(input, **options)
 
     async def upsert(self, key, *, workspace_id=_DEFAULT, model=None, instructions=None, tools=None, definition=None, thinking_level=None, subject=None, context=None,
-                     key_scope=None, spend_limit=None, run_limits=None, model_headers=None, mounts=None, remount=None, name=None, instructions_append=None, file_tools=None,
+                     key_scope=None, spend_limit=None, run_limits=None, model_headers=None, mounts=None, remount=None, name=None, metadata=None, instructions_append=None, file_tools=None,
                      builtins=None, delegate=None, subagents=False, on_event=None, on_input=None, on_error=None, attach=None, takeover=False, connection=None,
                      code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, bucket=None,
                      queue=None):
@@ -3005,7 +3037,7 @@ class Agents:
         tools = list(tools or [])
         session = await self.runtime.upsert_agent(key, workspace_id=workspace_id, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
                                                   subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits,
-                                                  model_headers=model_headers, mounts=mounts, remount=remount, name=name, system_prompt_append=instructions_append, file_tools=file_tools, builtins=builtins,
+                                                  model_headers=model_headers, mounts=mounts, remount=remount, name=name, metadata=metadata, system_prompt_append=instructions_append, file_tools=file_tools, builtins=builtins,
                                                   delegate=delegate, code_mode=code_mode, initial_messages=initial_messages, import_messages=import_messages,
                                                   max_output_tokens=max_output_tokens, temperature=temperature, data_collection=data_collection, language=language, mcp_servers=mcp_servers, bucket=bucket,
                                                   queue=queue)

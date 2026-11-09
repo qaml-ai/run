@@ -12,6 +12,8 @@ export const POST = createAgentHandler({
     return process.env.NODE_ENV === "production" ? null : { userId: "demo", name: "Demo user" };
   },
   agent: {
+    // Tenant-owned JSON, returned in agent lists; never sent to the model.
+    // metadata: { type: "support-chat" },
     instructions: "You are a helpful assistant.",
   },
 });

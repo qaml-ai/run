@@ -564,7 +564,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   async function provisionAgent(tenant: string, params: any, key: string | undefined, steps: Steps, outcome: { agent?: string; upsert: boolean }, parent?: { payer?: string; agentId: string; runId: string; toolCallId: string; depth: number; computer?: "none" | { seed: string } }, admit?: (unchanged: boolean) => Promise<unknown>, run?: RunSettings & { ttlMs: number }) {
     rejectWorkflow(params ?? {});
     // The application's tools are its attached MCP server's: the tools/list it declares.
-    const { mcp: _mcp, subject: _subject, context: _context, keyScope, spendLimit: limit, bucket: givenBucket, modelHeaders: headers, builtins: asked, delegate: delegating, mcpServers: servers, decide: deciding, remount, ...rest } = params ?? {};
+    const { mcp: _mcp, subject: _subject, context: _context, keyScope, spendLimit: limit, bucket: givenBucket, modelHeaders: headers, builtins: asked, delegate: delegating, mcpServers: servers, decide: deciding, remount, metadata: _metadata, ...rest } = params ?? {};
     if (remount !== undefined && typeof remount !== "boolean") throw new HttpError(400, "remount must be true or false");
     // The application's tools as it declared them, whose hash its connections are told (`toolsHash`).
     const mcpTools = params?.mcp?.tools;
@@ -611,7 +611,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     // An agent made with a key is one the application comes back to: it lives until deleted, unless it says otherwise.
     // One made without is a scratch agent nothing can find again once its id is lost: it lives a day, unless it says.
     const lifetime = run ? run.ttlMs : ttl === undefined ? (key !== undefined ? null : undefined) : ttl === null ? null : ttl * 1000;
-    const { reconfigure, ...made_ } = await clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type }, tenant, lifetime, params.mounts,
+    const { reconfigure, ...made_ } = await clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type, application: _metadata }, tenant, lifetime, params.mounts,
       made && { definition: made.ref, provision: made.provision, overrides: made.overrides, sources: made.sources }, identity,
       { keyScope, spendLimit, ...(params.model === undefined && !inherited ? { defaultModel: true } : {}), ...(bucket ? { bucket } : {}), builtins, delegate, mcpServers, ...(decide !== undefined ? { decide } : {}), ...(remount ? { remount } : {}), ...(idle && !run ? { idleTtlMs: idle * 1000 } : {}), ...(parent ? { parent } : {}), ...(run ? { run: { retentionMs: run.retentionMs, fingerprint: run.fingerprint } } : {}), ...(mcpTools !== undefined ? { toolsHash: createHash("sha256").update(JSON.stringify(mcpTools)).digest("hex") } : {}), ...(admit ? { admit } : {}) }, steps);
     outcome.agent = made_.id;

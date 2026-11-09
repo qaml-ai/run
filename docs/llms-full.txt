@@ -627,6 +627,36 @@ A self-hosted runtime charges nothing unless its operator sets up billing; see
 
 ---
 
+<!-- https://run.camelai.com/docs/guides/agents.md -->
+
+# Application metadata
+
+Set `metadata` to a JSON object on `POST /v1/agents`, or replace it with
+`PATCH /v1/agents/{id}/configuration`. It is tenant-owned application data,
+not model instructions. It is limited to 16,384 bytes of serialized UTF-8 JSON.
+Omitting it preserves the current value (including on keyed upserts);
+`{}` clears it. Top-level `name` and `type` retain their existing meanings.
+
+Agent list and detail responses return `metadata` (an empty object for older
+agents). Both backends also return `lastActiveAt` and `lastError` in lists.
+Use `GET /v1/agents?metadata.type=camelcode-project` for exact, case-sensitive
+matches on top-level string fields. Multiple metadata filters are ANDed;
+numbers, arrays and nested objects are not string matches. Filtering happens
+before pagination and is indexed. Existing list calls still return an array.
+
+TypeScript: `agents.createAgent({ metadata: { type: "camelcode-project" } })`,
+`agents.listAgents({ metadata: { type: "camelcode-project" } })`, and
+`agents.setAgentMetadata(id, { repos: ["acme/app"] })`. Updates return a
+configuration request; poll it for completion.
+
+Python's `AgentRuntime.create_agent` and `Agents.upsert` accept `metadata`;
+`runtime.list_agents(metadata={"type": "camelcode-project"})` filters it and
+`runtime.set_agent_metadata(id, {...})` replaces it. The CLI accepts
+`--metadata '{"type":"camelcode-project"}'` with `agents create`,
+`agents configure`, and `agents list`.
+
+---
+
 <!-- https://run.camelai.com/docs/guides/projects.md -->
 
 # Projects
@@ -7545,6 +7575,38 @@ webhooks and mints the agents' tokens. See [Channels](https://run.camelai.com/do
 Account export lists your Apps, masked (`github-apps.json`); deleting the
 account deletes them.
 
+## List repositories without copying the App key
+
+An account API token can read the repositories of its registered App:
+
+- `GET /v1/github-apps/{app}/repositories?perPage=100&cursor=...`
+  returns `{ items, nextCursor }`. Follow `nextCursor` until it is null, including
+  when a page has no items. Pages cross installations; suspended installations
+  are skipped. `perPage` is 1–100 (default 100).
+- `GET /v1/github-apps/{app}/repositories/{owner}/{name}` checks that the App's
+  installation can access this repository. A public repository without an
+  installation is not enough. Unavailable repositories return 404.
+
+Repository cursors follow GitHub's live installation and repository pages; they
+do not identify a fixed snapshot. Changes to installations or repository access
+between requests can skip or repeat items. Deduplicate by repository `id` and
+restart the listing when you need a fresh inventory. Keep `perPage` unchanged
+while following a cursor.
+
+Each item has `id`, `name`, `fullName`, `private`, `htmlUrl`, and
+`defaultBranch`. These are App permissions, not the signed-in user's GitHub
+permissions. Enforce your application's membership policy before exposing them.
+
+The runtime reads the tenant's encrypted App credentials and mints installation
+tokens with only metadata read permission. It never returns the private key or
+installation token. Registration and egress grants continue to use the same
+App; these read APIs do not change grants or repository permissions.
+
+TypeScript: `runtime.githubRepositories("code", { cursor, perPage: 100 })`
+and `runtime.githubRepository("code", "acme", "app")`.
+Python: `runtime.github_repositories("code", cursor=cursor)` and
+`runtime.github_repository("code", "acme", "app")`.
+
 ---
 
 <!-- https://run.camelai.com/docs/guides/migrating.md -->
@@ -9767,6 +9829,7 @@ wait out `Retry-After` and retry. `GET /v1/billing` has the account's run limit
 | An agent's key (`Idempotency-Key` on `POST /v1/agents`, the SDKs' `upsert(key)`) | 1–80 characters of `A-Z a-z 0-9 _ -` |
 | Lifetime (`ttlSeconds`) | 60 s to 31,622,400 s (366 days), or `null`: until deleted. Default: until deleted for an agent made with a key; 1 day for one made without |
 | Create body (`POST /v1/agents`, with `initialMessages`) | 18 MiB |
+| Application `metadata` | JSON object, at most 16,384 UTF-8 bytes; top-level string fields can be filtered in the agent list |
 | Imported history (`initialMessages`) | 16 MB of JSON (`HISTORY_TOO_LARGE`, 413) |
 | `systemPrompt`, `systemPromptAppend` | 32,000 characters each |
 | `modelHeaders` | at most 20 headers, 8 KB in all; never auth headers |
