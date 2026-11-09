@@ -292,7 +292,7 @@ contractTest('computers', SOURCE, 'sharing starts the unused parent machine once
   const boat = await fakeBoatServer(); t.after(() => boat.close());
   const r = await createContractFixture(t, { env: boatEnv(boat.url), respond: body => {
     const results = turnResults(body);
-    if (systemText(body).includes('FIRST_USE_CHILD')) return results.length
+    if (firstUser(body).includes('FIRST_USE_CHILD')) return results.length
       ? { role: 'assistant', content: results[0] }
       : toolCall('computer_exec', { command: 'echo shared-first-use' }, 'exec');
     if (!results.length) return toolCall('delegate', { instructions: 'FIRST_USE_CHILD', task: 'Use the computer' }, 'first');
