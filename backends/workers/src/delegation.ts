@@ -1,7 +1,7 @@
 import { defineTool, type ToolRegistration, type ToolExecutionApi } from '@earendil-works/pi-durable';
 import { HttpError } from './errors.ts';
 import { digest } from './api-contract.ts';
-import { modelOutputSchema, MULTI_AGENT_LIMITS, PARENT_KEYS, roleAndTask, delegateTool, agentsTools, agentMessage, agentUpdates, REPORT_PROGRESS, SEND_MESSAGE, type DelegateSettings } from './multi-agent-policy.ts';
+import { childStatus, modelOutputSchema, MULTI_AGENT_LIMITS, PARENT_KEYS, roleAndTask, delegateTool, agentsTools, agentMessage, agentUpdates, REPORT_PROGRESS, SEND_MESSAGE, type DelegateSettings } from './multi-agent-policy.ts';
 import type { ToolDefinition } from './policy-host.ts';
 import type { NoticeRequest, RuntimeNotice } from './delegation-notifications.ts';
 import { childConfig } from './child-config.ts';
@@ -13,7 +13,6 @@ import { outputInput } from './output-validation.ts';
 import type { Context } from '@earendil-works/chord';
 import type { McpResult } from './attached-tools.ts';
 import { waitsForProgress } from './delegation-progress.ts';
-import { followEvents } from './event-follow.ts';
 import { scriptOf } from './codemode-run.ts';
 import { computerChoice, forkBatch } from '../../../src/core/computer-fork.ts';
 import type { ComputerSnapshot } from './computers/provider.ts';
@@ -92,7 +91,8 @@ export interface DelegationHost {
 }
 /** What a fork gives a child: a seed for its computer connection, and the native computer's snapshot. */
 export type ChildComputerFork = { connection?: { seed: string; connection?: string; provider?: string; at?: number }; native?: { snapshot: ComputerSnapshot; origin: NativeForkOrigin } };
-type ChildRelay = { abort(): void; drained: Promise<void> };
+export type ChildEvent = { agentId: string; requestId: string; event: { type: string; id?: string; requestId?: string; event?: unknown }; record?: ChildRun };
+export const CHILD_FALLBACK_MS = 5000;
 const prefix = 'delegation:';
 type ChildCharge = { requestId: string; usd: number; at: number };
 const chargePrefix = 'delegation-charge:';
@@ -114,6 +114,72 @@ async function signature(secret: string, agent: string, run: string, depth: stri
 /** Durable child lifecycle; Pi owns invocation replay, and the child request is idempotent. */
 export class Delegation {
   private readonly following = new Set<string>();
+  private readonly changed = new Map<string, Set<() => void>>();
+  private fallback?: ReturnType<typeof setTimeout>;
+  private sweepRunning = false;
+  private readonly completions = new Map<string, Promise<void>>();
+  readonly measurements = { relayStreams: 0, fallbackSweeps: 0, fallbackRequests: 0, pushedEvents: 0, pushedCompletions: 0, maxFallbackConcurrent: 0 };
+  private signalChange(key: string) {
+    for (const name of [key, '*']) {
+      for (const wake of this.changed.get(name) ?? []) wake();
+      this.changed.delete(name);
+    }
+  }
+  private waitChange(key: string, signal?: AbortSignal) {
+    return new Promise<void>((resolve, reject) => {
+      if (signal?.aborted) return reject(signal.reason);
+      const remove = () => { const entries = this.changed.get(key); entries?.delete(done); if (!entries?.size) this.changed.delete(key); };
+      const done = () => { signal?.removeEventListener('abort', aborted); remove(); resolve(); };
+      const aborted = () => { remove(); reject(signal?.reason); };
+      const entries = this.changed.get(key) ?? new Set(); entries.add(done); this.changed.set(key, entries);
+      signal?.addEventListener('abort', aborted, { once: true });
+      if (key === '*') this.scheduleFallback();
+    });
+  }
+  private scheduleFallback() {
+    if (this.fallback || this.sweepRunning || (!this.following.size && !this.changed.has('*'))) return;
+    this.fallback = setTimeout(() => {
+      this.fallback = undefined;
+      this.host.waitUntil(this.sweep().finally(() => this.scheduleFallback()));
+    }, CHILD_FALLBACK_MS);
+  }
+  private async sweep() {
+    this.sweepRunning = true;
+    this.measurements.fallbackSweeps++;
+    let active = 0;
+    try {
+      const pending = (await this.children()).filter(child => this.following.has(child.key));
+      // Six bounded workers share one sweep; no child owns a timer or an open stream.
+      await Promise.all(Array.from({ length: Math.min(6, pending.length) }, async () => {
+        for (;;) {
+          const child = pending.shift(); if (!child) return;
+          if (child.status !== 'running') { await this.afterCompletion(child); continue; }
+          if (!child.id || !child.accepted) continue;
+          this.measurements.fallbackRequests++;
+          active++; this.measurements.maxFallbackConcurrent = Math.max(this.measurements.maxFallbackConcurrent, active);
+          try {
+            const response = await this.host.fetch(child.id, new Request(`https://agent/requests/${child.requestId}`));
+            const record: ChildRun = response.ok ? await response.json() : { state: 'completed', status: 'failed', error: 'The sub-agent was deleted before it answered' };
+            if (!response.ok && ![404, 410].includes(response.status)) continue;
+            if (record.state === 'completed') await this.complete(child, record);
+          } catch { /* The next sweep retries a lost callback or unavailable child. */ } finally { active--; }
+        }
+      }));
+    } finally { this.sweepRunning = false; this.signalChange('*'); }
+  }
+  /** Binding-only delivery: accept events only for a child request this parent recorded. */
+  async receive(event: ChildEvent) {
+    const key = await this.host.storage.get<string>(`delegation-run:${event.agentId}:${event.requestId}`);
+    const child = key ? await this.host.storage.get<DelegatedChild>(prefix + key) : undefined;
+    if (!child || child.id !== event.agentId || child.requestId !== event.requestId) return { accepted: false };
+    this.measurements.pushedEvents++;
+    if (event.event.type === 'event' && child.status === 'running') await this.host.emit({ type: 'event', requestId: child.parentRequestId, event: { type: 'subagent_event', toolCallId: child.toolCallId, agentId: child.id, requestId: child.requestId, event: event.event.event } });
+    if (event.record?.state === 'completed') {
+      if (child.status === 'running') this.measurements.pushedCompletions++;
+      await this.complete(child, event.record);
+    }
+    return { accepted: true };
+  }
   /** wait_agent calls in flight: while one is, a child's ending is left for it, not sent to the running turn (notify "asap"). */
   waiting = 0;
   private readonly starting = new Set<Promise<DelegatedChild>>();
@@ -297,19 +363,18 @@ export class Delegation {
           const metadata = { [PARENT_KEYS.agent]: id, [PARENT_KEYS.run]: run.id, [PARENT_KEYS.toolCall]: toolCallId, [PARENT_KEYS.depth]: String(place.depth), [PARENT_KEYS.maxDepth]: String(place.maxDepth), [PARENT_KEYS.chain]: place.chain.join(',') };
           const signed = { ...metadata, [PARENT_KEYS.signature]: await signature(this.host.secret, admitted.id, admitted.requestId, String(place.depth), String(place.maxDepth), place.chain.join(',')) };
           await this.host.emit({ type: 'event', requestId: run.id, event: { type: 'subagent_start', toolCallId, agentId: admitted.id, requestId: admitted.requestId, name: admitted.name, depth: admitted.depth, ...(admitted.background ? { background: true } : {}) } });
-          const relay = await this.relay(admitted);
-          try { await this.checkCancellation(admitted, signal); }
-          catch (error) { relay.abort(); throw error; }
+          await this.host.storage.put(`delegation-run:${admitted.id}:${admitted.requestId}`, admitted.key);
+          await this.checkCancellation(admitted, signal);
           const response = await this.host.fetch(admitted.id, new Request('https://agent/requests', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: admitted.requestId, method: 'prompt', params: { text: admitted.task, endUser: admitted.payer, bucket: admitted.bucket, metadata: signed, whileRunning: 'queue', ...(run.params?.actor ? { actor: run.params.actor } : {}), ...(held !== undefined ? { spendLimit: { usd: held } } : {}), ...(args.output !== undefined ? { output: { schema: modelOutputSchema(args.output) } } : {}) } }) }));
           if (!response.ok) {
-            relay.abort();
             const detail = await response.json().catch(() => undefined) as { error?: unknown } | undefined;
             throw new HttpError(response.status, typeof detail?.error === 'string' ? detail.error : 'Child submission failed');
           }
           Object.assign(admitted, await this.update(admitted, { accepted: true }));
-          this.follow(admitted, relay);
+          this.follow(admitted);
           if (signal.aborted || admitted.cancelRequested) {
             await this.cancelRemote(admitted);
+            await this.wait(admitted, AbortSignal.timeout(10_000)).catch(() => {});
             throw new DOMException('Delegation cancelled', 'AbortError');
           }
           return admitted;
@@ -321,81 +386,69 @@ export class Delegation {
             if (cancelled && admitted.id) await this.cancelRemote(admitted);
             await this.host.emit({ type: 'event', requestId: run.id, event: { type: 'subagent_end', toolCallId, agentId: admitted.id, requestId: admitted.requestId, name: admitted.name, status: admitted.status, error: admitted.error, ...(admitted.background ? { background: true } : {}) } });
           }
+          this.signalChange('*');
           throw error;
         }
       }
-      await sleep(25, signal);
+      await this.waitChange('*', signal);
     }
   }
-  private async relay(child: DelegatedChild) {
-    const abort = new AbortController();
-    let drain!: () => void;
-    const drained = new Promise<void>(resolve => { drain = resolve; });
-    let queued = Promise.resolve();
-    await followEvents({
-      events: 'https://agent/events?watch=1&subagents=1',
-      fetch: (input, init) => this.host.fetch(child.id, new Request(input, init)),
-    }, { push: item => {
-      if (item.kind === 'failed') { abort.abort(); drain(); return; }
-      if (item.kind !== 'event') return;
-      const event = item.data as { type: string; requestId?: string; id?: string; event?: unknown };
-      queued = queued.then(async () => {
-        if (event.type === 'event' && event.requestId === child.requestId) await this.host.emit({ type: 'event', requestId: child.parentRequestId, event: { type: 'subagent_event', toolCallId: child.toolCallId, agentId: child.id, requestId: child.requestId, event: event.event } });
-        if (event.type === 'response' && event.id === child.requestId) drain();
-      }).catch(() => { abort.abort(); drain(); });
-    } }, abort.signal);
-    this.host.waitUntil(drained);
-    return { abort: () => { abort.abort(); void queued.finally(drain); }, drained };
-  }
-  private follow(child: DelegatedChild, relay?: ChildRelay) {
-    if (this.following.has(child.key) || (child.status !== 'running' && (!child.background || child.notified))) return;
+  private follow(child: DelegatedChild) {
+    if (child.status !== 'running' && (!child.background || child.notified)) return;
     this.following.add(child.key);
-    this.host.waitUntil((async () => {
-      if (!relay && child.status === 'running') relay = await this.relay(child);
-      await this.wait(child);
-      // The response is published after its final assistant event. Let the
-      // already-open stream consume it before closing the child subscription.
-      if (relay) {
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        await Promise.race([relay.drained, new Promise<void>(resolve => { timer = setTimeout(resolve, 1000); })]);
-        clearTimeout(timer);
-      }
-      const finished = await this.host.storage.get<DelegatedChild>(prefix + child.key);
-      if (finished?.background && this.host.notify && !finished.notified && finished.landedBy !== 'wait') {
-        await this.host.notify(finished);
+    this.host.waitUntil(this.host.storage.put(`delegation-run:${child.id}:${child.requestId}`, child.key));
+    this.scheduleFallback();
+    if (child.status !== 'running') this.host.waitUntil(this.afterCompletion(child));
+  }
+  private afterCompletion(child: DelegatedChild): Promise<void> {
+    const pending = this.completions.get(child.key);
+    if (pending) return pending;
+    const work = this.finishChild(child).finally(() => this.completions.delete(child.key));
+    this.completions.set(child.key, work);
+    return work;
+  }
+  private async finishChild(child: DelegatedChild) {
+    try {
+      child = await this.host.storage.get<DelegatedChild>(prefix + child.key) ?? child;
+      if (child.background && this.host.notify && !child.notified && child.landedBy !== 'wait') {
+        await this.host.notify(child);
         await this.host.storage.transaction(async tx => {
           const latest = await tx.get<DelegatedChild>(prefix + child.key);
           if (latest) await tx.put(prefix + child.key, { ...latest, notified: true });
         });
       }
-      if (finished?.background && finished.status === 'input_required') await this.resumePaused(finished);
-    })().catch(async () => { await this.host.retry?.(); }).finally(() => { relay?.abort(); this.following.delete(child.key); }));
+      this.following.delete(child.key);
+      if (!this.following.size && this.fallback) { clearTimeout(this.fallback); this.fallback = undefined; }
+      if (child.background && child.status === 'input_required') await this.resumePaused(child);
+    } catch { this.following.add(child.key); this.scheduleFallback(); }
+  }
+  private async complete(child: DelegatedChild, record: ChildRun) {
+    const finished = await this.host.storage.transaction(async tx => {
+      const current = await tx.get<DelegatedChild>(prefix + child.key) ?? child;
+      if (current.status !== 'running') return { child: current, changed: false };
+      const usage = record.outcome?.result?.usage;
+      const folded = !!(record.steeredInto || record.outcome?.result?.steeredInto);
+      let value: DelegatedChild = { ...current, folded, ...(folded ? { notified: true } : {}), status: childStatus(record), endedAt: Date.now(), outcome: record.outcome, error: record.error ?? record.outcome?.error, spent: folded ? 0 : childUsageCost(usage), held: undefined };
+      await tx.put(prefix + child.key, value);
+      if (!value.background) value = await this.settleInTransaction(tx, value, value.parentRequestId);
+      return { child: value, changed: !folded };
+    });
+    if (finished.changed && !child.background && child.made && child.id) this.host.waitUntil(this.host.releaseComputer?.(child.id).catch(() => {}) ?? Promise.resolve());
+    if (finished.changed) await this.host.emit({ type: 'event', requestId: child.parentRequestId, event: { type: 'subagent_end', toolCallId: child.toolCallId, agentId: child.id, requestId: child.requestId, name: child.name, status: finished.child.status, ...(child.background ? { background: true } : {}), ...(finished.child.error ? { error: finished.child.error } : {}) } });
+    this.signalChange(child.key);
+    await this.afterCompletion(finished.child);
+    return finished.child;
   }
   async wait(child: DelegatedChild, signal?: AbortSignal): Promise<DelegatedChild> {
+    this.follow(child);
     for (;;) {
       signal?.throwIfAborted();
+      // Subscribe before reading, so a completion cannot fall between the read and wait.
+      const controller = new AbortController();
+      const change = this.waitChange(child.key, signal ? AbortSignal.any([signal, controller.signal]) : controller.signal);
       const saved = await this.host.storage.get<DelegatedChild>(prefix + child.key);
-      if (saved?.status !== 'running') return saved ?? child;
-      const response = await this.host.fetch(child.id, new Request(`https://agent/requests/${child.requestId}?wait=1`, { signal }));
-      if (!response.ok && response.status !== 404 && response.status !== 410) throw new HttpError(response.status, 'Child agent unavailable');
-      const record: ChildRun = response.ok ? await response.json() : { state: 'completed', status: 'failed', error: 'The sub-agent was deleted before it answered' };
-      if (record.state === 'completed') {
-        const finished = await this.host.storage.transaction(async tx => {
-          const current = await tx.get<DelegatedChild>(prefix + child.key) ?? child;
-          if (current.status !== 'running') return { child: current, changed: false };
-          const usage = record.outcome?.result?.usage;
-          const folded = !!(record.steeredInto || record.outcome?.result?.steeredInto);
-          let value: DelegatedChild = { ...current, folded, ...(folded ? { notified: true } : {}), status: record.outcome?.result?.code === 'aborted' ? 'aborted' : record.status ?? (record.outcome?.error ? 'failed' : 'completed'), endedAt: Date.now(), outcome: record.outcome, error: record.error ?? record.outcome?.error, spent: folded ? 0 : childUsageCost(usage), held: undefined };
-          await tx.put(prefix + child.key, value);
-          if (!value.background) value = await this.settleInTransaction(tx, value, value.parentRequestId);
-          return { child: value, changed: !folded };
-        });
-        // A delegate child answered: its computers (keyed by the child) stop, so they bill nothing more.
-        if (finished.changed && !child.background && child.made && child.id) this.host.waitUntil(this.host.releaseComputer?.(child.id).catch(() => {}) ?? Promise.resolve());
-        if (finished.changed) await this.host.emit({ type: 'event', requestId: child.parentRequestId, event: { type: 'subagent_end', toolCallId: child.toolCallId, agentId: child.id, requestId: child.requestId, name: child.name, status: finished.child.status, ...(child.background ? { background: true } : {}), ...(finished.child.error ? { error: finished.child.error } : {}) } });
-        return finished.child;
-      }
-      await sleep(25, signal);
+      if (saved?.status !== 'running') { controller.abort(); await change.catch(() => {}); return saved ?? child; }
+      await change;
     }
   }
   answer(child: DelegatedChild) { return { agentId: child.id, requestId: child.requestId, name: child.name, status: child.status, ...(child.outcome?.result?.reply ? { text: child.outcome.result.reply } : {}), ...(child.outcome?.result?.output !== undefined ? { output: child.outcome.result.output } : {}), ...(child.outcome?.result?.stopped ? { stopped: child.outcome.result.stopped } : {}), ...(child.error ? { error: child.error } : {}) }; }
@@ -458,6 +511,7 @@ export class Delegation {
       await this.host.emit({ type: 'event', requestId: child.parentRequestId, event: { type: 'subagent_progress', toolCallId: child.toolCallId, agentId: child.id, requestId: child.requestId, name: child.name, text: progress.text, at: progress.at, ...(child.background ? { background: true } : {}) } });
       if (!child.background) await this.host.emit({ type: 'event', requestId: child.parentRequestId, event: { type: 'tool_execution_update', toolCallId: child.toolCallId, toolName: 'delegate', partialResult: { content: [{ type: 'text', text: progress.text }], details: { type: 'progress', tool: 'delegate', message: progress.text } } } });
     }
+    this.signalChange("*");
     return { reported: true };
   }
   private async takeProgress(api?: ToolExecutionApi) {
@@ -516,7 +570,7 @@ export class Delegation {
       const response = await this.host.fetch(child.id, new Request(`https://agent/requests/${child.requestId}`));
       const record = response.ok ? await response.json() as { began?: number; state?: string } : undefined;
       if (!record || record.began || record.state === 'completed') break;
-      await sleep(100, signal);
+      await sleep(1000, signal);
     }
     const key = `message-${identity.slice(0, 48)}`, existing = await this.host.storage.get<DelegatedChild>(prefix + key);
     const answer = (value: DelegatedChild) => ({ sent: true, to: child.name, agentId: child.id, into: value.folded ? 'its running turn' : 'a new turn: its answer comes as a notification' });
@@ -568,6 +622,7 @@ export class Delegation {
       }
       if (child.accepted) this.follow(child);
     }
+    if (this.following.size && !this.sweepRunning) await this.sweep();
   }
   private async resumePaused(child: DelegatedChild) {
     if (child.cancelRequested) return;
@@ -677,7 +732,7 @@ export class Delegation {
               if (messaged.size) break;
               if (args.untilProgress && Date.now() >= earliestProgress) for (const child of latest) if (child.progress && child.progress.sequence > (child.progressShown ?? 0)) updated.add(child.name);
               if (updated.size) break;
-              await sleep(Math.min(25, Math.max(1, deadline - Date.now())), signal);
+              await this.waitChange('*', AbortSignal.any([signal, AbortSignal.timeout(Math.min(CHILD_FALLBACK_MS, Math.max(1, deadline - Date.now())))] )).catch(error => { if (signal.aborted) throw error; });
             }
           } finally { stop.abort(); await Promise.all(watches); }
           const { run } = await this.host.context(api);

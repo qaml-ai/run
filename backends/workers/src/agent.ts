@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { type RuntimeNotice, type NoticeRequest, type WakeDecision } from "./delegation-notifications.ts";
-import type { ChildProgressReport } from "./delegation.ts";
+import type { ChildEvent, ChildProgressReport } from "./delegation.ts";
 import { Env } from "./agent-types.ts";
 import { AgentRuntime } from "./agent-runtime.ts";
 import { ARM_AGENT, DUE_HUMAN_INPUTS } from "./agent-internals.ts";
@@ -46,6 +46,8 @@ export class CamelAgent extends DurableObject<Env> {
   receiveAgentProgress(report: ChildProgressReport): Promise<unknown> {
     return this.#runtime.receiveAgentProgress(report);
   }
+
+  receiveChildEvent(event: ChildEvent) { return this.#runtime.receiveChildEvent(event); }
 
   hasBackgroundChild(id: string): Promise<boolean> {
     return this.#runtime.hasBackgroundChild(id);

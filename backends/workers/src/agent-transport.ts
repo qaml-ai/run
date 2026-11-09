@@ -1,3 +1,4 @@
+import { PARENT_KEYS } from "./multi-agent-policy.ts";
 import { readInputMirrors } from "./agent-input-mirror.ts";
 import { stageInputMirror } from "./input-mirror.ts";
 import { visibleReplay } from "./event-visibility.ts";
@@ -87,6 +88,16 @@ export async function emitImpl(this: AgentRuntime,
     this.serial = work.catch(() => {});
     await work;
     const value = event as any;
+    const metadata = (committed.record?.metadata ?? committed.record?.params?.metadata) as Record<string, unknown> | undefined;
+    const parent = metadata?.[PARENT_KEYS.agent];
+    if (typeof parent === "string" && committed.owner && committed.record &&
+      (value.requestId === committed.record.id || value.id === committed.record.id)) {
+      const push = { agentId: committed.owner.id, requestId: committed.record.id, event: value,
+        ...(value.type === "response" ? { record: { ...committed.record, outcome: value.outcome } } : {}) };
+      // Child-owned sequencing preserves event order without holding a relay stream in the parent.
+      this.delegationPush = this.delegationPush.then(() => this.env.AGENTS.getByName(parent).receiveChildEvent(push)).catch(() => { /* The parent's bounded recovery sweep retries a lost push. */ });
+      this.ctx.waitUntil(this.delegationPush);
+    }
     if (webhook || value.type === "response" || ["agent_start", "input_required", "input_resolved"].includes(value.event?.type))
       this.ctx.waitUntil(this.dbProfile.run("webhooks", () => this.webhooks.flush()));
   }

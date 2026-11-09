@@ -293,7 +293,7 @@ export type ChildStatus = "completed" | "failed" | "aborted" | "input_required" 
 type Ended = { status?: string; error?: string; outcome?: { result?: unknown; error?: string } };
 export function childStatus(record: Ended): ChildStatus {
   const result = record.outcome?.result as { code?: string; stopped?: string } | undefined;
-  if (result?.code === "aborted" || result?.code === "cancelled") return "aborted";
+  if (record.status === "aborted" || record.status === "cancelled" || result?.code === "aborted" || result?.code === "cancelled") return "aborted";
   if (result?.stopped === "spend_limit") return "paused";
   if (result?.stopped === "input_required") return "input_required";
   return record.status === "completed" || record.status === "input_required" || record.status === "paused" ? record.status : "failed";

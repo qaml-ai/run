@@ -10,9 +10,9 @@ function fixture() {
     async list({ prefix }: { prefix: string }) { return new Map([...values].filter(([key]) => key.startsWith(prefix)).map(([key, value]) => [key, structuredClone(value)])); },
     async transaction<T>(work: (tx: unknown) => Promise<T>) { return work(storage); },
   } as unknown as DurableObjectStorage;
-  const host = { storage } as DelegationHost;
+  const host = { storage, waitUntil() {} } as DelegationHost;
   const delegation = new Delegation(host);
-  const child: DelegatedChild = { id: 'child', key: 'child', requestId: 'spawn_child', parentRequestId: 'spawn', toolCallId: 'call', task: 'help', name: 'helper', depth: 1, background: true, made: true, createdAt: 1, status: 'completed', spent: 0.15 };
+  const child: DelegatedChild = { id: 'child', key: 'child', requestId: 'spawn_child', parentRequestId: 'spawn', toolCallId: 'call', task: 'help', name: 'helper', depth: 1, background: true, made: true, createdAt: 1, status: 'completed', accepted: true, spent: 0.15 };
   return { storage, delegation, child, host };
 }
 
