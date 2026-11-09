@@ -1,3 +1,4 @@
+import { stageScheduleOutcome, flushScheduleOutcomes } from './schedule-outcomes.ts';
 import { readInputMirrors } from "./agent-input-mirror.ts";
 import { stageInputMirror } from "./input-mirror.ts";
 import { visibleReplay } from "./event-visibility.ts";
@@ -38,6 +39,7 @@ export async function emitImpl(this: AgentRuntime,
         const value = event as any;
         const owner = await tx.get<Config>("configuration");
         const record = await tx.get<RequestRecord>(reqKey(value.requestId ?? value.id ?? ""));
+        if (owner && record && value.type === "response") await stageScheduleOutcome(tx,owner.tenantId,owner.id,record);
         const announcement = webhook ?? (owner && record &&
           (value.type === "response" || value.event?.type === "agent_start")
           ? runWebhook(owner, value.type === "response" ? record : { ...record, state: "running" }, this.nextMessage)
@@ -87,6 +89,7 @@ export async function emitImpl(this: AgentRuntime,
     this.serial = work.catch(() => {});
     await work;
     const value = event as any;
+    if (value.type === "response") this.ctx.waitUntil(flushScheduleOutcomes(this).then(()=>this.arm()));
     if (webhook || value.type === "response" || ["agent_start", "input_required", "input_resolved"].includes(value.event?.type))
       this.ctx.waitUntil(this.dbProfile.run("webhooks", () => this.webhooks.flush()));
   }

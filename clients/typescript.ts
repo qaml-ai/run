@@ -385,7 +385,8 @@ export interface AgentInput {
 }
 export type InboxPriority = "urgent" | "high" | "normal" | "low";
 export interface InboxOptions { for?: string; subject?: string; root?: string; priority?: InboxPriority; kind?: AgentInput["kind"]; cursor?: string; limit?: number }
-export interface InboxItem extends Omit<AgentInput, "key"> { inputId: string; priority: InboxPriority; blocking: boolean; subject: string | null; root: string; lineage: string[]; key: string | null; version: number }
+/** id answers on agent; inputId is the same value for compatibility. Key rows by (agent, id). */
+export interface InboxItem extends Omit<AgentInput, "key"> { tenant: string; inputId: string; priority: InboxPriority; blocking: boolean; subject: string | null; root: string; lineage: string[]; key: string | null; version: number }
 export interface InboxPage { items: InboxItem[]; cursor: string | null; counts: { priority: Record<InboxPriority, number>; lead: Record<string, number> } }
 /** What an input asks: by its `kind`, the fields of one of these. */
 export interface InputDetail {
@@ -816,7 +817,7 @@ export interface DreamingStatus {
   lastResult: { status: string; from: number; to: number; summary?: string; error?: string } | null;
   results: NonNullable<DreamingStatus["lastResult"]>[];
 }
-export interface Schedule { calendar?: CalendarSchedule; email?: ScheduleEmail; id: string; agent: string; text?: string; code?: string; /** @deprecated Never set: every wake-up sees the agent's history. */ history?: "none"; dueAt: number; everySeconds?: number; createdAt: number; failures?: number; lastError?: string; lastErrorAt?: number }
+export interface Schedule { mounts?: MountInput[]; cron?: {expression:string; timeZone:string}; sessionMode?: "continue" | "fresh"; spendLimit?: {usd:number}; calendar?: CalendarSchedule; email?: ScheduleEmail; id: string; agent: string; text?: string; code?: string; /** @deprecated Never set: every wake-up sees the agent's history. */ history?: "none"; dueAt: number; everySeconds?: number; createdAt: number; failures?: number; lastError?: string; lastErrorAt?: number }
 /**
  * A steered message as the runtime took it (`steerMessage`, `agent.steer`): `accepted`, the running turn reads it after
  * its current step; `taken`, it has read it already, in the turn `steeredInto` names; `queued`, no turn was running, so it
@@ -1705,6 +1706,9 @@ export class AgentRuntime {
   readonly voice: Voice;
   readonly voices: Voices;
   constructor(options: RuntimeOptions = {}) {
+    const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
+    options = { ...options, apiKey: options.apiKey ?? (env.CAMELRUN_API_KEY || env.CAMELAI_API_KEY || env.AGENT_RUNTIME_TOKEN),
+      url: options.url ?? (env.CAMELRUN_URL || env.CAMELAI_BASE_URL || env.CAMELAI_URL || env.AGENT_URL) };
     this.options = options; this.transport = new Transport(options);
     this.endUsers = new EndUsers(this.transport, () => this.operator());
     this.transcriptions = new Transcriptions(this.transport, () => this.operator());
@@ -1816,17 +1820,12 @@ export class AgentRuntime {
     return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/context/reset`, this.operator(), "POST", options, true);
   }
   /** An existing agent's credentials, by its id or the key it was made with, its configuration untouched (404 when there is none). */
-  /** An existing agent's credentials, by key or id, with its `configHash`. */
   agentCredentials(keyOrId: string): Promise<SessionCredentials & { configHash?: string }> { return this.transport.json(`/v1/agents/${encodeURIComponent(keyOrId)}/credentials`, this.operator()); }
   definitions(): Promise<Definition[]> { return this.transport.json("/v1/definitions", this.operator()); }
   deleteDefinition(id: string): Promise<{ deleted: boolean }> { return this.transport.json(`/v1/definitions/${encodeURIComponent(id)}`, this.operator(), "DELETE", undefined, false); }
   mounts(agentId: string): Promise<Mount[]> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/mounts`, this.operator()); }
   /** Replace an agent's mounts: a removed one at once, the rest from its next turn, which is told of them. */
   setMounts(agentId: string, mounts: MountInput[]): Promise<Mount[]> { return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/mounts`, this.operator(), "PUT", { mounts }, false); }
-  /**
-   * Every source of an agent's tools (its application, file tools, built-ins, MCP servers, OpenAPI
-   * specs) and what each offers the model. `schemas` includes input schemas; `refresh` lists MCP servers now.
-   */
   /** A page of this conversation tree in [from,to), in epoch milliseconds. Follow next, including empty pages. */
   sessions(agentId: string, options: { from: number; to: number; cursor?: string; limit?: number; children?: boolean; endUser?: string }): Promise<{ agentId: string | null; entries: { index: number; message: unknown }[]; next: string | null }> {
     const query = new URLSearchParams(Object.entries(options).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)]));
@@ -1843,11 +1842,18 @@ export class AgentRuntime {
   browserToken(agentId: string, options: { ttlSeconds?: number; scopes?: ("events" | "state" | "history" | "inputs" | "children")[]; events?: string[]; redact?: "usage.cost"[]; subject?: string } = {}): Promise<{ token: string; expiresAt: number; agentId: string; url?: string }> {
     return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/browser-tokens`, this.operator(), "POST", options, false);
   }
-  /** Who the API key is: `tenant` is your tenant's id, which serveTools and verifyRuntimeToken take. */
   /** Who the API key is (`tenant`), and `defaultModel`, the model an agent gets when it names none. */
   me(): Promise<{ tenant: string; via: string; login?: string; defaultModel: string }> { return this.transport.json("/v1/me", this.operator()); }
+  /** Answer using the inbox item's public id and agent. Never use its database row id. */
+  answerInbox(item: Pick<InboxItem, "agent" | "id">, answer: InputAnswer): Promise<{ input: AgentInput; request: any | null }> {
+    return this.transport.json(`/v1/agents/${encodeURIComponent(item.agent)}/inputs/${encodeURIComponent(item.id)}`, this.operator(), "POST", answer);
+  }
   /** Pending inputs in priority order, with a cursor and filtered counts. */
   inbox(options: InboxOptions = {}): Promise<InboxPage> { return this.transport.json(`/v1/inbox?${queryOf({ ...options })}`, this.operator()); }
+  /**
+   * Every source of an agent's tools (its application, file tools, built-ins, MCP servers, OpenAPI
+   * specs) and what each offers the model. `schemas` includes input schemas; `refresh` lists MCP servers now.
+   */
   async toolSources(agentId: string, options: { schemas?: boolean; refresh?: boolean } = {}): Promise<ToolSource[]> {
     const query = [options.schemas && "schemas=true", options.refresh && "refresh=true"].filter(Boolean).join("&");
     return (await this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}${query ? `?${query}` : ""}`, this.operator())).toolSources;
@@ -2702,13 +2708,14 @@ export class AgentClient {
   }
   /**
    * Wake this agent later: with `text` it gets a prompt, with `code` it runs sandboxed
-   * code against your tools. `everySeconds` (at least 60) repeats it. Every wake-up sees the agent's history (`history`
-   * is deprecated and ignored).
+   * code against your tools. `everySeconds` (at least 60) repeats it. Use sessionMode: "fresh" to start from the definition for each run.
+   * `history` is deprecated and ignored.
    */
-  schedule(input: { text?: string; code?: string; /** @deprecated Ignored: every wake-up sees the agent's history. */ history?: "full" | "none"; at?: string | Date; inSeconds?: number; everySeconds?: number; calendar?: CalendarSchedule; email?: ScheduleEmail }): Promise<Schedule> {
+  schedule(input: { text?: string; code?: string; /** @deprecated Ignored: every wake-up sees the agent's history. */ history?: "full" | "none"; at?: string | Date; inSeconds?: number; everySeconds?: number; mounts?: MountInput[]; cron?: {expression:string; timeZone:string}; sessionMode?: "continue" | "fresh"; spendLimit?: {usd:number}; calendar?: CalendarSchedule; email?: ScheduleEmail }): Promise<Schedule> {
     return this.http("/schedules", "POST", { ...input, ...(input.at instanceof Date ? { at: input.at.toISOString() } : {}) }, false);
   }
   schedules(): Promise<Schedule[]> { return this.http("/schedules"); }
+  runSchedule(id: string): Promise<{agent:string; requestId:string; record:unknown}> { return this.http(`/schedules/${encodeURIComponent(id)}/run`, "POST", {}, false); }
   unschedule(id: string) { return this.http(`/schedules/${encodeURIComponent(id)}`, "DELETE", undefined, false); }
   /** The agent's process (when loaded) and whether it is busy: `busy`, `activeRun`, `queuedRuns`, as GET /v1/agents/{id} and its state say too. */
   status() { return this.request("status"); }

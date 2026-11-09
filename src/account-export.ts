@@ -82,6 +82,7 @@ export async function* exportAccount(options: ExportOptions, tenant: string): As
 
   yield* zip.file("workspace-usage.json", json((await accounts.db.query("select workspace, day, model, responses, input, output, cache_read, cache_write, cost, platform_responses, platform_cost from workspace_usage where tenant = $1 order by day, workspace, model", [tenant])).rows));
 
+  yield* zip.file("schedule-runs.json", json((await accounts.db.query("select * from schedule_runs where tenant = $1 order by created_at, id", [tenant])).rows));
   yield* zip.file("schedule-deliveries.json", json((await accounts.db.query("select * from schedule_deliveries where tenant = $1 order by created_at, id", [tenant])).rows));
 
   for (let after = ""; ;) {

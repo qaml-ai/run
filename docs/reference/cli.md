@@ -278,3 +278,14 @@ key in your shell's environment or an ignored file such as `.env.local`. A key
 or a connected app can create and delete every agent in the account. Give a
 coding agent a key of its own, or connect it with OAuth, so you can revoke it
 alone.
+
+## Scheduled runs
+
+`camelrun schedules add <agent> --text 'Report' --cron '0 9 * * 1-5'
+--time-zone America/Chicago --session-mode fresh --spend-limit 1` creates a
+weekday schedule. Omit `--session-mode` to continue the same agent. Existing
+`--in`, `--at` and `--every` timing flags still work.
+
+`camelrun schedules run <agent> <scheduleId>` runs it immediately without moving
+the next occurrence. See [Schedules](../guides/schedules.md) for retention and
+run history.

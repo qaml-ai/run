@@ -62,7 +62,7 @@ export async function readInbox(sql: Sql, tenant: string, query: ReturnType<type
     Object.defineProperty(counts.lead, group.lead, { value: (Object.hasOwn(counts.lead, group.lead) ? counts.lead[group.lead] : 0) + Number(group.count), enumerable: true, configurable: true });
   }
   const last = page.at(-1);
-  return { items: page.map(row => ({ ...inputView(row), inputId: row.input.workersInputId ?? row.id, priority: row.priority, blocking: row.blocking,
+  return { items: page.map(row => ({ ...inputView(row), id: row.input.workersInputId ?? row.id, inputId: row.input.workersInputId ?? row.id, priority: row.priority, blocking: row.blocking,
     subject: row.subject, root: row.root_agent ?? row.agent, lineage: row.lineage ?? [row.agent], key: row.item_key, version: row.version })),
     cursor: more && last ? Buffer.from(JSON.stringify([last.priority_rank, Number(last.expires_at), Number(last.created_at), last.id])).toString('base64url') : null, counts };
 }
