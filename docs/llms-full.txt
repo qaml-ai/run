@@ -5734,9 +5734,14 @@ return { fire: changed, value: { url: "https://example.com/pricing" }, state: { 
 A check that returns no `state` keeps the last one. Anything else returned, or an error thrown, is a failed check.
 
 A check has the agent's code tools, with its network policy and credentials, except the ones that start model work,
-wait on a person or use a computer: no `delegate`, `spawn_agent`, `send_message`, `ask_user`, `request_decision`,
-`decide`, `generate_image`, schedule or monitor tools, and no computer or browser tools. A tool that needs approval
-is declined. A check runs for at most 10 seconds.
+wait on a person, use a computer, or write or import files: no `delegate`, `spawn_agent`, `send_message`, `ask_user`,
+`request_decision`, `decide`, `generate_image`, schedule or monitor tools, no computer or browser tools, and no
+`write`, `edit`, `cp`, `mv`, `present_file`, `file_import` or `file_link` (reading files is fine). A tool that needs
+approval is declined. A check runs for at most 10 seconds and makes at most 10 tool calls. Paid tools are charged as
+in any run of the agent; a check the account cannot pay for fails.
+
+Checks are not runs: they do not count toward your runs per minute, do not keep an idle agent alive, send no
+`run.completed` webhook and are not listed with the agent's requests. Read them from the monitor's check log.
 
 ## The fire
 

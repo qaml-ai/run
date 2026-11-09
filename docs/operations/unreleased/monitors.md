@@ -11,9 +11,10 @@ The `monitor` builtin gives an agent `monitor_start`, `monitor_stop` and `monito
 SDKs and `camelrun monitors` mirror it. Both backends.
 
 Guardrails: 20 monitors an agent, expiry (a day by default, 30 days at most), a check gets no tool that starts model
-work, asks a person or uses a computer, and 10 seconds; failing checks back off and stop the monitor after 10 in a
+work, asks a person, uses a computer or writes files, and 10 seconds and 10 tool calls; failing checks back off and stop the monitor after 10 in a
 row with one message; more than 12 fires in an hour pause it with one message; an occurrence is skipped while the last
-check still runs. Approvals asked by a check or by the turn a fire starts are declined.
+check still runs. Approvals asked by a check or by the turn a fire starts are declined. Checks are not runs: no
+run-rate use, no idle-lifetime refresh, no `run.completed` webhook, not in request listings.
 
 Migration `134_schedule_monitors.sql` adds one nullable column (`schedules.monitor`); nodes on the previous release
 are unaffected during a rolling deploy. See `docs/guides/monitors.md` and `docs/design/monitors.md`.

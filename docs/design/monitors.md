@@ -36,11 +36,22 @@ return { fire: done, value: { status: done ? page.text.slice(0, 200) : "running"
 ```
 
 **What a check can use.** It is a normal code-mode script with the agent's code tools, except those that start model
-work, wait on a person or use a computer: no `delegate`, `spawn_agent`, `send_message`, `wait_agent`, `ask_user`,
-`request_decision`, `decide`, `generate_image`, schedule or monitor tools, and no computer or browser tools. A call to
+work, wait on a person, use a computer, or write or import files (reads are fine): no `delegate`, `spawn_agent`,
+`send_message`, `wait_agent`, `ask_user`, `request_decision`, `decide`, `generate_image`, schedule or monitor tools, no
+computer or browser tools, no `write`, `edit`, `cp`, `mv`, `present_file`, `file_import` or `file_link`. A call to
 an approval-gated tool is declined (as under `humanInput.unattended: "decline"`), in the check and in the turn a fire
-starts: nobody is there. Limits: 10 s of wall time and (on Node) 10 tool calls a check, on top of code mode's own CPU
-and memory limits. Network access, secrets and the outbound guard are exactly the agent's tools' own.
+starts: nobody is there. Limits: 10 s of wall time and 10 tool calls a check (counted by the check's wrapper on both
+backends, and by the host too on Node), on top of code mode's own CPU and memory limits. Network access, secrets and
+the outbound guard are exactly the agent's tools' own, and so are their credit and spend checks: a paid call
+(`web_search`, `x_search`, a rendered `web_fetch`) is admitted and charged as in any code run of the agent, and a
+check the account cannot pay for fails. A check refused outright (out of credit, a spend limit) or ended any way
+but completed is a failed check: it backs off and counts toward the stop at 10.
+
+**Checks are not runs.** A check's request takes none of the tenant's runs per minute, does not refresh an idle
+agent's lifetime, emits no `run.completed` webhook and is not listed with the agent's requests; the monitor's check
+log has it. A monitor has at most one open check request: one still in flight when the next would be sent is sent
+again under its own id (a no-op while it waits, and the way a lost settling is recovered), so monitors cannot fill an
+agent's request queue behind a long turn. Only a request of the monitor's own agent settles it.
 
 **A fire** queues one ordinary prompt to the agent (request id `monitor-<schedule>-<n>`), so the agent's
 `queue: {mode: "batch"}` merges a burst into one turn, and its spend and run limits and billing apply as to any
@@ -92,6 +103,8 @@ The script runs in v8-exec in the agent's host, as every `execute` does.
 **Workers.** The monitor is one of the agent's `schedule:<id>` entries in its Durable Object. The object's alarm does
 steps 1–2 (`monitorDue`), the script runs in the agent's `CodemodeSandbox` object exactly as any code-mode run, and
 step 3 commits in the same storage transaction that publishes the request's response (`stageMonitorSettle`).
+Check request records do not accumulate in the object (every wake lists its requests): a settled check's record is
+deleted at the monitor's next occurrence, and a removed monitor's a minute later, so a monitor holds two at most.
 
 **Wake-loop safety (Workers).** A past production OOM came from wake spirals, so: `everySeconds` is validated
 server-side (60 at least) on every path that creates a monitor; the alarm is armed for the monitor's due time and the
@@ -128,7 +141,7 @@ Checks are not billed to tenants in this version. A fire's turn is billed and li
 | --- | --- |
 | Monitors per agent | 20 (they also count toward the agent's 100 schedules) |
 | `everySeconds`, `nextSeconds` | 60 to 86,400; default 300 |
-| A check | 10 s wall, 10 tool calls (Node), code mode's CPU and memory limits |
+| A check | 10 s wall, 10 tool calls, code mode's CPU and memory limits |
 | `value`, `state` | 4 KB of JSON each |
 | Expiry | default 1 day, at most 30 days |
 | Errors | each failed check delays the next (interval × 2 per failure in a row, at most 1 hour); 10 in a row stop the monitor with one message saying why |
@@ -157,7 +170,12 @@ field). For SDK users everything is additive: new methods and one new optional b
    change. Also, Pi tool names cannot contain a dot: it would be `tools.monitor_wait`.
 2. **Measure the Workers cost** on the pilot (active seconds per check, rows written), and decide whether checks are
    billed.
-3. **Check requests are requests**: each appears in the agent's request records and `run.completed` webhooks like any
-   `execute`. If that is noise for applications, hide `monitor-check-*` there.
-4. **Tool-call cap on Workers** is only the 10 s deadline; Node also counts calls.
-5. **Thresholds** (12 fires an hour, 10 errors, 20 monitors) are first guesses.
+3. **Workers: Pi's own journal of each check** (the `execute` request's conversation and task in the object's
+   SQLite) is still written per check and not pruned here; only the runtime's request records are. Worth measuring
+   with the cost.
+4. **The tool-call cap on Workers** is counted by the check's wrapper script, which a script that reaches the global
+   `tools` could step around; the 10 s deadline bounds it regardless. Node's host counts calls too.
+5. **Not tested end to end:** a paid tool call from a check with the account out of credit (the path is the agent's
+   ordinary one, read not exercised), and 16 monitors queued behind a long turn (covered by unit tests of the
+   one-open-check rule).
+6. **Thresholds** (12 fires an hour, 10 errors, 20 monitors) are first guesses.
