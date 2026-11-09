@@ -1,4 +1,5 @@
 import { inboxAnswers, inboxReceipt, inboxAgentFailure } from "../shared/inbox-answers.ts";
+import { monitorView } from "../shared/monitors.ts";
 import { vaultRoutes } from "./vault-api.ts";
 import type { Vault } from "./core/vault.ts";
 import type { Dreaming } from "../shared/dreaming.ts";
@@ -176,7 +177,7 @@ const OAUTH_ROUTES = [
   /^GET \/v1\/(?:me|models|providers|inputs|usage|billing|billing\/ledger)$/,
   /^(?:GET|POST) \/v1\/agents$/,
   /^(?:GET|DELETE) \/v1\/agents\/[^/]+$/,
-  /^(?:GET|POST|PUT|PATCH|DELETE) \/v1\/agents\/[^/]+\/(?:abort|configuration|context\/reset|events|fork|history|inputs|inputs\/[^/]+|mounts|prompt|requests\/[^/]+|schedules|schedules\/[^/]+|schedules\/[^/]+\/run|schedule-deliveries|state|uploads\/[^/]+\/[^/]+)$/,
+  /^(?:GET|POST|PUT|PATCH|DELETE) \/v1\/agents\/[^/]+\/(?:abort|configuration|context\/reset|events|fork|history|inputs|inputs\/[^/]+|mounts|prompt|requests\/[^/]+|schedules|schedules\/[^/]+|schedules\/[^/]+\/run|schedule-deliveries|monitors|monitors\/[^/]+|monitors\/[^/]+\/checks|state|uploads\/[^/]+\/[^/]+)$/,
   /^(?:GET|POST|PATCH|DELETE) \/v1\/definitions(?:\/[^/]+(?:\/agents)?)?$/,
   /^POST \/v1\/(?:transcriptions|images|speech)$/,
   /^(?:POST \/v1\/runs|(?:GET|DELETE) \/v1\/runs\/[^/]+|GET \/v1\/runs\/[^/]+\/(?:events|messages)|POST \/v1\/runs\/[^/]+\/abort)$/,
@@ -924,6 +925,25 @@ export function api(context: ApiContext) {
     if (!await scheduler().remove(c.req.param("id")!, c.req.param("scheduleId")!)) throw new HttpError(404, "Unknown schedule");
     return json(c, 200, { deleted: true });
   });
+  // Monitors (shared/monitors.ts): repeating code schedules whose script decides whether the agent is woken.
+  const monitorPath = agentId.extend({ monitorId: z.string().openapi({ description: "The monitor's id or name" }) });
+  const monitorOf = async (c: { req: { param(name: string): string | undefined } }) => {
+    const found = await scheduler().monitor(c.req.param("id")!, c.req.param("monitorId")!);
+    if (!found) throw new HttpError(404, "Unknown monitor");
+    return found;
+  };
+  route(createRoute({ method: "get", path: "/v1/agents/{id}/monitors", request: { params: agentId }, responses: { 200: reply("The agent's monitors", z.array(schema.Monitor)) } }),
+    async c => json(c, 200, (await scheduler().monitors(c.req.param("id")!)).map(monitorView)));
+  route(createRoute({ method: "post", path: "/v1/agents/{id}/monitors", request: { params: agentId, body: content(schema.MonitorInput) }, responses: { 201: reply("The monitor", schema.Monitor) } }),
+    async c => json(c, 201, monitorView(await scheduler().startMonitor(c.req.param("id")!, c.var.principal.tenant, await readJson(c.req.raw.body, 64 * 1024, {})))));
+  route(createRoute({ method: "get", path: "/v1/agents/{id}/monitors/{monitorId}", request: { params: monitorPath }, responses: { 200: reply("The monitor", schema.Monitor) } }),
+    async c => json(c, 200, monitorView(await monitorOf(c))));
+  route(createRoute({ method: "delete", path: "/v1/agents/{id}/monitors/{monitorId}", request: { params: monitorPath }, responses: { 200: reply("The monitor is stopped", z.object({ stopped: z.boolean() })) } }), async c => {
+    if (!await scheduler().stopMonitor(c.req.param("id")!, c.req.param("monitorId")!)) throw new HttpError(404, "Unknown monitor");
+    return json(c, 200, { stopped: true });
+  });
+  route(createRoute({ method: "get", path: "/v1/agents/{id}/monitors/{monitorId}/checks", request: { params: monitorPath }, responses: { 200: reply("The monitor's latest 20 checks, oldest first", z.array(schema.MonitorCheck)) } }),
+    async c => json(c, 200, (await monitorOf(c)).monitor!.log));
 
   route(createRoute({ method: "get", path: "/v1/tokens", responses: { 200: reply("The tenant's API tokens", z.array(schema.Token)) } }),
     async c => json(c, 200, await accounts.listTokens(c.var.principal.tenant)));

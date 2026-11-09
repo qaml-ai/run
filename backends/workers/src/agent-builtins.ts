@@ -1,3 +1,4 @@
+import { agentMonitorTools, type MonitorToolsHost } from './agent-monitors.ts';
 import type { Networking } from "../../../src/core/vault.ts";
 import { defineTool, type ToolRegistration, type ToolExecutionApi } from '@earendil-works/pi-durable';
 import { compile } from '@earendil-works/pi-schema';
@@ -19,7 +20,7 @@ import type { WebhookEnv } from './webhooks.ts';
 
 export type BuiltinScope = { networking?: Networking; tenant: string; agent: string; requestId?: string; spendLimit?: number; callId?: string; startedAt?: number; builtins?: string[]; webSearch?: { providers: string[] }; keyScope?: string; identity?: { subject?: string; context?: Record<string, unknown> }; actor?: string; bucket?: string; files?: WebFiles };
 export type BuiltinEnv = ProviderKeyEnv & KeyEnv & WebhookEnv & { TEST_MODEL?: string; AGENT_OUTBOUND_ALLOW_HTTP?: string; AGENT_OUTBOUND_ALLOW_CIDRS?: string; AGENT_OUTBOUND_BLOCK_CIDRS?: string; AGENT_EXA_SEARCH_URL?: string; AGENT_BRAVE_SEARCH_URL?: string; AGENT_PARALLEL_SEARCH_URL?: string; AGENT_WEB_SEARCH_PROVIDERS?: string; AGENT_XAI_RESPONSES_URL?: string; AGENT_X_SEARCH_URL?: string; AGENT_FIRECRAWL_SCRAPE_URL?: string };
-export type BuiltinHost = { outbound?: Outbound; providerOutbound?: Outbound; key?: (scope: BuiltinScope, provider: string) => Promise<{ key: string; platform: boolean } | undefined>; admit?: (scope: BuiltinScope, platform: boolean) => Promise<void>; record?: (scope: BuiltinScope, usage: UsageRecord) => Promise<void>; schedules?: ScheduleToolsHost };
+export type BuiltinHost = { outbound?: Outbound; providerOutbound?: Outbound; key?: (scope: BuiltinScope, provider: string) => Promise<{ key: string; platform: boolean } | undefined>; admit?: (scope: BuiltinScope, platform: boolean) => Promise<void>; record?: (scope: BuiltinScope, usage: UsageRecord) => Promise<void>; schedules?: ScheduleToolsHost; monitors?: MonitorToolsHost };
 
 /** Register only enabled web capabilities; source policy owns validation, routing and budgets. */
 export async function agentBuiltins(env: BuiltinEnv, context: (api?: ToolExecutionApi) => Promise<BuiltinScope>, host: BuiltinHost = {}): Promise<ToolRegistration[]> {
@@ -32,7 +33,7 @@ export async function agentBuiltins(env: BuiltinEnv, context: (api?: ToolExecuti
   const providers = searchProvidersFromEnvironment(settings as never);
   const pricingEnv = Object.fromEntries(Object.entries(env).filter(([, value]) => typeof value === 'string')) as NodeJS.ProcessEnv;
   const pricing = pricingFromEnvironment(pricingEnv);
-  return [...agentScheduleTools(initial.builtins, host.schedules), ...builtinDefinitions(initial.builtins).map(definition => {
+  return [...agentScheduleTools(initial.builtins, host.schedules), ...agentMonitorTools(initial.builtins, host.monitors), ...builtinDefinitions(initial.builtins).map(definition => {
     const check = compile(definition.parameters as never);
     return defineTool({ name: definition.name, description: definition.description, parameters: definition.parameters as never, structuredOutputSchema: {}, replay: 'safe', execute: async (args: Record<string, unknown>, api, call) => {
       if (!(check.check as (value: unknown) => boolean)(args)) throw new HttpError(400, `Invalid ${definition.name} arguments`);

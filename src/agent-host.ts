@@ -15,6 +15,7 @@ import { scriptValue } from "./mcp-results.ts";
 import { callableFromCode, declaredToModel, errorText, normalizeTool, STOPPED_NOTICE, type ToolDefinition, CONTEXT_RANGE_MAX_BYTES, CONTEXT_TOO_LARGE, contextRangeMessage, IDENTITY_KEY, legacyFormatRefused, PERSISTENCE_FAILED, SCOPE_KEY, scratchMount, type AgentConfig, type CallContext, type Credentials, type RunStop } from "./protocol.ts";
 import { APPLICATION, applicationInstructions, CODEMODE, ENVIRONMENT, environmentSummary, INSTRUCTIONS, LANGUAGE, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL, RUNTIME, runtimeRules } from "./system-prompt.ts";
 import { languageInstructions } from "./language.ts";
+import { allowedInCheck, checkRequest, MONITOR_LIMITS } from "../shared/monitors.ts";
 import { AGENT_UPDATES, renderMessages, stamp, type MessageSource } from "./sender.ts";
 import { closeInterruptedTurn, importedHistory, interruptedTurnRepairs, step, validateInitialMessages, validateUserMessages } from "./history.ts";
 import { contextTokens, explicitKeyStream, modelKeyFailure, type ModelGate } from "./compaction.ts";
@@ -528,7 +529,10 @@ export function createAgentHost(hostIO: HostIO) {
    * `maxOutputCharacters` in all.
    */
   async function execute(params: unknown, signal: AbortSignal) {
+    // `monitor`: a monitor's check (shared/monitors.ts), which gets no tool that starts model work, waits on a person or
+    // uses a computer, and only a few calls.
     const { requestId, ...input } = params as Record<string, unknown>;
+    const monitor = !!checkRequest(requestId);
     const { code, timeoutMs, maxOutputCharacters = SANDBOX_LIMITS.outputCharacters } = codeRequest(input);
     const longest = Math.min(config.codeLimits?.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs, SANDBOX_LIMITS.maxTimeoutMs);
     if (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || timeoutMs < 1)) throw new Error(`timeoutMs must be 1..${longest}`);
@@ -536,9 +540,10 @@ export function createAgentHost(hostIO: HostIO) {
     // An SDK script has no model tool call. Give its effects a stable request-scoped identity,
     // including parallel delegates, so retries find the same child rather than creating another.
     let callIndex = 0;
-    const tools = config.tools.filter(callableFromCode).map((tool): CodemodeTool => ({
+    const tools = config.tools.filter(callableFromCode).filter(tool => !monitor || allowedInCheck(tool.name)).map((tool): CodemodeTool => ({
       name: tool.name, description: tool.description, inputSchema: tool.parameters,
       execute: async args => {
+        if (monitor && callIndex >= MONITOR_LIMITS.toolCalls) throw new Error(`A monitor's check makes at most ${MONITOR_LIMITS.toolCalls} tool calls`);
         const identity = requestId ? { toolCallId: `execute:${requestId}`, innerCallId: `c${++callIndex}` } : undefined;
         const value = await io.tool(tool.name, args as Record<string, unknown>, identity, signal);
         return tool.resultFormat === "content" ? scriptValue(value) : value;

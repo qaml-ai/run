@@ -395,7 +395,7 @@ export const ModelHeaders = z.record(z.string(), z.string()).openapi("ModelHeade
 });
 
 // Documentation only: sessionConfig validates provisioning, with the messages the SDKs rely on.
-const Builtin = z.enum(["file_link", "file_import", "web_fetch", "web_search", "x_search", "schedule", "ask_user", "request_decision", "delegate", "generate_image", "agents", "decide"]).openapi("Builtin", { description: "file_link: short-lived GET or PUT links to workspace files; file_import: public URLs streamed to the workspace; agents: sub-agents in the background (spawn_agent, wait_agent, list_agents), with the delegate settings" });
+const Builtin = z.enum(["file_link", "file_import", "web_fetch", "web_search", "x_search", "schedule", "monitor", "ask_user", "request_decision", "delegate", "generate_image", "agents", "decide"]).openapi("Builtin", { description: "file_link: short-lived GET or PUT links to workspace files; file_import: public URLs streamed to the workspace; agents: sub-agents in the background (spawn_agent, wait_agent, list_agents), with the delegate settings; monitor: background checks that wake the agent when their script says so (monitor_start, monitor_stop, monitor_list)" });
 const AgentTarget = z.union([
   z.string().openapi({ description: "A definition's key or id; the model sees it by that name" }),
   z.strictObject({
@@ -571,7 +571,7 @@ export const AgentInput = z.object({
   remount: z.boolean().optional().openapi({ description: "An upsert of an existing agent: true sets the mounts given, between its turns, where other mounts are a 409" }),
   subject: z.string().optional().openapi({ description: "Who the agent acts for (a user id in your app): the `sub` of the identity tokens its tool servers with auth \"runtime\" get. Set only here" }),
   context: z.record(z.string(), z.unknown()).optional().openapi({ description: "Claims your tool servers need (org, workspace, thread…), carried as `ctx` in its identity tokens; at most 4 KB. Set only here" }),
-  builtins: z.array(Builtin).max(12).optional().openapi({ description: "Tools the runtime answers itself (file_link, file_import, web_fetch, web_search, x_search, schedule, ask_user, delegate, generate_image, agents, decide), for an agent without a definition; one made from a definition has its definition's. An upsert without builtins leaves the agent none" }),
+  builtins: z.array(Builtin).max(13).optional().openapi({ description: "Tools the runtime answers itself (file_link, file_import, web_fetch, web_search, x_search, schedule, ask_user, delegate, generate_image, agents, decide), for an agent without a definition; one made from a definition has its definition's. An upsert without builtins leaves the agent none" }),
   decide: z.boolean().optional().openapi({ description: "The decide tool (typed questions answered with probabilities by a decision model; see Decisions) is every agent's by default, except one with no code mode and no other tools. false: none; true: even then. Not for an agent made from a definition: its definition's decide applies" }),
   delegate: DelegateSettings.optional().openapi({ description: "With the delegate or agents builtin: who the agent may hand tasks to. Not with a definition, whose own it takes" }),
   mcpServers: z.array(InlineMcpServerInput).max(64).optional().openapi({ description: "Remote MCP servers whose tools the runtime calls for the agent, for an agent without a definition; one made from a definition has its definition's. No credentials: auth \"runtime\" or none. An upsert without mcpServers leaves the agent none" }),
@@ -911,6 +911,23 @@ export const Upload = z.object({
 const Calendar = z.object({ time: z.string().openapi({ description: "Local HH:MM" }), timeZone: z.string().openapi({ description: "IANA time zone, e.g. America/Chicago" }), daysOfWeek: z.array(z.number().int().min(0).max(6)).optional().openapi({ description: "Sunday 0 to Saturday 6; default every day" }) }).openapi("CalendarSchedule");
 const ScheduleEmail = z.object({ to: z.email(), subject: z.string().min(1).max(200), format: z.enum(["text", "markdown", "html"]).optional().describe("Reply format; defaults to markdown. HTML is sent as supplied, with a generated plain-text alternative.") }).openapi("ScheduleEmail");
 // Documentation only: scheduleInput and Scheduler.create validate schedules.
+// Documentation only: monitorInput (shared/monitors.ts) validates monitors.
+export const MonitorInput = z.object({
+  name: z.string().openapi({ description: "1–64 lowercase letters, digits, _ or -. Starting a monitor under a name the agent already uses replaces that one" }),
+  everySeconds: z.number().int().min(60).max(86400).optional().openapi({ description: "How often the check runs. Default 300" }),
+  code: z.string().max(16000).openapi({ description: "The check: a code-mode script (an async function body) that reads `state` and returns { fire: boolean, value?, state?, nextSeconds? }. It runs with the agent's code tools except those that start model work, ask a person or use a computer, for at most 10 seconds and 10 tool calls" }),
+  mode: z.enum(["once", "repeat"]).optional().openapi({ description: "once (default): stop after the first fire. repeat: go on, and fire again only when value differs from the last fire's" }),
+  expiresInSeconds: z.number().int().min(60).max(2592000).optional().openapi({ description: "Default 86400; the monitor then stops" }),
+  budget: z.object({ usd: z.number() }).optional().openapi({ description: "The spend limit of each turn a fire starts" }),
+}).openapi("MonitorInput");
+export const Monitor = z.object({
+  id: z.string(), name: z.string(), everySeconds: z.number(), mode: z.enum(["once", "repeat"]), code: z.string(),
+  status: z.enum(["active", "paused", "stopped"]), reason: z.string().optional().openapi({ description: "noise: paused after more than 12 fires in an hour" }),
+  createdAt: z.number(), expiresAt: z.number(), nextCheckAt: z.number(), checks: z.number(), fires: z.number(), consecutiveErrors: z.number(),
+  lastCheckAt: z.number().optional(), lastFiredAt: z.number().optional(), lastError: z.string().optional(),
+  value: z.unknown().optional().openapi({ description: "The value of the last fire" }), budget: z.object({ usd: z.number() }).optional(),
+}).openapi("Monitor");
+export const MonitorCheck = z.object({ at: z.number(), fired: z.boolean(), error: z.string().optional() }).openapi("MonitorCheck");
 export const ScheduleInput = z.object({
   mounts: z.array(MountInput).max(16).optional(),
   cron: z.object({expression:z.string(),timeZone:z.string()}).optional(),
@@ -1135,7 +1152,7 @@ const definitionFields = {
   runLimits: RunLimits,
   queue: QueueSettingInput.openapi({ description: "What its agents do with prompts that arrive while a turn runs (QueueSetting); an agent given its own keeps it when the definition is applied" }),
   mounts: z.array(MountInput).max(16).openapi({ description: "Volumes for each agent's file tools, beside its own workspace at /workspace unless they include {workspace: false}" }),
-  builtins: z.array(Builtin).max(12).openapi({ description: "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); x_search searches X posts through Grok with handle and date filters, using the tenant's xAI key or the platform's and charging its reported total cost; schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer; generate_image makes or edits an image (OpenAI's gpt-image-2.5-flare on the tenant's OpenAI key, else the platform's, billed per token) and saves it to the workspace; decide answers typed questions (noul, choice, score) about a state with a decision model (TypeSafe's Jev through OpenRouter), one state or a batch of up to 100, from code as tools.decide" }),
+  builtins: z.array(Builtin).max(13).openapi({ description: "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); x_search searches X posts through Grok with handle and date filters, using the tenant's xAI key or the platform's and charging its reported total cost; schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer; generate_image makes or edits an image (OpenAI's gpt-image-2.5-flare on the tenant's OpenAI key, else the platform's, billed per token) and saves it to the workspace; decide answers typed questions (noul, choice, score) about a state with a decision model (TypeSafe's Jev through OpenRouter), one state or a batch of up to 100, from code as tools.decide" }),
   decide: z.boolean().openapi({ description: "false: its agents get no decide tool, which every agent has by default (except one with no code mode and no other tools); true: they get it even then" }),
   webSearch: z.object({
     providers: z.array(z.enum(["exa", "brave", "parallel"])).min(1).max(3).openapi({ description: "The providers web_search tries, in order; each is skipped without a key, and the next is tried when one fails, times out or is rate limited", example: ["brave"] }),
@@ -1201,7 +1218,7 @@ export const ConfigureInput = z.object({
   queue: QueueSettingInput.nullable().optional().openapi({ description: "Replaces what it does with prompts that arrive while a turn runs (QueueSetting), from the next turn's start; null: one turn each. Set here on an agent from a definition, it stays when the definition is applied" }),
   modelHeaders: ModelHeaders.nullable().optional().openapi({ description: "Replaces the agent's model headers; null or {} removes them" }),
   humanInput: z.strictObject({ unattended: z.literal("decline").optional(), expiresInSeconds: z.number().int().min(60).max(2592000).optional(), approvers: z.array(z.string()).max(100).optional() }).optional(),
-  builtins: z.array(Builtin).max(12).optional().openapi({ description: "Replaces the agent's builtins; [] removes them. Not for an agent made from a definition, whose builtins are its definition's" }),
+  builtins: z.array(Builtin).max(13).optional().openapi({ description: "Replaces the agent's builtins; [] removes them. Not for an agent made from a definition, whose builtins are its definition's" }),
   decide: z.boolean().nullable().optional().openapi({ description: "false: no decide tool; true: the tool even with no code mode and no other tools; null: back to the default. Not for an agent made from a definition" }),
   delegate: DelegateSettings.nullable().optional().openapi({ description: "Replaces who the agent may delegate to (with the delegate builtin); null removes it" }),
   mcpServers: z.array(InlineMcpServerInput).max(64).nullable().optional().openapi({ description: "Replaces the agent's own MCP servers; null or [] removes them. No credentials: auth \"runtime\" or none. Not for an agent made from a definition, whose servers are its definition's" }),
