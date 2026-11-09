@@ -184,6 +184,7 @@ export class Directory {
     if (owner && owner.tenant!==this.tenantId) throw new ApiError(403,'Agent belongs to another account','FORBIDDEN');
     if (owner?.revoked) throw new ApiError(410,'Agent is deleted','AGENT_GONE');
     const previousEntry = await this.get(id), previousConfig = previousEntry?.config;
+    if (fields.metadata === undefined && previousConfig?.metadata !== undefined) config.metadata = previousConfig.metadata;
     if (fields.model === undefined && previousConfig?.model) config.model = previousConfig.model;
     if (fields.language === undefined && previousConfig?.language !== undefined) config.language = previousConfig.language;
     // An upsert that leaves its queue out keeps the one the agent has, as for its language.
@@ -205,6 +206,7 @@ export class Directory {
       if (fields.model === undefined) delete target.model;
       if (fields.language === undefined) delete target.language;
       if (fields.queue === undefined) delete target.queue;
+      if (fields.metadata === undefined) delete target.metadata;
       const response = await this.env.AGENTS.getByName(id).fetch(new Request('https://agent/upsert', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ id: crypto.randomUUID(), method: 'configure', params: {
@@ -255,6 +257,7 @@ export class Directory {
       if (requested===undefined && old?.config.mounts) config.mounts=old.config.mounts;
       if(old?.config.mounts&&requested!==undefined&&mountIdentity(old.config.mounts)!==mountIdentity(config.mounts)&&(input as {remount?:boolean}).remount!==true)
         throw new ApiError(409,`An existing agent's mounts cannot change; delete it (DELETE /v1/agents/${id}) or use another idempotency key, or send remount: true to change its mounts`);
+      if (fields.metadata === undefined && old?.config.metadata !== undefined) config.metadata = old.config.metadata;
       const configHash=await digest(canonical(config));
       const sameModel = JSON.stringify(old?.resolvedModel) === JSON.stringify(resolvedModel);
       if (admitCreate)

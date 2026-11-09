@@ -39,6 +39,8 @@ export interface AgentsOptions {
 
 /** An agent's configuration: what `upsert` makes it, or changes it to. */
 export interface AgentConfig {
+  /** Tenant-owned application JSON (16 KB), never sent to the model. */
+  metadata?: Record<string, unknown>;
   /** Account workspace for spend attribution. */
   workspaceId?: string | null;
   /** A model from the catalog (GET /v1/models) as "provider/model-id", e.g. "anthropic/claude-sonnet-5-5". */

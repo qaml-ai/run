@@ -26,9 +26,9 @@ async function body(request: Request): Promise<Record<string, unknown>> {
 
 /** `/v1/github-apps` and below, for an authenticated tenant; undefined for other paths. */
 export async function githubAppRoutes(request: Request, env: Env, auth: { tenantId: string; kind: string }): Promise<Response | undefined> {
-  const match = /^\/v1\/github-apps(?:\/([^/]+))?$/.exec(new URL(request.url).pathname);
+  const match = /^\/v1\/github-apps(?:\/([^/]+))?(?:\/(repositories)(?:\/([^/]+)\/([^/]+))?)?$/.exec(new URL(request.url).pathname);
   if (!match) return undefined;
-  const [, ref] = match, method = request.method;
+  const [, ref, repositories, owner, name] = match, method = request.method;
   const route = !ref ? method === "GET" || method === "POST" : ref === "manifest" ? method === "POST" : ["GET", "PATCH", "DELETE"].includes(method);
   if (!route) return undefined;
   // An App says where its tokens may go (hosts): an OAuth client acting for the tenant neither reads nor changes one.
@@ -36,6 +36,12 @@ export async function githubAppRoutes(request: Request, env: Env, auth: { tenant
   const tenant = auth.tenantId;
   try {
     const apps = await workerGitHubApps(env as unknown as GitHubAppsEnv);
+    if (repositories) {
+      if (method !== "GET") return undefined;
+      const url = new URL(request.url);
+      return reply(owner ? await apps.repository(tenant, decodeURIComponent(ref!), decodeURIComponent(owner), decodeURIComponent(name!))
+        : await apps.repositories(tenant, decodeURIComponent(ref!), url.searchParams.get("cursor") ?? undefined, url.searchParams.has("perPage") ? Number(url.searchParams.get("perPage")) : 100));
+    }
     if (!ref) return method === "GET" ? reply(await apps.list(tenant)) : reply(await apps.create(tenant, await body(request)), 201);
     if (ref === "manifest") return reply(await apps.fromManifest(tenant, await body(request)), 201);
     const app = decodeURIComponent(ref);

@@ -21,6 +21,10 @@ export function githubAppRoutes(route: Route, apps: () => GitHubApps | undefined
     if (!value) throw new HttpError(404, "GitHub Apps are not enabled on this runtime");
     return value;
   };
+  route(createRoute({ method: "get", path: "/v1/github-apps/{app}/repositories", request: { params: appRef, query: z.object({ cursor: z.string().optional(), perPage: z.string().optional() }) }, responses: { 200: reply("A page of installation repositories; follow nextCursor until null, including empty pages", schema.GitHubRepositories) } }),
+    async c => json(c, 200, await service().repositories(c.var.principal.tenant, c.req.param("app")!, c.req.query("cursor"), c.req.query("perPage") === undefined ? 100 : Number(c.req.query("perPage")))));
+  route(createRoute({ method: "get", path: "/v1/github-apps/{app}/repositories/{owner}/{name}", request: { params: appRef.extend({ owner: z.string(), name: z.string() }) }, responses: { 200: reply("Repository the installation can access; 404 if unavailable", schema.GitHubRepository) } }),
+    async c => json(c, 200, await service().repository(c.var.principal.tenant, c.req.param("app")!, c.req.param("owner")!, c.req.param("name")!)));
   route(createRoute({ method: "get", path: "/v1/github-apps", responses: { 200: reply("The tenant's GitHub Apps, their credentials masked", z.array(schema.GitHubApp)) } }),
     async c => json(c, 200, await service().list(c.var.principal.tenant)));
   route(createRoute({ method: "post", path: "/v1/github-apps", request: { body: body(schema.GitHubAppInput) }, responses: { 201: reply("The App, its key checked with GitHub (GET /app) and stored encrypted", schema.GitHubApp) } }),

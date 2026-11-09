@@ -30,6 +30,7 @@ import { limitRefused } from "./limit-hits.ts";
 import { AGENT_PAGE_MAX } from "./client-sessions/configuration.ts";
 import type { Channels } from "./channels.ts";
 import { channelRoutes } from "./channels-api.ts";
+import { metadataFilters } from "../shared/agent-metadata.ts";
 import type { GitHubApps } from "./core/github-apps.ts";
 import { githubAppRoutes } from "./github-apps-api.ts";
 import { validTtl, type Definitions } from "./definitions.ts";
@@ -581,6 +582,7 @@ export function api(context: ApiContext) {
     request: { query: z.object({
       limit: z.string().optional().openapi({ description: `A page of at most this many (1–${AGENT_PAGE_MAX}), by id; the X-Next-Cursor header then holds the next page's cursor while there are more. Without limit or cursor, every agent that matches, as always` }),
       cursor: z.string().optional().openapi({ description: "The previous page's X-Next-Cursor" }),
+      "metadata.type": z.string().optional().openapi({ description: "Exact match on a top-level metadata string. Any metadata.<key> is supported; multiple filters are ANDed." }),
       workspaceId: z.string().optional().openapi({ description: "Only agents in this workspace, or unassigned for agents in none" }),
       status: z.enum(["running", "failed", "expiring"]).optional().openapi({ description: "running: loaded on a node now; failed: a run failed in the last 24 hours (lastError); expiring: has an expiresAt" }),
       subAgents: z.enum(["only", "exclude"]).optional().openapi({ description: "Only sub-agents (those with a parentAgentId), or none of them" }),
@@ -597,7 +599,9 @@ export function api(context: ApiContext) {
       return value as T | undefined;
     };
     if (query.q !== undefined && query.q.length > 200) throw new HttpError(400, "q must be at most 200 characters");
-    const page = await clients.page(c.var.principal.tenant, {
+    let metadata: Record<string, string>;
+    try { metadata = metadataFilters(new URL(c.req.url).searchParams); } catch (error) { throw new HttpError(400, (error as Error).message); }
+    const page = await clients.page(c.var.principal.tenant, { metadata,
       // A cursor without a limit pages at the largest size.
       limit: limit ?? (query.cursor !== undefined ? AGENT_PAGE_MAX : undefined), cursor: query.cursor, workspaceId: query.workspaceId || undefined, q: query.q,
       status: oneOf("status", ["running", "failed", "expiring"] as const), subAgents: oneOf("subAgents", ["only", "exclude"] as const),

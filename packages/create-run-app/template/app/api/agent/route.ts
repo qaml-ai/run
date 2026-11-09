@@ -19,6 +19,8 @@ export const POST = createAgentHandler({
     return userId && /^[0-9a-f-]{36}$/.test(userId) ? { userId } : null;
   },
   agent: {
+    // Tenant-owned JSON, returned in agent lists; never sent to the model.
+    // metadata: { type: "support-chat" },
     // No model: the agent gets your account's default. To choose one, set AGENT_MODEL to a model your account can
     // use (`npx -y @camelai/camelrun models --available`).
     ...(process.env.AGENT_MODEL ? { model: process.env.AGENT_MODEL } : {}),

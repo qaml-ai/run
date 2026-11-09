@@ -9,7 +9,7 @@ const error = (status: number, message: string, code: string) => response({ type
 
 function metadata(entry: DirectoryEntry) {
   return {
-    id: entry.id, key: entry.key, name: entry.config.name ?? "", type: entry.config.type ?? "agent",
+    metadata: entry.config.metadata ?? {}, id: entry.id, key: entry.key, name: entry.config.name ?? "", type: entry.config.type ?? "agent",
     model: entry.config.model, configHash: entry.configHash, expiresAt: entry.expiresAt,
     connected: false, running: false, resume: null,
     workspaceId: null, lastActiveAt: null, lastError: null,

@@ -66,6 +66,7 @@ wait out `Retry-After` and retry. `GET /v1/billing` has the account's run limit
 | An agent's key (`Idempotency-Key` on `POST /v1/agents`, the SDKs' `upsert(key)`) | 1–80 characters of `A-Z a-z 0-9 _ -` |
 | Lifetime (`ttlSeconds`) | 60 s to 31,622,400 s (366 days), or `null`: until deleted. Default: until deleted for an agent made with a key; 1 day for one made without |
 | Create body (`POST /v1/agents`, with `initialMessages`) | 18 MiB |
+| Application `metadata` | JSON object, at most 16,384 UTF-8 bytes; top-level string fields can be filtered in the agent list |
 | Imported history (`initialMessages`) | 16 MB of JSON (`HISTORY_TOO_LARGE`, 413) |
 | `systemPrompt`, `systemPromptAppend` | 32,000 characters each |
 | `modelHeaders` | at most 20 headers, 8 KB in all; never auth headers |

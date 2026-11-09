@@ -180,3 +180,29 @@ webhooks and mints the agents' tokens. See [Channels](channels.md).
 
 Account export lists your Apps, masked (`github-apps.json`); deleting the
 account deletes them.
+
+## List repositories without copying the App key
+
+An account API token can read the repositories of its registered App:
+
+- `GET /v1/github-apps/{app}/repositories?perPage=100&cursor=...`
+  returns `{ items, nextCursor }`. Follow `nextCursor` until it is null, including
+  when a page has no items. Pages cross installations; suspended installations
+  are skipped. `perPage` is 1–100 (default 100).
+- `GET /v1/github-apps/{app}/repositories/{owner}/{name}` checks that the App's
+  installation can access this repository. A public repository without an
+  installation is not enough. Unavailable repositories return 404.
+
+Each item has `id`, `name`, `fullName`, `private`, `htmlUrl`, and
+`defaultBranch`. These are App permissions, not the signed-in user's GitHub
+permissions. Enforce your application's membership policy before exposing them.
+
+The runtime reads the tenant's encrypted App credentials and mints installation
+tokens with only metadata read permission. It never returns the private key or
+installation token. Registration and egress grants continue to use the same
+App; these read APIs do not change grants or repository permissions.
+
+TypeScript: `runtime.githubRepositories("code", { cursor, perPage: 100 })`
+and `runtime.githubRepository("code", "acme", "app")`.
+Python: `runtime.github_repositories("code", cursor=cursor)` and
+`runtime.github_repository("code", "acme", "app")`.

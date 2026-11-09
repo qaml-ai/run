@@ -120,6 +120,7 @@ function summary(entry: DirectoryEntry) {
     ...(entry.parentAgentId ? { parentAgentId: entry.parentAgentId, parentRunId: entry.parentRunId } : {}),
     id: entry.id,
     key: entry.key,
+    metadata: entry.config.metadata ?? {},
     name: entry.config.name ?? "",
     type: entry.config.type ?? "agent",
     model: entry.config.model,
@@ -559,7 +560,7 @@ const worker = {
         if (!auth) scopedConfiguration(params);
         rejectWorkflow(params);
         if (auth) {
-          const allowed = new Set(["model", "systemPrompt", "systemPromptAppend", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "queue", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "builtins", "decide", "delegate", "mcpServers"]);
+          const allowed = new Set(["metadata", "model", "systemPrompt", "systemPromptAppend", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "queue", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "builtins", "decide", "delegate", "mcpServers"]);
           const unknown = Object.keys(params).find(field => !allowed.has(field));
           if (unknown) throw new BadRequest(`Unsupported field: ${unknown}`);
         }
