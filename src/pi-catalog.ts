@@ -139,9 +139,12 @@ const OPENROUTER_HOSTS: Record<string, string[]> = {
  * - Relace (2026-11-02): it drops a call's `name` argument. Each of the six camel-builder conversations whose
  *   create_bot looped on "Give either name" overnight started on a Relace response (OpenRouter's generation records),
  *   and 103 of the 114 such failed calls were Relace's.
+ * - CoreWeave (Miguel, 2026-11-09): its responses end mid-stream with "Provider finish_reason: error". All 24 such model
+ *   errors of camel-builder in 24 h were CoreWeave's `:nitro` responses (20 in about 1,020 between 12:00 and 14:00 UTC),
+ *   none any other host's.
  */
 const OPENROUTER_IGNORED_HOSTS: Record<string, string[]> = {
-  "deepseek/deepseek-v4.1-flash-1017": ["inference-net", "wafer", "relace"],
+  "deepseek/deepseek-v4.1-flash-1017": ["inference-net", "wafer", "relace", "coreweave"],
 };
 
 /**

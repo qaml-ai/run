@@ -8,7 +8,7 @@ import { fakeModel, runtime, toolCall } from "./runtime-server.ts";
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
 const HOSTS = ["fireworks", "together", "parasail", "coreweave", "nebius"];
 /** 1017's hosts it is never served by: they drop tool-call arguments (2026-10-27). */
-const IGNORED = ["inference-net", "wafer", "relace"];
+const IGNORED = ["inference-net", "wafer", "relace", "coreweave"];
 const FLASH = getModel("openrouter", "deepseek/deepseek-v4.1-flash")!;
 const FLASH_1017 = getModel("openrouter", "deepseek/deepseek-v4.1-flash-1017")!;
 /** Never an order or sort: either turns off OpenRouter's load balancing. An only or an ignore, never both; nor a quantization or anything else. */
@@ -16,7 +16,7 @@ const onlyOnly = (bodies: any[]) => {
   for (const body of bodies) assert.ok(!body.provider || ['["only"]', '["ignore"]'].includes(JSON.stringify(Object.keys(body.provider))), JSON.stringify(body.provider));
 };
 
-test("DeepSeek V4.1 Flash on OpenRouter may be served only by its listed hosts; 1017 by any but InferenceNet and Wafer; others by any", () => {
+test("DeepSeek V4.1 Flash on OpenRouter may be served only by its listed hosts; 1017 by any but its ignored hosts; others by any", () => {
   assert.deepEqual(openRouterHosts("deepseek/deepseek-v4.1-flash"), HOSTS);
   assert.deepEqual(openRouterHosts("deepseek/deepseek-v4.1-flash:nitro"), HOSTS, "a routing variant with no entry of its own is its base model's");
   for (const id of ["deepseek/deepseek-v4.1-flash-1017", "deepseek/deepseek-v4.1-flash-1017:nitro", "deepseek/deepseek-v4-flash", "moonshotai/kimi-k3", "z-ai/glm-5.3-flash"]) assert.equal(openRouterHosts(id), undefined, id);
@@ -81,7 +81,7 @@ test("1017:vetted is 1017 served only by camel-bots' gated hosts, with no ignore
   assert.deepEqual(openRouterHosts(vetted.id), only);
   assert.equal(openRouterIgnoredHosts(vetted.id), undefined);
   assert.deepEqual(withOpenRouterHosts(vetted, { model: vetted.id, messages: [] }), { model: FLASH_1017.id, messages: [], provider: { only } });
-  assert.deepEqual(openRouterIgnoredHosts(`${FLASH_1017.id}:nitro`), ["inference-net", "wafer", "relace"], ":nitro is untouched");
+  assert.deepEqual(openRouterIgnoredHosts(`${FLASH_1017.id}:nitro`), ["inference-net", "wafer", "relace", "coreweave"], ":nitro is untouched");
 
   const host = await fakeModel(t, () => ({ role: "assistant", content: "Vetted." }));
   const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), LOCAL);
