@@ -13,11 +13,8 @@ export type ApplyResult = {
   agents: Record<string, string>;
   changes: { resource: string; action: 'create' | 'update' | 'unchanged' }[];
 };
-export async function applyResources(input: unknown, ops: {
-  error(message: string): Error;
-  save(kind: 'volumes' | 'definitions' | 'agents', key: string, input: Record<string, unknown>): Promise<{ id: string; action: 'create' | 'update' | 'unchanged' }>;
-}): Promise<ApplyResult> {
-  const fail = (message: string): never => { throw ops.error(message); };
+export function validateApply(input: unknown, error: (message: string) => Error): ApplyManifest {
+  const fail = (message: string): never => { throw error(message); };
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('apply requires an object');
   const manifest = input as ApplyManifest;
   for (const field of Object.keys(manifest)) if (!['volumes', 'definitions', 'agents', 'dryRun'].includes(field)) fail(`Unknown apply field: ${field}`);
@@ -30,11 +27,18 @@ export async function applyResources(input: unknown, ops: {
       if (!/^[A-Za-z0-9_-]{1,80}$/.test(key)) fail(`Invalid resource key: ${key}`);
       if (!value || typeof value !== 'object' || Array.isArray(value)) fail(`${kind}.${key} must be an object`);
       if (kind === 'agents' && ['prompt', 'importMessages', 'initialMessages'].some(field => field in value)) fail('apply provisions agents without initial messages or prompts');
-      if (kind === 'definitions' && value.applyOnUpdate) fail('applyOnUpdate is not supported in an atomic apply');
+      if (kind === 'definitions' && (value.applyOnUpdate || value.apply)) fail('applyOnUpdate is not supported in an atomic apply');
       count++;
     }
   }
   if (count > 100) fail('apply accepts at most 100 resources');
+  return manifest;
+}
+export async function applyResources(manifest: ApplyManifest, ops: {
+  error(message: string): Error;
+  save(kind: 'volumes' | 'definitions' | 'agents', key: string, input: Record<string, unknown>): Promise<{ id: string; action: 'create' | 'update' | 'unchanged' }>;
+}): Promise<ApplyResult> {
+  const fail = (message: string): never => { throw ops.error(message); };
   const result: ApplyResult = { dryRun: manifest.dryRun ?? false, volumes: {}, definitions: {}, agents: {}, changes: [] };
   const resolve = (value: unknown): any => {
     if (Array.isArray(value)) return value.map(resolve);

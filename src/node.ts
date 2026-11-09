@@ -1,4 +1,4 @@
-import { applying } from "../shared/apply-scope.ts";
+import { applying, prepareApply } from "../shared/apply-scope.ts";
 import { SharedAgents } from "./shared-agents.ts";
 import { withOpenRouterDetails } from "./openrouter-model.ts";
 import { modelReference } from "./virtual-models.ts";
@@ -594,12 +594,12 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     // Its definition and the tenant's own providers are read at once.
     const [made, custom] = await Promise.all([
       params?.definition !== undefined ? steps.time("definition", definitions.provision(tenant, params)) : undefined,
-      steps.time("providers", modelProviders.resolvable(tenant, keyScope)),
+      steps.time("providers", prepareApply(`providers:${JSON.stringify([tenant, keyScope])}`, () => modelProviders.resolvable(tenant, keyScope))),
     ]);
     if (made) params = made.params;
-    const fallback = inherited ?? (params.model === undefined ? await steps.time("providers", defaultModelFor(tenant, keyScope)) : model);
+    const fallback = inherited ?? (params.model === undefined ? await steps.time("providers", prepareApply(`default-model:${JSON.stringify([tenant, keyScope])}`, () => defaultModelFor(tenant, keyScope))) : model);
     const config = { ...sessionConfig(params, fallback, systemPrompt, tenants.modelEndpoints(tenant), custom), ...(modelHeaders ? { modelHeaders } : {}) };
-    config.model = await withOpenRouterDetails(config.model);
+    config.model = await prepareApply(`model-details:${JSON.stringify(config.model)}`, () => withOpenRouterDetails(config.model));
     const ttl = params.ttlSeconds;
     validTtl(ttl);
     // An idle lifetime instead: the agent lives this long from its latest run.
@@ -616,7 +616,8 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       { keyScope, spendLimit, ...(params.model === undefined && !inherited ? { defaultModel: true } : {}), ...(bucket ? { bucket } : {}), builtins, delegate, mcpServers, ...(decide !== undefined ? { decide } : {}), ...(remount ? { remount } : {}), ...(idle && !run ? { idleTtlMs: idle * 1000 } : {}), ...(parent ? { parent } : {}), ...(run ? { run: { retentionMs: run.retentionMs, fingerprint: run.fingerprint } } : {}), ...(mcpTools !== undefined ? { toolsHash: createHash("sha256").update(JSON.stringify(mcpTools)).digest("hex") } : {}), ...(admit ? { admit } : {}) }, steps);
     outcome.agent = made_.id;
     outcome.upsert = !!reconfigure;
-    const warnings = await warningsFor(tenant, made ? made.sources : builtins && { builtins });
+    const warningSources = made ? made.sources : builtins && { builtins };
+    const warnings = await prepareApply(`agent-warnings:${JSON.stringify([tenant, warningSources])}`, () => warningsFor(tenant, warningSources));
     if (warnings.length) made_.warnings = warnings;
     if (!reconfigure || applying()) return made_;
     // The key's agent exists: bring it to this configuration between its turns. Every upsert queues its own request, so
