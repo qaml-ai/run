@@ -278,3 +278,5 @@ key in your shell's environment or an ignored file such as `.env.local`. A key
 or a connected app can create and delete every agent in the account. Give a
 coding agent a key of its own, or connect it with OAuth, so you can revoke it
 alone.
+
+See [incoming webhook triggers](../guides/triggers.md) for the trigger management API and commands.

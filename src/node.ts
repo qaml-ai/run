@@ -1,3 +1,5 @@
+import { transaction as triggerTransaction } from "./db.ts";
+import { Triggers } from "./triggers.ts";
 import { SharedAgents } from "./shared-agents.ts";
 import { withOpenRouterDetails } from "./openrouter-model.ts";
 import { modelReference } from "./virtual-models.ts";
@@ -1030,6 +1032,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     if (!allowed) return false;
     return !(await db.query("select 1 from billing_email_suppressions where email_hash=$1", [createHash("sha256").update(email).digest("hex")])).rowCount;
   };
+  let triggers: Triggers | undefined;
   const scheduler = new Scheduler({
     db, node, emailEnabled: !!scheduleMailConfig, canEmail: canScheduleEmail,
     deliver: async (schedule, requestId) => {
@@ -1037,7 +1040,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       const request = schedule.code !== undefined ? { method: "execute", params: { code: schedule.code, allowDisconnected: true } } : { method: "prompt", params: { text: schedule.calendar ? calendarPrompt(schedule.text!, schedule.calendar, schedule.dueAt) : schedule.text!, allowDisconnected: true } };
       await submitAnywhere(schedule.agent, schedule.tenant, { id: requestId, ...request });
     },
-    also: now => clients.expireInputs(now),
+    also: async now => { await clients.expireInputs(now); await triggers?.scan(); },
   });
   scheduler.start(config.schedulerIntervalMs);
   const scheduleMailer = scheduleMailConfig ? new ScheduleMailer({ db, mail: scheduleMailConfig, canEmail: canScheduleEmail, request: (agent, tenant, id, signal) => requestAnywhere(agent, tenant, id, 0, signal) }) : undefined;
@@ -1081,6 +1084,17 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     ...(config.channelRecheckMs !== undefined ? { recheckMs: config.channelRecheckMs } : {}),
   });
   channels.start(config.schedulerIntervalMs);
+  triggers = new Triggers({
+    db, transaction: work => triggerTransaction(db, work), keys: accounts,
+    async fresh(tenant, agent, key) {
+      const header = (await db.query('select header from agents where id=$1 and tenant=$2', [agent,tenant])).rows[0]?.header;
+      if (!header?.definition) throw new HttpError(400, 'Fresh triggers require an agent definition');
+      return (await createAgent(tenant, {definition:header.definition.id, ttlSeconds:604800}, key)).id;
+    },
+    upload: (agent,tenant,id,text) => channels.uploadTrigger(agent,tenant,id,text),
+    submit: submitAnywhere,
+  });
+
   // Accounts being deleted, continued by whichever node claims each (and started at once on a request).
   const accountDeletions = new AccountDeletions({
     db, accounts, storage, volumes, channels, stripe, deleteAgent: deleteAnywhere, removeComputers: tenant => computers.removeTenant(tenant),
@@ -1298,7 +1312,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
     await rateLimits.run(tenant);
   };
-  app.route("/", api({ computers, accounts, endUsers, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return modelReference(chosen); }, keyScopes, webhooks, scheduler, accountDeletions, githubApps, ...(config.idempotencyLockMs !== undefined ? { idempotencyLockMs: config.idempotencyLockMs } : {}), channels, volumes, definitions, links, fileUrls, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: config.verifyKeys,
+  app.route("/", api({ triggers, computers, accounts, endUsers, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return modelReference(chosen); }, keyScopes, webhooks, scheduler, accountDeletions, githubApps, ...(config.idempotencyLockMs !== undefined ? { idempotencyLockMs: config.idempotencyLockMs } : {}), channels, volumes, definitions, links, fileUrls, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: config.verifyKeys,
     rateLimits, clientAddress: c => requestClient(c).address, runRetentionSeconds, requestAnywhere, ...(voice ? { voice } : {}),
     transcriptions: {
       transcriber, outbound: outbound.withoutOrigins(),

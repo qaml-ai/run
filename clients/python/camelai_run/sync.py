@@ -202,6 +202,11 @@ class AgentClient(_AgentCalls):
             before = page["next"]
         return {"messages": [message for page in reversed(pages) for message in page]}
 
+    def _trigger_http(self, suffix, method="GET", body=None, retry=True):
+        if not self._api_key:
+            raise AgentError("Trigger management requires a tenant API key", 403)
+        return _http_sync(self.http, self.base, f"/v1/agents/{self.id}" + suffix, self._api_key, method, body, retry)
+
     def _http(self, suffix, method="GET", body=None, retry=True, timeout=None):
         return _http_sync(self.http, self.base, self.path + suffix, self.session["token"], method, body, retry, timeout=timeout)
 
@@ -599,6 +604,21 @@ class Agent:
     def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None):
         """Wake the agent later with a message (text), or run code; every_seconds (at least 60) repeats it."""
         return self.client.schedule(text=text, code=code, at=at, in_seconds=in_seconds, every_seconds=every_seconds)
+
+    def create_trigger(self, **input):
+        return self.client.create_trigger(**input)
+
+    def triggers(self):
+        return self.client.triggers()
+
+    def delete_trigger(self, trigger_id):
+        return self.client.delete_trigger(trigger_id)
+
+    def rotate_trigger(self, trigger_id):
+        return self.client.rotate_trigger(trigger_id)
+
+    def trigger_deliveries(self, trigger_id):
+        return self.client.trigger_deliveries(trigger_id)
 
     def schedules(self):
         return self.client.schedules()

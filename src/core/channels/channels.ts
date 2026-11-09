@@ -400,6 +400,12 @@ export class Channels {
     if (!channel || channel.tenant !== tenant) throw new HttpError(404, "Unknown channel");
     return channel;
   }
+  async uploadTrigger(agent: string, tenant: string, id: string, text: string) {
+    async function* source() { yield new TextEncoder().encode(text); }
+    if (!this.host.files) throw new Error("File uploads are not enabled");
+    return this.host.files.upload(agent, tenant, id, "payload.json", source(), "application/json");
+  }
+
   protected secrets(channel: Channel): { credentials: Credentials; secret: string } {
     return JSON.parse(this.host.keys.unseal(`channel:${channel.id}`, channel.sealed));
   }

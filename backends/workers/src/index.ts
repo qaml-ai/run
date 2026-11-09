@@ -1,3 +1,4 @@
+import { workerTriggers, triggerRoutes } from "./triggers.ts";
 import { SharedAgents, ShareLinkInput, MemberInput } from '../../../src/shared-agents.ts';
 import { database } from './postgres.ts';
 import { inboxQuery, readInbox, InboxQueryError } from '../../../shared/inbox.ts';
@@ -233,6 +234,11 @@ const worker = {
           experimental: true,
         });
       // Channels' webhooks come before any authentication: each delivery proves itself.
+      if(/^\/v1\/hooks\/[^/]+$/.test(path)&&request.method==='POST') {
+        const service=await workerTriggers(env), result=await service.receive(path.split('/').pop()!,request);
+        ctx.waitUntil(service.scan());
+        return Response.json(result.body,{status:result.code,headers:{'Cache-Control':'no-store'}});
+      }
       const delivery = await channelWebhook(request, env, ctx);
       if (delivery) return delivery;
       const publicResponse = await publicRoutes(request, env);
@@ -317,6 +323,10 @@ const worker = {
       if (auth) {
         const computers = await handleComputerRequest(request, env, auth);
         if (computers) return computers;
+      }
+      if (auth) {
+        const trigger = await triggerRoutes(request,env,auth.tenantId);
+        if (trigger) return trigger;
       }
       if (!match) {
         if (!auth) throw new ApiError(403, "Account key required", "FORBIDDEN");
@@ -684,6 +694,7 @@ const worker = {
     return withMoneyMetrics(env, async () => {
     try {
       if (_controller.cron === "* * * * *") { await sweepInputMirrors(env); return; }
+      await (await workerTriggers(env)).scan();
       await maintenance(env);
       await moneyMaintenance(env);
       await publishScheduleEmails(env);

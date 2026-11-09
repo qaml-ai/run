@@ -954,3 +954,5 @@ Needs runtime 0.3.0 or later (run.camelai.com has it).
 Each reads `CAMELAI_API_KEY` (and `CAMELAI_BASE_URL` for a runtime of your own).
 `npm run demo:clients` runs the release board and inventory examples against a
 temporary local runtime with scripted code, calling no model.
+
+See [incoming webhook triggers](../guides/triggers.md) for the trigger management API and commands.

@@ -1674,6 +1674,21 @@ class _AgentCalls:
         body = {key: value for key, value in {"text": text, "code": code, "history": history, "at": at, "inSeconds": in_seconds, "everySeconds": every_seconds, "calendar": calendar, "email": email}.items() if value is not None}
         return self._http("/schedules", "POST", body, retry=False)
 
+    def create_trigger(self, **input):
+        return self._trigger_http("/triggers", "POST", input, retry=False)
+
+    def triggers(self):
+        return self._trigger_http("/triggers")
+
+    def delete_trigger(self, trigger_id):
+        return self._trigger_http("/triggers/" + quote(trigger_id, safe=""), "DELETE", retry=False)
+
+    def rotate_trigger(self, trigger_id):
+        return self._trigger_http("/triggers/" + quote(trigger_id, safe="") + "/rotate", "POST", {}, retry=False)
+
+    def trigger_deliveries(self, trigger_id):
+        return self._trigger_http("/triggers/" + quote(trigger_id, safe="") + "/deliveries")
+
     def schedules(self):
         return self._http("/schedules")
 
@@ -1783,6 +1798,11 @@ class AgentClient(_AgentCalls):
                 break
             before = page["next"]
         return {"messages": [message for page in reversed(pages) for message in page]}
+
+    async def _trigger_http(self, suffix, method="GET", body=None, retry=True):
+        if not self._api_key:
+            raise AgentError("Trigger management requires a tenant API key", 403)
+        return await _http(self.http, self.base, f"/v1/agents/{self.id}" + suffix, self._api_key, method, body, retry)
 
     async def _http(self, suffix, method="GET", body=None, retry=True, timeout=None):
         return await _http(self.http, self.base, self.path + suffix, self.session["token"], method, body, retry, timeout=timeout)
@@ -2785,6 +2805,21 @@ class Agent:
     async def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None, history=None, calendar=None, email=None):
         """Wake the agent later with a message (text), or run code; every_seconds (at least 60) repeats it. history is deprecated and ignored."""
         return await self.client.schedule(text=text, code=code, at=at, in_seconds=in_seconds, every_seconds=every_seconds, history=history, calendar=calendar, email=email)
+
+    async def create_trigger(self, **input):
+        return await self.client.create_trigger(**input)
+
+    async def triggers(self):
+        return await self.client.triggers()
+
+    async def delete_trigger(self, trigger_id):
+        return await self.client.delete_trigger(trigger_id)
+
+    async def rotate_trigger(self, trigger_id):
+        return await self.client.rotate_trigger(trigger_id)
+
+    async def trigger_deliveries(self, trigger_id):
+        return await self.client.trigger_deliveries(trigger_id)
 
     async def schedules(self):
         return await self.client.schedules()
