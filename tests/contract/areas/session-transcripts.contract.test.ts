@@ -65,3 +65,18 @@ contractTest('history', 'docs/guides/session-transcripts.md', 'named delegate co
   } while(cursor);
   assert.ok(found);
 });
+
+contractTest('history','docs/guides/session-transcripts.md','endUser filtering excludes other users and their assistant replies',async(_t,f)=>{
+  for(const user of ['alice','bob']) assert.equal((await f.call(`/v1/end-users/${user}/entries`,{body:{kind:'grant',amount:100000,key:`grant-${user}`}})).status,201);
+  f.setModel(body=>({content:JSON.stringify(body.messages).includes('BOB_ONLY')?'REPLY_BOB':'REPLY_ALICE'}));
+  const id=(await f.call('/v1/agents',{body:{}})).json.id;
+  const from=Date.now()-1000;
+  await f.prompt(id,'ALICE_ONLY',undefined,{endUser:'alice'});
+  await f.prompt(id,'BOB_ONLY',undefined,{endUser:'bob'});
+  const to=Date.now()+1000;
+  const page=await f.call(`/v1/agents/${id}/sessions?from=${from}&to=${to}&endUser=alice`);
+  assert.equal(page.status,200,page.text);
+  const text=JSON.stringify(page.json.entries);
+  assert.ok(text.includes('ALICE_ONLY'));assert.ok(text.includes('REPLY_ALICE'));
+  assert.ok(!text.includes('BOB_ONLY'));assert.ok(!text.includes('REPLY_BOB'));
+});

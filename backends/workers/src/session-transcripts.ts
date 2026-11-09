@@ -19,3 +19,11 @@ export async function transcriptDescendants(env: ControlEnv, tenant: string, roo
   }
   return [...seen];
 }
+
+export async function transcriptScope(env: ControlEnv, id: string) {
+  const row=(await database(env).query('select header from agents where id=$1',[id])).rows[0];
+  const response=await env.AGENTS.getByName(id).fetch(new Request('https://agent/state'));
+  if(!response.ok) throw new Error('Cannot read conversation scope');
+  const state=await response.json() as {requests:any[]};
+  return {subject:row?.header?.config?.subject,requests:state.requests};
+}

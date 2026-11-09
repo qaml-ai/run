@@ -1,5 +1,7 @@
 import { Dreaming, DreamError } from '../shared/dreaming.ts';
 import { DREAM_ANALYZER_PROMPT, DREAM_ORGANIZER_PROMPT } from '../shared/dreaming-workflow.ts';
+import { tenantDreamSecrets } from '../shared/dreaming-secrets.ts';
+import type { Accounts } from './accounts.ts';
 import type { Db } from './db.ts';
 import type { ClientSessions } from './client-sessions.ts';
 import type { Definitions } from './definitions.ts';
@@ -7,7 +9,7 @@ import { snapshotContents, type VolumeService } from './volumes.ts';
 import type { RequestRecord } from '../shared/client-protocol.ts';
 
 export function nodeDreaming(options: {
-  db: Db; clients: ClientSessions; definitions: Definitions; volumes: VolumeService;
+  db: Db; accounts: Accounts; clients: ClientSessions; definitions: Definitions; volumes: VolumeService;
   create(tenant: string, params: any, key: string): Promise<any>;
   submit(agent: string, tenant: string, request: {id: string; method: string; params: Record<string, unknown>}): Promise<RequestRecord>;
   request(agent: string, tenant: string, id: string, wait: number): Promise<RequestRecord | undefined>;
@@ -15,9 +17,13 @@ export function nodeDreaming(options: {
   const {db,clients,definitions,volumes} = options;
   return new Dreaming({
     db: (sql, values) => db.query(sql,values),
+    secrets:tenant=>tenantDreamSecrets((sql,values)=>db.query(sql,values),options.accounts,tenant),
+    async scope(agent) {
+      const row=(await db.query('select tenant,header from agents where id=$1',[agent])).rows[0];
+      return {subject:row.header.identity?.subject ?? row.header.config?.subject,requests:(await clients.stateFor(agent,row.tenant)).requests};
+    },
     async page(agent,after,limit) {
       const header = (await db.query('select tenant from agents where id=$1',[agent])).rows[0];
-      if ((await clients.stateFor(agent,header.tenant)).busy) throw new DreamError('A source conversation is still running',409);
       return clients.historyPageFor(agent,header.tenant,{after:String(after),limit:String(limit),maxBytes:'64000'});
     },
     async verify(tenant,agent,volume) {
@@ -35,7 +41,7 @@ export function nodeDreaming(options: {
       const read = await volumes.handle(volume,tenant,'readAll',{path:'/'});
       return Object.fromEntries(read.files.map((f: any) => { if (typeof f.text !== 'string') throw new DreamError('Memory must contain only text files'); return [f.path.replace(/^\//,''),f.text]; }));
     },
-    async start(tenant,key,config,code) {
+    async start(tenant,key,config,code,requestKey) {
       const targets = [];
       for (const [name,model,systemPrompt] of [['analyzer',config.analyzerModel,DREAM_ANALYZER_PROMPT],['organizer',config.organizerModel,DREAM_ORGANIZER_PROMPT]]) {
         const definition = await definitions.upsert(tenant,`${key.slice(0,key.lastIndexOf("-"))}-${name}`,{name:`dream-${name}`,model,systemPrompt,builtins:[],fileTools:false,codeMode:false,decide:false,mounts:[{workspace:false}]});
@@ -43,7 +49,7 @@ export function nodeDreaming(options: {
       }
       const existing = clients.agentId(tenant,key);
       const agent = await clients.owns(existing,tenant) ? {id:existing} : await options.create(tenant,{ttlSeconds:86400,model:config.organizerModel,builtins:['delegate'],delegate:{agents:targets,maxParallel:4,maxDepth:1},fileTools:false,decide:false,mounts:[{workspace:false}],spendLimit:{usd:config.budgetUsd}},key);
-      const request = `${key}-execute`;
+      const request = `${requestKey ?? key}-execute`;
       await options.submit(agent.id,tenant,{id:request,method:'execute',params:{code,maxOutputCharacters:128000,allowDisconnected:true}});
       return {agent:agent.id,request};
     },

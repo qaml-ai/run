@@ -1,4 +1,6 @@
-import { transcriptDescendants } from "./session-transcripts.ts";
+import { tenantDreamSecrets } from '../../../shared/dreaming-secrets.ts';
+import { keyServices } from './security-services.ts';
+import { transcriptDescendants, transcriptScope } from "./session-transcripts.ts";
 import { Dreaming, DreamError } from '../../../shared/dreaming.ts';
 import { DREAM_ANALYZER_PROMPT, DREAM_ORGANIZER_PROMPT } from '../../../shared/dreaming-workflow.ts';
 import { Directory, type ControlEnv } from './control.ts';
@@ -18,10 +20,10 @@ export function workerDreaming(env: ControlEnv & FileBindings) {
   const fileCall = (tenant: string,volume: string,path: string,body?: unknown) => handleFileRequest(new Request(`https://runtime/v1/volumes/${volume}/${path}`,body === undefined ? undefined : {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}),env,{tenantId:tenant}).then(json);
   return new Dreaming({
     db:(sql,values)=>db.query(sql,values),
+    secrets:async tenant=>tenantDreamSecrets((sql,values)=>db.query(sql,values),(await keyServices(env)).accounts,tenant),
+    scope:agent=>transcriptScope(env,agent),
     descendants:(tenant,root)=>transcriptDescendants(env,tenant,root),
     async page(agent,after,limit) {
-      const state = await agentCall(agent,'/state');
-      if (state.busy) throw new DreamError('A source conversation is still running',409);
       return agentCall(agent,`/history?after=${after}&limit=${limit}&maxBytes=64000`);
     },
     async verify(tenant,agent,volume) {
@@ -39,7 +41,7 @@ export function workerDreaming(env: ControlEnv & FileBindings) {
       const read = await fileCall(tenant,volume,'files?content=true');
       return Object.fromEntries(read.files.map((f: any)=>{if(typeof f.text!=='string') throw new DreamError('Memory must contain only text files'); return [f.path.replace(/^\//,''),f.text];}));
     },
-    async start(tenant,key,config,code) {
+    async start(tenant,key,config,code,requestKey) {
       const targets=[];
       for(const [name,model,systemPrompt] of [['analyzer',config.analyzerModel,DREAM_ANALYZER_PROMPT],['organizer',config.organizerModel,DREAM_ORGANIZER_PROMPT]]) {
         const request = new Request('https://runtime/v1/definitions',{method:'POST',headers:{'content-type':'application/json','Idempotency-Key':`${key.slice(0,key.lastIndexOf('-'))}-${name}`},body:JSON.stringify({name:`dream-${name}`,model,systemPrompt,builtins:[],fileTools:false,codeMode:false,decide:false,mounts:[{workspace:false}]})});
@@ -50,7 +52,7 @@ export function workerDreaming(env: ControlEnv & FileBindings) {
       const old=await directory.get(key);
       const made=old ?? await directory.upsert({model:config.organizerModel,builtins:['delegate'],delegate:{agents:targets,maxParallel:4,maxDepth:1},fileTools:false,decide:false,mounts:[{workspace:false}],ttlSeconds:86400,spendLimit:{usd:config.budgetUsd}} as any,key,'https://runtime');
       if ('failed' in made) throw new DreamError(made.error,made.status);
-      const request=`${key}-execute`;
+      const request=`${requestKey ?? key}-execute`;
       await agentCall(made.id,'/requests',{id:request,method:'execute',params:{code,maxOutputCharacters:128000,allowDisconnected:true}});
       return {agent:made.id,request};
     },

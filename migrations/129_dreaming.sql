@@ -19,3 +19,7 @@ create table agent_dreaming_runs (
   result jsonb not null
 );
 create index agent_dreaming_runs_agent on agent_dreaming_runs(agent,created_at);
+alter table agent_dreaming add column progress jsonb;
+alter table agent_dreaming add column failed_nights integer not null default 0;
+alter table agent_dreaming add column failed_date text;
+alter table agent_dreaming add column allowed_urls jsonb not null default '[]';

@@ -608,11 +608,13 @@ class _RuntimeCalls:
     def dream_now(self, agent_id):
         return self._rest("POST", "/v1/agents/" + quote(agent_id, safe="") + "/dreaming/run", {}, retry=False)
 
-    def sessions(self, agent_id, *, from_ms, to_ms, cursor=None, limit=100, children=True):
+    def sessions(self, agent_id, *, from_ms, to_ms, cursor=None, limit=100, children=True, end_user=None):
         """A tenant-authenticated page of a conversation tree in [from_ms,to_ms). Follow next until null."""
         query = {"from": from_ms, "to": to_ms, "limit": limit, "children": str(children).lower()}
         if cursor is not None:
             query["cursor"] = cursor
+        if end_user is not None:
+            query["endUser"] = end_user
         return self._rest("GET", "/v1/agents/" + quote(agent_id, safe="") + "/sessions?" + urlencode(query))
 
     def fork_agent(self, agent_id, *, key=None, name=None, at_message=None, ttl_seconds=_DEFAULT, subject=None, context=None, instructions_append=None, model_headers=_DEFAULT):
