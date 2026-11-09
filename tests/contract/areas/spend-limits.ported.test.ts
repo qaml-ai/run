@@ -36,6 +36,8 @@ test("an agent's spend limit ends the turn that crosses it and refuses new promp
   await r.call(`/v1/agents/${id}/configuration`, { method: "PATCH", body: { spendLimit: null } });
   assert.equal((await r.call(`/v1/agents/${id}`)).json.spendLimit, null);
   assert.equal((await r.call(`/v1/agents/${id}/prompt`, { body: { text: "free" } })).status, 202);
+  // Finish the deliberately unlimited turn before graceful fixture shutdown.
+  assert.equal((await r.call(`/v1/agents/${id}/abort`, { method: "POST" })).status, 200);
 });
 
 test("a run's own spend limit ends that run once it crosses it, and leaves the agent's limit and later runs alone", async t => {
