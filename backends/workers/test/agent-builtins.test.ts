@@ -70,6 +70,10 @@ test('schedule builtins expose structured values and ignore legacy history', asy
   assert.equal(input?.history, 'none');
   assert.deepEqual(made.structuredOutput, { id: 'wake', text: 'check', dueAt: '1970-01-01T00:00:01.000Z', everySeconds: 60 });
   assert.deepEqual(value(await invoke(tools[1], {})), { schedules: [made.structuredOutput] });
+  const extended = { ...schedule, cron: { expression: '0 9 * * 1-5', timeZone: 'America/Chicago' }, sessionMode: 'continue' as const, spendLimit: { usd: 1 } };
+  const extendedTools = agentScheduleTools(['schedule'], { ...host, create: async () => extended });
+  assert.deepEqual((await invoke(extendedTools[0], { text: 'check', inSeconds: 1 })).structuredOutput,
+    { ...made.structuredOutput, cron: extended.cron, sessionMode: extended.sessionMode, spendLimit: extended.spendLimit });
   assert.deepEqual(value(await invoke(tools[2], { id: 'wake' })), { cancelled: true });
   assert.equal(scheduleError(Object.assign(new Error('spend limit'), { status: 402 })), 'HTTP 402: spend limit');
 });

@@ -1,3 +1,4 @@
+import { cronInput, nextCron, freshCronAllowed, type Cron } from "./core/cron.ts";
 import { calendarInput, nextCalendar, type Calendar } from "./calendar.ts";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
@@ -30,7 +31,7 @@ import { underClaim, type Claim } from "./ownership.ts";
  */
 export interface Schedule {
   id: string; agent: string; tenant: string; text?: string; code?: string;
-  dueAt: number; everySeconds?: number; calendar?: Calendar; email?: ScheduleEmail; createdAt: number;
+  dueAt: number; everySeconds?: number; calendar?: Calendar; cron?: Cron; sessionMode?: "continue" | "fresh"; spendLimit?: { usd: number }; mounts?: {volumeId?:string;path?:string;mode?:"ro"|"rw";workspace?:boolean;subpath?:string;notify?:boolean}[]; email?: ScheduleEmail; createdAt: number;
   /** Occurrences in a row whose delivery was given up, and why the latest attempt failed: until a delivery succeeds. */
   failures?: number; lastError?: string; lastErrorAt?: number;
 }
@@ -40,7 +41,7 @@ export function scheduleEmail(value: any): ScheduleEmail {
   if (value.format !== undefined && !["text", "markdown", "html"].includes(value.format)) throw new Error("email format must be text, markdown, or html");
   return { to: value.to, subject: value.subject.trim(), ...(value.format !== undefined ? { format: value.format } : {}) };
 }
-export type Deliver = (schedule: Schedule, requestId: string) => Promise<void>;
+export type Deliver = (schedule: Schedule, requestId: string) => Promise<unknown>;
 
 /** A claim older than this is assumed abandoned by a crashed node and may be retaken. */
 const CLAIM_TIMEOUT_MS = 60_000;
@@ -50,9 +51,9 @@ export const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000];
 /** Failures a retry may fix: no status (the network, a crash), a timeout, a conflict, a rate limit, or a server error. */
 const retryable = (status: number | undefined) => status === undefined || status >= 500 || [408, 409, 425, 429].includes(status);
 export const MIN_REPEAT_SECONDS = 60;
-const COLUMNS = "id, agent, tenant, text, code, history, due_at, every_seconds, calendar, email, created_at, failures, last_error, last_error_at";
+const COLUMNS = "id, agent, tenant, text, code, history, due_at, every_seconds, calendar, cron, session_mode, spend_limit, mounts, email, created_at, failures, last_error, last_error_at";
 const schedule = (row: any): Schedule => ({
-  id: row.id, agent: row.agent, tenant: row.tenant, ...(row.calendar ? { calendar: row.calendar } : {}), ...(row.email ? { email: row.email } : {}), ...(row.text !== null ? { text: row.text } : {}), ...(row.code !== null ? { code: row.code } : {}),
+  ...(row.mounts ? {mounts:row.mounts} : {}), ...(row.cron ? {cron:row.cron} : {}), sessionMode: row.session_mode ?? "continue", ...(row.spend_limit ? {spendLimit:row.spend_limit} : {}), id: row.id, agent: row.agent, tenant: row.tenant, ...(row.calendar ? { calendar: row.calendar } : {}), ...(row.email ? { email: row.email } : {}), ...(row.text !== null ? { text: row.text } : {}), ...(row.code !== null ? { code: row.code } : {}),
   dueAt: row.due_at, ...(row.every_seconds !== null ? { everySeconds: row.every_seconds } : {}), createdAt: row.created_at,
   ...(row.failures ? { failures: row.failures } : {}), ...(row.last_error !== null ? { lastError: row.last_error, lastErrorAt: Number(row.last_error_at) } : {}),
 });
@@ -83,7 +84,9 @@ export class Scheduler {
   }
   stop() { if (this.timer) clearInterval(this.timer); this.timer = undefined; }
 
-  async create(input: { agent: string; tenant: string; text?: string; code?: string; history?: string; dueAt: number; everySeconds?: number; calendar?: Calendar; email?: ScheduleEmail }, claim?: Claim): Promise<Schedule> {
+  async create(input: { agent: string; tenant: string; text?: string; code?: string; history?: string; dueAt: number; everySeconds?: number; calendar?: Calendar; cron?: Cron; sessionMode?: "continue" | "fresh"; spendLimit?: { usd: number }; mounts?: {volumeId?:string;path?:string;mode?:"ro"|"rw";workspace?:boolean;subpath?:string;notify?:boolean}[]; email?: ScheduleEmail }, claim?: Claim): Promise<Schedule> {
+    validateScheduleMode(input);
+    if (input.sessionMode === "fresh" && !(await this.db.query("select 1 from agents where id=$1 and tenant=$2 and header->'definition' is not null", [input.agent,input.tenant])).rowCount) throw new HttpError(400, "Fresh schedules require an agent definition");
     if (input.calendar) { input = { ...input, calendar: calendarInput(input.calendar) }; if (input.everySeconds !== undefined) throw new Error("Use calendar or everySeconds, not both"); }
     if (input.email) { if (!this.emailEnabled) throw new Error("Scheduled email is not enabled on this runtime"); input = { ...input, email: scheduleEmail(input.email) }; if (input.code !== undefined) throw new Error("Email delivery requires a text schedule"); }
     if (input.email && this.canEmail && !await this.canEmail(input.tenant, input.email.to)) throw new HttpError(403, "Use your sign-in email or a verified billing recipient for scheduled reports");
@@ -95,14 +98,14 @@ export class Scheduler {
     if (input.history !== undefined && !["full", "none"].includes(input.history)) throw new Error('history is "full" or "none" (deprecated: ignored, every wake-up sees the agent\'s history)');
     const { history, ...rest } = input;
     if (history === "none") historyNoneIgnored(input.agent, input.tenant, "schedule");
-    const created: Schedule = { id: randomUUID(), ...rest, dueAt: Math.round(input.dueAt), createdAt: Date.now() };
+    const created: Schedule = { id: randomUUID(), sessionMode: "continue", ...rest, dueAt: Math.round(input.dueAt), createdAt: Date.now() };
     await underClaim(this.db, claim, async sql => {
       await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`schedules:${input.agent}`]);
       // A wake-up would start a turn its parent did not send: a sub-agent the runtime made has none (its builtin's either).
       if ((await sql.query("select 1 from agents where id = $1 and header->'parent' is not null", [input.agent])).rowCount) throw viaParent(input.agent);
       if ((await sql.query("select count(*) as count from schedules where agent = $1", [input.agent])).rows[0].count >= 100) throw new Error("An agent can have at most 100 schedules");
-      await sql.query("insert into schedules (id, agent, tenant, text, code, due_at, every_seconds, created_at, calendar, email) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
-        [created.id, created.agent, created.tenant, created.text ?? null, created.code ?? null, created.dueAt, created.everySeconds ?? null, created.createdAt, created.calendar ?? null, created.email ?? null]);
+      await sql.query("insert into schedules (id, agent, tenant, text, code, due_at, every_seconds, created_at, calendar, email, cron, session_mode, spend_limit, mounts) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+        [created.id, created.agent, created.tenant, created.text ?? null, created.code ?? null, created.dueAt, created.everySeconds ?? null, created.createdAt, created.calendar ?? null, created.email ?? null, created.cron ?? null, created.sessionMode ?? "continue", created.spendLimit ?? null, created.mounts ?? null]);
     });
     return created;
   }
@@ -113,12 +116,26 @@ export class Scheduler {
    */
   async list(agent: string): Promise<Schedule[]> {
     return (await this.db.query(`select ${COLUMNS} from schedules where agent = $1
-      and not (every_seconds is null and calendar is null and claimed_by is not null and claimed_until > now()) order by due_at, id`, [agent])).rows.map(schedule);
+      and not (every_seconds is null and calendar is null and cron is null and claimed_by is not null and claimed_until > now()) order by due_at, id`, [agent])).rows.map(schedule);
   }
 
   async remove(agent: string, id: string, claim?: Claim) {
     if (!/^[0-9a-f-]{36}$/.test(id)) return false;
     return !!(await underClaim(this.db, claim, sql => sql.query("delete from schedules where agent = $1 and id = $2", [agent, id]))).rowCount;
+  }
+
+  async runNow(agent: string, id: string) {
+    if (!/^[0-9a-f-]{36}$/.test(id)) throw new HttpError(404, "Unknown schedule");
+    const row = (await this.db.query(`select ${COLUMNS} from schedules where agent=$1 and id=$2`, [agent,id])).rows[0];
+    if (!row) throw new HttpError(404, 'Unknown schedule');
+    return this.dispatch(schedule(row), `schedule-run-${randomUUID()}`);
+  }
+
+  private async dispatch(due: Schedule, id: string) {
+    const result = await this.deliver(due, id);
+    const agent = result && typeof result === "object" && "agent" in result && typeof result.agent === "string" ? result.agent : due.agent;
+    if (due.email) await this.db.query("insert into schedule_deliveries (id,tenant,agent,schedule,email,created_at,next_at) values ($1,$2,$3,$4,$5,$6,$6) on conflict do nothing", [id,due.tenant,agent,due.id,due.email,Date.now()]);
+    return result;
   }
 
   /** Deliver every due wake-up this node claims. */
@@ -153,8 +170,7 @@ export class Scheduler {
   private async fire({ claim, attempts, ...due }: Schedule & { claim: string; attempts: number }) {
     try {
       const id = `schedule-${due.id}-${due.dueAt}`;
-      if (due.email) await this.db.query("insert into schedule_deliveries (id,tenant,agent,schedule,email,created_at,next_at) values ($1,$2,$3,$4,$5,$6,$6) on conflict do nothing", [id,due.tenant,due.agent,due.id,due.email,Date.now()]);
-      await this.deliver(due, id);
+      await this.dispatch(due, id);
     }
     catch (error) {
       // The agent was deleted or expired: drop its schedule.
@@ -166,7 +182,7 @@ export class Scheduler {
       await this.failed(due, claim, attempts + 1, status, error);
       return;
     }
-    if (due.everySeconds || due.calendar) {
+    if (due.everySeconds || due.calendar || due.cron) {
       await this.db.query(`update schedules set due_at = $3, claimed_by = null, claimed_until = null, attempts = 0, failures = 0, last_error = null, last_error_at = null
         where id = $1 and due_at = $2 and claimed_by = $4`, [due.id, due.dueAt, nextOccurrence(due), claim]);
     } else {
@@ -183,7 +199,7 @@ export class Scheduler {
     const now = Date.now();
     const message = `${status !== undefined ? `HTTP ${status}: ` : ""}${error instanceof Error ? error.message : String(error)}`.slice(0, 1000);
     const delay = retryable(status) ? RETRY_DELAYS_MS[attempt - 1] : undefined;
-    const next = due.everySeconds || due.calendar ? nextOccurrence(due, now) : undefined;
+    const next = due.everySeconds || due.calendar || due.cron ? nextOccurrence(due, now) : undefined;
     const retry = delay !== undefined && (next === undefined || now + delay < next);
     console.error(JSON.stringify({ type: "schedule_delivery_failed", schedule: due.id, agent: due.agent, tenant: due.tenant, status, attempt, error: message, ...(retry ? { retryInMs: delay } : { gaveUp: true }) }));
     if (retry) {
@@ -199,21 +215,35 @@ export class Scheduler {
 }
 
 /** A repeating schedule's next occurrence after now, skipping any missed while nothing was running. */
-function nextOccurrence(due: { dueAt: number; everySeconds?: number; calendar?: Calendar }, now = Date.now()) {
+function nextOccurrence(due: { dueAt: number; everySeconds?: number; calendar?: Calendar; cron?: Cron }, now = Date.now()) {
+  if (due.cron) return nextCron(due.cron, Math.max(now, due.dueAt));
   if (due.calendar) return nextCalendar(due.calendar, Math.max(now, due.dueAt));
   const step = due.everySeconds! * 1000;
   return due.dueAt + Math.max(1, Math.ceil((now - due.dueAt + 1) / step)) * step;
 }
 
+export function validateScheduleMode(input: {code?: unknown; spendLimit?: unknown; sessionMode?: string; everySeconds?: number; cron?: Cron}) {
+  if (input.code !== undefined && input.spendLimit !== undefined) throw new Error('Code schedules do not support spendLimit');
+  if (input.sessionMode === 'fresh' && (input.everySeconds !== undefined && input.everySeconds < 300 || input.cron && !freshCronAllowed(input.cron)))
+    throw new Error('Fresh schedules must be at least five minutes apart');
+}
+
 /** Parse `{ text | code, history?, at? (ISO time or ms), inSeconds?, everySeconds? }` into a due time. */
 export function scheduleInput(body: any, now = Date.now()) {
   if (!body || typeof body !== "object") throw new Error("Send { text | code, history?, at | inSeconds, everySeconds? }");
+  if (body.sessionMode !== undefined && !['continue','fresh'].includes(body.sessionMode)) throw new Error('sessionMode must be continue or fresh');
+  if (body.spendLimit !== undefined && (!body.spendLimit || typeof body.spendLimit.usd !== 'number' || !Number.isFinite(body.spendLimit.usd) || body.spendLimit.usd < 0 || body.spendLimit.usd > 1000000)) throw new Error('spendLimit must be {usd} from 0 to 1000000');
+  const mounts = body.mounts === undefined ? undefined : z.array(z.union([z.strictObject({volumeId:z.string(),path:z.string(),mode:z.enum(['ro','rw']),subpath:z.string().optional(),notify:z.boolean().optional()}),z.strictObject({workspace:z.boolean(),path:z.string().optional()})])).max(16).parse(body.mounts);
+  if (mounts && body.sessionMode !== 'fresh') throw new Error('Schedule mounts require fresh mode');
+  const cron = body.cron === undefined ? undefined : cronInput(body.cron);
+  if (cron && [body.calendar, body.at, body.inSeconds, body.everySeconds].some(value => value !== undefined)) throw new Error('cron cannot be combined with other timing fields');
+  validateScheduleMode({...body,cron});
   const calendar = body.calendar === undefined ? undefined : calendarInput(body.calendar);
   if (calendar && [body.at, body.inSeconds, body.everySeconds].some(value => value !== undefined)) throw new Error("calendar cannot be combined with at, inSeconds or everySeconds");
   const email = body.email === undefined ? undefined : scheduleEmail(body.email);
   const at = body.at === undefined ? undefined : typeof body.at === "number" ? body.at : Date.parse(body.at);
-  const dueAt = calendar ? nextCalendar(calendar, now) : at ?? (body.inSeconds !== undefined ? now + Number(body.inSeconds) * 1000 : body.everySeconds !== undefined ? now + Number(body.everySeconds) * 1000 : NaN);
+  const dueAt = cron ? nextCron(cron, now) : calendar ? nextCalendar(calendar, now) : at ?? (body.inSeconds !== undefined ? now + Number(body.inSeconds) * 1000 : body.everySeconds !== undefined ? now + Number(body.everySeconds) * 1000 : NaN);
   if (!Number.isFinite(dueAt)) throw new Error("Give a due time: at (ISO time) or inSeconds");
-  if (dueAt > now + 366 * 86_400_000) throw new Error("Schedules can be at most a year ahead");
-  return { ...(calendar ? { calendar } : {}), ...(email ? { email } : {}), ...(body.text !== undefined ? { text: body.text } : {}), ...(body.code !== undefined ? { code: body.code } : {}), ...(body.history !== undefined ? { history: body.history } : {}), dueAt: Math.max(dueAt, now), ...(body.everySeconds !== undefined ? { everySeconds: Number(body.everySeconds) } : {}) };
+  if (!cron && dueAt > now + 366 * 86_400_000) throw new Error("Schedules can be at most a year ahead");
+  return { ...(mounts ? {mounts} : {}), ...(cron ? { cron } : {}), ...(body.sessionMode !== undefined ? {sessionMode: body.sessionMode as "continue" | "fresh"} : {}), ...(body.spendLimit !== undefined ? {spendLimit: body.spendLimit as {usd:number}} : {}), ...(calendar ? { calendar } : {}), ...(email ? { email } : {}), ...(body.text !== undefined ? { text: body.text } : {}), ...(body.code !== undefined ? { code: body.code } : {}), ...(body.history !== undefined ? { history: body.history } : {}), dueAt: Math.max(dueAt, now), ...(body.everySeconds !== undefined ? { everySeconds: Number(body.everySeconds) } : {}) };
 }

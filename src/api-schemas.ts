@@ -739,7 +739,7 @@ export const InboxQuery = z.object({
   cursor: z.string().optional(), limit: z.coerce.number().int().min(1).max(100).optional(),
 });
 export const InboxPage = z.object({
-  items: z.array(Input.extend({ inputId: z.string().openapi({ description: "Use this id with the per-agent input answer route; id identifies the inbox row" }), priority: z.enum(["urgent", "high", "normal", "low"]), blocking: z.boolean(),
+  items: z.array(Input.extend({ inputId: z.string().openapi({ description: "Compatibility alias of id. Both identify the answerable input on agent; use (agent, id) as the row key" }), priority: z.enum(["urgent", "high", "normal", "low"]), blocking: z.boolean(),
     subject: z.string().nullable(), root: z.string(), lineage: z.array(z.string()), key: z.string().nullable(), version: z.number().int() })),
   cursor: z.string().nullable(), counts: z.object({ priority: z.object({ urgent: z.number(), high: z.number(), normal: z.number(), low: z.number() }), lead: z.record(z.string(), z.number()) }),
 }).openapi("InboxPage");
@@ -884,6 +884,10 @@ const Calendar = z.object({ time: z.string().openapi({ description: "Local HH:MM
 const ScheduleEmail = z.object({ to: z.email(), subject: z.string().min(1).max(200), format: z.enum(["text", "markdown", "html"]).optional().describe("Reply format; defaults to markdown. HTML is sent as supplied, with a generated plain-text alternative.") }).openapi("ScheduleEmail");
 // Documentation only: scheduleInput and Scheduler.create validate schedules.
 export const ScheduleInput = z.object({
+  mounts: z.array(MountInput).max(16).optional(),
+  cron: z.object({expression:z.string(),timeZone:z.string()}).optional(),
+  sessionMode: z.enum(["continue","fresh"]).optional(),
+  spendLimit: z.object({usd:z.number().min(0).max(1000000)}).optional(),
   calendar: Calendar.optional(),
   email: ScheduleEmail.optional().openapi({ description: "Email the successful run's final reply. Owner-configured only; failed runs are not sent." }),
   text: z.string().optional().openapi({ description: "Prompt to deliver; give exactly one of text or code" }),
@@ -895,6 +899,10 @@ export const ScheduleInput = z.object({
 }).openapi("ScheduleInput");
 
 export const Schedule = z.object({
+  mounts: z.array(MountInput).max(16).optional(),
+  cron: z.object({expression:z.string(),timeZone:z.string()}).optional(),
+  sessionMode: z.enum(["continue","fresh"]).optional(),
+  spendLimit: z.object({usd:z.number().min(0).max(1000000)}).optional(),
   calendar: Calendar.optional(),
   email: ScheduleEmail.optional(),
   id: z.string(),
