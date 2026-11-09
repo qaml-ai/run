@@ -19,7 +19,7 @@ export type ComputerChoice = typeof COMPUTER_CHOICES[number];
 /** The `computer` argument of delegate and spawn_agent as the model sees it. */
 export const COMPUTER_ARGUMENT = Object.freeze({
   type: "string", enum: [...COMPUTER_CHOICES],
-  description: "share (default when you have a computer): use your machine and filesystem concurrently; only you can start or stop it. Only if you have a computer: fork gives the sub-agent its own copy of your computer's disk as it is now (repos, installed packages, build caches; not running processes), so it can build and test on its own branch; its writes never reach yours. fresh: a new, empty computer, started only when the sub-agent first uses it: choose it when the task may need a shell. none (default without a computer): no computer. An agent that declares its own computer keeps it by default.",
+  description: "share (default when you have a computer): the sub-agent uses your machine and filesystem at the same time as you; only you can start or stop it. fork (only if you have a computer): its own copy of your machine's disk as it is now (repos, packages, caches; not running processes), so it can build and test alone; its writes never reach yours. fresh: its own new, empty machine, started when it first uses it. none (default without a computer): no machine. An agent that declares its own computer keeps it by default.",
 });
 
 /** A call's `computer` argument: share when left out, fresh when it is and the definition the child is made from declares a computer of its own. */
