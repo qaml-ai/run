@@ -37,7 +37,7 @@ export interface Input {
   detail: Record<string, any>;
   /** Who may answer, besides the definition's approvers: the person whose message started the turn. */
   responders: { audience?: string[] };
-  state: InputState; answer?: Answer; createdAt: number; expiresAt: number;
+  version?: number; state: InputState; answer?: Answer; createdAt: number; expiresAt: number;
 }
 /** What is stored beyond what callers see: how the call is retried once answered. */
 type Stored = Pick<Input, "message" | "detail" | "responders"> & {
@@ -428,12 +428,16 @@ export class Inputs {
   }
 
   /** Settle several pending inputs, all or none: undefined when any had already settled. */
-  async settleAll(answers: { id: string; answer: Answer }[]): Promise<InputRow[] | undefined> {
+  async settleAll(answers: { id: string; answer: Answer; version?: number }[]): Promise<InputRow[] | undefined> {
     const taken = new Error("An input had already settled");
     try {
       return await transaction(this.db, async sql => {
         const settled: InputRow[] = [];
-        for (const { id, answer } of answers) {
+        for (const { id, answer, version } of answers) {
+          if (version !== undefined) {
+            const current = (await sql.query("select version from agent_inputs where id=$1 for update", [id])).rows[0];
+            if (!current || current.version !== version) throw taken;
+          }
           const done = await this.settle(id, answer, undefined, sql);
           if (!done) throw taken;
           settled.push(done);

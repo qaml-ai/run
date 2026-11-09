@@ -6462,6 +6462,9 @@
             "items": {
               "type": "object",
               "properties": {
+                "agent": {
+                  "type": "string"
+                },
                 "id": {
                   "type": "string"
                 },
@@ -6492,6 +6495,7 @@
                 }
               },
               "required": [
+                "agent",
                 "id",
                 "outcome",
                 "status"
@@ -6516,6 +6520,10 @@
             "items": {
               "type": "object",
               "properties": {
+                "agent": {
+                  "type": "string",
+                  "minLength": 1
+                },
                 "id": {
                   "type": "string"
                 },
@@ -6564,6 +6572,7 @@
                 }
               },
               "required": [
+                "agent",
                 "id",
                 "version"
               ]

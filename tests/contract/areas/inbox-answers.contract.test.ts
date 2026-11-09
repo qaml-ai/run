@@ -20,6 +20,10 @@ contractTest('inbox-answers', 'shared/inbox-answers.ts', 'batch answers use the 
   assert.equal('input' in forbiddenVersion.json, false);
   const moved = await f.call('/v1/inbox/answers', { body: { requestId: 'moved', answers: [{ ...answer, version: 20 }] } });
   assert.equal(moved.json.outcomes[0].outcome, 'conflict');
+  const outsider = await f.seedTenant('outsider');
+  const hidden = await f.call('/v1/inbox/answers', { token: outsider.token, body: { requestId: 'foreign-agent', answers: [answer] } });
+  assert.equal(hidden.status, 200, hidden.text);
+  assert.equal(hidden.json.outcomes[0].outcome, 'unknown');
   const batch = { requestId: 'batch', answers: [answer, { ...answer, id: 'absent' }] };
   const [first, concurrent] = await Promise.all([f.call('/v1/inbox/answers', { body: batch }), f.call('/v1/inbox/answers', { body: batch })]);
   assert.deepEqual(concurrent.json, first.json, concurrent.text);
@@ -137,20 +141,24 @@ contractTest('inbox-answers', 'shared/inbox-answers.ts', 'a down agent is unavai
   assert.equal(pending.state, 'pending');
 }, { env: { AGENT_IDLE_MS: '1000' }, timeout: 90_000 });
 
-contractTest('inbox-answers', 'shared/inbox-answers.ts', 'the per-agent writer rejects a stale version while the input is still pending', async (_t, f) => {
-  f.setModel(() => toolCall('ask_user', { questions: [{ question: 'Region?', header: 'Region', options: [{ label: 'EU' }, { label: 'US' }] }] }));
-  const definition = (await f.call('/v1/definitions', { body: { name: 'CAS input', builtins: ['ask_user'] } })).json;
-  const created = await f.call('/v1/agents', { body: { definition: definition.id, ttlSeconds: null } });
-  assert.equal(created.status, 201, created.text);
-  const agent = created.json.id;
-  await f.prompt(agent, 'Ask');
-  const item = await until(async () => (await f.call('/v1/inbox')).json.items.find((item: any) => item.agent === agent), 'input');
-  await f.advanceInboxVersion(agent);
-  const response = await f.call(`/v1/agents/${agent}/inputs/${item.inputId}`, { body: { version: item.version, action: 'accept', content: { answers: { 'Region?': 'EU' } } } });
-  assert.equal(response.status, 409, response.text);
-  const current = (await f.call('/v1/inbox')).json.items.find((input: any) => input.id === item.id);
-  assert.equal(current.state, 'pending');
-  assert.equal(current.version, item.version + 1);
+contractTest('inbox-answers', 'shared/inbox-answers.ts', 'both per-agent writers reject stale versions while inputs remain pending', async (_t, f) => {
+  for (const builtin of ['ask_user', 'request_decision']) {
+    f.setModel((_body, index) => index === 0 ? toolCall(builtin, builtin === 'ask_user'
+      ? { questions: [{ question: 'Region?', header: 'Region', options: [{ label: 'EU' }, { label: 'US' }] }] }
+      : { title: 'Region?', body: 'Review', options: [{ label: 'EU' }, { label: 'US' }] }) : { role: 'assistant', content: 'Continuing.' });
+    const definition = (await f.call('/v1/definitions', { body: { name: 'CAS ' + builtin, builtins: [builtin] } })).json;
+    const created = await f.call('/v1/agents', { body: { definition: definition.id, ttlSeconds: null } });
+    assert.equal(created.status, 201, created.text);
+    const agent = created.json.id;
+    await f.prompt(agent, 'Ask');
+    const item = await until(async () => (await f.call('/v1/inbox')).json.items.find((item: any) => item.agent === agent), 'input');
+    await f.advanceInboxVersion(agent);
+    const response = await f.call(`/v1/agents/${agent}/inputs/${item.inputId}`, { body: { version: item.version, action: 'accept', content: { answers: { 'Region?': 'EU' } } } });
+    assert.equal(response.status, 409, response.text);
+    const current = (await f.call('/v1/inbox')).json.items.find((input: any) => input.agent === agent && input.id === item.id);
+    assert.equal(current.state, 'pending');
+    assert.equal(current.version, item.version + 1);
+  }
 });
 
 contractTest('inbox-answers', 'shared/inbox-answers.ts', 'mixed blocking inputs and decisions settle independently with one decision notice', async (_t, f) => {

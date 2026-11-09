@@ -377,7 +377,10 @@ const worker = {
             const outcomes: (InboxOutcome & { agent: string })[] = [];
             for (const [agent, answers] of groups) {
               try {
-                const response = await forward(new Request(request.url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answers }) }), env, agent, "/inbox-answers", ctx);
+                const target = await new Directory(env, auth.tenantId).get(agent);
+                if (!target || target.deleted || (target.expiresAt !== null && target.expiresAt <= Date.now())) throw new ApiError(404, "Unknown agent");
+                if (!target.initialized) throw new ApiError(503, "Agent initialization is pending");
+                const response = await forward(new Request(request.url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answers }) }), env, target.id, "/inbox-answers", ctx);
                 if (!response.ok && ![403, 404].includes(response.status)) throw new ApiError(response.status, "Inbox authority unavailable");
                 const result = response.ok ? await response.json() as { outcomes: InboxOutcome[] } : { outcomes: answers.map(a => inboxAgentFailure(a.id, { status: response.status })) };
                 outcomes.push(...result.outcomes.map(outcome => ({ ...outcome, agent })));

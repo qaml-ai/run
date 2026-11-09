@@ -290,6 +290,7 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
       await server.restart();
     },
     async advanceInboxVersion(agent) {
+      await db.query("update agent_inputs set version=version+1 where agent=$1 and state='pending' and not blocking", [agent]);
       const result = await call(`/v1/agents/${agent}/__test/contract-inbox-version`, { body: {} });
       if (result.status !== 200) throw new Error(result.text);
     },
