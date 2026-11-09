@@ -60,7 +60,22 @@ camel-bots change is required.
 
 ## Validation
 
-Validation results are recorded in the final report after the sprite runs finish.
+All validation ran on Sprites; no production endpoints were changed.
+
+- Full Node suite at `6092f075`: all eight shards passed on the first run at
+  that commit (129–208 seconds per shard).
+- Transcript and dreaming contract files: three cases each on both Node and
+  Workers, covering descendant pagination, tenant authorization, private route
+  isolation, configuration, read-only mounts, real delegated publication, and
+  budget failure without publication or watermark advancement.
+- Targeted transcript, workflow, scheduler, log privacy, and Workers tool
+  selection tests passed. Scheduler coverage includes failure/retry, restart,
+  concurrent claims, scheduled admission, redaction, and source references.
+- Node/package and Workers typechecks passed. Python SDK: 65 tests passed.
+- OpenAPI and docs were regenerated; the docs/llms checks passed.
+
+An earlier full run caught unsafe scheduler error logging; it was fixed to use
+`safeError` before the final passing suite. No CI was triggered.
 
 ## Draft model-facing strings, verbatim
 
