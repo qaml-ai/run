@@ -434,7 +434,7 @@ and a webpack production build with the generated directory as the standalone ro
 
 `runtime.inbox({ for, subject, root, priority, kind, cursor, limit })` returns `{items, cursor, counts}`.
 Each item's `id` is answerable on its `agent`; `inputId` is a compatibility alias for the same value.
-Use `runtime.answerInbox(item, {action: "accept", content: value})` on your server. The priority-ordered
+Use `runtime.answerInbox([{agent: item.agent, id: item.id, version: item.version, action: "accept", content: value}], requestId)` on your server. The priority-ordered
 page and next cursor come from the runtime; do not sort pages independently.
 
 `InboxList` from `@camelai/run-react/ui` takes a `page`, a `load(filters)` callback, an

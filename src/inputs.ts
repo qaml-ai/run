@@ -425,12 +425,16 @@ export class Inputs {
   }
 
   /** Settle several pending inputs, all or none: undefined when any had already settled. */
-  async settleAll(answers: { id: string; answer: Answer }[]): Promise<InputRow[] | undefined> {
+  async settleAll(answers: { id: string; answer: Answer; version?: number }[]): Promise<InputRow[] | undefined> {
     const taken = new Error("An input had already settled");
     try {
       return await transaction(this.db, async sql => {
         const settled: InputRow[] = [];
-        for (const { id, answer } of answers) {
+        for (const { id, answer, version } of answers) {
+          if (version !== undefined) {
+            const current = (await sql.query("select version from agent_inputs where id=$1 for update", [id])).rows[0];
+            if (!current || current.version !== version) throw taken;
+          }
           const done = await this.settle(id, answer, undefined, sql);
           if (!done) throw taken;
           settled.push(done);

@@ -1,3 +1,4 @@
+import { inboxAnswers, inboxReceipt, inboxAgentFailure } from "../shared/inbox-answers.ts";
 import { vaultRoutes } from "./vault-api.ts";
 import type { Vault } from "./core/vault.ts";
 import type { Dreaming } from "../shared/dreaming.ts";
@@ -882,6 +883,19 @@ export function api(context: ApiContext) {
   }), async c => {
     const { status, ...answered } = await clients.answer(c.req.param("id")!, c.var.principal.tenant, answerList(await readJson(c.req.raw.body, 1024 * 1024, {})));
     return json(c, status, answered);
+  });
+  route(createRoute({ method: "post", path: "/v1/inbox/answers", request: { body: content(schema.InboxAnswers) }, responses: { 200: reply("One outcome per item; replayed by requestId", schema.InboxOutcomes), 409: reply("requestId was used with different answers", schema.ApiError) } }), async c => {
+    const body = inboxAnswers(await readJson(c.req.raw.body, 1024 * 1024, {}));
+    const tenant = c.var.principal.tenant;
+    return json(c, 200, await inboxReceipt(accounts.db, tenant, body, async () => {
+      const groups = new Map<string, typeof body.answers>();
+      for (const entry of body.answers) groups.set(entry.agent, [...groups.get(entry.agent) ?? [], entry]);
+      const outcomes = (await Promise.all([...groups].map(async ([agent, entries]) => {
+        const results = await clients.answerInbox(agent, tenant, entries).catch(error => entries.map(entry => inboxAgentFailure(entry.id, error)));
+        return results.map(result => ({ ...result, agent }));
+      }))).flat();
+      return body.answers.map(entry => outcomes.find(o => o.agent === entry.agent && o.id === entry.id)!);
+    }));
   });
   for (const path of ["/v1/inbox", "/v1/inputs"]) {
     route(createRoute({ method: "get", path, request: { query: schema.InboxQuery }, responses: { 200: reply("Pending inputs in priority order, with filtered counts before pagination", schema.InboxPage) } }), async c => {

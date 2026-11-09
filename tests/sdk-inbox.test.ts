@@ -14,14 +14,14 @@ test('inbox SDK sends filters and cursor and returns the page', async t => {
   assert.deepEqual(await client.inbox({ for: 'sam & alex', subject: 'customer', root: 'lead', priority: 'urgent', kind: 'decision', cursor: 'a+b=', limit: 7 }), page);
 });
 
-test('answerInbox posts the public id to its agent', async () => {
+test('answerInbox posts public IDs and versions in a batch', async () => {
   const client = new AgentRuntime({ url: 'https://runtime.example', apiKey: 'key', fetch: async (url, init) => {
-    assert.equal(new URL(String(url)).pathname, '/v1/agents/agent/inputs/local');
+    assert.equal(new URL(String(url)).pathname, '/v1/inbox/answers');
     assert.equal(init?.method, 'POST');
-    assert.deepEqual(JSON.parse(String(init?.body)), { action: 'accept', content: 'yes' });
+    assert.deepEqual(JSON.parse(String(init?.body)), { requestId: 'review', answers: [{ agent: 'agent', id: 'local', version: 1, action: 'accept', content: 'yes' }] });
     return Response.json({ input: {}, request: null });
   } });
-  await client.answerInbox({ agent: 'agent', id: 'local' }, { action: 'accept', content: 'yes' });
+  await client.answerInbox([{ agent: 'agent', id: 'local', version: 1, action: 'accept', content: 'yes' }], 'review');
 });
 
 test('canonical runtime environment names take precedence and explicit options win', () => {

@@ -391,6 +391,8 @@ export type InboxPriority = "urgent" | "high" | "normal" | "low";
 export interface InboxOptions { for?: string; subject?: string; root?: string; priority?: InboxPriority; kind?: AgentInput["kind"]; cursor?: string; limit?: number }
 /** id answers on agent; inputId is the same value for compatibility. Key rows by (agent, id). */
 export interface InboxItem extends Omit<AgentInput, "key"> { tenant: string; inputId: string; priority: InboxPriority; blocking: boolean; subject: string | null; root: string; lineage: string[]; key: string | null; version: number }
+export interface InboxAnswer { agent: string; id: string; version: number; action?: "accept" | "decline" | "cancel"; content?: unknown; accept?: "recommended"; actor?: string; from?: Sender }
+export interface InboxOutcome { agent: string; id: string; outcome: "answered" | "same" | "conflict" | "forbidden" | "unknown" | "invalid" | "unavailable"; status: number; retryable?: boolean; state?: string; by?: unknown; error?: string }
 export interface InboxPage { items: InboxItem[]; cursor: string | null; counts: { priority: Record<InboxPriority, number>; lead: Record<string, number> } }
 /** What an input asks: by its `kind`, the fields of one of these. */
 export interface InputDetail {
@@ -408,7 +410,7 @@ export interface InputDetail {
   url?: string; origin?: string;
 }
 /** An answer. `content`: for a question, { answers: { "<question>": "<label>" | ["<label>"] | "<own words>" } }; for a form, its fields. `from`/`actor`: who answers, checked against who may. */
-export interface InputAnswer { action: "accept" | "decline" | "cancel"; content?: unknown; from?: Sender; actor?: string }
+export interface InputAnswer { version?: number; action: "accept" | "decline" | "cancel"; content?: unknown; from?: Sender; actor?: string }
 export type { ThinkingLevel };
 export interface CreateAgentOptions extends AgentOptions {
   definitionRevision?: number;
@@ -1895,12 +1897,9 @@ export class AgentRuntime {
   }
   /** Who the API key is (`tenant`), and `defaultModel`, the model an agent gets when it names none. */
   me(): Promise<{ tenant: string; via: string; login?: string; defaultModel: string }> { return this.transport.json("/v1/me", this.operator()); }
-  /** Answer using the inbox item's public id and agent. Never use its database row id. */
-  answerInbox(item: Pick<InboxItem, "agent" | "id">, answer: InputAnswer): Promise<{ input: AgentInput; request: any | null }> {
-    return this.transport.json(`/v1/agents/${encodeURIComponent(item.agent)}/inputs/${encodeURIComponent(item.id)}`, this.operator(), "POST", answer);
-  }
   /** Pending inputs in priority order, with a cursor and filtered counts. */
   inbox(options: InboxOptions = {}): Promise<InboxPage> { return this.transport.json(`/v1/inbox?${queryOf({ ...options })}`, this.operator()); }
+  answerInbox(answers: InboxAnswer[], requestId: string): Promise<{ outcomes: InboxOutcome[] }> { return this.transport.json("/v1/inbox/answers", this.operator(), "POST", { answers, requestId }); }
   /**
    * Every source of an agent's tools (its application, file tools, built-ins, MCP servers, OpenAPI
    * specs) and what each offers the model. `schemas` includes input schemas; `refresh` lists MCP servers now.
