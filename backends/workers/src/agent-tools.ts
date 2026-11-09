@@ -375,7 +375,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
         });
         registry.install({
           name: "camel.computers",
-          tools: attachedComputerTools(
+          tools: conf.config.networking?.type === "limited" ? [] : attachedComputerTools(
             this.env,
             () => this.config(),
             (run) =>
@@ -420,6 +420,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
               requestId: run.id === "background" ? undefined : run.id,
               spendLimit: (params?.spendLimit as { usd?: number } | undefined)
                 ?.usd,
+              networking: conf.config.networking,
               builtins: conf.config.builtins,
               webSearch: conf.config.webSearch,
               keyScope: conf.config.keyScope,
@@ -472,7 +473,7 @@ export function createHarness(this: AgentRuntime): PiHarness {
         });
         registry.install({
           name: "camel.linux",
-          tools: [computerTool(this.env, this.ctx.id.toString(), async () => computerSetup(this.env, await this.config()), conf.config.computer)],
+          tools: [computerTool(this.env, this.ctx.id.toString(), async () => computerSetup(this.env, await this.config()), { ...conf.config.computer, networking: conf.config.networking })],
         });
         const sandbox = new SessionCodemodeSandbox({ remote: this.sandboxRemote });
         registry.install({

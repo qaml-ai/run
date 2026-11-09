@@ -1,3 +1,4 @@
+import { networkingInput, type Networking } from "./core/vault.ts";
 import { createHash, randomBytes } from "node:crypto";
 import type { Db } from "./db.ts";
 import type { RunLimits, ToolDefinition } from "./protocol.ts";
@@ -25,6 +26,7 @@ import type { ToolSourceView } from "./tool-servers.ts";
  * each through its `configure` request.
  */
 export interface DefinitionSpec {
+  networking?: Networking;
   /** What its agents are for: the description of each one's MCP tool (agent-mcp.ts). */
   description?: string;
   model?: string;
@@ -81,9 +83,9 @@ export interface ApplyResult { agent: string; requestId: string; status: "update
 /** Agent parameters from a definition, as `createAgent` takes them. */
 export type AgentParams = Record<string, unknown> & { tools?: ToolDefinition[] };
 
-const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "limits", "runLimits", "queue", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "decide", "applyOnUpdate"] as const;
+const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "limits", "runLimits", "queue", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "decide", "applyOnUpdate", "networking"] as const;
 /** Configuration an agent made from a definition may set as its own, which applying the definition leaves. */
-export const OVERRIDES = ["model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "runLimits", "queue"] as const;
+export const OVERRIDES = ["model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "runLimits", "queue", "networking"] as const;
 const PROVISION_FIELDS = ["name", "type", "ttlSeconds", "idleTtlSeconds", "mounts", "tools", "initialMessages", "systemPromptAppend"];
 /** Definitions a self-serve tenant may have; a tenant of the tenants file has its own limit (`maxDefinitions` option). */
 export const MAX_DEFINITIONS = 200;
@@ -323,6 +325,10 @@ export class Definitions {
       const refusal = model && modelSettingsRefusal(model, settings);
       if (refusal) throw new Error(refusal);
     } catch (error) { throw new HttpError(400, errorText(error)); }
+    if (spec.networking !== undefined) {
+      spec.networking = networkingInput(spec.networking);
+      if (spec.networking.type === "limited") throw new HttpError(400, "Limited networking is unavailable on the Node/Sprites backend");
+    }
     if (spec.limits !== undefined) {
       if (!spec.limits || typeof spec.limits !== "object" || Object.keys(spec.limits).some(key => key !== "ttlSeconds" && key !== "idleTtlSeconds")) throw new HttpError(400, "limits is { ttlSeconds?, idleTtlSeconds? }");
       validTtl(spec.limits.ttlSeconds);

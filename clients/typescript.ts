@@ -406,6 +406,7 @@ export interface InputDetail {
 export interface InputAnswer { action: "accept" | "decline" | "cancel"; content?: unknown; from?: Sender; actor?: string }
 export type { ThinkingLevel };
 export interface CreateAgentOptions extends AgentOptions {
+  networking?: Networking;
   /** Account workspace for spend attribution; null leaves it unassigned. */
   workspaceId?: string | null;
   idempotencyKey?: string;
@@ -512,7 +513,10 @@ export interface DelegateSettings {
  * (MCP servers) a short-lived credential the runtime fetches from `url`, an endpoint of yours: it is asked with an
  * identity token (aud `audience`, else `url`) and answers `{ token, expiresAt | expiresIn }`. See docs/guides/tools.md.
  */
-export type SourceAuth = { type: "bearer"; token: string } | { type: "runtime" } | { type: "exchange"; url: string; audience?: string };
+export type VaultAuth = { type: "vault"; name: string; workspace?: string };
+export type Networking = { type: "unrestricted" | "limited"; allowedHosts?: string[]; allowPackageManagers?: boolean; allowMcpServers?: boolean };
+export type SecretInput = { value?: string; allowedHosts?: string[]; locations?: ("header" | "query" | "body")[] };
+export type SourceAuth = VaultAuth | { type: "bearer"; token: string } | { type: "runtime" } | { type: "exchange"; url: string; audience?: string };
 /**
  * Options every tool source takes. Deprecated `exposure`: direct allows both and always declares the tools to the
  * model; codemode allows code only; both allows either, subject to the direct-tool budget.
@@ -525,7 +529,7 @@ export type SourceAuth = { type: "bearer"; token: string } | { type: "runtime" }
  * Not listed when saved: one that cannot be listed shows in a run's `sourceErrors`.
  */
 export interface InlineMcpServer {
-  name: string; url: string; auth?: { type: "runtime" }; audience?: string; allowTools?: string[]; denyTools?: string[]; exposure?: "direct" | "codemode" | "both"; timeoutMs?: number; fileArguments?: "on" | "off";
+  name: string; url: string; auth?: { type: "runtime" } | VaultAuth; audience?: string; allowTools?: string[]; denyTools?: string[]; exposure?: "direct" | "codemode" | "both"; timeoutMs?: number; fileArguments?: "on" | "off";
   /** Which tools the user approves before each call. */
   approval?: { default?: "never" | "always" | "destructive" | "judged"; tools?: Record<string, "never" | "always" | "judged"> };
 }
@@ -536,6 +540,8 @@ export interface InlineMcpServer {
  */
 interface SourceOptions { name: string; headers?: Record<string, string>; auth?: SourceAuth; audience?: string; allowTools?: string[]; denyTools?: string[]; exposure?: "direct" | "codemode" | "both"; timeoutMs?: number; fileArguments?: "on" | "off" }
 export interface DefinitionInput {
+  networking?: Networking;
+  computer?: { egress?: { host: string; auth?: SourceAuth; scheme?: "bearer" | "basic" }[]; secrets?: VaultAuth[]; idleSeconds?: number; idle?: "sleep" | "stop"; instance?: string };
   name: string;
   /** What its agents are for: shown to models as the description of each agent's MCP tool (/v1/agents/:id/mcp). */
   description?: string;
@@ -1097,7 +1103,7 @@ const AGENT_KEY = /^[A-Za-z0-9_-]{1,80}$/;
 const REQUEST_ID = AGENT_KEY;
 /** A create request's fields, from the options given. */
 function provisioning(options: CreateAgentOptions) {
-  const fields = ["workspaceId", "subject", "context", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "definition", "mounts", "remount", "model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "queue", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "decide", "delegate", "mcpServers", "prompt"] as const;
+  const fields = ["networking", "workspaceId", "subject", "context", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "definition", "mounts", "remount", "model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "queue", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "decide", "delegate", "mcpServers", "prompt"] as const;
   return withMultiAgent(Object.fromEntries(fields.filter(field => options[field] !== undefined).map(field => [field, options[field]])));
 }
 /** `delegate` settings bring their builtin: given the settings without delegate or agents, delegate is added. */
@@ -1757,6 +1763,11 @@ export class AgentRuntime {
    * Definitions: reusable agent configurations with their tool sources (MCP servers, OpenAPI
    * specs, built-ins). Make agents from one with `createAgent({ definition: id })`.
    */
+  listSecrets(workspace?: string): Promise<string[]> { return this.transport.json(this.vaultPath(workspace), this.operator(), "GET"); }
+  createSecret(name: string, input: SecretInput, workspace?: string): Promise<{name: string}> { return this.transport.json(`${this.vaultPath(workspace)}/${encodeURIComponent(name)}`, this.operator(), "POST", input, false); }
+  updateSecret(name: string, input: SecretInput, workspace?: string): Promise<{name: string}> { return this.transport.json(`${this.vaultPath(workspace)}/${encodeURIComponent(name)}`, this.operator(), "PATCH", input, false); }
+  deleteSecret(name: string, workspace?: string): Promise<{deleted: boolean}> { return this.transport.json(`${this.vaultPath(workspace)}/${encodeURIComponent(name)}`, this.operator(), "DELETE", undefined, false); }
+  private vaultPath(workspace?: string) { return workspace ? `/v1/workspaces/${encodeURIComponent(workspace)}/secrets` : "/v1/secrets"; }
   createDefinition(input: DefinitionInput): Promise<Definition> { return this.transport.json("/v1/definitions", this.operator(), "POST", withMultiAgent(input), false); }
   /**
    * The definition for `key`, set to `input` whole: made if there is none, else a new revision if `input` changes it. The same key is the same definition.

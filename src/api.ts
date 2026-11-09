@@ -1,3 +1,5 @@
+import { vaultRoutes } from "./vault-api.ts";
+import type { Vault } from "./core/vault.ts";
 import { SharedAgents, ShareLinkInput, MemberInput, ShareLink, CreatedShareLink, Member } from './shared-agents.ts';
 import { inboxQuery, readInbox, InboxQueryError } from '../shared/inbox.ts';
 import { rejectWorkflow } from "./builtins.ts";
@@ -103,6 +105,7 @@ export interface ApiContext {
   channels?: Channels;
   /** A tenant's GitHub Apps (`/v1/github-apps`), which egress grants and tool sources mint tokens from. */
   githubApps?: GitHubApps;
+  vault?: Vault;
   volumes?: VolumeService;
   definitions?: Definitions;
   /** Tenants whose operator tokens may adjust any tenant's credit (AGENT_BILLING_ADMINS). */
@@ -1399,6 +1402,7 @@ export function api(context: ApiContext) {
 
   channelRoutes(route, () => context.channels);
   githubAppRoutes(route, () => context.githubApps);
+  vaultRoutes(route, () => context.vault);
   definitionRoutes(route, () => context);
   workspaceRoutes(route, () => accounts.db);
   computerRoutes(route, () => context.computers, operatorOnly);

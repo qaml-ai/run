@@ -1,3 +1,4 @@
+import { maskResponse } from "./core/vault.ts";
 import { createHash } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -23,7 +24,7 @@ import { callParams, type CallInput } from "./mcp-results.ts";
  * token the server answered 401 or 403 to (a credential that expired early or was revoked): the request is then sent
  * once more with the next `token()`, since a request refused for its credentials never ran.
  */
-export interface McpServer { url: string; headers: Record<string, string>; token?: () => Promise<string>; refused?: (token: string) => void; scope?: string }
+export interface McpServer { vault?: boolean; url: string; headers: Record<string, string>; token?: () => Promise<string>; refused?: (token: string) => void; scope?: string }
 type Connection = {
   key: string; tenant: string; server: McpServer;
   client?: Client; connecting?: Promise<Client>;
@@ -72,8 +73,10 @@ export class McpConnections {
   /** Requests to the server's own origin carry its credentials; anything else goes without them. */
   private fetcher(server: McpServer): FetchLike {
     const send = async (url: string | URL, init?: RequestInit) => {
+      if (server.token && new URL(url).origin !== new URL(server.url).origin) throw new Error("Authenticated MCP requests cannot change origin");
       const token = await server.token?.();
-      const response = await this.outbound.fetch(url, {
+      let response: Response;
+      try { response = await this.outbound.fetch(url, {
         ...init, secrets: token === undefined ? server.headers : { ...server.headers, Authorization: `Bearer ${token}` },
         // Each MCP request has its own timeout, and a server answering in JSON sends its headers only with a
         // tool's answer: this only bounds a response that never starts. Closing the connection aborts it.
@@ -81,7 +84,8 @@ export class McpConnections {
         // A response may be an event stream carrying the answer (or the server's notifications): only its start is timed.
         stream: true,
       });
-      return { token, response };
+      } catch (error) { if (server.vault) throw new Error("Vault MCP request failed"); throw error; }
+      return { token, response: token ? await maskResponse(response, [token]) : response };
     };
     const unauthorized = (response: Response) => response.status === 401 || response.status === 403;
     return async (url, init) => {

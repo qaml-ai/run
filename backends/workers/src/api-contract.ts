@@ -1,3 +1,4 @@
+import { networkingInput, type Networking } from "../../../src/core/vault.ts";
 import { BadRequest, object } from "./validation.ts";
 
 import { languageInput } from "../../../src/language.ts";
@@ -17,6 +18,7 @@ import { humanInputSettings, type HumanInputSettings } from "./input-policy.ts";
 import { rejectWorkflow } from "./workflow-refusal.ts";
 
 export interface AgentConfiguration {
+  networking?: Networking;
   /** A definition's native computer settings (computers/egress.ts); agents take them only from their definition. */
   computer?: import("./computers/egress.ts").ComputerSettings;
   model?: string;
@@ -99,13 +101,14 @@ export function configuration(input: unknown, defaultModel: string, operation: "
   rejectWorkflow(input);
   let fields: Record<string, unknown>;
   try {
-    fields = object(input, ["model", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "name", "type", "thinkingLevel", "mcp", "ttlSeconds", "idleTtlSeconds", "builtins", "webSearch", "delegate", "decide", "mounts", "maxOutputTokens", "temperature", "dataCollection", "language", "modelHeaders", "runLimits", "queue", "initialMessages", "importMessages", "definition", "subject", "context", "keyScope", "spendLimit", "bucket", "humanInput", "subagents", "workspaceId", "remount", "prompt", "mcpServers", "openApi", "definitionRevision", "definitionOverrides", "computer"]);
+    fields = object(input, ["model", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "name", "type", "thinkingLevel", "mcp", "ttlSeconds", "idleTtlSeconds", "builtins", "webSearch", "delegate", "decide", "mounts", "maxOutputTokens", "temperature", "dataCollection", "language", "modelHeaders", "runLimits", "queue", "initialMessages", "importMessages", "definition", "subject", "context", "keyScope", "spendLimit", "bucket", "humanInput", "subagents", "workspaceId", "remount", "prompt", "mcpServers", "openApi", "definitionRevision", "definitionOverrides", "computer", "networking"]);
   } catch (error) {
     if (error instanceof BadRequest && error.message.startsWith("Unsupported field: "))
       throw new BadRequest(`Unknown agent field: ${error.message.slice("Unsupported field: ".length).split(", ")[0]}`);
     throw error;
   }
   const config: AgentConfiguration = { model: defaultModel };
+  if (fields.networking !== undefined) config.networking = networkingInput(fields.networking);
   Object.assign(config, identityInput(fields));
   if (fields.bucket !== undefined && fields.bucket !== null) config.bucket = bucketInput(fields.bucket);
   // Creation requires a scope name; only configuration updates use null to remove it.

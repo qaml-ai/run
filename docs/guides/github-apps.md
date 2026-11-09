@@ -180,3 +180,5 @@ webhooks and mints the agents' tokens. See [Channels](channels.md).
 
 Account export lists your Apps, masked (`github-apps.json`); deleting the
 account deletes them.
+
+Computer egress shares the credential gateway with the [vault](vault.md). Vault values can authenticate other services; existing `github-app` references keep working.

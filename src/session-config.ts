@@ -1,3 +1,4 @@
+import { networkingInput } from "./core/vault.ts";
 import { passthroughModel } from "./openrouter-model.ts";
 import { VIRTUAL_PROVIDER, virtualModel } from "./virtual-models.ts";
 import { getModel, temperatureRefusal } from './pi-catalog.ts';
@@ -251,10 +252,15 @@ export function sessionConfig(input: any, defaultModel: AgentConfig['model'], de
     ...(input.dataCollection !== undefined ? { dataCollection: input.dataCollection } : {}),
     ...(input.language !== undefined ? { language: input.language } : {}),
     ...(input.queue !== undefined ? { queue: input.queue } : {}),
+    ...(input.networking !== undefined ? { networking: input.networking } : {}),
   });
   const refusal = modelSettingsRefusal(model, updates);
   if (refusal) throw new HttpError(400, refusal);
   if (input.initialMessages !== undefined) validateInitialMessages(input.initialMessages);
+  if (input.networking !== undefined) {
+    input = { ...input, networking: networkingInput(input.networking) };
+    if (input.networking.type === 'limited') throw new HttpError(400, 'Limited networking is unavailable on the Node/Sprites backend');
+  }
   if (input.fileTools !== undefined && typeof input.fileTools !== 'boolean') throw new Error('fileTools must be true or false');
   if (input.codeMode !== undefined && typeof input.codeMode !== 'boolean') throw new Error('codeMode must be true or false');
   return { model, ...updates, ...(input.fileTools === false ? { fileTools: false } : {}), ...(input.codeMode === false ? { codeMode: false } : {}), ...(input.initialMessages !== undefined ? { initialMessages: input.initialMessages } : {}) };
@@ -264,9 +270,13 @@ export function sessionConfig(input: any, defaultModel: AgentConfig['model'], de
  * Scoped credentials can change behavior, tools and the model, but never a model
  * endpoint or credentials: a model can only be named from Pi's catalog.
  */
-export function configurationUpdate(input: any, endpoints?: ModelEndpoints, custom?: CustomProviders): Pick<AgentConfig, 'systemPrompt' | 'systemPromptAppend' | 'thinkingLevel' | 'modelHeaders' | 'runLimits' | 'maxOutputTokens' | 'temperature' | 'dataCollection' | 'language' | 'queue'> & { tools?: AgentConfig['tools']; model?: AgentConfig['model']; keyScope?: string | null } {
+export function configurationUpdate(input: any, endpoints?: ModelEndpoints, custom?: CustomProviders): Pick<AgentConfig, 'systemPrompt' | 'systemPromptAppend' | 'thinkingLevel' | 'modelHeaders' | 'runLimits' | 'maxOutputTokens' | 'temperature' | 'dataCollection' | 'language' | 'queue' | 'networking'> & { tools?: AgentConfig['tools']; model?: AgentConfig['model']; keyScope?: string | null } {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid configuration');
-  for (const key of Object.keys(input)) if (!['systemPrompt', 'systemPromptAppend', 'thinkingLevel', 'mcp', 'model', 'keyScope', 'modelHeaders', 'tools', 'fileTools', 'codeMode', 'runLimits', 'maxOutputTokens', 'temperature', 'dataCollection', 'language', 'queue'].includes(key)) throw new Error(`Unsupported scoped configuration field: ${key}`);
+  for (const key of Object.keys(input)) if (!['systemPrompt', 'systemPromptAppend', 'thinkingLevel', 'mcp', 'model', 'keyScope', 'modelHeaders', 'tools', 'fileTools', 'codeMode', 'runLimits', 'maxOutputTokens', 'temperature', 'dataCollection', 'language', 'queue', 'networking'].includes(key)) throw new Error(`Unsupported scoped configuration field: ${key}`);
+  if (input.networking !== undefined) {
+    input = { ...input, networking: networkingInput(input.networking) };
+    if (input.networking.type === 'limited') throw new HttpError(400, 'Limited networking is unavailable on the Node/Sprites backend');
+  }
   if (input.fileTools !== undefined && typeof input.fileTools !== 'boolean') throw new Error('fileTools must be true or false');
   if (input.codeMode !== undefined && typeof input.codeMode !== 'boolean') throw new Error('codeMode must be true or false');
   if (input.keyScope !== undefined && input.keyScope !== null) checkScope(input.keyScope);

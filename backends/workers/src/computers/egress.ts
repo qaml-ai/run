@@ -1,3 +1,4 @@
+import { vaultAuth, vaultRequest, maskResponse, type Vault, type VaultAuth, type Networking, networkAllows } from "../../../../src/core/vault.ts";
 // A native computer starts with enableInternet: true: every host is reachable
 // directly. Its definition may grant HTTPS egress to named hosts: the
 // Container's traffic to each host is intercepted
@@ -13,13 +14,16 @@ import { GITHUB_HOSTS, githubAppAuthInput, type GitHubAppAuth } from "../../../.
 import type { RuntimeIdentity } from "../tool-identity.ts";
 import { INSTANCE_TYPES, type InstanceType } from "./provider.ts";
 
-export type EgressAuth = ExchangeAuth | GitHubAppAuth;
+export type EgressAuth = ExchangeAuth | GitHubAppAuth | VaultAuth;
 export type EgressGrant = { host: string; auth?: EgressAuth; scheme?: "bearer" | "basic" };
 /** A definition's `computer`: what its agents' native computers may reach, how long they stay up idle, and their size. */
 export type ComputerSettings = {
   egress?: EgressGrant[]; idleSeconds?: number; instance?: InstanceType;
   /** What idling out does: "stop" (default) discards the disk; "sleep" saves it first, so the next start or fork resumes it. */
   idle?: "stop" | "sleep";
+  secrets?: VaultAuth[];
+  networking?: Networking;
+  mcpHosts?: string[];
 };
 export type EgressIdentity = { issuer: string; claims: RuntimeIdentity };
 /** What the agent hands its computer object with each operation. */
@@ -63,9 +67,14 @@ type UrlCheck = (value: unknown) => URL;
  */
 export function computerSettingsInput(value: unknown, checkUrl: UrlCheck, tenant: string): ComputerSettings {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw bad("computer must be an object");
-  const extra = Object.keys(value).find(key => !["egress", "idleSeconds", "instance", "idle"].includes(key));
+  const extra = Object.keys(value).find(key => !["egress", "idleSeconds", "instance", "idle", "secrets"].includes(key));
   if (extra) throw bad(`computer: Unrecognized key: "${extra}"`);
-  const input = value as { egress?: unknown; idleSeconds?: unknown; instance?: unknown; idle?: unknown }, settings: ComputerSettings = {};
+  const input = value as { secrets?: unknown; egress?: unknown; idleSeconds?: unknown; instance?: unknown; idle?: unknown }, settings: ComputerSettings = {};
+  if (input.secrets !== undefined) {
+    if (!Array.isArray(input.secrets) || input.secrets.length > 64) throw bad("computer.secrets must contain at most 64 vault references");
+    settings.secrets = input.secrets.map(vaultAuth);
+    if (new Set(settings.secrets.map(s => s.name)).size !== settings.secrets.length) throw bad("Secret names must be unique");
+  }
   if (input.idle !== undefined) {
     if (input.idle !== "stop" && input.idle !== "sleep") throw bad('computer.idle must be "stop" or "sleep"');
     settings.idle = input.idle;
@@ -105,6 +114,8 @@ export function computerSettingsInput(value: unknown, checkUrl: UrlCheck, tenant
         if (!(GITHUB_HOSTS as readonly string[]).includes(host)) throw bad(`${where}.auth github-app is for GitHub's hosts: ${GITHUB_HOSTS.join(", ")}`);
         try { grant.auth = githubAppAuthInput(auth, `${where}.auth`); } catch (error) { throw bad((error as Error).message); }
         grant.scheme = (scheme as EgressGrant["scheme"]) ?? (host === "github.com" ? "basic" : "bearer");
+      } else if (auth !== undefined && (auth as {type?: unknown}).type === "vault") {
+        grant.auth = vaultAuth(auth); grant.scheme = (scheme as EgressGrant["scheme"]) ?? "bearer";
       } else if (auth !== undefined) {
         if (!auth || typeof auth !== "object" || Array.isArray(auth) || (auth as { type?: unknown }).type !== "exchange")
           throw bad(`${where}.auth is { type: "exchange", url, audience? } or { type: "github-app", app, repositories?, permissions? }`);
@@ -136,13 +147,17 @@ export function authorization(grant: EgressGrant, token: string) {
 /** The computer's description of its network, for the tool the model reads. */
 export function egressDescription(settings?: ComputerSettings) {
   const authed = settings?.egress?.filter(grant => grant.auth).map(grant => grant.host) ?? [];
-  return "Internet access." +
+  return (settings?.networking?.type === "limited" ? "Network access is limited to allowed hosts." : "Internet access.") +
+    (settings?.secrets?.length ? ` Vault placeholders are in environment variables: ${settings.secrets.map(s => s.name).join(", ")}.` : "") +
     (authed.length ? ` Requests to ${authed.join(", ")} are authenticated by the runtime: use plain https:// URLs and never put credentials in commands, files or remotes.` : "");
 }
 
 const HOP = ["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade", "host"];
 export type EgressDeps = {
   /** The credential for an authenticated grant, from the exchange cache. */
+  networking?: Networking;
+  mcpHosts?: string[];
+  vault?: { service: Vault; tenant: string; refs: VaultAuth[] };
   credential(grant: EgressGrant & { auth: EgressAuth }): Promise<{ token: string; refused(): void }>;
   /** Sends the upstream request (the Worker's fetch, after the runtime's outbound checks). */
   send(request: Request): Promise<Response>;
@@ -156,9 +171,15 @@ export type EgressDeps = {
  * the upstream refuses (401/403) is dropped from the cache; a request without a body is sent once more with a new one.
  */
 export async function forwardEgress(request: Request, grant: EgressGrant, deps: EgressDeps): Promise<Response> {
+  let secretValues: string[] = [];
+  if (deps.vault) {
+    try { const filled = await vaultRequest(request, deps.vault.refs, deps.vault.service, deps.vault.tenant); request = filled.request; secretValues = filled.values; }
+    catch { return Response.json({ error: "Vault request refused" }, { status: 403 }); }
+  }
   const incoming = new URL(request.url);
-  if (incoming.hostname !== grant.host) return Response.json({ error: `Egress is granted to ${grant.host}, not ${incoming.hostname}` }, { status: 403 });
-  const target = new URL(`${incoming.pathname}${incoming.search}`, `https://${grant.host}`);
+  if (deps.networking && !networkAllows(deps.networking, incoming, deps.mcpHosts)) return Response.json({ error: "Network destination is not allowed" }, { status: 403 });
+  if (grant.host !== "*" && incoming.hostname !== grant.host) return Response.json({ error: `Egress is granted to ${grant.host}, not ${incoming.hostname}` }, { status: 403 });
+  const target = new URL(incoming.href); target.protocol = "https:"; target.port = ""; target.username = ""; target.password = "";
   if (deps.testUpstream) { target.protocol = deps.testUpstream.protocol; target.host = deps.testUpstream.host; }
   const headers = new Headers(request.headers);
   for (const name of HOP) headers.delete(name);
@@ -170,17 +191,20 @@ export async function forwardEgress(request: Request, grant: EgressGrant, deps: 
       headers.delete("authorization");
       try { credential = await deps.credential(grant as EgressGrant & { auth: EgressAuth }); }
       catch (error) { return { response: Response.json({ error: `camelRun egress credential for ${grant.host}: ${(error as Error).message}` }, { status: 502 }) }; }
+      secretValues.push(credential.token);
       headers.set("authorization", authorization(grant, credential.token));
     }
     const response = await deps.send(new Request(target, { method: request.method, headers, body, redirect: "manual", ...(body ? { duplex: "half" } : {}) } as RequestInit));
     return { response, credential };
   };
-  let { response, credential } = await send();
+  let first;
+  try { first = await send(); } catch { return Response.json({ error: "Egress request failed" }, { status: 502 }); }
+  let { response, credential } = first;
   // GitHub answers 403 for what a scoped token may not do, which a new token would not change: only its 401 is a refusal.
   const refusal = grant.auth?.type === "github-app" ? [401] : [401, 403];
   if (credential && refusal.includes(response.status)) {
     credential.refused();
-    if (!body) { await response.body?.cancel(); ({ response } = await send()); }
+    if (!body) { await response.body?.cancel(); try { ({ response } = await send()); } catch { return Response.json({ error: "Egress request failed" }, { status: 502 }); } }
   }
-  return response;
+  return secretValues.length ? maskResponse(response, secretValues) : response;
 }

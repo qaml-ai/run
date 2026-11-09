@@ -261,3 +261,18 @@ test("the parent-link cache stays bounded, dropping the oldest entries", async (
   for (let i = 0; i < PARENT_CACHE_ENTRIES + 50; i++) rememberParent(`client_${i}`, i % 2 ? `parent_${i}` : null);
   assert.equal(parentCacheSize(), PARENT_CACHE_ENTRIES);
 });
+
+test("limited gateway checks the destination even for an authenticated grant and never follows redirects", async () => {
+  const { networkingInput } = await import("../../../src/core/vault.ts");
+  const network = networkingInput({type:"limited",allowedHosts:["api.stripe.com"]});
+  let sent = 0;
+  const deps = { networking: network, credential: async () => ({token:"live-secret",refused(){}}), send: async (request: Request) => {
+    sent++; assert.equal(request.redirect,"manual"); assert.equal(new URL(request.url).host,"api.stripe.com");
+    return new Response("live-secret",{status:302,headers:{location:"https://evil.com/?key=live-secret"}});
+  }};
+  assert.equal((await forwardEgress(new Request("https://evil.com"),{host:"*"},deps)).status,403);
+  assert.equal(sent,0);
+  const response=await forwardEgress(new Request("https://api.stripe.com//evil.com/path"),{host:"api.stripe.com",auth:{type:"vault",name:"TOKEN"}},deps);
+  assert.equal(sent,1); assert.equal(response.status,302);
+  assert.equal(await response.text(),"[hidden]"); assert.equal(response.headers.get("location"),"https://evil.com/?key=[hidden]");
+});

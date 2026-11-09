@@ -1,3 +1,4 @@
+import type { Networking } from "../../../src/core/vault.ts";
 import { defineTool, type ToolRegistration, type ToolExecutionApi } from '@earendil-works/pi-durable';
 import { compile } from '@earendil-works/pi-schema';
 import { resolveProviderKey, type ProviderKeyEnv } from './model-credentials.ts';
@@ -16,7 +17,7 @@ import type { KeyEnv } from './security-services.ts';
 import { toolResult } from './attached-tools.ts';
 import type { WebhookEnv } from './webhooks.ts';
 
-export type BuiltinScope = { tenant: string; agent: string; requestId?: string; spendLimit?: number; callId?: string; startedAt?: number; builtins?: string[]; webSearch?: { providers: string[] }; keyScope?: string; identity?: { subject?: string; context?: Record<string, unknown> }; actor?: string; bucket?: string; files?: WebFiles };
+export type BuiltinScope = { networking?: Networking; tenant: string; agent: string; requestId?: string; spendLimit?: number; callId?: string; startedAt?: number; builtins?: string[]; webSearch?: { providers: string[] }; keyScope?: string; identity?: { subject?: string; context?: Record<string, unknown> }; actor?: string; bucket?: string; files?: WebFiles };
 export type BuiltinEnv = ProviderKeyEnv & KeyEnv & WebhookEnv & { TEST_MODEL?: string; AGENT_OUTBOUND_ALLOW_HTTP?: string; AGENT_OUTBOUND_ALLOW_CIDRS?: string; AGENT_OUTBOUND_BLOCK_CIDRS?: string; AGENT_EXA_SEARCH_URL?: string; AGENT_BRAVE_SEARCH_URL?: string; AGENT_PARALLEL_SEARCH_URL?: string; AGENT_WEB_SEARCH_PROVIDERS?: string; AGENT_XAI_RESPONSES_URL?: string; AGENT_X_SEARCH_URL?: string; AGENT_FIRECRAWL_SCRAPE_URL?: string };
 export type BuiltinHost = { outbound?: Outbound; key?: (scope: BuiltinScope, provider: string) => Promise<{ key: string; platform: boolean } | undefined>; admit?: (scope: BuiltinScope, platform: boolean) => Promise<void>; record?: (scope: BuiltinScope, usage: UsageRecord) => Promise<void>; schedules?: ScheduleToolsHost };
 
@@ -25,7 +26,7 @@ export async function agentBuiltins(env: BuiltinEnv, context: (api?: ToolExecuti
   const initial = await context();
   const testMode = env.TEST_MODEL === '1' && env.TEST_MODE === '1';
   const cidrs = (value?: string) => value?.split(',').map(value => value.trim()).filter(Boolean);
-  const outbound = host.outbound ?? new PublicOutbound({ allowHttp: testMode && env.AGENT_OUTBOUND_ALLOW_HTTP === 'true', allow: testMode ? cidrs(env.AGENT_OUTBOUND_ALLOW_CIDRS) ?? [] : [], block: cidrs(env.AGENT_OUTBOUND_BLOCK_CIDRS) });
+  const outbound = host.outbound ?? new PublicOutbound({ networking: initial.networking, allowHttp: testMode && env.AGENT_OUTBOUND_ALLOW_HTTP === 'true', allow: testMode ? cidrs(env.AGENT_OUTBOUND_ALLOW_CIDRS) ?? [] : [], block: cidrs(env.AGENT_OUTBOUND_BLOCK_CIDRS) });
   const settings = testMode ? env : { AGENT_WEB_SEARCH_PROVIDERS: env.AGENT_WEB_SEARCH_PROVIDERS };
   const providers = searchProvidersFromEnvironment(settings as never);
   const pricingEnv = Object.fromEntries(Object.entries(env).filter(([, value]) => typeof value === 'string')) as NodeJS.ProcessEnv;
