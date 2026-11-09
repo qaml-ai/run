@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { contractTest, toolCall, until } from '../support.ts';
 
+const decisionNotices = (bodies: any[]) => [...new Set<string>(bodies.flatMap(body => body.messages ?? []).filter((message: any) => message.role === 'user').map((message: any) => JSON.stringify(message.content)).filter((text: string) => text.includes('<decision_answer id=')))];
+
 contractTest('inbox-answers', 'shared/inbox-answers.ts', 'batch answers use the authority, enforce responders, and replay outcomes', async (_t, f) => {
   f.setModel((_body, index) => index === 0 ? toolCall('ask_user', { questions: [{ question: 'Region?', header: 'Region', options: [{ label: 'EU' }, { label: 'US' }] }] }) : { role: 'assistant', content: 'Recorded.' });
   const definition = (await f.call('/v1/definitions', { body: { name: 'Batch asker', builtins: ['ask_user'] } })).json;
@@ -112,8 +114,9 @@ contractTest('inbox-answers', 'shared/inbox-answers.ts', 'withdrawn decisions co
   assert.equal(result.json.outcomes.filter((o: any) => o.outcome === 'answered').length, 2);
   assert.equal(result.json.outcomes.find((o: any) => o.outcome === 'conflict').state, 'withdrawn');
   await until(() => f.model.bodies.length === before + 1, 'one decision notice');
-  const notice = JSON.stringify(f.model.bodies.at(-1));
-  assert.match(notice, /decision_answer/);
+  const notices = decisionNotices(f.model.bodies.slice(before));
+  assert.equal(notices.length, 1);
+  const notice = notices[0];
   for (const item of all.filter((i: any) => i.state === 'pending')) assert.ok(notice.includes(item.id));
   assert.deepEqual((await f.call('/v1/inbox/answers', { body })).json, result.json);
   assert.equal(f.model.bodies.length, before + 1);
@@ -191,7 +194,9 @@ contractTest('inbox-answers', 'shared/inbox-answers.ts', 'mixed blocking inputs 
   }, 'the decision notice completes');
   const notices = (await f.call(`/v1/agents/${agent}`)).json.requests.filter((request: any) => request.id.startsWith('decision_'));
   assert.equal(notices.length, 1);
-  const delivered = f.model.bodies.map(body => JSON.stringify(body)).find(body => body.includes('decision_answer'))!;
+  const texts = decisionNotices(f.model.bodies);
+  assert.equal(texts.length, 1);
+  const delivered = texts[0];
   for (const item of all.filter((item: any) => !item.blocking && item.state === 'pending')) assert.ok(delivered.includes(item.id));
   assert.deepEqual((await f.call('/v1/inbox/answers', { body })).json, response.json);
   assert.equal((await f.call(`/v1/agents/${agent}`)).json.requests.filter((request: any) => request.id.startsWith('decision_')).length, 1);
