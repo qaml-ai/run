@@ -3,6 +3,7 @@ import type { Api, Model } from '@earendil-works/pi-ai';
 import { getModel, temperatureRefusal } from './model-catalog.ts';
 import { deepseekOnOpenRouter } from './deepseek-policy.ts';
 import { HttpError } from './errors.ts';
+import { queueInput, type QueueSetting } from '../../../shared/queue-mode.ts';
 export type RunLimits = { maxResponses?: number; maxSeconds?: number; firstTokenSeconds?: number; idleSeconds?: number; contextTokens?: number };
 type AgentConfig = { model: Model<Api>; thinkingLevel?: string; maxOutputTokens?: number | null; temperature?: number | null };
 const MIN_CONTEXT_TOKENS = 20_000;
