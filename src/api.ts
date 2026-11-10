@@ -1081,7 +1081,7 @@ export function api(context: ApiContext) {
     const hold = endUserHold(c.var.principal.tenant, identity?.subject, input.bucket, "transcription");
     return json(c, 200, await transcribeRequest(service, c.var.principal.tenant, {
       audio: bytes ? { bytes } : { url: input.url! }, ...(language ? { language } : {}), ...(input.prompt ? { prompt: input.prompt } : {}),
-      ...(input.keyScope ? { keyScope: input.keyScope } : {}), ...(identity ? { identity } : {}), ...(actor ? { actor } : {}), ...(hold ? { hold } : {}),
+      ...(input.keyScope ? { keyScope: input.keyScope } : {}), ...(input.bucket === undefined ? {} : { bucket: input.bucket }), ...(identity ? { identity } : {}), ...(actor ? { actor } : {}), ...(hold ? { hold } : {}),
     }, c.req.raw.signal));
   });
 
@@ -1106,7 +1106,7 @@ export function api(context: ApiContext) {
     const actor = actorInput(asked);
     const hold = endUserHold(c.var.principal.tenant, identity?.subject, bucket as string | undefined, "decision");
     return json(c, 200, await decisionsRequest(service, c.var.principal.tenant, {
-      ...request, ...(keyScope ? { keyScope: keyScope as string } : {}), ...(dataCollection === "deny" ? { dataCollection } : {}), ...(identity ? { identity } : {}), ...(actor ? { actor } : {}), ...(hold ? { hold } : {}),
+      ...request, ...(keyScope ? { keyScope: keyScope as string } : {}), ...(dataCollection === "deny" ? { dataCollection } : {}), ...(bucket === undefined ? {} : { bucket: bucket as string }), ...(identity ? { identity } : {}), ...(actor ? { actor } : {}), ...(hold ? { hold } : {}),
     }, c.req.raw.signal));
   });
 
@@ -1125,7 +1125,7 @@ export function api(context: ApiContext) {
     const language = languageInput(input.language);
     const choice = input.speech === undefined ? undefined : speechChoiceInput(input.speech);
     const made = await speechRequest(service, c.var.principal.tenant, {
-      ...checked, ...(input.keyScope ? { keyScope: input.keyScope } : {}), ...(language ? { language } : {}), ...(choice ? { choice } : {}), ...(identity ? { identity } : {}), ...(actor ? { actor } : {}), ...(hold ? { hold } : {}),
+      ...checked, ...(input.keyScope ? { keyScope: input.keyScope } : {}), ...(language ? { language } : {}), ...(choice ? { choice } : {}), ...(input.bucket === undefined ? {} : { bucket: input.bucket }), ...(identity ? { identity } : {}), ...(actor ? { actor } : {}), ...(hold ? { hold } : {}),
     }, c.req.raw.signal);
     return new Response(made.body, { status: 200, headers: { "Content-Type": made.contentType, "Cache-Control": "no-store", "X-Speech-Model": made.model } });
   });
@@ -1178,7 +1178,7 @@ export function api(context: ApiContext) {
     return json(c, 200, await imageRequest(service, c.var.principal.tenant, {
       prompt: input.prompt, images, ...(mask ? { mask } : {}), options: imageOptions(input),
       ...(input.volumeId !== undefined ? { volume: { id: input.volumeId, path: path! } } : {}),
-      ...(input.keyScope ? { keyScope: input.keyScope } : {}), ...(identity ? { identity } : {}), ...(actor ? { actor } : {}), ...(hold ? { hold } : {}),
+      ...(input.keyScope ? { keyScope: input.keyScope } : {}), ...(input.bucket === undefined ? {} : { bucket: input.bucket }), ...(identity ? { identity } : {}), ...(actor ? { actor } : {}), ...(hold ? { hold } : {}),
     }, c.req.raw.signal));
   });
 

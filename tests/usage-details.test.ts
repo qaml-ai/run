@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
+import { transaction } from "../src/db.ts";
+import { runtime, until } from "./runtime-server.ts";
 import { testDatabase } from "./database.ts";
 import { groupedUsage, recordUsageDetails, resolveUsageAttribution, pruneUsageDetails, ownsUsageAgent, usageOptions } from "../shared/usage-details.ts";
 const day = () => new Date().toISOString().slice(0,10);
@@ -74,4 +76,63 @@ test("migration folds old call rows and preserves attribution for later correcti
     { root: "root", definition: "original", workspace: null });
   await recordUsageDetails(db, [{ ...row, endUser: null, attribution: { root: "root", definition: "original", workspace: null } }]);
   assert.equal((await db.query("select count(*)::int n from usage_details")).rows[0].n, 1);
+});
+
+
+test("daily bucket grouping retains corrections and includes missing buckets and subjects", async () => {
+  const { db } = await testDatabase();
+  const rows = [
+    { ...base(), bucket: "bot:1", cost: 0.3 },
+    { ...base(), bucket: "bot:2", cost: 0.4 },
+    { ...base(), bucket: null, endUser: null, cost: 0.5 },
+  ];
+  await recordUsageDetails(db, rows);
+  await recordUsageDetails(db, [{ ...rows[0], cost: -0.1, responses: 0 }]);
+  const options = usageOptions(new URLSearchParams("groupBy=day,bucket,endUser"));
+  const report = await groupedUsage(db, "alice", 0, options);
+  assert.equal(report.groups.length, 3);
+  assert.ok(Math.abs(report.totals.cost - 1.1) < 1e-9);
+  assert.ok(Math.abs(report.groups.find((row: any) => row.bucket === "bot:1").cost - 0.2) < 1e-9);
+  assert.equal(report.groups.find((row: any) => row.bucket === null).endUser, null);
+  assert.equal((await groupedUsage(db, "other", 0, options)).groups.length, 0);
+});
+
+test("older writers keep their conflict key and their usage stays visible alongside bucket totals", async () => {
+  const { db } = await testDatabase();
+  await transaction(db, sql => recordUsageDetails(sql, [{ ...base(), bucket: "bot:1" }]));
+  // The pre-upgrade writer only updates usage_details, using its original conflict key.
+  await db.query(`insert into usage_details (tenant,day,agent,root_agent,definition,end_user,model,workspace,totals)
+    select tenant,day,agent,root_agent,definition,end_user,model,workspace,totals from usage_details
+    on conflict (tenant,day,agent,root_agent,definition,end_user,model,workspace)
+    do update set totals=jsonb_build_object('responses',2,'input',20,'output',10,'cacheRead',0,'cacheWrite',0,'cost',0.4,'platformResponses',2,'platformCost',0.4)`);
+  const report = await groupedUsage(db, "alice", 0, { dimensions: ["bucket"], rollup: false });
+  assert.equal(report.groups.length, 2);
+  assert.equal(report.groups.find((row: any) => row.bucket === null).responses, 1);
+  assert.equal(report.groups.find((row: any) => row.bucket === "bot:1").responses, 1);
+  assert.equal(report.totals.cost, 0.4);
+  assert.equal((await groupedUsage(db, "alice", 0, { dimensions: ["model"], rollup: false })).totals.cost, 0.4);
+  await assert.rejects(transaction(db, async sql => {
+    await recordUsageDetails(sql, [{ ...base(), bucket: "bot:2" }]);
+    throw new Error("rollback");
+  }), /rollback/);
+  assert.equal((await groupedUsage(db, "alice", 0, { dimensions: ["bucket"], rollup: false })).totals.responses, 2);
+});
+
+test("run bucket attribution reaches the account and agent usage APIs without a subject", async t => {
+  const r = await runtime(t, () => ({ content: "ok", usage: { prompt_tokens: 10, completion_tokens: 1, cost: 0.1 } }));
+  const made = await r.call("/v1/agents", { body: { name: "bucket-report" } });
+  assert.equal(made.status, 201, made.text);
+  const id = made.json.id;
+  for (const bucket of ["bot:1", "bot:2"]) {
+    const run = await r.call(`/v1/agents/${id}/prompt`, { body: { text: "hello", bucket } });
+    assert.equal(run.status, 202, run.text);
+    await until(async () => (await r.call(`/v1/agents/${id}/requests/${run.json.id}`)).json.state === "completed", "run completed");
+  }
+  await until(async () => (await r.call("/v1/usage?groupBy=bucket")).json.totals.responses === 2, "bucket usage flushed");
+  for (const path of ["/v1/usage?groupBy=bucket", `/v1/agents/${id}/usage?groupBy=bucket`]) {
+    const report = await r.call(path);
+    assert.equal(report.status, 200, report.text);
+    assert.deepEqual(report.json.groups.map((row: any) => row.bucket).sort(), ["bot:1", "bot:2"]);
+    assert.equal(report.json.totals.responses, 2);
+  }
 });

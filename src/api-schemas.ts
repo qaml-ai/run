@@ -1091,8 +1091,8 @@ export const Images = z.object({
 
 export const GroupedUsageQuery = z.object({ days: z.string().optional(), groupBy: z.string().optional(), rollup: z.enum(["true", "false"]).optional(), limit: z.string().optional(), cursor: z.string().optional(), workspaceId: z.string().optional() });
 export const GroupedUsage = z.object({
-  since: z.number(), groupBy: z.array(z.enum(["agent", "definition", "endUser", "model", "day"])), rollup: z.boolean(), totals: Totals, next: z.string().optional(),
-  groups: z.array(Totals.extend({ agent: z.string().nullable().optional(), definition: z.string().nullable().optional(), endUser: z.string().nullable().optional(), model: z.string().optional(), day: z.string().optional() })),
+  since: z.number(), groupBy: z.array(z.enum(["agent", "definition", "endUser", "bucket", "model", "day"])), rollup: z.boolean(), totals: Totals, next: z.string().optional(),
+  groups: z.array(Totals.extend({ agent: z.string().nullable().optional(), definition: z.string().nullable().optional(), endUser: z.string().nullable().optional(), bucket: z.string().nullable().optional(), model: z.string().optional(), day: z.string().optional() })),
 }).openapi("GroupedUsage");
 export const Usage = z.object({
   since: z.number(),

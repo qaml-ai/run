@@ -19,7 +19,7 @@ export type AgentMediaScope = {
   builtins?: string[]; keyScope?: string; identity?: AgentIdentity; actor?: string; bucket?: string; mounts: Mount[];
 };
 type CallScope = AgentMediaScope & { callId: string; startedAt: number };
-type UsageScope = Pick<CallScope, "tenant" | "agent" | "requestId" | "callId" | "startedAt" | "identity" | "actor" | "keyScope">;
+type UsageScope = Pick<CallScope, "tenant" | "agent" | "requestId" | "callId" | "startedAt" | "identity" | "actor" | "keyScope" | "bucket">;
 type MediaReceipt = { scope: UsageScope; usage: UsageRecord };
 type Host = {
   storage?: DurableObjectStorage;
@@ -79,7 +79,7 @@ async function imageFiles(env: FileBindings, scope: CallScope, host: Host): Prom
 }
 
 async function recordImage(env: Env, services: KeyServices, scope: UsageScope, usage: UsageRecord) {
-  const facts = { ...usage, ...(scope.identity ? { identity: scope.identity } : {}), ...(scope.actor ? { actor: scope.actor } : {}), ...(scope.keyScope ? { keyScope: scope.keyScope } : {}), ...(scope.requestId ? { requestId: scope.requestId } : {}) };
+  const facts = { ...usage, bucket: scope.bucket, ...(scope.identity ? { identity: scope.identity } : {}), ...(scope.actor ? { actor: scope.actor } : {}), ...(scope.keyScope ? { keyScope: scope.keyScope } : {}), ...(scope.requestId ? { requestId: scope.requestId } : {}) };
   await transaction(env, async sql => {
     if (await recordAuxiliaryUsage(sql, { ...scope, kind: "image" }, { costUsd: usage.usage.cost.total, provider: usage.provider, model: usage.model }))
       await services.accounts.recordUsageIn(sql, scope.tenant, scope.agent, facts);
@@ -129,8 +129,8 @@ export async function agentMediaTools(env: Env, context: (api?: ToolExecutionApi
       })();
       const usages: UsageRecord[] = [];
       const durable: Promise<void>[] = [];
-      const { tenant, agent, requestId, callId, startedAt, identity, actor, keyScope } = scope;
-      const receiptScope: UsageScope = { tenant, agent, requestId, callId, startedAt, identity, actor, keyScope };
+      const { tenant, agent, requestId, callId, startedAt, identity, actor, keyScope, bucket } = scope;
+      const receiptScope: UsageScope = { tenant, agent, requestId, callId, startedAt, identity, actor, keyScope, bucket };
       const billingKey = `image-billing:${scope.callId}`;
       const hold = host.hold ? host.hold(scope) : scope.identity?.subject
         ? (usd: number) => new EndUserCredits(database(env)).hold(scope.tenant, scope.identity!.subject!, scope.bucket ?? "default", usd, "image", { agent: scope.agent, ...(scope.requestId ? { requestId: scope.requestId } : {}) })

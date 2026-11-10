@@ -195,7 +195,7 @@ export async function handleMediaRequest(request: Request, env: MediaBindings, a
   const key=(_tenant:string,scope:string|undefined,provider:string)=>mediaKey(env,tenant,scope,provider,services);
   const azure=mediaAzure(env);
   const identity=input.subject!==undefined || input.context!==undefined ? {subject:input.subject,context:input.context}:undefined;
-  const facts={...(input.keyScope?{keyScope:input.keyScope}:{}),...(input.actor?{actor:input.actor}:{}),...(identity?{identity}:{})};
+  const facts={...(input.bucket!==undefined?{bucket:input.bucket}:{}),...(input.keyScope?{keyScope:input.keyScope}:{}),...(input.actor?{actor:input.actor}:{}),...(identity?{identity}:{})};
   const hold=input.subject ? (usd:number)=>new EndUserCredits(database(env)).hold(tenant,input.subject,input.bucket??'default',usd,kind==='images'?'image':kind==='transcriptions'?'transcription':'speech') : undefined;
   if (kind==='images') {
     if (typeof input.prompt!=='string' || !input.prompt.trim() || input.prompt.length>32000) throw new HttpError(400,'prompt must contain 1–32000 characters');

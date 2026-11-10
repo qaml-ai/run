@@ -30,7 +30,7 @@ export type SpeechRequest = {
   text: string; voice: string; instructions?: string; language?: string; format: SpeechFormat; keyScope?: string;
   /** The providers to try in order, and their voices (voice-providers/); else OpenAI's. */
   choice?: SpeechChoice;
-  identity?: AgentIdentity; actor?: string;
+  identity?: AgentIdentity; actor?: string; bucket?: string;
   hold?: (usd: number) => Promise<{ settle(usd: number): Promise<void>; release(): Promise<void> } | undefined>;
   /** What was made and its cost, once billed (a voice session counts it as its own). */
   settled?: (made: { costUsd: number; seconds: number }) => void;
@@ -96,7 +96,7 @@ export async function speechRequest(service: SpeechService, tenant: string, requ
     if (samples) service.record(tenant, {
       provider: served?.provider ?? synthesizer.provider, model: served?.model ?? synthesizer.model, usage: { cost: { total: costUsd } }, platform: served?.platform ?? credentials?.platform ?? false, kind: "speech",
       speeches: 1, audioSeconds: seconds, timestamp: Date.now(),
-      ...(request.identity ? { identity: request.identity } : {}), ...(request.actor ? { actor: request.actor } : {}), ...(request.keyScope ? { keyScope: request.keyScope } : {}),
+      ...(request.bucket === undefined ? {} : { bucket: request.bucket }), ...(request.identity ? { identity: request.identity } : {}), ...(request.actor ? { actor: request.actor } : {}), ...(request.keyScope ? { keyScope: request.keyScope } : {}),
     } as UsageRecord);
     request.settled?.({ costUsd, seconds });
     console.log(JSON.stringify({ type: "speech_made", tenant, chars: request.text.length, seconds, format: request.format, aborted: abort.signal.aborted }));

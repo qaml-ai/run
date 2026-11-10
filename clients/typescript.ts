@@ -1718,7 +1718,7 @@ export class Voice {
 }
 
 /** Trusted-backend SDK. Only createAgent needs the operator key. */
-export type UsageOptions = { days?: number; groupBy?: ("agent" | "definition" | "endUser" | "model" | "day")[]; rollup?: boolean; limit?: number; cursor?: string; workspaceId?: string };
+export type UsageOptions = { days?: number; groupBy?: ("agent" | "definition" | "endUser" | "bucket" | "model" | "day")[]; rollup?: boolean; limit?: number; cursor?: string; workspaceId?: string };
 export interface GroupedUsage {
   since: number; groupBy: string[]; rollup: boolean; next?: string;
   totals: Record<string, number>;

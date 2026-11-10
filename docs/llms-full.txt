@@ -9771,8 +9771,11 @@ grouping is requested.
 
 REST: `GET /v1/usage?groupBy=agent,model&rollup=true` returns
 `{since, groupBy, rollup, totals, groups}`. Dimensions are agent, definition,
-endUser, model and UTC day, in any combination. Costs are USD and include
+endUser, bucket, model and UTC day, in any combination. Costs are USD and include
 signed reconciliation adjustments. Attribution begins with migration 127.
+Bucket attribution begins with migration 136; earlier aggregates have a null
+bucket. Use `groupBy=day,bucket,endUser` to include spending with no bucket or
+subject alongside attributed spending.
 `GET /v1/agents/{id}/usage` filters an agent. With rollup enabled, it filters
 a root and includes its descendants; other dimensions keep their own values.
 The default account usage response is unchanged.

@@ -48,7 +48,7 @@ export async function recordDecision(env: DecisionEnv, context: DecisionContext,
     await sql.query(`insert into usage(tenant,day,model,responses,input,output,cost,platform_responses,platform_cost) values($1,$2,$3,$4,$5,$6,$7,$8,$9)
       on conflict(tenant,day,model) do update set responses=usage.responses+excluded.responses,input=usage.input+excluded.input,output=usage.output+excluded.output,cost=usage.cost+excluded.cost,platform_responses=usage.platform_responses+excluded.platform_responses,platform_cost=usage.platform_cost+excluded.platform_cost`,
       [context.tenant, new Date(now).toISOString().slice(0, 10), `decision:${usage.provider}/${usage.model}`, usage.decisions ?? 0, usage.usage.input, usage.usage.output, usage.usage.cost.total, usage.platform ? 1 : 0, charge / 1_000_000]);
-    const attributed = { tenant: context.tenant, agent: agentId, requestId, endUser: context.identity?.subject ?? null,
+    const attributed = { tenant: context.tenant, agent: agentId, requestId, bucket: context.bucket ?? null, endUser: context.identity?.subject ?? null,
       timestamp: now, day: new Date(now).toISOString().slice(0, 10), model: `decision:${usage.provider}/${usage.model}`,
       responses: usage.decisions ?? 0, input: usage.usage.input, output: usage.usage.output, cacheRead: 0, cacheWrite: 0,
       cost: usage.usage.cost.total, platformResponses: usage.platform ? 1 : 0, platformCost: charge / 1_000_000 };
