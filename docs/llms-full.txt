@@ -6019,8 +6019,9 @@ you add its server as a provider, your account's or a key scope's: see
 [Custom models](https://run.camelai.com/docs/guides/custom-models.md).
 
 An agent that names no model (and whose definition names none) gets the
-runtime's default: `camelrun/default`, on run.camelai.com a
-[virtual model](https://run.camelai.com/docs/guides/models-and-keys.md#virtual-models) on OpenRouter. Your own keys come first, the agent's key scope's too: with no OpenRouter key of your own, the
+runtime's default: `openrouter/meta/muse-ember` on run.camelai.com and the Cloudflare
+pilot. A runtime with no model environment settings uses the [virtual model](https://run.camelai.com/docs/guides/models-and-keys.md#virtual-models)
+`camelrun/default`. Your own keys come first, the agent's key scope's too: with no OpenRouter key of your own, the
 first of DeepSeek V4.1 Flash on the platform's Azure
 (`azure/deepseek-v4.1-flash`), Anthropic (`anthropic/claude-sonnet-5-5`), OpenRouter
 (`openrouter/anthropic/claude-sonnet-5.5`) and Bedrock
@@ -6037,7 +6038,7 @@ moves nobody. These alternatives choose by who holds a key, not by who is up.
 
 `camelrun/default` is a virtual model: a name that stays on the agent, with a list of
 real models behind it that we can change without touching agents. Today they are
-`openrouter/particle-ai/particle-1`, then `openrouter/deepseek/deepseek-v4.1-flash-1017`.
+`openrouter/meta/muse-ember`, then `openrouter/deepseek/deepseek-v4.1-flash-1017`.
 `GET /v1/models` lists it with `routes`, and you can name it like any model.
 
 Each new message starts on the first. A request it cannot take now (a 429, a 5xx, no
