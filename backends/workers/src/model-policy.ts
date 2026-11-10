@@ -3,6 +3,7 @@ import type { Api, Model } from '@earendil-works/pi-ai';
 import { getModel, temperatureRefusal } from './model-catalog.ts';
 import { deepseekOnOpenRouter } from './deepseek-policy.ts';
 import { HttpError } from './errors.ts';
+import { queueInput, type QueueSetting } from '../../../shared/queue-mode.ts';
 export type RunLimits = { maxResponses?: number; maxSeconds?: number; firstTokenSeconds?: number; idleSeconds?: number; contextTokens?: number };
 type AgentConfig = { model: Model<Api>; thinkingLevel?: string; maxOutputTokens?: number | null; temperature?: number | null };
 const MIN_CONTEXT_TOKENS = 20_000;
@@ -43,7 +44,7 @@ export function passthroughModel(id: string): Passthrough {
 export const VIRTUAL_PROVIDER = "camelrun";
 /** Members share a provider: an agent holds one model key. */
 const VIRTUAL_MODELS: Record<string, { name: string; chain: [string, string][] }> = {
-  default: { name: "camelRun default", chain: [["openrouter", "particle-ai/particle-1"], ["openrouter", "deepseek/deepseek-v4.1-flash-1017"]] },
+  default: { name: "camelRun default", chain: [["openrouter", "meta/muse-ember"], ["openrouter", "deepseek/deepseek-v4.1-flash-1017"]] },
 };
 
 export type VirtualSelection = Model<Api> & { virtual?: string };
@@ -253,6 +254,11 @@ export function temperatureInput(value: unknown): number | null {
   if (value === null) return null;
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 2) throw new HttpError(400, 'temperature must be a number from 0 to 2, or null');
   return value;
+}
+
+/** An agent's or definition's `queue` (shared/queue-mode.ts): `{mode: "batch", windowMs?}`, or null for one turn per prompt. */
+export function queueSettingInput(value: unknown): QueueSetting | null {
+  try { return queueInput(value); } catch (error) { throw new HttpError(400, (error as Error).message); }
 }
 
 /** An agent's `dataCollection`: "deny" (OpenRouter hosts that do not collect its data), or null for OpenRouter's default. */

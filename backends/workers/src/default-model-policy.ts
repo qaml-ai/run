@@ -11,14 +11,14 @@ const DEFAULT_VIRTUAL_MODEL = `${VIRTUAL_PROVIDER}/default`;
  * The default with none of AGENT_PROVIDER, AGENT_MODEL and AGENT_BASE_URL set: the virtual model `camelrun/default`
  * (virtual-models.ts; AGENT_PROVIDER=camelrun, AGENT_MODEL=default names it). Any of them set names what it always named,
  * so a runtime configured earlier starts as it did: AGENT_MODEL (or an endpoint) alone is Anthropic's,
- * AGENT_PROVIDER=anthropic alone is Claude Sonnet 5.5, and AGENT_PROVIDER=openrouter alone is DeepSeek V4.1 Flash 1017.
+ * AGENT_PROVIDER=anthropic alone is Claude Sonnet 5.5, and AGENT_PROVIDER=openrouter alone is Muse Ember.
  */
 export function configuredModel(env: NodeJS.ProcessEnv = process.env): VirtualSelection {
   const unset = env.AGENT_PROVIDER === undefined && env.AGENT_MODEL === undefined && env.AGENT_BASE_URL === undefined;
   if (unset) return resolveModel(DEFAULT_VIRTUAL_MODEL);
   if (env.AGENT_PROVIDER === VIRTUAL_PROVIDER) return resolveModel(`${VIRTUAL_PROVIDER}/${env.AGENT_MODEL ?? "default"}`);
   const provider = env.AGENT_PROVIDER ?? "anthropic";
-  const id = env.AGENT_MODEL ?? (provider === "openrouter" ? "deepseek/deepseek-v4.1-flash-1017" : "claude-sonnet-5-5");
+  const id = env.AGENT_MODEL ?? (provider === "openrouter" ? "meta/muse-ember" : "claude-sonnet-5-5");
   const model = getModel(provider, id);
   if (!model) throw new Error(`Unknown Pi model: ${provider}/${id}`);
   return { ...model, ...(env.AGENT_BASE_URL ? { baseUrl: env.AGENT_BASE_URL } : {}) };
