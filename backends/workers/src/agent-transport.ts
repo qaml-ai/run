@@ -1,3 +1,4 @@
+import { stageMonitorSettle, flushMonitors } from "./agent-monitors.ts";
 import { PARENT_KEYS } from "./multi-agent-policy.ts";
 import { stageScheduleOutcome, flushScheduleOutcomes } from './schedule-outcomes.ts';
 import { readInputMirrors } from "./agent-input-mirror.ts";
@@ -31,6 +32,7 @@ export async function emitImpl(this: AgentRuntime,
     const mirrors = ["input_required", "input_resolved"].includes(inputEvent?.type)
       ? await readInputMirrors(this, [inputEvent.input?.id ?? inputEvent.id]) : [];
     let committed: { owner?: Config; record?: RequestRecord } = {};
+    let monitorOwes = false;
     const work = this.serial.then(async () => {
       const cursor = await this.ctx.storage.transaction(async (tx) => {
         if (delivery && !(await acknowledgeTerminalEvent(tx, delivery)))
@@ -41,6 +43,8 @@ export async function emitImpl(this: AgentRuntime,
         const owner = await tx.get<Config>("configuration");
         const record = await tx.get<RequestRecord>(reqKey(value.requestId ?? value.id ?? ""));
         if (owner && record && value.type === "response") await stageScheduleOutcome(tx,owner.tenantId,owner.id,record);
+        // A monitor's check ended: its state and counters, and the message of a fire, commit with its response.
+        if (record && value.type === "response" && await stageMonitorSettle(tx, { ...record, state: "completed", outcome: value.outcome ?? record.outcome })) monitorOwes = true;
         const announcement = webhook ?? (owner && record &&
           (value.type === "response" || value.event?.type === "agent_start")
           ? runWebhook(owner, value.type === "response" ? record : { ...record, state: "running" }, this.nextMessage)
@@ -67,6 +71,8 @@ export async function emitImpl(this: AgentRuntime,
         return next;
       });
       if (cursor === undefined) return;
+      // Outside this chain: the message is a prompt of the agent's own, which publishes events here.
+      if (monitorOwes) this.ctx.waitUntil(flushMonitors(this).then(() => this.arm()).catch(() => {}));
       this.channels.observe(committed.owner, event as { type?: string; event?: { type?: string } }, committed.record && (event as { type?: string }).type === "response"
         ? { ...committed.record, outcome: (event as { outcome?: RequestRecord["outcome"] }).outcome ?? committed.record.outcome } : committed.record);
       for (const listener of this.listeners) listener(cursor, event);

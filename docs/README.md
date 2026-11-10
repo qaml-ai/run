@@ -12,6 +12,7 @@ model-written code in a sandbox, and wakes agents when there is work.
    what usage costs, and credit.
 3. **Guides**
    - [Incoming webhook triggers](guides/triggers.md)
+   - [Monitors](guides/monitors.md)
    - [Scheduled agents and email reports](guides/schedules.md)
    - [Workspaces](guides/workspaces.md): group agents and definitions and see model and tool spend by project
    - [Application metadata](guides/agents.md): project data in agent lists and indexed filtering

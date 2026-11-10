@@ -56,6 +56,7 @@ Stateless runs (a configuration and a message in, the result out; nothing carrie
   inbox-answer <json>              Batch {requestId, answers} with agents, input IDs and versions
   answer <agent> <inputId> <value> true/false, text, JSON, or "decline"
   triggers list|add|delete|rotate|deliveries <agent> [triggerId] [--input JSON]
+  monitors list|add|get|stop|checks <agent> [monitor] [--input JSON]
   schedules list <agent>
   schedules add <agent> --text t (--in s | --at iso | --cron expr --time-zone zone) [--every s]
   schedules run <agent> <scheduleId>
@@ -242,6 +243,7 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
         return "requestId" in result ? printRun(result, print, io) : (print(result, () => result.note ?? "Decision answered."), 0);
       }
       case "triggers": return await triggers(args, flags, api, print);
+      case "monitors": return await monitors(args, flags, api, print);
       case "schedules": return await schedules(args, flags, api, print, io.err);
       default: throw new UsageError(`Unknown command: ${command}. Run camelrun --help`);
     }
@@ -435,4 +437,20 @@ async function triggers(args:string[],flags:Flags,api:()=>Api,print:(value:unkno
  if(sub==='rotate')return (print(await client.call('POST',`${base}/${enc(id)}/rotate`,{})),0);
  if(sub==='deliveries')return (print(await client.get(`${base}/${enc(id)}/deliveries`)),0);
  throw new UsageError("Unknown trigger command");
+}
+
+async function monitors(args: string[], flags: Flags, api: () => Api, print: (value: unknown) => void) {
+  const [sub, agent, monitor] = args;
+  if (!agent) throw new UsageError("Usage: camelrun monitors list|add|get|stop|checks <agent> [monitor] [--input JSON]");
+  const client = api(), base = `/v1/agents/${enc(await client.agentId(agent))}/monitors`;
+  if (sub === "list") return (print(await client.get(base)), 0);
+  if (sub === "add") {
+    if (!flags.input) throw new UsageError('Use --input with a monitor JSON object: {"name", "code", "everySeconds"?, "mode"?, "expiresInSeconds"?, "budget"?}');
+    return (print(await client.call("POST", base, JSON.parse(String(flags.input)))), 0);
+  }
+  if (!monitor) throw new UsageError("A monitor id or name is required");
+  if (sub === "get") return (print(await client.get(`${base}/${enc(monitor)}`)), 0);
+  if (sub === "stop") return (print(await client.call("DELETE", `${base}/${enc(monitor)}`)), 0);
+  if (sub === "checks") return (print(await client.get(`${base}/${enc(monitor)}/checks`)), 0);
+  throw new UsageError("Unknown monitor command");
 }

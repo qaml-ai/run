@@ -7,6 +7,9 @@ import { historyNoneIgnored } from "./history-none.ts";
 import { HttpError } from "./http.ts";
 import { viaParent } from "./multi-agent.ts";
 import { underClaim, type Claim } from "./ownership.ts";
+import { transaction } from "./db.ts";
+import { safeError } from "./metrics.ts";
+import { beforeCheck, checkKey, checkRequest, checkRequestId, checkResult, monitorInput, newMonitor, settleCheck, wakeRetryable, MONITOR_CAP_ERROR, MONITOR_LIMITS, type Monitor, type MonitorWake } from "../shared/monitors.ts";
 
 /**
  * Durable timers that wake agents with a prompt, on any node. Each schedule is a
@@ -34,6 +37,8 @@ export interface Schedule {
   dueAt: number; everySeconds?: number; calendar?: Calendar; cron?: Cron; sessionMode?: "continue" | "fresh"; spendLimit?: { usd: number }; mounts?: {volumeId?:string;path?:string;mode?:"ro"|"rw";workspace?:boolean;subpath?:string;notify?:boolean}[]; email?: ScheduleEmail; createdAt: number;
   /** Occurrences in a row whose delivery was given up, and why the latest attempt failed: until a delivery succeeds. */
   failures?: number; lastError?: string; lastErrorAt?: number;
+  /** A monitor (shared/monitors.ts): `code` is its check, run every `everySeconds`; its state and counters are here. */
+  monitor?: Monitor;
 }
 export interface ScheduleEmail { to: string; subject: string; format?: "text" | "markdown" | "html" }
 export function scheduleEmail(value: any): ScheduleEmail {
@@ -42,6 +47,8 @@ export function scheduleEmail(value: any): ScheduleEmail {
   return { to: value.to, subject: value.subject.trim(), ...(value.format !== undefined ? { format: value.format } : {}) };
 }
 export type Deliver = (schedule: Schedule, requestId: string) => Promise<unknown>;
+/** Queue a message to an agent (a monitor's fire): the same submission a schedule's delivery makes. */
+export type Wake = (agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }) => Promise<unknown>;
 
 /** A claim older than this is assumed abandoned by a crashed node and may be retaken. */
 const CLAIM_TIMEOUT_MS = 60_000;
@@ -51,11 +58,12 @@ export const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000];
 /** Failures a retry may fix: no status (the network, a crash), a timeout, a conflict, a rate limit, or a server error. */
 const retryable = (status: number | undefined) => status === undefined || status >= 500 || [408, 409, 425, 429].includes(status);
 export const MIN_REPEAT_SECONDS = 60;
-const COLUMNS = "id, agent, tenant, text, code, history, due_at, every_seconds, calendar, cron, session_mode, spend_limit, mounts, email, created_at, failures, last_error, last_error_at";
+const COLUMNS = "id, agent, tenant, text, code, history, due_at, every_seconds, calendar, cron, session_mode, spend_limit, mounts, email, created_at, failures, last_error, last_error_at, monitor";
 const schedule = (row: any): Schedule => ({
   ...(row.mounts ? {mounts:row.mounts} : {}), ...(row.cron ? {cron:row.cron} : {}), sessionMode: row.session_mode ?? "continue", ...(row.spend_limit ? {spendLimit:row.spend_limit} : {}), id: row.id, agent: row.agent, tenant: row.tenant, ...(row.calendar ? { calendar: row.calendar } : {}), ...(row.email ? { email: row.email } : {}), ...(row.text !== null ? { text: row.text } : {}), ...(row.code !== null ? { code: row.code } : {}),
   dueAt: row.due_at, ...(row.every_seconds !== null ? { everySeconds: row.every_seconds } : {}), createdAt: row.created_at,
   ...(row.failures ? { failures: row.failures } : {}), ...(row.last_error !== null ? { lastError: row.last_error, lastErrorAt: Number(row.last_error_at) } : {}),
+  ...(row.monitor ? { monitor: row.monitor } : {}),
 });
 
 export class Scheduler {
@@ -66,10 +74,12 @@ export class Scheduler {
   private readonly canEmail?: (tenant: string, to: string) => Promise<boolean>;
   /** Other due work the scan takes care of: human input past its expiry. */
   private readonly also?: (now: number) => Promise<unknown>;
+  private readonly wake?: Wake;
   private timer?: ReturnType<typeof setInterval>;
   private scanning = false;
 
-  constructor(options: { db: Db; node: string; deliver: Deliver; emailEnabled?: boolean; canEmail?: (tenant: string, to: string) => Promise<boolean>; also?: (now: number) => Promise<unknown> }) {
+  constructor(options: { db: Db; node: string; deliver: Deliver; emailEnabled?: boolean; canEmail?: (tenant: string, to: string) => Promise<boolean>; also?: (now: number) => Promise<unknown>; wake?: Wake }) {
+    this.wake = options.wake;
     this.db = options.db;
     this.node = options.node;
     this.deliver = options.deliver;
@@ -115,7 +125,7 @@ export class Scheduler {
    * anyone asking meanwhile, never see it; it is deleted once delivered, or listed again if its delivery failed.
    */
   async list(agent: string): Promise<Schedule[]> {
-    return (await this.db.query(`select ${COLUMNS} from schedules where agent = $1
+    return (await this.db.query(`select ${COLUMNS} from schedules where agent = $1 and monitor is null
       and not (every_seconds is null and calendar is null and cron is null and claimed_by is not null and claimed_until > now()) order by due_at, id`, [agent])).rows.map(schedule);
   }
 
@@ -126,7 +136,7 @@ export class Scheduler {
 
   async runNow(agent: string, id: string) {
     if (!/^[0-9a-f-]{36}$/.test(id)) throw new HttpError(404, "Unknown schedule");
-    const row = (await this.db.query(`select ${COLUMNS} from schedules where agent=$1 and id=$2`, [agent,id])).rows[0];
+    const row = (await this.db.query(`select ${COLUMNS} from schedules where agent=$1 and id=$2 and monitor is null`, [agent,id])).rows[0];
     if (!row) throw new HttpError(404, 'Unknown schedule');
     return this.dispatch(schedule(row), `schedule-run-${randomUUID()}`);
   }
@@ -166,8 +176,133 @@ export class Scheduler {
     });
   }
 
+
+  /**
+   * Monitors. A monitor is a schedule row with `monitor` set: each occurrence sends its check as an `execute` request
+   * (`monitor-check-<schedule>-<due>`), whose end `settleMonitor` reads. An occurrence is skipped, never queued, while
+   * the last check is still in flight, the monitor is paused, or a failed check's backoff runs; a check that cannot be
+   * sent is not retried (the next occurrence is the retry), so nothing here can wake an agent faster than its interval.
+   */
+  async startMonitor(agent: string, tenant: string, raw: unknown, claim?: Claim): Promise<Schedule> {
+    let input;
+    try { input = monitorInput(raw); } catch (error) { throw new HttpError(400, (error as Error).message); }
+    const now = Date.now();
+    const created: Schedule = { id: randomUUID(), agent, tenant, code: input.code, dueAt: now, everySeconds: input.everySeconds, sessionMode: "continue", createdAt: now, monitor: newMonitor(input, now) };
+    await underClaim(this.db, claim, async sql => {
+      await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`schedules:${agent}`]);
+      if ((await sql.query("select 1 from agents where id = $1 and header->'parent' is not null", [agent])).rowCount) throw viaParent(agent);
+      await sql.query("delete from schedules where agent = $1 and monitor->>'name' = $2", [agent, input.name]);
+      if ((await sql.query("select count(*) as count from schedules where agent = $1 and monitor is not null and monitor->>'ended' is null", [agent])).rows[0].count >= MONITOR_LIMITS.perAgent) throw new HttpError(400, MONITOR_CAP_ERROR);
+      await sql.query("insert into schedules (id, agent, tenant, code, due_at, every_seconds, created_at, session_mode, monitor) values ($1, $2, $3, $4, $5, $6, $7, 'continue', $8)",
+        [created.id, agent, tenant, created.code, created.dueAt, created.everySeconds, created.createdAt, JSON.stringify(created.monitor)]);
+    });
+    return created;
+  }
+  async monitors(agent: string): Promise<Schedule[]> {
+    return (await this.db.query(`select ${COLUMNS} from schedules where agent = $1 and monitor is not null and monitor->>'ended' is null order by created_at, id`, [agent])).rows.map(schedule);
+  }
+  /** One of the agent's monitors, by name or id. */
+  async monitor(agent: string, key: string): Promise<Schedule | undefined> {
+    return (await this.monitors(agent)).find(entry => entry.monitor!.name === key || entry.id === key);
+  }
+  async stopMonitor(agent: string, key: string, claim?: Claim) {
+    return !!(await underClaim(this.db, claim, sql => sql.query("delete from schedules where agent = $1 and monitor is not null and (monitor->>'name' = $2 or id::text = $2)", [agent, key]))).rowCount;
+  }
+
+  /** Whether request `id` is the check this agent's monitor has in flight: the scheduler marks it before sending it. */
+  async checkInFlight(agent: string, tenant: string, id: string) {
+    const request = checkRequest(id);
+    return !!request && !!(await this.db.query("select 1 from schedules where id = $1 and agent = $2 and tenant = $3 and monitor->'pending'->>'key' = $4", [request.schedule, agent, tenant, String(request.key)])).rowCount;
+  }
+
+  /** Change a monitor under its row's lock; `change` returning undefined leaves it. Returns the row after. */
+  private async changeMonitor(id: string, change: (monitor: Monitor, row: Schedule) => Monitor | undefined, owner?: { id: string; tenant: string }): Promise<Schedule | undefined> {
+    return transaction(this.db, async sql => {
+      const row = (await sql.query(`select ${COLUMNS} from schedules where id = $1 and monitor is not null and ($2::text is null or (agent = $2 and tenant = $3)) for update`, [id, owner?.id ?? null, owner?.tenant ?? null])).rows[0];
+      if (!row) return undefined;
+      const found = schedule(row), next = change(found.monitor!, found);
+      if (!next) return found;
+      await sql.query("update schedules set monitor = $2 where id = $1", [id, JSON.stringify(next)]);
+      return { ...found, monitor: next };
+    });
+  }
+
+  /** Send the messages a monitor owes its agent; one the agent refuses for good, or five times, is dropped. An ended monitor that owes none goes. */
+  private async flush(row: Schedule | undefined): Promise<Schedule | undefined> {
+    if (!row?.monitor?.outbox?.length || !this.wake) return this.ended(row);
+    const done = new Set<string>(), failed = new Set<string>();
+    let gone = false;
+    for (const wake of row.monitor.outbox) {
+      try {
+        await this.wake(row.agent, row.tenant, { id: wake.id, method: "prompt", params: { text: wake.text, allowDisconnected: true, ...(wake.budget ? { spendLimit: wake.budget } : {}) } });
+        done.add(wake.id);
+      } catch (error) {
+        const status = (error as { status?: number }).status;
+        if (status === 404 || status === 410) { gone = true; break; }
+        console.error(JSON.stringify({ type: "monitor_wake_failed", schedule: row.id, agent: row.agent, tenant: row.tenant, status, error: safeError(error) }));
+        if (!wakeRetryable(status) || (wake.attempts ?? 0) + 1 >= MONITOR_LIMITS.wakeAttempts) done.add(wake.id); else failed.add(wake.id);
+      }
+    }
+    if (gone) { await this.db.query("delete from schedules where id = $1", [row.id]); return undefined; }
+    return this.ended(await this.changeMonitor(row.id, monitor => ({ ...monitor, outbox: (monitor.outbox ?? []).filter(wake => !done.has(wake.id)).map((wake): MonitorWake => failed.has(wake.id) ? { ...wake, attempts: (wake.attempts ?? 0) + 1 } : wake) })));
+  }
+  private async ended(row: Schedule | undefined) {
+    if (!row?.monitor?.ended || row.monitor.outbox?.length) return row;
+    await this.db.query("delete from schedules where id = $1 and monitor->>'ended' is not null", [row.id]);
+    return undefined;
+  }
+
+  /**
+   * A check's request ended (the sessions' `requestEnded`), however it ended: settle it, and send what it owes the agent.
+   * Only a request of the monitor's own agent settles it: a request id is the caller's to choose.
+   */
+  async settleMonitor(agent: { id: string; tenant: string }, record: { id: string; state?: string; outcome?: unknown }) {
+    const request = checkRequest(record.id);
+    if (!request) return;
+    const result = checkResult(record as Parameters<typeof checkResult>[0]);
+    let settled = false;
+    const row = await this.changeMonitor(request.schedule, (monitor, found) => {
+      const next = settleCheck(found.id, found.everySeconds ?? MONITOR_LIMITS.defaultSeconds, monitor, request.key, result);
+      settled = !!next;
+      return next;
+    }, agent);
+    if (settled) await this.flush(row);
+  }
+
+  /** A monitor's due occurrence, claimed: send its check, or skip it; then move to the next occurrence. */
+  private async check(due: Schedule, claim: string) {
+    const now = Date.now();
+    const row = await this.flush(due);
+    const action = row ? beforeCheck(row.monitor!, now) : "remove";
+    if (!row || action === "expire" || action === "remove") {
+      if (row) await this.db.query("delete from schedules where id = $1 and claimed_by = $2", [due.id, claim]);
+      return;
+    }
+    if (action === "run") {
+      // One open request a monitor: a check still in flight is sent again under its own id, never beside a new one.
+      const key = checkKey(row.monitor!, due.dueAt);
+      const pending = (await this.db.query("update schedules set monitor = jsonb_set(monitor, '{pending}', $3::jsonb) where id = $1 and claimed_by = $2", [due.id, claim, JSON.stringify({ key, at: now })])).rowCount;
+      if (pending) try {
+        const record = await this.deliver(row, checkRequestId(due.id, key)) as { id?: string; state?: string } | undefined;
+        // It had ended already (its settling was lost): settle it from its record.
+        if (record?.id && record.state === "completed") await this.settleMonitor({ id: due.agent, tenant: due.tenant }, record as { id: string });
+      }
+      catch (error) {
+        const status = (error as { status?: number }).status;
+        if (status === 404 || status === 410) { await this.db.query("delete from schedules where id = $1 and claimed_by = $2", [due.id, claim]); return; }
+        console.error(JSON.stringify({ type: "monitor_check_not_sent", schedule: due.id, agent: due.agent, tenant: due.tenant, status, error: safeError(error) }));
+        // Refused for good (the account is out of credit, a spend limit): a failed check, which backs off and in the end stops the monitor.
+        if (!wakeRetryable(status)) await this.settleMonitor({ id: due.agent, tenant: due.tenant }, { id: checkRequestId(due.id, key), state: "refused" });
+        // Not sent otherwise: nothing is in flight, and the next occurrence tries again.
+        else await this.db.query("update schedules set monitor = monitor - 'pending' where id = $1 and monitor->'pending'->>'key' = $2", [due.id, String(key)]);
+      }
+    }
+    await this.db.query("update schedules set due_at = $3, claimed_by = null, claimed_until = null, attempts = 0 where id = $1 and due_at = $2 and claimed_by = $4", [due.id, due.dueAt, nextOccurrence(due), claim]);
+  }
+
   /** Deliver a claimed wake-up, then move it to its next occurrence or drop it. Only the claim holder advances it. */
   private async fire({ claim, attempts, ...due }: Schedule & { claim: string; attempts: number }) {
+    if (due.monitor) return this.check(due, claim);
     try {
       const id = `schedule-${due.id}-${due.dueAt}`;
       await this.dispatch(due, id);

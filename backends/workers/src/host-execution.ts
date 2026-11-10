@@ -1,3 +1,4 @@
+import { allowedInCheck, checkRequest } from "../../../shared/monitors.ts";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
@@ -114,7 +115,9 @@ export async function startHostExecution(pi: Harness, root: Conversation, reques
     if (saved.task !== undefined) return saved.task as TaskId<ToolTaskResult>;
     const conversation = await tx.createConversation({ ownership: { kind: "ownerless" } });
     (await tx.doc(HostExecutionRequest, conversation.id)).requestId = requestId;
-    await configure(tx, conversation.id, { extensions: agent.extensions, tools: [...agent.callable, tool], modelTools: [tool] });
+    // A monitor's check: without the tools a check may not use (shared/monitors.ts; its script counts its own calls).
+    const callable = !checkRequest(requestId) ? agent.callable : agent.callable.filter(entry => allowedInCheck(entry.name));
+    await configure(tx, conversation.id, { extensions: agent.extensions, tools: [...callable, tool], modelTools: [tool] });
     const callId = `execute:${requestId}`;
     const assistant = await tx.appendEntry(AssistantEntry, conversation.id, { model: [{
       role: "assistant", api: "openai-completions", provider: "camelrun", model: "host-execution", stopReason: "toolUse", timestamp: Date.now(),

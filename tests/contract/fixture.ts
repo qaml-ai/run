@@ -34,6 +34,8 @@ export interface ContractFixture {
   seedTenant(id: string, options?: TenantSeed): Promise<{ id: string; token: string }>;
   seedIdempotencyLock(lock: { tenant: string; key: string; fingerprint: string; createdAt: number }): Promise<void>;
   setScheduleDueAt(agent: string, schedule: string, dueAt: number): Promise<void>;
+  /** Request records of monitor checks the backend still stores for the agent; undefined where that is not a count of stored rows (Node folds its settled requests). */
+  checkRequestRecords(agent: string): Promise<number | undefined>;
   /** Make an agent's pending inputs due now, as if no one had answered in time; the backend's own expiry (its scheduler, or its alarm) then answers them. */
   expireInputs(agent: string): Promise<void>;
   /** Seed only the shared inbox index, independently of either backend's input authority. */

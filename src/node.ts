@@ -1,4 +1,5 @@
 import { Vault } from "./core/vault.ts";
+import { checkCode, checkRequest, MONITOR_LIMITS } from "../shared/monitors.ts";
 import { nodeDreaming } from "./dreaming.ts";
 import { freshAutomationRun, type FreshRunProvisioner } from './core/fresh-runs.ts';
 import { handleHook, hookPath } from "./core/trigger-ingress.ts";
@@ -926,6 +927,8 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     // Channels' hooks, and where journey events are on, each run's end (src/journey.ts): the day's activity, and an account's first run.
     get hooks() {
       return { ...channels.hooks, requestEnded: (agent, record) => {
+        // A monitor's check ended: settle it (state, counters, and the message of a fire).
+        if (checkRequest(record.id)) void scheduler.settleMonitor(agent, record).catch(error => console.error(JSON.stringify({type:"monitor_settle_failed",error:safeError(error)})));
         const source = scheduleRunSource(agent.tenant, record);
         if (source) void recordScheduleRun(db, source, agent.id, record).catch(error => console.error(JSON.stringify({type:"schedule_outcome_failed",error:safeError(error)})));
       }, runEnded: (agent, record) => {
@@ -1065,8 +1068,10 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     };
   let triggers: Triggers | undefined;
   const scheduler = new Scheduler({
-    db, node, emailEnabled: !!scheduleMailConfig, canEmail: canScheduleEmail,
+    db, node, emailEnabled: !!scheduleMailConfig, canEmail: canScheduleEmail, wake: (agent, tenant, request) => submitAnywhere(agent, tenant, request),
     deliver: async (schedule, requestId) => {
+      // A monitor's check: its script with `state` in scope, as an execute request without the tools a check may not use.
+      if (schedule.monitor) return submitAnywhere(schedule.agent, schedule.tenant, {id:requestId, method:"execute", params:{code:checkCode(schedule.code!, schedule.monitor.state), timeoutMs:MONITOR_LIMITS.timeoutMs, maxOutputCharacters:16_000, allowDisconnected:true}});
       const source = {tenant:schedule.tenant,agent:schedule.agent,schedule:schedule.id,createdAt:Date.now()};
       const report = (agent: string | null, record: unknown) => recordScheduleRun(db,source,agent,record).catch(error => console.error(JSON.stringify({type:"schedule_outcome_failed",error:safeError(error)})));
       let agent = schedule.agent;

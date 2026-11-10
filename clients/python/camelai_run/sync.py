@@ -605,6 +605,22 @@ class Agent:
         """Wake the agent later with a message (text), or run code; every_seconds (at least 60) repeats it."""
         return self.client.schedule(text=text, code=code, at=at, in_seconds=in_seconds, every_seconds=every_seconds, calendar=calendar, email=email, cron=cron, session_mode=session_mode, spend_limit=spend_limit, mounts=mounts)
 
+    def create_monitor(self, **input):
+        """Start a monitor: a check script that wakes the agent only when it returns fire: true."""
+        return self.client.create_monitor(**input)
+
+    def monitors(self):
+        return self.client.monitors()
+
+    def monitor(self, id_or_name):
+        return self.client.monitor(id_or_name)
+
+    def stop_monitor(self, id_or_name):
+        return self.client.stop_monitor(id_or_name)
+
+    def monitor_checks(self, id_or_name):
+        return self.client.monitor_checks(id_or_name)
+
     def create_trigger(self, **input):
         return self.client.create_trigger(**input)
 

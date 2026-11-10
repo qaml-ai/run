@@ -7,7 +7,7 @@ const OAUTH_ROUTES = [
   /^GET \/v1\/(?:me|models|providers|inputs|usage|billing|billing\/ledger)$/,
   /^(?:GET|POST) \/v1\/agents$/,
   /^(?:GET|DELETE) \/v1\/agents\/[^/]+$/,
-  /^(?:GET|POST|PUT|PATCH|DELETE) \/v1\/agents\/[^/]+\/(?:abort|configuration|context\/reset|events|fork|history|inputs|inputs\/[^/]+|mounts|prompt|requests\/[^/]+|schedules|schedules\/[^/]+|schedules\/[^/]+\/run|schedule-deliveries|state|uploads\/[^/]+\/[^/]+)$/,
+  /^(?:GET|POST|PUT|PATCH|DELETE) \/v1\/agents\/[^/]+\/(?:abort|configuration|context\/reset|events|fork|history|inputs|inputs\/[^/]+|mounts|prompt|requests\/[^/]+|schedules|schedules\/[^/]+|schedules\/[^/]+\/run|schedule-deliveries|monitors|monitors\/[^/]+|monitors\/[^/]+\/checks|state|uploads\/[^/]+\/[^/]+)$/,
   /^(?:GET|POST|PATCH|DELETE) \/v1\/definitions(?:\/[^/]+(?:\/agents)?)?$/,
   /^POST \/v1\/(?:transcriptions|images|speech)$/,
   /^(?:POST \/v1\/runs|(?:GET|DELETE) \/v1\/runs\/[^/]+|GET \/v1\/runs\/[^/]+\/(?:events|messages)|POST \/v1\/runs\/[^/]+\/abort)$/,

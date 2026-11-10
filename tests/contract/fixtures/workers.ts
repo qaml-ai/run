@@ -202,6 +202,11 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
       const result = await call(`/v1/agents/${agent}/__test/contract-inputs-due`, { body: {} });
       if (result.status !== 200) throw new Error(`Inputs fixture: ${result.status} ${result.text}`);
     },
+    async checkRequestRecords(agent) {
+      const result = await call(`/v1/agents/${agent}/__test/contract-check-records`);
+      if (result.status !== 200) throw new Error(`Check records fixture: ${result.status} ${result.text}`);
+      return result.json.count;
+    },
     async setScheduleDueAt(agent, schedule, dueAt) {
       const result = await call(`/v1/agents/${agent}/__test/contract-schedule-due`, { body: { id: schedule, dueAt } });
       if (result.status !== 200) throw new Error(`Schedule fixture: ${result.status} ${result.text}`);

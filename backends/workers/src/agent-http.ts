@@ -1,3 +1,5 @@
+import { checkRequest } from "../../../shared/monitors.ts";
+import { monitorRoutes, monitorToolsHost } from "./agent-monitors.ts";
 import { answerInboxGroup, type InboxAnswer } from "../../../shared/inbox-answers.ts";
 import { answerInput, mayAnswer } from "./input-policy.ts";
 import { HttpError } from "./errors.ts";
@@ -88,7 +90,8 @@ export async function stateImpl(this: AgentRuntime) {
       ...activity,
       running: activity.busy || lastActive > unloaded && Date.now() - lastActive < Number((this.env as Env & { AGENT_IDLE_MS?: string }).AGENT_IDLE_MS ?? 60_000),
       events: this.recentEvents.read(),
-      requests: await Promise.all((await this.records()).map(requestView)),
+      // A monitor's checks are not listed with the agent's requests: its own check log has them.
+      requests: await Promise.all((await this.records()).filter(record => !checkRequest(record.id)).map(requestView)),
       ...(this.env.TEST_MODEL === "1"
         ? { localInstanceId: this.instanceId }
         : {}),
@@ -215,7 +218,7 @@ export async function fetchRequestImpl(this: AgentRuntime,
                 bucket: (params?.bucket as string | undefined) ?? conf.config.bucket ?? await this.ctx.storage.get<string>("run-bucket") ?? "default",
                 files: (await this.sourceIdentity(api)).toolFiles('web_fetch'),
               };
-            }, { schedules: incoming.config.type === "subagent" ? undefined : this.scheduleTools() }),
+            }, { schedules: incoming.config.type === "subagent" ? undefined : this.scheduleTools(), monitors: incoming.config.type === "subagent" ? undefined : monitorToolsHost(this) }),
           });
           this.registry.install({
             name: "camel.decisions",
@@ -437,16 +440,19 @@ export async function fetchRequestImpl(this: AgentRuntime,
           ...(await this.ctx.storage
             .list<Schedule>({ prefix: "schedule:" })
             .then((x) =>
-              [...x.values()].sort(
+              [...x.values()].filter((schedule) => !schedule.monitor).sort(
                 (a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id),
               ),
             )),
         ]);
+      const monitors = await monitorRoutes(this, path, request, body);
+      if (monitors) return json(monitors.value, monitors.status ?? 200);
       if (path === "/schedules" && request.method === "POST")
         return json(await this.createSchedule(await body(request)), 201);
       if (/^\/schedules\/[^/]+\/run$/.test(path) && request.method === "POST") {
         const schedule=await this.ctx.storage.get<Schedule>(`schedule:${decodeURIComponent(path.split('/')[2])}`);
-        if(!schedule) throw new HttpError(404,'Unknown schedule');
+        // A monitor's check is never run as a plain schedule, as on Node.
+        if(!schedule || schedule.monitor) throw new HttpError(404,'Unknown schedule');
         return json(await deliverScheduledRun(this.env,schedule,`schedule-run-${crypto.randomUUID()}`,input=>this.submit(input),work=>this.ctx.waitUntil(work)),202);
       }
       if (path.startsWith("/schedules/") && request.method === "DELETE") {

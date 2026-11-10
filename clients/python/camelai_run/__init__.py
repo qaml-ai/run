@@ -1767,6 +1767,22 @@ class _AgentCalls:
         body = {key: value for key, value in {"text": text, "code": code, "history": history, "at": at, "inSeconds": in_seconds, "everySeconds": every_seconds, "calendar": calendar, "email": email, "cron": cron, "sessionMode": session_mode, "spendLimit": spend_limit, "mounts": mounts}.items() if value is not None}
         return self._http("/schedules", "POST", body, retry=False)
 
+    def create_monitor(self, **input):
+        """Start a monitor: name, code (a check script returning {fire, value?, state?}), everySeconds (default 300), mode, expiresInSeconds, budget."""
+        return self._trigger_http("/monitors", "POST", input, retry=False)
+
+    def monitors(self):
+        return self._trigger_http("/monitors")
+
+    def monitor(self, id_or_name):
+        return self._trigger_http("/monitors/" + quote(id_or_name, safe=""))
+
+    def stop_monitor(self, id_or_name):
+        return self._trigger_http("/monitors/" + quote(id_or_name, safe=""), "DELETE", retry=False)
+
+    def monitor_checks(self, id_or_name):
+        return self._trigger_http("/monitors/" + quote(id_or_name, safe="") + "/checks")
+
     def create_trigger(self, **input):
         return self._trigger_http("/triggers", "POST", input, retry=False)
 
@@ -2905,6 +2921,22 @@ class Agent:
     async def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None, history=None, calendar=None, email=None, cron=None, session_mode=None, spend_limit=None, mounts=None):
         """Wake the agent later with a message (text), or run code; every_seconds (at least 60) repeats it. history is deprecated and ignored."""
         return await self.client.schedule(text=text, code=code, at=at, in_seconds=in_seconds, every_seconds=every_seconds, history=history, calendar=calendar, email=email, cron=cron, session_mode=session_mode, spend_limit=spend_limit, mounts=mounts)
+
+    async def create_monitor(self, **input):
+        """Start a monitor: a check script that wakes the agent only when it returns fire: true."""
+        return await self.client.create_monitor(**input)
+
+    async def monitors(self):
+        return await self.client.monitors()
+
+    async def monitor(self, id_or_name):
+        return await self.client.monitor(id_or_name)
+
+    async def stop_monitor(self, id_or_name):
+        return await self.client.stop_monitor(id_or_name)
+
+    async def monitor_checks(self, id_or_name):
+        return await self.client.monitor_checks(id_or_name)
 
     async def create_trigger(self, **input):
         return await self.client.create_trigger(**input)

@@ -767,6 +767,12 @@ export class Agent {
   }
   /** Wake the agent later with a message (`text`), or run `code`; `everySeconds` (at least 60) repeats it. */
   schedule(input: Parameters<AgentClient["schedule"]>[0]) { return this.client.schedule(input); }
+  /** Start a monitor: a check script that wakes the agent only when it returns `fire: true`. */
+  createMonitor(input: Parameters<AgentClient["createMonitor"]>[0]) { return this.client.createMonitor(input); }
+  monitors() { return this.client.monitors(); }
+  monitor(idOrName: string) { return this.client.monitor(idOrName); }
+  stopMonitor(idOrName: string) { return this.client.stopMonitor(idOrName); }
+  monitorChecks(idOrName: string) { return this.client.monitorChecks(idOrName); }
   createTrigger(input: Parameters<AgentClient["createTrigger"]>[0]) { return this.client.createTrigger(input); }
   triggers() { return this.client.triggers(); }
   deleteTrigger(id: string) { return this.client.deleteTrigger(id); }

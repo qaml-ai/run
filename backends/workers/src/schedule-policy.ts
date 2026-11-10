@@ -2,11 +2,14 @@
 import { z } from 'zod';
 import { cronInput, nextCron, freshCronAllowed, type Cron } from '../../../src/core/cron.ts';
 import { calendarInput, nextCalendar, type Calendar } from '../../../src/calendar.ts';
+import type { Monitor } from '../../../shared/monitors.ts';
 export interface Schedule {
   id: string; agent: string; tenant: string; text?: string; code?: string;
   dueAt: number; everySeconds?: number; calendar?: Calendar; cron?: Cron; sessionMode?: "continue" | "fresh"; spendLimit?: { usd: number }; mounts?: {volumeId?:string;path?:string;mode?:"ro"|"rw";workspace?:boolean;subpath?:string;notify?:boolean}[]; email?: ScheduleEmail; createdAt: number;
   /** Occurrences in a row whose delivery was given up, and why the latest attempt failed: until a delivery succeeds. */
   failures?: number; lastError?: string; lastErrorAt?: number;
+  /** A monitor (shared/monitors.ts): `code` is its check, run every `everySeconds`; its state and counters are here. */
+  monitor?: Monitor;
 }
 export interface ScheduleEmail { to: string; subject: string; format?: "text" | "markdown" | "html" }
 export function scheduleEmail(value: any): ScheduleEmail {

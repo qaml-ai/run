@@ -1,4 +1,5 @@
 import { sweepInboxReceipts } from "../../shared/inbox-answers.ts";
+import { monitorRequest } from "../../shared/monitors.ts";
 import { inputAudience, supersedesInput } from "../shared-agents.ts";
 import { createHash } from "node:crypto";
 import { errorText } from "../protocol.ts";
@@ -64,7 +65,8 @@ export function approver(by: Responder) {
 export async function suspend(ctx: InputContext, session: Session, call: ToolCall, request: RequestRecord | undefined, result: McpResult) {
   const inputs = ctx.options.inputs;
   let requests: { key?: string; kind: Input["kind"]; message: string; detail: Record<string, unknown> }[] = inputRequests(result, call.name === "ask_user" || call.name === "request_decision");
-  const unattended = session.header.sources?.humanInput?.unattended === "decline";
+  // A monitor's check and the turn its fire starts run with nobody there: approvals are declined, as unattended.
+  const unattended = session.header.sources?.humanInput?.unattended === "decline" || monitorRequest(request?.id);
   if (requests.length && requests.every(entry => entry.kind === "approval") && unattended) return { content: [{ type: "text", text: "Approval declined: unattended mode. The tool did not run." }], isError: true };
   const decision = call.name === "request_decision";
   if (decision) requests = requests.map(entry => ({ ...entry, kind: "decision" }));

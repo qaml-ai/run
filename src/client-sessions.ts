@@ -22,6 +22,7 @@ import { outputInput } from "./tool-policy.ts";
 import { importedHistory, validateUserMessages } from "./history.ts";
 import { convertToLlm, createCompactionSummaryMessage } from "./pi-harness/messages.ts";
 import { canonical } from "../shared/durable-json.ts";
+import { checkRequest, RESERVED_CHECK_ERROR, RESERVED_CHECK_PREFIX } from "../shared/monitors.ts";
 import { joins, CANCELLABLE_METHODS as CANCELLABLE } from "../shared/queue-mode.ts";
 import type { CommitEffect } from "../shared/append-log.ts";
 import { fileStorage, type Storage } from "../shared/storage.ts";
@@ -488,7 +489,8 @@ export class ClientSessions {
   private async announce(session: Session, records: RequestRecord[], usage?: Map<string, RunUsage>) {
     try {
       await session.started;
-      await enqueueEvents(this.db, records.map(record => this.runEvent(session, record, usage?.get(record.id))));
+      // No run webhooks for a monitor's checks: only its fires' turns are runs.
+      await enqueueEvents(this.db, records.filter(record => !checkRequest(record.id)).map(record => this.runEvent(session, record, usage?.get(record.id))));
     } catch (error) {
       console.error(JSON.stringify({ type: "run_event_failed", agent: session.header.id, error: safeError(error) }));
       return;
@@ -1305,7 +1307,7 @@ export class ClientSessions {
     }
     const session = await this.load(id);
     if (!session) throw new HttpError(404, "Unknown agent");
-    return { cursor: session.cursor, requests: [...session.requests.values()].map(visible), ...activityOf(session.running.values()) };
+    return { cursor: session.cursor, requests: [...session.requests.values()].filter(record => !checkRequest(record.id)).map(visible), ...activityOf(session.running.values()) };
   }
 
   /** A tenant's view of one agent's history, read from Pi storage wherever the agent runs; undefined when the agent is not theirs. */
@@ -1653,7 +1655,7 @@ export class ClientSessions {
     app.put(`${agent}/uploads/:request/:name`, async c => json(c, 201, await this.upload(c.var.session, c.req.param("request"), c.req.param("name"), body(c) as AsyncIterable<Uint8Array>, c.req.header("content-type"))));
     app.get(`${agent}/state`, c => {
       const session = c.var.session;
-      return json(c, 200, { cursor: session.cursor, requests: [...session.requests.values()].map(visible), ...activityOf(session.running.values()) });
+      return json(c, 200, { cursor: session.cursor, requests: [...session.requests.values()].filter(record => !checkRequest(record.id)).map(visible), ...activityOf(session.running.values()) });
     });
     app.post(`${agent}/requests`, async c => {
       const request = await readJson(body(c), FRAME_BYTES);
@@ -1706,6 +1708,9 @@ export class ClientSessions {
    */
   private async accept(session: Session, body: any, trusted = false, member?: string): Promise<{ status: 200 | 202; record: RequestRecord; rate?: RateLimitState }> {
     if (!validId(body?.id) || !REQUEST_METHODS.includes(body.method) || !body.params || typeof body.params !== "object" || Array.isArray(body.params)) throw new HttpError(400, "Invalid request");
+    // A monitor's check is told by its id, which a client could choose: one is accepted only while the scheduler has
+    // marked it in flight for this agent's monitor (before sending it), so no client request gets a check's treatment.
+    if (body.id.startsWith(RESERVED_CHECK_PREFIX) && (body.method !== "execute" || !await this.options.scheduler?.checkInFlight(session.header.id, session.header.tenant, body.id))) throw new HttpError(400, RESERVED_CHECK_ERROR);
     // An idle raw steer is held for the next prompt. Active steers use payer-aware prompt admission.
     const rawSteer = body.method === "steer";
     const oldSteer = rawSteer && session.requests.get(body.id);
@@ -1788,7 +1793,8 @@ export class ClientSessions {
     }
     const isRun = RUN_METHODS.includes(body.method);
     // An agent that lives while it is used lives on from each run it is sent.
-    if (isRun) await this.stillUsed(session);
+    // Nor does it keep an idle agent alive.
+    if (isRun && !checkRequest(body.id)) await this.stillUsed(session);
     // Who is acting in a run is recorded apart from what the agent is asked to do.
     let actor: string | undefined;
     let sharedAgent: import("./shared-agents.ts").SharedAgent | null = null;
@@ -1862,7 +1868,8 @@ export class ClientSessions {
     // A sub-agent the runtime made runs only what its parent sends it: a run signed into its parent's chain, or a message
     // or notification of the runtime's. Anyone else's prompt, steer, continue or code is refused (answering its inputs still resumes it).
     if (session.header.parent && ["prompt", "steer", "continue", "execute"].includes(body.method) && !notice && !delegation.delegation(this.delegationContext, session.header.id, body.id, params.metadata).chain.length) throw viaParent(session.header.id);
-    const rate = isRun && body.method !== "resume" && !notice ? await this.options.runRate?.(session.header.tenant) ?? undefined : undefined;
+    // A monitor's check is not a run of the tenant's: it takes none of its runs per minute.
+    const rate = isRun && body.method !== "resume" && !notice && !checkRequest(body.id) ? await this.options.runRate?.(session.header.tenant) ?? undefined : undefined;
     const limited = body.method === "resume" || notice ? undefined : await spend.runLimit(this.spendContext, session, body.method, bucket, endUser);
     if (limited) throw limited;
     // The bucket the tenant names for a run is the one the runs the runtime starts for the agent after it spend from.
@@ -2380,7 +2387,7 @@ export class ClientSessions {
             [session.header.id, record.resumes ?? 0, Date.now(), this.sweepMs, MAX_RESUME_DELAY_MS]));
         } else if (!continued) await this.resetResumes(session);
         this.hook("runStarted", session, record);
-        if (session.announcing) {
+        if (session.announcing && !checkRequest(record.id)) {
           session.started = enqueueEvents(this.db, [this.runEvent(session, record)])
             .catch(error => console.error(JSON.stringify({ type: "run_event_failed", agent: session.header.id, error: safeError(error) })));
         }

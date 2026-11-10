@@ -2,6 +2,7 @@ import type { ToolDefinition } from "./protocol.ts";
 import type { Outbound } from "./outbound.ts";
 import type { Calendar } from "./calendar.ts";
 import { scheduleInput, type Scheduler, type Schedule } from "./scheduler.ts";
+import { MONITOR_TOOLS, monitorToolView } from "../shared/monitors.ts";
 import type { Claim } from "./ownership.ts";
 import { FRESHNESS, SEARCH, webSearchUnavailable, type WebSearch } from "./web-search.ts";
 import { isShell, type WebRender } from "./web-render.ts";
@@ -35,6 +36,7 @@ export const BUILTINS = {
   web_search: ["web_search"],
   x_search: ["x_search"],
   schedule: ["schedule", "list_schedules", "cancel_schedule"],
+  monitor: ["monitor_start", "monitor_stop", "monitor_list"],
   ask_user: ["ask_user"],
   request_decision: ["request_decision"],
   delegate: [],
@@ -163,6 +165,8 @@ const DEFINITIONS: Record<string, ToolDefinition> = {
     name: "cancel_schedule", exposure: "both", description: "Cancel one of your scheduled wake-ups by id.",
     parameters: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string" } } },
   },
+  // Monitors: the text is shared with the Workers backend (shared/monitors.ts).
+  ...Object.fromEntries(MONITOR_TOOLS.map(tool => [tool.name, { ...tool, exposure: "both" } as ToolDefinition])),
 };
 
 /** Only agents with request_decision are directed to use it. */
@@ -214,6 +218,9 @@ async function builtinValue(services: BuiltinServices, context: BuiltinContext, 
   }
   const scheduler = services.scheduler;
   if (!scheduler) throw new Error("Schedules are not enabled on this runtime");
+  if (name === "monitor_start") return monitorToolView(await scheduler.startMonitor(context.agent, context.tenant, args, context.claim));
+  if (name === "monitor_stop") return { stopped: await scheduler.stopMonitor(context.agent, String(args.name), context.claim) };
+  if (name === "monitor_list") return { monitors: (await scheduler.monitors(context.agent)).map(monitorToolView) };
   if (name === "schedule") {
     const input = scheduleInput({ text: args.text, cron: args.cron, spendLimit: args.spendLimit, ...(args.calendar !== undefined ? { calendar: args.calendar } : {}), ...(args.at !== undefined ? { at: args.at } : {}), ...(args.inSeconds !== undefined ? { inSeconds: args.inSeconds } : {}), ...(args.everySeconds !== undefined ? { everySeconds: args.everySeconds } : {}) });
     // Under the agent's claim: a node that lost the agent mid-turn schedules nothing for it.

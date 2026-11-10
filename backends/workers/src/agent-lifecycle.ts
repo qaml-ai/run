@@ -1,3 +1,4 @@
+import { checkGcDeadline, collectChecks, flushMonitors, monitorDeadline, monitorDue } from "./agent-monitors.ts";
 import { flushScheduleOutcomes } from './schedule-outcomes.ts';
 import { HttpError } from "./errors.ts";
 import { expireDecisions } from "./inbox-decisions.ts";
@@ -12,7 +13,7 @@ import { calendarPrompt } from "../../../src/calendar.ts";
 import { ComputerService } from "./computers/service.ts";
 import { newSchedule, deliverScheduledRun, type StoredSchedule as Schedule } from "./schedules.ts";
 import { nextOccurrence, retryable, RETRY_DELAYS_MS } from "./schedule-policy.ts";
-import { metric, errorClass } from "./observability.ts";
+import { metric, errorClass, failure } from "./observability.ts";
 import { TERMINAL_EVENTS_PREFIX } from "./event-log.ts";
 import { scheduleError, type ScheduleToolsHost } from "./agent-schedules.ts";
 import { Config } from "./agent-types.ts";
@@ -55,7 +56,7 @@ export async function configImpl(this: AgentRuntime) {
 export function scheduleToolsImpl(this: AgentRuntime): ScheduleToolsHost {
     return {
       create: input => this.createSchedule(input),
-      list: async () => [...(await this.ctx.storage.list<Schedule>({ prefix: "schedule:", limit: 100 })).values()]
+      list: async () => [...(await this.ctx.storage.list<Schedule>({ prefix: "schedule:", limit: 100 })).values()].filter(schedule => !schedule.monitor)
         .sort((a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id)),
       cancel: async id => {
         const cancelled = await this.ctx.storage.delete(`schedule:${id}`);
@@ -124,10 +125,11 @@ export async function armImpl(this: AgentRuntime,
             config.id,
           )) ?? Infinity)
         : Infinity,
-      ...[...schedules.values()].map((item) => item.retryAt ?? item.dueAt),
+      ...[...schedules.values()].map((item) => item.monitor ? monitorDeadline(item) : item.retryAt ?? item.dueAt),
       inputAdmissionDeadline(records),
       retry ?? Infinity,
       (await this.ctx.storage.list({prefix:"schedule-outcome:",limit:1})).size ? Date.now()+60_000 : Infinity,
+      await checkGcDeadline(this),
       pendingBilling ? Date.now() + 5000 : Infinity,
       pendingEvents ? Date.now() + 1000 : Infinity,
       records.some(record => record.method === 'configure' && record.state !== 'completed') ? Date.now() + 1000 : Infinity,
@@ -309,11 +311,18 @@ export async function wakeImpl(this: AgentRuntime) {
       }
     }
     const now = Date.now();
+    // Messages monitors still owe the agent, then their due checks (agent-monitors.ts).
+    await flushMonitors(this).catch(error => failure(this.env, "monitor_flush_failed", error));
+    await collectChecks(this, now).catch(error => failure(this.env, "monitor_gc_failed", error));
     for (const [key, schedule] of await this.ctx.storage.list<Schedule>({
       prefix: "schedule:",
       limit: 100,
     })) {
       if ((schedule.retryAt ?? schedule.dueAt) > now) continue;
+      if (schedule.monitor) {
+        await monitorDue(this, schedule, now).catch(error => failure(this.env, "monitor_due_failed", error));
+        continue;
+      }
       try {
         const occurrence = `schedule-${schedule.id}-${schedule.dueAt}`;
         await deliverScheduledRun(this.env, schedule, occurrence, input=>this.submit(input), work=>this.ctx.waitUntil(work));

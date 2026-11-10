@@ -961,6 +961,7 @@ Each reads `CAMELAI_API_KEY` (and `CAMELAI_BASE_URL` for a runtime of your own).
 temporary local runtime with scripted code, calling no model.
 
 See [incoming webhook triggers](../guides/triggers.md) for the trigger management API and commands.
+See [monitors](../guides/monitors.md) for checks that wake an agent only when something happens, and their API and commands.
 
 ### Usage breakdowns and retained run logs
 

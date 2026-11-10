@@ -4128,7 +4128,7 @@
             "items": {
               "$ref": "#/components/schemas/Builtin"
             },
-            "maxItems": 12,
+            "maxItems": 13,
             "description": "Tools the runtime answers itself (file_link, file_import, web_fetch, web_search, x_search, schedule, ask_user, delegate, generate_image, agents, decide), for an agent without a definition; one made from a definition has its definition's. An upsert without builtins leaves the agent none"
           },
           "decide": {
@@ -4324,6 +4324,7 @@
           "web_search",
           "x_search",
           "schedule",
+          "monitor",
           "ask_user",
           "request_decision",
           "delegate",
@@ -4331,7 +4332,7 @@
           "agents",
           "decide"
         ],
-        "description": "file_link: short-lived GET or PUT links to workspace files; file_import: public URLs streamed to the workspace; agents: sub-agents in the background (spawn_agent, wait_agent, list_agents), with the delegate settings"
+        "description": "file_link: short-lived GET or PUT links to workspace files; file_import: public URLs streamed to the workspace; agents: sub-agents in the background (spawn_agent, wait_agent, list_agents), with the delegate settings; monitor: background checks that wake the agent when their script says so (monitor_start, monitor_stop, monitor_list)"
       },
       "DelegateSettings": {
         "type": "object",
@@ -6162,7 +6163,7 @@
             "items": {
               "$ref": "#/components/schemas/Builtin"
             },
-            "maxItems": 12,
+            "maxItems": 13,
             "description": "Replaces the agent's builtins; [] removes them. Not for an agent made from a definition, whose builtins are its definition's"
           },
           "decide": {
@@ -7097,6 +7098,165 @@
             "minimum": 60
           }
         }
+      },
+      "Monitor": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "everySeconds": {
+            "type": "number"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "once",
+              "repeat"
+            ]
+          },
+          "code": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "paused",
+              "stopped"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "description": "noise: paused after more than 12 fires in an hour"
+          },
+          "createdAt": {
+            "type": "number"
+          },
+          "expiresAt": {
+            "type": "number"
+          },
+          "nextCheckAt": {
+            "type": "number"
+          },
+          "checks": {
+            "type": "number"
+          },
+          "fires": {
+            "type": "number"
+          },
+          "consecutiveErrors": {
+            "type": "number"
+          },
+          "lastCheckAt": {
+            "type": "number"
+          },
+          "lastFiredAt": {
+            "type": "number"
+          },
+          "lastError": {
+            "type": "string"
+          },
+          "value": {
+            "description": "The value of the last fire"
+          },
+          "budget": {
+            "type": "object",
+            "properties": {
+              "usd": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "usd"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "everySeconds",
+          "mode",
+          "code",
+          "status",
+          "createdAt",
+          "expiresAt",
+          "nextCheckAt",
+          "checks",
+          "fires",
+          "consecutiveErrors"
+        ]
+      },
+      "MonitorInput": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "1–64 lowercase letters, digits, _ or -. Starting a monitor under a name the agent already uses replaces that one"
+          },
+          "everySeconds": {
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 86400,
+            "description": "How often the check runs. Default 300"
+          },
+          "code": {
+            "type": "string",
+            "maxLength": 16000,
+            "description": "The check: a code-mode script (an async function body) that reads `state` and returns { fire: boolean, value?, state?, nextSeconds? }. It runs with the agent's code tools except those that start model work, ask a person or use a computer, for at most 10 seconds and 10 tool calls"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "once",
+              "repeat"
+            ],
+            "description": "once (default): stop after the first fire. repeat: go on, and fire again only when value differs from the last fire's"
+          },
+          "expiresInSeconds": {
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 2592000,
+            "description": "Default 86400; the monitor then stops"
+          },
+          "budget": {
+            "type": "object",
+            "properties": {
+              "usd": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "usd"
+            ],
+            "description": "The spend limit of each turn a fire starts"
+          }
+        },
+        "required": [
+          "name",
+          "code"
+        ]
+      },
+      "MonitorCheck": {
+        "type": "object",
+        "properties": {
+          "at": {
+            "type": "number"
+          },
+          "fired": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "at",
+          "fired"
+        ]
       },
       "Token": {
         "type": "object",
@@ -10698,7 +10858,7 @@
             "items": {
               "$ref": "#/components/schemas/Builtin"
             },
-            "maxItems": 12,
+            "maxItems": 13,
             "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); x_search searches X posts through Grok with handle and date filters, using the tenant's xAI key or the platform's and charging its reported total cost; schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer; generate_image makes or edits an image (OpenAI's gpt-image-2.5-flare on the tenant's OpenAI key, else the platform's, billed per token) and saves it to the workspace; decide answers typed questions (noul, choice, score) about a state with a decision model (TypeSafe's Jev through OpenRouter), one state or a batch of up to 100, from code as tools.decide"
           },
           "decide": {
@@ -11228,7 +11388,7 @@
             "items": {
               "$ref": "#/components/schemas/Builtin"
             },
-            "maxItems": 12,
+            "maxItems": 13,
             "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); x_search searches X posts through Grok with handle and date filters, using the tenant's xAI key or the platform's and charging its reported total cost; schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer; generate_image makes or edits an image (OpenAI's gpt-image-2.5-flare on the tenant's OpenAI key, else the platform's, billed per token) and saves it to the workspace; decide answers typed questions (noul, choice, score) about a state with a decision model (TypeSafe's Jev through OpenRouter), one state or a batch of up to 100, from code as tools.decide"
           },
           "decide": {
@@ -11888,7 +12048,7 @@
             "items": {
               "$ref": "#/components/schemas/Builtin"
             },
-            "maxItems": 12,
+            "maxItems": 13,
             "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); x_search searches X posts through Grok with handle and date filters, using the tenant's xAI key or the platform's and charging its reported total cost; schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer; generate_image makes or edits an image (OpenAI's gpt-image-2.5-flare on the tenant's OpenAI key, else the platform's, billed per token) and saves it to the workspace; decide answers typed questions (noul, choice, score) about a state with a decision model (TypeSafe's Jev through OpenRouter), one state or a batch of up to 100, from code as tools.decide"
           },
           "decide": {
@@ -20164,6 +20324,246 @@
                   "required": [
                     "deleted"
                   ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/monitors": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The agent's monitors",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Monitor"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MonitorInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The monitor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Monitor"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/monitors/{monitorId}": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The monitor's id or name"
+            },
+            "required": true,
+            "description": "The monitor's id or name",
+            "name": "monitorId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The monitor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Monitor"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The monitor's id or name"
+            },
+            "required": true,
+            "description": "The monitor's id or name",
+            "name": "monitorId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The monitor is stopped",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "stopped": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "stopped"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/monitors/{monitorId}/checks": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The monitor's id or name"
+            },
+            "required": true,
+            "description": "The monitor's id or name",
+            "name": "monitorId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The monitor's latest 20 checks, oldest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MonitorCheck"
+                  }
                 }
               }
             }
