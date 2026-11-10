@@ -134,7 +134,7 @@
   },
   "vars": {
     "PILOT_DB_PROFILE": "1",
-    "MODEL": "openrouter/anthropic/claude-sonnet-5.5",
+    "MODEL": "openrouter/meta/muse-ember",
     "AGENT_PUBLIC_URL": "https://run-pilot.camelai.dev",
     "PUBLIC_URL": "https://run-pilot.camelai.dev",
     "EMAIL_FROM": "camelrun@staging.camelai.dev",

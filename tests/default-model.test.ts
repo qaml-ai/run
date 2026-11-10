@@ -8,9 +8,9 @@ import { createHash } from "node:crypto";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
-// As production: DeepSeek V4.1 Flash on OpenRouter heads the list, and no AGENT_BASE_URL.
-const FLAGSHIP = "openrouter/deepseek/deepseek-v4.1-flash-1017";
-const PRODUCTION = { ...LOCAL, AGENT_PROVIDER: "openrouter", AGENT_MODEL: "deepseek/deepseek-v4.1-flash-1017", AGENT_BASE_URL: "" };
+// As production: Muse Ember on OpenRouter heads the list, and no AGENT_BASE_URL.
+const FLAGSHIP = "openrouter/meta/muse-ember";
+const PRODUCTION = { ...LOCAL, AGENT_PROVIDER: "openrouter", AGENT_MODEL: "meta/muse-ember", AGENT_BASE_URL: "" };
 const NOBODY = "nobody-operator-token-at-least-24-chars";
 
 test("the default is the virtual model camelrun/default; a runtime that names any part of its model keeps what that named", () => {
@@ -66,7 +66,7 @@ test("an agent that names no model gets the first default its tenant or key scop
   assert.equal(await model((await r.call("/v1/agents", { body: { model: "openrouter/anthropic/claude-sonnet-5.5" }, token: OTHER_OPERATOR })).json.id, OTHER_OPERATOR), "openrouter/anthropic/claude-sonnet-5.5");
 });
 
-test("a tenant's own key comes before the platform's: only an Anthropic key is Sonnet 5.5 on it, never DeepSeek on the platform's credit", async t => {
+test("a tenant's own key comes before the platform's: only an Anthropic key is Sonnet 5.5 on it, never Ember on the platform's credit", async t => {
   const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), PRODUCTION, { tenants: {
     byok: { tokenSha256: sha(OPERATOR), apiKeys: { anthropic: "fixture-model-key" } },
     bedrock: { tokenSha256: sha(OTHER_OPERATOR), apiKeys: { "amazon-bedrock": "fixture-model-key" } },

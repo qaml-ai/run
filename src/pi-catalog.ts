@@ -7,12 +7,21 @@ const piCatalog = piGetModel as (provider: string, id: string) => Model<Api> | u
  * Models Pi's catalog does not have yet, by provider and id: each is the Pi entry it is a release of (`from`), with
  * what differs, checked against the provider's own model list. Drop each once Pi ships it (Pi ships GPT-6.1 Terra on
  * OpenAI, Azure and OpenRouter since the vendored commit, and OpenRouter's DeepSeek V4.1 Flash 1017 since 1.4.0):
+ * - OpenRouter Muse Ember: checked against /api/v1/models on 2026-11-10. Uses the Muse Spark transport,
+ *   with mandatory reasoning and all efforts from minimal through max.
  * - Azure DeepSeek V4.1 Flash: measured 2026-10-26 on version 2026-09-10 (preview), not OpenRouter's
  *   2026-10-17 snapshot. Chat Completions serves tools, reasoning, images and cached input. Its 1,048,576-token
  *   window includes output, sent as max_tokens. Azure Global retail per million: $0.30 input, $1.20 output,
  *   $0.006 cached, no cache writes.
  */
 const ADDED: Record<string, Record<string, { from: string; name: string; cost: Model<Api>["cost"] } & Partial<Pick<Model<Api>, "contextWindow" | "input" | "thinkingLevelMap" | "compat">>>> = {
+  openrouter: {
+    "meta/muse-ember": {
+      from: "meta/muse-spark-1.3", name: "Meta: Muse Ember", input: ["text", "image"], contextWindow: 1_048_576,
+      cost: { input: 0.1, output: 0.5, cacheRead: 0.004, cacheWrite: 0.125 },
+      thinkingLevelMap: { off: null, minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" },
+    },
+  },
   azure: {
     "deepseek-v4.1-flash": {
       from: "deepseek-v4-pro", name: "DeepSeek V4.1 Flash", input: ["text", "image"], contextWindow: 1_048_576,

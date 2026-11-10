@@ -13,7 +13,7 @@ import { getModel } from "./pi-catalog.ts";
 export const VIRTUAL_PROVIDER = "camelrun";
 /** Members share a provider: an agent holds one model key. */
 const VIRTUAL_MODELS: Record<string, { name: string; chain: [string, string][] }> = {
-  default: { name: "camelRun default", chain: [["openrouter", "particle-ai/particle-1"], ["openrouter", "deepseek/deepseek-v4.1-flash-1017"]] },
+  default: { name: "camelRun default", chain: [["openrouter", "meta/muse-ember"], ["openrouter", "deepseek/deepseek-v4.1-flash-1017"]] },
 };
 
 export type VirtualSelection = Model<Api> & { virtual?: string };

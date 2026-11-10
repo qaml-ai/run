@@ -5,6 +5,17 @@ import { getModel, getModels, withCatalogPrices } from "../src/pi-catalog.ts";
 import { platformUsage } from "../src/platform-pricing.ts";
 import { resolveModel } from "../src/session-config.ts";
 
+test("Muse Ember has OpenRouter's price, context and mandatory reasoning in the catalog", () => {
+  const model = getModel("openrouter", "meta/muse-ember")!;
+  assert.equal(model.contextWindow, 1_048_576);
+  assert.equal(model.maxTokens, 943_718);
+  assert.deepEqual(model.cost, { input: 0.1, output: 0.5, cacheRead: 0.004, cacheWrite: 0.125 });
+  assert.equal(model.thinkingLevelMap?.off, null);
+  assert.equal(model.thinkingLevelMap?.max, "max");
+  assert.ok(getModels("openrouter").some(entry => entry.id === model.id));
+  assert.equal(resolveModel("openrouter/meta/muse-ember").api, "openai-responses");
+});
+
 test("Terra costs half Sol's rates, including cache writes and the long-context tier on every provider", () => {
   for (const provider of ["openai", "azure", "openrouter"]) {
     const id = `${provider === "openrouter" ? "openai/" : ""}gpt-6.1-terra`;
