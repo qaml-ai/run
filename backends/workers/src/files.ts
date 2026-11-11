@@ -10,6 +10,7 @@ import {
   safeName,
 } from "./file-policy.ts";
 import { uploadFile } from "./file-upload.ts";
+import { commitFiles } from "./volume-commit.ts";
 import { assertStorageWrite } from "./storage-quota.ts";
 import type { NativeStorageBindings } from "./tenant-storage.ts";
 import type { FileVersions } from "./file-versions.ts";
@@ -339,8 +340,23 @@ async function fileRoute(
     }
     const match = /^\/v1\/volumes\/([^/]+)(?:\/(.*))?$/.exec(path);
     if (!match) throw new FileError("Unknown file route", 404);
-    const [, id, tail = ""] = match,
-      v = await volume(env, tenant, id);
+    const [, id, tail = ""] = match;
+    // Local tests only: reach a volume's collection and pins directly, deleted volumes too.
+    if (tail.startsWith("__") && (env as FileBindings & { TEST_MODE?: string }).TEST_MODE === "1") {
+      const raw = stub(env, tenant, id);
+      if (tail === "__gc" && request.method === "POST")
+        return json(await raw.collectGarbage(Date.now() + Math.max(0, Math.min(2 * 86400_000, Number(url.searchParams.get("advance") ?? 0)))));
+      if (tail === "__alarm" && request.method === "POST") return json(await raw.testRunAlarm());
+      if (tail === "__fail-unpin" && request.method === "POST") return json(await raw.testFailUnpin(Number(url.searchParams.get("times") ?? 1)) ?? {});
+      if (tail === "__pin" && request.method === "POST") {
+        const ttl = url.searchParams.get("ttl");
+        await raw.testPinFiles(url.searchParams.get("owner")!, ttl ? Date.now() + Number(ttl) : undefined);
+        return json({});
+      }
+      if (tail === "__pin" && request.method === "DELETE") return json((await raw.unpin(url.searchParams.get("owner")!)) ?? {});
+      if (tail === "__forwarded" && request.method === "GET") return json(await raw.testForwardedPins());
+    }
+    const v = await volume(env, tenant, id);
     if (!tail && request.method === "GET") return json(await v.info());
     if (!tail && request.method === "DELETE") {
       await withSql(env, (sql) =>
@@ -525,41 +541,26 @@ async function fileRoute(
       const created = await createVolume(env, tenant, {
         name: options.name ?? `${info.name} (fork)`,
       });
-      const pin = "fork:" + created.id;
-      await v.pin(
-        pin,
-        at.files.map((f) => f.key),
-        Date.now() + 86400_000,
-      );
-      try {
-        return json(
-          await stub(env, tenant, created.id!).seed(at.files, {
-            volume: id,
-            ...(options.snapshot ? { snapshot: options.snapshot } : {}),
-            seq: at.seq,
-          }),
-          201,
-        );
-      } finally {
-        await v.unpin(pin);
-      }
-    }
-    if (
-      tail === "__gc" &&
-      request.method === "POST" &&
-      (env as FileBindings & { TEST_MODE?: string }).TEST_MODE === "1"
-    )
+      // Metadata only: the fork shares the content, pinned for as long as the fork lives (Volume.seed). Every key read
+      // here is held by the source now, and an unheld blob is kept for a day before it is collected, so the fork's pins
+      // land well inside that.
       return json(
-        await v.collectGarbage(
-          Date.now() +
-            Math.max(
-              0,
-              Math.min(
-                2 * 86400_000,
-                Number(url.searchParams.get("advance") ?? 0),
-              ),
-            ),
-        ),
+        await stub(env, tenant, created.id!).seed(at.files, {
+          volume: id,
+          ...(options.snapshot ? { snapshot: options.snapshot } : {}),
+          seq: at.seq,
+        }),
+        201,
+      );
+    }
+    if (tail === "commit" && request.method === "POST")
+      return await commitFiles(
+        env,
+        tenant,
+        id,
+        v,
+        (await input(request, 24 * 1024 * 1024)) as Parameters<typeof commitFiles>[4],
+        (source) => volume(env, tenant, source),
       );
     if (tail === "snapshots" && request.method === "POST") {
       const options = (await input(request, 24 * 1024 * 1024)) as {

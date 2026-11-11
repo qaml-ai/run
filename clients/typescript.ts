@@ -679,6 +679,16 @@ export interface Volume { id: string; name: string; createdAt: number; seq?: num
   existing?: boolean }
 export interface VolumeFile { path: string; version: number; size: number; updatedAt: number; by?: string; contentType: string }
 /** `pinned`: kept until unpinned (publish's pruning passes it by; deleting it takes `force`). `labels`: your own. */
+/** A file of an atomic commit (VolumeHandle.commit): its expected version (0: must not exist) and its new content. */
+export type CommitFile = { path: string; version: number; contentType?: string } & (
+  | { text: string } | { data: Uint8Array } | { from: { volume: string; path?: string; version?: number } } | { delete: true });
+/** A file a commit found at another version than the one given (headVersion 0: it does not exist). */
+export interface CommitConflict { path: string; headVersion: number }
+/**
+ * What a commit wrote: the files at their new versions, the paths removed, and the snapshot when one was asked for (null,
+ * with `snapshotError`, when the files were committed but the snapshot then failed: take it again, do not retry the commit).
+ */
+export interface VolumeCommit { seq: number; files: VolumeFile[]; removed: string[]; snapshot?: VolumeSnapshot | null; snapshotError?: string }
 export interface VolumeSnapshot { id: string; volume: string; name: string; seq: number; createdAt: number; files: number; bytes: number; pinned: boolean; labels: Record<string, string> }
 export interface VolumeChanges { seq: number; changes: { seq: number; path: string; kind: "write" | "delete"; version?: number; size?: number; by?: string; at: number }[]; gap?: boolean }
 /** A signed URL for one file: send `method` to `url` with no Authorization header, until `expiresAt`. */
@@ -895,6 +905,8 @@ export class AgentError extends Error {
   bucket?: string;
   /** With an end user's credit refusal: whose credit (the subject). */
   endUser?: string;
+  /** With code COMMIT_CONFLICT (a 409 from a volume commit): each file not at the version given, and the version it is at. */
+  conflicts?: CommitConflict[];
   constructor(message: string, status = 0, requestId?: string) { super(message); this.name = "AgentError"; this.status = status; this.requestId = requestId; }
 }
 /**
@@ -1087,7 +1099,7 @@ class Transport {
         });
         await rejectRedirect(response);
         const value = await (response.ok ? response.json() : response.json().catch(() => ({}))) as any;
-        if (!response.ok) throw Object.assign(new AgentError(value.error ?? `HTTP ${response.status}`, response.status), { retryAfterMs: retryAfter(response), ...codeOf(value) });
+        if (!response.ok) throw Object.assign(new AgentError(value.error ?? `HTTP ${response.status}`, response.status), { retryAfterMs: retryAfter(response), ...codeOf(value), ...(Array.isArray(value.conflicts) ? { conflicts: value.conflicts } : {}) });
         return value;
       } catch (error) {
         if (signal?.aborted) throw signal.reason;
@@ -2117,7 +2129,22 @@ export class VolumeHandle {
   restore(snapshot: string): Promise<{ snapshot: string; seq: number; written: number; removed: number }> {
     return this.transport.json(this.path("/restore"), this.token, "POST", { snapshot }, false);
   }
-  /** A new volume with this one's files (or a snapshot's); only metadata is copied. */
+  /**
+   * Write and remove several files as one change: every file must be at the version given (0: must not exist), or
+   * nothing is written and the answer is `{ conflicts }`, each path with the version it is at. Content is text, bytes,
+   * a file of another volume (`from`, e.g. a fork of this one), or `delete: true`. `snapshot` takes a snapshot of the
+   * result in the same change. At most 1,000 files, 16 MiB inline and 1 GiB copied.
+   */
+  async commit(files: CommitFile[], options: { snapshot?: { name?: string; pinned?: boolean; labels?: Record<string, string> } } = {}): Promise<VolumeCommit | { conflicts: CommitConflict[] }> {
+    const body = files.map(file => "data" in file ? { ...file, data: btoa(Array.from(file.data, byte => String.fromCharCode(byte)).join("")) } : file);
+    try {
+      return await this.transport.json(this.path("/commit"), this.token, "POST", { files: body, ...(options.snapshot ? { snapshot: options.snapshot } : {}) }, false, {}, 60_000);
+    } catch (error) {
+      if (error instanceof AgentError && error.code === "COMMIT_CONFLICT" && error.conflicts) return { conflicts: error.conflicts };
+      throw error;
+    }
+  }
+  /** A new volume with this one's files (or a snapshot's); only metadata is copied, and the content is kept while the fork lives. */
   fork(options: { name?: string; snapshot?: string } = {}): Promise<Volume> { return this.transport.json(this.path("/fork"), this.token, "POST", options, false); }
   /** Changes after `since` (a seq), oldest first; `prefix` keeps those at or under a path. */
   changes(since = 0, options: { prefix?: string } = {}): Promise<VolumeChanges> {

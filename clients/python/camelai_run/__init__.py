@@ -77,6 +77,8 @@ class AgentError(RuntimeError):
         self.retry_after = retry_after
         self.code, self.uncertain = code, uncertain
         self.reason, self.bucket, self.end_user = reason, bucket, end_user
+        # With code COMMIT_CONFLICT (a 409 from a volume commit): [{"path", "headVersion"}] for each file not at the version given.
+        self.conflicts = None
 
 
 def _credit_of(value):
@@ -543,7 +545,10 @@ def _json_of(response):
             value = response.json()
         except ValueError:
             value = {}
-        raise AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code, retry_after=_retry_after(response), code=_code(value), **_credit_of(value))
+        error = AgentError(value.get("error", f"HTTP {response.status_code}"), response.status_code, retry_after=_retry_after(response), code=_code(value), **_credit_of(value))
+        if isinstance(value.get("conflicts"), list):
+            error.conflicts = value["conflicts"]
+        raise error
     return response.json()
 
 
@@ -1581,8 +1586,25 @@ class Volume:
         are written back, each a change agents mounting it see. {"snapshot", "seq", "written", "removed"}."""
         return await self._json("/restore", "POST", {"snapshot": snapshot})
 
+    async def commit(self, files, *, snapshot=None):
+        """Write and remove several files as one change: every file must be at its "version" (0: must not exist), or
+        nothing is written and the answer is {"conflicts": [{"path", "headVersion"}]}. Each file is {"path", "version"}
+        and one of "text", "data" (bytes), "from" ({"volume", "path"?, "version"?}: a file of another volume, e.g. a fork
+        of this one) or "delete": True. `snapshot` ({"name"?, "pinned"?, "labels"?}) takes a snapshot of the result in
+        the same change. {"seq", "files", "removed", "snapshot"?}. At most 1,000 files, 16 MiB inline and 1 GiB copied."""
+        body = {"files": [{**file, "data": base64.b64encode(bytes(file["data"])).decode()} if "data" in file else file for file in files]}
+        if snapshot is not None:
+            body["snapshot"] = snapshot
+        try:
+            return await self._json("/commit", "POST", body)
+        except AgentError as error:
+            if error.code == "COMMIT_CONFLICT" and error.conflicts is not None:
+                return {"conflicts": error.conflicts}
+            raise
+
     async def fork(self, *, name=None, snapshot=None):
-        """A new volume with this one's files (or a snapshot's); only metadata is copied."""
+        """A new volume with this one's files (or a snapshot's); only metadata is copied, and the content is kept while
+        the fork lives."""
         return await self._json("/fork", "POST", {key: value for key, value in {"name": name, "snapshot": snapshot}.items() if value is not None})
 
     async def changes(self, since=0, *, prefix=None):
