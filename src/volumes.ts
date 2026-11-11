@@ -710,12 +710,19 @@ export class VolumeService {
       for (const file of batch) if (!file.delete) records.push({ t: "put", seq: ++seq, path: file.path, entry: { version: seq, size: file.size!, chunks: file.chunks!, updatedAt: at, ...by, ...(file.contentType ? { contentType: file.contentType } : {}) } });
       await this.commitAll(volume, records);
       // Mutations run one at a time, so the snapshot holds exactly this commit over what was there.
-      const taken = snapshot === undefined ? undefined : await this.mutate(volume, "snapshot", { name: snapshot.name, pinned: snapshot.pinned, labels: snapshot.labels });
+      // The files are committed now: a snapshot that fails after them (storage, the database) is reported beside the
+      // commit, never as its failure, so a caller does not retry a commit that already landed.
+      let taken: SnapshotSummary | null | undefined, snapshotError: string | undefined;
+      if (snapshot !== undefined) {
+        try { taken = await this.mutate(volume, "snapshot", { name: snapshot.name, pinned: snapshot.pinned, labels: snapshot.labels }); }
+        catch (error) { taken = null; snapshotError = `The files are committed, but the snapshot failed: ${errorText(error)}`; }
+      }
       return {
         seq: volume.seq,
         files: records.flatMap(record => record.t === "put" ? [{ path: record.path, version: record.entry.version, size: record.entry.size, updatedAt: record.entry.updatedAt, contentType: record.entry.contentType ?? guessContentType(record.path), ...by }] : []),
         removed: [...removed],
-        ...(taken ? { snapshot: taken } : {}),
+        ...(taken !== undefined ? { snapshot: taken } : {}),
+        ...(snapshotError ? { snapshotError } : {}),
       };
     }
     if (op === "remove") {

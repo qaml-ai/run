@@ -74,6 +74,18 @@ test("a snapshot on success holds exactly the commit", async t => {
   assert.deepEqual(listed.files.map((file: any) => [file.path, file.version]), [["/a.txt", done.files[0].version], ["/b.txt", done.files[1].version]]);
   await assert.rejects(commit(id, { files: [{ path: "/z.txt", version: 0, text: "z" }], snapshot: { name: "" } }), (error: any) => error.status === 400);
   await assert.rejects(volumes.call(id, "acme", "stat", { path: "/z.txt" }), /does not exist/);
+  // A snapshot that fails after the files are committed is reported beside the commit, not as its failure.
+  const writeBlob = volumes.storage.writeBlob.bind(volumes.storage);
+  volumes.storage.writeBlob = async (key, data) => {
+    if (key.includes("/snapshots/")) throw new Error("storage is down");
+    return writeBlob(key, data);
+  };
+  const landed = await commit(id, { files: [{ path: "/y.txt", version: 0, text: "y" }], snapshot: { name: "lost" } });
+  volumes.storage.writeBlob = writeBlob;
+  assert.equal(landed.snapshot, null);
+  assert.match(landed.snapshotError, /files are committed, but the snapshot failed: storage is down/);
+  assert.equal(landed.files[0].path, "/y.txt");
+  assert.equal((await volumes.call(id, "acme", "stat", { path: "/y.txt" })).version, landed.seq);
 });
 
 test("concurrent commits: the same file has one winner, different files all land, and plain writes interleave", async t => {

@@ -684,8 +684,11 @@ export type CommitFile = { path: string; version: number; contentType?: string }
   | { text: string } | { data: Uint8Array } | { from: { volume: string; path?: string; version?: number } } | { delete: true });
 /** A file a commit found at another version than the one given (headVersion 0: it does not exist). */
 export interface CommitConflict { path: string; headVersion: number }
-/** What a commit wrote: the files at their new versions, the paths removed, and the snapshot when one was asked for. */
-export interface VolumeCommit { seq: number; files: VolumeFile[]; removed: string[]; snapshot?: VolumeSnapshot }
+/**
+ * What a commit wrote: the files at their new versions, the paths removed, and the snapshot when one was asked for (null,
+ * with `snapshotError`, when the files were committed but the snapshot then failed: take it again, do not retry the commit).
+ */
+export interface VolumeCommit { seq: number; files: VolumeFile[]; removed: string[]; snapshot?: VolumeSnapshot | null; snapshotError?: string }
 export interface VolumeSnapshot { id: string; volume: string; name: string; seq: number; createdAt: number; files: number; bytes: number; pinned: boolean; labels: Record<string, string> }
 export interface VolumeChanges { seq: number; changes: { seq: number; path: string; kind: "write" | "delete"; version?: number; size?: number; by?: string; at: number }[]; gap?: boolean }
 /** A signed URL for one file: send `method` to `url` with no Authorization header, until `expiresAt`. */

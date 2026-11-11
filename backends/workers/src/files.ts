@@ -340,8 +340,23 @@ async function fileRoute(
     }
     const match = /^\/v1\/volumes\/([^/]+)(?:\/(.*))?$/.exec(path);
     if (!match) throw new FileError("Unknown file route", 404);
-    const [, id, tail = ""] = match,
-      v = await volume(env, tenant, id);
+    const [, id, tail = ""] = match;
+    // Local tests only: reach a volume's collection and pins directly, deleted volumes too.
+    if (tail.startsWith("__") && (env as FileBindings & { TEST_MODE?: string }).TEST_MODE === "1") {
+      const raw = stub(env, tenant, id);
+      if (tail === "__gc" && request.method === "POST")
+        return json(await raw.collectGarbage(Date.now() + Math.max(0, Math.min(2 * 86400_000, Number(url.searchParams.get("advance") ?? 0)))));
+      if (tail === "__alarm" && request.method === "POST") return json(await raw.testRunAlarm());
+      if (tail === "__fail-unpin" && request.method === "POST") return json(await raw.testFailUnpin(Number(url.searchParams.get("times") ?? 1)) ?? {});
+      if (tail === "__pin" && request.method === "POST") {
+        const ttl = url.searchParams.get("ttl");
+        await raw.testPinFiles(url.searchParams.get("owner")!, ttl ? Date.now() + Number(ttl) : undefined);
+        return json({});
+      }
+      if (tail === "__pin" && request.method === "DELETE") return json((await raw.unpin(url.searchParams.get("owner")!)) ?? {});
+      if (tail === "__forwarded" && request.method === "GET") return json(await raw.testForwardedPins());
+    }
+    const v = await volume(env, tenant, id);
     if (!tail && request.method === "GET") return json(await v.info());
     if (!tail && request.method === "DELETE") {
       await withSql(env, (sql) =>
@@ -546,23 +561,6 @@ async function fileRoute(
         v,
         (await input(request, 24 * 1024 * 1024)) as Parameters<typeof commitFiles>[4],
         (source) => volume(env, tenant, source),
-      );
-    if (
-      tail === "__gc" &&
-      request.method === "POST" &&
-      (env as FileBindings & { TEST_MODE?: string }).TEST_MODE === "1"
-    )
-      return json(
-        await v.collectGarbage(
-          Date.now() +
-            Math.max(
-              0,
-              Math.min(
-                2 * 86400_000,
-                Number(url.searchParams.get("advance") ?? 0),
-              ),
-            ),
-        ),
       );
     if (tail === "snapshots" && request.method === "POST") {
       const options = (await input(request, 24 * 1024 * 1024)) as {

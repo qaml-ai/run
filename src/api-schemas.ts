@@ -1374,7 +1374,8 @@ export const Committed = z.object({
   seq: z.number().openapi({ description: "The volume's seq after the commit" }),
   files: z.array(VolumeFile).openapi({ description: "The files written, each at its new version" }),
   removed: z.array(z.string()).openapi({ description: "The paths removed" }),
-  snapshot: Snapshot.optional(),
+  snapshot: Snapshot.nullable().optional().openapi({ description: "The snapshot asked for; null when the files were committed but the snapshot then failed (snapshotError says why): take it again, do not retry the commit" }),
+  snapshotError: z.string().optional(),
 }).openapi("Committed");
 export const CommitConflict = z.object({
   error: z.string(), code: z.literal("COMMIT_CONFLICT"),

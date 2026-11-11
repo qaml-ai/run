@@ -197,7 +197,9 @@ const agent = await agents.upsert("support", { mounts: [{ volumeId: docs.id, pat
   the answer is `{ conflicts: [{ path, headVersion }] }` (REST: 409,
   `COMMIT_CONFLICT`). `snapshot: { name?, pinned?, labels? }` takes a snapshot
   of the result in the same change. It answers `{seq, files, removed,
-  snapshot?}`. At most 1,000 files, 16 MiB inline and 1 GiB copied a commit.
+  snapshot?}`; on a Node runtime a snapshot that fails after the files are
+  committed answers `snapshot: null` and `snapshotError` (take the snapshot
+  again; do not retry the commit). At most 1,000 files, 16 MiB inline and 1 GiB copied a commit.
   Use it to land an agent's work from a fork onto its base: read the fork's
   `changes` since it was made, and commit those paths `from` the fork at the
   base versions the fork started from.

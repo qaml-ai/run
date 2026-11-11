@@ -194,6 +194,66 @@ test("atomic volume commits and fork pins that live with the fork", { timeout: 2
       assert.equal((await gc(source, 2 * DAY)).removed, 1);
       assert.equal(await text(source, "/keep.txt"), "changed");
     });
+
+    const forkOf = async (source: string) => {
+      const response = await post(`/v1/volumes/${source}/fork`, {});
+      assert.equal(response.status, 201, await response.clone().text());
+      return ((await response.json()) as { id: string }).id;
+    };
+    const forwarded = async (volume: string) =>
+      (await (await call(`/v1/volumes/${volume}/__forwarded`)).json()) as { owner: string; volume: string; expiresAt: number | null }[];
+
+    await t.test("the old fork route's pin and unpin around a new seed leave the fork's base pinned", async () => {
+      const source = await created("rollout source");
+      await put(source, "/keep.txt", "original", 0);
+      const fork = await forkOf(source);
+      // An old fetch handler finishing mid-deploy: it pinned fork:<id> for a day, then unpinned it in finally.
+      assert.equal((await call(`/v1/volumes/${source}/__pin?owner=fork:${fork}&ttl=${DAY}`, { method: "POST" })).status, 200);
+      assert.equal((await call(`/v1/volumes/${source}/__pin?owner=fork:${fork}`, { method: "DELETE" })).status, 200);
+      await put(source, "/keep.txt", "changed");
+      await gc(source);
+      assert.equal((await gc(source, 2 * DAY)).removed, 0);
+      assert.equal(await text(fork, "/keep.txt"), "original");
+    });
+
+    await t.test("a fork outlives its deleted source, and releases the source's blobs when it goes", async () => {
+      const source = await created("deleted source");
+      await put(source, "/keep.txt", "original", 0);
+      const fork = await forkOf(source);
+      assert.equal((await call(`/v1/volumes/${source}`, { method: "DELETE" })).status, 200);
+      await gc(source);
+      assert.equal((await gc(source, 2 * DAY)).removed, 0);
+      assert.equal(await text(fork, "/keep.txt"), "original");
+      assert.equal((await call(`/v1/volumes/${fork}`, { method: "DELETE" })).status, 200);
+      await gc(source);
+      assert.equal((await gc(source, 2 * DAY)).removed, 1);
+    });
+
+    await t.test("a failed pin release on fork deletion is retried by the alarm", async () => {
+      const source = await created("release retry source");
+      await put(source, "/keep.txt", "original", 0);
+      const fork = await forkOf(source);
+      await put(source, "/keep.txt", "changed");
+      await call(`/v1/volumes/${source}/__fail-unpin?times=1`, { method: "POST" });
+      assert.equal((await call(`/v1/volumes/${fork}`, { method: "DELETE" })).status, 200);
+      assert.deepEqual((await forwarded(fork)).map((row) => [row.owner, row.volume]), [[`fork-base:${fork}`, source]]);
+      await gc(source);
+      assert.equal((await gc(source, 2 * DAY)).removed, 0, "still pinned while the release has not reached the source");
+      assert.equal((await call(`/v1/volumes/${fork}/__alarm`, { method: "POST" })).status, 200);
+      assert.deepEqual(await forwarded(fork), []);
+      await gc(source);
+      assert.equal((await gc(source, 2 * DAY)).removed, 1);
+    });
+
+    await t.test("records of forwarded pins that expire are collected with them", async () => {
+      const source = await created("forwarded expiry source");
+      await put(source, "/keep.txt", "original", 0);
+      const fork = await forkOf(source);
+      await call(`/v1/volumes/${fork}/__pin?owner=archive:test&ttl=60000`, { method: "POST" });
+      assert.deepEqual((await forwarded(fork)).map((row) => [row.owner, row.expiresAt === null]), [["archive:test", false], [`fork-base:${fork}`, true]]);
+      await gc(fork, 2 * DAY);
+      assert.deepEqual((await forwarded(fork)).map((row) => [row.owner, row.expiresAt]), [[`fork-base:${fork}`, null]]);
+    });
   } catch (error) {
     t.diagnostic(fixture.worker.logs());
     throw error;

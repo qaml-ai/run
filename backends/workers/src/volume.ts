@@ -24,6 +24,7 @@ const globRegex = (value: string) => policy(() => sourceGlobRegex(value));
 export interface VolumeBindings extends NativeStorageBindings {
   BUCKET: R2Bucket;
   VOLUMES: DurableObjectNamespace<Volume>;
+  TEST_MODE?: string;
 }
 /** One file of an atomic commit: `key` names content this volume owns (an upload or a reused blob); none removes the path. */
 export type CommitFile = {
@@ -116,7 +117,7 @@ export class Volume extends DurableObject<VolumeBindings> {
     );
     // A pin on content another volume owns is kept there; this records where, so unpin finds it.
     ctx.storage.sql.exec(
-      "CREATE TABLE IF NOT EXISTS forwarded_pins(owner TEXT NOT NULL,volume TEXT NOT NULL,PRIMARY KEY(owner,volume))",
+      "CREATE TABLE IF NOT EXISTS forwarded_pins(owner TEXT NOT NULL,volume TEXT NOT NULL,expiresAt INTEGER,PRIMARY KEY(owner,volume))",
     );
   }
   private sql() {
@@ -833,8 +834,12 @@ export class Volume extends DurableObject<VolumeBindings> {
     });
     return this.info();
   }
+  /**
+   * The owner of a fork's base pins. Not `fork:<id>`: the route before metadata-only forks pinned and then unpinned that
+   * name around its copy, and an old route finishing mid-deploy must not release a new fork's base.
+   */
   private forkOwner() {
-    return `fork:${this.meta("id")!}`;
+    return `fork-base:${this.meta("id")!}`;
   }
   /** The volume whose collection owns a blob (the one named in its key), or undefined for this one. */
   private ownerOf(key: string) {
@@ -870,7 +875,13 @@ export class Volume extends DurableObject<VolumeBindings> {
         );
       // Recorded before the remote pin, so an unpin after a crash still reaches it.
       for (const volume of elsewhere.keys())
-        this.sql().exec("INSERT OR IGNORE INTO forwarded_pins VALUES(?,?)", owner, volume);
+        // Kept as long as the longest pin it records (NULL: until unpinned), then collected with expired pins.
+        this.sql().exec(
+          "INSERT INTO forwarded_pins VALUES(?,?,?) ON CONFLICT(owner,volume) DO UPDATE SET expiresAt=CASE WHEN forwarded_pins.expiresAt IS NULL OR excluded.expiresAt IS NULL THEN NULL ELSE max(forwarded_pins.expiresAt,excluded.expiresAt) END",
+          owner,
+          volume,
+          expiresAt ?? null,
+        );
     });
     for (const [volume, owned] of elsewhere) await this.peer(volume).pin(owner, owned, expiresAt);
     if (local.length) await this.scheduleCollection();
@@ -881,11 +892,36 @@ export class Volume extends DurableObject<VolumeBindings> {
     return [...this.sql().exec("SELECT 1 FROM pins WHERE owner=? AND key=? AND (expiresAt IS NULL OR expiresAt>?)", owner, key, Date.now())].length > 0;
   }
   async unpin(owner: string) {
+    if (this.env.TEST_MODE === "1" && Number(this.meta("test:fail-unpin") ?? 0) > 0) {
+      this.sql().exec("UPDATE metadata SET value=value-1 WHERE key='test:fail-unpin'");
+      throw new FileError("Injected unpin failure", 503);
+    }
     this.sql().exec("DELETE FROM pins WHERE owner=?", owner);
     for (const { volume } of [...this.sql().exec<{ volume: string }>("SELECT volume FROM forwarded_pins WHERE owner=?", owner)]) {
       await this.peer(volume).unpin(owner);
       this.sql().exec("DELETE FROM forwarded_pins WHERE owner=? AND volume=?", owner, volume);
     }
+  }
+  /** Local tests only (TEST_MODE): fail the next `times` unpins here, to exercise the release retry. */
+  testFailUnpin(times: number) {
+    if (this.env.TEST_MODE !== "1") throw new FileError("Not found", 404);
+    this.sql().exec("INSERT OR REPLACE INTO metadata VALUES('test:fail-unpin',?)", String(times));
+  }
+  /** Local tests only (TEST_MODE): pin every current file as `owner`, as another route would. */
+  async testPinFiles(owner: string, expiresAt?: number) {
+    if (this.env.TEST_MODE !== "1") throw new FileError("Not found", 404);
+    await this.pin(owner, this.list().map((file) => file.key), expiresAt);
+  }
+  /** Local tests only (TEST_MODE): run the alarm now, as if it had fired. */
+  async testRunAlarm() {
+    if (this.env.TEST_MODE !== "1") throw new FileError("Not found", 404);
+    await this.alarm();
+    return { alarm: await this.ctx.storage.getAlarm() };
+  }
+  /** Local tests only (TEST_MODE): what the forwarded pin records hold. */
+  testForwardedPins() {
+    if (this.env.TEST_MODE !== "1") throw new FileError("Not found", 404);
+    return [...this.sql().exec<{ owner: string; volume: string; expiresAt: number | null }>("SELECT * FROM forwarded_pins ORDER BY owner,volume")];
   }
   /** A deleted fork lets go of its base; retried by the alarm until every owning volume has heard. */
   private async releaseFork() {
@@ -908,6 +944,8 @@ export class Volume extends DurableObject<VolumeBindings> {
       "DELETE FROM pins WHERE expiresAt IS NOT NULL AND expiresAt<=?",
       now,
     );
+    // The pins they record expired in their own volumes too.
+    this.sql().exec("DELETE FROM forwarded_pins WHERE expiresAt IS NOT NULL AND expiresAt<=?", now);
     const held = new Set(
       [...this.sql().exec<{ key: string }>("SELECT key FROM files")].map(
         (f) => f.key,
