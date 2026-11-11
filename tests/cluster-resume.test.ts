@@ -94,7 +94,7 @@ test("a turn whose node died during a tool call continues with the outcome unkno
   assert.ok(toolMessages(model.bodies[1]).some((content: string) => /was interrupted and may have partially run/.test(content)), "the model was told the outcome is unknown");
 });
 
-test("node-loss resumes preserve growing backoff; the loss after the limit fails and new work can run", { timeout: 120_000 }, async t => {
+test("node-loss resumes preserve growing backoff; the loss after the limit fails and new work can run", { timeout: 240_000 }, async t => {
   const c = await cluster(t);
   const events: any[] = [];
   const hookUrl = await listen(t, async (req, res) => {
@@ -105,9 +105,12 @@ test("node-loss resumes preserve growing backoff; the loss after the limit fails
   });
   let finish = false;
   const model = await fakeModel(t, () => finish ? { role: "assistant", content: "new turn finished" } : undefined);
-  const sweepMs = 500;
+  const sweepMs = 500, leaseTtlMs = 18_000;
+  // A lost node's turn resumes once a peer reaps its heartbeat (~9-12 s after the kill) or its lease runs out (the TTL).
+  // A loaded host can stall a runtime's renewals for ~20 s on top: wait on the model calls for twice the TTL.
+  const resumeWaitMs = 2 * leaseTtlMs;
   // Only intentional node deaths should consume resumes, even when a loaded runner pauses heartbeat renewal.
-  const env = { ...model.env, AGENT_ORPHAN_SWEEP_MS: String(sweepMs), AGENT_LEASE_TTL_MS: "18000", AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_USAGE_WEBHOOK_RETRY_MS: "100", AGENT_SECRETS_KEY: randomBytes(32).toString("hex") };
+  const env = { ...model.env, AGENT_ORPHAN_SWEEP_MS: String(sweepMs), AGENT_LEASE_TTL_MS: String(leaseTtlMs), AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_USAGE_WEBHOOK_RETRY_MS: "100", AGENT_SECRETS_KEY: randomBytes(32).toString("hex") };
   let node = await c.start("a", env);
   const registered = await fetch(`${node.url}/v1/webhooks`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ url: hookUrl, events: ["run.failed"] }) });
   assert.equal(registered.status, 201);
@@ -123,7 +126,7 @@ test("node-loss resumes preserve growing backoff; the loss after the limit fails
   // The earliest the next reservation can be made: once its node is lost, and once the backoff before it has passed.
   let notBefore = 0;
   for (let loss = 1; loss <= MAX_RESUMES + 1; loss++) {
-    await until(() => model.bodies.length === loss, `model call ${loss}`);
+    await until(() => model.bodies.length === loss, `model call ${loss}`, resumeWaitMs);
     const before = await row();
     assert.equal(before.turn_resumes, loss - 1);
     assert.equal(before.resume_failures, loss - 1);
@@ -137,7 +140,7 @@ test("node-loss resumes preserve growing backoff; the loss after the limit fails
     await once(node.child, "close");
     node = await c.start(`a${loss}`, env, port);
     if (loss <= MAX_RESUMES) {
-      await until(() => model.bodies.length === loss + 1, `resumed call ${loss}`);
+      await until(() => model.bodies.length === loss + 1, `resumed call ${loss}`, resumeWaitMs);
       assert.ok(Date.now() >= deadline, "even a client-triggered load waits for resume_after");
     }
   }
