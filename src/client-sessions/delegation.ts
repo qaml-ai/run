@@ -3,7 +3,7 @@ import { errorText } from "../protocol.ts";
 import { outputInput } from "../tool-policy.ts";
 import { type ClientEvent, type RequestRecord } from "../../shared/client-protocol.ts";
 import { HttpError } from "../http.ts";
-import { type Db } from "../db.ts";
+import { transaction, type Db } from "../db.ts";
 import { underClaim } from "../ownership.ts";
 import { type McpResult } from "../mcp-results.ts";
 import { jsonResult, type ToolCall } from "../tool-servers.ts";
@@ -122,10 +122,13 @@ export async function delegate(ctx: DelegationContext, session: Session, setting
       throw error;
     });
     child.done = true;
-    // What the child spent counts against this agent's spend limit and this run's, once: not when the parent's stop took
-    // its ending first (`stopDelegates`). A call made again on a new node charges again, as the first node's count was lost with it.
-    const landed = await landDelegate(ctx, requestId, finished.status ?? "failed", "call").catch(() => ({ won: true, by: "call" }));
-    if (landed.won || landed.by === "call") chargeDelegate(ctx, session, run.id, finished);
+    // What the child spent counts against this agent's spend limit once, written with its landing (`landDelegate`): a
+    // call made again on a new node finds it landed and charged. This run's usage counts it as the call takes the answer
+    // (a run resumed on a new node counts from the resume): not when the parent's stop took its ending first
+    // (`stopDelegates`). A landing that failed leaves the row open, and the sweep lands and charges it (`sweepDelegate`).
+    const landed = await landDelegate(ctx, requestId, finished.status ?? "failed", "call", { session, record: finished })
+      .catch(error => { console.error(JSON.stringify({ type: "subagent_land_failed", agent: header.id, child: agent, error: safeError(error) })); return { won: false, by: "call" }; });
+    if (landed.won || landed.by === "call") chargeRun(session, run.id, finished);
     const result = (finished.outcome?.result ?? {}) as { reply?: string; output?: unknown };
     const status = finished.status ?? "failed";
     end(status, finished.error);
@@ -151,13 +154,24 @@ export async function delegate(ctx: DelegationContext, session: Session, setting
 
 /**
  * Land a delegate child's ending on its row, once: by the call that took its answer ('call'), or the parent's stop that
- * waited for it ('stop'). Returns whether this landed it, and who did.
+ * waited for it ('stop'). With `charge`, what the child spent is charged to the parent's spend limit in the same
+ * transaction, so the landing is the charge's one guard (as the sweep's 'late' landing is): whoever lands it charges it,
+ * and nothing charges a landed row again, on any node. Returns whether this landed it, and who did.
  */
-async function landDelegate(ctx: DelegationContext, id: string, status: string, by: "call" | "stop"): Promise<{ won: boolean; by?: string }> {
+export async function landDelegate(ctx: DelegationContext, id: string, status: string, by: "call" | "stop", charge?: { session: Session; record: Pick<RequestRecord, "outcome"> }): Promise<{ won: boolean; by?: string }> {
   const now = Date.now();
-  const { rows } = await ctx.db.query(`update agent_children set ended_at = coalesce(ended_at, $2), status = coalesce(status, $3), state = 'notified', landed_at = $2, landed_by = $4, updated_at = $2
-    where id = $1 and landed_at is null returning id`, [id, now, status, by]);
-  if (rows.length) return { won: true, by };
+  const cost = charge ? delegateCost(charge.record) : 0;
+  // The limit as the agent's owner knows it (read once per load): the child's spend counts against the limit set now.
+  const limit = charge && cost > 0 ? await ctx.spendContext.spendOf(charge.session) : null;
+  const won = await transaction(ctx.db, async sql => {
+    const { rows } = await sql.query(`update agent_children set ended_at = coalesce(ended_at, $2), status = coalesce(status, $3), state = 'notified', landed_at = $2, landed_by = $4, updated_at = $2
+      where id = $1 and landed_at is null returning parent`, [id, now, status, by]);
+    if (rows.length && limit) await sql.query("update agent_spend_limits set spent = spent + $2 where agent = $1 and set_at = $3", [rows[0].parent, cost, limit.setAt]);
+    return rows.length > 0;
+  });
+  // Counted here only once written: the owner's copy of the limit (`spendOf`) is what its next checks read.
+  if (won && limit && charge) ctx.spendContext.counted(charge.session, cost);
+  if (won) return { won: true, by };
   return { won: false, by: (await ctx.db.query("select landed_by from agent_children where id = $1", [id])).rows[0]?.landed_by ?? undefined };
 }
 
@@ -167,11 +181,13 @@ export function delegateCost(record: Pick<RequestRecord, "outcome">) {
   return (usage?.costUsd ?? 0) + (usage?.subagentCostUsd ?? 0) + (usage?.imageCostUsd ?? 0);
 }
 
-/** Charge what a delegate child spent to this agent's spend limit, and to run `runId` (its usage and limit) while the run is here. */
-function chargeDelegate(ctx: DelegationContext, session: Session, runId: string, record: Pick<RequestRecord, "outcome">) {
+/**
+ * Count what a delegate child spent in run `runId`'s usage and against its own limit, while the run is here. Its agent's
+ * spend limit is charged as the child lands (`landDelegate`), not here.
+ */
+function chargeRun(session: Session, runId: string, record: Pick<RequestRecord, "outcome">) {
   const cost = delegateCost(record);
   if (!(cost > 0)) return;
-  ctx.spent(session, cost);
   if (session.running.has(runId)) (session.childSpend ??= new Map()).set(runId, (session.childSpend.get(runId) ?? 0) + cost);
 }
 
@@ -421,7 +437,7 @@ async function stopDelegate(ctx: DelegationContext, session: Session, row: any, 
       continue;
     }
     if (record?.state === "completed") {
-      if ((await landDelegate(ctx, row.id, record.status ?? "failed", "stop")).won) chargeDelegate(ctx, session, row.parent_run, record);
+      if ((await landDelegate(ctx, row.id, record.status ?? "failed", "stop", { session, record })).won) chargeRun(session, row.parent_run, record);
       return false;
     }
     if (record && !aborted) {
