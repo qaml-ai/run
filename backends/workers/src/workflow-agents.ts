@@ -8,7 +8,6 @@
 // made, the child is made under a key derived from it and its run submitted with a request id derived from it, so a
 // start made again (after a restart, or `wake()`) finds the same row, the same agent and the same request. A new
 // attempt (a rerun, a re-issue after `payer_exhausted`) is a new child.
-import { HttpError } from "./errors.ts";
 import type { EffectExecutor, EffectOutcome, StartedEffect } from "./workflow-runner.ts";
 import { ChildRows } from "./children-table.ts";
 import { callIdentity, childUsageCost, type ChildRun, type DelegatedChild } from "./delegation.ts";
@@ -24,22 +23,31 @@ import type { Env } from "./agent-types.ts";
 /** What a script's `agent(prompt, opts)` issues (workflow-vm.ts): its prompt and its options but `key`. */
 export type AgentArgs = { prompt: string; definition?: string; instructions?: string; model?: string; output?: unknown; label?: string; type?: string; [option: string]: unknown };
 
-/** Why a workflow must pause instead of taking an effect's result: the runner marks the effect `refused`. */
-export type Refusal = { code: "payer_exhausted" | "budget_exhausted"; message: string };
+/**
+ * A refusal for money, landed as the effect's outcome: the runner marks the effect `refused` and pauses the workflow
+ * with `code` (resume re-issues it under the next attempt). The script never sees it.
+ */
+export type Refused = { refused: string; code: "payer_exhausted" | "budget_exhausted" };
+export type LandedOutcome = EffectOutcome | Refused;
+/** What a child spent, for the workflow's ledger: landed with its outcome, which the ledger keys by `key:attempt`. */
+export type EffectUsage = { costUsd: number; model?: string; inputTokens?: number; cachedInputTokens?: number; outputTokens?: number; durationMs?: number };
+
+/** Below this (USD) what is left of a budget cannot pay for a child's turn: the workflow pauses with `budget_exhausted`. */
+export const MIN_CHILD_BUDGET_USD = 0.01;
 
 export interface WorkflowAgentsHost {
   storage: DurableObjectStorage;
   workflow: { id: string; tenant: string; bucket?: string };
-  /** What is left of the workflow's budget, from its ledger (USD); undefined: no cap. */
-  budget(): Promise<number | undefined> | number | undefined;
+  /** What is left of the workflow's budget (`budget.usd` less its ledger), in USD. Every workflow has a budget. */
+  budget(): Promise<number> | number;
   /** Children running at once, at most (the workflow's `concurrency`). */
   concurrency: number;
-  /** The effect ended: its result, for the runner (`WorkflowRunner.land`, which ignores a second landing). */
-  land(key: string, attempt: number, outcome: EffectOutcome): Promise<void>;
-  /** The effect was refused for money: the runner marks it `refused` and pauses the workflow (resume re-issues it). */
-  refuse(key: string, attempt: number, refusal: Refusal): Promise<void>;
-  /** What a child spent, as its ending landed (the workflow's ledger). */
-  charge?(key: string, attempt: number, usd: number): Promise<void>;
+  /**
+   * The effect ended (`WorkflowRunner.land`): its result, or a refusal, with what its child spent. Landed again (a
+   * redelivery after a crash), the runner keeps the first landing and the ledger its one row per `key:attempt`, so a
+   * child's spend reaches the ledger exactly once however often its ending comes.
+   */
+  land(key: string, attempt: number, outcome: LandedOutcome, usage?: EffectUsage): Promise<void>;
   /** Everything that reaches outside the workflow object (workflowChildren for the real one). */
   children: WorkflowChildren;
 }
@@ -61,14 +69,16 @@ export const workflowRun = (id: string) => `${id}:main`;
 
 const ROW_PREFIX = "workflow-";
 /** A child's row in the workflow's table: queued (no slot yet), running, or how it ended. */
-type Row = DelegatedChild & { effectKey: string; args?: AgentArgs; refused?: true };
+type Row = DelegatedChild & { effectKey: string; args?: AgentArgs; refusal?: Refused; startedRun?: number };
 
 function owner(id: string): Owner { return { kind: "workflow", id }; }
 
-/** A refusal for money: a 402 at admission, or a run its spend limit (its share of the budget, or the tenant's) stopped. */
-function refusedFor(status: number | undefined, record?: ChildRun) {
-  return status === 402 || record?.outcome?.result?.stopped === "spend_limit";
-}
+/**
+ * Configuration a workflow's child never takes from a definition: no computer (`job()` is a workflow's compute), no
+ * `subject` (admission and billing charge an agent's subject's end-user pool: a workflow's children bill its tenant),
+ * and no agent spend limit of its own (each run's spend limit is its share of the workflow's budget).
+ */
+export const WORKFLOW_CHILD_REFUSED_KEYS = ["computer", "subject", "spendLimit"] as const;
 
 /** What `agent()` returns: a schema's validated object, else the text; a failed or aborted child is an error. */
 export function agentOutcome(record: ChildRun): EffectOutcome {
@@ -77,6 +87,24 @@ export function agentOutcome(record: ChildRun): EffectOutcome {
   if (status === "completed" && !result?.stopped) return { ok: true, value: result?.output !== undefined ? result.output : result?.reply ?? "" };
   return { ok: false, error: record.error ?? record.outcome?.error ?? (result?.stopped ? `The sub-agent stopped: ${result.stopped}` : `The sub-agent ${status}`) };
 }
+
+/** What a child's run spent, as the ledger keeps it. */
+export function effectUsage(record: ChildRun | undefined, durationMs?: number): EffectUsage | undefined {
+  const usage = record?.outcome?.result?.usage as (Record<string, unknown> & Parameters<typeof childUsageCost>[0]) | undefined;
+  if (!usage) return undefined;
+  const number = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  return {
+    costUsd: childUsageCost(usage),
+    ...(typeof usage.model === "string" ? { model: usage.model } : {}),
+    ...(number(usage.input) !== undefined ? { inputTokens: number(usage.input) } : {}),
+    ...(number(usage.cacheRead) !== undefined ? { cachedInputTokens: number(usage.cacheRead) } : {}),
+    ...(number(usage.output) !== undefined ? { outputTokens: number(usage.output) } : {}),
+    ...(durationMs !== undefined ? { durationMs } : {}),
+  };
+}
+
+/** A start that may be tried again with the same request: the child (or the directory) unreachable, or a 5xx. */
+const retryable = (status: number | undefined) => status === undefined || status >= 500;
 
 export class WorkflowAgents implements EffectExecutor {
   readonly rows: ChildRows;
@@ -135,7 +163,7 @@ export class WorkflowAgents implements EffectExecutor {
 
   /**
    * After a restart: a child marked running whose start was not acknowledged is submitted again (the same request,
-   * which it dedupes), then queued ones start. The workflow object calls this as it starts.
+   * which it dedupes), then queued ones start. The workflow object calls this as it wakes.
    */
   async recover() {
     const running = (await this.rows.withStatus("running")) as Row[];
@@ -143,87 +171,109 @@ export class WorkflowAgents implements EffectExecutor {
     await this.pump();
   }
 
+  /** End a row that never ran (refused, failed, aborted) and land it, unless it moved on meanwhile (an abort). */
+  private async end(row: Row, status: string, outcome: LandedOutcome) {
+    const ended = await this.host.storage.transaction(async tx => {
+      const current = await this.rows.get(row.key) as Row | undefined;
+      if (current && current.status !== row.status) return undefined;
+      const next: Row = { ...row, status, endedAt: Date.now(), held: undefined, ...("refused" in outcome ? { refusal: outcome, error: outcome.refused } : outcome.ok ? {} : { error: outcome.error }) };
+      await this.rows.put(next, tx);
+      return next;
+    });
+    if (ended) await this.settle(ended);
+  }
+
   private async launch(row: Row, running: Row[]) {
-    const fail = async (outcome: EffectOutcome | Refusal, status = "failed") => {
-      const ended: Row = { ...row, status, endedAt: Date.now(), ...("code" in outcome ? { refused: true as const, error: outcome.message } : outcome.ok ? {} : { error: outcome.error }) };
-      await this.rows.put(ended);
-      await this.settle(ended, "code" in outcome ? outcome : undefined);
-    };
-    // Its share of what is left: the remaining budget less what running children hold, over the free slots. A start made
-    // again keeps the share it was given (its request must be the same to dedupe).
-    const left = row.status === "running" ? undefined : await this.host.budget();
-    let held: number | undefined = row.held;
-    if (left !== undefined) {
+    // Its share of what is left: the remaining budget less what running children hold, over the free slots. A start
+    // made again keeps the share it was given (its request must be the same to dedupe).
+    let held = row.held;
+    if (row.status === "queued") {
+      const left = await this.host.budget();
+      if (typeof left !== "number" || !Number.isFinite(left)) return this.end(row, "refused", { refused: "The workflow has no budget", code: "budget_exhausted" });
       const free = left - running.reduce((sum, child) => sum + (child.held ?? 0), 0);
-      if (free <= 0) return fail({ code: "budget_exhausted", message: "The workflow's budget is spent" }, "refused");
+      if (free < MIN_CHILD_BUDGET_USD) return this.end(row, "refused", { refused: "The workflow's budget is spent", code: "budget_exhausted" });
       held = free / Math.max(1, this.host.concurrency - running.length);
     }
     const args = row.args!;
     const place: ChildPlace & { ownerRun: string } = { depth: row.depth, maxDepth: row.maxDepth!, chain: row.chain!, owner: row.owner, rootOwner: row.rootOwner, ownerRun: row.parentRequestId };
-    let id = row.id;
     try {
-      if (!id) {
+      if (!row.id) {
         const config = await this.host.children.config(args);
-        // A workflow's children have no computer (`job()` is its compute) and bill the workflow's tenant, never an end
-        // user's pool: no payer is passed, and the workflow's bucket is theirs.
-        delete config.computer;
-        id = (await this.host.children.create({ ...config, name: row.name, type: "subagent", ttlSeconds: MULTI_AGENT_LIMITS.childTtlSeconds, ...(row.bucket ? { bucket: row.bucket } : {}) }, row.key, place)).id;
-        await this.rows.put(row = { ...row, id });
+        for (const name of WORKFLOW_CHILD_REFUSED_KEYS) delete config[name];
+        const { id } = await this.host.children.create({ ...config, name: row.name, type: "subagent", ttlSeconds: MULTI_AGENT_LIMITS.childTtlSeconds, ...(row.bucket ? { bucket: row.bucket } : {}) }, row.key, place);
+        row = { ...row, id };
       }
-      // Running before it is submitted: a start made again after a crash here submits the same request, which dedupes.
-      await this.rows.put(row = { ...row, status: "running", ...(held !== undefined ? { held } : {}) });
+      // Running before it is submitted, unless an abort (or anything else) moved the row on while the child was being
+      // made: then nothing is started. A start made again after a crash here submits the same request, which dedupes.
+      const claimed = await this.host.storage.transaction(async tx => {
+        const current = await this.rows.get(row.key) as Row | undefined;
+        if (!current || current.status !== row.status || current.cancelRequested) return undefined;
+        const next: Row = { ...current, id: row.id, status: "running", startedRun: current.startedRun ?? Date.now(), ...(held !== undefined ? { held } : {}) };
+        await this.rows.put(next, tx);
+        return next;
+      });
+      if (!claimed) return;
+      row = claimed;
       const text = args.instructions === undefined ? args.prompt : roleAndTask(String(args.instructions), args.prompt);
       const placement: Placement = { owner: row.owner!, rootOwner: row.rootOwner!, chain: row.chain!, depth: row.depth, maxDepth: row.maxDepth!, toolCallId: row.effectKey, ownerRun: row.parentRequestId };
-      const submitted = await this.host.children.submit(id, { id: row.requestId, method: "prompt", params: {
+      const submitted = await this.host.children.submit(row.id, { id: row.requestId, method: "prompt", params: {
         text, ...(row.bucket ? { bucket: row.bucket } : {}), whileRunning: "queue",
         metadata: { workflowId: this.host.workflow.id, effectKey: row.effectKey, effectAttempt: String(row.attempt) },
-        ...(held !== undefined ? { spendLimit: { usd: held } } : {}),
+        ...(row.held !== undefined ? { spendLimit: { usd: row.held } } : {}),
         ...(args.output !== undefined ? { output: { schema: modelOutputSchema(args.output) } } : {}),
       } }, placement);
       if (!submitted.ok) {
-        if (refusedFor(submitted.status)) return fail({ code: "payer_exhausted", message: submitted.error || "The workflow's payer has no credit left" }, "refused");
-        return fail({ ok: false, error: submitted.error || "The sub-agent could not be started" });
+        if (submitted.status === 402) return this.end(row, "refused", { refused: submitted.error || "The workflow's tenant has no credit left", code: "payer_exhausted" });
+        if (retryable(submitted.status)) throw Object.assign(new Error(submitted.error || "The sub-agent's start failed"), { status: submitted.status });
+        return this.end(row, "failed", { ok: false, error: submitted.error || "The sub-agent could not be started" });
       }
-      await this.rows.put(row = { ...row, accepted: true });
+      const current = await this.rows.get(row.key) as Row | undefined;
+      if (current?.status === "running") await this.rows.put({ ...current, accepted: true });
     } catch (error) {
       const status = (error as { status?: number }).status;
-      if (status === 402) return fail({ code: "payer_exhausted", message: (error as Error).message }, "refused");
-      // The child unreachable while its start was on its way: it may have taken it. The row stays running and
-      // unacknowledged; the start is made again (recover, or the runner's wake), with the same request, which dedupes.
-      if (row.status === "running" && status === undefined) throw error;
-      return fail({ ok: false, error: error instanceof Error ? error.message : "The sub-agent could not be started" });
+      if (status === 402) return this.end(row, "refused", { refused: (error as Error).message, code: "payer_exhausted" });
+      // The directory or the child unreachable, or a 5xx: the same start is made again (recover, or the runner's wake),
+      // with the same key and request, which dedupe. The row keeps its place (queued, or running unacknowledged).
+      if (retryable(status)) throw error;
+      return this.end(row, "failed", { ok: false, error: error instanceof Error ? error.message : "The sub-agent could not be started" });
     }
   }
 
-  /** Land an ended row on its effect: a refusal pauses the workflow, anything else is the effect's result. */
-  private async settle(row: Row, refusal?: Refusal) {
-    if (row.refused || refusal) return this.host.refuse(row.effectKey, row.attempt ?? 1, refusal ?? { code: "payer_exhausted", message: row.error ?? "Refused for credit" });
-    return this.host.land(row.effectKey, row.attempt ?? 1, row.outcome ? agentOutcome({ state: "completed", status: row.status, outcome: row.outcome, error: row.error }) : { ok: false, error: row.error ?? `The sub-agent ${row.status}` });
+  /** Land an ended row on its effect, with what its child spent (the ledger keeps one row per `key:attempt`). */
+  private async settle(row: Row) {
+    const usage = effectUsage(row.outcome ? { state: "completed", outcome: row.outcome } : undefined, row.endedAt && row.startedRun ? row.endedAt - row.startedRun : undefined);
+    const outcome: LandedOutcome = row.refusal ?? (row.outcome ? agentOutcome({ state: "completed", status: row.status, outcome: row.outcome, error: row.error }) : { ok: false, error: row.error ?? `The sub-agent ${row.status}` });
+    return this.host.land(row.effectKey, row.attempt ?? 1, outcome, usage);
   }
 
   /**
    * A child's ending, from its outbox (the workflow object's `receiveEnding`). Idempotent: the row's status decides in
-   * one transaction whether this delivery ends it; either way the effect is landed (again), since the runner keeps the
-   * first landing and a crash may have come between the row's end and the landing.
+   * one transaction whether this delivery ends it; either way the effect is landed (again) with its usage, since the
+   * runner keeps the first landing and the ledger one row per effect, and a crash may have come between the two. The
+   * receipt goes back only after the landing, so the child delivers again until it is made.
    */
   async receiveEnding(ending: ChildEnding): Promise<Receipt> {
     let row = await this.rows.byRun(ending.agentId, ending.requestId) as Row | undefined ?? await this.resumed(ending);
     if (!row || row.id !== ending.agentId) return { accepted: false };
     if (ending.record?.state !== "completed") return { accepted: true };
     const record = ending.record;
-    const ended = await this.host.storage.transaction(async tx => {
+    row = await this.host.storage.transaction(async tx => {
       const current = await this.rows.get(row!.key) as Row ?? row!;
-      if (current.status !== "running") return { row: current, changed: false };
-      const status = childStatus(record);
-      const next: Row = { ...current, status: refusedFor(undefined, record) ? "refused" : status, endedAt: Date.now(), outcome: record.outcome, error: record.error ?? record.outcome?.error, spent: childUsageCost(record.outcome?.result?.usage), held: undefined, ...(refusedFor(undefined, record) ? { refused: true as const } : {}) };
+      if (current.status !== "running") return current;
+      const stopped = record.outcome?.result?.stopped === "spend_limit";
+      const spent = childUsageCost(record.outcome?.result?.usage);
+      // Stopped at its spend limit: its share of the workflow's budget is spent (budget_exhausted), or, short of it,
+      // its tenant's credit is (payer_exhausted).
+      const refusal: Refused | undefined = stopped ? (current.held !== undefined && spent >= current.held * 0.99
+        ? { refused: "The sub-agent spent its share of the workflow's budget", code: "budget_exhausted" }
+        : { refused: record.error ?? record.outcome?.error ?? "The workflow's tenant has no credit left", code: "payer_exhausted" }) : undefined;
+      const next: Row = { ...current, status: refusal ? "refused" : childStatus(record), endedAt: Date.now(), outcome: record.outcome, error: record.error ?? record.outcome?.error, spent, held: undefined, ...(refusal ? { refusal } : {}) };
       await this.rows.put(next, tx);
-      return { row: next, changed: true };
+      return next;
     });
-    row = ended.row;
     // A child waiting on a person has not ended: its resumed run's ending comes later (`resumed`).
     if (row.status === "input_required") return { accepted: true };
-    if (ended.changed && row.spent) await this.host.charge?.(row.effectKey, row.attempt ?? 1, row.spent);
-    await this.settle(row, row.refused ? { code: "payer_exhausted", message: row.error ?? "The sub-agent stopped at its spend limit" } : undefined);
+    await this.settle(row);
     await this.pump();
     return { accepted: true };
   }
@@ -249,17 +299,32 @@ export class WorkflowAgents implements EffectExecutor {
     return { accepted: true };
   }
 
+  /** Stop one effect's child (the runner's per-effect cancel, on abort or a pause that aborts children). */
+  async cancel(effect: { key: string; attempt: number }) {
+    const row = await this.rows.get(ROW_PREFIX + await this.keyOf(effect)) as Row | undefined;
+    if (row) await this.stop(row);
+  }
+
+  private async stop(row: Row) {
+    if (row.status === "queued") {
+      await this.host.storage.transaction(async tx => {
+        const current = await this.rows.get(row.key) as Row | undefined;
+        if (current?.status === "queued") await this.rows.put({ ...current, status: "aborted", endedAt: Date.now(), error: "The workflow was aborted" }, tx);
+      });
+      return;
+    }
+    if (row.status !== "running") return;
+    await this.rows.put({ ...row, cancelRequested: true });
+    if (row.id) await this.host.children.cancel(row.id, row.requestId);
+  }
+
   /**
    * The workflow was aborted: queued children never start, running ones are stopped (each stops its own children, as
-   * an aborted run does). Their endings still come and are recorded; the runner of an aborted workflow lands nothing.
+   * an aborted run does), and one being made right now is not started once made. Their endings still come and land;
+   * the runner of an aborted workflow takes nothing from them.
    */
   async abort() {
-    const rows = await this.rows.all() as Row[];
-    for (const row of rows.filter(row => row.status === "queued")) await this.rows.put({ ...row, status: "aborted", endedAt: Date.now(), error: "The workflow was aborted" });
-    await Promise.all(rows.filter(row => row.status === "running" && row.id).map(async row => {
-      await this.rows.put({ ...row, cancelRequested: true });
-      await this.host.children.cancel(row.id, row.requestId);
-    }));
+    for (const row of await this.rows.all() as Row[]) await this.stop(row);
   }
 }
 
@@ -280,7 +345,7 @@ export function workflowChildren(env: Env, workflow: { id: string; tenant: strin
     },
     async create(config, key, place) {
       const entry = await new Directory(env, workflow.tenant).upsert(config, key, defaults.runtimeOrigin);
-      if ("failed" in entry) throw new HttpError(entry.status ?? 400, entry.error);
+      if ("failed" in entry) throw Object.assign(new Error(entry.error), { status: entry.status ?? 400 });
       await recordChildParent(env, workflow.tenant, entry.id, workflow.id, place.ownerRun, place);
       return { id: entry.id };
     },
