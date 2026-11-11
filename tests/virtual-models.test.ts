@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { listModels } from "../src/catalog.ts";
+import { getModels, withOpenRouterHosts } from "../src/pi-catalog.ts";
+import { platformUsage } from "../src/platform-pricing.ts";
 import { configuredModel, defaultModels } from "../src/model.ts";
 import { isModelUnavailable } from "../src/model-errors.ts";
 import { withModelFallback } from "../src/model-fallback.ts";
@@ -40,7 +42,29 @@ test("camelrun/default is a chain, its head as an agent holds it, and the runtim
   const listed = listModels().find(model => model.id === ALIAS)!;
   assert.deepEqual(listed.routes, [`openrouter/${EMBER}`, `openrouter/${FLASH}`]);
   assert.deepEqual([listed.provider, listed.modelId, listed.contextWindow], ["camelrun", "default", 1_048_576]);
-  assert.ok(listModels("camelrun").length === 1 && !listModels("openrouter").some(model => model.id === ALIAS));
+  assert.deepEqual(listModels("camelrun").map(model => model.id), [ALIAS, "camelrun/fast", "camelrun/strong"]);
+  assert.ok(!listModels("openrouter").some(model => model.id === ALIAS));
+});
+
+test("camelrun/fast and camelrun/strong: strong asks Gemini 4 Carbon on flex, then the default tier; only it sends service_tier", () => {
+  const CARBON = "google/gemini-4-carbon";
+  const tiers = (reference: string) => virtualChain(reference)!.map(model => [`${model.provider}/${model.id}`, (model as { serviceTier?: string }).serviceTier]);
+  assert.deepEqual(tiers("camelrun/fast"), [[`openrouter/${EMBER}`, undefined]]);
+  assert.deepEqual(tiers("camelrun/strong"), [[`openrouter/${CARBON}`, "flex"], [`openrouter/${CARBON}`, "default"]]);
+  assert.ok(virtualChain(ALIAS)!.every(model => !Object.hasOwn(model, "serviceTier")), "camelrun/default's members are as they were");
+  const [flex, standard] = virtualChain("camelrun/strong")!;
+  const strong = resolveModel("camelrun/strong");
+  assert.equal((routeModel(strong, { reason: "retry", failed: flex }) as { serviceTier?: string }).serviceTier, "default");
+  // Node's fallback names the failed model by its message, which carries no tier: the first member of the model.
+  assert.equal((routeModel(strong, { reason: "retry", failed: { provider: "openrouter", model: CARBON } }) as { serviceTier?: string }).serviceTier, "default");
+  assert.equal(routeModel(strong, { reason: "retry", failed: standard }), undefined);
+  assert.deepEqual(withOpenRouterHosts(flex, { model: CARBON }), { model: CARBON, service_tier: "flex" });
+  for (const model of [...getModels("openrouter"), ...virtualChain(ALIAS)!]) assert.ok(!("service_tier" in (withOpenRouterHosts(model, { model: model.id }, "deny") as object)), model.id);
+  const tokens = { input: 1_000_000, output: 1_000_000, cacheRead: 1_000_000, cacheWrite: 0 };
+  assert.equal(platformUsage({ ...tokens, serviceTier: "flex" }, "openrouter", CARBON).usage.cost.total, 6.05);
+  assert.equal(platformUsage({ ...tokens, serviceTier: "default" }, "openrouter", CARBON).usage.cost.total, 12.1);
+  assert.equal(platformUsage({ ...tokens, serviceTier: "flex" }, "openrouter", EMBER).usage.cost.total, platformUsage(tokens, "openrouter", EMBER).usage.cost.total);
+  assert.deepEqual(listModels("camelrun").find(model => model.id === "camelrun/strong")!.serviceTiers, ["flex", "default"]);
 });
 
 test("route: a message starts at the head, a continuation stays on previous, a retry moves past failed and ends", () => {

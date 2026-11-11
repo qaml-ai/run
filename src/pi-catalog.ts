@@ -9,6 +9,8 @@ const piCatalog = piGetModel as (provider: string, id: string) => Model<Api> | u
  * OpenAI, Azure and OpenRouter since the vendored commit, and OpenRouter's DeepSeek V4.1 Flash 1017 since 1.4.0):
  * - OpenRouter Muse Ember: checked against /api/v1/models on 2026-11-10. Uses the Muse Spark transport,
  *   with mandatory reasoning and all efforts from minimal through max.
+ * - OpenRouter Gemini 4 Carbon: checked against /api/v1/models/google/gemini-4-carbon/endpoints on 2026-11-11. Argon's
+ *   transport and levels; the default tier's prices (flex's are in SERVICE_TIER_PRICES). `camelrun/strong`'s model.
  * - Azure DeepSeek V4.1 Flash: measured 2026-10-26 on version 2026-09-10 (preview), not OpenRouter's
  *   2026-10-17 snapshot. Chat Completions serves tools, reasoning, images and cached input. Its 1,048,576-token
  *   window includes output, sent as max_tokens. Azure Global retail per million: $0.30 input, $1.20 output,
@@ -20,6 +22,10 @@ const ADDED: Record<string, Record<string, { from: string; name: string; cost: M
       from: "meta/muse-spark-1.3", name: "Meta: Muse Ember", input: ["text", "image"], contextWindow: 1_048_576,
       cost: { input: 0.1, output: 0.5, cacheRead: 0.004, cacheWrite: 0.125 },
       thinkingLevelMap: { off: null, minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" },
+    },
+    "google/gemini-4-carbon": {
+      from: "google/gemini-4-argon", name: "Google: Gemini 4 Carbon", input: ["text", "image"], contextWindow: 1_048_576,
+      cost: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 0.1875 },
     },
   },
   azure: {
@@ -92,12 +98,28 @@ const AZURE = "azure";
  * serves. V4.1 Flash asks for 131,072 too: Pi's catalog moved it to 943,718 (2026-10-29), which leaves out Nebius
  * (943,200), one of its five allowed hosts (OPENROUTER_HOSTS), and with a long input asks for more than the window
  * holds. Azure Flash has no separate output cap (measured 2026-10-26), but input plus max_tokens must fit its window;
- * default to 131,072 there too.
+ * default to 131,072 there too. Gemini 4 Carbon asks for 65,536: its flex endpoint and Vertex's global one serve
+ * 943,718, but Vertex's US and EU ones 65,536, and the default tier `camelrun/strong` falls back to should keep them.
  */
 const MAX_TOKENS: Record<string, Record<string, number>> = {
   azure: { "deepseek-v4.1-flash": 131_072 },
-  openrouter: { "deepseek/deepseek-v4.1-flash": 131_072, "deepseek/deepseek-v4.1-flash-1017": 131_072 },
+  openrouter: { "deepseek/deepseek-v4.1-flash": 131_072, "deepseek/deepseek-v4.1-flash-1017": 131_072, "google/gemini-4-carbon": 65_536 },
 };
+
+/**
+ * Prices of an OpenRouter service tier other than the default, by model id and tier (USD per million tokens), from the
+ * model's endpoints (GET /api/v1/models/<id>/endpoints, `pricing` per tier). A response is billed at the tier that
+ * served it, as its `service_tier` says (`tierCost`).
+ * - Gemini 4 Carbon on flex (google-ai-studio/flex, 2026-11-11): half the default tier's.
+ */
+const SERVICE_TIER_PRICES: Record<string, Record<string, Model<Api>["cost"]>> = {
+  "google/gemini-4-carbon": { flex: { input: 1, output: 5, cacheRead: 0.05, cacheWrite: 0.09375 } },
+};
+
+/** The prices a response served on `tier` is billed at: the tier's own where it has them, else undefined (the model's). */
+export function tierCost(provider: string, id: string, tier: unknown): Model<Api>["cost"] | undefined {
+  return provider === "openrouter" && typeof tier === "string" ? SERVICE_TIER_PRICES[id.replace(/:[a-z]+$/, "")]?.[tier] : undefined;
+}
 const limited = (model: Model<Api>): Model<Api> => {
   const most = MAX_TOKENS[model.provider]?.[model.id];
   return most ? { ...model, maxTokens: most } : model;
@@ -192,18 +214,23 @@ export function openRouterIgnoredHosts(id: string): string[] | undefined {
  * its base id), the hosts it is never served by (`provider.ignore`) and, when its agent asks
  * (`dataCollection: "deny"`), only hosts that do not collect its data (`provider.data_collection`): OpenRouter skips the
  * providers whose data policy says they may train on it. All are filters, so load balancing stays on; any other
- * `provider` routing the request has is kept. Nothing else is added by default. Any other request is as it was.
+ * `provider` routing the request has is kept. A model asked on a service tier (`serviceTier`, only a virtual model's
+ * member has one) sends it as `service_tier`. Nothing else is added by default. Any other request is as it was.
  */
 export function withOpenRouterHosts(model: Model<Api>, payload: unknown, dataCollection?: "deny" | null): unknown {
   if (model.provider !== "openrouter" || !payload || typeof payload !== "object") return payload;
   const only = openRouterHosts(model.id);
   const ignore = openRouterIgnoredHosts(model.id);
-  if (!only && !ignore && !dataCollection) return payload;
+  // A virtual model's member asked on a service tier (virtual-models.ts): top-level `service_tier`, never a `:floor` variant.
+  const tier = (model as { serviceTier?: string }).serviceTier;
+  if (!only && !ignore && !dataCollection && !tier) return payload;
   const request = payload as { model?: unknown; provider?: Record<string, unknown> };
+  if (!only && !ignore && !dataCollection) return { ...request, service_tier: tier };
   const variant = hostVariant(model.id);
   return {
     ...request, ...(variant && request.model === model.id ? { model: variant.base } : {}),
     provider: { ...(only ? { only } : {}), ...(ignore ? { ignore } : {}), ...request.provider, ...(dataCollection ? { data_collection: dataCollection } : {}) },
+    ...(tier ? { service_tier: tier } : {}),
   };
 }
 

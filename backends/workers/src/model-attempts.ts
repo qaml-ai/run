@@ -259,6 +259,12 @@ export class ModelAttempts {
         await sql.query("update model_attempts set context = coalesce(context, '{}'::jsonb) || $2::jsonb where id=$1", [id, JSON.stringify({ superseded })]);
         row.context = { ...row.context, superseded };
       }
+      // The service tier the call asked for and the one that served it (model-attempt-stream.ts `servedTier`), kept with the attempt.
+      const tier = { ...(typeof usage.requestedServiceTier === "string" ? { requestedServiceTier: usage.requestedServiceTier } : {}), ...(typeof usage.serviceTier === "string" ? { serviceTier: usage.serviceTier } : {}) };
+      if (Object.keys(tier).length && (row.context?.serviceTier !== tier.serviceTier || row.context?.requestedServiceTier !== tier.requestedServiceTier)) {
+        await sql.query("update model_attempts set context = coalesce(context, '{}'::jsonb) || $2::jsonb where id=$1", [id, JSON.stringify(tier)]);
+        row.context = { ...row.context, ...tier };
+      }
       const replaced: Superseded | undefined = row.context?.superseded;
       const disabled = row.context?.reconciliationDisabled || (row.key_hash === hash("") ? "Empty provider credential has no reconciliation; reported usage is final" : undefined);
       const evidence = chars > 0 || [usage.input, usage.output, usage.cacheRead, usage.cacheWrite, usage.providerCost].some(value => typeof value === "number" && value > 0);

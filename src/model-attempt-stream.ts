@@ -1,13 +1,26 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createAssistantMessageEventStream, type Api, type AssistantMessage, type AssistantMessageEventStream, type Model } from "@earendil-works/pi-ai";
+import { calculateCost, createAssistantMessageEventStream, type Api, type AssistantMessage, type AssistantMessageEventStream, type Model } from "@earendil-works/pi-ai";
+import { tierCost } from "./pi-catalog.ts";
 import { attemptAck, type AttemptAck, type AttemptEstimate, type CreditStop, type ModelAttemptHook, type Superseded } from "./model-attempt.ts";
 import { PERSISTENCE_FAILED } from "./protocol.ts";
 
 /** How often a streaming call reports activity; also renews metered calls within the hold's ten-minute life. */
 export const RENEW_MS = 3 * 60_000;
 
-/** What a call's response says beyond Pi's message: the provider's cost (and credits), its generation id, and the host it was served by (`host`, OpenRouter's). */
-export type UsageSink = { cost?: number; credits?: number; host?: string; generation?: (id: string) => Promise<void> };
+/** What a call's response says beyond Pi's message: the provider's cost (and credits), its generation id, the host it was served by (`host`, OpenRouter's) and the service tier that served it (`serviceTier`, OpenRouter's). */
+export type UsageSink = { cost?: number; credits?: number; host?: string; serviceTier?: string; generation?: (id: string) => Promise<void> };
+/**
+ * The service tier a call asked for (`requestedServiceTier`, a virtual model's member: virtual-models.ts) and the one
+ * that served it (`serviceTier`, the response's own word), on its usage; its cost at the served tier's prices where it
+ * has its own (pi-catalog.ts `tierCost`): Pi priced it at the model's. Nothing for a call that asked none and heard none.
+ */
+export function servedTier(model: Model<Api>, message: AssistantMessage, served: string | undefined) {
+  const requested = (model as { serviceTier?: string }).serviceTier;
+  if (!requested && !served) return;
+  Object.assign(message.usage, { ...(requested ? { requestedServiceTier: requested } : {}), ...(served ? { serviceTier: served } : {}) });
+  const rates = tierCost(model.provider, model.id, served);
+  if (rates) calculateCost({ ...model, cost: rates }, message.usage);
+}
 const zeroUsage = () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } });
 
 /**
@@ -90,6 +103,7 @@ export async function attemptStream(model: Model<Api>, key: string, kind: "respo
           const message = event.type === "done" ? event.message : event.error;
           if (sink.cost !== undefined) Object.assign(message.usage, { providerCost: sink.cost, providerCreditCost: sink.credits });
           if (sink.host) Object.assign(message.usage, { providerHost: sink.host });
+          servedTier(model, message, sink.serviceTier);
           // Empty envelopes do not prove a provider generated billable output.
           const billed = message.content.length ? JSON.stringify(message.content).length : 0;
           try {

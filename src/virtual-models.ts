@@ -11,22 +11,33 @@ import { getModel } from "./pi-catalog.ts";
  * (its key, its limits) reads the head, and what is behind the name can change without touching agents.
  */
 export const VIRTUAL_PROVIDER = "camelrun";
-/** Members share a provider: an agent holds one model key. */
-const VIRTUAL_MODELS: Record<string, { name: string; chain: [string, string][] }> = {
+/**
+ * Members share a provider: an agent holds one model key. A member may name the OpenRouter service tier it is asked on
+ * (`service_tier`, sent by `withOpenRouterHosts`): `strong` asks Gemini 4 Carbon on flex, half the default tier's price,
+ * and moves to the default tier when flex has no capacity (model-settings.ts waits a bounded window first on Workers).
+ * - `fast` and `strong` are model classes (docs/design/swarm-workflows.md): bulk work and judgment. Decided 2026-11-10.
+ */
+type Member = [provider: string, id: string, options?: { serviceTier: ServiceTier }];
+const VIRTUAL_MODELS: Record<string, { name: string; chain: Member[] }> = {
   default: { name: "camelRun default", chain: [["openrouter", "meta/muse-ember"], ["openrouter", "deepseek/deepseek-v4.1-flash-1017"]] },
+  fast: { name: "camelRun fast", chain: [["openrouter", "meta/muse-ember"]] },
+  strong: { name: "camelRun strong", chain: [["openrouter", "google/gemini-4-carbon", { serviceTier: "flex" }], ["openrouter", "google/gemini-4-carbon", { serviceTier: "default" }]] },
 };
 
-export type VirtualSelection = Model<Api> & { virtual?: string };
+/** An OpenRouter service tier a virtual model's member is asked on (`service_tier`). */
+export type ServiceTier = "flex" | "default";
+export type VirtualSelection = Model<Api> & { virtual?: string; serviceTier?: ServiceTier };
 /** Why a request is routed, as Pi says: `user` after a message someone wrote, `continuation` after tool results, `retry` after `failed`, `direct` outside the loop (a summary). */
 export type ModelRouteReason = "user" | "continuation" | "retry" | "direct";
-type Physical = { provider: string; model?: string; id?: string };
+type Physical = { provider: string; model?: string; id?: string; serviceTier?: string };
 
 /** A member as it is called. One OpenRouter serves that the catalog lacks passes through: at its lookup's values when an agent is made on it as the head, else the defaults (openrouter-model.ts). */
-export const virtualMember = ([provider, id]: [string, string]): Model<Api> => {
+export const virtualMember = ([provider, id, options]: Member): Model<Api> => {
   const model = getModel(provider, id);
-  if (!model && provider === "openrouter") return passthroughModel(id);
+  const tier = options ? { serviceTier: options.serviceTier } : {};
+  if (!model && provider === "openrouter") return { ...passthroughModel(id), ...tier };
   if (!model) throw new Error(`Virtual model member ${provider}/${id} is not in the catalog`);
-  return provider === "openrouter" ? { ...model, api: openRouterApi(model.api, model) } as Model<Api> : model;
+  return provider === "openrouter" ? { ...model, api: openRouterApi(model.api, model), ...tier } as Model<Api> : model;
 };
 /** The models behind a reference, most preferred first; undefined for a reference that is no virtual model. */
 export function virtualChain(reference: string | undefined): Model<Api>[] | undefined {
@@ -50,7 +61,9 @@ export const currentModel = <T extends VirtualSelection>(model: T): T => {
   return !now || (now as Passthrough).passthrough && now.id === model.id ? model : now;
 };
 
-const same = (model: Model<Api>, physical: Physical) => model.provider === physical.provider && model.id === (physical.model ?? physical.id);
+/** A member is the physical model: by provider and id, and by service tier when the physical model says one (an assistant message does not). */
+const same = (model: VirtualSelection, physical: Physical) => model.provider === physical.provider && model.id === (physical.model ?? physical.id)
+  && (physical.serviceTier === undefined || model.serviceTier === physical.serviceTier);
 
 /**
  * The physical model for one request, or undefined when a `retry` has nowhere left to go. Sticky as Pi advises: a
