@@ -5901,7 +5901,7 @@ Every event is an envelope:
 | `run.failed` | It ended with an error, the runtime's or the model's | as above, and `usage`, `error`, `code` where the error has a name (`cancelled`: a stop cancelled it before it began; `aborted`; `model_stream_stalled`; `turn_limit`…), and `uncertain` when a restart cut it short |
 | `input.requested` | The agent asks a person for input (the run waits) | `agentId`, `requestId`, `inputId`, `toolCallId`, `kind`, `expiresAt` |
 | `input.resolved` | An input settled | `agentId`, `requestId`, `inputId`, `state` |
-| `usage.recorded` | A model response's usage was counted, a transcription's, or images' | `agentId`, `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response`, `compaction`, `transcription`, `image` or `speech`), tokens, `audioSeconds` (a transcription's, with no tokens), `images` (how many images were made), `cost: {usd, source}`, `at`. A [transcription](https://run.camelai.com/docs/guides/voice.md) made with `POST /v1/transcriptions`, or [images](https://run.camelai.com/docs/guides/images.md) made with `POST /v1/images`, has `agentId: null`, and the `subject`, `context` and `actor` it was sent with. Treat a `kind` you do not know as other usage: kinds may be added. `superseded: "content_filter"` marks a response that is not the answer: its provider's content filter blocked it and the same request went to the same model elsewhere ([models and keys](https://run.camelai.com/docs/guides/models-and-keys.md#azure-openai)), whose own event follows. Its tokens and cost are what the blocked call took; it is not charged to your account, so do not charge your users for it |
+| `usage.recorded` | A model response's usage was counted, a transcription's, or images' | `agentId`, `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response`, `compaction`, `transcription`, `image` or `speech`), tokens, `audioSeconds` (a transcription's, with no tokens), `images` (how many images were made), `cost: {usd, source}`, `at`. A [transcription](https://run.camelai.com/docs/guides/voice.md) made with `POST /v1/transcriptions`, or [images](https://run.camelai.com/docs/guides/images.md) made with `POST /v1/images`, has `agentId: null`, and the `subject`, `context` and `actor` it was sent with. Treat a `kind` you do not know as other usage: kinds may be added. `superseded: "content_filter"` marks a response that is not the answer: its provider's content filter blocked it and the same request went to the same model elsewhere ([models and keys](https://run.camelai.com/docs/guides/models-and-keys.md#azure-openai)), whose own event follows. Its tokens and cost are what the blocked call took; it is not charged to your account, so do not charge your users for it. `serviceTier` (`flex` or `default`) is the OpenRouter service tier that served a response, when OpenRouter said one: `camelrun/strong` asks for flex, which costs half |
 | `voice.session.started` | A [voice session](https://run.camelai.com/docs/guides/voice-calls.md) connected and is listening (once) | `session`, `provider`, `guildId`, `channelId`, `botUserId`, `subject`, `metadata` |
 | `voice.session.ended` | A voice session ended; your app leaves the channel | as above, and `reason`, `limit` and `endUserReason` with `budget`, `detail?` (failure classification, e.g. `realtime_failed`), `error?` (privacy-safe provider error classification and message length; no raw message), `startedAt`, `endedAt`, `utterances`, `speechSeconds`, `costUsd` |
 | `voice.session.error` | A voice session's audio failed: it reconnects at once (`restarting`), or after 3 failures in 5 minutes ends; or it needs new Discord credentials (`credentials_needed`) | the voice facts, `code` (`media_crashed`, `credentials_needed`), `detail`, `restarting`, `attempt?`, `waitMs?` |
@@ -6079,6 +6079,21 @@ moves nobody. These alternatives choose by who holds a key, not by who is up.
 real models behind it that we can change without touching agents. Today they are
 `openrouter/meta/muse-ember`, then `openrouter/deepseek/deepseek-v4.1-flash-1017`.
 `GET /v1/models` lists it with `routes`, and you can name it like any model.
+
+Two more name a class of work rather than one model, so what is behind them can move to a
+better or cheaper model without touching agents:
+
+- `camelrun/fast`, for bulk work (port a file, apply listed findings, extract, summarize):
+  `openrouter/meta/muse-ember`.
+- `camelrun/strong`, for judgment (review, plan, decide, final answers):
+  `openrouter/google/gemini-4-carbon` on OpenRouter's flex
+  [service tier](https://openrouter.ai/docs/guides/features/service-tiers), half the default
+  tier's price ($1/$5 per million tokens in and out, $0.05 cached, against $2/$10) and slower.
+  When flex has no capacity, a request waits for it, asking again with backoff for up to 30
+  seconds, then is made on the default tier; the rest of that turn stays there. `GET /v1/models`
+  lists each route's tier as `serviceTiers`.
+
+A response is charged at the tier that served it, which `usage.recorded` says as `serviceTier`.
 
 Each new message starts on the first. A request it cannot take now (a 429, a 5xx, no
 provider, a timeout, a stream that goes quiet) before any output moves to the next, at
