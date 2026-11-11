@@ -1,0 +1,14 @@
+{
+  "id": "s-ts-port",
+  "version": 1,
+  "tier": "S",
+  "title": "Port a 16-file JavaScript library to TypeScript",
+  "status": "ready",
+  "prompt": "/workspace holds strkit, a small JavaScript library: 16 modules in src/ and their tests in test/. Port it to TypeScript. Replace every src/*.js with a src/*.ts that behaves exactly the same, typed precisely enough to pass `tsc` under the strict tsconfig.json given (do not change it). Node will run the result directly by stripping types, so use only erasable TypeScript (no enums, namespaces or parameter properties) and import with .ts extensions. Port the tests to test/*.test.ts the same way, keeping every case. Delete each .js file you replace. You cannot run commands, so read and check carefully. Reply with a short summary when done.",
+  "budget": { "usd": 3, "wallMinutes": 30 },
+  "units": 16,
+  "workflowArgs": {
+    "files": ["src/words.js", "src/case.js", "src/slugify.js", "src/truncate.js", "src/wrap.js", "src/levenshtein.js", "src/pluralize.js", "src/escape.js", "src/template.js", "src/csv.js", "src/pad.js", "src/table.js", "src/bytes.js", "src/duration.js", "src/ordinal.js", "src/index.js", "test/text.test.js", "test/data.test.js", "test/units.test.js"],
+    "instructions": "Port this file of strkit (/workspace) from JavaScript to TypeScript: write the .ts file beside it with the same behaviour, strict types, erasable syntax only and .ts import extensions, then delete the .js file. Tests keep every case."
+  }
+}

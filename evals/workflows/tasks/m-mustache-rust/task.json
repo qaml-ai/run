@@ -1,0 +1,17 @@
+{
+  "id": "m-mustache-rust",
+  "version": 0,
+  "tier": "M",
+  "title": "Port mustache.js to Rust, judged by the Mustache spec (S/M boundary)",
+  "status": "planned",
+  "prompt": "/workspace holds mustache.js, a logic-less template engine in JavaScript. Port it to a Rust crate in /workspace/rust (edition 2021, serde_json allowed) with the same behaviour, and a binary, mustache-port, that reads {\"template\", \"data\", \"partials\"} JSON on stdin and writes the rendered text. Do not change the JavaScript. Reply with a short summary when done.",
+  "budget": { "usd": 10, "wallMinutes": 45 },
+  "units": 4,
+  "source": {
+    "port": { "repo": "janl/mustache.js", "ref": "v4.2.0", "license": "MIT", "paths": ["mustache.js"], "language": "JavaScript", "approxLines": 800 },
+    "judge": { "repo": "mustache/spec", "ref": "v1.4.3", "license": "MIT", "language": "language-independent (YAML/JSON cases)", "command": "cargo build --release && python3 judge/run_spec.py target/release/mustache-port specs/*.json",
+      "cases": "about 200 cases (comments, delimiters, interpolation, inverted, partials, sections; lambdas optional)", "parse": "{passed, failed}", "image": "rust:1.84-bookworm with python3, serde_json vendored; --cpus 4, no network" },
+    "why": "The cheapest real cross-language port with a language-independent judge: the first Tier M to build, to shake out the judge images and job() before the hour-long ones.",
+    "prepare": "Copy mustache.js and its README into input/; vendor serde_json for the offline build."
+  }
+}

@@ -1,0 +1,122 @@
+customer_id,name,email,country,notes
+1,Noor Gill,c1@example.com,FR,
+2,Lea Chen,c2@example.com,US,fragile; approved
+3,Noor Diaz,c3@example.com,GB,
+4,Max Brook,c4@example.com,FR,gift; checked
+5,Cleo Diaz,c5@example.com,US,priority; pending review
+6,Hana Chen,c6@example.com,DE,
+7,Gus Jain,c7@example.com,US,
+8,Gus Jain,c8@example.com,ES,
+9,Gus Gill,c9@example.com,US,late; priority
+10,Gus Etto,c10@example.com,US,pending review; late
+11,Otis Faro,c11@example.com,US,
+12,Noor Holt,c12@example.com,ES,
+13,Ben Ito,c13@example.com,US,reorder; fragile
+14,Otis Lund,c14@example.com,ES,
+15,Fay Brook,c15@example.com,DE,
+16,Gus Diaz,c16@example.com,ES,priority; priority
+17,Lea Faro,,GB,bulk; priority
+18,Otis Abe,c18@example.com,GB,reorder; priority
+19,Ada Gill,c19@example.com,FR,pending review; follow up
+20,Max Faro,c20@example.com,GB,approved; gift
+21,Gus Brook,c21@example.com,US,bulk; follow up
+22,Ivo Kerr,c22@example.com,GB,approved; follow up
+23,Eli Brook,c23@example.com,GB,
+24,Otis Brook,c24@example.com,DE,
+25,Ben Holt,c25@example.com,US,checked; fragile
+26,Pia Jain,c26@example.com,FR,gift; priority
+27,Cleo Diaz,c27@example.com,DE,pending review; fragile
+28,Hana Abe,c28@example.com,GB,follow up; follow up
+29,Lea Brook,c29@example.com,ES,priority; bulk
+30,Kai Abe,c30@example.com,GB,fragile; priority
+31,Max Abe,c31@example.com,ES,
+32,Hana Brook,c32@example.com,GB,bulk; follow up
+33,Kai Jain,c33@example.com,FR,call back at dana.ruiz@gmail.com
+34,Fay Brook,c34@example.com,GB,
+35,Lea Faro,c35@example.com,US,
+36,Max Chen,c36@example.com,US,
+37,Hana Gill,c37@example.com,DE,pending review; pending review
+38,Cleo Faro,c38@example.com,GB,late; reorder
+39,Lea Lund,c39@example.com,GB,
+40,Ben Faro,c40@example.com,ES,
+41,Noor Diaz,c41@example.com,ES,follow up; late
+42,Fay Faro,c42@example.com,FR,
+43,Eli Lund,c43@example.com,GB,follow up; reorder
+44,Noor Holt,c44@example.com,ES,gift; gift
+45,Kai Diaz,c45@example.com,FR,
+46,Ben Holt,c46@example.com,FR,follow up; reorder
+47,Dev Gill,c47@example.com,US,late; approved
+48,Fay Etto,c48@example.com,GB,late; late
+49,Ada Faro,c49@example.com,ES,late; gift
+50,Ben Ito,c50@example.com,DE,follow up; approved
+51,Ben Etto,c51@example.com,DE,
+52,Jun Brook,c52@example.com,FR,
+53,Lea Diaz,c53@example.com,DE,
+54,Ada Abe,c54@example.com,ES,
+55,Ada Jain,c55@example.com,ES,approved; follow up
+56,Ivo Gill,c56@example.com,DE,
+57,Ben Lund,c57@example.com,GB,fragile; pending review
+58,Dev Chen,c58@example.com,DE,pending review; approved
+59,Hana Diaz,c59@example.com,DE,pending review; pending review
+60,Pia Etto,c60@example.com,DE,reorder; checked
+61,Ben Gill,c61@example.com,US,gift; reorder
+62,Otis Faro,c62@example.com,ES,
+63,Dev Etto,c63@example.com,US,
+64,Lea Ito,,ES,gift; follow up
+65,Dev Kerr,c65@example.com,ES,bulk; gift
+66,Fay Gill,c66@example.com,ES,checked; pending review
+67,Ivo Diaz,c67@example.com,DE,
+68,Hana Ito,c68@example.com,US,priority; follow up
+69,Kai Etto,c69@example.com,ES,fragile; priority
+70,Cleo Chen,c70@example.com,GB,
+71,Max Brook,c71@example.com,US,pending review; approved
+72,Cleo Chen,c72@example.com,DE,reorder; pending review
+73,Hana Chen,c73@example.com,ES,
+74,Dev Abe,c74@example.com,ES,priority; gift
+75,Ben Diaz,c75@example.com,ES,fragile; reorder
+76,Jun Etto,c76@example.com,GB,reorder; late
+77,Ada Jain,c77@example.com,US,
+78,Noor Jain,c78@example.com,US,reorder; approved
+79,Kai Etto,c79@example.com,DE,reorder; approved
+80,Jun Ito,c80@example.com,DE,fragile; pending review
+81,Dev Etto,c81@example.com,FR,
+82,Ada Jain,c82@example.com,DE,
+83,Pia Jain,c83@example.com,FR,reorder; gift
+84,Gus Gill,c84@example.com,ES,pending review; reorder
+85,Max Gill,c85@example.com,GB,follow up; approved
+86,Gus Diaz,c86@example.com,ES,bulk; follow up
+87,Ben Kerr,c87@example.com,FR,approved; fragile
+88,Dev Diaz,c88@example.com,GB,
+89,Dev Abe,c89@example.com,US,
+90,Gus Abe,c90@example.com,DE,priority; bulk
+91,Ivo Gill,c91@example.com,DE,
+92,Cleo Holt,c92@example.com,GB,follow up; checked
+93,Gus Chen,c93@example.com,US,approved; reorder
+94,Ben Diaz,c94@example.com,GB,
+95,Noor Brook,c95@example.com,GB,late; follow up
+96,Kai Abe,c96@example.com,US,reorder; follow up
+97,Lea Jain,c97@example.com,US,
+98,Pia Chen,c98@example.com,FR,
+99,Noor Ito,c99@example.com,ES,follow up; priority
+100,Noor Holt,c100@example.com,ES,follow up; late
+101,Ben Abe,c101@example.com,US,
+102,Fay Faro,c102@example.com,DE,follow up; fragile
+103,Eli Faro,c103@example.com,FR,
+104,Cleo Faro,c104@example.com,DE,approved; follow up
+105,Dev Diaz,c105@example.com,FR,follow up; gift
+106,Max Holt,c106@example.com,DE,
+107,Noor Lund,c107@example.com,GB,bulk; priority
+108,Ben Brook,c108@example.com,FR,gift; checked
+109,Ben Jain,c109@example.com,FR,
+110,Kai Brook,c110@example.com,GB,
+111,Lea Lund,c111@example.com,DE,gift; reorder
+112,Eli Diaz,c112@example.com,ES,
+113,Cleo Faro,c113@example.com,US,
+114,Dev Brook,c114@example.com,ES,follow up; priority
+115,Fay Etto,c115@example.com,ES,
+116,Ben Brook,c116@example.com,DE,
+117,Eli Kerr,c117@example.com,GB,
+118,Pia Faro,c118@example.com,FR,
+119,Lea Holt,c119@example.com,ES,bulk; priority
+120,Jun Brook,c120@example.com,US,bulk; late
+87,Ben Kerr,c87@example.com,FR,approved; fragile

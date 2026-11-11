@@ -1,0 +1,131 @@
+review_id,product_id,customer_id,stars,body
+1,77,48,1,Works fine
+2,48,56,2,Great
+3,12,78,3,Great
+4,28,116,1,As described
+5,63,82,3,Works fine
+6,24,95,2,Works fine
+7,78,74,2,As described
+8,67,91,5,Broke after a week
+9,53,100,1,Works fine
+10,80,82,3,Broke after a week
+11,40,9,4,Works fine
+12,34,41,2,Great
+13,6,117,2,As described
+14,31,15,3,As described
+15,20,108,4,Broke after a week
+16,63,81,4,Great
+17,61,90,5,Works fine
+18,52,81,2,Broke after a week
+19,37,115,2,As described
+20,71,42,1,Works fine
+21,4,27,5,Works fine
+22,77,47,2,Great
+23,5,110,1,Works fine
+24,66,1,3,Great
+25,11,32,3,
+26,75,6,4,
+27,15,42,1,Great
+28,6,57,3,Great
+29,37,28,1,
+30,74,17,4,Broke after a week
+31,73,78,4,Broke after a week
+32,54,36,4,Works fine
+33,74,76,3,
+34,32,6,1,Broke after a week
+35,58,62,3,Works fine
+36,7,57,2,Great
+37,12,37,3,Great
+38,66,70,5,As described
+39,50,67,2,Works fine
+40,74,105,5,Great
+41,65,89,3,
+42,61,99,3,Works fine
+43,32,1,2,Great
+44,62,72,5,Works fine
+45,39,44,3,
+46,21,72,3,Broke after a week
+47,23,89,2,Great
+48,49,47,5,As described
+49,63,114,2,Broke after a week
+50,42,117,4,Works fine
+51,17,86,5,
+52,19,116,5,Works fine
+53,33,66,3,Great
+54,6,67,5,Works fine
+55,74,116,1,Works fine
+56,16,50,5,
+57,31,24,4,Broke after a week
+58,75,70,2,Great
+59,74,1,2,Broke after a week
+60,72,26,2,
+61,15,62,5,Great
+62,77,36,4,Great
+63,15,73,5,As described
+64,12,37,4,Broke after a week
+65,54,77,1,
+66,1,98,1,Works fine
+67,54,56,5,Broke after a week
+68,79,15,2,Great
+69,52,116,4,
+70,75,40,1,As described
+71,54,61,1,Broke after a week
+72,76,100,5,As described
+73,40,73,4,Broke after a week
+74,46,59,1,Works fine
+75,31,117,5,
+76,54,18,3,Great
+77,55,120,6,Works fine
+78,5,73,6,Works fine
+79,1,100,1,
+80,61,5,2,Works fine
+81,4,51,3,Works fine
+82,2,90,1,Works fine
+83,76,50,1,
+84,43,120,3,Works fine
+85,46,48,2,Broke after a week
+86,61,100,2,As described
+87,10,63,2,
+88,34,41,1,Great
+89,66,23,2,As described
+90,40,68,1,Broke after a week
+91,27,62,2,Works fine
+92,74,37,4,Broke after a week
+93,76,38,4,
+94,3,96,2,
+95,41,99,5,As described
+96,57,99,2,As described
+97,18,70,5,Great
+98,59,36,5,Works fine
+99,25,104,3,Broke after a week
+100,10,39,3,Broke after a week
+101,48,35,4,Great
+102,42,92,5,
+103,69,43,4,Works fine
+104,17,62,1,Works fine
+105,46,102,2,Broke after a week
+106,67,76,3,Broke after a week
+107,5,23,2,As described
+108,61,93,4,Works fine
+109,4,114,1,
+110,20,87,5,
+111,78,94,4,Broke after a week
+112,78,11,2,As described
+113,60,98,1,Broke after a week
+114,25,22,5,As described
+115,62,18,4,Great
+116,75,93,3,Works fine
+117,34,35,5,
+118,69,67,4,
+119,56,56,4,Great
+120,42,73,3,Works fine
+121,37,12,2,Great
+122,6,29,4,Broke after a week
+123,44,10,4,Great
+124,59,57,4,As described
+125,31,104,3,Great
+126,8,113,4,Works fine
+127,41,29,4,As described
+128,75,15,5,Works fine
+129,36,44,1,Works fine
+130,12,28,2,Works fine
