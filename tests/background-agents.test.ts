@@ -12,10 +12,16 @@ const text = (message: any) => typeof message.content === "string" ? message.con
 const lastUser = (body: any) => text(body.messages.findLast((message: any) => message.role === "user"));
 const last = (body: any) => body.messages.at(-1);
 const parentRequests = async (r: Awaited<ReturnType<typeof runtime>>, agent: string) => (await r.call(`/v1/agents/${agent}`)).json.requests as any[];
+/**
+ * A notification's turn runs a child's ending, a delivery and a model turn: on a loaded host whose runtime misses its
+ * lease renewals for ~20 s (lease_stale, then lease_interrupt cutting the model call), it lands well past 15 s. The
+ * wait is for the state, never a sleep; the longer bound costs time only when the notification never comes.
+ */
+const NOTIFICATION_WAIT_MS = 45_000;
 const notified = (r: Awaited<ReturnType<typeof runtime>>, agent: string, count = 1) => until(async () => {
   const done = (await parentRequests(r, agent)).filter(request => request.id.startsWith("child_") && request.state === "completed");
   return done.length >= count && done;
-}, "the notification's turn to end");
+}, "the notification's turn to end", NOTIFICATION_WAIT_MS);
 
 test("spawn_agent returns at once, and the child's ending arrives once, as a notification with its source and marker", async t => {
   let release!: () => void;
@@ -368,9 +374,9 @@ test("a sub-agent's turn a notification started is placed where it was made: pas
   const nested = await r.prompt(root, "nest");
   const middle = JSON.parse(nested.outcome.result.reply.slice("nested: ".length)).agentId;
   // Its child (depth 2) was refused a child of its own; hearing so, the middle agent spawns again in that notification's turn.
-  const again = await until(async () => (await parentRequests(r, middle)).find(request => request.id.startsWith("child_") && request.state === "completed" && request.outcome?.result?.reply?.startsWith("again: ")), "the notification's turn to spawn again");
+  const again = await until(async () => (await parentRequests(r, middle)).find(request => request.id.startsWith("child_") && request.state === "completed" && request.outcome?.result?.reply?.startsWith("again: ")), "the notification's turn to spawn again", NOTIFICATION_WAIT_MS);
   const latest = JSON.parse(again.outcome.result.reply.slice("again: ".length)).agentId;
-  const run = await until(async () => (await parentRequests(r, latest)).find(request => request.method === "prompt" && request.state === "completed" && !request.id.startsWith("child_")), "the new child's run");
+  const run = await until(async () => (await parentRequests(r, latest)).find(request => request.method === "prompt" && request.state === "completed" && !request.id.startsWith("child_")), "the new child's run", NOTIFICATION_WAIT_MS);
   // That child is at depth 2 of the root's chain, not at 1 of a new one: it is refused as its sibling was.
   assert.equal(run.metadata.delegationDepth, "2");
   assert.equal(run.metadata.delegationChain, `${root},${middle}`);
