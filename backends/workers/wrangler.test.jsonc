@@ -31,6 +31,10 @@
         "class_name": "Volume"
       },
       {
+        "name": "WORKFLOW_CAPACITY",
+        "class_name": "WorkflowCapacity"
+      },
+      {
         "name": "CODEMODE_SANDBOX",
         "class_name": "CodemodeSandbox",
         "script_name": "camelrun-proto-workers-codemode"
@@ -44,6 +48,12 @@
         "CamelAgent",
         "TenantAdmission",
         "Volume"
+      ]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": [
+        "WorkflowCapacity"
       ]
     }
   ],
