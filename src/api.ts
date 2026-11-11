@@ -1087,6 +1087,24 @@ export function api(context: ApiContext) {
     }, c.req.raw.signal));
   });
 
+  // Workflows (docs/guides/workflows.md) run on the Workers runtime only for now: this runtime documents them and
+  // answers each with a 501.
+  const workflowId = z.object({ id: z.string() });
+  const noWorkflows = (): never => { throw new HttpError(501, "Workflows run on the Workers runtime; this runtime does not have them yet", "WORKFLOWS_UNSUPPORTED"); };
+  route(createRoute({ method: "post", path: "/v1/workflows", request: { body: { content: { "application/json": { schema: schema.WorkflowStart } } } },
+    responses: { 201: reply("The workflow, started: its first step runs at once. An Idempotency-Key header gives the same workflow for the same key. 403 WORKFLOWS_OFF where the account does not have workflows", schema.Workflow) } }), noWorkflows);
+  route(createRoute({ method: "get", path: "/v1/workflows/{id}", request: { params: workflowId }, responses: { 200: reply("Its status, phase, revision, counts by effect status, spend and, once it ends, its result", schema.Workflow) } }), noWorkflows);
+  route(createRoute({ method: "get", path: "/v1/workflows/{id}/items", request: { params: workflowId, query: z.object({ after: z.string().optional(), limit: z.string().optional(), status: z.string().optional(), phase: z.string().optional(), kind: z.string().optional() }) },
+    responses: { 200: reply("Its effects (agents, gates, timers) with their keys, attempts, status, results and costs", schema.WorkflowItems) } }), noWorkflows);
+  route(createRoute({ method: "get", path: "/v1/workflows/{id}/events", request: { params: workflowId, query: z.object({ after: z.string().optional(), limit: z.string().optional() }) },
+    responses: { 200: reply("Its events (created, phase, paused, completed …), oldest first", schema.WorkflowEvents) } }), noWorkflows);
+  route(createRoute({ method: "get", path: "/v1/workflows/{id}/diff", request: { params: workflowId, query: z.object({ revision: z.string().optional() }) },
+    responses: { 200: reply("What a revision of its script kept, issued and dropped, and why it changed", z.record(z.string(), z.unknown())) } }), noWorkflows);
+  route(createRoute({ method: "put", path: "/v1/workflows/{id}/script", request: { params: workflowId, body: { content: { "application/json": { schema: schema.WorkflowEdit } } } },
+    responses: { 200: reply("The new revision: effects whose keys and arguments are unchanged keep their results", z.record(z.string(), z.unknown())) } }), noWorkflows);
+  for (const [action, description] of [["pause", "Paused: nothing new starts; { children: \"abort\" } stops its running sub-agents too"], ["resume", "Resumed; { rerun: [keys] } runs those effects again. Effects refused for money are issued again under a new attempt"], ["abort", "Aborted for good: its running sub-agents stop"], ["budget", "Its new budget, { usd } (null: no cap)"]] as const)
+    route(createRoute({ method: "post", path: `/v1/workflows/{id}/${action}`, request: { params: workflowId }, responses: { 200: reply(description, schema.Workflow) } }), noWorkflows);
+
   route(createRoute({
     method: "post", path: "/v1/decisions",
     request: { body: { content: { "application/json": { schema: schema.DecisionInput } } } },

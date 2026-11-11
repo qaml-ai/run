@@ -7464,12 +7464,18 @@ Its globals:
 | --- | --- |
 | `agent(prompt, opts)` | Starts a sub-agent and returns its answer. `opts`: `{ key?, type?, class?, output?, instructions?, label?, definition?, model? }`. With `output` (a JSON Schema) the answer is the validated object; without it, the text. A failed or aborted sub-agent returns `null` (the item records why), so `.filter(Boolean)` is the idiom |
 | `parallel(fns)`, `parallel(items, fn)` | Runs the functions (or `fn` over each item) at once, up to the workflow's `concurrency`, and waits for all of them, even after one fails. **Every `agent()` inside it needs an explicit `key`** (the workflow faults with `key_required` otherwise): branches finish in any order, and keys are how results are matched to calls on replay |
+| `agent(prompt, { repo })` | With `repo` (a volume id), the sub-agent gets its own copy of that volume at `/repo` (a fork: no bytes copied) and edits it with its file tools; it answers `{ text, fork }` (or the validated object with `fork` in it) |
+| `commit(fork, opts)` | Puts a sub-agent's edits (`result.fork`) on the volume it was forked from, all files or none: `{ committed: true, seq, files, removed }`, or `{ committed: false, conflicts: [{ path, headVersion }] }` when the volume changed under any of them (nothing is written; the script decides what to do) |
+| `job(opts)` | Runs one shell command in a container of its own: `{ command, timeoutSeconds, at?, files?, outputs?, limits?, internet?, key? }`. `at` (a volume id) starts it with that volume's files in its working directory; `outputs` names files it writes under `$JOB_OUT`. Answers `{ exitCode, timedOut, stdout, stderr, outputs, volume }`: each stream's end inline, and the whole streams and outputs kept in the workflow's own volume. Up to `jobConcurrency` (default 8) run at once. Paid by the agent that owns the workflow: a workflow started with an API key gets `null` (`job_payer_unavailable`). Jobs run on the Cloudflare pilot only for now (`JOBS_UNAVAILABLE` elsewhere) |
+| `push(opts)` | A job that writes a volume's files onto a GitHub branch: `{ volume, repo: "owner/name", branch, app, message?, key? }`, with your GitHub App's installation token, which neither the script nor any model sees. Answers `{ pushed, commit, exitCode, … }` |
 | `gate(opts)` | A decision for a person: `{ title, recommended?, expiresInSeconds? (7 days), onExpire?: "recommended" \| "pause", key? }`. Returns the answer when it comes. Not wired on the hosted runtime yet: a `gate()` fails to start today |
 | `sleep(seconds)` | A journaled timer; the script is not running meanwhile |
 | `phase(name)` | Names the stage the workflow is in (`phase` on its summary, items and log lines) |
 | `log(...parts)` | A line in the workflow's log |
 | `args` | What it was started with (`args` in the start), frozen |
 | `now()`, `random()` | The step's clock and the workflow's seeded generator (`Date.now()` and `Math.random()` read the same) |
+
+A workflow's forks are deleted when it ends, once its commits have landed.
 
 A `key` names an effect across replays. Outside `parallel()` one may be left
 out (the call gets a counted key, `agent#2`); inside, give one. The same key
@@ -7509,8 +7515,8 @@ the prompt.
 | Type | Does | Default class |
 | --- | --- | --- |
 | `worker` | One task from instructions; may write files | `fast` |
-| `critic` | Finds problems in someone else's output. Read-only, a fresh context; `output` is required, and it is never the model instance that did the work | `strong` |
-| `lead` | Plans, judges and writes the final answer; may delegate and open gates | `strong` |
+| `critic` | Finds problems in someone else's output, in a fresh context; `output` is required | `strong` |
+| `lead` | Plans, judges and writes the final answer; may delegate | `strong` |
 
 Classes are virtual models, `camelrun/fast`, `camelrun/strong` and
 `camelrun/max`, resolved to real models at each call (see [Models and
@@ -7525,9 +7531,9 @@ that. A `critic` or `lead` on `fast` is refused unless the start says
 `budget.usd` is a hard cap on what the workflow's sub-agents spend, enforced by
 its ledger (`spent` on the summary; `costUsd` on each item). `null` is no cap.
 A step that would start an effect past the cap stops the workflow with status
-`budget_exhausted`. Raise the budget (`POST …/budget`) above what was spent
-and it runs again by itself, re-issuing the effects the cap refused; lower it
-below what was spent and it stops.
+`budget_exhausted`. Raise the budget (`POST …/budget`) above what was spent,
+then resume it: the effects the cap refused are issued again, under a new
+attempt.
 
 A workflow that stops without ending is `paused`, and `pauseReason` says why:
 
@@ -7564,12 +7570,12 @@ Start one with your API key. An `Idempotency-Key` header makes a retry the
 same workflow (the key names it for your account).
 
 ```bash
-curl -X POST https://run.camelai.com/v1/workflows \
+curl -X POST $CAMELRUN_URL/v1/workflows \
   -H "Authorization: Bearer $CAMELAI_API_KEY" -H "Content-Type: application/json" -H "Idempotency-Key: port-2026-11" \
   -d '{ "name": "port", "script": "...", "args": { "files": ["a.ts", "b.ts"] }, "budget": { "usd": 20 }, "concurrency": 8 }'
 # { "id": "wf_…", "status": "running", "revision": 1, "step": 1, "budget": { "usd": 20 }, "spent": { "usd": 0, … }, "counts": { "running": 2 }, … }
 
-curl https://run.camelai.com/v1/workflows/wf_…/items?status=failed -H "Authorization: Bearer $CAMELAI_API_KEY"
+curl $CAMELRUN_URL/v1/workflows/wf_…/items?status=failed -H "Authorization: Bearer $CAMELAI_API_KEY"
 ```
 
 `items` is the journal: one row per effect (`kind` `agent`, `gate` or
@@ -7585,10 +7591,10 @@ changed ones run. `reason` is kept with the revision, and `diff` shows what
 the revision kept, issued and has not reached.
 
 ```bash
-curl -X PUT https://run.camelai.com/v1/workflows/wf_…/script \
+curl -X PUT $CAMELRUN_URL/v1/workflows/wf_…/script \
   -H "Authorization: Bearer $CAMELAI_API_KEY" -H "Content-Type: application/json" \
   -d '{ "script": "...", "reason": "critics accepted stubs; ask for a diff per finding" }'
-curl -X POST https://run.camelai.com/v1/workflows/wf_…/resume -H "Authorization: Bearer $CAMELAI_API_KEY" \
+curl -X POST $CAMELRUN_URL/v1/workflows/wf_…/resume -H "Authorization: Bearer $CAMELAI_API_KEY" \
   -H "Content-Type: application/json" -d '{ "rerun": ["review:a.ts"] }'
 ```
 
@@ -7606,7 +7612,8 @@ calls, and `wait` polls until the workflow settles: `completed`, `failed`,
 const wf = await agents.workflows.start({ script, args: { files }, budget: { usd: 20 }, name: "port" }, { idempotencyKey: "port-2026-11" });
 let done = await agents.workflows.wait(wf.id);
 if (done.status === "budget_exhausted") {
-  await agents.workflows.budget(wf.id, 40); // above what was spent: it runs again
+  await agents.workflows.budget(wf.id, 40); // above what was spent
+  await agents.workflows.resume(wf.id);
   done = await agents.workflows.wait(wf.id);
 }
 const failed = await agents.workflows.items(wf.id, { status: "failed" });
@@ -7619,7 +7626,8 @@ console.log((await agents.workflows.wait(wf.id)).result);
 wf = await agents.workflows.start(script, args={"files": files}, budget_usd=20, name="port", idempotency_key="port-2026-11")
 done = await agents.workflows.wait(wf["id"])
 if done["status"] == "budget_exhausted":
-    await agents.workflows.budget(wf["id"], 40)  # above what was spent: it runs again
+    await agents.workflows.budget(wf["id"], 40)  # above what was spent
+    await agents.workflows.resume(wf["id"])
     done = await agents.workflows.wait(wf["id"])
 failed = await agents.workflows.items(wf["id"], status="failed")
 await agents.workflows.edit(wf["id"], script2, reason="critics accepted stubs")
@@ -7640,15 +7648,15 @@ steers it. Every agent with [`delegate` settings](https://run.camelai.com/docs/g
 with workflows enabled has the `workflows` builtin: `workflow_start`,
 `workflow_status` (with a `waitSeconds`), `workflow_items`, `workflow_edit`,
 `workflow_pause`, `workflow_resume`, `workflow_abort` and `workflow_budget`.
-The agent that starts a workflow owns it: only its tools reach it, and the
-workflow's endings and gates come back to it as notifications. Its budget may
+The agent that starts a workflow owns it: only its tools reach it, and it
+reads how the workflow is doing with `workflow_status` and `workflow_items`. Its budget may
 not exceed the least of the agent's remaining spend limit and `maxBudgetUsd`
 (default $100); above that, a person starts it through the API.
 
 ```ts
 const lead = await agents.upsert("port-lead", {
-  instructions: "You port codebases. For many files, write a workflow.",
-  delegate: { agents: ["worker"] }, workflows: { maxBudgetUsd: 50 },
+  systemPrompt: "You port codebases. For many files, write a workflow.",
+  builtins: ["delegate"], delegate: { instructions: true }, workflows: { maxBudgetUsd: 50 },
 });
 ```
 

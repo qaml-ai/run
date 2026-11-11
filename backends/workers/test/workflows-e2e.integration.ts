@@ -111,7 +111,7 @@ test("an agent starts a workflow of keyed workers and a critic, owned by the wor
 
   // A budget too small: the expensive first agent spends more than the whole budget, so the second is refused for
   // budget, and the workflow pauses instead of handing the script a null. A raise and a resume finish it.
-  const small = await ok("/v1/workflows", { script: `const a = await agent("EXPENSIVE one", { key: "one" }); const b = await agent("cheap two", { key: "two" }); return [a, b];`, budget: { usd: 0.5 }, concurrency: 1 });
+  const small = await ok("/v1/workflows", { script: `const a = await agent("EXPENSIVE one", { key: "one", class: "fast" }); const b = await agent("cheap two", { key: "two", class: "fast" }); return [a, b];`, budget: { usd: 0.5 }, concurrency: 1 });
   assert.match(small.id, /^wf_/);
   const paused = await until(async () => { const value = await ok(`/v1/workflows/${small.id}`); return ["budget_exhausted", "paused"].includes(value.status) && value; }, "the budget pause", 90_000,
     async () => ({ workflow: await ok(`/v1/workflows/${small.id}`), items: await ok(`/v1/workflows/${small.id}/items?attempts=true`) }));
