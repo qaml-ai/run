@@ -17,6 +17,7 @@ const CARBON = "google/gemini-4-carbon", EMBER = "meta/muse-ember", FLASH = "dee
 const tier = (model: Model<Api> | undefined) => (model as { serviceTier?: string } | undefined)?.serviceTier;
 const usage = () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } });
 
+const priced = (usage: Record<string, unknown>, id: string) => (platformUsage(usage, "openrouter", id).usage as { cost: { total: number } }).cost.total;
 test("camelrun/fast and camelrun/strong are virtual models; camelrun/default is as it was", () => {
   assert.deepEqual(virtualModelReferences(), ["camelrun/default", "camelrun/fast", "camelrun/strong"]);
   // default: the same two members, with no service tier on either (nothing new is sent for them).
@@ -82,11 +83,11 @@ test("a response is priced at the tier that served it; other models ignore servi
   // Platform pricing reads the same catalog as model routing (it once read a stale copy without Muse Ember).
   assert.deepEqual(pricingCatalogModel("openrouter", EMBER)?.cost, getModel("openrouter", EMBER)?.cost);
   const tokens = { input: 1_000_000, output: 1_000_000, cacheRead: 1_000_000, cacheWrite: 0 };
-  assert.equal(platformUsage({ ...tokens, serviceTier: "flex" }, "openrouter", CARBON).usage.cost.total, 6.05);
-  assert.equal(platformUsage({ ...tokens, serviceTier: "default" }, "openrouter", CARBON).usage.cost.total, 12.1);
-  assert.equal(platformUsage(tokens, "openrouter", CARBON).usage.cost.total, 12.1, "no tier said: the default tier's price");
-  const ember = platformUsage(tokens, "openrouter", EMBER).usage.cost.total;
-  assert.equal(platformUsage({ ...tokens, serviceTier: "flex" }, "openrouter", EMBER).usage.cost.total, ember);
+  assert.equal(priced({ ...tokens, serviceTier: "flex" }, CARBON), 6.05);
+  assert.equal(priced({ ...tokens, serviceTier: "default" }, CARBON), 12.1);
+  assert.equal(priced(tokens, CARBON), 12.1, "no tier said: the default tier's price");
+  const ember = priced(tokens, EMBER);
+  assert.equal(priced({ ...tokens, serviceTier: "flex" }, EMBER), ember);
   assert.equal(flexFallbackDeltaUsd(getModel("openrouter", CARBON)!, { ...usage(), ...tokens, serviceTier: "default" } as never), 6.05);
   assert.equal(flexFallbackDeltaUsd(getModel("openrouter", EMBER)!, { ...usage(), ...tokens } as never), undefined);
 });

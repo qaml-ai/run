@@ -24,6 +24,7 @@ const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
 const ALIASED = { ...LOCAL, AGENT_PROVIDER: "camelrun", AGENT_MODEL: "default", AGENT_HOSTING: "inline" };
 
+const priced = (usage: Record<string, unknown>, id: string) => (platformUsage(usage, "openrouter", id).usage as { cost: { total: number } }).cost.total;
 test("camelrun/default is a chain, its head as an agent holds it, and the runtime's default with nothing set", () => {
   assert.deepEqual(virtualChain(ALIAS)!.map(model => `${model.provider}/${model.id}`), [`openrouter/${EMBER}`, `openrouter/${FLASH}`]);
   const selection = resolveModel(ALIAS);
@@ -61,9 +62,9 @@ test("camelrun/fast and camelrun/strong: strong asks Gemini 4 Carbon on flex, th
   assert.deepEqual(withOpenRouterHosts(flex, { model: CARBON }), { model: CARBON, service_tier: "flex" });
   for (const model of [...getModels("openrouter"), ...virtualChain(ALIAS)!]) assert.ok(!("service_tier" in (withOpenRouterHosts(model, { model: model.id }, "deny") as object)), model.id);
   const tokens = { input: 1_000_000, output: 1_000_000, cacheRead: 1_000_000, cacheWrite: 0 };
-  assert.equal(platformUsage({ ...tokens, serviceTier: "flex" }, "openrouter", CARBON).usage.cost.total, 6.05);
-  assert.equal(platformUsage({ ...tokens, serviceTier: "default" }, "openrouter", CARBON).usage.cost.total, 12.1);
-  assert.equal(platformUsage({ ...tokens, serviceTier: "flex" }, "openrouter", EMBER).usage.cost.total, platformUsage(tokens, "openrouter", EMBER).usage.cost.total);
+  assert.equal(priced({ ...tokens, serviceTier: "flex" }, CARBON), 6.05);
+  assert.equal(priced({ ...tokens, serviceTier: "default" }, CARBON), 12.1);
+  assert.equal(priced({ ...tokens, serviceTier: "flex" }, EMBER), priced(tokens, EMBER));
   assert.deepEqual(listModels("camelrun").find(model => model.id === "camelrun/strong")!.serviceTiers, ["flex", "default"]);
 });
 
