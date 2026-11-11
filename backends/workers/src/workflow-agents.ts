@@ -319,9 +319,16 @@ export class WorkflowAgents implements EffectExecutor {
       });
       return;
     }
-    if (row.status !== "running") return;
-    await this.rows.put({ ...row, cancelRequested: true });
-    if (row.id) await this.host.children.cancel(row.id, row.requestId);
+    // Re-read in a transaction: the row passed in may be stale (abort() reads every row first, and an ending may land
+    // during an earlier row's cancel), and writing it back would turn an ended child running again.
+    const current = await this.host.storage.transaction(async tx => {
+      const current = await this.rows.get(row.key) as Row | undefined;
+      if (current?.status !== "running") return undefined;
+      const next = { ...current, cancelRequested: true };
+      await this.rows.put(next, tx);
+      return next;
+    });
+    if (current?.id) await this.host.children.cancel(current.id, current.requestId);
   }
 
   /**

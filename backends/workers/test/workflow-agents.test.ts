@@ -20,6 +20,7 @@ function world(options: { budget?: number | undefined; concurrency?: number; con
   };
   withSql(storage);
   const created: { key: string; config: Record<string, any>; place: any }[] = [], submitted: Submitted[] = [], cancelled: string[] = [];
+  let onCancel: ((childId: string) => Promise<void>) | undefined;
   // The runner's landing as the workflow object wires it: the first landing of key:attempt wins, the ledger keeps one row per key:attempt.
   const landed: { key: string; attempt: number; outcome: LandedOutcome; usage?: EffectUsage }[] = [], ledger = new Map<string, number>();
   let landFails = 0;
@@ -39,7 +40,7 @@ function world(options: { budget?: number | undefined; concurrency?: number; con
       submitted.push({ childId, request, placement });
       return submitAnswer();
     },
-    cancel: async (childId, requestId) => { cancelled.push(`${childId}/${requestId}`); },
+    cancel: async (childId, requestId) => { cancelled.push(`${childId}/${requestId}`); await onCancel?.(childId); },
   };
   const agents = new WorkflowAgents({
     storage: storage as unknown as DurableObjectStorage, workflow: { id: 'wf_test', tenant: 'acme', bucket: 'wf-bucket' },
@@ -52,7 +53,7 @@ function world(options: { budget?: number | undefined; concurrency?: number; con
   });
   const refused = () => landed.filter(entry => 'refused' in entry.outcome);
   return { agents, created, submitted, cancelled, landed, refused, ledger, answer: (fn: typeof submitAnswer) => { submitAnswer = fn; }, failSubmits: (n: number) => { submitThrows = n; },
-    failLands: (n: number) => { landFails = n; }, holdCreate: (gate: Promise<void>) => { createGate = gate; }, failCreate: (error: unknown) => { createThrows = error; } };
+    failLands: (n: number) => { landFails = n; }, cancelling: (fn: (childId: string) => Promise<void>) => { onCancel = fn; }, holdCreate: (gate: Promise<void>) => { createGate = gate; }, failCreate: (error: unknown) => { createThrows = error; } };
 }
 
 const effect = (key: string, args: Record<string, unknown> = { prompt: `do ${key}` }, attempt = 1) => ({ key, attempt, kind: 'agent', args, phase: undefined });
@@ -248,4 +249,21 @@ test('a workflow with no cap (Infinity) gives its children no spend limit of its
   await unknown.agents.start(effect('a'));
   assert.equal((unknown.refused()[0]!.outcome as { code: string }).code, 'budget_exhausted');
   assert.equal(unknown.created.length, 0);
+});
+
+test('abort: an ending that lands during an earlier child\'s cancel is not written back to running', async () => {
+  const w = world();
+  await w.agents.start(effect('a'));
+  await w.agents.start(effect('b'));
+  const [first, second] = w.submitted;
+  // While a's cancel is on its way, b ends on its own.
+  w.cancelling(async childId => {
+    if (childId === first!.childId) await w.agents.receiveEnding(completed(second!, { reply: 'b done', usage: { costUsd: 0.1 } }));
+  });
+  await w.agents.abort();
+  const b = (await w.agents.rows.all()).find(row => row.id === second!.childId)!;
+  assert.equal(b.status, 'completed', 'b stays ended');
+  assert.equal(b.held, undefined, 'and holds no share of the budget');
+  assert.deepEqual(w.cancelled, [`${first!.childId}/${first!.request.id}`], 'an ended child is not cancelled');
+  assert.equal((await w.agents.rows.withStatus('running')).length, 1, 'only a is still running (its ending to come)');
 });
