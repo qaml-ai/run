@@ -44,6 +44,7 @@ test("a deletion interrupted at any step continues where it stopped, and never w
   await applyWorkspaceUsage(db, [{ tenant: "dave", agent: "client_a", timestamp: Date.now(), day: new Date().toISOString().slice(0, 10), model: "x/y", responses: 1, input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0.1, platformResponses: 0, platformCost: 0 }]);
   await db.query("insert into agents (id, tenant, header, revision, name, type, model) values ('client_a', 'dave', '{}', 1, 'a', 'general', 'x/y'), ('client_b', 'dave', '{}', 1, 'b', 'general', 'x/y')");
   await db.query("insert into definitions (id, tenant, name, revision, spec, created_at, updated_at) values ('def_1', 'dave', 'd', 1, '{}', 1, 1)");
+  await db.query("insert into usage_bucket_details (tenant, day, model, bucket, totals) values ('dave', '2026-11-10', 'x/y', 'bot:1', '{}')");
   await db.query("insert into credit_ledger (tenant, kind, amount, idempotency_key, created_at) values ('dave', 'grant', 5000000, 'grant:github:77', 1)");
   await db.query("insert into starting_credit_decisions (github_id, tenant, decision, offered_amount, signup_at, decided_at) values (77, 'dave', 'eligible', 5000000, 1, 1)");
   await storage.writeBlob("chunks/dave/ab/abc", Buffer.from("file contents"));
@@ -92,7 +93,7 @@ test("a deletion interrupted at any step continues where it stopped, and never w
   const status = (await deletions.status("dave"))!;
   assert.equal(status.state, "deleted");
 
-  for (const table of ["api_tokens", "definitions", "workspace_usage", "workspace_assignments", "workspaces"]) assert.equal((await db.query(`select count(*)::int as n from ${table}`)).rows[0].n, 0, table);
+  for (const table of ["api_tokens", "definitions", "workspace_usage", "usage_bucket_details", "workspace_assignments", "workspaces"]) assert.equal((await db.query(`select count(*)::int as n from ${table}`)).rows[0].n, 0, table);
   assert.equal((await db.query("select count(*)::int as n from tenants")).rows[0].n, 0);
   assert.equal(await storage.readBlob("chunks/dave/ab/abc"), undefined);
   assert.ok(await storage.readBlob("chunks/other/ab/abc"), "another tenant's files stay");
