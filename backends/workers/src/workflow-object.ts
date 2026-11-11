@@ -12,7 +12,10 @@ import { keyServices } from "./security-services.ts";
 import type { SecurityEnv } from "./security-services.ts";
 import { WorkflowAgents, workflowChildren } from "./workflow-agents.ts";
 import { WorkflowJobs, type WorkflowJobsEnv } from "./workflow-jobs.ts";
-import { forkForChild } from "./workflow-volumes.ts";
+import { deleteFork, forkForChild, forkId } from "./workflow-volumes.ts";
+import { ForkJanitor } from "./workflow-forks.ts";
+
+const ENDED = new Set(["completed", "failed", "aborted"]);
 
 /** Where a child of a repo edits its fork. */
 export const FORK_MOUNT_PATH = "/repo";
@@ -161,6 +164,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
   private readonly runner: WorkflowRunner;
   private readonly executor: ChildEffects;
   readonly agents: WorkflowAgents;
+  private readonly forks: ForkJanitor;
 
   constructor(ctx: DurableObjectState, env: WorkflowEnv) {
     super(ctx, env);
@@ -169,6 +173,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
       step: request => (env.CODEMODE_SANDBOX.getByName(ctx.id.toString()) as unknown as WorkflowSandbox).step(request),
     };
     const self = this;
+    this.forks = new ForkJanitor({ storage: ctx.storage, deleteFork: id => deleteFork(env, self.runner.identity().tenant!, id) });
     this.agents = new WorkflowAgents({
       storage: ctx.storage,
       get workflow() { const identity = self.runner.identity(); return { id: name!, tenant: identity.tenant!, ...(identity.bucket ? { bucket: identity.bucket } : {}) }; },
@@ -182,6 +187,8 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
         if (args.repo === undefined) return undefined;
         if (typeof args.repo !== "string") throw Object.assign(new Error("agent() repo is a volume id"), { status: 400 });
         const identity = self.runner.identity();
+        // Recorded before it is made, so the workflow's end deletes it whatever happens in between.
+        await self.forks.made(await forkId(identity.tenant!, { workflow: name!, key: effect.key, attempt: effect.attempt }));
         const fork = await forkForChild(env, identity.tenant!, { workflow: name!, key: effect.key, attempt: effect.attempt, repo: args.repo });
         return { mounts: [{ volumeId: fork.volume, path: FORK_MOUNT_PATH, mode: "rw" }], result: { fork: { volume: fork.volume, base: fork.base } } };
       },
@@ -198,7 +205,12 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
       { sql: ctx.storage.sql, transactionSync: fn => ctx.storage.transactionSync(fn) },
       sandbox, this.executor,
       {
-        alarm: { set: at => at === null ? ctx.storage.deleteAlarm() : ctx.storage.setAlarm(at) },
+        // The runner's alarm, or the forks' cleanup retry when it comes first: one alarm for both.
+        alarm: { set: async at => {
+          const retry = await this.forks.retryAt();
+          const next = at === null ? retry : retry === undefined ? at : Math.min(at, retry);
+          await (next === undefined ? ctx.storage.deleteAlarm() : ctx.storage.setAlarm(next));
+        } },
         capacity: name ? capacitySeam(env, name, () => this.runner.identity().tenant) : undefined,
       },
     );
@@ -233,10 +245,10 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
   async pause(options: Parameters<WorkflowRunner["pause"]>[0]) { await this.runner.pause(options); return this.runner.get(); }
   async resume(options: Parameters<WorkflowRunner["resume"]>[0]) { await this.runner.resume(options); return this.runner.get(); }
   async edit(options: Parameters<WorkflowRunner["edit"]>[0]) { return { ...(await this.runner.edit({ ...options, code: withArgs(options.code, this.settings().args) })), workflow: this.runner.get() }; }
-  async abort() { await this.runner.abort(); return this.runner.get(); }
+  async abort() { await this.runner.abort(); await this.ended(); return this.runner.get(); }
   async setBudget(usd: number | null) { await this.runner.setBudget(usd); return this.runner.get(); }
   /** An executor's landing of effect `key:attempt`. */
-  land(key: string, attempt: number, outcome: EffectOutcome, usage?: EffectUsage) { return this.runner.land(key, attempt, outcome, usage); }
+  async land(key: string, attempt: number, outcome: EffectOutcome, usage?: EffectUsage) { await this.runner.land(key, attempt, outcome, usage); await this.ended(); }
   /** A child's ending, delivered by its outbox until acknowledged (owner `{ kind: "workflow", id }`). */
   receiveEnding(ending: unknown) {
     if (!this.executor.receiveEnding) throw new WorkflowError("This workflow has no child executor yet", 501);
@@ -255,11 +267,20 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
       .map(grant => ({ key: grant.key, lease: grant.id, kind: grant.kind as "child" | "job" })));
   }
   /** After an eviction or a deploy: start what was committed but not started, and run due steps. */
-  wake() { return this.runner.wake(); }
+  async wake() { await this.runner.wake(); await this.ended(); }
 
-  override async alarm() { await this.runner.alarm(); }
+  override async alarm() { await this.runner.alarm(); await this.ended(); }
+
+  /** Once the workflow has ended: delete its children's forks, and keep the alarm for a retry if any delete failed. */
+  private async ended() {
+    if (!ENDED.has(this.runner.get().status)) return;
+    const retry = await this.forks.ended();
+    if (retry === undefined) return;
+    const current = await this.ctx.storage.getAlarm();
+    if (current === null || current > retry || current <= Date.now()) await this.ctx.storage.setAlarm(retry);
+  }
   /** TEST_MODE: what the alarm does, now. */
-  fireAlarm() { return this.runner.alarm(); }
+  async fireAlarm() { await this.runner.alarm(); await this.ended(); }
 }
 
 /**

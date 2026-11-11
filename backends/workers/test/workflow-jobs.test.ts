@@ -18,6 +18,7 @@ const hooks = registerHooks({ resolve(specifier, context, nextResolve) {
 const { WorkflowJobs, jobId, redact, PUSH_SCRIPT } = await import("../src/workflow-jobs.ts");
 const { byKind } = await import("../src/workflow-object.ts");
 const { forkChanges } = await import("../src/workflow-volumes.ts");
+const { ForkJanitor } = await import("../src/workflow-forks.ts");
 hooks.deregister();
 const run = promisify(execFile);
 
@@ -250,4 +251,45 @@ test("the push job writes the volume's tree on the branch, from the branch if it
   const again = await run("bash", ["-c", PUSH_SCRIPT], { cwd: root, env });
   assert.match(again.stdout, /^PUSH_RESULT unchanged [0-9a-f]{40}$/m);
   assert.equal((await git(["rev-list", "--count", "wf/edits"], join(root, "remote.git"))).stdout.trim(), "2");
+});
+
+test("a workflow's forks are deleted once it ends; a failed delete is tried again later, never while a commit is landing", async () => {
+  const rows = new Map<string, unknown>();
+  const storage = {
+    get: async (key: string) => rows.get(key),
+    put: async (key: string, value: unknown) => { rows.set(key, value); },
+    delete: async (key: string) => rows.delete(key),
+    list: async ({ prefix }: { prefix: string }) => new Map([...rows].filter(([key]) => key.startsWith(prefix))),
+  };
+  let now = 1_000_000;
+  const deleted: string[] = [], failing = new Set<string>();
+  const janitor = () => new ForkJanitor({ storage: storage as never, now: () => now, deleteFork: async id => {
+    if (failing.has(id)) throw new Error("storage unavailable");
+    deleted.push(id);
+  } });
+  let forks = janitor();
+  await forks.made("vol_a");
+  await forks.made("vol_b");
+  await forks.made("vol_c");
+  // A commit still landing (its row in WorkflowJobs) keeps every fork: it is tried again later.
+  rows.set("workflow-job:wf-1", { kind: "commit", key: "land", attempt: 1 });
+  assert.equal(await forks.ended(), now + 60_000);
+  assert.deepEqual(deleted, []);
+  rows.delete("workflow-job:wf-1");
+  // One delete fails: the others go, and the retry backs off.
+  failing.add("vol_b");
+  assert.equal(await forks.ended(), now + 120_000);
+  assert.deepEqual(deleted, ["vol_a", "vol_c"]);
+  assert.equal(await forks.retryAt(), now + 120_000);
+  // A crash, then the alarm: a new instance over the same storage finishes it, and the retry is cleared.
+  failing.clear();
+  now += 120_000;
+  forks = janitor();
+  assert.equal(await forks.ended(), undefined);
+  assert.deepEqual(deleted, ["vol_a", "vol_c", "vol_b"]);
+  assert.equal(await forks.retryAt(), undefined);
+  assert.equal([...rows.keys()].filter(key => key.startsWith("workflow-fork")).length, 0);
+  // Nothing left: ending again does nothing.
+  assert.equal(await forks.ended(), undefined);
+  assert.equal(deleted.length, 3);
 });

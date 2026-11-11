@@ -10,6 +10,9 @@ import { withSql } from "./postgres.ts";
 import type { FileBindings, Mount } from "./files.ts";
 export const workspaceId = async (id: string) =>
   `vol_${(await digest(new TextEncoder().encode(`workspace:${id}`))).slice(0, 24)}`;
+/** The id of the volume `createVolume` makes for `key`: the same key, the same volume. */
+export const keyedVolumeId = async (tenant: string, key: string) =>
+  `vol_${(await digest(new TextEncoder().encode(`volume-key:${tenant}:${key}`))).slice(0, 24)}`;
 export async function createVolume(
   env: FileBindings,
   tenant: string,
@@ -35,7 +38,7 @@ export async function createVolume(
   const id =
     input.key === undefined
       ? `vol_${crypto.randomUUID().replaceAll("-", "").slice(0, 24)}`
-      : `vol_${(await digest(new TextEncoder().encode(`volume-key:${tenant}:${input.key}`))).slice(0, 24)}`;
+      : await keyedVolumeId(tenant, input.key);
   const result = await withSql(env, async (sql) => {
     const createdAt = Date.now();
     const inserted = await sql.query(

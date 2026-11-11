@@ -1060,6 +1060,19 @@ test("workflows: children edit forks of a repo volume with their file tools, com
   assert.ok(jobItem.costUsd !== undefined && Math.abs(jobItem.costUsd - receipts[0].receipt.costUsd) < 1e-9, JSON.stringify({ jobItem, receipts }));
   assert.ok(done.spent.usd >= jobItem.costUsd!, JSON.stringify(done.spent));
 
+  // The workflow ended: its children's forks are deleted, which releases their pins on the repo's content.
+  const forks = (items as unknown as { kind: string; result?: { fork?: { volume: string } } }[]).filter(item => item.kind === "agent").map(item => item.result!.fork!.volume);
+  assert.equal(forks.length, 3);
+  for (const fork of forks) {
+    let status = 0;
+    for (let i = 0; i < 50 && status !== 404; i++) {
+      status = (await fetch(`${fixture.url}/v1/volumes/${fork}`, { headers: { authorization: `Bearer ${fixture.token}` } })).status;
+      if (status !== 404) await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    assert.equal(status, 404, `fork ${fork} is deleted`);
+  }
+  assert.equal(await call(`/v1/volumes/${repo.id}/files/src/a.txt`), "one", "the base keeps its content");
+
   // A workflow an API key started has no owner agent: its job() is refused as a value, not a pause.
   const keyStarted = await call("/v1/workflows", { script: `return await job({ key: "j", command: "true", timeoutSeconds: 30 });`, budget: { usd: 1 } });
   let keyDone: Record<string, any> = keyStarted;

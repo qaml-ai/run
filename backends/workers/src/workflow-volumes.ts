@@ -3,7 +3,8 @@
 // to volumes: a fork is a metadata-only copy whose files share the base's content, pinned for as long as the fork
 // lives (Volume.seed, #788), and a commit checks every path's version against the base in one transaction
 // (Volume.commit), so a conflicting file stops the whole commit instead of being merged.
-import { createVolume } from "./file-mounts.ts";
+import { createVolume, keyedVolumeId } from "./file-mounts.ts";
+import { withSql } from "./postgres.ts";
 import { volume, type FileBindings } from "./files.ts";
 import { commitFiles } from "./volume-commit.ts";
 import { digest, FileError, type FileEntry } from "./volume.ts";
@@ -24,10 +25,20 @@ export type ForkCommit =
  * as it is now. Made again for the same effect (a restart), it is the same fork with its edits: the volume is keyed by
  * the effect, and a fork already seeded is returned as it is.
  */
+const forkKey = (effect: { workflow: string; key: string; attempt: number }) => `workflow:${effect.workflow}:${effect.key}:${effect.attempt}`;
+/** The id of the fork `forkForChild` makes for an effect, before it is made: the workflow records it first (workflow-forks.ts). */
+export const forkId = (tenant: string, effect: { workflow: string; key: string; attempt: number }) => keyedVolumeId(tenant, forkKey(effect));
+
+/** Delete fork `id`: its row, then its object, which lets go of the base's pins. Deleting one twice is harmless. */
+export async function deleteFork(env: FileBindings, tenant: string, id: string) {
+  await withSql(env, sql => sql.query("UPDATE volumes SET deleted_at=$3 WHERE id=$1 AND tenant=$2 AND deleted_at IS NULL", [id, tenant, Date.now()]));
+  await env.VOLUMES.getByName(`${tenant}:${id}`).delete();
+}
+
 export async function forkForChild(env: FileBindings, tenant: string, effect: { workflow: string; key: string; attempt: number; repo: string }): Promise<WorkflowFork> {
   if (typeof effect.repo !== "string" || !effect.repo) throw new FileError("repo is a volume id");
   const name = `${effect.workflow} ${(await digest(new TextEncoder().encode(effect.key))).slice(0, 12)}`;
-  const created = await createVolume(env, tenant, { name: `fork of ${effect.repo} for ${name}`.slice(0, 120), key: `workflow:${effect.workflow}:${effect.key}:${effect.attempt}` });
+  const created = await createVolume(env, tenant, { name: `fork of ${effect.repo} for ${name}`.slice(0, 120), key: forkKey(effect) });
   const fork = await volume(env, tenant, created.id);
   const info = await fork.info();
   if (info.origin) {

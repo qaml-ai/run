@@ -82,7 +82,7 @@ export function workflowTools(host: WorkflowToolsHost): ToolRegistration[] {
       }
       return brief(args.workflowId, view);
     }),
-    tool("workflow_items", "A workflow's effects (its agents, gates and timers): their keys, status and results, to read samples or find failures.", {
+    tool("workflow_items", "A workflow's effects (its agents, gates, timers, jobs, commits and pushes): their keys, status and results, to read samples or find failures.", {
       workflowId: id, status: { type: "string", description: "Only effects in this status (pending, done, failed, refused)" }, limit: { type: "integer", description: "At most this many (default 50)" },
     }, ["workflowId"], async args => (await own(args.workflowId)).items({ ...(args.status ? { status: args.status } : {}), limit: Math.min(200, Number(args.limit ?? 50)) })),
     tool("workflow_edit", "Replace a workflow's script. Effects whose keys and arguments are unchanged keep their results; new or changed ones run. reason is required and kept with the revision.", {
