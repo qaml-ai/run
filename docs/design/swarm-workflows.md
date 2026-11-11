@@ -62,10 +62,13 @@ browsers, and for people's managed machines. They are not removed; they are not 
    Lambda MicroVMs are bridges and fallbacks behind the same driver seam.
 7. **Budget, cost and cache-hit reporting per workflow**, hard spend caps, a cap on total effects, and a step-rate
    guard, with every number on one console page.
-8. **Roles with late-bound models.** `agent(task, { role: "reviewer" })` names a definition whose model is a
-   virtual `camelrun/role:<role>` resolved at each call; a workflow may pin roles to models at start and a call may
-   override its own. A changed mapping never invalidates cached results; the resolved model is recorded on every
-   effect. A cheap implementer class under strong reviewers roughly halves a Bun-shaped bill, if the eval agrees.
+8. **Roles with late-bound models, and a Fusion-style model for single agents.** `agent(task, { role: "reviewer" })`
+   names a definition whose model is a virtual `camelrun/role:<role>` resolved at each call; a workflow may pin
+   roles to models at start and a call may override its own. A changed mapping never invalidates cached results;
+   the resolved model is recorded on every effect. For ordinary agents and a workflow's lead, `camelrun/fusion`
+   pairs a strong main model with a cheap sidekick, switching only at Pi's compaction boundary on a cheap
+   classifier's say, with judgment pinned to the main model. Fusion's measured 41–60% saving on
+   implementation-heavy work puts a Bun-shaped bill at $65–95k, if the eval agrees on quality at equal rounds.
 9. **Build it in five phases**, the first being the workflow object plus `job()` on bridge providers with children
    editing on volumes, the second our own job hosts, dogfooding with camelCode on a real refactor of one of our
    repositories after each.
@@ -306,14 +309,49 @@ effect's key, so completed results stay cached: the model is an execution detail
 wants old work redone on a stronger model says so: `resume({ rerun: ["impl:*"], roles: { implementer: "…" } })`.
 A call's explicit `model` is part of its arguments and does change its key, as any argument does.
 
-**Cost and latency for the Bun shape, roughly.** Of the port's $165k, take implementers and fixers as 60% of
-spend and reviewers and planners as 40% (two reviewers per implementer, but reviews read more than they write). A
-cheap implementer class at a tenth of the strong model's price makes the bill about 0.6 × 0.1 + 0.4 × 1 = 46% of
-the original, around $75k, and the cheap class streams faster, so the implement stage's wall time falls too. The
-honest caveat: a weaker implementer raises the reviewers' findings and the fixers' rounds, and the port's 19
-regressions came from semantic subtleties a reviewer must catch. The saving is real only if the eval says the
-review loop still converges in the same number of rounds; if it takes one extra fix round per item, the saving
-halves. The ledger's per-role lines show which it was.
+**Within one agent: a Fusion-style virtual model.** Roles are static per `agent()` call: the workflow picks the
+model class for each effect. Cognition's Devin Fusion (June 2026) routes *within* one agent's session instead: a
+frontier "main" agent and a cheap "sidekick" run in parallel, each with its own tools and its own persistent,
+cached context; the main agent reads minimally, delegates by default, and keeps the plan, the reading of
+ambiguity and the final review; lightweight classifiers decide mid-session when the controlling model should
+change; and a switch happens only at context compaction, which is already a cache miss, so it costs no extra cache
+penalty. On FrontierCode 1.1 Extended, Fusion scored 63.1 at $1.35 a task against Fable 5 xhigh at 64.9 / $10.53
+and Opus 5 medium at 63.6 / $3.51: up to 60% cheaper, with the largest gains on implementation-heavy sessions, and
+88% of Cognition's own merged PRs ran entirely on it. What failed for them is the lesson that matters here:
+delegating judgment-heavy work lost the intent (a cross-team feature gated on a flag dropped from 54 to 27).
+
+Recommend offering both. Per-call roles are right for a workflow's items, where the script already knows which
+effect is mechanical and which is judgment, and where a thousand `implementer` calls share one cached prefix. A
+Fusion-style virtual model, `camelrun/fusion`, is right for ordinary agents, for camelCode's long-lived lead, and
+for a workflow's `planner`: anything that holds one conversation across tasks of unknown difficulty. It would:
+
+- resolve to a pair (`main`, `sidekick`) from the role route lists, strong and cheap, and start the turn on the
+  main model;
+- switch the backing model only at a compaction boundary. Pi's compaction is where camelRun already rebuilds the
+  model's context from the journal (`docs/concepts.md`, Long conversations; the summary and recent messages are
+  re-sent whole), so a switch there is a context the provider has to read anyway, on either model. Between
+  compactions the model is fixed, so the cache keeps hitting;
+- keep a persistent cached context per model: the summary-plus-recent window that compaction produces is the same
+  bytes for both, so each model's prefix is warm as long as it is called within the provider's cache TTL;
+- decide with a cheap classifier (a `decide` call on the decision model, which the runtime already has) over the
+  last compaction window: mechanical (tests, formatting, a listed fix) goes to the sidekick, and a question, a
+  design choice, a merge or a final review brings the main model back;
+- never let judgment leave the main model: the plan, ambiguity, approvals, `commit` onto a shared branch and the
+  turn's final answer are main-model steps by rule, not by classifier.
+
+`servedModel` names which model answered each response, as it does for `camelrun/default` today, so usage, the
+ledger and end-user credit holds are unchanged in shape.
+
+**Cost for the Bun shape, sharpened by Fusion's numbers.** Fusion's implementation-heavy sessions saved 41–62%
+against a pure frontier harness, and its judgment-heavy ones 25–38% or went wrong. The port is overwhelmingly
+implementation-heavy: 1,448 mechanical ports, 16,000 compiler errors, test fixes from stack traces, each behind two
+reviewers. So expect the per-call roles to take the $165k to **$65–95k** (a 41–60% saving) with the reviewers and
+planner still on the strong model, and `camelrun/fusion` on the lead to save a further few percent of a small
+number. The honest caveat stands: a weaker implementer raises the reviewers' findings and the fixers' rounds, and
+the port's 19 regressions were semantic subtleties a reviewer must catch. So the eval measures two things, not one:
+**cost per merged task** (the review loop over a fixed repository and item set, to a green build) and **quality at
+equal rounds** (findings caught and regressions introduced when the loop is capped at the strong model's round
+count). A cheap implementer that needs one more round per item halves the saving; one that needs two erases it.
 
 **Guardrails.**
 
@@ -326,6 +364,21 @@ halves. The ledger's per-role lines show which it was.
   per-tenant overridable with `PUT /v1/tenants/{id}/roles`.
 - `GET /v1/models` lists each `camelrun/role:*` with its `routes`, and `GET /v1/workflows/:id` shows the resolved
   map at start and any pins, so nobody has to guess which model ran.
+- **Judgment never goes to the cheap model.** `planner` and `reviewer` route lists hold only strong models, the
+  runtime refuses a `roles` pin that puts a cheap-class model on them unless the start says `allowCheapJudgment:
+  true`, and `camelrun/fusion` keeps plan, ambiguity, approvals, shared-branch commits and final review on `main`
+  by rule. Cognition's one failed case is exactly this, and the port's regressions are the same kind.
+- **Account for the cache TTL.** Provider prompt caches expire after about 5 minutes. A role whose calls pause past
+  that (a phase that waits on a job, a gate open overnight) loses its prefix, and the next thousand calls pay full
+  price until it is warm again. The workflow runner keeps each active role's prefix warm while the workflow runs
+  (a minimal call every 4 minutes against the role's prefix, costing a few cached tokens) and batches a phase's
+  calls so they land within one window; `cacheShare` on the page shows when this is not working. Fusion names
+  engineering around this TTL as its hardest implementation problem; it is ours too.
+- **Route dynamically mid-task, not only from the first prompt.** A task's difficulty rarely shows in its first
+  message and follow-ups are often harder. Within a workflow the script re-routes by result: a `reviewer` that
+  returns findings above a threshold sends the fixer call to the strong class (`agent(..., { role: "fixer",
+  escalate: true })` picks the role's strong route). Within one agent, `camelrun/fusion`'s classifier runs at every
+  compaction, not once at the start.
 
 ### A small library of patterns
 
@@ -706,9 +759,12 @@ cost against the same work done by one agent on a computer.
     zero), or retire them once the pool has run a month? Keeping them costs two drivers to maintain under one seam.
 7. **Pricing of steps and the repo object.** Steps and searches are Durable Object time today, unbilled to tenants,
    as monitor checks are. Measure before deciding.
-8. **Role defaults.** Which cheap model is the implementer class on day one, and what the eval's pass bar is
-   (rounds to converge within 10% of the strong model's?). The 60/40 spend split above is an assumption to measure
-   on dogfood 1.
+8. **Role defaults and `camelrun/fusion`.** Which cheap model is the implementer class and the sidekick on day
+   one, and the eval's pass bar (cost per merged task down by a third or more at quality within 2% at equal
+   rounds?). For `camelrun/fusion`: whether a `decide` classifier at each compaction is accurate enough, or the
+   main model should make the call itself in its compaction summary; whether to keep the sidekick's cache warm
+   while the main model holds the turn (Fusion runs both in parallel; we would pay for two prefixes); and what a
+   compaction-boundary switch costs on providers whose cache keys include the model.
 9. **Layers for whole-tree refactors.** A refactor that touches 10,000 paths at once (the crate split) is one layer
    at the cap. Raise the cap, or run that phase as a job that commits through the object's bulk API?
 
