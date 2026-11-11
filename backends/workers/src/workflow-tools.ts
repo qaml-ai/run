@@ -20,7 +20,9 @@ export const WORKFLOW_START_DESCRIPTION =
   "Start a workflow: a JavaScript script that runs sub-agents (agent(prompt, { key, type, class, output })), waits on them (parallel(items, fn)), and returns a result. " +
   "Write a workflow when a task is many independent or repeated units of work (per file, per table, per source), needs more than a few sub-agents at once, must keep running after your turn ends, or needs a person's approval or a budget along the way; use `delegate` for a few sub-agents whose answers you need in this turn. " +
   "A workflow outlives your turn and reports back as it goes; you own it: you can edit its script, answer its gates and stop it. " +
-  "Inside parallel(), give every agent() a key. Types: worker (does one task), critic (finds problems; needs output), lead (plans, judges, writes the final answer). The script reads `args`.";
+  "Inside parallel(), give every agent() a key. Types: worker (does one task), critic (finds problems; needs output), lead (plans, judges, writes the final answer). The script reads `args`. " +
+  "agent(prompt, { repo: volumeId }) gives the agent its own copy of that volume at /repo and answers { text, fork }; commit(result.fork) puts its edits on the volume, or answers { committed: false, conflicts } when the volume changed under them. " +
+  "job({ command, timeoutSeconds, at: volumeId, outputs }) runs one shell command on a copy of the volume in a container of its own and answers its exit code and output.";
 
 export interface WorkflowToolsHost {
   env: WorkflowEnv;
