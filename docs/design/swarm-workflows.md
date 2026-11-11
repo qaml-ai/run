@@ -70,9 +70,11 @@ browsers, and for people's managed machines. They are not removed; they are not 
    on per-child volume forks, with the repo object following in phase 3.
 7. **We run the job VMs ourselves, on AWS Nitro Sandboxes.** Firecracker microVMs created through the Nitro
    Enclaves driver on Graviton hosts with local NVMe (`r8gd` for builds, `c8gd` spot for test shards), at EC2
-   performance, not nested; nested-virtualization Intel hosts only where restore from a memory snapshot wins.
-   Copy-on-write clones of warm disk snapshots on the host, our own host agent and scheduler, per-job netns with an
-   egress allowlist and no IMDS. Phase 1 jobs run on the Cloudflare Containers driver only; Bun-class builds wait
+   performance, not nested. Measured on `r8gd.4xlarge`: about 1% build overhead on a Bun incremental build, 0.83 s
+   cold start, p50 2.3 s for 32 at once. One substrate for phase 2; nested-virtualization Intel hosts with
+   memory-snapshot restore (35 ms, 10x faster under burst) only if a start-latency-bound job class appears. XFS
+   reflink clones of warm disk snapshots on the host, Firecracker's Async disk engine, dedicated build hosts with a
+   pre-started build sandbox, our own host agent and scheduler, per-job netns with an egress allowlist and no IMDS. Phase 1 jobs run on the Cloudflare Containers driver only; Bun-class builds wait
    for our hosts in phase 2. Boat and Lambda MicroVMs stay behind the same `JobDriver` seam as fallbacks, not plan.
 8. **Budget, cost and cache-hit reporting per workflow**, hard spend caps, a cap on total effects, and a step-rate
    guard, with every number on one console page. Fusion's measured 41–60% saving on implementation-heavy work
@@ -738,18 +740,37 @@ ones that made jobs the primitive: a Bun-class build wants 16 vCPU, 128 GiB and 
 managed provider gives at a price and a disk speed we control; a boot must be hundreds of milliseconds at 32 in
 parallel, not a 30 s tail on a cold host; and egress, isolation and placement must be ours to set.
 
-**Substrate: AWS Nitro Sandboxes on Graviton by default; nested-virt Intel hosts where restore from a memory
-snapshot wins.** Nitro Sandboxes (launched 2026-11-09;
+**Substrate: AWS Nitro Sandboxes on Graviton for every job class we have; nested-virt Intel with memory-snapshot
+restore only if a start-latency-bound class appears.** Nitro Sandboxes (launched 2026-11-09;
 `docs.aws.amazon.com/AWSEC2/latest/UserGuide/amazon-ec2-nitro-sandboxes.html`) let Firecracker v1.18 create
 microVMs through the Nitro Enclaves driver, running beside the parent at EC2 performance, not nested, on Graviton
 too. Enable at launch with `--enclave-options Enabled=true`. Their limits shape the host: no snapshot/restore and no
-pause, so every job boots from its disk clone (the guest kernel reaches init in 0.16 s, below) rather than resuming
-a memory image; the sandbox memory pool is reserved at boot and sized per host; up to 5 sandboxes per vCPU and 896
-per instance; no resize while running; on x86 with SMT a sandbox gets only the physical cores (Graviton has no
-SMT, one more reason for it); incompatible with nested virtualization on the same instance; and `169.254.169.254`
-must be blocked by us. Nested virtualization (KVM through Nitro on non-metal Intel instances since February 2026,
-`NestedVirtualization=enabled` at launch) stays the alternative for a pool where restoring a job from a memory
-snapshot matters more than raw build speed; it adds overhead to CPU-heavy work and is Intel-only as far as we know.
+pause, so every job boots from its disk clone rather than resuming a memory image; the sandbox memory pool is
+reserved at boot and sized per host; up to 5 sandboxes per vCPU and 896 per instance; no resize while running; on
+x86 with SMT a sandbox gets only the physical cores (Graviton has no SMT, one more reason for it); incompatible
+with nested virtualization on the same instance; and `169.254.169.254` must be blocked by us.
+
+The spike (2026-11-11, `r8gd.4xlarge`, AL2023 arm64, Firecracker 1.18.0, direct mode, a 100 GiB pool; full
+results in the spike's `results.md`) measured what matters:
+
+| Measure | Result |
+| --- | --- |
+| Build overhead | About 1%: a one-file Bun incremental build (`build:debug:noasan`, `src/js_parser/lexer.rs`) 39.4 s on the host, 39.9 s in a 14 vCPU / 96 GiB sandbox; edit to linked binary 26.1 vs 26.4 s. Cold full build 224 s. Bun built cleanly on Graviton |
+| Cold start to first command, idle host | 0.83 s median at 1 vCPU / 512 MiB with a reflink root (about 2.0 s without `quiet` on the kernel line); 1.5 s at 4 GiB, 2.5 s at 32 GiB, 6.3 s at 96 GiB |
+| 32 at once | p50 about 2.3 s, max 3.4 s; CPU-bound on guest kernel boot, about 0.7 s of shared vCPU each. 8 at once p50 0.9 s, 16 at once 1.1 s |
+| Large sandbox on a busy host | With a build running on the host: 16 GiB took 12 s, 32 GiB 38 s, once 235 s. The pool shares memory pressure with the host |
+| Disk | Firecracker's default engine 13k random-read IOPS; `"io_engine": "Async"` 447k IOPS and 2.3 GB/s |
+| Clone | XFS `reflink=1` on the instance NVMe and `cp --reflink=always`: about 1.5 ms per clone |
+| Nested virt on `r8id.4xlarge` (x86), for comparison | Cold boot 0.8 s; memory-snapshot restore 35 ms; 32 restores at once p50 about 235 ms, max 302 ms: roughly 10x faster than Nitro cold starts under burst |
+
+So one substrate wins for phase 2: every job we have (a build, a test shard, a query, an `rg`) runs for tens of
+seconds to minutes, and a 1–3 s start is noise against it, while a 1% build tax is far below the 25–45% host
+spread Cloudflare showed (#702). Nested-virt Intel with snapshot restore is the right answer only for a class
+where start latency dominates, such as many tiny jobs or an interactive tool behind the `jobs` builtin; none is on
+the plan, so it stays a second driver behind the seam, built when that class appears. Three design consequences
+from the busy-host numbers: build sandboxes run on hosts that run nothing else; a build host starts its sandbox
+before it is loaded, or keeps one pre-started build sandbox per host; and no host-side job ever runs on a sandbox
+host. Next levers, not yet measured: a smaller guest kernel to cut the boot CPU, and pre-started pools per host.
 
 | Pool | Instance | For | Buying |
 | --- | --- | --- | --- |
@@ -759,11 +780,17 @@ snapshot matters more than raw build speed; it adds overhead to CPU-heavy work a
 **VM.** One Firecracker microVM per job (Cloud Hypervisor is the alternative if we need virtio-fs or hotplug). The
 earlier spike on Kata over Cloud Hypervisor measured about 0.8 s to the first command, with the guest kernel at
 init in 0.16 s; the rest was containerd and CNI serializing starts. So the driver is our own, with a pool of
-pre-made network namespaces and taps per host, and no containerd in the path.
+pre-made network namespaces and taps per host, and no containerd in the path. The configuration that worked:
+`enclave: { direct_mode: true, cpu_overcommit: true }` (`false` for a build sandbox), `--no-api`, run as root,
+`nitro_enclaves.mempool=100G@0` set with grubby and a reboot, 36 written to
+`/sys/class/misc/nitro_enclaves/pcie_slots` (80 slots on that host), `quiet` on the kernel command line, commands
+over vsock.
 
 **Disks.** A base image (kernel, rootfs with toolchains) and the warm build-cache snapshots live on the host's NVMe,
-pulled from S3 on first use and kept while the host lives. A job gets a copy-on-write clone (dm-thin, or a reflink
-copy on XFS) in milliseconds, boots, `camel-sync`s the changed files in, runs, and the clone is dropped. The disk
+pulled from S3 on first use and kept while the host lives. A job gets a copy-on-write clone (decided: XFS with
+`reflink=1` on the instance NVMe and `cp --reflink=always`, 1.5 ms a clone, simpler than dm-thin) with
+Firecracker's `io_engine: "Async"` (required: the default engine does 13k IOPS, Async 447k), boots, `camel-sync`s
+the changed files in, runs, and the clone is dropped. The disk
 watermark check before the command stays, and `saveSnapshot` promotes the job's disk to a new snapshot in S3, once
 per phase. A snapshot is `{ id, baseImage, sizeBytes, hosts: [...] }`; placement prefers a host that already holds
 it, as Cloudflare's scheduler does.
@@ -786,20 +813,21 @@ found that none of this is a default; it is written down here so it is a test, n
 **Ops we take on.** Patching hosts and rolling the ASG; Firecracker and guest kernel updates (a new base image, old
 snapshots rebuilt by a job); capacity (queue depth scales the test pool; builds have a fixed warm pool); a host lost
 mid-job (its leases expire and each job is re-issued by its key, so a workflow sees a slower job, never a lost one);
-spot interruption (the two-minute notice drains the host). Cost at list: an `r8id.4xlarge`-class build host is a
-few dollars an hour on-demand and a `c8id.xlarge`-class test host well under one on spot, so a 64-way Bun phase
-(8 builds, 32 test shards) is tens of dollars an hour of compute against hundreds of model spend.
+spot interruption (the two-minute notice drains the host); build hosts that run nothing beside their sandbox. Cost
+at list: an `r8gd.4xlarge` build host is a few dollars an hour on-demand and a `c8gd.xlarge`-class test host well
+under one on spot, so a 64-way Bun phase (8 builds, 32 test shards) is tens of dollars an hour of compute against
+hundreds of model spend. The spike itself cost under $1 of instance time.
 
 **Bridge until it lands.** Phase 1 ships the seam with the Cloudflare Containers driver only (repositories under
 20 GB, on the pilot), already driven for computers (#702, `backends/workers/src/computers/objects.ts`). Bun-class
 builds wait for our hosts in phase 2. Boat and Lambda MicroVMs stay behind the seam as fallbacks when our pool is
 scaled to zero or a region is down, selected by `job({ provider })` or the tenant's default.
 
-**The spike now running.** One `r8gd.4xlarge` with Nitro Sandboxes enabled: boot Firecracker from a dm-thin clone
-of a Bun warm-cache disk snapshot and time boot to first command; rebuild after a one-file change and compare with
-Bun CI's `r8g.4xlarge` bare; measure the sandbox's build-time overhead against the same instance without one; boot
-32 sandboxes in parallel from one snapshot and record p50/p95 and NVMe throughput. Those four numbers set the
-phase-2 schedule below; a nested-virt Intel host is measured only if memory-snapshot restore turns out to matter.
+**What the spike settled.** The four numbers it was scheduled for are in the substrate table above: boot to first
+command, the one-file rebuild against the bare host, the sandbox's build overhead, and 32 parallel boots. They set
+phase 2 as planned, with reflink clones, the Async disk engine and dedicated build hosts as decided inputs rather
+than options. The x86 nested-virt comparison ran on `r8id.4xlarge` before the plan changed; its Bun build was not
+completed there (a missing `nasm`), so there are no x86 build numbers, only start and restore ones.
 
 **Sharded tests.** The script lists tests (one job: `bun test --list > /out/tests.txt`), slices them into N shards,
 runs N jobs at once, and feeds failures to the review loop. The post's four worktrees sharded by folder were a
@@ -853,7 +881,7 @@ conflicts per commit, and cost against the same work done by one agent on a comp
 | Phase | Weeks | Delivers | Dogfood |
 | --- | --- | --- | --- |
 | 1. Workflow object and jobs | 4 | `WorkflowObject`, runner, journal, keys, `agent()`, `parallel`, `pipeline`, `gate`, `sleep`, pause/edit/resume, budget, ledger, items API, console page, `workflows` builtin, the three agent types as definitions and the `fast`/`strong` classes as virtual models with the `classes` map and per-call pin (`auto` follows in phase 4); `POST /v1/jobs` with the `JobDriver` seam and the Cloudflare Containers driver only, `camel-sync`, limits, outputs, `jobConcurrency`; `strong`'s flex handling and fallback logging; children on volume forks with the phase-1 commit and `layer` on `agent()`; contract tests. Workers only. The Nitro Sandboxes spike on `r8gd.4xlarge` runs in parallel | camelCode review loop on a chiridion refactor: 8–16 children editing forks, one typecheck-and-test job per round on Cloudflare, push by job; the same run twice, workers on `strong` against `fast`, as the first class eval |
-| 2. Our job hosts | 4 | The Graviton host image (Nitro Sandboxes enabled, Firecracker v1.18, base rootfs, netns/tap pool, nftables, no IMDS), the host agent, `job_hosts` registration and placement, dm-thin clones of NVMe snapshots pulled from S3, `saveSnapshot` to S3, the ASG with a warm `r8gd` build pool and a `c8gd` spot test pool scaled on queue depth, lease sweeps and retry by key on host loss | The same loop with jobs on our hosts, Bun-class builds included: boot p50/p95 at 32 parallel, build time against Bun CI's `r8g.4xlarge`, sandbox overhead, cost per job against Cloudflare |
+| 2. Our job hosts | 4 | The Graviton host image (Nitro Sandboxes enabled, Firecracker v1.18 in direct mode, `io_engine: "Async"`, base rootfs with `quiet`, netns/tap pool, nftables, no IMDS), the host agent, `job_hosts` registration and placement, XFS reflink clones of NVMe snapshots pulled from S3, `saveSnapshot` to S3, the ASG with a dedicated `r8gd` build pool (one pre-started build sandbox per host, nothing else on the host) and a `c8gd` spot test pool scaled on queue depth, lease sweeps and retry by key on host loss | The same loop with jobs on our hosts, Bun-class builds included. Targets from the spike: build overhead ≤ 2%, test-shard start p50 ≤ 2.5 s at 32 parallel, build-sandbox start ≤ 7 s on an idle host, cost per job against Cloudflare |
 | 3. Repositories | 4 | `kind: "repo"` volumes, the repo object, layer rows, commit with three-way merge, `diff`, `branch`, `merge`, the trigram index behind `grep`, import job, push and pull through the GitHub App from the object | The loop at 32 children, commits of one file at a time onto one branch, whole-tree `grep` from the object, one push a phase |
 | 4. Queues and scale | 3 | `queue()`, sharded tests on the spot pool, the `jobs` builtin for ordinary agents, `/stuck`, alerts, phase collapse in the journal, 10,000 effects, saved patterns | A compile-error work queue on a Rust or TypeScript repository of ours: 64 fixers, 8 builds on `r8gd`, 32 shards on `c8gd`, a snapshot refreshed per crate |
 | 5. Bun-shaped run | 3 | Docs, the class and `auto` eval harness, the menu's first per-strength evals | A full Bun-shaped run on a public repository, measured against the post's numbers: cost, cache share, wall time, conflicts, jobs per hour |
@@ -870,10 +898,13 @@ conflicts per commit, and cost against the same work done by one agent on a comp
    they need `git log -p` on the file they review? If so, the import job keeps a shallow history of N commits.
 4. **isomorphic-git in a Durable Object at Bun scale.** Pack building for a few hundred files is fine; a first push
    of a 1,500-file port is a 35 MB pack. Build it in a job if the object cannot.
-5. **Our hosts: the unmeasured numbers.** Nitro Sandbox overhead on a Bun-class build; boot at 32 in parallel from
-   one NVMe snapshot; whether any job class needs memory-snapshot restore badly enough to justify a nested-virt
-   Intel pool beside the Graviton one; dm-thin against reflink for clones; how long a warm snapshot stays warm
-   (`target/` invalidation after a toolchain bump). The running spike answers the first two; the rest is phase 2.
+5. **Our hosts: what is still open after the spike.** Overhead (1%), 32-way boot (p50 2.3 s), clones (reflink)
+   and the disk engine (Async) are measured and decided. Open: whether a job class ever needs the nested-virt
+   Intel pool's 35 ms restores (none planned); how much a smaller guest kernel cuts the 0.7 s of boot CPU per
+   sandbox, which is what bounds a burst; how a pre-started build sandbox per host is kept warm without idling a
+   96 GiB reservation; the 235 s outlier starting a 32 GiB sandbox on a busy host, which the dedicated-host rule
+   avoids but does not explain; and how long a warm snapshot stays warm (`target/` invalidation after a toolchain
+   bump).
 6. **Fallbacks after our hosts land.** Keep Cloudflare (and Boat, Lambda) as fallbacks indefinitely (a region
    down, a pool at zero), or retire them once the pool has run a month? Each kept driver is one more to maintain
    under the seam.
