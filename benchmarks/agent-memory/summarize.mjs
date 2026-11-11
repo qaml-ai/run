@@ -11,6 +11,7 @@ const rows = process.argv.slice(2).map(file => {
   return {
     file: file.split("/").pop(), backend: r.backend, agents: r.created ?? r.agents, concurrency: r.concurrency, code: r.code ?? true,
     baseline: mb(r.baselineMB - proxy), resident: mb(r.residentMB - proxy), perAgent: r.marginalMBPerAgent?.toFixed(2),
+    residentPeak: mb(r.residentPeakMB === undefined ? undefined : r.residentPeakMB - proxy), peakPerAgent: r.peakMBPerAgent?.toFixed(2),
     peak: mb(r.peakMB - proxy), idle: mb(r.idleMB - proxy), proxyCounted: proxy,
     cpuMsPerTurn: Math.round(1000 * ((cpu.server ?? 0) + (cpu.workerd ?? 0) + (cpu.celld ?? 0) + (cpu["v8-exec"] ?? 0))),
     pgCpuMsPerTurn: Math.round(1000 * (cpu.postgres ?? 0)), pgPeakPss: mb(r.peakPostgresMB),
