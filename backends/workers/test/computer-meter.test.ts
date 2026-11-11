@@ -276,3 +276,24 @@ test("measured CPU is capped at the provisioned vCPU: never more than Cloudflare
   assert.equal(h.charges[0].cpuSeconds, 10 / 16);
   near(h.charges[0].costUsd, 10 * secondRate("lite"));
 });
+
+test("a named session (a job's) is charged under its name, its checkpointed parts under name#2, …; spentUsd sums them", async () => {
+  const h = harness();
+  await h.meter.started(payer, "standard-1", 60_000, 0, "job:wf-abc");
+  for (let i = 0; i < 3; i++) { h.advance(CHECKPOINT_MS / 2 + 1); await h.meter.used(); }
+  h.advance(10_000);
+  await h.meter.stopped();
+  assert.deepEqual(h.charges.map(charge => charge.id), ["job:wf-abc", "job:wf-abc#2"]);
+  assert.ok(Math.abs(h.meter.spentUsd() - h.charges.reduce((sum, charge) => sum + charge.costUsd, 0)) < 1e-12);
+  // The same job run again (its workflow restarted mid-run) charges under the same names: once.
+  await h.meter.started(payer, "standard-1", 60_000, 0, "job:wf-abc");
+  h.advance(5_000);
+  await h.meter.stopped();
+  assert.deepEqual(h.charges.map(charge => charge.id), ["job:wf-abc", "job:wf-abc#2"]);
+  // An unnamed session gets its own id each time.
+  await h.meter.started(payer, "standard-1");
+  h.advance(5_000);
+  await h.meter.stopped();
+  assert.equal(h.charges.length, 3);
+  assert.ok(!h.charges[2]!.id.startsWith("job:"));
+});

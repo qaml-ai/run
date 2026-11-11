@@ -11,8 +11,8 @@ export interface JobMeter {
   /** Just before the container starts. */
   started(instance: InstanceType, idleMs: number): Promise<void>;
   used(cpuUsec?: number): Promise<void>;
-  /** The container is gone: settle the session and give back the slot. */
-  stopped(cpuUsec?: number): Promise<void>;
+  /** The container is gone: settle the session and give back the slot. Answers what the job's container time cost (USD). */
+  stopped(cpuUsec?: number): Promise<number | void>;
 }
 export type ContainerJobOptions = {
   container: ContainerApi;
@@ -95,10 +95,11 @@ export async function runContainerJob(spec: Spec, options: ContainerJobOptions):
   const lifetimeMs = jobLifetimeMs(spec.timeoutSeconds);
   const stop = options.stop ?? new AbortController().signal;
   const step = (ms: number) => AbortSignal.any([AbortSignal.timeout(ms), stop]);
+  let last: JobResult | undefined;
   const done = (result: JobResult): JobResult => {
     timings.endedAt = now();
     timings.totalMs = timings.endedAt - startedAt;
-    return result;
+    return last = result;
   };
   const fail = (failure: JobFailure) => done({
     ok: false, id: spec.id, code: stop.aborted ? "stopped" : failure.code, message: stop.aborted ? "The job was stopped" : failure.message,
@@ -236,7 +237,10 @@ export async function runContainerJob(spec: Spec, options: ContainerJobOptions):
     }
     if (container.running) await container.destroy().catch((error: unknown) =>
       console.error(JSON.stringify({ type: "job_destroy_failed", job: spec.id, error: message(error) })));
-    if (meter) await meter.stopped(cpu).catch((error: unknown) =>
-      console.error(JSON.stringify({ type: "job_meter_failed", job: spec.id, error: message(error) })));
+    if (meter) {
+      const cost = await meter.stopped(cpu).catch((error: unknown) =>
+        console.error(JSON.stringify({ type: "job_meter_failed", job: spec.id, error: message(error) })));
+      if (last && typeof cost === "number") last.costUsd = cost;
+    }
   }
 }

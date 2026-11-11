@@ -75,7 +75,7 @@ function recordingMeter(refuse = false) {
     async admit(instance) { events.push(`admit:${instance}`); if (refuse) throw new Error("Spending limit reached"); },
     async started(instance, idleMs) { events.push(`started:${instance}:${idleMs}`); },
     async used(cpu) { events.push(`used:${cpu}`); },
-    async stopped(cpu) { events.push(`stopped:${cpu}`); },
+    async stopped(cpu) { events.push(`stopped:${cpu}`); return 0.0125; },
   };
   return { meter, events };
 }
@@ -205,6 +205,7 @@ test("a job starts, syncs, runs one command in /repo, collects its outputs and i
   assert.equal(events.at(-1), "destroy");
   assert.equal(container.running, false);
   assert.deepEqual(metered, ["admit:standard-3", `started:standard-3:${(60 + 600 + 120) * 1000}`, "stopped:4200000"]);
+  assert.equal(result.costUsd, 0.0125, "the result says what its container time cost, as the meter charged it");
   for (const key of ["startMs", "syncMs", "commandMs", "collectMs", "totalMs"] as const) assert.ok(result.timings[key] >= 0);
 });
 

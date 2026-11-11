@@ -52,7 +52,9 @@ export type ComputerPayer = { tenant: string; agent: string };
  * `cpuUsec` the latest reading and `cpuAt` when it was taken (the start, until the first reading).
  */
 export type ComputerSession = ComputerPayer & { id: string; instance: InstanceType; startedAt: number; usedAt: number; idleMs?: number;
-  cpuBaseUsec?: number; cpuUsec?: number; cpuAt?: number };
+  cpuBaseUsec?: number; cpuUsec?: number; cpuAt?: number;
+  /** A session named by its caller (a job's), and which of its checkpointed parts this is: its charges are `id`, `id#2`, …. */
+  named?: string; part?: number };
 /** A finished session's charge. `id` makes it exactly-once: charging the same session twice records it once. */
 export type ComputerCharge = ComputerPayer & { id: string; instance: InstanceType; startedAt: number; endedAt: number; seconds: number; costUsd: number;
   /** vCPU-seconds the cgroup counted, and seconds charged at the provisioned vCPU because no reading covers them. */
@@ -97,6 +99,9 @@ export class ComputerMeter {
   private idleMs: number;
   private now: () => number;
   private schedule: (at: number) => Promise<void>;
+  /** What the sessions this instance closed since its last `started` cost (USD): a job's whole run. */
+  private spent = 0;
+  spentUsd() { return this.spent; }
   constructor(options: { store: MeterStore; billing: MeterBilling; idleMs: number; now?: () => number; schedule: (at: number) => Promise<void> }) {
     this.store = options.store;
     this.billing = options.billing;
@@ -111,11 +116,16 @@ export class ComputerMeter {
    * A container is starting for this payer. Call before `start()`, so a DO that dies in between leaves a session
    * (billed until it idles out) rather than an unmetered container. Any earlier session ended.
    */
-  async started(payer: ComputerPayer, instance: InstanceType, idleMs = this.idleMs, cpuBaseUsec = 0) {
+  /**
+   * `id` names the session (a job's, which a run made again charges under the same name, so it is charged once);
+   * without one each session gets its own.
+   */
+  async started(payer: ComputerPayer, instance: InstanceType, idleMs = this.idleMs, cpuBaseUsec = 0, id?: string) {
     await this.close();
+    this.spent = 0;
     const at = this.now();
-    await this.store.put<ComputerSession>(OPEN, { ...payer, id: crypto.randomUUID(), instance, startedAt: at, usedAt: at, idleMs,
-      cpuBaseUsec, cpuUsec: cpuBaseUsec, cpuAt: at });
+    await this.store.put<ComputerSession>(OPEN, { ...payer, id: id ?? crypto.randomUUID(), instance, startedAt: at, usedAt: at, idleMs,
+      cpuBaseUsec, cpuUsec: cpuBaseUsec, cpuAt: at, ...(id ? { named: id, part: 1 } : {}) });
     await this.schedule(at + idleMs + SETTLE_MARGIN_MS);
   }
   private idle(session: ComputerSession) {
@@ -170,7 +180,8 @@ export class ComputerMeter {
     if (!running) { await this.settle(); return undefined; }
     // Time past the old session's idle point stays unbilled: the new one is billed from now only while in use.
     // CPU continues from the last reading; the time since it stays unmeasured in the new session too.
-    const next: ComputerSession = { ...open, id: crypto.randomUUID(), startedAt: now, usedAt: Math.max(open.usedAt, now),
+    const part = (open.part ?? 1) + 1;
+    const next: ComputerSession = { ...open, id: open.named ? `${open.named}#${part}` : crypto.randomUUID(), ...(open.named ? { part } : {}), startedAt: now, usedAt: Math.max(open.usedAt, now),
       cpuBaseUsec: open.cpuUsec ?? open.cpuBaseUsec ?? 0, cpuAt: Math.max(now, open.cpuAt ?? now) };
     await this.store.put(OPEN, next);
     await this.settle();
@@ -196,6 +207,7 @@ export class ComputerMeter {
       costUsd: sessionCost(open.instance, seconds, cpuSeconds, unmeasuredSeconds) };
     // A session that ended as it started costs nothing and records nothing.
     if (seconds > 0) await this.store.put(`${UNSETTLED}${open.id}`, charge);
+    this.spent += seconds > 0 ? charge.costUsd : 0;
     await this.store.delete(OPEN);
   }
   /** Charge every finished session; one that fails stays for the next attempt, later each time. */

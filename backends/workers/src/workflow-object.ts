@@ -189,6 +189,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
     });
     const jobs = new WorkflowJobs(env, {
       get workflow() { return { id: name ?? "", tenant: self.runner.identity().tenant ?? "" }; },
+      payer: () => { const owner = self.settings().owner; return owner?.kind === "agent" ? owner.id : undefined; },
       land: (...args) => self.land(...args), waitUntil: promise => ctx.waitUntil(promise), storage: ctx.storage,
     });
     const stub = env.TEST_MODE === "1" && env.TEST_WORKFLOW_EXECUTOR === "stub" ? testExecutor((...args) => this.land(...args), ctx) : undefined;

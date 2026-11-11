@@ -90,7 +90,7 @@ test("byKind sends agents and gates to the children, job/commit/push to the jobs
 });
 
 /** WorkflowJobs over a fake driver and storage: what it lands. */
-function jobs(result: (spec: JobSpec) => JobResult | Promise<JobResult>, available = true) {
+function jobs(result: (spec: JobSpec) => JobResult | Promise<JobResult>, available = true, payer: string | null = "agent_owner") {
   const rows = new Map<string, unknown>();
   const storage = {
     put: async (key: string, value: unknown) => { rows.set(key, value); },
@@ -98,11 +98,11 @@ function jobs(result: (spec: JobSpec) => JobResult | Promise<JobResult>, availab
     get: async (key: string) => rows.get(key),
     list: async ({ prefix }: { prefix: string }) => new Map([...rows].filter(([key]) => key.startsWith(prefix))),
   };
-  const landed: [string, number, unknown][] = [], specs: JobSpec[] = [], pending: Promise<unknown>[] = [], stopped: string[] = [];
+  const landed: [string, number, unknown, unknown?][] = [], specs: JobSpec[] = [], pending: Promise<unknown>[] = [], stopped: string[] = [];
   const driver = { provider: "cloudflare-containers" as const, run: async (spec: JobSpec) => { specs.push(spec); return result(spec); }, stop: async (id: string) => { stopped.push(id); return { stopped: true }; } };
   const executor = new WorkflowJobs({} as never, {
-    workflow: { id: "wf_1", tenant: "t1" }, storage: storage as never,
-    land: async (key, attempt, outcome) => { landed.push([key, attempt, outcome]); },
+    workflow: { id: "wf_1", tenant: "t1" }, storage: storage as never, payer: () => payer ?? undefined,
+    land: async (key, attempt, outcome, usage) => { landed.push([key, attempt, outcome, usage]); },
     waitUntil: promise => { pending.push(promise); },
   }, () => available ? { ok: true, driver } : { ok: false, code: "JOBS_UNAVAILABLE", message: "Jobs need Cloudflare Containers" });
   return { executor, landed, specs, rows, stopped, settled: async () => { while (pending.length) await pending.shift(); } };
@@ -115,7 +115,7 @@ test("WorkflowJobs: refusals and failures land as values; a job is paid by the w
   let j = jobs(() => { throw new Error("no driver"); }, false);
   await j.executor.start(effect("a", { command: "true", timeoutSeconds: 5 }));
   await j.settled();
-  assert.deepEqual(j.landed, [["a", 1, { ok: false, error: "JOBS_UNAVAILABLE: Jobs need Cloudflare Containers" }]]);
+  assert.deepEqual(j.landed.map(entry => entry.slice(0, 3)), [["a", 1, { ok: false, error: "JOBS_UNAVAILABLE: Jobs need Cloudflare Containers" }]]);
   assert.equal(j.rows.size, 0, "its row goes once it lands");
 
   // A bad option fails the effect without starting anything.
@@ -131,7 +131,7 @@ test("WorkflowJobs: refusals and failures land as values; a job is paid by the w
   await j.settled();
   assert.deepEqual(j.landed[0]![2], { refused: "The tenant has no credit left", code: "payer_exhausted" });
   const spec = j.specs[0]!;
-  assert.deepEqual(spec.payer, { tenant: "t1", agent: "wf_1" }, "the workflow's tenant pays, the workflow is its computer tree");
+  assert.deepEqual(spec.payer, { tenant: "t1", agent: "agent_owner" }, "the agent that owns the workflow pays");
   assert.equal(spec.id, await jobId("wf_1", "c", 1));
   assert.match(spec.id, /^wf-[0-9a-f]{40}$/);
   assert.deepEqual(Object.keys(spec.files!), ["a.txt"]);
@@ -158,6 +158,19 @@ test("WorkflowJobs: refusals and failures land as values; a job is paid by the w
   assert.deepEqual(j.landed.map(entry => entry[0]), ["f"]);
   await j.executor.cancel(effect("f", {}));
   assert.deepEqual(j.stopped, [await jobId("wf_1", "f", 1)]);
+
+  // A workflow an API key started has no owner agent: its jobs refuse as a value, with no compute.
+  j = jobs(() => { throw new Error("never"); }, true, null);
+  await j.executor.start(effect("api", { command: "true", timeoutSeconds: 5 }));
+  await j.settled();
+  assert.match((j.landed[0]![2] as { error: string }).error, /^job_payer_unavailable: /);
+  assert.equal(j.specs.length, 0);
+
+  // A failure's metered cost still reaches the workflow's ledger (the usage it lands with).
+  j = jobs(spec => ({ ok: false, id: spec.id, code: "container_failed", message: "out of memory", timings, costUsd: 0.02 }));
+  await j.executor.start(effect("oom", { command: "true", timeoutSeconds: 5 }));
+  await j.settled();
+  assert.deepEqual(j.landed[0]![3], { costUsd: 0.02, durationMs: 1 });
 
   // The sweep's poll runs again a job whose run threw (nothing in flight here), and never one in flight.
   let calls = 0;

@@ -100,8 +100,10 @@ export type JobResult =
       /** saveSnapshot was asked for and failed; the result stands. */
       snapshotError?: string;
       timings: JobTimings;
+      /** What the job's container time cost its payer (USD), as metered; absent for a job run without a meter. */
+      costUsd?: number;
     }
-  | { ok: false; id: string; code: JobFailureCode; message: string; timings: JobTimings; freeBytes?: number };
+  | { ok: false; id: string; code: JobFailureCode; message: string; timings: JobTimings; freeBytes?: number; costUsd?: number };
 
 export class JobSpecError extends Error {
   readonly code = "JOB_INVALID";

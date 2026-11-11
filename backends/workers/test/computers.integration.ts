@@ -945,14 +945,21 @@ test("workflows: children edit forks of a repo volume with their file tools, com
     process.env.MINIFLARE_CONTAINER_EGRESS_IMAGE = egressImage;
     t.after(() => { delete process.env.MINIFLARE_CONTAINER_EGRESS_IMAGE; });
   }
-  // The children's model: "EDIT <path> <text>" makes one write tool call, then says it is done.
+  // The children's model: "EDIT <path> <text>" makes one write tool call, then says it is done. The owner agent's: start
+  // the workflow (SCRIPT) with its workflows builtin, then say which it started.
+  let script = "";
   const textOf = (message: any) => typeof message?.content === "string" ? message.content : (message?.content ?? []).map((part: any) => part.text ?? "").join("\n");
   const model = createHttpServer(async (request, response) => {
     let raw = ""; for await (const chunk of request) raw += chunk;
     const body = JSON.parse(raw);
     const last = body.messages.at(-1), user = textOf(body.messages.filter((message: any) => message.role === "user").at(-1));
     const edit = /EDIT (\S+) (\S+)/.exec(user);
-    const delta = last.role !== "tool" && edit
+    const system = body.messages.filter((message: any) => message.role === "system").map(textOf).join("\n");
+    const owner = !system.includes("You are a worker in a workflow") && user.startsWith("START");
+    const delta = owner
+      ? last.role === "tool" ? { role: "assistant", content: `STARTED ${textOf(last)}` }
+        : { role: "assistant", tool_calls: [{ index: 0, id: "start-1", type: "function", function: { name: "workflow_start", arguments: JSON.stringify({ script, args: JSON.parse(user.slice(6)), budgetUsd: 5, name: "edit the repo" }) } }] }
+      : last.role !== "tool" && edit
       ? { role: "assistant", tool_calls: [{ index: 0, id: "write-1", type: "function", function: { name: "write", arguments: JSON.stringify({ path: edit[1], content: edit[2] }) } }] }
       : { role: "assistant", content: `edited ${edit?.[1] ?? "nothing"}` };
     response.writeHead(200, { "Content-Type": "text/event-stream" });
@@ -989,7 +996,7 @@ test("workflows: children edit forks of a repo volume with their file tools, com
   await call(`/v1/volumes/${repo.id}/files/src/b.txt`, undefined, "2");
   await call(`/v1/volumes/${repo.id}/files/check.sh`, undefined,
     'a=$(cat src/a.txt); b=$(cat src/b.txt); echo "a=$a b=$b" | tee "$JOB_OUT/report.txt"; test "$a" = one && test "$b" = two && echo PASS');
-  const script = `
+  script = `
     phase("edit");
     // Three workers fork the repo as it is now and edit it with their write tool; the third edits the file the first does.
     const [a, b, c] = await parallel([
@@ -1004,8 +1011,16 @@ test("workflows: children edit forks of a repo volume with their file tools, com
     phase("test");
     const checked = await job({ key: "check", command: "bash check.sh", timeoutSeconds: 120, at: args.repo, outputs: ["report.txt"] });
     return { said: [a.text, b.text, c.text], landedA, landedB, landedC, checked };`;
-  const created = await call("/v1/workflows", { script, args: { repo: repo.id }, budget: { usd: 5 }, concurrency: 4, name: "edit the repo" });
-  let done: Record<string, any> = created;
+  // An agent starts the workflow and owns it: it is the payer of the workflow's jobs.
+  const owner = await call("/v1/agents", { model: "repo-fixture/repo-model", codeMode: false, fileTools: false, builtins: ["delegate"], delegate: { instructions: true } });
+  const run = await call(`/v1/agents/${owner.id}/prompt`, { text: `START ${JSON.stringify({ repo: repo.id })}` });
+  let started: Record<string, any> = {};
+  for (let i = 0; i < 300 && started.state !== "completed"; i++) { await new Promise(resolve => setTimeout(resolve, 200)); started = await call(`/v1/agents/${owner.id}/requests/${run.id}`); }
+  const reply = String(started.outcome?.result?.reply ?? "");
+  assert.match(reply, /^STARTED /, JSON.stringify(started.outcome));
+  const created = { id: JSON.parse(reply.slice("STARTED ".length)).workflowId as string };
+  let done: Record<string, any> = await call(`/v1/workflows/${created.id}`);
+  assert.deepEqual(done.owner, { kind: "agent", id: owner.id });
   for (let i = 0; i < 600 && !["completed", "failed", "paused", "aborted", "budget_exhausted"].includes(done.status); i++) {
     await new Promise(resolve => setTimeout(resolve, 500));
     done = await call(`/v1/workflows/${created.id}`);
@@ -1033,4 +1048,25 @@ test("workflows: children edit forks of a repo volume with their file tools, com
     [["check", "job", "done"], ["commit:a", "commit", "done"], ["commit:b", "commit", "done"], ["commit:c", "commit", "done"], ["edit:a", "agent", "done"], ["edit:b", "agent", "done"], ["edit:c", "agent", "done"]]);
   // The job's computer slot was given back when it ended.
   assert.equal((await fixture.db.query("select 1 from computer_slots where tenant=$1 and machine like 'job:wf-%' and expires_at > $2", ["camelrun-proto-local", Date.now()])).rowCount, 0);
+  // Its container time was metered once, to the owner agent, under the job's own receipt, and counts in the workflow's ledger.
+  let receipts: any[] = [];
+  for (let i = 0; i < 50 && !receipts.length; i++) {
+    receipts = (await fixture.db.query("select message->'_workersAuxiliary' as receipt from pi_usage_receipts where tenant=$1 and session_id=$2 and message->'_workersAuxiliary'->>'kind'='computer'", ["camelrun-proto-local", owner.id])).rows;
+    if (!receipts.length) await new Promise(resolve => setTimeout(resolve, 200));
+  }
+  assert.equal(receipts.length, 1, JSON.stringify(receipts));
+  assert.match(receipts[0].receipt.callId, /^computer:job:wf-[0-9a-f]{40}$/);
+  const jobItem = items.find(item => item.key === "check") as unknown as { costUsd?: number };
+  assert.ok(jobItem.costUsd !== undefined && Math.abs(jobItem.costUsd - receipts[0].receipt.costUsd) < 1e-9, JSON.stringify({ jobItem, receipts }));
+  assert.ok(done.spent.usd >= jobItem.costUsd!, JSON.stringify(done.spent));
+
+  // A workflow an API key started has no owner agent: its job() is refused as a value, not a pause.
+  const keyStarted = await call("/v1/workflows", { script: `return await job({ key: "j", command: "true", timeoutSeconds: 30 });`, budget: { usd: 1 } });
+  let keyDone: Record<string, any> = keyStarted;
+  for (let i = 0; i < 100 && keyDone.status !== "completed"; i++) { await new Promise(resolve => setTimeout(resolve, 200)); keyDone = await call(`/v1/workflows/${keyStarted.id}`); }
+  assert.equal(keyDone.status, "completed", JSON.stringify(keyDone));
+  assert.equal(keyDone.result, null);
+  const refusedItem = ((await call(`/v1/workflows/${keyStarted.id}/items`)).items as { key: string; status: string; reason?: string }[]).find(item => item.key === "j")!;
+  assert.equal(refusedItem.status, "failed");
+  assert.match(refusedItem.reason ?? "", /^job_payer_unavailable: /);
 });
