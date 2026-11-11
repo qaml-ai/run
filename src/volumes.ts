@@ -171,7 +171,7 @@ export async function commitContents(volumes: VolumeService, tenant: string, id:
     if (file.remove) return { path: file.path, ifMatch: file.version, delete: true };
     const source = sources[index];
     const stored = source ? { chunks: source.chunks, size: source.size } : await volumes.store(tenant, new Uint8Array(file.bytes!));
-    const contentType = declaredType(file.contentType) ?? source?.contentType ?? sniffContentType(file.bytes!.subarray(0, 512), file.path);
+    const contentType = declaredType(file.contentType) ?? (source ? source.contentType : sniffContentType(file.bytes!.subarray(0, 512), file.path));
     return { path: file.path, ifMatch: file.version, ...stored, contentType };
   }));
   try {
