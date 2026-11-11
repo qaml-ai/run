@@ -1,0 +1,223 @@
+{
+ "date": "2026-11-11",
+ "node": "v22.21.1",
+ "fingerprint": "quickjs-wasi 3.6.2, wasm d4c9375f2b1ca4dc, prelude 57c8dc8c0e812117, driver 1, stack 262144, heap 25165824",
+ "runs": [
+  {
+   "effects": 50,
+   "keepsResults": false,
+   "totalMs": 999,
+   "done": {
+    "type": "done",
+    "ok": true,
+    "value": "{\"count\":50,\"random\":0.3898226593579639,\"now\":1050}"
+   },
+   "steps": [
+    {
+     "effects": 1,
+     "restoreMs": 4.393011000000001,
+     "runMs": 1.2831819999999823,
+     "snapshotMs": 3.4886280000000056,
+     "gzipMs": 8.716250000000002,
+     "gunzipMs": 4.924347000000012,
+     "rawBytes": 1638703,
+     "gzipBytes": 222733,
+     "linearBytes": 1638400,
+     "polls": 0
+    },
+    {
+     "effects": 50,
+     "restoreMs": 3.714717000000064,
+     "runMs": 0.7835410000000138,
+     "snapshotMs": 1.8387099999999919,
+     "gzipMs": 9.292642000000114,
+     "gunzipMs": 2.803809999999885,
+     "rawBytes": 1638705,
+     "gzipBytes": 221905,
+     "linearBytes": 1638400,
+     "polls": 0
+    }
+   ]
+  },
+  {
+   "effects": 500,
+   "keepsResults": false,
+   "totalMs": 8081,
+   "done": {
+    "type": "done",
+    "ok": true,
+    "value": "{\"count\":500,\"random\":0.3898226593579639,\"now\":1500}"
+   },
+   "steps": [
+    {
+     "effects": 1,
+     "restoreMs": 3.656496999999945,
+     "runMs": 0.17242400000009184,
+     "snapshotMs": 1.659787999999935,
+     "gzipMs": 8.44186499999978,
+     "gunzipMs": 2.8316870000001018,
+     "rawBytes": 1638703,
+     "gzipBytes": 222785,
+     "linearBytes": 1638400,
+     "polls": 0
+    },
+    {
+     "effects": 500,
+     "restoreMs": 3.5559880000000703,
+     "runMs": 0.3018900000006397,
+     "snapshotMs": 1.0120069999993575,
+     "gzipMs": 7.941013999999996,
+     "gunzipMs": 2.571820999999545,
+     "rawBytes": 1638707,
+     "gzipBytes": 216238,
+     "linearBytes": 1638400,
+     "polls": 0
+    }
+   ]
+  },
+  {
+   "effects": 5000,
+   "keepsResults": false,
+   "totalMs": 97242,
+   "done": {
+    "type": "done",
+    "ok": true,
+    "value": "{\"count\":5000,\"random\":0.3898226593579639,\"now\":6000}"
+   },
+   "steps": [
+    {
+     "effects": 1,
+     "restoreMs": 5.40589799999907,
+     "runMs": 0.16947600000094099,
+     "snapshotMs": 1.3538410000001022,
+     "gzipMs": 8.094758999999613,
+     "gunzipMs": 2.717060999999376,
+     "rawBytes": 1638703,
+     "gzipBytes": 222780,
+     "linearBytes": 1638400,
+     "polls": 0
+    },
+    {
+     "effects": 5000,
+     "restoreMs": 3.5470749999949476,
+     "runMs": 0.6217130000004545,
+     "snapshotMs": 4.1645209999987856,
+     "gzipMs": 10.127576000013505,
+     "gunzipMs": 3.671835999994073,
+     "rawBytes": 2228533,
+     "gzipBytes": 292872,
+     "linearBytes": 2228224,
+     "polls": 0
+    }
+   ]
+  },
+  {
+   "effects": 50,
+   "keepsResults": true,
+   "totalMs": 856,
+   "done": {
+    "type": "done",
+    "ok": true,
+    "value": "{\"count\":50,\"random\":0.3898226593579639,\"now\":1050}"
+   },
+   "steps": [
+    {
+     "effects": 1,
+     "restoreMs": 3.657791999998153,
+     "runMs": 0.122787000000244,
+     "snapshotMs": 6.865595999988727,
+     "gzipMs": 8.613160999986576,
+     "gunzipMs": 5.008233000000473,
+     "rawBytes": 1638703,
+     "gzipBytes": 222592,
+     "linearBytes": 1638400,
+     "polls": 0
+    },
+    {
+     "effects": 50,
+     "restoreMs": 6.388365999999223,
+     "runMs": 0.17477200001303572,
+     "snapshotMs": 1.3788740000018151,
+     "gzipMs": 8.303785999989486,
+     "gunzipMs": 2.6373769999918295,
+     "rawBytes": 1638705,
+     "gzipBytes": 223500,
+     "linearBytes": 1638400,
+     "polls": 0
+    }
+   ]
+  },
+  {
+   "effects": 500,
+   "keepsResults": true,
+   "totalMs": 9073,
+   "done": {
+    "type": "done",
+    "ok": true,
+    "value": "{\"count\":500,\"random\":0.3898226593579639,\"now\":1500}"
+   },
+   "steps": [
+    {
+     "effects": 1,
+     "restoreMs": 3.5879920000006678,
+     "runMs": 0.14445599999453407,
+     "snapshotMs": 1.3184999999939464,
+     "gzipMs": 8.163706999999704,
+     "gunzipMs": 2.8050100000109524,
+     "rawBytes": 1638703,
+     "gzipBytes": 222637,
+     "linearBytes": 1638400,
+     "polls": 0
+    },
+    {
+     "effects": 500,
+     "restoreMs": 3.72369999998773,
+     "runMs": 0.6387539999996079,
+     "snapshotMs": 1.384688999998616,
+     "gzipMs": 8.91635500000848,
+     "gunzipMs": 2.937356999987969,
+     "rawBytes": 1769779,
+     "gzipBytes": 244997,
+     "linearBytes": 1769472,
+     "polls": 0
+    }
+   ]
+  },
+  {
+   "effects": 5000,
+   "keepsResults": true,
+   "totalMs": 141989,
+   "done": {
+    "type": "done",
+    "ok": true,
+    "value": "{\"count\":5000,\"random\":0.3898226593579639,\"now\":6000}"
+   },
+   "steps": [
+    {
+     "effects": 1,
+     "restoreMs": 3.486073000007309,
+     "runMs": 0.1304610000079265,
+     "snapshotMs": 2.0669959999941057,
+     "gzipMs": 8.58560099999886,
+     "gunzipMs": 2.6186820000002626,
+     "rawBytes": 1638703,
+     "gzipBytes": 222632,
+     "linearBytes": 1638400,
+     "polls": 0
+    },
+    {
+     "effects": 5000,
+     "restoreMs": 4.373739000002388,
+     "runMs": 1.1248560000094585,
+     "snapshotMs": 2.7165749999985565,
+     "gzipMs": 19.819306999997934,
+     "gunzipMs": 20.284118000010494,
+     "rawBytes": 3408181,
+     "gzipBytes": 570836,
+     "linearBytes": 3407872,
+     "polls": 0
+    }
+   ]
+  }
+ ]
+}
