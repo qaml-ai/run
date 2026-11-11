@@ -32,7 +32,11 @@ input reads against 5.9B uncached. Every failure he hit has a line in this docum
    nobody runs `cargo check` beside 63 others, and a test that eats every socket on the box kills only its job.
 6. **Budget, cost and cache-hit reporting per workflow**, hard spend caps, a cap on total effects, and a step-rate
    guard, with every number on one console page.
-7. **Build it in four phases**, dogfooding with camelCode on a real refactor of one of our repositories after each.
+7. **Roles with late-bound models.** `agent(task, { role: "reviewer" })` names a definition whose model is a
+   virtual `camelrun/role:<role>` resolved at each call; a workflow may pin roles to models at start and a call may
+   override its own. A changed mapping never invalidates cached results; the resolved model is recorded on every
+   effect. A cheap implementer class under strong reviewers roughly halves a Bun-shaped bill, if the eval agrees.
+8. **Build it in four phases**, dogfooding with camelCode on a real refactor of one of our repositories after each.
 
 ## What the Bun port needed, and what camelRun has
 
@@ -221,6 +225,74 @@ The console page `/workflows/:id` shows the phase tree (Claude Code's progress t
 spend line with cache share, stuck items, the last 50 `log()` lines, each item's sample output and a link to the
 child's transcript, open gates with answer buttons, the script with a diff against the previous revision, and
 `pause`, `resume`, `abort`, `edit`. `/workflows` lists the tenant's, running first.
+
+### Roles and model routing
+
+The Bun port ran every agent on one Mythos-class model. Most of its tokens were implementers and fixers doing
+mechanical work a cheaper model does well enough when two strong reviewers stand behind it. The lever is to name
+the **role** an `agent()` plays and let the runtime pick the model.
+
+**Roles are definitions, with a model class instead of a model.** A definition today names a model (or inherits
+the runtime's default, fixed when the agent is made). A role is a definition whose `model` is a virtual name of
+the form `camelrun/role:<role>`, resolved at each call, the way `camelrun/default` resolves by name to a list of
+real models with failover (`docs/guides/models-and-keys.md`, Virtual models). The runtime ships default roles as
+definitions a tenant can copy or override:
+
+| Role | Does | Must not | Default model class |
+| --- | --- | --- | --- |
+| `implementer` | Writes the code for one item from a spec | Review, judge, merge | Cheap and fast (today DeepSeek V4.1 Flash via OpenRouter; Haiku 5.5 is about 11x cheaper than Sonnet 5.5 for this shape) |
+| `fixer` | Applies a list of findings to the files named | Reinterpret the findings | Cheap and fast |
+| `reviewer` | Finds bugs and spec violations; answers in a schema | Edit anything | Strong (today Claude Sonnet 5.5 or better) |
+| `planner` | Turns a goal into a work-list, a porting guide, a shard plan | Write code | Strong, high reasoning effort |
+| `explorer` | Reads and searches to answer a question about the tree | Write anything | Cheap and fast, large context |
+
+A workflow refers to roles by name: `agent(task, { role: "reviewer" })` (`definition` still names a specific
+definition when the script wants one). A role's prompt is the definition's system prompt, so every call of a role
+shares one prefix and the provider's prompt cache hits across thousands of calls; a workflow that puts PORTING.md
+and LIFETIMES.tsv into each role's system prompt gets Bun's 92% cache share for free. `report_progress`, file tools
+and `commit` come from the role's builtins; a role with `readOnly` layers (reviewer, explorer) cannot write.
+
+**Late binding.** `camelrun/role:reviewer` resolves at the moment of each call to the current route list for that
+role, so a workflow written today gets a better or cheaper model when the role's default moves, with no edit. The
+resolved real model is recorded on every effect (`items[].model`, the ledger, `usage.recorded`'s `servedModel`), so
+a run is reproducible and a cost report says which model did what.
+
+**Pinning.** A start may map roles to models for the whole workflow, and a call may override its own:
+
+```js
+// POST /v1/workflows { …, roles: { implementer: "openrouter/deepseek/deepseek-v4.1-flash-1017", reviewer: "anthropic/claude-opus-5-5" } }
+await agent(task, { role: "reviewer", model: "anthropic/claude-sonnet-5-5" });   // this call only
+```
+
+The order is: the call's `model`, then the workflow's `roles` map, then the role's current default. A pinned model
+is a real model: no failover, as for any agent that names one. OpenRouter routes under a role use `provider.only`
+and `ignore` allowlists only, never `order` or `sort`, which disable its load balancing (the 2026-10-18 incident).
+
+**Resume semantics.** A change to a role's default, or to the workflow's `roles` map, does **not** change an
+effect's key, so completed results stay cached: the model is an execution detail, not an argument. The owner who
+wants old work redone on a stronger model says so: `resume({ rerun: ["impl:*"], roles: { implementer: "…" } })`.
+A call's explicit `model` is part of its arguments and does change its key, as any argument does.
+
+**Cost and latency for the Bun shape, roughly.** Of the port's $165k, take implementers and fixers as 60% of
+spend and reviewers and planners as 40% (two reviewers per implementer, but reviews read more than they write). A
+cheap implementer class at a tenth of the strong model's price makes the bill about 0.6 × 0.1 + 0.4 × 1 = 46% of
+the original, around $75k, and the cheap class streams faster, so the implement stage's wall time falls too. The
+honest caveat: a weaker implementer raises the reviewers' findings and the fixers' rounds, and the port's 19
+regressions came from semantic subtleties a reviewer must catch. The saving is real only if the eval says the
+review loop still converges in the same number of rounds; if it takes one extra fix round per item, the saving
+halves. The ledger's per-role lines show which it was.
+
+**Guardrails.**
+
+- A role never reviews its own work: the runtime refuses `agent({ role: "reviewer" })` whose `layer` was written by
+  a child on the same resolved model in this workflow, unless the call sets `allowSameModel: true`. Two reviewers
+  of one item resolve to different models when the role's route list has two.
+- A role's default moves only with an eval on the saved pattern scripts (the review loop over a fixed repository
+  and item set, scored on findings caught, rounds to converge and cost) and a turn-outcome watch after the change,
+  as the standing rule for model default changes says. The route list is operator-set (`AGENT_ROLE_MODELS`) and
+  per-tenant overridable with `PUT /v1/tenants/{id}/roles`.
+- `GET /v1/models` lists each `camelrun/role:*` with its `routes`, and `GET /v1/workflows/:id` shows the resolved
+  map at start and any pins, so nobody has to guess which model ran.
 
 ### A small library of patterns
 
@@ -482,7 +554,7 @@ against the same work done by one agent.
 
 | Phase | Weeks | Delivers | Dogfood |
 | --- | --- | --- | --- |
-| 1. Workflow object | 3 | `WorkflowObject`, runner, journal, keys, `agent()`, `parallel`, `pipeline`, `gate`, `sleep`, pause/edit/resume, budget, ledger, items API, console page, `workflow` builtin, contract tests | camelCode review loop on a chiridion refactor, 8–16 children on forked computers |
+| 1. Workflow object | 3 | `WorkflowObject`, runner, journal, keys, `agent()`, `parallel`, `pipeline`, `gate`, `sleep`, pause/edit/resume, budget, ledger, items API, console page, `workflows` builtin, the five default roles as definitions with `camelrun/role:*` virtual models, the `roles` map and per-call pin, the resolved model on every item, contract tests | camelCode review loop on a chiridion refactor, 8–16 children on forked computers; the same run twice, strong implementer against cheap, as the first role eval |
 | 2. Repositories | 4 | `kind: "repo"` volumes, the repo object, layers, commit/merge/diff, the trigram index behind `grep`, import and push through the GitHub App, `layer` on `agent()` | The same loop with no computers for editing: 32 children on layers, commits of one file at a time, one push a phase |
 | 3. Jobs | 3 | `job()`, snapshots on Cloudflare Containers and Boat, `camel-sync`, limits, outputs, `queue()`, sharded tests, `jobConcurrency` | A compile-error work queue on a Rust or TypeScript repository of ours, 64 fixers, 8 jobs |
 | 4. Scale and Node | 3 | Phase collapse in the journal, 10,000 effects, `/stuck`, alerts, saved patterns, Node parity through the shared runner, docs | A full Bun-shaped run on a public repository, measured against the post's numbers |
@@ -505,7 +577,10 @@ against the same work done by one agent.
    worth a driver for jobs?
 7. **Pricing of steps and the repo object.** Steps and searches are Durable Object time today, unbilled to tenants,
    as monitor checks are. Measure before deciding.
-8. **Layers for whole-tree refactors.** A refactor that touches 10,000 paths at once (the crate split) is one layer
+8. **Role defaults.** Which cheap model is the implementer class on day one, and what the eval's pass bar is
+   (rounds to converge within 10% of the strong model's?). The 60/40 spend split above is an assumption to measure
+   on dogfood 1.
+9. **Layers for whole-tree refactors.** A refactor that touches 10,000 paths at once (the crate split) is one layer
    at the cap. Raise the cap, or run that phase as a job that commits through the object's bulk API?
 
 ### Non-goals
