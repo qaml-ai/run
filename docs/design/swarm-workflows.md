@@ -68,16 +68,19 @@ browsers, and for people's managed machines. They are not removed; they are not 
    on the box kills only its job. Jobs are `POST /v1/jobs` and a `jobs` builtin for ordinary agents too, not only
    a workflow global. No forked or persistent VM is in the swarm path; phase 1 is already VM-less for editing,
    on per-child volume forks, with the repo object following in phase 3.
-7. **We run the job VMs ourselves.** Firecracker microVMs on nested-virtualization EC2 hosts with local NVMe
-   (R8id for builds, C8id/I7i spot for test shards), copy-on-write clones of warm snapshots on the host, our own
-   host agent and scheduler, per-job netns with an egress allowlist and no IMDS. Boat, Cloudflare Containers and
-   Lambda MicroVMs are bridges and fallbacks behind the same driver seam.
+7. **We run the job VMs ourselves, on AWS Nitro Sandboxes.** Firecracker microVMs created through the Nitro
+   Enclaves driver on Graviton hosts with local NVMe (`r8gd` for builds, `c8gd` spot for test shards), at EC2
+   performance, not nested; nested-virtualization Intel hosts only where restore from a memory snapshot wins.
+   Copy-on-write clones of warm disk snapshots on the host, our own host agent and scheduler, per-job netns with an
+   egress allowlist and no IMDS. Phase 1 jobs run on the Cloudflare Containers driver only; Bun-class builds wait
+   for our hosts in phase 2. Boat and Lambda MicroVMs stay behind the same `JobDriver` seam as fallbacks, not plan.
 8. **Budget, cost and cache-hit reporting per workflow**, hard spend caps, a cap on total effects, and a step-rate
    guard, with every number on one console page. Fusion's measured 41–60% saving on implementation-heavy work
    puts a Bun-shaped bill at $65–95k with workers on `fast` and critics on `strong`, if the eval agrees on quality
    at equal rounds.
-9. **Build it in five phases**, the first being the workflow object plus `job()` on bridge providers with children
-   working on volumes, the second our own job hosts, the third the code module. The first test is a Bun-shaped
+9. **Build it in five phases, on Workers only**, the first being the workflow object plus `job()` on the
+   Cloudflare driver with children working on volumes, the second our own job hosts, the third the code module.
+   Node parity comes later, when a Node tenant needs it. The first test is a Bun-shaped
    port of one of our repositories; a research sweep and a data audit run on the same phase-1 harness.
 
 ## The first test: what the Bun port needed, and what camelRun has
@@ -113,11 +116,11 @@ browsers, and for people's managed machines. They are not removed; they are not 
   children, journal and layers go.
 - `owner` is whoever started it: an API key, a console user, or an agent (through the `workflow` builtin). The owner's
   payer and bucket are billed; `subject` and `context` are fixed at start as for an agent.
-- **Where it lives.** On Workers, one `WorkflowObject` per workflow, with SQLite for the journal, items and ledger,
-  and an alarm for timers and the step-rate guard. On Node, a `workflows` row plus an actor served by one node under
-  `actor_owners`, the way volumes are (`docs/operations/architecture.md`). The script runner, journal format and
-  effect keys live in `shared/` so both backends run the same contract tests. Workers first: that is where
-  camelCode and the pilot run.
+- **Where it lives.** One `WorkflowObject` per workflow on Workers, with SQLite for the journal, items and ledger,
+  and an alarm for timers and the step-rate guard. Decided: Workers only through phase 5; that is where camelCode
+  and the pilot run. The script runner, journal format and effect keys still live in `shared/`, so when a Node
+  tenant needs workflows the Node backend gets a `workflows` row plus an actor under `actor_owners`, the way
+  volumes are (`docs/operations/architecture.md`), and the same contract tests.
 
 ### The script
 
@@ -129,7 +132,7 @@ network of its own. Its globals:
 | `agent(task, opts)` | Starts a sub-agent and returns its answer. `opts`: `{ key?, label?, type?, class?, definition?, instructions?, model?, output?, files?, layer?, timeoutSeconds?, phase? }` (`type` is `worker`, `critic` or `lead`; `class` is `fast`, `strong` or `auto`; see Agent types). With `output` (a JSON Schema) the answer is the validated object; without it, the text. A failed or aborted child returns `null` (and the item records why), so `.filter(Boolean)` is the idiom, as in Claude Code |
 | `parallel(thunks)` | Runs thunks at once, up to the workflow's `concurrency`; a barrier |
 | `pipeline(items, ...stages)` | Each item through every stage with no barrier between stages; a stage that throws drops the item to `null` |
-| `job(opts)` | A build or test run in an ephemeral container (Part 3). Returns `{ exitCode, outputs: { name: text }, durationMs }` |
+| `job(opts)` | A build, test or query run in an ephemeral container (Part 2). Returns `{ exitCode, outputs: { name: text }, durationMs }` |
 | `repo(id)` | A handle on a repository: `commit`, `branch`, `diff`, `read`, `search`, `merge` (Part 2) |
 | `gate(opts)` | A decision for a person: an inbox item. Returns the answer when it comes; `expiresInSeconds` and `recommended` as in `request_decision` |
 | `sleep(seconds)` | A journaled timer; the script is not running meanwhile |
@@ -281,9 +284,20 @@ to a list of real models with failover (`docs/guides/models-and-keys.md`, Virtua
 
 | Class | For | Resolves to |
 | --- | --- | --- |
-| `camelrun/fast` | Bulk work: port a file, apply listed findings, extract, summarize, search | A cheap, quick model (today DeepSeek V4.1 Flash over OpenRouter; Haiku 5.5 is about 11x cheaper than Sonnet 5.5 for this shape) |
-| `camelrun/strong` | Judgment: review, plan, decide, read ambiguity, final answers | A frontier model (today Claude Sonnet 5.5 or better, high reasoning effort where the type asks) |
+| `camelrun/fast` | Bulk work: port a file, apply listed findings, extract, summarize, search | Decided: `openrouter/meta/muse-ember`, already the runtime default (#782, #783): $0.10/M in, $0.50/M out, $0.004/M cache read, 1M context, served by Meta and Google Vertex |
+| `camelrun/strong` | Judgment: review, plan, decide, read ambiguity, final answers | Decided: `openrouter/google/gemini-4-carbon` on the **flex** service tier: $1/M in, $5/M out, $0.05/M cache read, half the default tier's $2/$10, lower priority and slower (below) |
 | `camelrun/auto` | One conversation across tasks of unknown difficulty | A Fusion-style pair (strong main, fast sidekick) that switches only at compaction; below |
+
+**Flex, and what happens when flex is full.** `strong` sends the top-level `service_tier: "flex"` parameter on
+each request (OpenRouter's `google-ai-studio/flex` endpoint), never the `:floor` model variant, which is a price
+sort and breaks the no-sort, no-order rule; routes still use `provider.only` and `ignore` filters only. Per
+OpenRouter's service-tiers doc, an explicit flex request falls back only to endpoints priced at or below flex, and
+Google's flex is the cheapest Carbon endpoint, so a flex capacity shortage surfaces as an error, not a fallback.
+So the runtime handles it: retry flex with backoff inside a bounded window, then fall back to the default tier for
+that call. The window is a per-workflow setting (`flexWaitSeconds`, default 600: workflows are latency-tolerant;
+an ordinary agent's default is 30). A fallback is logged on the effect and in the ledger with its cost delta
+(`items[].tier: { requested: "flex", served: "default", deltaUsd }`), and what is recorded is the response's own
+`service_tier` field, which says which tier served, not what was asked.
 
 **Agent types** are three small sets of behaviours and permissions, shipped as definitions a tenant can copy:
 
@@ -682,8 +696,8 @@ const result = await job({ key: `test:${shard}`, at: layerOrCommit, snapshot: "b
 1. **Start from a warm snapshot.** A `snapshot` names a disk image the workflow or the tenant prepared: the
    repository at some commit with dependencies installed and build caches (`target/`, `node_modules`) filled. On
    our own hosts (below) it is a copy-on-write clone of an image on the host's NVMe, booted in a microVM; on the
-   bridge providers it is a Cloudflare Containers snapshot (#702: restore p50 200–350 ms, tails to 30 s on a cold
-   host) or a Boat saved snapshot (fork 3.4 s, FUSE-slow for the first minutes).
+   Cloudflare Containers driver, phase 1's only one, it is a container snapshot (#702: restore p50 200–350 ms,
+   tails to 30 s on a cold host).
 2. **Sync the tree.** The container runs `camel-sync /repo --at <commit or layer>`: it tells the object which commit
    the snapshot holds, and gets a tar of only the paths that differ (a layer over a commit the snapshot already has
    is a few files). No FUSE, no network filesystem, no `git` state to corrupt.
@@ -717,30 +731,35 @@ workflow's budget or the agent's payer at the provider's price.
 
 ### Our own job hosts
 
-Decided: we run the VMs ourselves. Jobs run on microVMs on hosts we own; Boat, Cloudflare Containers and Lambda
-MicroVMs sit behind the same `JobDriver` seam (`snapshot`, `create({ from })`, `run`, `collect`, `destroy`) as
-bridges until the hosts land and as fallbacks after, not as the plan. The reasons are the ones that made jobs the
-primitive: a Bun-class build wants 16 vCPU, 128 GiB and a `target/` past 20 GB, which no managed provider gives at
-a price and a disk speed we control; a restore must be hundreds of milliseconds at 32 in parallel, not a 30 s tail
-on a cold host; and egress, isolation and placement must be ours to set.
+Decided: we run the VMs ourselves. Jobs run on microVMs on hosts we own; Cloudflare Containers (phase 1's only
+driver), Boat and Lambda MicroVMs sit behind the same `JobDriver` seam (`snapshot`, `create({ from })`, `run`,
+`collect`, `destroy`) as bridges until the hosts land and as fallbacks after, not as the plan. The reasons are the
+ones that made jobs the primitive: a Bun-class build wants 16 vCPU, 128 GiB and a `target/` past 20 GB, which no
+managed provider gives at a price and a disk speed we control; a boot must be hundreds of milliseconds at 32 in
+parallel, not a 30 s tail on a cold host; and egress, isolation and placement must be ours to set.
 
-**Hosts.** EC2 instances with nested virtualization and local NVMe, in an Auto Scaling group. Since February 2026
-EC2 exposes KVM through Nitro on non-metal Intel instances (C8i/M8i/R8i first, and since June 2026 C7i/M7i/R7i,
-C8id/M8id/R8id, the `-flex` types, I7i and X8i), enabled at launch with the CPU option `NestedVirtualization=enabled`
-or on a stopped instance with `aws ec2 modify-instance-cpu-options --nested-virtualization enabled`. No `.metal`
-instances. Intel only as far as we know: do not assume Graviton, and verify the current list before choosing types.
+**Substrate: AWS Nitro Sandboxes on Graviton by default; nested-virt Intel hosts where restore from a memory
+snapshot wins.** Nitro Sandboxes (launched 2026-11-09;
+`docs.aws.amazon.com/AWSEC2/latest/UserGuide/amazon-ec2-nitro-sandboxes.html`) let Firecracker v1.18 create
+microVMs through the Nitro Enclaves driver, running beside the parent at EC2 performance, not nested, on Graviton
+too. Enable at launch with `--enclave-options Enabled=true`. Their limits shape the host: no snapshot/restore and no
+pause, so every job boots from its disk clone (the guest kernel reaches init in 0.16 s, below) rather than resuming
+a memory image; the sandbox memory pool is reserved at boot and sized per host; up to 5 sandboxes per vCPU and 896
+per instance; no resize while running; on x86 with SMT a sandbox gets only the physical cores (Graviton has no
+SMT, one more reason for it); incompatible with nested virtualization on the same instance; and `169.254.169.254`
+must be blocked by us. Nested virtualization (KVM through Nitro on non-metal Intel instances since February 2026,
+`NestedVirtualization=enabled` at launch) stays the alternative for a pool where restoring a job from a memory
+snapshot matters more than raw build speed; it adds overhead to CPU-heavy work and is Intel-only as far as we know.
 
 | Pool | Instance | For | Buying |
 | --- | --- | --- | --- |
-| Build hosts | R8id (memory family, local NVMe): a Bun CI build runs on 16 vCPU / 128 GiB (`r8g.4xlarge` class), ASAN on the 8xlarge class | `cargo build`, `cargo check` per crate, link steps | On-demand or reserved; a small warm pool (2) |
-| Test hosts | C8id / I7i: a test shard fits 4 vCPU / 8–16 GiB (`c7i.xlarge` in Bun CI); ASAN shards need 64 GiB | Sharded tests, lints, `rg` | Spot, scaled on queue depth, interrupted jobs retry by key |
+| Build hosts | `r8gd` (Graviton, memory family, local NVMe): a Bun CI build runs on 16 vCPU / 128 GiB (`r8g.4xlarge`), ASAN on the 8xlarge | `cargo build`, `cargo check` per crate, link steps | On-demand or reserved; a small warm pool (2) |
+| Test hosts | `c8gd`: a test shard fits 4 vCPU / 8–16 GiB; ASAN shards need 64 GiB | Sharded tests, lints, `rg` | Spot, scaled on queue depth, interrupted jobs retry by key |
 
 **VM.** One Firecracker microVM per job (Cloud Hypervisor is the alternative if we need virtio-fs or hotplug). The
 earlier spike on Kata over Cloud Hypervisor measured about 0.8 s to the first command, with the guest kernel at
 init in 0.16 s; the rest was containerd and CNI serializing starts. So the driver is our own, with a pool of
-pre-made network namespaces and taps per host, and no containerd in the path. Nested virtualization adds overhead
-to CPU-heavy work (a second level of page-table walks, exits on I/O); it is unmeasured for our workload and is the
-first number the spike produces.
+pre-made network namespaces and taps per host, and no containerd in the path.
 
 **Disks.** A base image (kernel, rootfs with toolchains) and the warm build-cache snapshots live on the host's NVMe,
 pulled from S3 on first use and kept while the host lives. A job gets a copy-on-write clone (dm-thin, or a reflink
@@ -749,7 +768,8 @@ watermark check before the command stays, and `saveSnapshot` promotes the job's 
 per phase. A snapshot is `{ id, baseImage, sizeBytes, hosts: [...] }`; placement prefers a host that already holds
 it, as Cloudflare's scheduler does.
 
-**Host agent.** Ours, 1,000–1,500 lines: register and heartbeat; pull images; clone, boot and restore; sync files in
+**Host agent.** Ours, 1,000–1,500 lines: register and heartbeat; pull images; clone and boot (restore from a memory
+snapshot only on a nested-virt host); sync files in
 over the job's one allowed route to the runtime; run the command with the job's `limits` as the VM's vCPU, memory
 and disk size and a pid cap in the guest; stream logs to the workflow's event stream; upload `/out` to S3; destroy.
 The scheduler lives in camelRun: hosts in a `job_hosts` table with heartbeat and capacity (cores, memory, NVMe
@@ -770,16 +790,16 @@ spot interruption (the two-minute notice drains the host). Cost at list: an `r8i
 few dollars an hour on-demand and a `c8id.xlarge`-class test host well under one on spot, so a 64-way Bun phase
 (8 builds, 32 test shards) is tens of dollars an hour of compute against hundreds of model spend.
 
-**Bridges until it lands.** Phase 1 ships the seam with Boat (Bun-class) and Cloudflare Containers (repositories
-under 20 GB, on the pilot) behind it; both are already driven for computers (#702,
-`backends/workers/src/computers/objects.ts`). They stay as fallbacks when our pool is scaled to zero or a region is
-down, selected by `job({ provider })` or the tenant's default.
+**Bridge until it lands.** Phase 1 ships the seam with the Cloudflare Containers driver only (repositories under
+20 GB, on the pilot), already driven for computers (#702, `backends/workers/src/computers/objects.ts`). Bun-class
+builds wait for our hosts in phase 2. Boat and Lambda MicroVMs stay behind the seam as fallbacks when our pool is
+scaled to zero or a region is down, selected by `job({ provider })` or the tenant's default.
 
-**First spike to schedule.** One C8id or R8id instance with nested virtualization on: boot Firecracker from a Bun
-warm-cache snapshot and time restore to first command; rebuild after a one-file change and compare with Bun CI's
-`r8g.4xlarge`; measure the nested-virtualization overhead on that build against the same instance without a VM;
-run 32 parallel restores from one snapshot and record p50/p95 and NVMe throughput. Those four numbers decide the
-phase-2 schedule below.
+**The spike now running.** One `r8gd.4xlarge` with Nitro Sandboxes enabled: boot Firecracker from a dm-thin clone
+of a Bun warm-cache disk snapshot and time boot to first command; rebuild after a one-file change and compare with
+Bun CI's `r8g.4xlarge` bare; measure the sandbox's build-time overhead against the same instance without one; boot
+32 sandboxes in parallel from one snapshot and record p50/p95 and NVMe throughput. Those four numbers set the
+phase-2 schedule below; a nested-virt Intel host is measured only if memory-snapshot restore turns out to matter.
 
 **Sharded tests.** The script lists tests (one job: `bun test --list > /out/tests.txt`), slices them into N shards,
 runs N jobs at once, and feeds failures to the review loop. The post's four worktrees sharded by folder were a
@@ -812,9 +832,10 @@ provider's, storage as volumes are.
 
 The MVP is the workflow object plus `job()`, on Workers, with no machine held by anyone: the replay runner with
 `agent`, `parallel`, `pipeline`, `gate`, `sleep`, `log`, `phase`, keys and journal, pause/edit/resume, budget and
-ledger, the items API and a plain console page; `POST /v1/jobs` with the Boat and Cloudflare drivers, `camel-sync`,
-limits and outputs; and children editing on per-child volume forks with the phase-1 commit (Part 2, "Phase 1:
-layers from volume forks"). The review loop runs on a real repository from day one: implementers and fixers edit
+ledger, the items API and a plain console page; `POST /v1/jobs` with the `JobDriver` seam and the Cloudflare
+Containers driver only (Bun-class builds wait for our hosts in phase 2), `camel-sync`, limits and outputs; and
+children editing on per-child volume forks with the phase-1 commit (Part 2, "Phase 1: layers from volume forks").
+Workers only; `fast` is `muse-ember` and `strong` is Gemini 4 Carbon on flex, as decided above. The review loop runs on a real repository from day one: implementers and fixers edit
 forks, reviewers read them, commits land on the base volume by version check, and one job per round runs the
 typecheck and tests and pushes.
 
@@ -824,18 +845,19 @@ tree), and push is a job rather than the object's own pack. None of these puts a
 
 Dogfood 1: camelCode runs the review loop over the 40-odd files of `backends/workers/src/delegation*` for a refactor
 we want anyway, 8 at once, with the lead in Slack, one typecheck-and-test job per round. Measure: steps, replay time
-at 500 effects, cache share, job start-to-first-command and cost per job on each driver, conflicts per commit, and
-cost against the same work done by one agent on a computer.
+at 500 effects, cache share, job start-to-first-command and cost per job, flex fallbacks and their cost delta,
+conflicts per commit, and cost against the same work done by one agent on a computer.
 
 ### Phases
 
 | Phase | Weeks | Delivers | Dogfood |
 | --- | --- | --- | --- |
-| 1. Workflow object and jobs | 4 | `WorkflowObject`, runner, journal, keys, `agent()`, `parallel`, `pipeline`, `gate`, `sleep`, pause/edit/resume, budget, ledger, items API, console page, `workflows` builtin, the three agent types as definitions and the `fast`/`strong` classes as virtual models with the `classes` map and per-call pin (`auto` follows in phase 4); `POST /v1/jobs` with the `JobDriver` seam, the Boat and Cloudflare bridge drivers, `camel-sync`, limits, outputs, `jobConcurrency`; children on volume forks with the phase-1 commit and `layer` on `agent()`; contract tests. The nested-virt spike runs in parallel, week 1 | camelCode review loop on a chiridion refactor: 8–16 children editing forks, one typecheck-and-test job per round on Cloudflare, push by job; the same run twice, workers on `strong` against `fast`, as the first class eval |
-| 2. Our job hosts | 4 | The host image (Firecracker, base rootfs, netns/tap pool, nftables, no IMDS), the host agent, `job_hosts` registration and placement, dm-thin clones of NVMe snapshots pulled from S3, `saveSnapshot` to S3, the ASG with a warm build pool and a spot test pool scaled on queue depth, lease sweeps and retry by key on host loss | The same loop with jobs on our hosts: measure restore p50/p95 at 32 parallel, build time against Bun CI's `r8g.4xlarge`, nested-virt overhead, cost per job against the bridges |
+| 1. Workflow object and jobs | 4 | `WorkflowObject`, runner, journal, keys, `agent()`, `parallel`, `pipeline`, `gate`, `sleep`, pause/edit/resume, budget, ledger, items API, console page, `workflows` builtin, the three agent types as definitions and the `fast`/`strong` classes as virtual models with the `classes` map and per-call pin (`auto` follows in phase 4); `POST /v1/jobs` with the `JobDriver` seam and the Cloudflare Containers driver only, `camel-sync`, limits, outputs, `jobConcurrency`; `strong`'s flex handling and fallback logging; children on volume forks with the phase-1 commit and `layer` on `agent()`; contract tests. Workers only. The Nitro Sandboxes spike on `r8gd.4xlarge` runs in parallel | camelCode review loop on a chiridion refactor: 8–16 children editing forks, one typecheck-and-test job per round on Cloudflare, push by job; the same run twice, workers on `strong` against `fast`, as the first class eval |
+| 2. Our job hosts | 4 | The Graviton host image (Nitro Sandboxes enabled, Firecracker v1.18, base rootfs, netns/tap pool, nftables, no IMDS), the host agent, `job_hosts` registration and placement, dm-thin clones of NVMe snapshots pulled from S3, `saveSnapshot` to S3, the ASG with a warm `r8gd` build pool and a `c8gd` spot test pool scaled on queue depth, lease sweeps and retry by key on host loss | The same loop with jobs on our hosts, Bun-class builds included: boot p50/p95 at 32 parallel, build time against Bun CI's `r8g.4xlarge`, sandbox overhead, cost per job against Cloudflare |
 | 3. Repositories | 4 | `kind: "repo"` volumes, the repo object, layer rows, commit with three-way merge, `diff`, `branch`, `merge`, the trigram index behind `grep`, import job, push and pull through the GitHub App from the object | The loop at 32 children, commits of one file at a time onto one branch, whole-tree `grep` from the object, one push a phase |
-| 4. Queues and scale | 3 | `queue()`, sharded tests on the spot pool, the `jobs` builtin for ordinary agents, `/stuck`, alerts, phase collapse in the journal, 10,000 effects, saved patterns | A compile-error work queue on a Rust or TypeScript repository of ours: 64 fixers, 8 builds on R8id, 32 shards on C8id, a snapshot refreshed per crate |
-| 5. Bun-shaped run and Node | 3 | Node parity through the shared runner, docs, the class and `auto` eval harness | A full Bun-shaped run on a public repository, measured against the post's numbers: cost, cache share, wall time, conflicts, jobs per hour |
+| 4. Queues and scale | 3 | `queue()`, sharded tests on the spot pool, the `jobs` builtin for ordinary agents, `/stuck`, alerts, phase collapse in the journal, 10,000 effects, saved patterns | A compile-error work queue on a Rust or TypeScript repository of ours: 64 fixers, 8 builds on `r8gd`, 32 shards on `c8gd`, a snapshot refreshed per crate |
+| 5. Bun-shaped run | 3 | Docs, the class and `auto` eval harness, the menu's first per-strength evals | A full Bun-shaped run on a public repository, measured against the post's numbers: cost, cache share, wall time, conflicts, jobs per hour |
+| Later | — | Node parity through the shared runner, when a Node tenant needs workflows | — |
 
 ### Open questions
 
@@ -844,37 +866,36 @@ cost against the same work done by one agent on a computer.
    v8-exec does not do today.
 2. **Child engine.** #696 is on hold. The workflow needs remote children either way; if Pi-owned children land, the
    `RemoteChild` task replaces the `agent_children` row for workflows too. Decide before phase 4, not before phase 1.
-3. **Node parity.** camelRun is moving onto Workers and camelCode runs there. The runner is in `shared/` so Node can
-   follow, but phases 1–3 are Workers only. Is a Node workflow needed for camel-bots before then?
-4. **History.** v1 imports no git history and serves `log`/`blame` from GitHub. Is that enough for reviewers, or do
+3. **History.** v1 imports no git history and serves `log`/`blame` from GitHub. Is that enough for critics, or do
    they need `git log -p` on the file they review? If so, the import job keeps a shallow history of N commits.
-5. **isomorphic-git in a Durable Object at Bun scale.** Pack building for a few hundred files is fine; a first push
+4. **isomorphic-git in a Durable Object at Bun scale.** Pack building for a few hundred files is fine; a first push
    of a 1,500-file port is a 35 MB pack. Build it in a job if the object cannot.
-6. **Our hosts: the unmeasured numbers.** Nested-virtualization overhead on a Bun-class build; Firecracker restore
-   at 32 in parallel from one NVMe snapshot; whether Intel-only nested virt is acceptable against Bun CI's Graviton
-   build numbers; dm-thin against reflink for clones; how long a warm snapshot stays warm (`target/` invalidation
-   after a toolchain bump). The week-1 spike answers the first two; the rest is phase 2.
-11. **Bridges after our hosts land.** Keep Boat and Cloudflare as fallbacks indefinitely (a region down, a pool at
-    zero), or retire them once the pool has run a month? Keeping them costs two drivers to maintain under one seam.
-12. **Who curates the menu, and how often.** The operator's menu needs an owner who runs the per-strength evals
+5. **Our hosts: the unmeasured numbers.** Nitro Sandbox overhead on a Bun-class build; boot at 32 in parallel from
+   one NVMe snapshot; whether any job class needs memory-snapshot restore badly enough to justify a nested-virt
+   Intel pool beside the Graviton one; dm-thin against reflink for clones; how long a warm snapshot stays warm
+   (`target/` invalidation after a toolchain bump). The running spike answers the first two; the rest is phase 2.
+6. **Fallbacks after our hosts land.** Keep Cloudflare (and Boat, Lambda) as fallbacks indefinitely (a region
+   down, a pool at zero), or retire them once the pool has run a month? Each kept driver is one more to maintain
+   under the seam.
+7. **Pricing of steps and the repo object.** Steps and searches are Durable Object time today, unbilled to tenants,
+   as monitor checks are. Measure before deciding.
+8. **The eval bar, and `auto`'s classifier.** The day-one models are decided (`muse-ember` for `fast`, Gemini 4
+   Carbon on flex for `strong`); open is the pass bar for the class eval (cost per merged task down by a third or
+   more at quality within 2% at equal rounds?) and how often flex falls back under load. For `camelrun/auto`: how
+   Jev's routing is scored before the three-way eval (a labelled set of decision points from real sessions, scored
+   on wrong-way switches, with the cost of each kind of error weighed: a fast model on judgment is worse than a
+   strong model on bulk), where the confidence threshold sits, whether to keep the sidekick's cache warm while the
+   main model holds the turn (Fusion runs both in parallel; we would pay for two prefixes), and what a
+   compaction-boundary switch costs on providers whose cache keys include the model.
+9. **Layers for whole-tree refactors.** A refactor that touches 10,000 paths at once (the crate split) is one layer
+   at the cap. Raise the cap, or run that phase as a job that commits through the object's bulk API?
+10. **Types for other domains.** Three types cover code, research and audits in this document. A domain that needs
+    a fourth (a `negotiator` that may spend, an `operator` that may run side effects without a gate) should argue
+    for a permission the three lack, not a job title.
+11. **Who curates the menu, and how often.** The operator's menu needs an owner who runs the per-strength evals
     and decides admissions and removals; a tenant's menu is its own. Re-evaluate every entry on a schedule (monthly?)
     and on every model or route change, and retire an entry whose ledger shows it losing for two weeks. Whether a
     tenant may add an entry with its own eval evidence, or only choose among the operator's, is open.
-7. **Pricing of steps and the repo object.** Steps and searches are Durable Object time today, unbilled to tenants,
-   as monitor checks are. Measure before deciding.
-8. **Day-one models and `auto`'s classifier.** Which model backs `fast` (DeepSeek V4.1 Flash on vetted OpenRouter
-   hosts, or Haiku 5.5?) and `strong` (Sonnet 5.5, or Opus 5.5 for critics only?) on day one, and the eval's
-   pass bar (cost per merged task down by a third or more at quality within 2% at equal rounds?). For
-   `camelrun/auto`: how Jev's routing is scored before the three-way eval (a labelled set of decision points from
-   real sessions, scored on wrong-way switches, with the cost of each kind of error weighed: a fast model on
-   judgment is worse than a strong model on bulk), where the confidence threshold sits, whether to keep the
-   sidekick's cache warm while the main model holds the turn (Fusion runs both in parallel; we would pay for two
-   prefixes), and what a compaction-boundary switch costs on providers whose cache keys include the model.
-10. **Types for other domains.** Three types cover code, research and audits in this document. A domain that needs
-    a fourth (a `negotiator` that may spend, a `operator` that may run side effects without a gate) should argue
-    for a permission the three lack, not a job title.
-9. **Layers for whole-tree refactors.** A refactor that touches 10,000 paths at once (the crate split) is one layer
-   at the cap. Raise the cap, or run that phase as a job that commits through the object's bulk API?
 
 ### Non-goals
 
@@ -886,8 +907,9 @@ cost against the same work done by one agent on a computer.
   semantics.
 - Forked or persistent machines anywhere in the swarm path. A computer stays available for the agents whose work is
   the machine (interactive sessions, browsers, people's managed computers); a workflow's children never hold one.
-- Managed compute providers as the plan for jobs. They are bridges and fallbacks behind the driver seam; the
-  microVM hosts are ours.
+- Managed compute providers as the plan for jobs. Cloudflare Containers is phase 1's bridge; it, Boat and Lambda
+  are fallbacks behind the driver seam after that; the microVM hosts are ours, on Nitro Sandboxes.
+- Node parity in phases 1–5. It comes when a Node tenant needs workflows, through the shared runner.
 - Moving computers (the long-lived kind) onto our hosts in this work. They may follow once the job pool is proven;
   that is a separate decision.
 - Multi-repository workflows in v1. One `repo` per workflow; a second repository is a second workflow or a job.
