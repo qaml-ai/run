@@ -72,8 +72,8 @@ function capacitySeam(env: WorkflowEnv, workflow: string, tenant: () => string |
     release: lease => stub().release(workflow, lease),
     async renew() {
       const renewed = await stub().renew(workflow, CAPACITY_LEASE_MS);
-      if (!renewed.ok) throw refused(renewed);
-      return renewed.held.filter(lease => lease.kind === "child").map(lease => ({ key: lease.key, lease: lease.id }));
+      if (!renewed.ok) return { ok: false, message: `${renewed.code}: ${renewed.message}` };
+      return { ok: true, held: renewed.held.filter(lease => lease.kind === "child").map(lease => ({ key: lease.key, lease: lease.id })) };
     },
     close: () => stub().close(workflow),
   };

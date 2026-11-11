@@ -139,7 +139,9 @@ export const WORKFLOW_PRELUDE = `(function (bridge) {
   }
   function settle(key, ok, json) {
     const entry = pending.get(key);
-    if (entry === undefined) throw new ErrorCtor("A result for effect " + key + ", which is not waiting for one");
+    // A result the script has not asked for (in this revision): an edit dropped the call while it ran, or the script
+    // has not reached it yet. It is kept as if from the table, so a later ask is answered from it.
+    if (entry === undefined) { if (!settled.has(key)) table.set(key, { key, ok, value: json }); return; }
     pending.delete(key);
     const value = parse(json);
     const done = { ok, value };

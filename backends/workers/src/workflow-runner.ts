@@ -41,6 +41,8 @@ export const WORKFLOW_LIMITS = Object.freeze({
   rerunConfirmPercent: 25,
   /** A gate's default expiry. */
   gateSeconds: 7 * 86_400,
+  /** The newest events and log lines a workflow keeps, and one log line's length. */
+  keptEvents: 10_000, keptLogs: 10_000, logChars: 4_096,
 });
 
 export interface StartedEffect { key: string; attempt: number; kind: string; args: unknown; options: unknown; phase: string | undefined }
@@ -145,7 +147,7 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS workflow_effects (
     key TEXT NOT NULL, attempt INTEGER NOT NULL, current INTEGER NOT NULL, ord INTEGER NOT NULL UNIQUE, origin TEXT NOT NULL,
     revision INTEGER NOT NULL, kind TEXT NOT NULL, args TEXT NOT NULL, options TEXT, phase TEXT, status TEXT NOT NULL,
-    started INTEGER NOT NULL DEFAULT 0, started_at INTEGER, due_at INTEGER, lease TEXT, ok INTEGER, result TEXT, reason TEXT, landed INTEGER UNIQUE,
+    started INTEGER NOT NULL DEFAULT 0, started_at INTEGER, due_at INTEGER, lease TEXT, cancel_sent INTEGER NOT NULL DEFAULT 0, start_failures INTEGER NOT NULL DEFAULT 0, ok INTEGER, result TEXT, reason TEXT, landed INTEGER UNIQUE,
     issued_step INTEGER NOT NULL, delivered_step INTEGER, seen_revision INTEGER NOT NULL, issued_at INTEGER NOT NULL, ended_at INTEGER,
     version INTEGER NOT NULL, PRIMARY KEY (key, attempt))`,
   `CREATE INDEX IF NOT EXISTS workflow_effects_current ON workflow_effects (current, status, kind)`,
@@ -182,7 +184,8 @@ export interface CapacitySeam {
   open(concurrency: number): Promise<{ ok: true } | { ok: false; message: string }>;
   acquire(key: string): Promise<{ granted: true; lease: string } | { granted: false }>;
   release(lease: string): Promise<void>;
-  renew(): Promise<{ key: string; lease: string }[]>;
+  /** The leases held (grants whose wake was missed among them), or a refusal: the limiter dropped this workflow. */
+  renew(): Promise<{ ok: true; held: { key: string; lease: string }[] } | { ok: false; message: string }>;
   close(): Promise<void>;
 }
 
@@ -319,6 +322,8 @@ export class WorkflowRunner {
 
   private event(type: string, data?: unknown) {
     this.sql.exec("INSERT INTO workflow_events (at, type, data) VALUES (?, ?, ?)", this.now(), type, data === undefined ? null : JSON.stringify(data));
+    // The newest `keptEvents` stay; older ones go, a few at a time.
+    this.sql.exec("DELETE FROM workflow_events WHERE seq <= (SELECT MAX(seq) FROM workflow_events) - ?", WORKFLOW_LIMITS.keptEvents);
   }
 
   private setStatus(status: WorkflowStatus, reason: PauseReason | null = null) {
@@ -349,6 +354,7 @@ export class WorkflowRunner {
       // Effects held from before (a resume, a raised budget, a failed start, a slot granted) first; then each step's new ones.
       await this.startHeld();
       while (await this.step()) await this.startHeld();
+      await this.cancelEnded();
       await this.capacityHousekeeping();
     } finally { await this.arm(); }
   }
@@ -428,6 +434,18 @@ export class WorkflowRunner {
     });
   }
 
+  /**
+   * Stop the children of effects that ended without landing (the script ended, the workflow was aborted, a pause
+   * stopped them). Marked in the journal first, stopped after the commit, once each, so a crash between the two
+   * stops them on the next advance.
+   */
+  private async cancelEnded() {
+    for (const row of this.sql.exec("SELECT key, attempt, kind, args, options, phase FROM workflow_effects WHERE status IN ('cancelled', 'aborted') AND started = 1 AND cancel_sent = 0 AND kind IN ('agent', 'gate')").toArray()) {
+      await this.executor.cancel?.(this.started(row));
+      this.sql.exec("UPDATE workflow_effects SET cancel_sent = 1 WHERE key = ? AND attempt = ?", row.key, row.attempt);
+    }
+  }
+
   /** Slots the limiter granted (a wake, or a renew's `held`): each goes to its effect, or straight back if it has none. */
   private async assignGrants(grants: { key: string; lease: string }[]) {
     for (const grant of grants) {
@@ -460,7 +478,7 @@ export class WorkflowRunner {
   private async startHeld() {
     const row = this.state();
     if (row.status !== "running" && row.status !== "waiting") return;
-    const held = this.sql.exec("SELECT key, attempt, kind, args, options, phase, lease FROM workflow_effects WHERE current = 1 AND status = 'pending' AND started = 0 ORDER BY ord").toArray();
+    const held = this.sql.exec("SELECT key, attempt, kind, args, options, phase, lease, start_failures FROM workflow_effects WHERE current = 1 AND status = 'pending' AND started = 0 ORDER BY ord").toArray();
     if (!held.length) return;
     const budget = row.budget_usd === null ? null : Number(row.budget_usd);
     let running = Number(this.sql.exec("SELECT COUNT(*) AS n FROM workflow_effects WHERE current = 1 AND status = 'pending' AND started = 1 AND kind = 'agent'").one().n);
@@ -491,11 +509,15 @@ export class WorkflowRunner {
           if (effect.kind === "agent") running--;
           const message = error instanceof Error ? error.message : String(error);
           console.error(`Workflow effect ${effect.key}:${effect.attempt} did not start`, error);
-          this.storage.transactionSync(() => this.event("start_failed", { key: effect.key, attempt: Number(effect.attempt), error: message }));
+          this.storage.transactionSync(() => {
+            // Recorded once per effect; the count says how often it was tried.
+            if (Number(effect.start_failures) === 0) this.event("start_failed", { key: effect.key, attempt: Number(effect.attempt), error: message });
+            this.sql.exec("UPDATE workflow_effects SET start_failures = start_failures + 1, reason = ? WHERE key = ? AND attempt = ?", `did not start: ${message}`, effect.key, effect.attempt);
+          });
           continue;
         }
       }
-      this.sql.exec("UPDATE workflow_effects SET started = 1, started_at = ? WHERE key = ? AND attempt = ?", this.now(), effect.key, effect.attempt);
+      this.sql.exec("UPDATE workflow_effects SET started = 1, started_at = ?, reason = NULL WHERE key = ? AND attempt = ?", this.now(), effect.key, effect.attempt);
     }
   }
 
@@ -584,10 +606,12 @@ export class WorkflowRunner {
         );
       }
       for (const effect of ran.issued) if (effect.reused) this.sql.exec("UPDATE workflow_effects SET seen_revision = ? WHERE key = ? AND current = 1", revision.revision, effect.key);
-      for (const log of ran.logs) this.sql.exec("INSERT INTO workflow_log (step, phase, text) VALUES (?, ?, ?)", step, log.phase ?? null, log.text);
+      for (const log of ran.logs) this.sql.exec("INSERT INTO workflow_log (step, phase, text) VALUES (?, ?, ?)", step, log.phase ?? null, log.text.slice(0, WORKFLOW_LIMITS.logChars));
+      if (ran.logs.length) this.sql.exec("DELETE FROM workflow_log WHERE seq <= (SELECT MAX(seq) FROM workflow_log) - ?", WORKFLOW_LIMITS.keptLogs);
       if (ran.done) {
-        // Effects issued earlier and still out when the script ended are not needed any more.
-        this.sql.exec("UPDATE workflow_effects SET status = 'cancelled', reason = 'the script ended', due_at = NULL, ended_at = ? WHERE current = 1 AND status = 'pending' AND started = 0", at);
+        // Effects still out when the script ended are not needed any more: running children are stopped after the
+        // commit (cancelEnded), and their slots given back.
+        this.sql.exec("UPDATE workflow_effects SET status = 'cancelled', reason = 'the script ended', due_at = NULL, ended_at = ? WHERE current = 1 AND status = 'pending'", at);
         this.dropSnapshot();
         const done = ran.done;
         this.sql.exec("UPDATE workflow_state SET result = ?, error = ?, fault_code = NULL WHERE id = 1", done.ok ? (done.value ?? null) : null, done.ok ? null : done.error);
@@ -638,7 +662,7 @@ export class WorkflowRunner {
     }
     for (const effect of issued.filter(effect => !effect.replayed && !effect.reused)) {
       const row = this.sql.exec("SELECT status FROM workflow_effects WHERE key = ? AND current = 1", effect.key).toArray()[0];
-      if (row && row.status !== "aborted" && row.status !== "refused")
+      if (row && row.status !== "aborted" && row.status !== "refused" && row.status !== "cancelled")
         return { code: "nondeterministic_script", message: `The script issued ${effect.kind} ${effect.key} again, which the journal already has` };
     }
     return undefined;
@@ -744,7 +768,7 @@ export class WorkflowRunner {
         for (const row of stopping) this.sql.exec("UPDATE workflow_effects SET status = 'aborted', reason = 'paused', ended_at = ? WHERE key = ? AND attempt = ?", this.now(), row.key, row.attempt);
         this.event("paused", { children: options.children ?? "keep", stopped: stopping.length });
       });
-      for (const row of stopping) await this.executor.cancel?.(this.started(row));
+      await this.cancelEnded();
       await this.capacityHousekeeping();
       await this.arm();
     });
@@ -816,7 +840,7 @@ export class WorkflowRunner {
         this.setStatus("aborted");
         this.event("aborted", { cancelled: live.length });
       });
-      for (const row of live) if (row.started === 1 && EXECUTED.has(row.kind as string)) await this.executor.cancel?.(this.started(row));
+      await this.cancelEnded();
       await this.executor.abort?.();
       await this.capacityHousekeeping();
       await this.arm();
@@ -836,6 +860,8 @@ export class WorkflowRunner {
           this.setStatus("budget_exhausted");
           this.event("budget_exhausted", { spentUsd: spent, budgetUsd: usd });
         } else if (status === "budget_exhausted" && (usd === null || spent < usd)) {
+          // Effects refused for the budget (a child's share ran out) go again under their next attempt.
+          for (const row of this.sql.exec("SELECT key FROM workflow_effects WHERE current = 1 AND status = 'refused'").toArray()) this.nextAttempt(row.key as string, "reissue");
           this.setStatus("running");
           this.refreshLiveness();
         }
@@ -846,69 +872,116 @@ export class WorkflowRunner {
 
   /**
    * The object's one alarm: due timers land, expired gates take their recommendation or pause the workflow, a step
-   * window that has moved lets steps run again, and the sweep starts what a crash left unstarted and asks the executor
-   * after effects that have not landed.
+   * window that has moved lets steps run again, the capacity lease is renewed, and the sweep starts what a crash left
+   * unstarted and asks the executor after effects that have not landed. Each concern is isolated: one that throws is
+   * recorded and the others still run, and the alarm is armed again whatever happens, never sooner than a second from
+   * now (thirty after a failure), so a concern that keeps failing cannot spin the object.
    */
   alarm(): Promise<void> {
     return this.serial(async () => {
-      const now = this.now(), state = this.state();
-      if (TERMINAL.has(state.status as WorkflowStatus)) { await this.arm(); return; }
-      for (const row of this.sql.exec("SELECT key, attempt, kind, args, options FROM workflow_effects WHERE current = 1 AND status = 'pending' AND due_at IS NOT NULL AND due_at <= ? ORDER BY due_at, ord", now).toArray()) {
-        if (row.kind === "sleep") { this.record(row.key as string, Number(row.attempt), { ok: true, value: null }); continue; }
-        const options = JSON.parse((row.options as string | null) ?? "{}") as { onExpire?: string };
-        const args = JSON.parse(row.args as string) as { recommended?: unknown };
-        if (options.onExpire === "recommended" && args.recommended !== undefined) {
-          this.record(row.key as string, Number(row.attempt), { ok: true, value: args.recommended });
-          this.storage.transactionSync(() => this.event("gate_expired", { key: row.key, took: "recommended" }));
-          continue;
+      const now = this.now();
+      let failed = false;
+      const isolated = async (concern: string, work: () => unknown) => {
+        try { await work(); }
+        catch (error) {
+          failed = true;
+          console.error(`Workflow alarm: ${concern} failed`, error);
+          try { this.storage.transactionSync(() => this.event("alarm_failed", { concern, error: error instanceof Error ? error.message : String(error) })); }
+          catch { /* the event is best effort; the failure is logged above */ }
         }
-        this.storage.transactionSync(() => {
-          this.sql.exec("UPDATE workflow_effects SET due_at = NULL WHERE key = ? AND attempt = ?", row.key, row.attempt);
-          const status = this.state().status;
-          if (status === "running" || status === "waiting") this.setStatus("paused", "waiting_on_gate");
-          this.event("gate_expired", { key: row.key, took: "pause" });
-        });
-      }
-      if (state.throttled_until !== null && Number(state.throttled_until) <= now) this.sql.exec("UPDATE workflow_state SET throttled_until = NULL WHERE id = 1");
-      // The capacity lease is renewed from open to close, slots held or not: a workflow that only waits keeps its place.
-      const capacity = this.options.capacity;
-      if (capacity && state.capacity_open && now - Number(state.renewed_at ?? 0) >= capacity.leaseMs / 2) {
-        await this.assignGrants(await capacity.renew());
-        this.sql.exec("UPDATE workflow_state SET renewed_at = ? WHERE id = 1", now);
-      }
-      if (state.swept_at === null || now - Number(state.swept_at) >= WORKFLOW_LIMITS.sweepMs) {
-        this.sql.exec("UPDATE workflow_state SET swept_at = ? WHERE id = 1", now);
-        if (this.executor.poll) {
-          const stale = this.sql.exec(
-            "SELECT key, attempt, kind, args, options, phase FROM workflow_effects WHERE current = 1 AND status = 'pending' AND started = 1 AND kind IN ('agent', 'gate') AND started_at <= ?",
-            now - WORKFLOW_LIMITS.sweepMs,
-          ).toArray();
-          for (const row of stale) {
-            const ended = await this.executor.poll(this.started(row));
-            if (ended) this.record(row.key as string, Number(row.attempt), ended.outcome, ended.usage);
+      };
+      try {
+        const state = this.state();
+        if (TERMINAL.has(state.status as WorkflowStatus)) { await isolated("capacity", () => this.capacityHousekeeping()); return; }
+        for (const row of this.sql.exec("SELECT key, attempt, kind, args, options FROM workflow_effects WHERE current = 1 AND status = 'pending' AND due_at IS NOT NULL AND due_at <= ? ORDER BY due_at, ord", now).toArray()) {
+          await isolated(`${row.kind} ${row.key}`, () => this.expire(row));
+        }
+        if (state.throttled_until !== null && Number(state.throttled_until) <= now) this.sql.exec("UPDATE workflow_state SET throttled_until = NULL WHERE id = 1");
+        // The capacity lease is renewed from open to close, slots held or not: a workflow that only waits keeps its place.
+        const capacity = this.options.capacity;
+        if (capacity && state.capacity_open && now - Number(state.renewed_at ?? 0) >= capacity.leaseMs / 2) {
+          await isolated("capacity renew", async () => {
+            const renewed = await capacity.renew();
+            if (renewed.ok) await this.assignGrants(renewed.held);
+            else this.storage.transactionSync(() => {
+              this.sql.exec("UPDATE workflow_state SET capacity_open = 0 WHERE id = 1");
+              const status = this.state().status;
+              if (status === "running" || status === "waiting") this.setStatus("paused", "capacity_refused");
+              this.event("capacity_refused", { message: renewed.message });
+            });
+            this.sql.exec("UPDATE workflow_state SET renewed_at = ? WHERE id = 1", now);
+          });
+        }
+        const live = state.status === "running" || state.status === "waiting";
+        if (live && (state.swept_at === null || now - Number(state.swept_at) >= WORKFLOW_LIMITS.sweepMs)) {
+          this.sql.exec("UPDATE workflow_state SET swept_at = ? WHERE id = 1", now);
+          if (this.executor.poll) {
+            const stale = this.sql.exec(
+              "SELECT key, attempt, kind, args, options, phase FROM workflow_effects WHERE current = 1 AND status = 'pending' AND started = 1 AND kind IN ('agent', 'gate') AND started_at <= ?",
+              now - WORKFLOW_LIMITS.sweepMs,
+            ).toArray();
+            for (const row of stale) {
+              await isolated(`poll ${row.key}`, async () => {
+                const ended = await this.executor.poll!(this.started(row));
+                if (ended) this.record(row.key as string, Number(row.attempt), ended.outcome, ended.usage);
+              });
+            }
           }
         }
+        await isolated("steps", () => this.advance(true));
+      } finally {
+        await this.arm(now + (failed ? 30_000 : 1_000));
       }
-      await this.advance(true);
     });
   }
 
-  /** The earliest of the next timer, gate expiry, step window and sweep; none once the workflow has ended. */
+  /** A due timer lands; an expired gate takes its recommendation, or pauses the workflow. */
+  private expire(row: Row) {
+    if (row.kind === "sleep") { this.record(row.key as string, Number(row.attempt), { ok: true, value: null }); return; }
+    const options = JSON.parse((row.options as string | null) ?? "{}") as { onExpire?: string };
+    const args = JSON.parse(row.args as string) as { recommended?: unknown };
+    if (options.onExpire === "recommended" && args.recommended !== undefined) {
+      this.record(row.key as string, Number(row.attempt), { ok: true, value: args.recommended });
+      this.storage.transactionSync(() => this.event("gate_expired", { key: row.key, took: "recommended" }));
+      return;
+    }
+    this.storage.transactionSync(() => {
+      this.sql.exec("UPDATE workflow_effects SET due_at = NULL WHERE key = ? AND attempt = ?", row.key, row.attempt);
+      const status = this.state().status;
+      if (status === "running" || status === "waiting") this.setStatus("paused", "waiting_on_gate");
+      this.event("gate_expired", { key: row.key, took: "pause" });
+    });
+  }
+
+  /**
+   * The earliest of the next timer, gate expiry, step window, capacity renew and sweep; none once the workflow has
+   * ended and given its capacity back. The sweep runs only while the workflow runs or waits: a paused one wakes for its
+   * timers, gates and renew, not every five minutes.
+   */
   nextAlarm(): number | null {
     const state = this.state();
-    if (TERMINAL.has(state.status as WorkflowStatus)) return null;
+    const capacity = this.options.capacity && state.capacity_open ? this.options.capacity : undefined;
+    if (TERMINAL.has(state.status as WorkflowStatus)) return capacity ? this.now() + 30_000 : null;
     const candidates: number[] = [];
     const due = this.sql.exec("SELECT MIN(due_at) AS at FROM workflow_effects WHERE current = 1 AND status = 'pending' AND due_at IS NOT NULL").one().at;
     if (due !== null) candidates.push(Number(due));
     if (state.throttled_until !== null) candidates.push(Number(state.throttled_until));
-    const unlanded = this.sql.exec("SELECT 1 FROM workflow_effects WHERE current = 1 AND status = 'pending' AND (kind IN ('agent', 'gate') OR started = 0) LIMIT 1").toArray().length > 0;
-    if (unlanded) candidates.push((state.swept_at === null ? this.now() : Number(state.swept_at)) + WORKFLOW_LIMITS.sweepMs);
-    if (this.options.capacity && state.capacity_open) candidates.push(Number(state.renewed_at ?? this.now()) + this.options.capacity.leaseMs / 2);
+    if (state.status === "running" || state.status === "waiting") {
+      // A result landed but its step did not run (the step failed): try again (arm's floor spaces the tries out).
+      // While the step window is full, the window's end (above) is when to try.
+      const throttled = state.throttled_until !== null && Number(state.throttled_until) > this.now();
+      if (!throttled && this.sql.exec("SELECT 1 FROM workflow_effects WHERE current = 1 AND delivered_step IS NULL AND landed IS NOT NULL LIMIT 1").toArray().length) candidates.push(this.now());
+      const unlanded = this.sql.exec("SELECT 1 FROM workflow_effects WHERE current = 1 AND status = 'pending' AND (kind IN ('agent', 'gate') OR started = 0) LIMIT 1").toArray().length > 0;
+      if (unlanded) candidates.push((state.swept_at === null ? this.now() : Number(state.swept_at)) + WORKFLOW_LIMITS.sweepMs);
+    }
+    if (capacity) candidates.push(Number(state.renewed_at ?? this.now()) + capacity.leaseMs / 2);
     return candidates.length ? Math.min(...candidates) : null;
   }
 
-  private async arm() {
-    await this.options.alarm?.set(this.nextAlarm());
+  /** Arm the alarm for `nextAlarm()`, no sooner than `notBefore`. */
+  private async arm(notBefore?: number) {
+    const next = this.nextAlarm();
+    await this.options.alarm?.set(next === null || notBefore === undefined ? next : Math.max(next, notBefore));
   }
 }
 

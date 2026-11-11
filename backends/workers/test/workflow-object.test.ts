@@ -215,7 +215,8 @@ test("a failed start is recorded and retried by every later advance and by the a
   assert.equal(h.alarmAt, h.clock + WORKFLOW_LIMITS.sweepMs, "the sweep is armed while an effect is unstarted");
   await h.next(); // b lands; that advance tries a again (before and after b's step), and it fails again
   assert.equal(h.world.queue.length, 0);
-  assert.equal(h.runner.events().filter(event => event.type === "start_failed").length, 3);
+  assert.equal(h.runner.events().filter(event => event.type === "start_failed").length, 1, "recorded once per effect");
+  assert.equal((h.store.db.prepare("SELECT start_failures FROM workflow_effects WHERE key = 'a'").get() as { start_failures: number }).start_failures, 3);
   assert.equal(h.alarmAt, h.clock + WORKFLOW_LIMITS.sweepMs, "still armed: nothing else would ever try a");
   await h.next(); // the alarm, with no landing to prompt it
   assert.deepEqual(h.world.queue.map(effect => effect.key), ["a"]);
@@ -323,4 +324,85 @@ test("capacity: slots are acquired per agent, waiters start on a grant or a rene
   await r.runner.resume();
   await r.run();
   assert.equal(at(r).result, "re: a");
+});
+
+test("review fixes: the alarm survives a failing concern; an edit can drop a running key; the end stops running children", { timeout: 60_000 }, async () => {
+  const { FakeCapacity } = await import("./workflow-harness.ts");
+  // 1. A renew that throws, and an executor poll that throws: recorded, the rest of the alarm runs, the alarm is re-armed later.
+  const capacity = new FakeCapacity(4);
+  const h = harness({ capacity });
+  h.init({ code: `const [a, nap] = await parallel([() => agent("a", { key: "a" }), () => sleep(600, { key: "nap" })]); return a.answer;` });
+  await h.wake();
+  h.world.queue.splice(0); // a's ending is lost; the sweep would poll it
+  capacity.failRenew = "the limiter is down";
+  h.world.poll = async () => { throw new Error("poll is down"); };
+  h.clock = h.alarmAt!;
+  await h.runner.alarm();
+  assert.deepEqual(h.runner.events().filter(event => event.type === "alarm_failed").map(event => event.data.concern).sort(), ["capacity renew", "poll a"]);
+  assert.ok(h.alarmAt! >= h.clock + 30_000, "armed again, later, not lost");
+  capacity.failRenew = undefined;
+  capacity.refuseRenew = "workflow_not_open: the lease expired";
+  h.clock = h.alarmAt!;
+  await h.runner.alarm();
+  assert.deepEqual([at(h).status, at(h).pauseReason], ["paused", "capacity_refused"], "a refused renew pauses rather than throws");
+  assert.ok(h.alarmAt! > h.clock, "the timer still has its alarm");
+
+  // 2. An edit that no longer asks for a key whose child is still running: its ending is kept, not a fault.
+  const e = harness();
+  e.init({ code: `const r = await parallel(["a", "b"], k => agent(k, { key: k })); return r.map(x => x.answer);` });
+  await e.wake();
+  const [first, second] = e.world.queue.splice(0);
+  await e.runner.land(first!.key, first!.attempt, e.world.answer(first!));
+  await e.runner.edit({ code: `return (await agent("a", { key: "a" })).answer;`, reason: "only a", rerunConfirmPercent: 100 });
+  assert.equal(at(e).status, "completed");
+  await e.runner.resume({ rerun: ["a"] });
+  await e.runner.land(second!.key, second!.attempt, e.world.answer(second!)); // b's child ends after all
+  await e.run();
+  assert.equal(at(e).status, "completed", JSON.stringify(at(e)));
+  assert.equal(at(e).result, "re: a");
+  assert.ok(e.runner.diff().unseen.includes("b"));
+
+  // 3. Completing with a child still running stops it, gives its slot back and closes the lease.
+  const slots = new FakeCapacity(4);
+  const c = harness({ capacity: slots });
+  c.init({ code: `agent("slow", { key: "slow" }); return (await agent("fast", { key: "fast" })).answer;` });
+  await c.wake();
+  assert.deepEqual(c.world.queue.map(effect => effect.key), ["slow", "fast"]);
+  const fast = c.world.queue.find(effect => effect.key === "fast")!;
+  await c.runner.land(fast.key, fast.attempt, c.world.answer(fast));
+  assert.equal(at(c).status, "completed");
+  assert.ok(c.world.cancelled.includes("slow:1"), "the running child was cancelled");
+  assert.deepEqual(at(c).counts, { done: 1, cancelled: 1 });
+  assert.equal(slots.held.size, 0);
+  assert.equal(slots.calls.at(-1), "close");
+  assert.equal(c.alarmAt, null);
+});
+
+test("review fixes: a raised budget re-issues budget refusals; rerun past a cancelled effect; a paused workflow does not sweep", { timeout: 60_000 }, async () => {
+  const b = harness();
+  b.init({ code: `return (await agent("a")).answer;`, budgetUsd: 1 });
+  await b.wake();
+  await b.next(() => ({ refused: "the child's share is spent", code: "budget_exhausted" }));
+  assert.equal(at(b).status, "budget_exhausted");
+  await b.runner.setBudget(5);
+  assert.equal(b.world.queue[0]?.attempt, 2, "re-issued under the next attempt");
+  await b.run();
+  assert.equal(at(b).result, "re: a");
+
+  const r = harness();
+  r.init({ code: `const a = await agent("a", { key: "a" }); agent("later", { key: "bg" }); return a.answer;` });
+  await r.wake();
+  await r.run();
+  assert.deepEqual(r.runner.items().items.map(item => [item.key, item.status]), [["a", "done"], ["bg", "cancelled"]]);
+  await r.runner.resume({ rerun: ["a"] });
+  await r.run();
+  assert.equal(at(r).status, "completed", JSON.stringify(at(r)));
+  assert.deepEqual(r.runner.items({ attempts: true }).items.filter(item => item.key === "bg").map(item => [item.attempt, item.status]), [[1, "cancelled"], [2, "cancelled"]]);
+
+  const p = harness();
+  p.init({ code: `return (await agent("a")).answer;` });
+  await p.wake();
+  assert.ok(p.alarmAt !== null, "running: the sweep is armed");
+  await p.runner.pause();
+  assert.equal(p.alarmAt, null, "paused with nothing timed: no alarm every five minutes");
 });

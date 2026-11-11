@@ -102,9 +102,10 @@ test("a crash at every step boundary leaves the same workflow, each effect journ
   const where = new Set<string>();
   for (let crashAt = 1; crashAt <= baseline.ops; crashAt++) {
     const run = await drive(REVIEW, { crashAt });
-    // A failed start is handled (recorded, retried by the alarm's sweep), not a crash; every other point kills the process.
+    // Most points kill the process. A failed start, and a failure inside one of the alarm's concerns, is handled instead
+    // (recorded, and tried again by a later advance or alarm).
     assert.ok(run.crashed, `crash ${crashAt} fired`);
-    assert.equal(run.crashes, run.crashed === "executor start" ? 0 : 1, `crash ${crashAt} (${run.crashed})`);
+    assert.ok(run.crashes <= 1, `crash ${crashAt} (${run.crashed})`);
     where.add(run.crashed!);
     assert.deepEqual(timeless(run.snapshot()), expected, `crash ${crashAt} (${run.crashed})`);
     assert.deepEqual([...run.world.starts.keys()].sort(), [...baseline.world.starts.keys()].sort());

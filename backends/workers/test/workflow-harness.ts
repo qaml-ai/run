@@ -106,6 +106,8 @@ export class FakeCapacity {
   slots: number;
   dropWakes = false;
   refuseOpen?: string;
+  failRenew?: string;
+  refuseRenew?: string;
   readonly calls: string[] = [];
   readonly held = new Map<string, string>();
   readonly waiting: string[] = [];
@@ -133,7 +135,12 @@ export class FakeCapacity {
         this.held.set(key, id);
         if (!this.dropWakes) queueMicrotask(() => void this.wake([{ key, lease: id }]));
       },
-      renew: async () => { this.calls.push("renew"); return [...this.held].map(([key, lease]) => ({ key, lease })); },
+      renew: async () => {
+        this.calls.push("renew");
+        if (this.failRenew) throw new Error(this.failRenew);
+        if (this.refuseRenew) return { ok: false, message: this.refuseRenew };
+        return { ok: true, held: [...this.held].map(([key, lease]) => ({ key, lease })) };
+      },
       close: async () => { this.calls.push("close"); this.held.clear(); this.waiting.splice(0); },
     };
   }
