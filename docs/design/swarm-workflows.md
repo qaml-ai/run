@@ -1128,16 +1128,30 @@ conflicts per commit, and cost against the same work done by one agent on a comp
 10. **`max` evaluation.** `max` is Claude Fable 5.2 (decided). Open: whether `max` needs its own eval or rides on
     the class eval's orchestrator transcripts, and whether `draft: "max"` should be the default for an agent on
     `fast` (a cheap agent writing a $20,000 loop is the case the guardrails exist for).
-13. **The builtin's wording.** The "when to write a workflow" description above is a draft; it decides how often
-    agents reach for a workflow against `delegate`, so it needs an eval of its own (tasks where a workflow is
-    right against tasks where it is overkill) and a wording review before it ships.
 11. **Types for other domains.** Four types cover code, research and audits in this document. A domain that needs
-    a fourth (a `negotiator` that may spend, an `operator` that may run side effects without a gate) should argue
-    for a permission the three lack, not a job title.
+    a fifth (a `negotiator` that may spend, an `operator` that may run side effects without a gate) should argue
+    for a permission the four lack, not a job title.
 12. **Who curates the menu, and how often.** The operator's menu needs an owner who runs the per-strength evals
     and decides admissions and removals; a tenant's menu is its own. Re-evaluate every entry on a schedule (monthly?)
     and on every model or route change, and retire an entry whose ledger shows it losing for two weeks. Whether a
     tenant may add an entry with its own eval evidence, or only choose among the operator's, is open.
+13. **The builtin's wording.** The "when to write a workflow" description above is a draft; it decides how often
+    agents reach for a workflow against `delegate`, so it needs an eval of its own (tasks where a workflow is
+    right against tasks where it is overkill) and a wording review before it ships.
+14. **Nested workflows (later, not phase 1).** Should a workflow's child write a workflow of its own, so a task
+    decomposes more than one layer deep (a Bun-style port as one workflow per crate group, each splitting its own
+    files)? Phase 1 says no: children cannot start workflows, and `workflow(name, args)` (a saved sub-script run
+    inline, one level, on the parent's budget and concurrency) covers most hierarchy with one owner and one ledger.
+    Allowing it later needs:
+    - an explicit grant from the parent script, never a default;
+    - one budget for the whole tree, reserved from the root rather than inherited;
+    - a depth cap (two levels of workflows), plus tree-wide caps on concurrency and effects, and loop detection
+      across the tree (`AGENT_WAKES_PER_HOUR` counts one chain, not a tree of workflows);
+    - gates that escalate to the root's owner;
+    - a tree view on the workflow page.
+
+    Build it only if the first test, run with flat workflows plus inline sub-scripts, shows that decomposition
+    quality or the root agent's context is the limit.
 
 ### Non-goals
 
