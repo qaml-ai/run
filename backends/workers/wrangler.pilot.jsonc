@@ -153,7 +153,6 @@
     ]
   },
   "vars": {
-    // Tenants with workflows (POST /v1/workflows, the workflows builtin): a comma-separated list, or "*".
     "AGENT_WORKFLOW_TENANTS": "pilot-camel-code",
     "PILOT_DB_PROFILE": "1",
     "MODEL": "openrouter/meta/muse-ember",
