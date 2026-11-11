@@ -885,6 +885,8 @@ export class Volume extends DurableObject<VolumeBindings> {
     });
     for (const [volume, owned] of elsewhere) await this.peer(volume).pin(owner, owned, expiresAt);
     if (local.length) await this.scheduleCollection();
+    // A record of an expiring pin kept elsewhere is collected by this volume's own alarm, which may have none yet.
+    if (elsewhere.size && expiresAt !== undefined) await this.alarmBy(expiresAt);
   }
   async hasPin(owner: string, key: string): Promise<boolean> {
     const volume = this.ownerOf(key);
@@ -918,6 +920,11 @@ export class Volume extends DurableObject<VolumeBindings> {
     await this.alarm();
     return { alarm: await this.ctx.storage.getAlarm() };
   }
+  /** Local tests only (TEST_MODE): when the alarm is set to fire, or null. */
+  testAlarm() {
+    if (this.env.TEST_MODE !== "1") throw new FileError("Not found", 404);
+    return this.ctx.storage.getAlarm().then((alarm) => ({ alarm }));
+  }
   /** Local tests only (TEST_MODE): what the forwarded pin records hold. */
   testForwardedPins() {
     if (this.env.TEST_MODE !== "1") throw new FileError("Not found", 404);
@@ -933,6 +940,11 @@ export class Volume extends DurableObject<VolumeBindings> {
       console.error("fork pin release failed; the alarm retries", error);
       return false;
     }
+  }
+  /** The alarm fires by `at` at the latest. */
+  private async alarmBy(at: number) {
+    const alarm = await this.ctx.storage.getAlarm();
+    if (alarm === null || alarm > at) await this.ctx.storage.setAlarm(at);
   }
   private async scheduleCollection() {
     if ((await this.ctx.storage.getAlarm()) === null)
@@ -1004,6 +1016,9 @@ export class Volume extends DurableObject<VolumeBindings> {
       this.sql().exec<{ n: number }>("SELECT count(*) n FROM objects").one().n
     )
       await this.ctx.storage.setAlarm(Date.now() + DAY);
+    // Records of expiring pins kept elsewhere are collected when the first of them expires.
+    const next = this.sql().exec<{ at: number | null }>("SELECT min(expiresAt) at FROM forwarded_pins WHERE expiresAt IS NOT NULL").one().at;
+    if (next !== null) await this.alarmBy(next);
   }
   /** Erase metadata after account deletion has removed the volume's live files. */
   async purgeAccountData(tenant: string) {

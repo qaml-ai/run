@@ -254,6 +254,23 @@ test("atomic volume commits and fork pins that live with the fork", { timeout: 2
       await gc(fork, 2 * DAY);
       assert.deepEqual((await forwarded(fork)).map((row) => [row.owner, row.expiresAt]), [[`fork-base:${fork}`, null]]);
     });
+
+    await t.test("a fork with only forwarded pins arms its own alarm for their expiry", async () => {
+      const source = await created("forwarded alarm source");
+      await put(source, "/keep.txt", "original", 0);
+      const fork = await forkOf(source);
+      const alarm = async () => ((await (await call(`/v1/volumes/${fork}/__alarm`)).json()) as { alarm: number | null }).alarm;
+      // Its base pins never expire and it owns no blobs: nothing to collect, no alarm.
+      assert.equal(await alarm(), null);
+      const before = Date.now();
+      await call(`/v1/volumes/${fork}/__pin?owner=archive:alarm&ttl=60000`, { method: "POST" });
+      const armed = await alarm();
+      assert.ok(armed !== null && armed >= before + 60_000 && armed <= Date.now() + 60_000, String(armed));
+      // An alarm that runs before the record expires keeps one armed for it.
+      assert.equal((await call(`/v1/volumes/${fork}/__alarm`, { method: "POST" })).status, 200);
+      assert.ok((await alarm()) !== null);
+      assert.deepEqual((await forwarded(fork)).map((row) => row.owner), ["archive:alarm", `fork-base:${fork}`]);
+    });
   } catch (error) {
     t.diagnostic(fixture.worker.logs());
     throw error;
