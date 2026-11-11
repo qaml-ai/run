@@ -52,10 +52,18 @@ export async function hasChildImpl(this: AgentRuntime,
     return (await this.delegation.rows.byChild(id)) !== undefined;
   }
 
-/** Where this agent's runs' endings and progress go: their owners, by kind and id. */
-export function ownerAgent(env: AgentRuntime["env"], owner: Owner) {
-  if (owner.kind !== "agent") throw new Error(`No ${owner.kind} owners on this runtime yet`);
-  return env.AGENTS.getByName(owner.id);
+/** What an owner of either kind answers its children's outboxes with. */
+type OwnerStub = { receiveEnding(ending: ChildEnding): Promise<Receipt>; receiveProgress(report: ChildProgressReport): Promise<Receipt> };
+/**
+ * Where this agent's runs' endings and progress go: their owners, by kind and id. A workflow is reached through the
+ * `WORKFLOWS` namespace once the workflow object is deployed (its `receiveEnding`/`receiveProgress` are
+ * workflow-agents.ts's); until then a delivery to one fails and the outbox retries it.
+ */
+export function ownerAgent(env: AgentRuntime["env"], owner: Owner): OwnerStub {
+  if (owner.kind === "agent") return env.AGENTS.getByName(owner.id);
+  const workflows = (env as { WORKFLOWS?: { getByName(name: string): OwnerStub } }).WORKFLOWS;
+  if (!workflows) throw new Error(`No workflow objects on this runtime yet: ${owner.id}'s delivery waits`);
+  return workflows.getByName(owner.id);
 }
 
 export function createOutbox(this: AgentRuntime): ChildOutbox {
@@ -99,8 +107,10 @@ export function createNotifications(this: AgentRuntime): DelegationNotifications
       !delivery.run && delivery.stopped === 'aborted'
         ? this.admit(request, notice, delivery)
         : this.submit(request, notice, delivery),
+    // The chain's root counts its wakes. A workflow's chain (its ids are wf_…) counts them at its child, the first agent
+    // below it: a workflow has no notifications of its own to loop on.
     admitWake: (root, id) =>
-      root === this.ctx.id.name
+      root === this.ctx.id.name || root.startsWith("wf_")
         ? this.admitDelegateWake(id)
         : this.env.AGENTS.getByName(root).admitDelegateWake(id),
     humanPending: async () => {

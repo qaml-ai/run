@@ -113,6 +113,12 @@ export class ChildRows {
     return this.rows("SELECT state FROM children WHERE status = 'running' ORDER BY started, key");
   }
 
+  /** Rows in one status, oldest first (a workflow's queued and running children). */
+  async withStatus(status: string): Promise<DelegatedChild[]> {
+    await this.load();
+    return this.rows('SELECT state FROM children WHERE status = ? ORDER BY started, key', status);
+  }
+
   /** The children one run of the owner started. */
   async ofRun(requestId: string): Promise<DelegatedChild[]> {
     await this.load();

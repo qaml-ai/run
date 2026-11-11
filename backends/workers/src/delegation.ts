@@ -607,6 +607,7 @@ export class Delegation {
     const identity = await digest(`${id}:${run.id}:${callId}`), requestId = `msg_${identity.slice(0, 48)}`;
     if (args.to === 'parent') {
       if (!lineage?.parent) throw new HttpError(400, 'This run has no parent');
+      if (lineage.owner.kind !== 'agent') throw new HttpError(400, 'A workflow started this run: it reads your answer when you finish, and report_progress reaches it meanwhile');
       const message = agentMessage({ agentId: id, name: typeof config.name === 'string' ? config.name : 'subagent', root: lineage.root }, args.text, 'parent');
       const response = await this.host.sendMessage(lineage.parent, { id: requestId, method: 'prompt', params: { text: args.text, endUser: run.params?.endUser, bucket: run.params?.bucket ?? config.bucket, allowDisconnected: true, whileRunning: 'followUp' } }, message.notice) as { steer?: string; steeredInto?: string } | undefined;
       return { sent: true, to: 'parent', into: response?.steer === 'accepted' || response?.steeredInto ? 'its running turn' : 'a new turn of its own' };
