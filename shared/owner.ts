@@ -48,3 +48,13 @@ export function placementOf(value: unknown): Placement | undefined {
     ...(typeof raw.ownerRun === "string" ? { ownerRun: raw.ownerRun } : {}),
   };
 }
+
+/**
+ * A delegation call's identity: `callId` on its first attempt, `callId:attempt` after. A rerun or an abort followed by
+ * a re-issue bumps the attempt and makes a new child; attempt 1 is the call id alone, so a child made before attempts
+ * existed is found again by the same call.
+ */
+export function attemptedCall(callId: string, attempt = 1): string {
+  if (!Number.isSafeInteger(attempt) || attempt < 1) throw new Error("attempt is a positive integer");
+  return attempt === 1 ? callId : `${callId}:${attempt}`;
+}

@@ -861,6 +861,7 @@ export const ChildAgent = z.object({
   status: z.enum(["running", "completed", "failed", "aborted", "input_required", "paused"]).openapi({ description: "As its latest run says: a message or a resume starts it again" }),
   requestId: z.string().openapi({ description: "Its latest run's request, on the child: GET /v1/agents/{agentId}/requests/{requestId}, or its events with ?request=" }),
   toolCallId: z.string().openapi({ description: "The parent's tool call that started that run (spawn_agent, delegate, or send_message)" }),
+  attempt: z.number().int().openapi({ description: "Which attempt of that call the run is: 1, unless the call was made again on purpose (a rerun, or an abort then a re-issue), which makes a new child" }),
   startedAt: z.number().openapi({ description: "When the parent first started it (ms since the epoch)" }),
   endedAt: z.number().optional().openapi({ description: "When its latest run ended (ms since the epoch)" }),
   delivered: z.boolean().optional().openapi({ description: "An ended child (or one waiting on a person): whether its answer reached the parent yet (its notification landed, or a wait_agent or the delegate call took it). false: a notification is still on its way, and will start or join a turn of the parent's" }),

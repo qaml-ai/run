@@ -1835,7 +1835,7 @@ class _AgentCalls:
 
     def children(self):
         """The children its delegate and spawn_agent calls started, newest first (at most 200), each as its latest run
-        says: {"children": [{agentId, name, background, status, requestId, toolCallId, startedAt, endedAt, delivered
+        says: {"children": [{agentId, name, background, status, requestId, toolCallId, attempt, startedAt, endedAt, delivered
         (an ended child's answer reached the agent yet), progress, error}]}. The agent idle and every child ended and
         delivered: the whole tree is settled."""
         return self._http("/children")

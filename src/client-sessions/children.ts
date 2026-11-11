@@ -274,7 +274,7 @@ export async function childrenView(ctx: ChildrenContext, parent: string): Promis
     return {
       agentId: row.child as string, name: row.name as string, background: row.kind !== "delegate",
       status: paused ? "input_required" : running ? "running" : row.status as string,
-      requestId: row.request_id as string, toolCallId: row.tool_call_id as string,
+      requestId: row.request_id as string, toolCallId: row.tool_call_id as string, attempt: Number(row.attempt ?? 1),
       startedAt: Number(row.started), ...!running ? { endedAt: Number(row.ended_at) } : {},
       ...paused ? { delivered: row.paused_landed_at !== null } : !running ? { delivered: row.landed_at !== null } : {},
       ...running && !paused && Number(row.progress_seq) > 0 ? { progress: row.progress as string, progressAt: Number(row.progress_at) } : {},
@@ -287,7 +287,7 @@ export async function childrenView(ctx: ChildrenContext, parent: string): Promis
 export const CHILDREN_LISTED = 200;
 
 export type ChildView = {
-  agentId: string; name: string; background: boolean; status: string; requestId: string; toolCallId: string;
+  agentId: string; name: string; background: boolean; status: string; requestId: string; toolCallId: string; attempt: number;
   startedAt: number; endedAt?: number; delivered?: boolean; progress?: string; progressAt?: number; error?: string;
 };
 

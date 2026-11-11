@@ -29,6 +29,13 @@ test("an older node's child and input rows still insert, and read as their agent
   await assert.rejects(db.query("insert into agent_children (id, tenant, parent, child, request_id, name, depth, root, parent_run, tool_call_id, checked_at, created_at, updated_at, owner_kind) values ('bad', 'payg', 'p', 'c', 'r', 'n', 1, 'r', 'run', 'call', 1, 1, 1, 'nobody')"), /check/);
 });
 
+test("an older node's child rows are first attempts (138), and an attempt below 1 is refused", async () => {
+  const { db } = await testDatabase();
+  await db.query(OLD_CHILD, ["old-attempt"]);
+  assert.equal((await db.query("select attempt from agent_children where id='old-attempt'")).rows[0].attempt, 1);
+  await assert.rejects(db.query("update agent_children set attempt = 0 where id='old-attempt'"), /check/);
+});
+
 test("the migration backfills every existing input's owner from its agent", async () => {
   const { db } = await testDatabase();
   // The schema as it was before 137, with an input in it.

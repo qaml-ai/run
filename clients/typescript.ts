@@ -362,6 +362,8 @@ export interface ChildAgent {
   requestId: string;
   /** The parent's tool call that started that run. */
   toolCallId: string;
+  /** Which attempt of that call the run is: 1, unless the call was made again on purpose (a rerun), which makes a new child. */
+  attempt: number;
   startedAt: number;
   endedAt?: number;
   delivered?: boolean;
