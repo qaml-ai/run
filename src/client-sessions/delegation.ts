@@ -126,8 +126,12 @@ export async function delegate(ctx: DelegationContext, session: Session, setting
     // call made again on a new node finds it landed and charged. This run's usage counts it as the call takes the answer
     // (a run resumed on a new node counts from the resume): not when the parent's stop took its ending first
     // (`stopDelegates`). A landing that failed leaves the row open, and the sweep lands and charges it (`sweepDelegate`).
-    const landed = await landDelegate(ctx, requestId, finished.status ?? "failed", "call", { session, record: finished })
-      .catch(error => { console.error(JSON.stringify({ type: "subagent_land_failed", agent: header.id, child: agent, error: safeError(error) })); return { won: false, by: "call" }; });
+    const landed = await landDelegate(ctx, requestId, finished.status ?? "failed", "call", { session, record: finished }).catch(error => {
+      console.error(JSON.stringify({ type: "subagent_land_failed", agent: header.id, child: agent, error: safeError(error) }));
+      // Counted on the owner's copy of the limit for now, so its checks are no looser; the sweep writes it.
+      ctx.spendContext.counted(session, delegateCost(finished));
+      return { won: false, by: "call" };
+    });
     if (landed.won || landed.by === "call") chargeRun(session, run.id, finished);
     const result = (finished.outcome?.result ?? {}) as { reply?: string; output?: unknown };
     const status = finished.status ?? "failed";
@@ -156,22 +160,24 @@ export async function delegate(ctx: DelegationContext, session: Session, setting
  * Land a delegate child's ending on its row, once: by the call that took its answer ('call'), or the parent's stop that
  * waited for it ('stop'). With `charge`, what the child spent is charged to the parent's spend limit in the same
  * transaction, so the landing is the charge's one guard (as the sweep's 'late' landing is): whoever lands it charges it,
- * and nothing charges a landed row again, on any node. Returns whether this landed it, and who did.
+ * and nothing charges a landed row again, on any node. The child's spend counts against the limit in force when it
+ * started (`set_at <= created_at`), as the sweep's does: a limit set after it started counts from zero. Returns whether
+ * this landed it, and who did.
  */
 export async function landDelegate(ctx: DelegationContext, id: string, status: string, by: "call" | "stop", charge?: { session: Session; record: Pick<RequestRecord, "outcome"> }): Promise<{ won: boolean; by?: string }> {
   const now = Date.now();
   const cost = charge ? delegateCost(charge.record) : 0;
-  // The limit as the agent's owner knows it (read once per load): the child's spend counts against the limit set now.
-  const limit = charge && cost > 0 ? await ctx.spendContext.spendOf(charge.session) : null;
-  const won = await transaction(ctx.db, async sql => {
+  const landed = await transaction(ctx.db, async sql => {
     const { rows } = await sql.query(`update agent_children set ended_at = coalesce(ended_at, $2), status = coalesce(status, $3), state = 'notified', landed_at = $2, landed_by = $4, updated_at = $2
-      where id = $1 and landed_at is null returning parent`, [id, now, status, by]);
-    if (rows.length && limit) await sql.query("update agent_spend_limits set spent = spent + $2 where agent = $1 and set_at = $3", [rows[0].parent, cost, limit.setAt]);
-    return rows.length > 0;
+      where id = $1 and landed_at is null returning parent, created_at`, [id, now, status, by]);
+    if (!rows.length) return undefined;
+    if (!(cost > 0)) return { charged: undefined };
+    const { rows: [limit] } = await sql.query("update agent_spend_limits set spent = spent + $2 where agent = $1 and set_at <= $3 returning set_at", [rows[0].parent, cost, Number(rows[0].created_at)]);
+    return { charged: limit ? Number(limit.set_at) : undefined };
   });
-  // Counted here only once written: the owner's copy of the limit (`spendOf`) is what its next checks read.
-  if (won && limit && charge) ctx.spendContext.counted(charge.session, cost);
-  if (won) return { won: true, by };
+  // Counted on the owner's copy of the limit only once written to that same limit: its next checks read it.
+  if (landed?.charged !== undefined && charge?.session.spend?.setAt === landed.charged) ctx.spendContext.counted(charge.session, cost);
+  if (landed) return { won: true, by };
   return { won: false, by: (await ctx.db.query("select landed_by from agent_children where id = $1", [id])).rows[0]?.landed_by ?? undefined };
 }
 
