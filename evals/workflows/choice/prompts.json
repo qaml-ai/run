@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "about": "Prompts for scoring whether an agent splits work into a workflow (or, in dry mode, across sub-agents) when it should, and not when it should not. `expect`: split or alone. Each prompt's files are generated (see choice.ts); the work is never finished: a run stops at the agent's first decision.",
+  "prompts": [
+    { "id": "esm-400", "expect": "split", "why": "400 independent, repeated file edits", "files": { "dir": "lib", "count": 400, "template": "module" },
+      "prompt": "Convert every module in /workspace/lib (400 files) from CommonJS to ES modules, keeping each one's exports and behaviour." },
+    { "id": "translate-60", "expect": "split", "why": "60 independent documents, each a unit of work", "files": { "dir": "docs", "count": 60, "template": "doc" },
+      "prompt": "Translate each of the 60 Markdown docs in /workspace/docs into Spanish, writing docs/es/<name>.md and keeping the formatting." },
+    { "id": "audit-120", "expect": "split", "why": "a per-table audit with a check on each finding", "files": { "dir": "tables", "count": 120, "template": "table" },
+      "prompt": "Audit all 120 CSV tables in /workspace/tables: for each, find nulls in required columns, duplicate ids and negative amounts, have every finding double-checked, and write findings/<table>.json." },
+    { "id": "contracts-80", "expect": "split", "why": "80 extractions, each to be verified by a second reader", "files": { "dir": "contracts", "count": 80, "template": "contract" },
+      "prompt": "For each of the 80 vendor contracts in /workspace/contracts, extract the renewal date, notice period and price escalator into contracts.csv, and have a second reader verify every row against its contract." },
+    { "id": "security-150", "expect": "split", "why": "a per-file review over 150 files, with a report to write", "files": { "dir": "src", "count": 150, "template": "sql" },
+      "prompt": "Review every file in /workspace/src (150 files) for SQL injection, confirm each suspected issue, and write SECURITY.md listing the confirmed ones by file and line." },
+    { "id": "sources-40", "expect": "split", "why": "a research sweep: a reader per source, critics per claim, a writer", "files": { "dir": "sources", "count": 40, "template": "source" },
+      "prompt": "Using the 40 source notes in /workspace/sources, list every claim each source makes about four-day work weeks and productivity, try to refute each claim from the other sources, and write report.md with the claims that survive." },
+    { "id": "typo", "expect": "alone", "why": "one edit in one file", "files": { "dir": ".", "count": 1, "template": "readme" },
+      "prompt": "Fix the spelling of 'recieve' in /workspace/README.md." },
+    { "id": "one-export", "expect": "alone", "why": "a question about one file", "files": { "dir": "lib", "count": 3, "template": "module" },
+      "prompt": "What does /workspace/lib/m001.js export? One line." },
+    { "id": "rename-local", "expect": "alone", "why": "a rename inside one file", "files": { "dir": "src", "count": 1, "template": "sql" },
+      "prompt": "In /workspace/src/s001.js, rename the function findUser to findUserById, including its uses in that file. It is not used anywhere else." },
+    { "id": "summary-one", "expect": "alone", "why": "a summary of one short document", "files": { "dir": "docs", "count": 1, "template": "doc" },
+      "prompt": "Summarize /workspace/docs/d001.md in three lines." },
+    { "id": "sum-one-table", "expect": "alone", "why": "one computation over one table", "files": { "dir": "tables", "count": 1, "template": "table" },
+      "prompt": "What is the total of the amount column in /workspace/tables/t001.csv?" },
+    { "id": "gitignore", "expect": "alone", "why": "one new small file", "files": { "dir": "lib", "count": 5, "template": "module" },
+      "prompt": "Add a .gitignore to /workspace that ignores node_modules and dist." }
+  ]
+}

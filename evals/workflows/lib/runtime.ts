@@ -3,11 +3,12 @@
 // children, workflow items). Everything goes through the public API with a tenant key, so it runs against the
 // Workers pilot or a local Workers dev runtime alike; never against production (see `guardUrl`).
 import { spawnSync } from "node:child_process";
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { AgentRuntime } from "../../../clients/node.ts";
+import { tmpdir } from "node:os";
+import { AgentRuntime, schema, tool, type Tools } from "../../../clients/node.ts";
 import type { AgentEvent } from "../../../clients/types.ts";
-import { walk } from "./score.ts";
+import { execIn, judgeImage, walk } from "./score.ts";
 import type { AgentType, Classes, CostBreakdown, Mode, ModelClass, RunResult, Task } from "./types.ts";
 
 /** Production hosts this harness refuses outright: evals never run on a production tenant. */
@@ -35,7 +36,7 @@ const TYPES: Record<Exclude<AgentType, "orchestrator" | "other">, { description:
     systemPrompt: "You are a lead. Plan, decide or judge as asked, from the files in /workspace. Be concrete: name files, steps and decisions." },
 };
 /** The orchestrator's system prompt. Model-facing. It names the sub-agents but does not say to use them: whether the agent splits the work is measured. */
-const ORCHESTRATOR = "You are the lead agent on a large task. You may hand parts of it to sub-agents with delegate: worker (does one task and may edit files), critic (reviews someone else's work and reports problems, never edits) and lead (plans and judges). Sub-agents see /workspace as you do, but not this conversation, so give each a complete task. Decide for yourself whether and how to split the work. You cannot run commands. Keep your final reply short.";
+export const ORCHESTRATOR = "You are the lead agent on a large task. You may hand parts of it to sub-agents with delegate: worker (does one task and may edit files), critic (reviews someone else's work and reports problems, never edits) and lead (plans and judges). Sub-agents see /workspace as you do, but not this conversation, so give each a complete task. Decide for yourself whether and how to split the work. You cannot run commands. Keep your final reply short.";
 /** `--split required`: the orchestrator type as the design defines it, doing no item work itself, so worker classes can be compared. Model-facing. */
 const SPLIT_REQUIRED = " Do none of the item work yourself: split it among workers, have critics check their work, and send fixes back to workers.";
 
@@ -78,11 +79,14 @@ export class Runtime {
   abortWorkflow(kind: WorkflowApiKind, id: string) { return this.api(this.workflowPath(kind, id, "abort"), { method: "POST", body: {} }); }
 
   async upload(task: Task, name: string) {
-    const volume = await this.client.createVolume({ name });
     const root = join(task.dir, "input");
-    const files = walk(root).map(path => ({ path, version: 0, text: readFileSync(join(root, path), "utf8") }));
-    const result = await this.client.volume(volume.id).commit(files);
-    if ("conflicts" in result) throw new Error(`Uploading ${task.id}: ${JSON.stringify(result.conflicts).slice(0, 300)}`);
+    return this.uploadFiles(name, Object.fromEntries(walk(root).map(path => [path, readFileSync(join(root, path), "utf8")])));
+  }
+  /** A new volume holding these files, written as one commit. */
+  async uploadFiles(name: string, files: Record<string, string>) {
+    const volume = await this.client.createVolume({ name });
+    const result = await this.client.volume(volume.id).commit(Object.entries(files).map(([path, text]) => ({ path, version: 0, text })));
+    if ("conflicts" in result) throw new Error(`Uploading ${name}: ${JSON.stringify(result.conflicts).slice(0, 300)}`);
     return volume.id;
   }
   /** The volume as it is now, unpacked into `dest`. */
@@ -174,7 +178,7 @@ export class Runtime {
     return items;
   }
   /** Waits for a workflow to end (completed, failed, aborted, budget_exhausted), or to sit paused or waiting past `stallMs`. */
-  async waitWorkflow(kind: WorkflowApiKind, id: string, deadline: number, stallMs = 600_000) {
+  async waitWorkflow(kind: WorkflowApiKind, id: string, deadline: number, stallMs = 600_000, pollMs = 10_000) {
     let since = Date.now(), last = "";
     for (;;) {
       const { status, body } = await this.api(this.workflowPath(kind, id));
@@ -182,7 +186,7 @@ export class Runtime {
       if (["completed", "failed", "aborted", "budget_exhausted"].includes(body.status)) return body;
       if (body.status !== last) { last = body.status; since = Date.now(); }
       if ((["paused", "waiting"].includes(body.status) && Date.now() - since > stallMs) || Date.now() > deadline) return { ...body, stalled: true };
-      await new Promise(resolve => setTimeout(resolve, 10_000));
+      await new Promise(resolve => setTimeout(resolve, pollMs));
     }
   }
   /** Effects, children, jobs, retries and conflicts from a workflow's items; cost from its ledger. */
@@ -209,6 +213,34 @@ export class Runtime {
       cost,
     };
   }
+}
+
+/**
+ * Dry mode's stand-in for phase 1's `job()`: tools the harness serves to the orchestrator that run one command over
+ * the volume as it is now, in the task's judge image with no network, and answer its output. They never run the
+ * hidden judge. Model-facing: the descriptions are the tools' wording.
+ */
+function jobTools(runtime: Runtime, task: Task, volumeId: string, log: (entry: unknown) => void, jobs: { count: number; ms: number }): Tools {
+  if (!task.jobs?.includes("go")) return {};
+  const run = async (script: string, env: Record<string, string> = {}) => {
+    const started = Date.now(), dir = mkdtempSync(join(tmpdir(), "wf-eval-job-"));
+    try {
+      await runtime.download(volumeId, dir);
+      const result = execIn("docker", dir, ["sh", "-c", script], { env, image: judgeImage(join(task.dir, task.judgeImage ?? "judge")), timeoutMs: 180_000 });
+      const output = `${result.stdout}${result.stderr}`.slice(0, 12_000) + (result.timedOut ? "\n(timed out after 180 s)" : "");
+      log({ job: script.slice(0, 80), exit: result.status, ms: Date.now() - started });
+      return output || "(no output)";
+    } finally { jobs.count++; jobs.ms += Date.now() - started; rmSync(dir, { recursive: true, force: true }); }
+  };
+  const go = "export GOPROXY=off GOTOOLCHAIN=local CGO_ENABLED=0 GOFLAGS=-mod=mod HOME=/tmp GOCACHE=/tmp/gocache; cd /work/go || exit 1";
+  return {
+    go_build: tool({ description: "Build /workspace/go as it is now (go build ./... then go vet ./...) in a fresh container, and answer the compiler's output. Takes up to a minute.",
+      input: schema.Object({}, { additionalProperties: false }),
+      execute: () => run(`${go}; go build ./... 2>&1 | head -c 8000; echo "go build exit: $?"; go vet ./... 2>&1 | head -c 4000`) }),
+    go_decode: tool({ description: "Build cmd/toml-decoder from /workspace/go and run it on the TOML given, answering its stdout, stderr and exit code: for checking the port on examples you write.",
+      input: schema.Object({ toml: schema.String({ description: "TOML to decode" }) }, { additionalProperties: false }),
+      execute: ({ toml }) => run(`${go}; go build -o /tmp/decoder ./cmd/toml-decoder 2>&1 | head -c 6000 || exit 1; printf '%s' "$TOML_INPUT" | /tmp/decoder; echo "exit: $?"`, { TOML_INPUT: toml }) }),
+  };
 }
 
 /** Runs one task once in one mode, and returns everything but the score. */
@@ -254,8 +286,10 @@ export async function orchestrate(runtime: Runtime, task: Task, options: RunOpti
   for (const key of Object.values(types.keys)) cleanups.push(() => runtime.client.deleteDefinition(key));
   const toolCalls: Record<string, number> = {};
   let delegateCalls = 0;
+  const jobs = { count: 0, ms: 0 };
   const agent = await runtime.client.createAgent({
-    name: `wf-eval ${task.id}`, model: options.classes.orchestrator, systemPrompt: ORCHESTRATOR + (options.split === "required" ? SPLIT_REQUIRED : ""), ttlSeconds: 86_400,
+    tools: jobTools(runtime, task, volumeId, log, jobs),
+    name: `wf-eval ${task.id}`, model: options.classes.orchestrator, systemPrompt: (task.jobs?.length ? ORCHESTRATOR.replace("You cannot run commands.", "You cannot run commands except through the build tools you are given.") : ORCHESTRATOR) + (options.split === "required" ? SPLIT_REQUIRED : ""), ttlSeconds: 86_400,
     mounts: [{ volumeId, path: "/workspace", mode: "rw" }], spendLimit: { usd: options.budgetUsd }, subagents: true,
     delegate: { agents: Object.entries(types.keys).map(([name, definition]) => ({ name, definition })), maxParallel: 8, maxDepth: 1 },
     onEvent(event: AgentEvent) {
@@ -316,7 +350,7 @@ export async function orchestrate(runtime: Runtime, task: Task, options: RunOpti
   const cost = workflowStats ? mergeCost(own, workflowStats.cost) : own;
   return {
     ...base, status: runStatus, error: runError, reply, wallMs: Date.now() - started, volumeId, cleanup,
-    cost, effects: workflowStats ? { ...workflowStats.effects, children: workflowStats.effects.children + children.children, grandchildren: children.grandchildren } : children,
+    cost, effects: workflowStats ? { ...workflowStats.effects, children: workflowStats.effects.children + children.children, grandchildren: children.grandchildren, jobs: (workflowStats.effects.jobs ?? 0) + jobs.count } : { ...children, ...(jobs.count ? { jobs: jobs.count } : {}) },
     conflicts: children.conflicts + (workflowStats?.conflicts ?? 0), retries: workflowStats ? workflowStats.retries : null,
     choice: { delegated: children.children > 0 || delegateCalls > 0, delegateCalls: Math.max(delegateCalls, children.children), workflowStarted: workflowIds.length > 0 || !!toolCalls.workflow_start, workflowIds, toolCalls },
   };

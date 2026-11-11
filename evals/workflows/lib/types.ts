@@ -18,6 +18,10 @@ export interface Task {
   units: number;
   /** Arguments for the task's reference workflow script (`workflow.js`), in workflow-direct mode. */
   workflowArgs?: Record<string, unknown>;
+  /** The task's own judge image directory (a Dockerfile with pinned toolchains), for judges `node:22` cannot run; such a task scores only in docker. */
+  judgeImage?: string;
+  /** Dry mode's stand-in for `job()`: harness-served build tools for the orchestrator ("go": go_build and go_decode in the judge image). */
+  jobs?: string[];
   /** Planned tasks: where the input comes from and how the judge runs. */
   source?: Record<string, unknown>;
   dir: string;

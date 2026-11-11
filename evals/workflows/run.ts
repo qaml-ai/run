@@ -8,12 +8,16 @@
 //   … run.ts run [--tasks s-ts-port,s-esm-refactor] [--modes dry] [--workers fast,strong] [--runs 1] [--label name] [--max-usd 5]
 //               [--orchestrator camelrun/strong] [--split free|required] [--workflow-api auto|public|test-hook] [--allow-host dev.example] [--keep]
 //   … run.ts summary .agent-runtime/eval/workflows-<label>.jsonl [more.jsonl]
+//   AGENT_URL=… AGENT_RUNTIME_TOKEN=… \
+//   … run.ts choice [--modes dry,workflow] [--guidance none,evals/workflows/choice/guidance-design-draft.md] [--prompts esm-400,typo] [--runs 1] [--label name] [--max-usd 3]
+//               scores whether the agent splits work when it should (evals/workflows/choice/prompts.json); stops each run at its first decision
 //
 // `run` appends one JSON line per run to .agent-runtime/eval/workflows-<label>.jsonl, writes
 // .agent-runtime/eval/workflows-<label>/<task>-<mode>-<workers>-<n>/ (result.json, events.jsonl, output/), and the
 // markdown summary to .agent-runtime/eval/workflows-<label>.md. Model calls cost money: not part of CI.
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
+import { choiceSummary, choose, loadPrompts } from "./lib/choice.ts";
 import { CLASS_MODELS, guardUrl, orchestrate, Runtime } from "./lib/runtime.ts";
 import { readResults, summary } from "./lib/report.ts";
 import { dockerReady, type Sandbox } from "./lib/score.ts";
@@ -55,6 +59,7 @@ async function main() {
     console.log(JSON.stringify(await scoreTree(findTask(id), resolve(dir), sandbox()), null, 2));
     return;
   }
+  if (command === "choice") return choiceCommand();
   if (command === "summary") { console.log(summary(readResults(argv.slice(1).filter(path => !path.startsWith("--"))))); return; }
   if (command !== "run") throw new Error("Commands: list, check, score, run, summary (see the header of evals/workflows/run.ts)");
 
@@ -103,6 +108,31 @@ async function main() {
       `$${(result.cost?.totalUsd ?? 0).toFixed(3)}, cache ${Math.round((result.cost?.cacheShare ?? 0) * 100)}%, ${Math.round(result.wallMs / 1000)} s, ${result.effects.children} children, split: ${result.choice.workflowStarted ? "workflow" : result.choice.delegated ? "delegate" : "none"}`);
   }
   const markdown = summary(readResults([`${out}.jsonl`]));
+  writeFileSync(`${out}.md`, markdown);
+  console.log(`\n${markdown}\nTotal spend: $${spent.toFixed(3)}. Results: ${out}.jsonl, ${out}.md`);
+}
+
+async function choiceCommand() {
+  const url = process.env.AGENT_URL, token = process.env.AGENT_RUNTIME_TOKEN;
+  if (!url || !token) throw new Error("Set AGENT_URL (the pilot or a local Workers runtime) and AGENT_RUNTIME_TOKEN (a tenant API key for it)");
+  guardUrl(url, arg("allow-host"));
+  const runtime = new Runtime(url, token);
+  const label = arg("label") ?? `choice-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}`;
+  const maxUsd = Number(arg("max-usd") ?? 3), runs = Number(arg("runs") ?? 1);
+  const wanted = arg("prompts") ? list("prompts", "") : undefined;
+  const prompts = loadPrompts().filter(prompt => !wanted || wanted.includes(prompt.id));
+  const guidance = list("guidance", "none").map(item => item === "none" ? undefined : { name: basename(item, ".md"), text: readFileSync(item, "utf8") });
+  const out = join(DIR, `workflows-${label}`);
+  mkdirSync(out, { recursive: true });
+  let spent = 0;
+  for (const mode of list("modes", "dry") as ("dry" | "workflow")[]) for (const wording of guidance) for (let run = 1; run <= runs; run++) for (const prompt of prompts) {
+    if (spent >= maxUsd) { console.log(`stopping at $${spent.toFixed(2)} (--max-usd ${maxUsd})`); break; }
+    const result = await choose(runtime, prompt, { label, mode, guidance: wording, run, dir: out, capUsd: 0.5, capMs: 360_000, orchestrator: arg("orchestrator") ?? CLASS_MODELS.strong });
+    spent += result.costUsd;
+    appendFileSync(`${out}.jsonl`, JSON.stringify(result) + "\n");
+    console.log(`${prompt.id} (${prompt.expect}) ${mode} ${wording?.name ?? "runtime"}: ${result.decision}${result.correct ? "" : " WRONG"}, ${result.subagents} sub-agents, $${result.costUsd.toFixed(3)}, ${Math.round(result.wallMs / 1000)} s${result.error ? ` (${result.error.split("\n")[0]})` : ""}`);
+  }
+  const markdown = choiceSummary(readFileSync(`${out}.jsonl`, "utf8").trim().split("\n").map(line => JSON.parse(line)));
   writeFileSync(`${out}.md`, markdown);
   console.log(`\n${markdown}\nTotal spend: $${spent.toFixed(3)}. Results: ${out}.jsonl, ${out}.md`);
 }

@@ -1,18 +1,56 @@
 {
   "id": "m-toml-go",
-  "version": 0,
+  "version": 1,
   "tier": "M",
-  "title": "Port smol-toml (TypeScript) to Go, judged by toml-test",
-  "status": "planned",
-  "prompt": "/workspace holds smol-toml, a TOML 1.0 parser and serializer in TypeScript. Port it to a Go module in /workspace/go (package toml, Go 1.23, standard library only) with the same behaviour, plus two commands, cmd/toml-decoder and cmd/toml-encoder, that speak toml-test's decoder and encoder protocol (README-toml-test.md). Do not change the TypeScript. Reply with a short summary when done.",
-  "budget": { "usd": 30, "wallMinutes": 90 },
+  "title": "Port smol-toml (TypeScript, 1.6k lines) to Go, judged by toml-test",
+  "status": "ready",
+  "prompt": "/workspace holds smol-toml, a TOML 1.0 parser and serializer in TypeScript (src/, about 1,600 lines; toml-test-parse.mjs and toml-test-encode.mjs show how it maps to toml-test's JSON). Port it to Go in /workspace/go: package toml at the module root (go.mod is given: module smoltoml, Go 1.24, standard library only, no third-party modules), with the same behaviour, plus two commands, cmd/toml-decoder and cmd/toml-encoder, that follow the toml-test protocol in PROTOCOL.md for TOML 1.0: the decoder reads TOML on stdin and prints its JSON description, or exits 1 on invalid TOML; the encoder reads a JSON description and prints TOML. Do not change the TypeScript. You have go_build and go_decode tools that build /workspace/go in a fresh container (sub-agents do not have them), so build after each round of changes. Reply with a short summary when done.",
+  "budget": {
+    "usd": 7,
+    "wallMinutes": 90
+  },
   "units": 12,
   "source": {
-    "port": { "repo": "squirrelchat/smol-toml", "ref": "v1.9.1", "license": "BSD-3-Clause", "paths": ["src/"], "language": "TypeScript", "approxLines": 1500 },
-    "judge": { "repo": "toml-lang/toml-test", "ref": "v2.2.0", "license": "MIT", "language": "language-independent (TOML in, tagged JSON out)",
-      "command": "toml-test test -toml 1.0 -decoder ./bin/toml-decoder && toml-test test -toml 1.0 -encoder ./bin/toml-encoder", "cases": "about 700 valid and invalid decoder cases, plus encoder cases",
-      "parse": "the summary line 'toml-test v… : passed N, failed M'", "image": "golang:1.23-bookworm with the toml-test binary built in; --cpus 4, no network" },
+    "port": {
+      "repo": "squirrelchat/smol-toml",
+      "ref": "v1.9.1",
+      "license": "BSD-3-Clause",
+      "paths": [
+        "src/"
+      ],
+      "language": "TypeScript",
+      "approxLines": 1500,
+      "commit": "69aa050fef018b71799519bb2cbb54f158a0c5f9"
+    },
+    "judge": {
+      "repo": "toml-lang/toml-test",
+      "ref": "v2.2.0",
+      "license": "MIT",
+      "language": "language-independent (TOML in, tagged JSON out)",
+      "command": "hidden/run.sh: go build both commands with GOPROXY=off, then toml-test test -toml 1.0 -json",
+      "cases": "205 valid, 474 invalid, 205 encoder (TOML 1.0)",
+      "parse": "the summary line 'toml-test v\u2026 : passed N, failed M'",
+      "image": "judge/Dockerfile: golang:1.27.3-bookworm with toml-test v2.2.0 installed; scoring runs with --network none, 4 CPUs",
+      "commit": "ce08da1ddb075d1c7596d663c7fcba9a2ae02c5c"
+    },
     "why": "A real cross-language port where the judge is the language-independent suite every TOML implementation is held to, as Bun's TS tests judged the Rust. Small enough to finish in about an hour with a dozen children.",
-    "prepare": "Clone the port repo at ref into input/ (src, README, LICENSE, the toml-test protocol doc as README-toml-test.md; no tests, so the judge stays hidden); build the judge image; record both commit SHAs in task.json."
-  }
+    "reference": "reference/go: BurntSushi/toml v1.6.0 (MIT, stdlib only) as module smoltoml with its toml-test commands; scores 0.989 (it rejects 449 of the 474 invalid cases)"
+  },
+  "judgeImage": "judge",
+  "workflowArgs": {
+    "files": [
+      "src/date.ts",
+      "src/error.ts",
+      "src/extract.ts",
+      "src/parse.ts",
+      "src/primitive.ts",
+      "src/stringify.ts",
+      "src/struct.ts",
+      "src/util.ts",
+      "src/index.ts"
+    ]
+  },
+  "jobs": [
+    "go"
+  ]
 }
