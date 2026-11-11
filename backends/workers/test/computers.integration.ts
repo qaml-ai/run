@@ -963,7 +963,7 @@ test("workflows: children edit forks of a repo volume with their file tools, com
   });
   model.listen(0, "127.0.0.1"); await once(model, "listening");
   t.after(() => { model.closeAllConnections(); return new Promise<void>(resolve => model.close(() => resolve())); });
-  const fixture = await startFixture({ config: "wrangler.computers.test.jsonc", vars: { TEST_MODEL: "0", MODEL: "openai/gpt-4o-mini",
+  const fixture = await startFixture({ config: "wrangler.computers.test.jsonc", vars: { TEST_MODEL: "0", MODEL: "openai/gpt-4o-mini", AGENT_WORKFLOW_TENANTS: "*",
     AGENT_WORKFLOW_CLASS_MODELS: JSON.stringify({ fast: "repo-fixture/repo-model", strong: "repo-fixture/repo-model", max: "repo-fixture/repo-model" }) } });
   t.after(async () => {
     const names = new Set([...fixture.worker.logs().matchAll(/containerName = (workerd-camelrun-proto-workers-computers-local-ContainerComputer-[a-f0-9]{64})/g)].map(match => match[1]));
