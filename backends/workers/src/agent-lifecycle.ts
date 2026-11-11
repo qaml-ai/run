@@ -1,4 +1,4 @@
-import { ChildOutbox } from "./ending-outbox.ts";
+import { ChildOutbox, deletedDeadline } from "./ending-outbox.ts";
 import { stageMissedEndings } from "./agent-endings.ts";
 import { checkGcDeadline, collectChecks, flushMonitors, monitorDeadline, monitorDue } from "./agent-monitors.ts";
 import { flushScheduleOutcomes } from './schedule-outcomes.ts';
@@ -107,6 +107,14 @@ export async function armImpl(this: AgentRuntime,
     const pendingEvents = (
       await this.ctx.storage.list({ prefix: TERMINAL_EVENTS_PREFIX, limit: 1 })
     ).size;
+    if (deleted) {
+      // A deleted agent wakes only for what it still owes, never for the watchdog: a child row left ended and
+      // unnotified (its notify refused by the deleted agent's own config) would otherwise wake it every second.
+      const at = deletedDeadline({ billing: !!pendingBilling, events: !!pendingEvents, outbox: await this.outbox.deadline() });
+      if (generation === this.maintenanceGeneration) this.maintenance = { at, tracksRuns: false };
+      if (Number.isFinite(at)) await this.lifecycle.jobs.push({ id: "camel-wake", fn: "camel-wake", time: Math.max(Date.now() + 1, at) });
+      return;
+    }
     const records = await this.records();
     const pendingRuns = records.filter(record => record.accepted && record.state !== "completed");
     const children = await this.delegation.children();
