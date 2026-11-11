@@ -92,7 +92,7 @@ brought to `config` if it differs. Returns a connected `Agent`. See
 | `builtins` | `builtins=` | tools the runtime answers itself, without a definition: `web_fetch`, `web_search`, `x_search`, `schedule`, `ask_user`, `delegate`, `agents` |
 | `delegate` | `delegate=` | sub-agents it may hand tasks to (`{ agents, instructions?, maxDepth?, maxParallel? }`); brings its builtin. See [Multi-agent](../guides/multi-agent.md) |
 | `mcpServers` | `mcp_servers=` | remote MCP servers of its own, without a definition: `[{ name, url, auth?: { type: "runtime" }, allowTools?, … }]`, no credentials. See [An agent's own MCP servers](../guides/tools.md#an-agents-own-mcp-servers) |
-| `subagents` | `subagents=` | also deliver its sub-agents' progress: `subagent_start`, `subagent_event`, `subagent_end`, `subagent_message` and `subagent_progress` events, and stream parts |
+| `subagents` | `subagents=` | also deliver its sub-agents' progress: `subagent_start`, `subagent_end`, `subagent_message` and `subagent_progress` events, and stream parts |
 | `attach` | `attach=` | `false`: declare `tools` without serving them (another process does) |
 | `takeover` | `takeover=` | replace the process serving the tools now |
 | `onEvent(event, runId)` | `on_event=` | every event, for display; runs in order, apart from the connection; plain or async |
@@ -806,7 +806,7 @@ Needs runtime 0.4.0 or later (run.camelai.com has it).
 
 - Sub-agents: `delegate` settings on `upsert` / definitions (`delegate: { agents, instructions?, maxDepth?,
   maxParallel? }`, Python `delegate=`) turn on the `delegate` built-in. `subagents: true` on `stream` / `watch`
-  (Python `subagents=True`) relays `subagent_start` / `subagent_event` / `subagent_end`; `run.toolCalls[].agentId`
+  (Python `subagents=True`) delivers `subagent_start` / `subagent_end`, and `watch` follows each sub-agent's own stream by its id for its messages; `run.toolCalls[].agentId`
   names the sub-agent, and `run.usage.subagentCostUsd` its spend. `@camelai/run-react`'s chat shows a sub-agent's
   transcript under its delegate call (`watch: { subagents: true }`). CLI manifests take `delegate`.
 - Workflows are code mode scripts that call `tools.delegate`; see

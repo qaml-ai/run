@@ -2,10 +2,10 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { Decider, decisionRequest, decisionsAnswer, checkedAnswers } from '../src/decision-policy.ts';
 import { delegateInput, delegateSettings } from '../src/multi-agent-policy.ts';
-import { Delegation, type DelegationHost } from '../src/delegation.ts';
+import { Delegation, type DelegatedChild, type DelegationHost } from '../src/delegation.ts';
 import { DecisionRuntime } from '../src/decision-runtime.ts';
 import type { ToolExecutionApi } from '@earendil-works/pi-durable';
-import { withSql, submitViaFetch } from './sql-storage.ts';
+import { withSql, submitViaFetch, childAlarms } from './sql-storage.ts';
 
 const questions = { valid: { type: 'noul' as const, instructions: 'Is valid?' } };
 const signal = () => new AbortController().signal;
@@ -38,16 +38,9 @@ test('stock delegation configuration validates named targets and depth ceilings'
   assert.throws(() => delegateSettings(['delegate'], undefined));
   assert.deepEqual(delegateSettings(['delegate'], { agents: ['helper'] })?.agents, [{ name: 'helper', definition: 'helper' }]);
 });
-const fixtures: { delegation: Delegation; host: DelegationHost }[] = [];
-after(async () => {
-  // Complete mock children left running by assertion-only fixtures, so the
-  // real recovery timers do not survive the file.
-  for (const { delegation, host } of fixtures) {
-    host.fetch = async () => Response.json({ state: 'completed', status: 'completed' });
-    host.notify = undefined;
-    await delegation.recover();
-  }
-});
+const fixtures: { delegation: Delegation; host: DelegationHost; stop: () => Promise<void> }[] = [];
+// The simulated children's alarms stop with the file.
+after(async () => { for (const { stop } of fixtures) await stop(); });
 function fixture() {
   const values = new Map<string, unknown>();
   let transaction = Promise.resolve<unknown>(undefined);
@@ -92,7 +85,7 @@ function fixture() {
   };
   host.submitChild = submitViaFetch(host);
   const delegation = new Delegation(host);
-  fixtures.push({ delegation, host });
+  fixtures.push({ delegation, host, stop: childAlarms(host, delegation) });
   return { delegation, host, events, submitted, tasks, setRun: (value: unknown) => { run = value; }, setId: (value: string) => { parentId = value; }, values };
 }
 test('decision and delegation tools resolve context from the executing conversation', async () => {
@@ -209,7 +202,7 @@ test('delegate tools describe their saved definition targets', async () => {
 test('authoritative remaining budget reserves shares held by background children from earlier runs', async () => {
   const f = fixture();
   f.host.remainingBudget = async background => { assert.equal(background, true); return 0.04; };
-  f.values.set('delegation:earlier', { id: 'earlier', key: 'earlier', requestId: 'earlier', parentRequestId: 'old-run', status: 'running', background: true, held: 0.03 });
+  await f.delegation.rows.put({ id: 'earlier', key: 'earlier', requestId: 'earlier', parentRequestId: 'old-run', status: 'running', background: true, held: 0.03 } as DelegatedChild);
   await f.delegation.start({ instructions: 'helper', task: 'help' }, 'remaining', signal(), true);
   assert.ok(Math.abs(f.submitted[0].params.spendLimit.usd - 0.01) < 1e-12);
   await Promise.all(f.tasks);
@@ -264,8 +257,8 @@ test('recovery notifies completed background children but never direct delegates
   const f = fixture(), notified: string[] = [];
   f.host.notify = async child => { notified.push(child.key); };
   const base = { id: 'child', requestId: 'child-run', parentRequestId: 'parent-run', toolCallId: 'call', task: 'go', name: 'helper', depth: 1, root: 'parent', createdAt: 1, endedAt: 2, status: 'completed', made: true, accepted: true };
-  f.values.set('delegation:background', { ...base, key: 'background', background: true });
-  f.values.set('delegation:direct', { ...base, key: 'direct', background: false });
+  await f.delegation.rows.put({ ...base, key: 'background', background: true } as DelegatedChild);
+  await f.delegation.rows.put({ ...base, key: 'direct', background: false } as DelegatedChild);
   await f.delegation.recover();
   await Promise.all(f.tasks);
   assert.deepEqual(notified, ['background']);
@@ -291,15 +284,19 @@ test('background child result and lifecycle events retain their public identity'
 test('a paused background child produces one new completion notice after its human resume', async () => {
   const f = fixture(), notified: string[] = [], retries: number[] = [];
   let resumed = false;
-  f.values.set('delegation:paused', { id: 'child', key: 'paused', requestId: 'child-run', parentRequestId: 'parent-run', toolCallId: 'spawn', task: 'ask', name: 'helper', depth: 1, createdAt: Date.now(), status: 'input_required', background: true, made: true, accepted: true, notified: true });
+  await f.delegation.rows.put({ id: 'child', key: 'paused', requestId: 'child-run', parentRequestId: 'parent-run', toolCallId: 'spawn', task: 'ask', name: 'helper', depth: 1, createdAt: Date.now(), status: 'input_required', background: true, made: true, accepted: true, notified: true } as DelegatedChild);
   const original = f.host.fetch;
   f.host.fetch = async (id, request) => new URL(request.url).pathname.startsWith('/requests/resume_') && !resumed ? new Response('', { status: 404 }) : original(id, request);
   f.host.notify = async child => { notified.push(child.key); };
   f.host.retry = async after => { retries.push(after!); };
   await f.delegation.recover();
-  assert.equal(retries[0], 15_000);
+  // Not resumed yet: nothing to do, and nothing polls (the resumed run's ending will come by the child's outbox).
+  assert.deepEqual(retries, []);
   resumed = true;
   await f.delegation.recover();
+  await Promise.all(f.tasks);
+  // The resumed run's ending comes by the child's outbox (simulated by the fixture's child alarms).
+  for (let i = 0; i < 400 && !notified.length; i++) await new Promise(resolve => setTimeout(resolve, 5));
   await Promise.all(f.tasks);
   await f.delegation.recover();
   await Promise.all(f.tasks);
@@ -317,9 +314,9 @@ test('a trusted tool starts an existing tenant worker without exposing a model s
 test('deleting a parent retries made-child cleanup without deleting named workers', async () => {
   const f = fixture(), removed: string[] = [];
   const child = { requestId: 'done', parentRequestId: 'parent-run', toolCallId: 'call', task: 'go', name: 'helper', depth: 1, createdAt: 1, status: 'completed', accepted: true };
-  f.values.set('delegation:made', { ...child, id: 'made', key: 'made', made: true });
-  f.values.set('delegation:resume', { ...child, id: 'made', key: 'resume', made: true });
-  f.values.set('delegation:named', { ...child, id: 'named', key: 'named', made: false });
+  await f.delegation.rows.put({ ...child, id: 'made', key: 'made', made: true } as DelegatedChild);
+  await f.delegation.rows.put({ ...child, id: 'made', key: 'resume', made: true } as DelegatedChild);
+  await f.delegation.rows.put({ ...child, id: 'named', key: 'named', made: false } as DelegatedChild);
   let fail = true;
   f.host.remove = async id => { if (fail) throw new Error('retry cleanup'); removed.push(id); };
   await assert.rejects(f.delegation.destroy(), /retry cleanup/);
@@ -330,9 +327,9 @@ test('deleting a parent retries made-child cleanup without deleting named worker
 test('parent cancellation aborts made children and only its actively running named child', async () => {
   const f = fixture(), aborted: string[] = [];
   const base = { requestId: 'child-run', parentRequestId: 'parent-run', toolCallId: 'call', task: 'go', name: 'helper', depth: 1, createdAt: 1, status: 'running', accepted: true };
-  f.values.set('delegation:made', { ...base, id: 'made', key: 'made', made: true });
-  f.values.set('delegation:named', { ...base, id: 'named', key: 'named', made: false });
-  f.values.set('delegation:queued', { ...base, id: 'queued', key: 'queued', made: false });
+  await f.delegation.rows.put({ ...base, id: 'made', key: 'made', made: true } as DelegatedChild);
+  await f.delegation.rows.put({ ...base, id: 'named', key: 'named', made: false } as DelegatedChild);
+  await f.delegation.rows.put({ ...base, id: 'queued', key: 'queued', made: false } as DelegatedChild);
   f.host.fetch = async (id, request) => {
     if (request.method === 'POST') { aborted.push(id); return Response.json({}); }
     if (aborted.includes(id)) return Response.json({ state: 'completed', status: 'aborted' });
@@ -395,7 +392,7 @@ test('targeted cancellation includes queued requests of named agents and survive
   f.host.cancelRequest = async (_agent, request) => { cancelled.push(request); };
   // Background cancellation persists the request and recovery follows its ending.
   // Direct delegates are already drained by cancel() before it returns.
-  f.values.set('delegation:queued', { id: 'shared-agent', key: 'queued', requestId: 'owned-request', parentRequestId: 'parent-run', status: 'running', made: false, background: true, accepted: true });
+  await f.delegation.rows.put({ id: 'shared-agent', key: 'queued', requestId: 'owned-request', parentRequestId: 'parent-run', status: 'running', made: false, background: true, accepted: true } as DelegatedChild);
   await f.delegation.cancel('parent-run');
   assert.deepEqual(cancelled, ['owned-request']);
   await new Delegation(f.host).recover();
@@ -405,7 +402,7 @@ test('targeted cancellation includes queued requests of named agents and survive
 test('cancel recovery reads costs when eviction lost the child admission acknowledgement', async () => {
   const f = fixture();
   f.host.cancelRequest = async () => {};
-  f.values.set('delegation:pending', { id: 'child', key: 'pending', requestId: 'child-request', parentRequestId: 'parent-run', status: 'running', made: true, accepted: false, cancelRequested: true });
+  await f.delegation.rows.put({ id: 'child', key: 'pending', requestId: 'child-request', parentRequestId: 'parent-run', status: 'running', made: true, accepted: false, cancelRequested: true } as DelegatedChild);
   await f.delegation.recover();
   await Promise.all(f.tasks);
   assert.equal(await f.delegation.cost('parent-run'), 0.01);
@@ -442,7 +439,7 @@ test('public metadata cannot forge a parent for agent messages or progress', asy
 });
 test('a message folded into a running child keeps its original answer for wait_agent', async () => {
   const f = fixture();
-  f.values.set('delegation:original', { id: 'child', key: 'original', requestId: 'child-run', parentRequestId: 'parent-run', toolCallId: 'spawn', task: 'work', name: 'worker', depth: 1, createdAt: 1, status: 'completed', background: true, accepted: true, made: true, outcome: { result: { reply: 'the full answer' } } });
+  await f.delegation.rows.put({ id: 'child', key: 'original', requestId: 'child-run', parentRequestId: 'parent-run', toolCallId: 'spawn', task: 'work', name: 'worker', depth: 1, createdAt: 1, status: 'completed', background: true, accepted: true, made: true, outcome: { result: { reply: 'the full answer' } } } as DelegatedChild);
   let submitted = '';
   f.host.sendMessage = async (_id, request) => { submitted = request.id; };
   const fetch = f.host.fetch;
@@ -462,7 +459,7 @@ test('a message folded into a running child keeps its original answer for wait_a
 });
 test('a message that never reached its child ends failed, with no notification, rather than waiting on a request the child never had', async () => {
   const f = fixture();
-  f.values.set('delegation:original', { id: 'child', key: 'original', requestId: 'child-run', parentRequestId: 'parent-run', toolCallId: 'spawn', task: 'work', name: 'worker', depth: 1, createdAt: 1, status: 'completed', background: true, accepted: true, made: true, outcome: { result: { reply: 'done' } } });
+  await f.delegation.rows.put({ id: 'child', key: 'original', requestId: 'child-run', parentRequestId: 'parent-run', toolCallId: 'spawn', task: 'work', name: 'worker', depth: 1, createdAt: 1, status: 'completed', background: true, accepted: true, made: true, outcome: { result: { reply: 'done' } } } as DelegatedChild);
   f.host.sendMessage = async () => { throw new Error('A call to blockConcurrencyWhile() in a Durable Object waited for too long.'); };
   const fetch = f.host.fetch;
   f.host.fetch = async (id, request) => new URL(request.url).pathname.startsWith('/requests/msg_') ? new Response('', { status: 404 }) : fetch(id, request);
@@ -479,8 +476,10 @@ test('a message that never reached its child ends failed, with no notification, 
 });
 test('progress is idempotent, shown once in tool results, and never starts a turn', async () => {
   const parent = fixture(), child = await childFixture();
-  parent.values.set('delegation:live', { id: 'child', key: 'live', requestId: 'child-run', parentRequestId: 'parent-run', toolCallId: 'spawn', task: 'go', name: 'helper', depth: 1, createdAt: 1, status: 'running', made: true, background: true, accepted: true });
-  child.host.reportProgress = async (id, report) => { assert.equal(id, 'parent'); await parent.delegation.recordProgress(report); };
+  // The child is still working: its simulated alarm has no ending to deliver while the test reads its progress.
+  parent.host.fetch = async () => Response.json({ state: 'running' });
+  await parent.delegation.rows.put({ id: 'child', key: 'live', requestId: 'child-run', parentRequestId: 'parent-run', toolCallId: 'spawn', task: 'go', name: 'helper', depth: 1, createdAt: 1, status: 'running', made: true, background: true, accepted: true } as DelegatedChild);
+  child.host.reportProgress = async (owner, report) => { assert.deepEqual(owner, { kind: 'agent', id: 'parent' }); return parent.delegation.recordProgress(report); };
   const progress = child.delegation.tools({}, [], true).find(tool => tool.name === 'report_progress')!;
   await (progress.execute as any)({ text: 'Read the first source' }, toolApi('progress'), { abortSignal: signal() });
   await (progress.execute as any)({ text: 'Read the first source' }, toolApi('progress'), { abortSignal: signal() });
@@ -494,13 +493,13 @@ test('progress is idempotent, shown once in tool results, and never starts a tur
   assert.match(first.output[1].text, /Read the first source/);
   const second = await (list.execute as any)({}, toolApi('list2'), { abortSignal: signal() });
   assert.equal(second.output.length, 1);
-  await assert.rejects(parent.delegation.recordProgress({ agentId: 'stranger', requestId: 'child-run', callId: 'fake', text: 'fake' }), /Unknown sub-agent/);
+  assert.deepEqual(await parent.delegation.recordProgress({ agentId: 'stranger', requestId: 'child-run', callId: 'fake', text: 'fake' }), { accepted: false, error: 'Unknown sub-agent run' });
 });
 test('wait_agent takes a background ending exactly once and excludes direct delegates', async () => {
   const f = fixture();
   const base = { id: 'child', requestId: 'child-run', parentRequestId: 'parent-run', toolCallId: 'call', task: 'go', name: 'helper', depth: 1, root: 'parent', createdAt: 1, endedAt: 2, status: 'completed', made: true, accepted: true, outcome: { result: { reply: 'done' } } };
-  f.values.set('delegation:background', { ...base, key: 'background', background: true });
-  f.values.set('delegation:direct', { ...base, id: 'direct', key: 'direct', background: false });
+  await f.delegation.rows.put({ ...base, key: 'background', background: true } as DelegatedChild);
+  await f.delegation.rows.put({ ...base, id: 'direct', key: 'direct', background: false } as DelegatedChild);
   const wait = f.delegation.tools({ instructions: true }, ['agents']).find(tool => tool.name === 'wait_agent')!;
   const first = await (wait.execute as any)({}, toolApi('wait'), { abortSignal: signal() });
   assert.deepEqual(JSON.parse(first.output[0].text).agents.map((entry: any) => [entry.name, entry.text]), [['helper', 'done']]);

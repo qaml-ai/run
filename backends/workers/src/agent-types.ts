@@ -50,6 +50,8 @@ export type RequestRecord = {
   metadata?: unknown;
   /** Where this run stands in a delegation chain, as its owner placed it through the binding (shared/owner.ts). */
   delegation?: Placement;
+  /** Its ending is in this agent's outbox for its owner (ending-outbox.ts). */
+  endingStaged?: true;
   actor?: string;
   usageBaseline?: Record<string, number>;
   fingerprint: string;

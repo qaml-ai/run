@@ -60,7 +60,7 @@ test('workerd runs 64 concurrent delegated children without relay streams or per
     assert.equal(started, CHILDREN, fixture.worker.logs());
     assert.equal(peakChildren, CHILDREN);
     console.log('DELEGATION_LOAD_STARTED ' + JSON.stringify({ children: started, elapsedMs: Date.now() - began }));
-    // Hold past one recovery sweep, exercising its fixed concurrency bound too.
+    // Hold the children a while: the parent polls none of them meanwhile (their endings come by their outboxes).
     await new Promise(resolve => setTimeout(resolve, 5500));
     gate.resolve();
     const completionDeadline = Date.now() + 90_000;
@@ -77,13 +77,12 @@ test('workerd runs 64 concurrent delegated children without relay streams or per
     assert.ok(profile.children.every((status: string) => status === 'completed'), JSON.stringify(profile));
     assert.equal(profile.eventStreams, 0);
     assert.ok(profile.rpc.total < 1000, JSON.stringify(profile.rpc));
-    assert.equal(profile.relayStreams, 0);
-    assert.ok(profile.pushedCompletions > 0, JSON.stringify(profile));
-    assert.equal(profile.pushedCompletions + profile.recoveredCompletions, CHILDREN, JSON.stringify(profile));
-    assert.ok(profile.maxFallbackConcurrent <= 6, JSON.stringify(profile));
+    // Every ending reached the parent through its child's outbox, taken once; nothing was reconciled by polling.
+    assert.equal(profile.endings, CHILDREN, JSON.stringify(profile));
+    assert.equal(profile.legacyRecovered, 0, JSON.stringify(profile));
     await new Promise(resolve => setTimeout(resolve, 6000));
     const settled = await call(`/__test/delegation/${parent.id}`);
-    assert.equal(settled.fallbackSweeps, profile.fallbackSweeps, 'no recovery polling after completion');
+    assert.equal(settled.endings, profile.endings, 'nothing is taken again after completion');
     assert.equal(settled.alarmFires, profile.alarmFires, 'no alarm loop after completion');
     assert.ok(settled.alarmFires <= 2, JSON.stringify(settled));
     console.log('DELEGATION_LOAD ' + JSON.stringify({ concurrentChildren: peakChildren, v8Flags: process.env.MINIFLARE_WORKERD_V8_FLAGS, elapsedMs: Date.now() - began, baselineHeap: baseline, peakHeap: peakBreakdown, peakHeapBytes: peakHeap, ...settled }));

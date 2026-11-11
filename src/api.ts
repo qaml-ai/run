@@ -359,11 +359,13 @@ export function api(context: ApiContext) {
       throw new HttpError(403, "An OAuth access token works with agents only: it cannot get agent tokens or make API tokens, links, webhooks, channels or provider keys. Use an API token or the console");
     }
     // A browser token reads its one agent's events, state, history and inputs, as its scopes say, and nothing else; with
-    // the children scope, its background sub-agents' too.
+    // the children scope, its sub-agents' too. Its events scope reads its sub-agents' events (what `subagents` once
+    // relayed on its own stream): a watcher follows each child on the child's own stream.
     if (principal.browser) {
       const [, agent, scope] = BROWSER_ROUTE.exec(c.req.path) ?? [];
       if (c.req.method !== "GET" || !scope) throw new HttpError(403, "A browser token only reads an agent's events, state, history and inputs");
-      if (agent !== principal.browser.agent && !(principal.browser.scopes.includes("children") && await clients.isChildOf(agent, principal.browser.agent))) {
+      const readsChild = principal.browser.scopes.includes("children") || scope === "events";
+      if (agent !== principal.browser.agent && !(readsChild && await clients.isChildOf(agent, principal.browser.agent))) {
         throw new HttpError(403, principal.browser.scopes.includes("children") ? "This browser token is for another agent, and this one is not its sub-agent" : "This browser token is for another agent");
       }
       if (!principal.browser.scopes.includes(scope as BrowserClaims["scopes"][number])) throw new HttpError(403, `This browser token does not read ${scope}`);
@@ -725,7 +727,7 @@ export function api(context: ApiContext) {
         poll: z.enum(["1"]).optional().openapi({ description: "Answer once, as JSON, instead of streaming" }),
         wait: z.string().optional().openapi({ description: "With poll: seconds (at most 25) to wait for the next event when none is buffered" }),
         snapshot: z.enum(["1", "0"]).optional().openapi({ description: "By default, where the stream cannot replay (no Last-Event-ID, or one behind the buffer), it starts with a snapshot of the running turn instead of what is buffered or a 409. Each message_update is its delta alone, so a subscriber folds from the snapshot. 0: no snapshot; behind the buffer is a 409" }),
-        subagents: z.enum(["1"]).optional().openapi({ description: "Also send the agent's children's progress, from its delegate and spawn_agent calls: subagent_start, subagent_event (a child's event, streamed text left out), subagent_end (a background child's, as its notification lands; both with background: true), subagent_message (a background child messaged its parent) and subagent_progress (a child's latest report_progress). Without it, none of them" }),
+        subagents: z.enum(["1"]).optional().openapi({ description: "Also send the agent's children's progress, from its delegate and spawn_agent calls: subagent_start, subagent_end (a background child's, as its notification lands; both with background: true), subagent_message (a background child messaged its parent) and subagent_progress (a child's latest report_progress). Without it, none of them. A child's own events are on its own stream (GET /v1/agents/{childId}/events; a browser token reads it with the children scope). The deprecated subagent_event relay is still sent by the Node runtime for older SDKs, and will be removed" }),
         request: z.string().optional().openapi({ description: "Only this request's events and response (a run's id, a prompt's requestId), besides snapshots" }),
       }),
     },

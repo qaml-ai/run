@@ -118,7 +118,7 @@ export type AgentEvent =
   | { type: "event_omitted"; reason: string; was?: string }
   /** With `subagents: true`: a delegate (or spawn_agent, `background`) call started (or found) its child agent `agentId`, running request `requestId`. */
   | { type: "subagent_start"; toolCallId: string; agentId: string; requestId: string; name: string; depth: number; background?: true }
-  /** With `subagents: true`: one of the child's events (its streamed text left out); a grandchild's arrive nested in its child's. */
+  /** Deprecated, Node only (older SDKs read it): one of the child's events, relayed. Read the child's own stream by its id instead. */
   | { type: "subagent_event"; toolCallId: string; agentId: string; event: AgentEvent }
   /** With `subagents: true`: the child's run ended, and how; a background child's as its notification lands (or a wait_agent takes it). */
   | { type: "subagent_end"; toolCallId: string; agentId: string; requestId: string; status: "completed" | "input_required" | "failed" | "aborted"; error?: string; name?: string; background?: true }

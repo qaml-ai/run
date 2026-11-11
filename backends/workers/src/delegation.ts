@@ -19,6 +19,7 @@ import type { ComputerSnapshot } from './computers/provider.ts';
 import type { NativeForkOrigin } from './computers/native-fork.ts';
 import type { ChildPlace } from './child-parent.ts';
 import { ChildRows, CHILDREN_KV_PREFIX } from './children-table.ts';
+import type { ChildEnding, Receipt } from './ending-outbox.ts';
 import { agentOwner, ownerOf, placementOf, type Owner, type Placement } from '../../../shared/owner.ts';
 
 type Configuration = { bucket?: string; model?: string | object; systemPrompt?: string; delegate?: DelegateSettings; builtins?: string[]; spendLimit?: { usd: number }; [key: string]: unknown };
@@ -31,7 +32,7 @@ export function childUsageCost(usage?: ChildUsage) {
 /** A child's progress report as a parent's tool result shows it (`agentUpdates`), with what marks it shown. */
 export type ShownProgress = { key: string; name: string; text: string; at: number; sequence: number };
 export type ChildProgressReport = { agentId: string; requestId: string; text: string; callId: string };
-export type DelegatedChild = { owner?: Owner; rootOwner?: Owner; payer?: string; bucket?: string; id: string; key: string; requestId: string; parentRequestId: string; toolCallId: string; callId?: string; task?: string; payloadBytes?: number; name: string; depth: number; maxDepth?: number; chain?: string[]; root?: string; background?: boolean; folded?: boolean; createdAt: number; endedAt?: number; status: string; made: boolean; held?: number; spent?: number; charged?: boolean; outcome?: ChildRun['outcome']; error?: string; notified?: boolean; landedBy?: 'wait' | 'notice'; accepted?: boolean; cancelRequested?: boolean; progress?: { text: string; at: number; sequence: number }; progressShown?: number; progressCalls?: string[] };
+export type DelegatedChild = { outbox?: boolean; owner?: Owner; rootOwner?: Owner; payer?: string; bucket?: string; id: string; key: string; requestId: string; parentRequestId: string; toolCallId: string; callId?: string; task?: string; payloadBytes?: number; name: string; depth: number; maxDepth?: number; chain?: string[]; root?: string; background?: boolean; folded?: boolean; createdAt: number; endedAt?: number; status: string; made: boolean; held?: number; spent?: number; charged?: boolean; outcome?: ChildRun['outcome']; error?: string; notified?: boolean; landedBy?: 'wait' | 'notice'; accepted?: boolean; cancelRequested?: boolean; progress?: { text: string; at: number; sequence: number }; progressShown?: number; progressCalls?: string[] };
 /** How many children `GET /v1/agents/{id}/children` lists, newest first (as Node's CHILDREN_LISTED). */
 export const CHILDREN_LISTED = 200;
 /**
@@ -102,12 +103,13 @@ export interface DelegationHost {
   notify?(child: DelegatedChild): Promise<void>;
   retry?(afterMs?: number): Promise<void>;
   sendMessage?(targetId: string, request: NoticeRequest, notice: RuntimeNotice): Promise<unknown>;
-  reportProgress?(parentId: string, report: ChildProgressReport): Promise<unknown>;
+  /** Send a progress report to this run's owner through this agent's outbox (ending-outbox.ts). */
+  reportProgress?(owner: Owner, report: ChildProgressReport): Promise<Receipt>;
 }
 /** What a fork gives a child: a seed for its computer connection, and the native computer's snapshot. */
 export type ChildComputerFork = { connection?: { seed: string; connection?: string; provider?: string; at?: number }; native?: { snapshot: ComputerSnapshot; origin: NativeForkOrigin } };
-export type ChildEvent = { agentId: string; requestId: string; event: { type: string; id?: string; requestId?: string; event?: unknown }; record?: ChildRun };
-export const CHILD_FALLBACK_MS = 5000;
+/** How often a wait_agent looks again for messages and progress while it waits (endings wake it at once). */
+export const WAIT_RECHECK_MS = 5000;
 const prefix = CHILDREN_KV_PREFIX;
 const payloadPrefix = 'delegation-payload:';
 type ChildStorage = Pick<DurableObjectStorage, 'get' | 'put'>;
@@ -129,17 +131,20 @@ async function legacySignature(secret: string, agent: string, run: string, depth
   return [...new Uint8Array(bytes)].map(x => x.toString(16).padStart(2, '0')).join('');
 }
 
+const resumeRequestId = async (paused: DelegatedChild) => `resume_${(await digest(paused.requestId)).slice(0, 40)}`;
+function resumeRow(paused: DelegatedChild, requestId: string): DelegatedChild {
+  return { ...paused, outbox: true, key: `${paused.key}:resume`, requestId, payloadBytes: undefined, createdAt: Date.now(), status: 'running', endedAt: undefined, outcome: undefined, error: undefined, spent: undefined, held: undefined, charged: undefined, notified: undefined, landedBy: undefined, progress: undefined, progressCalls: undefined, progressShown: undefined };
+}
+
 /** A run's place in its chain: its parent (the chain's last) and root (its first) agent ids, with their owners. */
 export type Lineage = { depth: number; maxDepth: number; chain: string[]; parent: string; root: string; owner: Owner; rootOwner: Owner };
 
 /** Durable child lifecycle; Pi owns invocation replay, and the child request is idempotent. */
 export class Delegation {
-  private readonly following = new Set<string>();
   private readonly changed = new Map<string, Set<() => void>>();
-  private fallback?: ReturnType<typeof setTimeout>;
-  private sweepRunning = false;
   private readonly completions = new Map<string, Promise<void>>();
-  readonly measurements = { relayStreams: 0, fallbackSweeps: 0, fallbackRequests: 0, pushedEvents: 0, pushedCompletions: 0, recoveredCompletions: 0, maxFallbackConcurrent: 0 };
+  /** Endings taken (`endings`), delivered again after one was (`repeatedEndings`), and legacy runs reconciled at start. */
+  readonly measurements = { endings: 0, repeatedEndings: 0, legacyRecovered: 0 };
   private signalChange(key: string) {
     for (const name of [key, '*']) {
       for (const wake of this.changed.get(name) ?? []) wake();
@@ -154,50 +159,18 @@ export class Delegation {
       const aborted = () => { remove(); reject(signal?.reason); };
       const entries = this.changed.get(key) ?? new Set(); entries.add(done); this.changed.set(key, entries);
       signal?.addEventListener('abort', aborted, { once: true });
-      if (key === '*') this.scheduleFallback();
     });
   }
-  private scheduleFallback() {
-    if (this.fallback || this.sweepRunning || (!this.following.size && !this.changed.has('*'))) return;
-    this.fallback = setTimeout(() => {
-      this.fallback = undefined;
-      this.host.waitUntil(this.sweep().finally(() => this.scheduleFallback()));
-    }, CHILD_FALLBACK_MS);
-  }
-  private async sweep() {
-    this.sweepRunning = true;
-    this.measurements.fallbackSweeps++;
-    let active = 0;
-    try {
-      const pending = (await this.children()).filter(child => this.following.has(child.key));
-      // Six bounded workers share one sweep; no child owns a timer or an open stream.
-      await Promise.all(Array.from({ length: Math.min(6, pending.length) }, async () => {
-        for (;;) {
-          const child = pending.shift(); if (!child) return;
-          if (child.status !== 'running') { await this.afterCompletion(child); continue; }
-          if (!child.id || !child.accepted) continue;
-          this.measurements.fallbackRequests++;
-          active++; this.measurements.maxFallbackConcurrent = Math.max(this.measurements.maxFallbackConcurrent, active);
-          try {
-            const response = await this.host.fetch(child.id, new Request(`https://agent/requests/${child.requestId}`));
-            const record: ChildRun = response.ok ? await response.json() : { state: 'completed', status: 'failed', error: 'The sub-agent was deleted before it answered' };
-            if (!response.ok && ![404, 410].includes(response.status)) continue;
-            if (record.state === 'completed') await this.complete(child, record, 'recovery');
-          } catch { /* The next sweep retries a lost callback or unavailable child. */ } finally { active--; }
-        }
-      }));
-    } finally { this.sweepRunning = false; this.signalChange('*'); }
-  }
-  /** Binding-only delivery: accept events only for a child request this parent recorded. */
-  async receive(event: ChildEvent) {
-    const child = await this.rows.byRun(event.agentId, event.requestId);
-    if (!child || child.id !== event.agentId || child.requestId !== event.requestId) return { accepted: false };
-    this.measurements.pushedEvents++;
-    if (event.event.type === 'event' && child.status === 'running') await this.host.emit({ type: 'event', requestId: child.parentRequestId, event: { type: 'subagent_event', toolCallId: child.toolCallId, agentId: child.id, requestId: child.requestId, event: event.event.event } });
-    this.signalChange('*');
-    if (event.record?.state === 'completed') {
-      await this.complete(child, event.record, 'push');
-    }
+  /**
+   * A child's ending, delivered by the child's outbox (ending-outbox.ts) until this answers. Idempotent on the child's
+   * run: the row's status decides, in one transaction, whether this delivery or an earlier one took the ending, so a
+   * delivery made again charges, notifies and releases nothing twice. An unknown run is answered `accepted: false`.
+   */
+  async receiveEnding(ending: ChildEnding): Promise<Receipt> {
+    const child = await this.rows.byRun(ending.agentId, ending.requestId) ?? await this.resumedRun(ending);
+    if (!child || child.id !== ending.agentId) return { accepted: false };
+    if (ending.record?.state !== 'completed') return { accepted: true };
+    await this.complete(child, ending.record);
     return { accepted: true };
   }
   /** wait_agent calls in flight: while one is, a child's ending is left for it, not sent to the running turn (notify "asap"). */
@@ -394,7 +367,7 @@ export class Delegation {
             await tx.put(responseKey, { ...state.delegateResponse!, keys: [...new Set([...(prior?.keys ?? []), key])] });
           } else held = remaining / (maxParallel - running.length);
         }
-        const child: DelegatedChild = { id: '', owner: place.owner, rootOwner: place.rootOwner, payer: run.params?.endUser, bucket: run.params?.bucket ?? config.bucket, key, requestId: `${background ? 'spawn' : 'delegate'}_${identity.slice(0, 48)}`, parentRequestId: run.id, toolCallId, ...(toolCallId !== callId ? { callId } : {}), task: args.instructions === undefined ? args.task as string : roleAndTask(args.instructions as string, args.task as string), name: typeof args.name === 'string' ? args.name : `${target?.name ?? 'subagent'}-${children.length + 1}`, depth: place.depth, maxDepth: place.maxDepth, chain: place.chain, root: place.chain[0], background, createdAt: Date.now(), status: 'running', made: target?.agent === undefined, ...(held !== undefined ? { held } : {}) };
+        const child: DelegatedChild = { id: '', outbox: true, owner: place.owner, rootOwner: place.rootOwner, payer: run.params?.endUser, bucket: run.params?.bucket ?? config.bucket, key, requestId: `${background ? 'spawn' : 'delegate'}_${identity.slice(0, 48)}`, parentRequestId: run.id, toolCallId, ...(toolCallId !== callId ? { callId } : {}), task: args.instructions === undefined ? args.task as string : roleAndTask(args.instructions as string, args.task as string), name: typeof args.name === 'string' ? args.name : `${target?.name ?? 'subagent'}-${children.length + 1}`, depth: place.depth, maxDepth: place.maxDepth, chain: place.chain, root: place.chain[0], background, createdAt: Date.now(), status: 'running', made: target?.agent === undefined, ...(held !== undefined ? { held } : {}) };
         return this.putChild(tx, child);
       });
       if (admitted) {
@@ -454,12 +427,10 @@ export class Delegation {
       await this.waitChange('*', signal);
     }
   }
+  /** An ended child's notification, if it still owes one. A running child's ending comes to `receiveEnding` by itself. */
   private follow(child: DelegatedChild) {
-    if (child.status !== 'running' && (!child.background || child.notified)) return;
-    this.following.add(child.key);
-    this.host.waitUntil(this.host.storage.put(`delegation-run:${child.id}:${child.requestId}`, child.key));
-    this.scheduleFallback();
-    if (child.status !== 'running') this.host.waitUntil(this.afterCompletion(child));
+    if (child.status === 'running' || !child.background || child.notified) return;
+    this.host.waitUntil(this.afterCompletion(child));
   }
   private afterCompletion(child: DelegatedChild): Promise<void> {
     const pending = this.completions.get(child.key);
@@ -478,13 +449,13 @@ export class Delegation {
           if (latest) await this.putChild(tx, { ...latest, notified: true });
         });
       }
-      this.following.delete(child.key);
-      if (this.following.size <= 32) this.reportedChildren = 32;
-      if (!this.following.size && this.fallback) { clearTimeout(this.fallback); this.fallback = undefined; }
       if (child.background && child.status === 'input_required') await this.resumePaused(child);
-    } catch { this.following.add(child.key); this.scheduleFallback(); }
+    } catch {
+      // The next wake (recover) tries again: the row still owes its notification.
+      await this.host.retry?.(MULTI_AGENT_LIMITS.sweepMs).catch(() => {});
+    }
   }
-  private async complete(child: DelegatedChild, record: ChildRun, source: 'push' | 'recovery') {
+  private async complete(child: DelegatedChild, record: ChildRun) {
     const finished = await this.host.storage.transaction(async tx => {
       const current = await this.rows.get(child.key) ?? child;
       if (current.status !== 'running') return { child: current, changed: false };
@@ -495,8 +466,8 @@ export class Delegation {
       if (!value.background) value = await this.settleInTransaction(tx, value, value.parentRequestId);
       return { child: value, changed: !folded };
     });
-    // Count the transaction winner: a late push may arrive after recovery already completed this child.
-    if (finished.changed) this.measurements[source === 'push' ? 'pushedCompletions' : 'recoveredCompletions']++;
+    // The transaction's winner counts: a delivery made again finds the row ended.
+    this.measurements[finished.changed ? 'endings' : 'repeatedEndings']++;
     if (finished.changed && !child.background && child.made && child.id && finished.child.status !== 'input_required') this.host.waitUntil(this.host.releaseComputer?.(child.id).catch(() => {}) ?? Promise.resolve());
     if (finished.changed) await this.host.emit({ type: 'event', requestId: child.parentRequestId, event: { type: 'subagent_end', toolCallId: child.toolCallId, agentId: child.id, requestId: child.requestId, name: child.name, status: finished.child.status, ...(child.background ? { background: true } : {}), ...(finished.child.error ? { error: finished.child.error } : {}) } });
     this.signalChange(child.key);
@@ -560,26 +531,30 @@ export class Delegation {
       await tx.put(key, [...calls, callId]);
     });
   }
-  /** Accept only a report for the exact child run this parent started. */
-  async recordProgress(report: ChildProgressReport) {
-    if (typeof report.text !== 'string' || !report.text.trim() || report.text.length > MULTI_AGENT_LIMITS.progressChars) throw new HttpError(400, 'Invalid progress report');
+  /**
+   * A child's progress report, delivered by its outbox: taken only for the exact child run this owner started, once per
+   * call. A refusal is answered (`accepted: false`), not thrown, so the child's outbox drops it instead of retrying.
+   */
+  async recordProgress(report: ChildProgressReport): Promise<Receipt> {
+    if (typeof report.text !== 'string' || !report.text.trim() || report.text.length > MULTI_AGENT_LIMITS.progressChars) return { accepted: false, error: 'Invalid progress report' };
     const recorded = await this.host.storage.transaction(async tx => {
       const child = await this.rows.byRun(report.agentId, report.requestId);
-      if (!child) throw new HttpError(404, 'Unknown sub-agent run');
+      if (!child) return { refused: 'Unknown sub-agent run' };
       const calls = child.progressCalls ?? [];
       if (child.status !== 'running' || calls.includes(report.callId)) return;
-      if (calls.length >= MULTI_AGENT_LIMITS.progressPerRun) throw new HttpError(400, 'Progress limit reached');
+      if (calls.length >= MULTI_AGENT_LIMITS.progressPerRun) return { refused: 'Progress limit reached' };
       const progress = { text: report.text.trim(), at: Date.now(), sequence: calls.length + 1 };
       await this.putChild(tx, { ...child, progress, progressCalls: [...calls, report.callId] });
       return { child, progress };
     });
+    if (recorded && 'refused' in recorded) return { accepted: false, error: recorded.refused };
     if (recorded) {
       const { child, progress } = recorded;
       await this.host.emit({ type: 'event', requestId: child.parentRequestId, event: { type: 'subagent_progress', toolCallId: child.toolCallId, agentId: child.id, requestId: child.requestId, name: child.name, text: progress.text, at: progress.at, ...(child.background ? { background: true } : {}) } });
       if (!child.background) await this.host.emit({ type: 'event', requestId: child.parentRequestId, event: { type: 'tool_execution_update', toolCallId: child.toolCallId, toolName: 'delegate', partialResult: { content: [{ type: 'text', text: progress.text }], details: { type: 'progress', tool: 'delegate', message: progress.text } } } });
     }
     this.signalChange("*");
-    return { reported: true };
+    return { accepted: true };
   }
   private async takeProgress(api?: ToolExecutionApi) {
     const site = api ? await toolCallSite(api) : undefined;
@@ -642,7 +617,7 @@ export class Delegation {
     const key = `message-${identity.slice(0, 48)}`, existing = await this.rows.get(key);
     const answer = (value: DelegatedChild) => ({ sent: true, to: child.name, agentId: child.id, into: value.folded ? 'its running turn' : 'a new turn: its answer comes as a notification' });
     if (existing?.accepted) { this.follow(existing); return answer(existing); }
-    const next: DelegatedChild = existing ?? { ...child, payer: run.params?.endUser, bucket: run.params?.bucket ?? config.bucket, key, requestId, parentRequestId: run.id, toolCallId: callId, task: args.text, background: true, createdAt: Date.now(), endedAt: undefined, status: 'running', held: undefined, spent: undefined, charged: undefined, outcome: undefined, error: undefined, notified: undefined, landedBy: undefined, accepted: false, cancelRequested: undefined, folded: undefined, progress: undefined, progressCalls: undefined, progressShown: undefined };
+    const next: DelegatedChild = existing ?? { ...child, outbox: true, payer: run.params?.endUser, bucket: run.params?.bucket ?? config.bucket, key, requestId, parentRequestId: run.id, toolCallId: callId, task: args.text, background: true, createdAt: Date.now(), endedAt: undefined, status: 'running', held: undefined, spent: undefined, charged: undefined, outcome: undefined, error: undefined, notified: undefined, landedBy: undefined, accepted: false, cancelRequested: undefined, folded: undefined, progress: undefined, progressCalls: undefined, progressShown: undefined };
     await this.putChild(this.host.storage, next);
     const chain = child.chain ?? [...lineage?.chain ?? [], id], maxDepth = child.maxDepth ?? config.delegate?.maxDepth ?? MULTI_AGENT_LIMITS.maxDepth;
     const metadata = { [PARENT_KEYS.agent]: id, [PARENT_KEYS.run]: run.id, [PARENT_KEYS.toolCall]: callId, [PARENT_KEYS.depth]: String(child.depth), [PARENT_KEYS.maxDepth]: String(maxDepth), [PARENT_KEYS.chain]: chain.join(',') };
@@ -676,7 +651,9 @@ export class Delegation {
     const { id, run } = await this.host.context(api), lineage = await this.lineage(id, run);
     if (!lineage?.parent) throw new HttpError(400, 'This run has no parent');
     await this.countCall('progress reports', run.id, callId, MULTI_AGENT_LIMITS.progressPerRun);
-    await this.host.reportProgress(lineage.parent, { agentId: id, requestId: run.id, text: args.text.trim(), callId });
+    // Through this agent's outbox: delivered now if the owner answers, else by the alarm, in order.
+    const receipt = await this.host.reportProgress(lineage.owner, { agentId: id, requestId: run.id, text: args.text.trim(), callId });
+    if (!receipt.accepted) throw new HttpError(400, receipt.error ?? 'Your parent did not take the report');
     return { reported: true };
   }
   async recover() {
@@ -690,29 +667,54 @@ export class Delegation {
       if (child.cancelRequested && child.status === 'running') {
         await this.cancelRemote(child);
         if (!child.accepted) {
-          if (child.id) this.follow(await this.update(child, { accepted: true }));
-          else await this.update(child, { status: 'aborted', endedAt: Date.now(), held: undefined });
+          if (!child.id) { await this.update(child, { status: 'aborted', endedAt: Date.now(), held: undefined }); continue; }
+          const accepted = await this.update(child, { accepted: true });
+          this.follow(accepted);
+          if (!accepted.outbox) await this.reconcileLegacy(accepted);
           continue;
         }
       }
       if (child.accepted) this.follow(child);
+      if (child.accepted && child.status === 'running' && !child.outbox) await this.reconcileLegacy(child);
     }
-    if (this.following.size && !this.sweepRunning) await this.sweep();
   }
+  /**
+   * A child started before durable endings (its row has no `outbox`): its ending was pushed once, fire and forget, and
+   * may have been lost. Asked when the parent wakes (its start, and its watchdog while such a row runs), as the old
+   * sweep did, for these rows only. Goes with the contract deploy (PR 6), when no such row is left running (a made child
+   * lives a day).
+   */
+  private async reconcileLegacy(child: DelegatedChild) {
+    try {
+      const response = await this.host.fetch(child.id, new Request(`https://agent/requests/${child.requestId}`));
+      if (!response.ok && ![404, 410].includes(response.status)) return;
+      const record: ChildRun = response.ok ? await response.json() : { state: 'completed', status: 'failed', error: 'The sub-agent was deleted before it answered' };
+      if (record.state !== 'completed') return;
+      this.measurements.legacyRecovered++;
+      await this.complete(child, record);
+    } catch { /* The next start asks again. */ }
+  }
+  /**
+   * A background child that waited on a person runs again once answered (its `resume_` run): the row of that run, made
+   * when the parent sees it begin (resumePaused, on a wake) or, at the latest, when its ending arrives here.
+   */
+  private async resumedRun(ending: ChildEnding): Promise<DelegatedChild | undefined> {
+    if (!ending.requestId.startsWith('resume_')) return;
+    for (const paused of await this.rows.ofChild(ending.agentId)) {
+      if (paused.status !== 'input_required' || !paused.background || paused.cancelRequested) continue;
+      if (ending.requestId !== await resumeRequestId(paused)) continue;
+      return await this.rows.get(`${paused.key}:resume`) ?? await this.putChild(this.host.storage, resumeRow(paused, ending.requestId));
+    }
+  }
+  /** A paused background child's resume, if it has begun: its row, so it lists as running. Its ending comes by itself. */
   private async resumePaused(child: DelegatedChild) {
     if (child.cancelRequested) return;
     const key = `${child.key}:resume`;
     if (await this.rows.get(key)) return;
-    const requestId = `resume_${(await digest(child.requestId)).slice(0, 40)}`;
+    const requestId = await resumeRequestId(child);
     const response = await this.host.fetch(child.id, new Request(`https://agent/requests/${requestId}`));
-    if (response.status === 404) {
-      if (Date.now() - child.createdAt < MULTI_AGENT_LIMITS.childTtlSeconds * 1000) await this.host.retry?.(MULTI_AGENT_LIMITS.sweepMs);
-      return;
-    }
     if (!response.ok) return;
-    const resumed: DelegatedChild = { ...child, key, requestId, payloadBytes: undefined, createdAt: Date.now(), status: 'running', endedAt: undefined, outcome: undefined, error: undefined, spent: undefined, held: undefined, charged: undefined, notified: undefined, landedBy: undefined, progress: undefined, progressCalls: undefined, progressShown: undefined };
-    await this.putChild(this.host.storage, resumed);
-    this.follow(resumed);
+    await this.putChild(this.host.storage, resumeRow(child, requestId));
   }
   async targetDescriptions(settings: DelegateSettings) {
     const descriptions = new Map<string, string>();
@@ -807,7 +809,7 @@ export class Delegation {
             if (messaged.size) break;
             if (args.untilProgress && Date.now() >= earliestProgress) for (const child of latest) if (child.progress && child.progress.sequence > (child.progressShown ?? 0)) updated.add(child.name);
             if (updated.size) break;
-            await this.waitChange('*', AbortSignal.any([signal, AbortSignal.timeout(Math.min(CHILD_FALLBACK_MS, Math.max(1, deadline - Date.now())))] )).catch(error => { if (signal.aborted) throw error; });
+            await this.waitChange('*', AbortSignal.any([signal, AbortSignal.timeout(Math.min(WAIT_RECHECK_MS, Math.max(1, deadline - Date.now())))] )).catch(error => { if (signal.aborted) throw error; });
           }
           const { run } = await this.host.context(api);
           const answers = await this.host.storage.transaction(async tx => {

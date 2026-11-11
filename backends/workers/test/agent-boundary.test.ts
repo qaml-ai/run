@@ -8,8 +8,8 @@ import { ARM_AGENT, DUE_HUMAN_INPUTS } from "../src/agent-internals.ts";
 test("the Durable Object preserves its RPC boundary and gates pilot counters", async () => {
   const methods = [
     "removeMember", "databaseProfile",
-    "purgeAccountData", "admitDelegateWake", "receiveAgentMessage", "receiveAgentProgress", "receiveChildEvent", "admitDelegated",
-    "hasBackgroundChild", "cancelRequest", "fetch", "onStart", "onJob",
+    "purgeAccountData", "admitDelegateWake", "receiveAgentMessage", "receiveProgress", "receiveEnding", "admitDelegated",
+    "hasChild", "cancelRequest", "fetch", "onStart", "onJob",
     "webSocketMessage", "webSocketClose", "webSocketError",
   ];
   const source = readFileSync(new URL("../src/agent.ts", import.meta.url), "utf8");

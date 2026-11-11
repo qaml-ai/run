@@ -258,7 +258,7 @@ you get none of these events.
 | Event | |
 | --- | --- |
 | `subagent_start` | `{ toolCallId, agentId, requestId, name, depth }`: the call started its sub-agent |
-| `subagent_event` | `{ toolCallId, agentId, event }`: one of the sub-agent's events (its streamed text left out). A grandchild's events arrive nested in its parent's |
+| `subagent_event` | deprecated (Node only, for older SDKs): one of the sub-agent's events, relayed. Read the sub-agent's own stream by its `agentId` instead; the SDKs' `subagents: true` does |
 | `subagent_end` | `{ toolCallId, agentId, requestId, status, error? }` |
 | `subagent_progress` | `{ toolCallId, agentId, name, text }`: the sub-agent's latest [progress report](#progress) |
 
@@ -490,6 +490,12 @@ that ran it, as the run ends, and otherwise by a sweep on any node (every
 which the parent takes once, so a node lost on the way (the sub-agent's, the
 parent's, or both) delays the notification by a sweep and never repeats it.
 
+On Workers the parent keeps a `children` table in its own storage, and the sub-agent's ending is durable on the
+sub-agent's side: the run's outcome and its ending are written together to the sub-agent's outbox, and the
+sub-agent's alarm delivers the ending to its parent, with jittered backoff (1 s doubling to 5 minutes), until the
+parent takes it (once: it checks its row). A parent that is evicted or hibernating hears it when the delivery wakes it; nothing on its side polls its
+sub-agents. Progress reports travel the same way.
+
 ### Cost and loop guards
 
 - What the sub-agent spent is charged to the parent's spend limit when its
@@ -512,7 +518,7 @@ parent's, or both) delays the notification by a sweep and never repeats it.
 
 With `?subagents=1` (`subagents: true` in the SDKs), the parent's stream has
 `subagent_start` (with `background: true`) when a sub-agent starts,
-`subagent_event` with its events while it runs on the parent's node, and
+its own events on its own stream (by its `agentId`), and
 `subagent_end` (with `background: true`, `name` and `status`) when its
 notification lands or a `wait_agent` answers it, `subagent_message` when it
 messages its parent, and `subagent_progress` (with `background: true`) when it
@@ -651,4 +657,4 @@ parent's task.
 
 A definition target can pin a revision: `{ name: "reviewer", definition: "review", revision: 3 }`. New children use that saved revision even after the definition changes. Revisions available before this feature start with the revision current at migration; older revisions cannot be recovered. Deleting the definition deletes its revisions. Rotating or removing a credential purges its sealed value from old revisions; a pin does not preserve retired credentials.
 
-On Workers, child events and completion are pushed to the parent Durable Object. A single recovery sweep runs every five seconds for missed notifications, with at most six child reads in flight. Waiting does not open a relay stream or polling timer for each child. The concurrency ceiling is 64 on both backends; configured capacity and spend limits still apply.
+On Workers, a child's ending and progress reports are delivered to the parent by the child's own outbox and alarm (see Exactly once); the parent neither polls its children nor relays their events, and a waiting parent holds no stream or timer per child. The concurrency ceiling is 64 on both backends; configured capacity and spend limits still apply.
