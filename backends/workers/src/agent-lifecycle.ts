@@ -5,7 +5,7 @@ import { HttpError } from "./errors.ts";
 import { expireDecisions } from "./inbox-decisions.ts";
 import { restageInputMirrors } from "./agent-input-mirror.ts";
 import { inputAdmissionDeadline } from "./input-admission.ts";
-import { MULTI_AGENT_LIMITS, viaParent } from "./multi-agent-policy.ts";
+import { viaParent } from "./multi-agent-policy.ts";
 import { childParent } from "./child-parent.ts";
 import { type EventSubscription } from "./event-socket.ts";
 import { withMoneyMetrics } from "./money-metrics.ts";
@@ -109,7 +109,6 @@ export async function armImpl(this: AgentRuntime,
     const records = await this.records();
     const pendingRuns = records.filter(record => record.accepted && record.state !== "completed");
     const children = await this.delegation.children();
-    const childKeys = new Set(children.map(child => child.key));
     const recovering = records.some(record => record.state !== "completed" && !record.accepted && !record.heldForInput) ||
       this.cancellations.size > 0 ||
       (await Promise.all(pendingRuns.map(record => this.ctx.storage.get(`cancelled-request:${record.id}`)))).some(Boolean) ||
@@ -117,10 +116,9 @@ export async function armImpl(this: AgentRuntime,
       await this.notifications.pending() ||
       // A running child needs nothing from here: its ending comes by its own outbox. Only a child older code started
       // (no outbox) is asked, on each wake until it ends (Delegation.reconcileLegacy).
+      // A child waiting on a person needs nothing either: its resumed run's ending comes the same way.
       children.some(child => (child.status === "running" && child.accepted && !child.outbox) ||
-        (child.background && ((child.status === "input_required" && !child.cancelRequested &&
-          !childKeys.has(`${child.key}:resume`) && Date.now() - child.createdAt < MULTI_AGENT_LIMITS.childTtlSeconds * 1000) ||
-          (child.accepted && !child.notified && child.landedBy !== "wait"))));
+        (child.background && child.accepted && !child.notified && child.landedBy !== "wait"));
     const next = Math.min(
       config?.expiresAt ?? Infinity,
       config

@@ -290,7 +290,8 @@ test('a paused background child produces one new completion notice after its hum
   f.host.notify = async child => { notified.push(child.key); };
   f.host.retry = async after => { retries.push(after!); };
   await f.delegation.recover();
-  assert.equal(retries[0], 15_000);
+  // Not resumed yet: nothing to do, and nothing polls (the resumed run's ending will come by the child's outbox).
+  assert.deepEqual(retries, []);
   resumed = true;
   await f.delegation.recover();
   await Promise.all(f.tasks);

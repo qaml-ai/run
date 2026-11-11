@@ -131,6 +131,11 @@ async function legacySignature(secret: string, agent: string, run: string, depth
   return [...new Uint8Array(bytes)].map(x => x.toString(16).padStart(2, '0')).join('');
 }
 
+const resumeRequestId = async (paused: DelegatedChild) => `resume_${(await digest(paused.requestId)).slice(0, 40)}`;
+function resumeRow(paused: DelegatedChild, requestId: string): DelegatedChild {
+  return { ...paused, outbox: true, key: `${paused.key}:resume`, requestId, payloadBytes: undefined, createdAt: Date.now(), status: 'running', endedAt: undefined, outcome: undefined, error: undefined, spent: undefined, held: undefined, charged: undefined, notified: undefined, landedBy: undefined, progress: undefined, progressCalls: undefined, progressShown: undefined };
+}
+
 /** A run's place in its chain: its parent (the chain's last) and root (its first) agent ids, with their owners. */
 export type Lineage = { depth: number; maxDepth: number; chain: string[]; parent: string; root: string; owner: Owner; rootOwner: Owner };
 
@@ -162,7 +167,7 @@ export class Delegation {
    * delivery made again charges, notifies and releases nothing twice. An unknown run is answered `accepted: false`.
    */
   async receiveEnding(ending: ChildEnding): Promise<Receipt> {
-    const child = await this.rows.byRun(ending.agentId, ending.requestId);
+    const child = await this.rows.byRun(ending.agentId, ending.requestId) ?? await this.resumedRun(ending);
     if (!child || child.id !== ending.agentId) return { accepted: false };
     if (ending.record?.state !== 'completed') return { accepted: true };
     await this.complete(child, ending.record);
@@ -689,20 +694,27 @@ export class Delegation {
       await this.complete(child, record);
     } catch { /* The next start asks again. */ }
   }
+  /**
+   * A background child that waited on a person runs again once answered (its `resume_` run): the row of that run, made
+   * when the parent sees it begin (resumePaused, on a wake) or, at the latest, when its ending arrives here.
+   */
+  private async resumedRun(ending: ChildEnding): Promise<DelegatedChild | undefined> {
+    if (!ending.requestId.startsWith('resume_')) return;
+    for (const paused of await this.rows.ofChild(ending.agentId)) {
+      if (paused.status !== 'input_required' || !paused.background || paused.cancelRequested) continue;
+      if (ending.requestId !== await resumeRequestId(paused)) continue;
+      return await this.rows.get(`${paused.key}:resume`) ?? await this.putChild(this.host.storage, resumeRow(paused, ending.requestId));
+    }
+  }
+  /** A paused background child's resume, if it has begun: its row, so it lists as running. Its ending comes by itself. */
   private async resumePaused(child: DelegatedChild) {
     if (child.cancelRequested) return;
     const key = `${child.key}:resume`;
     if (await this.rows.get(key)) return;
-    const requestId = `resume_${(await digest(child.requestId)).slice(0, 40)}`;
+    const requestId = await resumeRequestId(child);
     const response = await this.host.fetch(child.id, new Request(`https://agent/requests/${requestId}`));
-    if (response.status === 404) {
-      if (Date.now() - child.createdAt < MULTI_AGENT_LIMITS.childTtlSeconds * 1000) await this.host.retry?.(MULTI_AGENT_LIMITS.sweepMs);
-      return;
-    }
     if (!response.ok) return;
-    const resumed: DelegatedChild = { ...child, outbox: true, key, requestId, payloadBytes: undefined, createdAt: Date.now(), status: 'running', endedAt: undefined, outcome: undefined, error: undefined, spent: undefined, held: undefined, charged: undefined, notified: undefined, landedBy: undefined, progress: undefined, progressCalls: undefined, progressShown: undefined };
-    await this.putChild(this.host.storage, resumed);
-    this.follow(resumed);
+    await this.putChild(this.host.storage, resumeRow(child, requestId));
   }
   async targetDescriptions(settings: DelegateSettings) {
     const descriptions = new Map<string, string>();
