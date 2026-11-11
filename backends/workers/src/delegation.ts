@@ -674,8 +674,9 @@ export class Delegation {
   }
   /**
    * A child started before durable endings (its row has no `outbox`): its ending was pushed once, fire and forget, and
-   * may have been lost. Asked once at start, never polled. Goes with the contract deploy (PR 6), when no such row is left
-   * running (a made child lives a day).
+   * may have been lost. Asked when the parent wakes (its start, and its watchdog while such a row runs), as the old
+   * sweep did, for these rows only. Goes with the contract deploy (PR 6), when no such row is left running (a made child
+   * lives a day).
    */
   private async reconcileLegacy(child: DelegatedChild) {
     try {

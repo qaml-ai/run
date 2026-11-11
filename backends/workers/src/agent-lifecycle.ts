@@ -116,7 +116,7 @@ export async function armImpl(this: AgentRuntime,
       !!await this.ctx.storage.get("resume-kept-queue") ||
       await this.notifications.pending() ||
       // A running child needs nothing from here: its ending comes by its own outbox. Only a child older code started
-      // (no outbox) is asked once, at start (Delegation.reconcileLegacy).
+      // (no outbox) is asked, on each wake until it ends (Delegation.reconcileLegacy).
       children.some(child => (child.status === "running" && child.accepted && !child.outbox) ||
         (child.background && ((child.status === "input_required" && !child.cancelRequested &&
           !childKeys.has(`${child.key}:resume`) && Date.now() - child.createdAt < MULTI_AGENT_LIMITS.childTtlSeconds * 1000) ||
