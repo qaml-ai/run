@@ -129,6 +129,17 @@ test("leases: a workflow that stops renewing loses its slots to waiters; renew k
   assert.equal(ledger.usage().tenant.workflows, 1);
   assert.ok(ledger.nextExpiry()! > clock.now);
   assert.throws(() => ledger.renew("crashed"), /open it again/);
+  // A release or close never grants a waiter whose workflow has already expired, even before any alarm ran.
+  clock.now = 10 * WORKFLOW_CAPACITY.leaseMs;
+  ledger.open("alive", { concurrency: 16 }, { ...CAPS, children: 2 });
+  assert.ok(ledger.acquire("alive", "child", "y").acquired.granted && ledger.acquire("alive", "child", "z").acquired.granted, "alive holds the whole cap");
+  ledger.open("ghost", { concurrency: 16 }, { ...CAPS, children: 2 });
+  assert.equal(ledger.acquire("ghost", "child", "g").acquired.granted, false);
+  clock.now += WORKFLOW_CAPACITY.leaseMs - 1;
+  const held = ledger.renew("alive").held[0];
+  clock.now += 2;
+  assert.deepEqual(ledger.release("alive", held.id), [], "the ghost expired: its request is not granted");
+  assert.equal(ledger.usage("ghost").workflows.length, 0);
   // An overdue row the clock has passed is reported due after now, never at or before it.
   clock.now += WORKFLOW_CAPACITY.leaseMs * 2;
   assert.equal(ledger.nextExpiry(), clock.now + 1);
