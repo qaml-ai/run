@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { DatabaseSync } from "node:sqlite";
 import type { WorkflowSandbox, WorkflowStepRequest } from "../codemode/workflow-protocol.ts";
 import { serveWorkflowStep } from "../codemode/workflow-vm.ts";
-import { WorkflowRunner, type EffectExecutor, type EffectOutcome, type EffectUsage, type StartedEffect, type WorkflowInit } from "../src/workflow-runner.ts";
+import { WorkflowRunner, type CapacitySeam, type EffectExecutor, type EffectOutcome, type EffectUsage, type StartedEffect, type WorkflowInit } from "../src/workflow-runner.ts";
 
 // The QuickJS build production runs: the one pi-codemode bundles (`cloudflareQuickJSWasm` resolves it from pi-codemode).
 const require = createRequire(import.meta.url);
@@ -97,7 +97,49 @@ export class World implements EffectExecutor {
 export const plain = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 
 /** A workflow over fake storage, clock and alarm; `next()` lands the oldest started effect or fires the alarm. */
-export function harness(options: { crashAt?: number; snapshotCap?: number; rewrite?: (request: WorkflowStepRequest) => Promise<WorkflowStepRequest>; db?: DatabaseSync } = {}) {
+/**
+ * A tenant capacity limiter with `slots` child slots: past them requests wait in order, and a release grants the next
+ * one and wakes the workflow (unless `dropWakes`, when only a renew tells it).
+ */
+export class FakeCapacity {
+  leaseMs = 600_000;
+  slots: number;
+  dropWakes = false;
+  refuseOpen?: string;
+  readonly calls: string[] = [];
+  readonly held = new Map<string, string>();
+  readonly waiting: string[] = [];
+  private next = 0;
+  wake: (grants: { key: string; lease: string }[]) => Promise<void> = async () => {};
+  constructor(slots: number) { this.slots = slots; }
+  seam(): CapacitySeam {
+    return {
+      leaseMs: this.leaseMs,
+      open: async concurrency => { this.calls.push(`open ${concurrency}`); return this.refuseOpen ? { ok: false, message: this.refuseOpen } : { ok: true }; },
+      acquire: async key => {
+        this.calls.push(`acquire ${key}`);
+        const lease = this.held.get(key);
+        if (lease) return { granted: true, lease };
+        if (this.held.size < this.slots) { const id = `l${++this.next}`; this.held.set(key, id); return { granted: true, lease: id }; }
+        if (!this.waiting.includes(key)) this.waiting.push(key);
+        return { granted: false };
+      },
+      release: async lease => {
+        this.calls.push(`release ${lease}`);
+        for (const [key, id] of this.held) if (id === lease) this.held.delete(key);
+        const key = this.waiting.shift();
+        if (key === undefined) return;
+        const id = `l${++this.next}`;
+        this.held.set(key, id);
+        if (!this.dropWakes) queueMicrotask(() => void this.wake([{ key, lease: id }]));
+      },
+      renew: async () => { this.calls.push("renew"); return [...this.held].map(([key, lease]) => ({ key, lease })); },
+      close: async () => { this.calls.push("close"); this.held.clear(); this.waiting.splice(0); },
+    };
+  }
+}
+
+export function harness(options: { crashAt?: number; snapshotCap?: number; rewrite?: (request: WorkflowStepRequest) => Promise<WorkflowStepRequest>; db?: DatabaseSync; capacity?: FakeCapacity } = {}) {
   let ops = 0;
   const self = {
     crashes: 0, crashed: undefined as string | undefined, clock: 5_000, alarmAt: null as number | null,
@@ -108,8 +150,9 @@ export function harness(options: { crashAt?: number; snapshotCap?: number; rewri
   const box = sandbox(crash, options.rewrite);
   const world = new World();
   world.crash = crash;
-  const make = () => new WorkflowRunner(store, box, world, { snapshotCap: options.snapshotCap, now: () => self.clock, alarm: { set: at => { self.alarmAt = at; } } });
+  const make = () => new WorkflowRunner(store, box, world, { snapshotCap: options.snapshotCap, now: () => self.clock, alarm: { set: at => { self.alarmAt = at; } }, capacity: options.capacity?.seam() });
   let runner = make();
+  if (options.capacity) options.capacity.wake = grants => runner.capacityGranted(grants);
   /** Run `work`; a crash drops the runner, and a new one over the same storage wakes up. */
   const attempt = async <T>(work: () => Promise<T>): Promise<T | undefined> => {
     try { return await work(); }

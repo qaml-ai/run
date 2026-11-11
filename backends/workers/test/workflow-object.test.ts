@@ -264,3 +264,63 @@ test("an uncatchable VM error is the poll budget, the heap or a VM crash, told a
   assert.equal(classifyVmFailure("InternalError: out of memory", 10, 1_000).code, "out_of_memory");
   assert.deepEqual(classifyVmFailure("a promise job failed", 10, 1_000), { code: "vm_crash", message: "The VM failed: a promise job failed" });
 });
+
+test("capacity: slots are acquired per agent, waiters start on a grant or a renew, the lease is renewed until close", { timeout: 60_000 }, async () => {
+  const { FakeCapacity } = await import("./workflow-harness.ts");
+  const capacity = new FakeCapacity(2);
+  const h = harness({ capacity });
+  h.init({ code: `const r = await parallel(["a", "b", "c"], k => agent(k, { key: k })); return r.map(x => x.answer);`, concurrency: 4 });
+  await h.wake();
+  assert.equal(capacity.calls[0], "open 4");
+  assert.deepEqual(h.world.queue.map(effect => effect.key), ["a", "b"], "two slots");
+  assert.deepEqual(capacity.waiting, ["c"]);
+  // A landing releases a's slot; the limiter grants c and wakes the workflow, which starts it.
+  await h.next();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(h.world.queue.map(effect => effect.key), ["b", "c"]);
+  await h.run();
+  assert.deepEqual(at(h).result, ["re: a", "re: b", "re: c"]);
+  assert.equal(capacity.calls.at(-1), "close");
+  assert.equal(capacity.held.size, 0);
+
+  // A wake that never arrives: another workflow's release grants the slot, and the renew on the alarm hands it over.
+  const shared = new FakeCapacity(1);
+  shared.held.set("other workflow's child", "l0");
+  const s2 = harness({ capacity: shared });
+  s2.init({ code: `return (await agent("a", { key: "a" })).answer;` });
+  await s2.wake();
+  assert.deepEqual([s2.world.queue.length, shared.waiting], [0, ["a"]]);
+  shared.dropWakes = true;
+  await shared.seam().release("l0");
+  const acquires = shared.calls.filter(call => call === "acquire a").length;
+  s2.clock = s2.alarmAt!;
+  await s2.runner.alarm();
+  assert.deepEqual(s2.world.queue.map(effect => effect.key), ["a"], "the renew's held lease started a");
+  assert.equal(shared.calls.filter(call => call === "acquire a").length, acquires, "without asking again");
+  await s2.run();
+  assert.equal(at(s2).result, "re: a");
+
+  // A waiting-only workflow still renews.
+  const idle = new FakeCapacity(1);
+  const w = harness({ capacity: idle });
+  w.init({ code: `await sleep(3600); return 1;` });
+  await w.wake();
+  assert.equal(w.alarmAt, w.clock + idle.leaseMs / 2, "the renew comes before the hour-long timer");
+  await w.next();
+  assert.ok(idle.calls.includes("renew"));
+  await w.run();
+  assert.equal(at(w).status, "completed");
+  assert.equal(idle.calls.at(-1), "close");
+
+  // A refused open pauses the workflow until resumed.
+  const full = new FakeCapacity(1);
+  full.refuseOpen = "the tenant runs 32 workflows already";
+  const r = harness({ capacity: full });
+  r.init({ code: `return (await agent("a")).answer;` });
+  await r.wake();
+  assert.deepEqual([at(r).status, at(r).pauseReason], ["paused", "capacity_refused"]);
+  full.refuseOpen = undefined;
+  await r.runner.resume();
+  await r.run();
+  assert.equal(at(r).result, "re: a");
+});

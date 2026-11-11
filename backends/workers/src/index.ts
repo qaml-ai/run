@@ -357,7 +357,7 @@ const worker = {
         )
           return json({ queued: await publishPending(env) });
         if (path.startsWith("/__test/workflows/") && env.TEST_MODE === "1" && auth.kind === "operator") {
-          const workflow = await workflowTestRoute(request, env as unknown as WorkflowEnv, path);
+          const workflow = await workflowTestRoute(request, env as unknown as WorkflowEnv, path, auth.tenantId);
           if (workflow) return workflow;
         }
         const money = await moneyRoutes(request, env, auth, ctx);

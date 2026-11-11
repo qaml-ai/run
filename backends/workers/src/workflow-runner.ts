@@ -86,7 +86,7 @@ export interface WorkflowStorage {
 }
 
 export type WorkflowStatus = "running" | "waiting" | "paused" | "completed" | "failed" | "aborted" | "budget_exhausted";
-export type PauseReason = "user" | "payer_exhausted" | "confirm_rerun" | "waiting_on_gate" | WorkflowFaultCode;
+export type PauseReason = "user" | "payer_exhausted" | "confirm_rerun" | "waiting_on_gate" | "capacity_refused" | WorkflowFaultCode;
 const TERMINAL = new Set<WorkflowStatus>(["completed", "failed", "aborted"]);
 
 export interface WorkflowSummary {
@@ -131,7 +131,7 @@ const SCHEMA = [
     id INTEGER PRIMARY KEY CHECK (id = 1), seed INTEGER NOT NULL, started_at INTEGER NOT NULL,
     status TEXT NOT NULL, pause_reason TEXT, revision INTEGER NOT NULL, step INTEGER NOT NULL, phase TEXT,
     result TEXT, error TEXT, fault_code TEXT, budget_usd REAL, concurrency INTEGER NOT NULL,
-    throttled_until INTEGER, swept_at INTEGER, tenant TEXT, bucket TEXT, end_user TEXT,
+    throttled_until INTEGER, swept_at INTEGER, tenant TEXT, bucket TEXT, end_user TEXT, capacity_open INTEGER NOT NULL DEFAULT 0, renewed_at INTEGER,
     created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, version INTEGER NOT NULL)`,
   // A revision is a script and what the journal held when it began (its table): an edit, or a rerun of exact keys.
   `CREATE TABLE IF NOT EXISTS workflow_revisions (
@@ -145,7 +145,7 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS workflow_effects (
     key TEXT NOT NULL, attempt INTEGER NOT NULL, current INTEGER NOT NULL, ord INTEGER NOT NULL UNIQUE, origin TEXT NOT NULL,
     revision INTEGER NOT NULL, kind TEXT NOT NULL, args TEXT NOT NULL, options TEXT, phase TEXT, status TEXT NOT NULL,
-    started INTEGER NOT NULL DEFAULT 0, started_at INTEGER, due_at INTEGER, ok INTEGER, result TEXT, reason TEXT, landed INTEGER UNIQUE,
+    started INTEGER NOT NULL DEFAULT 0, started_at INTEGER, due_at INTEGER, lease TEXT, ok INTEGER, result TEXT, reason TEXT, landed INTEGER UNIQUE,
     issued_step INTEGER NOT NULL, delivered_step INTEGER, seen_revision INTEGER NOT NULL, issued_at INTEGER NOT NULL, ended_at INTEGER,
     version INTEGER NOT NULL, PRIMARY KEY (key, attempt))`,
   `CREATE INDEX IF NOT EXISTS workflow_effects_current ON workflow_effects (current, status, kind)`,
@@ -171,7 +171,23 @@ const bytesOf = (value: SqlStorageValue) => value instanceof Uint8Array ? value 
 const text = (value: SqlStorageValue) => value === null || value === undefined ? undefined : String(value);
 const EXECUTED = new Set(["agent", "gate"]);
 
+/**
+ * The tenant's capacity limiter (WorkflowCapacity), as the runner uses it: one slot per running agent, leased and
+ * renewed. Opened at the first step, renewed on the alarm from open to close whether or not slots are held, released
+ * as effects end, closed when the workflow ends. A slot granted later arrives through `capacityGranted` (or the next
+ * renew's `held`), and the effect it was for then starts.
+ */
+export interface CapacitySeam {
+  leaseMs: number;
+  open(concurrency: number): Promise<{ ok: true } | { ok: false; message: string }>;
+  acquire(key: string): Promise<{ granted: true; lease: string } | { granted: false }>;
+  release(lease: string): Promise<void>;
+  renew(): Promise<{ key: string; lease: string }[]>;
+  close(): Promise<void>;
+}
+
 export interface RunnerOptions {
+  capacity?: CapacitySeam;
   snapshotCap?: number;
   now?: () => number;
   /** The object's one alarm: `set(at)` arms it, `set(null)` clears it. */
@@ -329,9 +345,11 @@ export class WorkflowRunner {
   private async advance(recover = false) {
     try {
       if (recover) await this.executor.recover?.();
-      // Effects held from before (a resume, a raised budget, a failed start) first; then each step's new ones.
+      await this.capacityHousekeeping();
+      // Effects held from before (a resume, a raised budget, a failed start, a slot granted) first; then each step's new ones.
       await this.startHeld();
       while (await this.step()) await this.startHeld();
+      await this.capacityHousekeeping();
     } finally { await this.arm(); }
   }
 
@@ -383,6 +401,50 @@ export class WorkflowRunner {
     });
   }
 
+  /**
+   * The capacity lease's life: open it before the first agent starts; give back the slots of effects that ended; close
+   * it once the workflow has ended. An open the limiter refuses (too many running workflows) pauses the workflow.
+   */
+  private async capacityHousekeeping() {
+    const capacity = this.options.capacity;
+    if (!capacity) return;
+    const state = this.state();
+    if (state.capacity_open) {
+      for (const row of this.sql.exec("SELECT key, attempt, lease FROM workflow_effects WHERE lease IS NOT NULL AND NOT (status = 'pending' AND current = 1)").toArray()) {
+        await capacity.release(row.lease as string);
+        this.sql.exec("UPDATE workflow_effects SET lease = NULL WHERE key = ? AND attempt = ?", row.key, row.attempt);
+      }
+      if (TERMINAL.has(state.status as WorkflowStatus)) {
+        await capacity.close();
+        this.sql.exec("UPDATE workflow_state SET capacity_open = 0, renewed_at = NULL WHERE id = 1");
+      }
+      return;
+    }
+    if (state.status !== "running" && state.status !== "waiting") return;
+    const opened = await capacity.open(Number(state.concurrency));
+    this.storage.transactionSync(() => {
+      if (opened.ok) this.sql.exec("UPDATE workflow_state SET capacity_open = 1, renewed_at = ? WHERE id = 1", this.now());
+      else { this.setStatus("paused", "capacity_refused"); this.event("capacity_refused", { message: opened.message }); }
+    });
+  }
+
+  /** Slots the limiter granted (a wake, or a renew's `held`): each goes to its effect, or straight back if it has none. */
+  private async assignGrants(grants: { key: string; lease: string }[]) {
+    for (const grant of grants) {
+      const row = this.sql.exec("SELECT attempt, lease FROM workflow_effects WHERE key = ? AND current = 1 AND status = 'pending' AND kind = 'agent'", grant.key).toArray()[0];
+      if (row && (row.lease === null || row.lease === grant.lease)) this.sql.exec("UPDATE workflow_effects SET lease = ? WHERE key = ? AND attempt = ?", grant.lease, grant.key, row.attempt);
+      else if (!row) await this.options.capacity?.release(grant.lease);
+    }
+  }
+
+  /** The limiter's wake: slots it granted to effects that waited for one. */
+  capacityGranted(grants: { key: string; lease: string }[]): Promise<void> {
+    return this.serial(async () => {
+      await this.assignGrants(grants);
+      await this.advance();
+    });
+  }
+
   /** `running` while an agent runs or a result waits for its step; `waiting` while only timers and gates are open. */
   private refreshLiveness() {
     const status = this.state().status as WorkflowStatus;
@@ -398,7 +460,7 @@ export class WorkflowRunner {
   private async startHeld() {
     const row = this.state();
     if (row.status !== "running" && row.status !== "waiting") return;
-    const held = this.sql.exec("SELECT key, attempt, kind, args, options, phase FROM workflow_effects WHERE current = 1 AND status = 'pending' AND started = 0 ORDER BY ord").toArray();
+    const held = this.sql.exec("SELECT key, attempt, kind, args, options, phase, lease FROM workflow_effects WHERE current = 1 AND status = 'pending' AND started = 0 ORDER BY ord").toArray();
     if (!held.length) return;
     const budget = row.budget_usd === null ? null : Number(row.budget_usd);
     let running = Number(this.sql.exec("SELECT COUNT(*) AS n FROM workflow_effects WHERE current = 1 AND status = 'pending' AND started = 1 AND kind = 'agent'").one().n);
@@ -412,6 +474,13 @@ export class WorkflowRunner {
           }
         }
         if (running >= Number(row.concurrency)) continue;
+        if (this.options.capacity && !row.capacity_open) continue;
+        if (this.options.capacity && effect.lease === null) {
+          const slot = await this.options.capacity.acquire(effect.key as string);
+          // Not granted: it waits in the limiter's queue, and its grant starts it later.
+          if (!slot.granted) continue;
+          this.sql.exec("UPDATE workflow_effects SET lease = ? WHERE key = ? AND attempt = ?", slot.lease, effect.key, effect.attempt);
+        }
         running++;
       }
       if (EXECUTED.has(effect.kind as string)) {
@@ -676,6 +745,7 @@ export class WorkflowRunner {
         this.event("paused", { children: options.children ?? "keep", stopped: stopping.length });
       });
       for (const row of stopping) await this.executor.cancel?.(this.started(row));
+      await this.capacityHousekeeping();
       await this.arm();
     });
   }
@@ -748,6 +818,7 @@ export class WorkflowRunner {
       });
       for (const row of live) if (row.started === 1 && EXECUTED.has(row.kind as string)) await this.executor.cancel?.(this.started(row));
       await this.executor.abort?.();
+      await this.capacityHousekeeping();
       await this.arm();
     });
   }
@@ -799,6 +870,12 @@ export class WorkflowRunner {
         });
       }
       if (state.throttled_until !== null && Number(state.throttled_until) <= now) this.sql.exec("UPDATE workflow_state SET throttled_until = NULL WHERE id = 1");
+      // The capacity lease is renewed from open to close, slots held or not: a workflow that only waits keeps its place.
+      const capacity = this.options.capacity;
+      if (capacity && state.capacity_open && now - Number(state.renewed_at ?? 0) >= capacity.leaseMs / 2) {
+        await this.assignGrants(await capacity.renew());
+        this.sql.exec("UPDATE workflow_state SET renewed_at = ? WHERE id = 1", now);
+      }
       if (state.swept_at === null || now - Number(state.swept_at) >= WORKFLOW_LIMITS.sweepMs) {
         this.sql.exec("UPDATE workflow_state SET swept_at = ? WHERE id = 1", now);
         if (this.executor.poll) {
@@ -826,6 +903,7 @@ export class WorkflowRunner {
     if (state.throttled_until !== null) candidates.push(Number(state.throttled_until));
     const unlanded = this.sql.exec("SELECT 1 FROM workflow_effects WHERE current = 1 AND status = 'pending' AND (kind IN ('agent', 'gate') OR started = 0) LIMIT 1").toArray().length > 0;
     if (unlanded) candidates.push((state.swept_at === null ? this.now() : Number(state.swept_at)) + WORKFLOW_LIMITS.sweepMs);
+    if (this.options.capacity && state.capacity_open) candidates.push(Number(state.renewed_at ?? this.now()) + this.options.capacity.leaseMs / 2);
     return candidates.length ? Math.min(...candidates) : null;
   }
 
