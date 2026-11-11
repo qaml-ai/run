@@ -58,7 +58,7 @@ import { voiceRoutes } from "./voice-api.ts";
 import type { VoiceSessions } from "./voice-sessions.ts";
 import type { ClientEvent, RequestRecord, TurnSnapshot } from "../shared/client-protocol.ts";
 import * as schema from "./api-schemas.ts";
-import { normalizePath, snapshotContents, VOLUME_LIMITS, type FileEntry, type VolumeService } from "./volumes.ts";
+import { normalizePath, snapshotContents, commitContents, VOLUME_LIMITS, type FileEntry, type VolumeService } from "./volumes.ts";
 import { actorInput, identityInput } from "./identity.ts";
 import { languageInput, transcribeRequest, type TranscriptionService } from "./transcription.ts";
 import { speechChoiceInput, speechInput, speechRequest, type SpeechService } from "./speech-api.ts";
@@ -1630,6 +1630,18 @@ export function api(context: ApiContext) {
     const target = await volume(c);
     const { snapshot } = parse(schema.RestoreInput, await readJson(c.req.raw.body, 4096, {}));
     return json(c, 200, await target.call("restore", { snapshot }));
+  });
+  route(createRoute({
+    method: "post", path: "/v1/volumes/{id}/commit", request: { params: volumeId, body: content(schema.CommitInput) },
+    responses: {
+      200: reply("Every file is written and removed as given, in one change (and the snapshot taken, when asked)", schema.Committed),
+      409: reply("A file is not at the version given: nothing is written", schema.CommitConflict),
+    },
+  }), async c => {
+    const target = await volume(c);
+    const result = await commitContents(volumes(), target.tenant, target.id, await readJson(c.req.raw.body, 24 * 1024 * 1024, {}));
+    if (result.conflicts) return json(c, 409, { error: `${result.conflicts.length} of the files changed since the versions given; nothing was written`, code: "COMMIT_CONFLICT", conflicts: result.conflicts });
+    return json(c, 200, result);
   });
   route(createRoute({ method: "post", path: "/v1/volumes/{id}/fork", request: { params: volumeId, body: content(schema.ForkInput) }, responses: { 201: reply("A new, independent volume with the same files", schema.Volume) } }), async c => {
     const target = await volume(c);

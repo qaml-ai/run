@@ -4763,8 +4763,23 @@ const agent = await agents.upsert("support", { mounts: [{ volumeId: docs.id, pat
   `changes(since, { prefix? })`. `runtime.volumes(ids)` reads up to 50 volumes'
   `seq` (and files and bytes) in one request, to see which changed.
 - `volume.snapshot()` and `volume.fork({ snapshot })` copy metadata only: a fork
-  shares its source's content and diverges independently. `read`, `list` and
-  `readAll` take `{ snapshot }` to read a snapshot as it was.
+  shares its source's content and diverges independently. The shared content is
+  kept for as long as the fork lives, whatever becomes of the source, and let go
+  when the fork is deleted. `read`, `list` and `readAll` take `{ snapshot }` to
+  read a snapshot as it was.
+- `volume.commit(files, { snapshot? })` (`POST /v1/volumes/:id/commit`) writes
+  and removes several files as one change. Each file names the `version` it
+  expects (`0`: it must not exist) and one of `text`, `data` (bytes; base64 over
+  REST), `from: { volume, path?, version? }` (a file of another volume, such as
+  a fork of this one) or `delete: true`. Every version is checked and every file
+  written together: if any file is at another version, nothing is written and
+  the answer is `{ conflicts: [{ path, headVersion }] }` (REST: 409,
+  `COMMIT_CONFLICT`). `snapshot: { name?, pinned?, labels? }` takes a snapshot
+  of the result in the same change. It answers `{seq, files, removed,
+  snapshot?}`. At most 1,000 files, 16 MiB inline and 1 GiB copied a commit.
+  Use it to land an agent's work from a fork onto its base: read the fork's
+  `changes` since it was made, and commit those paths `from` the fork at the
+  base versions the fork started from.
 - A snapshot can be pinned (`snapshot({ pinned: true })`, or
   `updateSnapshot(id, { pinned })`, `PATCH /v1/volumes/:id/snapshots/:id`): it is
   kept until unpinned, counts against 10,000 pinned snapshots rather than the

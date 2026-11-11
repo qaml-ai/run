@@ -10,6 +10,7 @@ import {
   safeName,
 } from "./file-policy.ts";
 import { uploadFile } from "./file-upload.ts";
+import { commitFiles } from "./volume-commit.ts";
 import { assertStorageWrite } from "./storage-quota.ts";
 import type { NativeStorageBindings } from "./tenant-storage.ts";
 import type { FileVersions } from "./file-versions.ts";
@@ -525,25 +526,27 @@ async function fileRoute(
       const created = await createVolume(env, tenant, {
         name: options.name ?? `${info.name} (fork)`,
       });
-      const pin = "fork:" + created.id;
-      await v.pin(
-        pin,
-        at.files.map((f) => f.key),
-        Date.now() + 86400_000,
+      // Metadata only: the fork shares the content, pinned for as long as the fork lives (Volume.seed). Every key read
+      // here is held by the source now, and an unheld blob is kept for a day before it is collected, so the fork's pins
+      // land well inside that.
+      return json(
+        await stub(env, tenant, created.id!).seed(at.files, {
+          volume: id,
+          ...(options.snapshot ? { snapshot: options.snapshot } : {}),
+          seq: at.seq,
+        }),
+        201,
       );
-      try {
-        return json(
-          await stub(env, tenant, created.id!).seed(at.files, {
-            volume: id,
-            ...(options.snapshot ? { snapshot: options.snapshot } : {}),
-            seq: at.seq,
-          }),
-          201,
-        );
-      } finally {
-        await v.unpin(pin);
-      }
     }
+    if (tail === "commit" && request.method === "POST")
+      return await commitFiles(
+        env,
+        tenant,
+        id,
+        v,
+        (await input(request, 24 * 1024 * 1024)) as Parameters<typeof commitFiles>[4],
+        (source) => volume(env, tenant, source),
+      );
     if (
       tail === "__gc" &&
       request.method === "POST" &&

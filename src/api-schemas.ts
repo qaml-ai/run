@@ -1352,6 +1352,34 @@ export const VolumeFile = z.object({
   path: z.string(), version: z.number(), size: z.number(), updatedAt: z.number(), by: z.string().optional(),
   contentType: z.string().openapi({ description: "As uploaded (Content-Type), else sniffed from the file's first bytes and name" }),
 }).openapi("VolumeFile");
+export const CommitFileInput = z.object({
+  path: z.string(),
+  version: z.number().int().openapi({ description: "The version this commit expects the file to be at now (0: it must not exist). Any file at another version fails the whole commit (409)" }),
+  text: z.string().optional().openapi({ description: "The file's new content as text" }),
+  data: z.string().optional().openapi({ description: "The file's new content in base64" }),
+  contentType: z.string().optional().openapi({ description: "Default: the source file's, else sniffed from the content and name" }),
+  from: z.object({
+    volume: z.string(),
+    path: z.string().optional().openapi({ description: "Default: the same path" }),
+    version: z.number().int().optional().openapi({ description: "The version the source file must be at (412 otherwise)" }),
+  }).optional().openapi({ description: "The new content is this file of a volume (a fork this one was the base of, say)" }),
+  delete: z.literal(true).optional().openapi({ description: "Remove the file" }),
+}).openapi("CommitFileInput", { description: "One of text, data, from or delete: true" });
+export const CommitInput = z.object({
+  files: z.array(CommitFileInput).openapi({ description: "1 to 1,000 files; inline contents at most 16 MiB, copied files at most 1 GiB" }),
+  snapshot: z.object({ name: z.string().optional(), pinned: z.boolean().optional(), labels: Labels.optional() }).optional()
+    .openapi({ description: "Take a snapshot of the volume as the commit leaves it, in the same change" }),
+}).openapi("CommitInput");
+export const Committed = z.object({
+  seq: z.number().openapi({ description: "The volume's seq after the commit" }),
+  files: z.array(VolumeFile).openapi({ description: "The files written, each at its new version" }),
+  removed: z.array(z.string()).openapi({ description: "The paths removed" }),
+  snapshot: Snapshot.optional(),
+}).openapi("Committed");
+export const CommitConflict = z.object({
+  error: z.string(), code: z.literal("COMMIT_CONFLICT"),
+  conflicts: z.array(z.object({ path: z.string(), headVersion: z.number().openapi({ description: "The version it is at (0: it does not exist)" }) })),
+}).openapi("CommitConflict");
 export const LinkInput = z.object({
   path: z.string().openapi({ description: "The file's path in the volume" }),
   method: z.enum(["GET", "PUT"]).optional().openapi({ description: "GET (default) downloads the file; PUT uploads it, creating or replacing it" }),
