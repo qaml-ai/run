@@ -81,6 +81,45 @@ Changing an allowance or a limit never resets what was spent today: spend is kep
 per day and bucket, and the allowance is only the cap. Raise a bucket from $40 to $60
 mid-day and the person has $20 more, not $60.
 
+## Shared daily allowances
+
+Use `sharedAllowances` when all of a person's bots share one free amount each UTC
+day. The ordinary `allowances` map still supplies independent bucket allowances.
+
+```ts
+await agents.endUsers.amend({
+  allowances: { builder: 343_000, "bot:*": null },
+  sharedAllowances: { "bot:*": 257_000 },
+});
+await agents.endUsers.update("creator", {
+  sharedAllowances: { "bot:*": 1_285_000 },
+});
+```
+
+Each matching bucket spends from the same pool for that person. The most-specific
+shared key wins, using exact name, longest prefix, then `*`. A matching shared pool
+replaces that bucket's ordinary free allowance. Removing a person's override with
+`null` restores the tenant's amount. PUT replaces maps it receives. PATCH merges
+keys and removes keys set to `null`.
+
+`endUsers.get(id)` returns configured pools in `today.pools`, including unused
+pools. Each has `key`, `allowance`, `allowanceSpent`, `held`, and `allowanceLeft`.
+Each member in `today.buckets` also has its `pool` snapshot. The member's
+`allowanceSpent`, `paidSpent`, and `held` still describe that bucket alone. Its
+`allowance` and `allowanceLeft` describe the shared allowance. Unpooled buckets
+have `pool: null`. Pass `buckets` to include named bots that have not spent today.
+
+Calls in flight reserve from the shared pool. Paid credit and per-bucket paid
+limits apply after the pool runs out. A call crossing midnight uses the day it
+began for its allowance. `end_user.allowance.low` and allowance exhaustion fire
+once per person, pool, and UTC day, with the pool key in `data.pool` and the
+triggering member in `data.bucket`.
+
+Changing pool membership or its amount keeps recorded spend. Current membership
+groups that day's existing per-bucket allowance spend and holds. Moving to a
+shared pool partway through a day therefore includes the members' earlier free
+spend.
+
 ## Turn it on
 
 ```ts

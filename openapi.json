@@ -1982,15 +1982,19 @@
                   "daily_limit",
                   "bucket_limit"
                 ],
-                "description": "allowance: the bucket's free allowance for the day is used up (work goes on from the balance, if it may); balance, daily_limit, bucket_limit: as a credit refusal's reason (the errors reference). More may be added"
+                "description": "allowance: the bucket or pool's free allowance for the day is used up (work goes on from the balance, if it may); balance, daily_limit, bucket_limit: as a credit refusal's reason (the errors reference). More may be added"
               },
               "day": {
                 "type": "string",
                 "description": "The UTC day, YYYY-MM-DD"
               },
+              "pool": {
+                "type": "string",
+                "description": "Shared allowance key, when this event is for a pool"
+              },
               "allowance": {
                 "type": "integer",
-                "description": "With allowance: the bucket's allowance that day (raw micro-USD)"
+                "description": "With allowance: the bucket or pool's allowance that day (raw micro-USD)"
               },
               "dailyLimit": {
                 "type": "integer",
@@ -2509,7 +2513,11 @@
               },
               "allowance": {
                 "type": "integer",
-                "description": "The bucket's daily allowance (raw micro-USD)"
+                "description": "The bucket or pool's daily allowance (raw micro-USD)"
+              },
+              "pool": {
+                "type": "string",
+                "description": "Shared allowance key, when this warning is for a pool"
               },
               "allowanceSpent": {
                 "type": "integer",
@@ -2536,7 +2544,7 @@
           "created",
           "data"
         ],
-        "description": "An end user's spend in a bucket passed the tenant's allowanceWarningPercent of its daily allowance: once per person, bucket and day"
+        "description": "An end user's spend passed the tenant's allowanceWarningPercent of its daily allowance: once per person, bucket or pool and day"
       },
       "Error": {
         "type": "object",
@@ -12899,6 +12907,18 @@
               "bot:*": 1000000
             }
           },
+          "sharedAllowances": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "description": "Shared pools per person; the most-specific matching pool replaces a bucket allowance: micro-USD of raw cost per UTC day, keyed by a bucket (\"builder\"), a prefix of buckets (\"bot:*\") or every bucket (\"*\"). A bucket takes its own key, else the longest prefix it starts with, else \"*\", else none",
+            "example": {
+              "builder": 50000000,
+              "bot:*": 1000000
+            }
+          },
           "bucketLimits": {
             "type": "object",
             "additionalProperties": {
@@ -12945,6 +12965,7 @@
         "required": [
           "enabled",
           "allowances",
+          "sharedAllowances",
           "bucketLimits",
           "dailyLimit",
           "markupBps",
@@ -12966,6 +12987,18 @@
               "minimum": 0
             },
             "description": "Free allowances (replaces the current map): micro-USD of raw cost per UTC day, keyed by a bucket (\"builder\"), a prefix of buckets (\"bot:*\") or every bucket (\"*\"). A bucket takes its own key, else the longest prefix it starts with, else \"*\", else none",
+            "example": {
+              "builder": 50000000,
+              "bot:*": 1000000
+            }
+          },
+          "sharedAllowances": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "description": "Shared pools per person (replaces the current map): micro-USD of raw cost per UTC day, keyed by a bucket (\"builder\"), a prefix of buckets (\"bot:*\") or every bucket (\"*\"). A bucket takes its own key, else the longest prefix it starts with, else \"*\", else none",
             "example": {
               "builder": 50000000,
               "bot:*": 1000000
@@ -13027,6 +13060,17 @@
             },
             "description": "Merged into the allowances key by key; null removes a key"
           },
+          "sharedAllowances": {
+            "type": "object",
+            "additionalProperties": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "description": "Shared pools merged key by key; null removes a key"
+          },
           "bucketLimits": {
             "type": "object",
             "additionalProperties": {
@@ -13064,7 +13108,7 @@
             "maximum": 100
           }
         },
-        "description": "Only what is sent changes: allowances and bucketLimits key by key, merged into the map as it stands when the write lands, so concurrent PATCHes of different fields or keys all keep their changes"
+        "description": "Only what is sent changes: allowance maps and bucketLimits key by key, merged into the map as it stands when the write lands, so concurrent PATCHes of different fields or keys all keep their changes"
       },
       "EndUserList": {
         "type": "object",
@@ -13161,6 +13205,12 @@
                   "type": "integer"
                 }
               },
+              "sharedAllowances": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "integer"
+                }
+              },
               "bucketLimits": {
                 "type": "object",
                 "additionalProperties": {
@@ -13182,6 +13232,7 @@
             },
             "required": [
               "allowances",
+              "sharedAllowances",
               "bucketLimits",
               "dailyLimit",
               "lowBalance"
@@ -13203,12 +13254,15 @@
                 "items": {
                   "type": "object",
                   "properties": {
+                    "pool": {
+                      "$ref": "#/components/schemas/EndUserAllowancePool"
+                    },
                     "bucket": {
                       "type": "string"
                     },
                     "allowance": {
                       "type": "integer",
-                      "description": "The bucket's allowance today (raw cost), in micro-USD (1 USD = 1000000)"
+                      "description": "The bucket or pool's allowance today (raw cost), in micro-USD (1 USD = 1000000)"
                     },
                     "allowanceSpent": {
                       "type": "integer",
@@ -13239,6 +13293,7 @@
                     }
                   },
                   "required": [
+                    "pool",
                     "bucket",
                     "allowance",
                     "allowanceSpent",
@@ -13249,12 +13304,19 @@
                     "paidLimit"
                   ]
                 }
+              },
+              "pools": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/EndUserAllowancePool"
+                }
               }
             },
             "required": [
               "day",
               "paidSpent",
-              "buckets"
+              "buckets",
+              "pools"
             ]
           },
           "createdAt": {
@@ -13327,6 +13389,41 @@
           "createdAt"
         ]
       },
+      "EndUserAllowancePool": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "allowance": {
+            "type": "integer",
+            "description": "The shared daily allowance in raw micro-USD, in micro-USD (1 USD = 1000000)"
+          },
+          "allowanceSpent": {
+            "type": "integer",
+            "description": "Total allowance spent by all members today, in micro-USD (1 USD = 1000000)"
+          },
+          "held": {
+            "type": "integer",
+            "description": "Allowance reserved by pool members today, in micro-USD (1 USD = 1000000)"
+          },
+          "allowanceLeft": {
+            "type": "integer",
+            "description": "Pool allowance remaining after spend and holds, in micro-USD (1 USD = 1000000)"
+          }
+        },
+        "required": [
+          "key",
+          "allowance",
+          "allowanceSpent",
+          "held",
+          "allowanceLeft"
+        ],
+        "description": "The shared pool this bucket spends from; null for a per-bucket allowance"
+      },
       "EndUserUpdate": {
         "type": "object",
         "properties": {
@@ -13340,6 +13437,17 @@
               "minimum": 0
             },
             "description": "Merged into the user's own allowances key by key; null removes a key"
+          },
+          "sharedAllowances": {
+            "type": "object",
+            "additionalProperties": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "description": "Personal shared-pool overrides, merged by key; null restores the tenant value"
           },
           "bucketLimits": {
             "type": "object",

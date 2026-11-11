@@ -300,9 +300,10 @@ export const WebhookEvents = {
   }), "An end user's balance is below their low-balance threshold: a debit took it there, or a debit after a grant left it there, or a threshold was set above it (cause.kind threshold_changed). See the guide's When balance events fire"),
   "end_user.credit.exhausted": envelope("end_user.credit.exhausted", z.object({
     endUser: z.string(), bucket: z.string().nullable().openapi({ description: "The bucket the spend or refusal was in; null for a tenant's entry that took the balance to zero" }),
-    reason: z.enum(["allowance", ...CREDIT_REASONS]).openapi({ description: "allowance: the bucket's free allowance for the day is used up (work goes on from the balance, if it may); balance, daily_limit, bucket_limit: as a credit refusal's reason (the errors reference). More may be added" }),
+    reason: z.enum(["allowance", ...CREDIT_REASONS]).openapi({ description: "allowance: the bucket or pool's free allowance for the day is used up (work goes on from the balance, if it may); balance, daily_limit, bucket_limit: as a credit refusal's reason (the errors reference). More may be added" }),
     day: z.string().openapi({ description: "The UTC day, YYYY-MM-DD" }),
-    allowance: z.number().int().optional().openapi({ description: "With allowance: the bucket's allowance that day (raw micro-USD)" }),
+    pool: z.string().optional().openapi({ description: "Shared allowance key, when this event is for a pool" }),
+    allowance: z.number().int().optional().openapi({ description: "With allowance: the bucket or pool's allowance that day (raw micro-USD)" }),
     dailyLimit: z.number().int().optional().openapi({ description: "With daily_limit: the end user's daily limit (charged micro-USD)" }),
     bucketLimit: z.number().int().optional().openapi({ description: "With bucket_limit: the bucket's daily limit on paid spend (charged micro-USD)" }),
     balance: z.number().int().openapi({ description: "The balance (charged micro-USD)" }),
@@ -314,9 +315,10 @@ export const WebhookEvents = {
   "end_user.credit.expired": envelope("end_user.credit.expired", endUserEntryEvent, "A lot of an end user's credit expired: its unspent part left the balance (amount negative; metadata.lot is the grant's key)"),
   "end_user.credit.spent": envelope("end_user.credit.spent", endUserEntryEvent, "The tenant posted a spend: credit spent on something it sells other than metered usage (amount negative, as in the ledger)"),
   "end_user.allowance.low": envelope("end_user.allowance.low", z.object({
-    endUser: z.string(), bucket: z.string(), day: z.string(), allowance: z.number().int().openapi({ description: "The bucket's daily allowance (raw micro-USD)" }),
+    endUser: z.string(), bucket: z.string(), day: z.string(), allowance: z.number().int().openapi({ description: "The bucket or pool's daily allowance (raw micro-USD)" }),
+    pool: z.string().optional().openapi({ description: "Shared allowance key, when this warning is for a pool" }),
     allowanceSpent: z.number().int().openapi({ description: "Spent from it today, with the call that passed the warning" }), percent: z.number().int().openapi({ description: "The tenant's allowanceWarningPercent" }),
-  }), "An end user's spend in a bucket passed the tenant's allowanceWarningPercent of its daily allowance: once per person, bucket and day"),
+  }), "An end user's spend passed the tenant's allowanceWarningPercent of its daily allowance: once per person, bucket or pool and day"),
 };
 
 export const Model = z.object({
@@ -1472,6 +1474,7 @@ const bucketLimitMap = (description: string) => z.record(z.string(), z.number().
 export const EndUserSettings = z.object({
   enabled: z.boolean().openapi({ description: "Whether runs and calls with a subject are metered and limited by their end user's credit" }),
   allowances: allowanceMap("Free allowances, spent before the paid balance"),
+  sharedAllowances: allowanceMap("Shared pools per person; the most-specific matching pool replaces a bucket allowance"),
   bucketLimits: bucketLimitMap("The most each bucket may charge an end user's balance per UTC day"),
   dailyLimit: micros("The most an end user's paid spend may be per UTC day (charged amounts); null: no limit").nullable(),
   markupBps: z.number().int().openapi({ description: "Added to the raw cost of paid spend, in basis points (2500: +25%)" }),
@@ -1481,6 +1484,7 @@ export const EndUserSettings = z.object({
 }).openapi("EndUserSettings");
 export const EndUserSettingsInput = z.object({
   enabled: z.boolean().optional(), allowances: allowanceMap("Free allowances (replaces the current map)").optional(),
+  sharedAllowances: allowanceMap("Shared pools per person (replaces the current map)").optional(),
   bucketLimits: bucketLimitMap("The most each bucket may charge an end user's balance per UTC day (replaces the current map)").optional(),
   dailyLimit: z.number().int().nullable().optional(), markupBps: z.number().int().min(0).max(100_000).optional(), lowBalance: z.number().int().nullable().optional(),
   allowanceWarningPercent: z.number().int().min(1).max(100).nullable().optional(),
@@ -1488,12 +1492,19 @@ export const EndUserSettingsInput = z.object({
 export const EndUserSettingsPatch = z.object({
   enabled: z.boolean().optional(),
   allowances: z.record(z.string(), z.number().int().nonnegative().nullable()).optional().openapi({ description: "Merged into the allowances key by key; null removes a key" }),
+  sharedAllowances: z.record(z.string(), z.number().int().nonnegative().nullable()).optional().openapi({ description: "Shared pools merged key by key; null removes a key" }),
   bucketLimits: z.record(z.string(), z.number().int().nonnegative().nullable()).optional().openapi({ description: "Merged into the bucket limits key by key; null removes a key" }),
   dailyLimit: z.number().int().nullable().optional(), markupBps: z.number().int().min(0).max(100_000).optional(), lowBalance: z.number().int().nullable().optional(),
   allowanceWarningPercent: z.number().int().min(1).max(100).nullable().optional(),
-}).openapi("EndUserSettingsPatch", { description: "Only what is sent changes: allowances and bucketLimits key by key, merged into the map as it stands when the write lands, so concurrent PATCHes of different fields or keys all keep their changes" });
+}).openapi("EndUserSettingsPatch", { description: "Only what is sent changes: allowance maps and bucketLimits key by key, merged into the map as it stands when the write lands, so concurrent PATCHes of different fields or keys all keep their changes" });
+export const EndUserAllowancePool = z.object({
+  key: z.string(), allowance: micros("The shared daily allowance in raw micro-USD"),
+  allowanceSpent: micros("Total allowance spent by all members today"), held: micros("Allowance reserved by pool members today"),
+  allowanceLeft: micros("Pool allowance remaining after spend and holds"),
+}).openapi("EndUserAllowancePool");
 export const EndUserBucketDay = z.object({
-  bucket: z.string(), allowance: micros("The bucket's allowance today (raw cost)"), allowanceSpent: micros("Spent from it today (raw cost)"),
+  pool: EndUserAllowancePool.nullable().openapi({ description: "The shared pool this bucket spends from; null for a per-bucket allowance" }),
+  bucket: z.string(), allowance: micros("The bucket or pool's allowance today (raw cost)"), allowanceSpent: micros("Spent from it today (raw cost)"),
   paidSpent: micros("Charged to the balance today for this bucket"),
   writtenOff: micros("Cost past what was left for this bucket today (the balance, the daily limit, the bucket's limit), raw: not charged to the user; the tenant bears it"),
   held: micros("Held for calls in flight (allowance and balance)"),
@@ -1522,14 +1533,15 @@ export const EndUser = z.object({
   dailyLimit: micros("The daily limit on paid spend that applies (the user's own, else the tenant's); null: none").nullable(),
   lowBalance: micros("The low-balance threshold that applies (the user's own, else the tenant's); null: none").nullable(),
   markupBps: z.number().int(),
-  overrides: z.object({ allowances: z.record(z.string(), z.number().int()), bucketLimits: z.record(z.string(), z.number().int()), dailyLimit: z.number().int().nullable(), lowBalance: z.number().int().nullable() }).openapi({ description: "The user's own allowances, bucket limits, daily limit and low-balance threshold, over the tenant's" }),
-  today: z.object({ day: z.string(), paidSpent: micros("Charged to the balance today, every bucket"), buckets: z.array(EndUserBucketDay) }),
+  overrides: z.object({ allowances: z.record(z.string(), z.number().int()), sharedAllowances: z.record(z.string(), z.number().int()), bucketLimits: z.record(z.string(), z.number().int()), dailyLimit: z.number().int().nullable(), lowBalance: z.number().int().nullable() }).openapi({ description: "The user's own allowances, bucket limits, daily limit and low-balance threshold, over the tenant's" }),
+  today: z.object({ day: z.string(), paidSpent: micros("Charged to the balance today, every bucket"), buckets: z.array(EndUserBucketDay), pools: z.array(EndUserAllowancePool) }),
   createdAt: z.number().nullable().openapi({ description: "null: never metered or credited yet" }), updatedAt: z.number().nullable(),
 }).openapi("EndUser");
 export const EndUserSummary = z.object({ id: z.string(), balance: micros("Paid credit left"), createdAt: z.number(), updatedAt: z.number() });
 export const EndUserList = z.object({ endUsers: z.array(EndUserSummary), next: z.string().optional().openapi({ description: "Pass as `after` for the next page" }) }).openapi("EndUserList");
 export const EndUserUpdate = z.object({
   allowances: z.record(z.string(), z.number().int().nonnegative().nullable()).optional().openapi({ description: "Merged into the user's own allowances key by key; null removes a key" }),
+  sharedAllowances: z.record(z.string(), z.number().int().nonnegative().nullable()).optional().openapi({ description: "Personal shared-pool overrides, merged by key; null restores the tenant value" }),
   bucketLimits: z.record(z.string(), z.number().int().nonnegative().nullable()).optional().openapi({ description: "Merged into the user's own bucket limits key by key; null removes a key" }),
   dailyLimit: z.number().int().nonnegative().nullable().optional().openapi({ description: "The user's own daily limit on paid spend; null: the tenant's" }),
   lowBalance: z.number().int().nonnegative().nullable().optional().openapi({ description: "The user's own low-balance threshold (end_user.balance.low); null: the tenant's. Set above their balance, it fires once with cause threshold_changed" }),

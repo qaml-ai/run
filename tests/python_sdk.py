@@ -1154,6 +1154,14 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
                 return runtime.end_users.get("person")["balance"], runtime.end_users.settings()["enabled"], len(runtime.end_users.days("person", limit=1)["days"])
         self.assertEqual(await asyncio.to_thread(synchronous), (0, True, 1))
 
+        pools = await end_users.configure(shared_allowances={"bot:*": 200_000})
+        self.assertEqual(pools["sharedAllowances"], {"bot:*": 200_000})
+        await end_users.amend(shared_allowances={"other:*": 10})
+        person = await end_users.update("person", shared_allowances={"bot:*": 500_000})
+        self.assertEqual(person["overrides"]["sharedAllowances"], {"bot:*": 500_000})
+        self.assertEqual(next(pool for pool in person["today"]["pools"] if pool["key"] == "bot:*")["allowance"], 500_000)
+        self.assertEqual((await end_users.amend(shared_allowances={"other:*": None}))["sharedAllowances"], {"bot:*": 200_000})
+
     async def test_volumes_files_snapshots_and_mounts(self):
         created = await self.runtime.create_volume(name="shared docs")
         volume = self.runtime.volume(created["id"])
