@@ -347,6 +347,7 @@ async function fileRoute(
       if (tail === "__gc" && request.method === "POST")
         return json(await raw.collectGarbage(Date.now() + Math.max(0, Math.min(2 * 86400_000, Number(url.searchParams.get("advance") ?? 0)))));
       if (tail === "__alarm" && request.method === "POST") return json(await raw.testRunAlarm());
+      if (tail === "__alarm" && request.method === "GET") return json(await raw.testAlarm());
       if (tail === "__fail-unpin" && request.method === "POST") return json(await raw.testFailUnpin(Number(url.searchParams.get("times") ?? 1)) ?? {});
       if (tail === "__pin" && request.method === "POST") {
         const ttl = url.searchParams.get("ttl");
