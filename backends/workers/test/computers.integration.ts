@@ -842,3 +842,96 @@ test('computer.idle "sleep": a machine that idles out saves its disk, and the ne
   await fixture.db.query('update agents set revoked=true where id=$1', [agent.id]);
   assert.match(await (await readChild()).text(), /parent's machine is stopped/);
 });
+
+test("jobs: one command in a container of its own, its files synced in and its outputs collected, then destroyed", {
+  timeout: 600_000, skip: requireDocker ? false : unavailable,
+}, async (t) => {
+  assert.equal(unavailable, undefined, unavailable);
+  const egressImage = await egressImageWithoutSocketMatch(t);
+  if (egressImage) {
+    process.env.MINIFLARE_CONTAINER_EGRESS_IMAGE = egressImage;
+    t.after(() => { delete process.env.MINIFLARE_CONTAINER_EGRESS_IMAGE; });
+  }
+  const fixture = await startFixture({ config: "wrangler.computers.test.jsonc", entrypoint: join(process.cwd(), "test/jobs-entry.ts") });
+  t.after(async () => {
+    const names = new Set([...fixture.worker.logs().matchAll(/containerName = (workerd-camelrun-proto-workers-computers-local-ContainerComputer-[a-f0-9]{64})/g)].map(match => match[1]));
+    await fixture.stop();
+    for (const name of names) for (const target of [name, `${name}-proxy`]) await run("docker", ["rm", "-f", target]).catch(() => {});
+  });
+  const call = async (path: string, body?: unknown, raw?: string) => {
+    const response = await fetch(fixture.url + path, {
+      method: raw !== undefined ? "PUT" : body === undefined ? "GET" : "POST",
+      headers: { authorization: `Bearer ${fixture.token}`, "content-type": raw !== undefined ? "text/plain" : "application/json" },
+      ...(raw !== undefined ? { body: raw } : body === undefined ? {} : { body: JSON.stringify(body) }),
+      signal: AbortSignal.timeout(300_000),
+    });
+    const text = await response.text();
+    assert.ok(response.ok, `${path}: ${response.status} ${text}\n${fixture.worker.logs().slice(-4000)}`);
+    try { return JSON.parse(text); } catch { return text; }
+  };
+  const b64 = (text: string) => Buffer.from(text).toString("base64");
+  const text = (value: { bytes: string }) => Buffer.from(value.bytes, "base64").toString();
+  const definition = await call("/v1/definitions", { name: "Jobs payer" });
+  const agent = await call("/v1/agents", { definition: definition.id });
+  const tenant = "camelrun-proto-local";
+
+  // Inline files, a payer, limits and outputs; one missing.
+  const first = await call("/__test/jobs", {
+    id: "inline-1", command: "cat src/hello.txt; mkdir -p $JOB_OUT/logs; wc -c < src/hello.txt > $JOB_OUT/logs/count.txt; echo oops >&2; exit 3",
+    timeoutSeconds: 120, files: { "src/hello.txt": b64("hello from camel-sync"), [`${"deep/".repeat(25)}x.txt`]: b64("deep") },
+    outputs: ["logs/count.txt", "missing.txt"], limits: { pids: 512 }, payer: { tenant, agent: agent.id }, saveSnapshot: "never-saved",
+  });
+  assert.equal(first.ok, true, JSON.stringify(first));
+  assert.equal(first.exitCode, 3);
+  assert.equal(first.timedOut, false);
+  assert.equal(text(first.stdout), "hello from camel-sync");
+  assert.equal(text(first.stderr), "oops\n");
+  assert.equal(text(first.outputs["logs/count.txt"]).trim(), "21");
+  assert.deepEqual(first.missing, ["missing.txt"]);
+  assert.equal(first.instance, "standard-1");
+  assert.ok(["cgroup", "unenforced"].includes(first.pids));
+  assert.equal(first.snapshot, undefined, "a failing job saves no snapshot");
+  t.diagnostic(`job timings ${JSON.stringify(first.timings)}, pids ${first.pids}`);
+  // Stopped and given back: no slot left, and the container time was charged to the payer.
+  assert.equal((await fixture.db.query("select 1 from computer_slots where tenant=$1 and machine='job:inline-1'", [tenant])).rowCount, 0);
+  let charged = 0;
+  for (let i = 0; i < 50 && !charged; i++) {
+    charged = (await fixture.db.query("select 1 from pi_usage_receipts where tenant=$1 and session_id=$2 and message->'_workersAuxiliary'->>'kind'='computer'", [tenant, agent.id])).rowCount ?? 0;
+    if (!charged) await new Promise(resolve => setTimeout(resolve, 200));
+  }
+  assert.ok(charged, "the job's container time is a computer usage receipt for its payer");
+
+  // A volume snapshot as the source, and a warm snapshot saved for the next job.
+  const volume = await call("/v1/volumes", { name: "job-source" });
+  await call(`/v1/volumes/${volume.id}/files/pkg/a.txt`, undefined, "from the volume");
+  const snap = await call(`/v1/volumes/${volume.id}/snapshots`, { name: "for-job" });
+  await call(`/v1/volumes/${volume.id}/files/pkg/a.txt`, undefined, "changed after the snapshot");
+  const warm = await call("/__test/jobs", {
+    id: "volume-1", command: "cat pkg/a.txt; echo warm > /var/tmp/cache", timeoutSeconds: 120,
+    volume: { tenant, volume: volume.id, snapshot: snap.id }, saveSnapshot: "warm-1",
+  });
+  assert.equal(warm.ok, true, JSON.stringify(warm));
+  assert.equal(text(warm.stdout), "from the volume");
+  assert.equal(warm.snapshot?.name, "warm-1");
+  const resumed = await call("/__test/jobs", { id: "warm-2", snapshot: warm.snapshot, command: "cat /var/tmp/cache; ls", timeoutSeconds: 120 });
+  assert.equal(resumed.ok, true, JSON.stringify(resumed));
+  assert.equal(text(resumed.stdout), "warm\npkg\n", "a job from a snapshot starts with that job's disk");
+
+  // A command past its timeout is killed; its outputs still come back.
+  const slow = await call("/__test/jobs", { id: "slow-1", command: "echo partial > $JOB_OUT/p.txt; sleep 60", timeoutSeconds: 3, outputs: ["p.txt"] });
+  assert.equal(slow.ok, true, JSON.stringify(slow));
+  assert.equal(slow.timedOut, true);
+  assert.equal(slow.exitCode, null);
+  assert.equal(text(slow.outputs["p.txt"]), "partial\n");
+
+  // stop() ends a running job.
+  const running = call("/__test/jobs", { id: "stop-1", command: "sleep 60", timeoutSeconds: 120 });
+  let stopped = false;
+  for (let i = 0; i < 120 && !stopped; i++) {
+    await new Promise(resolve => setTimeout(resolve, 500));
+    stopped = (await call("/__test/jobs/stop", { id: "stop-1" })).stopped;
+  }
+  assert.ok(stopped);
+  const ended = await running;
+  assert.equal(ended.code, "stopped", JSON.stringify(ended));
+});
