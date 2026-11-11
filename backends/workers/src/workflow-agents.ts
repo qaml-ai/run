@@ -19,6 +19,7 @@ import { recordChildParent, type ChildPlace } from "./child-parent.ts";
 import { Directory } from "./control.ts";
 import { provisionDefinition, resolveDefinition } from "./definitions.ts";
 import type { Env } from "./agent-types.ts";
+import { AgentOptionsError, classModel, resolveAgentOptions, TYPE_DEFINITIONS, type AgentType, type ModelClass } from "./workflow-types.ts";
 
 /** What a script's `agent(prompt, opts)` issues (workflow-vm.ts): its prompt and its options but `key`. */
 export type AgentArgs = { prompt: string; definition?: string; instructions?: string; model?: string; output?: unknown; label?: string; type?: string; [option: string]: unknown };
@@ -27,7 +28,7 @@ export type AgentArgs = { prompt: string; definition?: string; instructions?: st
  * A refusal for money, landed as the effect's outcome: the runner marks the effect `refused` and pauses the workflow
  * with `code` (resume re-issues it under the next attempt). The script never sees it.
  */
-export type Refused = { refused: string; code: "payer_exhausted" | "budget_exhausted" };
+export type Refused = { refused: string; code?: "payer_exhausted" | "budget_exhausted"; spent?: number };
 export type LandedOutcome = EffectOutcome | Refused;
 /** What a child spent, for the workflow's ledger: landed with its outcome, which the ledger keys by `key:attempt`. */
 export type EffectUsage = { costUsd: number; model?: string; inputTokens?: number; cachedInputTokens?: number; outputTokens?: number; durationMs?: number };
@@ -53,12 +54,23 @@ export interface WorkflowAgentsHost {
   land(key: string, attempt: number, outcome: LandedOutcome, usage?: EffectUsage): Promise<void>;
   /** Everything that reaches outside the workflow object (workflowChildren for the real one). */
   children: WorkflowChildren;
+  /** The workflow's class pins and whether judgment may run on the fast class (workflow-types.ts). */
+  classes?(): { classes?: Partial<Record<AgentType, ModelClass>>; allowFastJudgment?: boolean };
+  /**
+   * A volume the child works in (`agent(task, { repo })`, the jobs lane's volume forks): called once before the child
+   * is made, idempotent per `key:attempt` on the host's side. `mounts` join the child's configuration; `result` joins
+   * an ok outcome's value (`{ fork: { volume, base } }`), a text answer becoming `{ text, ...result }`.
+   */
+  childVolume?(effect: { key: string; attempt: number }, args: AgentArgs): Promise<{ mounts?: unknown[]; result?: Record<string, unknown> } | undefined>;
 }
 
 /** Making and reaching child agents. */
 export interface WorkflowChildren {
-  /** The child's configuration: its definition's, or an inline child's on the workflow's default model. */
-  config(args: AgentArgs): Promise<Record<string, unknown>>;
+  /**
+   * The child's configuration: its definition's, or an inline child's on the workflow's default model, shaped by its
+   * resolved type (its built-in definition) and class (its model).
+   */
+  config(args: AgentArgs, resolved?: { type?: AgentType; modelClass?: ModelClass }): Promise<Record<string, unknown>>;
   /** Make the child under `key` (the same key makes the same agent), recording its place under the workflow. */
   create(config: Record<string, unknown>, key: string, place: ChildPlace & { ownerRun: string }): Promise<{ id: string }>;
   /** Start its run through the binding, with its placement (agent.ts `admitDelegated`). */
@@ -72,7 +84,7 @@ export const workflowRun = (id: string) => `${id}:main`;
 
 const ROW_PREFIX = "workflow-";
 /** A child's row in the workflow's table: queued (no slot yet), running, or how it ended. */
-type Row = DelegatedChild & { effectKey: string; args?: AgentArgs; refusal?: Refused; startedRun?: number };
+type Row = DelegatedChild & { effectKey: string; args?: AgentArgs; refusal?: Refused; startedRun?: number; resolved?: { type?: AgentType; modelClass?: ModelClass }; volumeResult?: Record<string, unknown> };
 
 function owner(id: string): Owner { return { kind: "workflow", id }; }
 
@@ -137,12 +149,15 @@ export class WorkflowAgents implements EffectExecutor {
     }
     if (!args || typeof args.prompt !== "string" || !args.prompt) return this.host.land(effect.key, effect.attempt, { ok: false, error: "agent() needs a prompt" });
     if (args.computer !== undefined) return this.host.land(effect.key, effect.attempt, { ok: false, error: "A workflow's agents have no computer: run a job() for compute" });
+    let resolved: { type?: AgentType; modelClass?: ModelClass };
+    try { resolved = resolveAgentOptions(args, this.host.classes?.() ?? {}); }
+    catch (error) { if (error instanceof AgentOptionsError) return this.host.land(effect.key, effect.attempt, { ok: false, error: error.message }); throw error; }
     const row: Row = {
       id: "", key, effectKey: effect.key, attempt: effect.attempt, callId: effect.key, toolCallId: effect.key, outbox: true,
       owner: owner(this.host.workflow.id), rootOwner: owner(this.host.workflow.id), chain: [this.host.workflow.id], root: this.host.workflow.id,
       depth: 1, maxDepth: MULTI_AGENT_LIMITS.maxDepth, requestId: `workflow_${identity}`, parentRequestId: workflowRun(this.host.workflow.id),
       name: typeof args.label === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(args.label) ? args.label : `agent-${identity.slice(0, 8)}`,
-      background: true, made: true, createdAt: Date.now(), status: "queued", args,
+      background: true, made: true, createdAt: Date.now(), status: "queued", args, resolved,
       ...(this.host.workflow.bucket ? { bucket: this.host.workflow.bucket } : {}),
     };
     await this.rows.put(row);
@@ -205,17 +220,19 @@ export class WorkflowAgents implements EffectExecutor {
     const place: ChildPlace & { ownerRun: string } = { depth: row.depth, maxDepth: row.maxDepth!, chain: row.chain!, owner: row.owner, rootOwner: row.rootOwner, ownerRun: row.parentRequestId };
     try {
       if (!row.id) {
-        const config = await this.host.children.config(args);
+        const config = await this.host.children.config(args, row.resolved);
         for (const name of WORKFLOW_CHILD_REFUSED_KEYS) delete config[name];
+        const volume = await this.host.childVolume?.({ key: row.effectKey, attempt: row.attempt ?? 1 }, args);
+        if (volume?.mounts?.length) config.mounts = [...(Array.isArray(config.mounts) ? config.mounts : []), ...volume.mounts];
         const { id } = await this.host.children.create({ ...config, name: row.name, type: "subagent", ttlSeconds: MULTI_AGENT_LIMITS.childTtlSeconds, ...(row.bucket ? { bucket: row.bucket } : {}) }, row.key, place);
-        row = { ...row, id };
+        row = { ...row, id, ...(volume?.result ? { volumeResult: volume.result } : {}) };
       }
       // Running before it is submitted, unless an abort (or anything else) moved the row on while the child was being
       // made: then nothing is started. A start made again after a crash here submits the same request, which dedupes.
       const claimed = await this.host.storage.transaction(async tx => {
         const current = await this.rows.get(row.key) as Row | undefined;
         if (!current || current.status !== row.status || current.cancelRequested) return undefined;
-        const next: Row = { ...current, id: row.id, status: "running", startedRun: current.startedRun ?? Date.now(), ...(held !== undefined ? { held } : {}) };
+        const next: Row = { ...current, id: row.id, ...(row.volumeResult ? { volumeResult: row.volumeResult } : {}), status: "running", startedRun: current.startedRun ?? Date.now(), ...(held !== undefined ? { held } : {}) };
         await this.rows.put(next, tx);
         return next;
       });
@@ -249,7 +266,9 @@ export class WorkflowAgents implements EffectExecutor {
   /** Land an ended row on its effect, with what its child spent (the ledger keeps one row per `key:attempt`). */
   private async settle(row: Row) {
     const usage = effectUsage(row.outcome ? { state: "completed", outcome: row.outcome } : undefined, row.endedAt && row.startedRun ? row.endedAt - row.startedRun : undefined);
-    const outcome: LandedOutcome = row.refusal ?? (row.outcome ? agentOutcome({ state: "completed", status: row.status, outcome: row.outcome, error: row.error }) : { ok: false, error: row.error ?? `The sub-agent ${row.status}` });
+    let outcome: LandedOutcome = row.refusal ?? (row.outcome ? agentOutcome({ state: "completed", status: row.status, outcome: row.outcome, error: row.error }) : { ok: false, error: row.error ?? `The sub-agent ${row.status}` });
+    if (row.volumeResult && "ok" in outcome && outcome.ok && "value" in outcome)
+      outcome = { ok: true, value: outcome.value && typeof outcome.value === "object" && !Array.isArray(outcome.value) ? { ...outcome.value as object, ...row.volumeResult } : { text: outcome.value, ...row.volumeResult } };
     return this.host.land(row.effectKey, row.attempt ?? 1, outcome, usage);
   }
 
@@ -347,20 +366,29 @@ export class WorkflowAgents implements EffectExecutor {
  * directory under the effect's key, placed under the workflow (their header's `owner`, `rootOwner`; recordChildParent),
  * and started through `admitDelegated`. `defaults.model` is the workflow's default model for inline children.
  */
-export function workflowChildren(env: Env, workflow: { id: string; tenant: string }, defaults: { model?: unknown; runtimeOrigin?: string } = {}): WorkflowChildren {
+export function workflowChildren(env: Env & { AGENT_WORKFLOW_CLASS_MODELS?: string }, workflow: () => { id: string; tenant: string }, defaults: { model?: unknown; runtimeOrigin?: string } = {}): WorkflowChildren {
   return {
-    async config(args) {
+    async config(args, resolved = {}) {
+      const { tenant } = workflow();
+      const model = resolved.modelClass ? classModel(env, resolved.modelClass) : args.model ?? defaults.model;
       if (typeof args.definition === "string") {
-        const definition = await resolveDefinition(env, workflow.tenant, args.definition);
-        return await provisionDefinition(env, workflow.tenant, { definition: definition.id }) as Record<string, unknown>;
+        const definition = await resolveDefinition(env, tenant, args.definition);
+        const config = await provisionDefinition(env, tenant, { definition: definition.id }) as Record<string, unknown>;
+        return { ...config, ...(resolved.modelClass || args.model !== undefined ? { model } : {}) };
       }
-      const model = args.model ?? defaults.model;
-      return { ...(model !== undefined ? { model } : {}), systemPrompt: SUBAGENT_PROMPT };
+      const typed = resolved.type ? TYPE_DEFINITIONS[resolved.type] : undefined;
+      return {
+        ...(model !== undefined ? { model } : {}),
+        systemPrompt: typed?.systemPrompt ?? SUBAGENT_PROMPT,
+        ...(typed?.builtins ? { builtins: typed.builtins } : {}),
+        ...(typed?.delegate ? { delegate: typed.delegate } : {}),
+      };
     },
     async create(config, key, place) {
-      const entry = await new Directory(env, workflow.tenant).upsert(config, key, defaults.runtimeOrigin);
+      const { id, tenant } = workflow();
+      const entry = await new Directory(env, tenant).upsert(config, key, defaults.runtimeOrigin);
       if ("failed" in entry) throw Object.assign(new Error(entry.error), { status: entry.status ?? 400 });
-      await recordChildParent(env, workflow.tenant, entry.id, workflow.id, place.ownerRun, place);
+      await recordChildParent(env, tenant, entry.id, id, place.ownerRun, place);
       return { id: entry.id };
     },
     submit: (childId, request, placement) => env.AGENTS.getByName(childId).admitDelegated(request, placement),
