@@ -24,9 +24,17 @@ export interface WorkflowStepRequest {
   /** The VM's clock at the script's start (ms since the epoch) and its seed; fixed for the workflow's life. */
   startedAt: number;
   seed: number;
-  /** The gzipped snapshot the last step returned. Without one the VM starts again and replays `replay`. */
+  /** The gzipped snapshot the last step returned. Without one the VM starts again (with `table`) and replays `replay`. */
   restore?: Uint8Array;
-  /** Without `restore`: every earlier step's results, in step order (none for the workflow's first step). */
+  /**
+   * Without `restore`: the revision's adopted effects, which a VM started again knows before the script runs. A new
+   * revision (an edit, a rerun) starts from the journal this way: an effect it asks for that the table holds is
+   * answered from it (`value`) or waits for its pending result (no `value`), and is never issued again.
+   */
+  table?: { key: string; ok?: boolean; value?: string }[];
+  /** Without `restore`: the clock when the revision began (the VM's clock reads it until a batch moves it on). */
+  beganAt?: number;
+  /** Without `restore`: every earlier step's batch in this revision, in step order; absent for a revision's first step. */
   replay?: WorkflowBatch[];
   /** This step's new results. */
   deliver?: WorkflowBatch;
@@ -34,12 +42,15 @@ export interface WorkflowStepRequest {
   snapshotCap: number;
 }
 
-/** An effect the script asked for. `args` is its canonical JSON; `replayed` ones were issued by a replay. */
-export interface IssuedEffect { key: string; kind: string; args: string; phase: string | undefined; replayed: boolean }
+/**
+ * An effect the script asked for. `args` is its canonical JSON and `options` the effect's own options (a gate's expiry).
+ * `replayed` ones were issued by a replay; `reused` ones were answered from the revision's table, not issued.
+ */
+export interface IssuedEffect { key: string; kind: string; args: string; options?: string; phase: string | undefined; replayed: boolean; reused: boolean }
 
 /** What the host must handle as a workflow fault: the script cannot go on as written. */
 export type WorkflowFaultCode =
-  | "key_required" | "key_conflict" | "nondeterministic_script" | "journal_version" | "stalled" | "step_budget";
+  | "key_required" | "key_conflict" | "nondeterministic_script" | "journal_version" | "stalled" | "step_budget" | "effect_limit";
 
 export type WorkflowStepOutcome =
   | {

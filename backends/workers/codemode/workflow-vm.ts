@@ -53,14 +53,14 @@ export function canonicalJson(value: unknown): string {
 
 /**
  * The guest's prelude: the workflow globals over one host function, `bridge(kind, ...)` with kind "effect" (key, kind,
- * args JSON, phase), "log" (text, phase), "phase" (name), "fault" (code, message) or "done" (ok, value or error JSON).
- * Evaluates to `{ settle(key, ok, json), run(fn), status() }`. Its references to built-ins are taken before the script
+ * args JSON, phase, options JSON, reused), "log" (text, phase), "phase" (name), "fault" (code, message) or "done" (ok,
+ * value or error JSON). Evaluates to `{ settle(key, ok, json), adopt(tableJson), run(fn), status() }`. Its references to built-ins are taken before the script
  * runs, so a script that patches one changes only its own values, never what is reported.
  */
 export const WORKFLOW_PRELUDE = `(function (bridge) {
   "use strict";
   const stringify = JSON.stringify, parse = JSON.parse, keysOf = Object.keys, isArray = Array.isArray, defineProperty = Object.defineProperty;
-  const PromiseCtor = Promise, all = Promise.allSettled.bind(Promise), resolved = Promise.resolve.bind(Promise), rejected = Promise.reject.bind(Promise);
+  const PromiseCtor = Promise, all = Promise.allSettled.bind(Promise), resolved = Promise.resolve.bind(Promise);
   const ErrorCtor = Error, TypeErrorCtor = TypeError, now = Date.now, random = Math.random;
   const pending = new Map(), settled = new Map(), known = new Map(), occurrences = new Map();
   let parallelDepth = 0, finished = false, phase = "";
@@ -89,17 +89,14 @@ export const WORKFLOW_PRELUDE = `(function (bridge) {
       return stringify({ message: typeof error === "string" ? error : stringify(error) });
     } catch { return stringify({ message: "The script threw a value that cannot be described" }); }
   }
-  function toError(key, value) {
-    const error = new ErrorCtor(value && typeof value.message === "string" ? value.message : "Effect " + key + " failed");
-    error.effect = key;
-    return error;
-  }
   // A fault ends the workflow whatever the script does next: it is reported first, then unwinds the script.
   function fault(code, message) {
     if (!finished) { finished = true; bridge("fault", code, message); }
     throw new ErrorCtor(message);
   }
-  function effect(kind, args, options) {
+  // A failed effect gives the script null (its item records why), so .filter(Boolean) drops it.
+  const outcome = done => done.ok ? done.value : null;
+  function effect(kind, args, options, extra) {
     if (finished) return new PromiseCtor(() => {});
     const json = canonical(args);
     let key;
@@ -118,14 +115,20 @@ export const WORKFLOW_PRELUDE = `(function (bridge) {
     if (before !== undefined) {
       if (before.kind !== kind || before.args !== json) fault("key_conflict", "Key " + stringify(key) + " is already the key of another " + before.kind + "() with other arguments");
       const done = settled.get(key);
-      if (done !== undefined) return done.ok ? resolved(done.value) : rejected(toError(key, done.value));
+      if (done !== undefined) return resolved(outcome(done));
       return pending.get(key).promise;
     }
     known.set(key, { kind, args: json });
-    let resolve, reject;
-    const promise = new PromiseCtor((yes, no) => { resolve = yes; reject = no; });
-    pending.set(key, { promise, resolve, reject });
-    bridge("effect", key, kind, json, phase);
+    // The revision's table: an effect the journal already has is answered from it, or waits for its result.
+    const adopted = table.get(key);
+    if (adopted !== undefined) {
+      table.delete(key);
+      bridge("effect", key, kind, json, phase, extra === undefined ? undefined : stringify(extra), true);
+      if (adopted.value !== undefined) { const done = { ok: adopted.ok, value: parse(adopted.value) }; settled.set(key, done); return resolved(outcome(done)); }
+    } else bridge("effect", key, kind, json, phase, extra === undefined ? undefined : stringify(extra), false);
+    let resolve;
+    const promise = new PromiseCtor(yes => { resolve = yes; });
+    pending.set(key, { promise, resolve });
     return promise;
   }
   function settle(key, ok, json) {
@@ -133,9 +136,12 @@ export const WORKFLOW_PRELUDE = `(function (bridge) {
     if (entry === undefined) throw new ErrorCtor("A result for effect " + key + ", which is not waiting for one");
     pending.delete(key);
     const value = parse(json);
-    settled.set(key, { ok, value });
-    if (ok) entry.resolve(value); else entry.reject(toError(key, value));
+    const done = { ok, value };
+    settled.set(key, done);
+    entry.resolve(outcome(done));
   }
+  const table = new Map();
+  function adopt(json) { for (const entry of parse(json)) table.set(entry.key, entry); }
   function options(value, name) {
     if (value !== undefined && (value === null || typeof value !== "object" || isArray(value))) throw new TypeErrorCtor(name + "() options must be an object");
     return value;
@@ -148,9 +154,20 @@ export const WORKFLOW_PRELUDE = `(function (bridge) {
       if (opts) for (const name of keysOf(opts)) if (name !== "key") args[name] = opts[name];
       return effect("agent", args, opts);
     },
-    sleep(ms, opts) {
-      if (typeof ms !== "number" || !(ms >= 0) || ms === Infinity) throw new TypeErrorCtor("sleep(ms) needs a number of milliseconds");
-      return effect("sleep", { ms }, options(opts, "sleep"));
+    sleep(seconds, opts) {
+      if (typeof seconds !== "number" || !(seconds >= 0) || seconds === Infinity) throw new TypeErrorCtor("sleep(seconds) needs a number of seconds");
+      return effect("sleep", { seconds }, options(opts, "sleep"));
+    },
+    // A decision for a person. Answers with what they chose; expires after expiresInSeconds (7 days), then takes
+    // the recommendation when onExpire is "recommended", or pauses the workflow.
+    gate(opts) {
+      options(opts, "gate");
+      if (!opts || typeof opts.title !== "string" || opts.title === "") throw new TypeErrorCtor("gate({ title }) needs a title");
+      const args = {};
+      for (const name of keysOf(opts)) if (name !== "key" && name !== "expiresInSeconds" && name !== "onExpire") args[name] = opts[name];
+      const extra = { expiresInSeconds: opts.expiresInSeconds === undefined ? 604800 : opts.expiresInSeconds, onExpire: opts.onExpire === "recommended" ? "recommended" : "pause" };
+      if (typeof extra.expiresInSeconds !== "number" || !(extra.expiresInSeconds > 0)) throw new TypeErrorCtor("gate() expiresInSeconds must be a positive number");
+      return effect("gate", args, opts, extra);
     },
     // Waits for every branch, even after one fails, so no branch is still issuing effects outside parallel().
     async parallel(items, fn) {
@@ -183,6 +200,7 @@ export const WORKFLOW_PRELUDE = `(function (bridge) {
   for (const name of keysOf(globals)) defineProperty(globalThis, name, { value: globals[name], enumerable: true });
   return {
     settle,
+    adopt,
     run(fn) {
       let promise;
       try { promise = fn(); } catch (error) { finished = true; bridge("done", false, describe(error)); return; }
@@ -267,12 +285,14 @@ class WorkflowVm {
     };
   }
 
-  bridge = (kind: JSValueHandle, a: JSValueHandle, b: JSValueHandle, c: JSValueHandle, d: JSValueHandle) => {
+  bridge = (kind: JSValueHandle, a: JSValueHandle, b: JSValueHandle, c: JSValueHandle, d: JSValueHandle, e?: JSValueHandle, f?: JSValueHandle) => {
     const text = (handle: JSValueHandle | undefined) => handle === undefined || handle.isUndefined ? undefined : handle.toString();
     switch (kind.toString()) {
       case "effect": {
-        const phase = text(d);
-        this.issued.push({ key: a.toString(), kind: b.toString(), args: c.toString(), phase: phase || undefined, replayed: this.replaying });
+        const phase = text(d), options = text(e);
+        const effect: IssuedEffect = { key: a.toString(), kind: b.toString(), args: c.toString(), phase: phase || undefined, replayed: this.replaying, reused: f !== undefined && f.toBoolean() };
+        if (options !== undefined) effect.options = options;
+        this.issued.push(effect);
         break;
       }
       case "log": if (!this.replaying) this.logs.push({ phase: text(b) || undefined, text: a.toString() }); break;
@@ -310,10 +330,15 @@ class WorkflowVm {
     return self;
   }
 
-  /** Run the script from its start until it first waits. */
-  begin(code: string) {
+  /** Run the script from its start until it first waits, knowing `table` first. */
+  begin(code: string, table: WorkflowStepRequest["table"]) {
     const vm = this.vm;
     try {
+      if (table?.length) {
+        const adopt = this.api.getProp("adopt");
+        vm.withScope(() => vm.callFunction(adopt, this.api, vm.newString(JSON.stringify(table))));
+        adopt.dispose();
+      }
       const run = this.api.getProp("run");
       const fn = vm.evalCode(`(async () => {${code}\n})`, "workflow.js");
       vm.callFunction(run, this.api, fn).dispose();
@@ -407,9 +432,10 @@ export async function serveWorkflowStep(request: WorkflowStepRequest, wasm: WebA
     vm = await WorkflowVm.restore(state, image, wasm);
   } else {
     vm = await WorkflowVm.start(request, wasm, fingerprint);
+    if (request.beganAt !== undefined) vm.state.clock.now = Math.max(vm.state.clock.now, request.beganAt);
     replayed = request.replay !== undefined;
     vm.replaying = replayed;
-    vm.begin(request.code);
+    vm.begin(request.code, request.table);
     for (const batch of request.replay ?? []) vm.deliver(batch);
     vm.replaying = false;
   }

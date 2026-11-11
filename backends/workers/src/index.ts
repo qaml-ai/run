@@ -95,6 +95,8 @@ import {
 export { CamelAgent };
 export { TenantAdmission } from "./tenant.ts";
 export { Volume } from "./volume.ts";
+export { WorkflowObject } from "./workflow-object.ts";
+import { workflowTestRoute, type WorkflowEnv } from "./workflow-object.ts";
 export { ContainerComputer } from "./computers/objects.ts";
 export { ComputerEgress } from "./computers/egress-gateway.ts";
 
@@ -354,6 +356,10 @@ const worker = {
           request.method === "POST"
         )
           return json({ queued: await publishPending(env) });
+        if (path.startsWith("/__test/workflows/") && env.TEST_MODE === "1" && auth.kind === "operator") {
+          const workflow = await workflowTestRoute(request, env as unknown as WorkflowEnv, path);
+          if (workflow) return workflow;
+        }
         const money = await moneyRoutes(request, env, auth, ctx);
         if (money) return money;
         const admin = await handleAdminRequest(request, env, auth);

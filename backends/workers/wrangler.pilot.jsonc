@@ -47,6 +47,10 @@
         "class_name": "Volume"
       },
       {
+        "name": "WORKFLOWS",
+        "class_name": "WorkflowObject"
+      },
+      {
         "name": "CODEMODE_SANDBOX",
         "class_name": "CodemodeSandbox",
         "script_name": "camelrun-pilot-codemode"
@@ -70,6 +74,12 @@
       "tag": "v2",
       "new_sqlite_classes": [
         "ContainerComputer"
+      ]
+    },
+    {
+      "tag": "workflow-object",
+      "new_sqlite_classes": [
+        "WorkflowObject"
       ]
     }
   ],
