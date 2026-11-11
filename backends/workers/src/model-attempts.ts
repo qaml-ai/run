@@ -259,12 +259,17 @@ export class ModelAttempts {
         await sql.query("update model_attempts set context = coalesce(context, '{}'::jsonb) || $2::jsonb where id=$1", [id, JSON.stringify({ superseded })]);
         row.context = { ...row.context, superseded };
       }
+      // The service tier the call asked for and the one that served it (model-attempt-stream.ts `servedTier`), kept with the attempt.
+      const tier = { ...(typeof usage.requestedServiceTier === "string" ? { requestedServiceTier: usage.requestedServiceTier } : {}), ...(typeof usage.serviceTier === "string" ? { serviceTier: usage.serviceTier } : {}) };
+      // Written with the attempt's own update below, never as a query of its own: settle is every model call's path.
+      const tierContext = Object.keys(tier).length && (row.context?.serviceTier !== tier.serviceTier || row.context?.requestedServiceTier !== tier.requestedServiceTier) ? JSON.stringify(tier) : null;
+      if (tierContext) row.context = { ...row.context, ...tier };
       const replaced: Superseded | undefined = row.context?.superseded;
       const disabled = row.context?.reconciliationDisabled || (row.key_hash === hash("") ? "Empty provider credential has no reconciliation; reported usage is final" : undefined);
       const evidence = chars > 0 || [usage.input, usage.output, usage.cacheRead, usage.cacheWrite, usage.providerCost].some(value => typeof value === "number" && value > 0);
       if (!reconciled && !evidence) {
         // Unknown is not a zero-cost final result. Unreconcilable failures have nothing to bill.
-        await sql.query("update model_attempts set updated_at=$2 where id=$1", [id, Date.now()]);
+        await sql.query("update model_attempts set updated_at=$2, context = case when $3::jsonb is null then context else coalesce(context, '{}'::jsonb) || $3::jsonb end where id=$1", [id, Date.now(), tierContext]);
         if (disabled) await sql.query("update model_attempts set state='settled',last_error=null where id=$1", [id]);
         return;
       }
@@ -344,8 +349,9 @@ export class ModelAttempts {
         if (event.legacy) Object.assign(event.legacy, facts);
       }
       await enqueueEvents(sql, quote.events);
-      await sql.query(`update model_attempts set state=$2,totals=$3,charge=$4,revision=$5,updated_at=$6,next_check_at=$7,last_error=$8 where id=$1`,
-        [id, final ? "settled" : "estimated", JSON.stringify(quote.totals), amount, revision, Date.now(), Date.now()+60_000, null]);
+      await sql.query(`update model_attempts set state=$2,totals=$3,charge=$4,revision=$5,updated_at=$6,next_check_at=$7,last_error=$8,
+        context = case when $9::jsonb is null then context else coalesce(context, '{}'::jsonb) || $9::jsonb end where id=$1`,
+        [id, final ? "settled" : "estimated", JSON.stringify(quote.totals), amount, revision, Date.now(), Date.now()+60_000, null, tierContext]);
     });
     this.accounts.invalidateModelUsage(tenant);
     // A committed debit must still wake automatic top-up, but its delivery cannot undo settlement.

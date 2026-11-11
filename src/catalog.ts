@@ -1,4 +1,4 @@
-import { VIRTUAL_PROVIDER, virtualChain, virtualModel, virtualModelReferences } from "./virtual-models.ts";
+import { VIRTUAL_PROVIDER, virtualChain, virtualModel, virtualModelReferences, type VirtualSelection } from "./virtual-models.ts";
 import { readFileSync } from "node:fs";
 import { getProviders } from "@earendil-works/pi-ai/compat";
 import { getModels } from "./pi-catalog.ts";
@@ -55,6 +55,8 @@ export interface ModelInfo {
   toolCallStreaming: boolean | "unknown";
   /** A virtual model's physical models, most preferred first: each request is made on the first that can take it. Its other fields are the first's. */
   routes?: string[];
+  /** For each of `routes`, the OpenRouter service tier it is asked on (null: the provider's default), where any route names one. */
+  serviceTiers?: (string | null)[];
 }
 
 const MEASURED: Record<string, boolean> = JSON.parse(readFileSync(new URL("./tool-streaming.json", import.meta.url), "utf8")).models;
@@ -109,7 +111,8 @@ export function listModels(provider?: string): ModelInfo[] {
   const providers = provider ? [provider] : getProviders();
   const virtual = !provider || provider === VIRTUAL_PROVIDER ? virtualModelReferences().map(reference => {
     const chain = virtualChain(reference)!;
-    return { ...modelInfo(chain[0]), id: reference, provider: VIRTUAL_PROVIDER, modelId: reference.slice(VIRTUAL_PROVIDER.length + 1), name: virtualModel(reference)!.name, routes: chain.map(model => `${model.provider}/${model.id}`) };
+    return { ...modelInfo(chain[0]), id: reference, provider: VIRTUAL_PROVIDER, modelId: reference.slice(VIRTUAL_PROVIDER.length + 1), name: virtualModel(reference)!.name, routes: chain.map(model => `${model.provider}/${model.id}`),
+      ...(chain.some(model => (model as VirtualSelection).serviceTier) ? { serviceTiers: chain.map(model => (model as VirtualSelection).serviceTier ?? null) } : {}) };
   }) : [];
   return [...virtual, ...providers.flatMap(id => (getProviders().includes(id as never) ? models(id) : []).map(modelInfo))];
 }
