@@ -93,6 +93,7 @@ function jobs(result: (spec: JobSpec) => JobResult | Promise<JobResult>, availab
   const storage = {
     put: async (key: string, value: unknown) => { rows.set(key, value); },
     delete: async (key: string) => rows.delete(key),
+    get: async (key: string) => rows.get(key),
     list: async ({ prefix }: { prefix: string }) => new Map([...rows].filter(([key]) => key.startsWith(prefix))),
   };
   const landed: [string, number, unknown][] = [], specs: JobSpec[] = [], pending: Promise<unknown>[] = [], stopped: string[] = [];
@@ -155,6 +156,31 @@ test("WorkflowJobs: refusals and failures land as values; a job is paid by the w
   assert.deepEqual(j.landed.map(entry => entry[0]), ["f"]);
   await j.executor.cancel(effect("f", {}));
   assert.deepEqual(j.stopped, [await jobId("wf_1", "f", 1)]);
+
+  // The sweep's poll runs again a job whose run threw (nothing in flight here), and never one in flight.
+  let calls = 0;
+  j = jobs(spec => { if (calls++ === 0) throw new Error("the container's object is unreachable"); return { ok: false, id: spec.id, code: "disk_low", message: "full", timings }; });
+  await j.executor.start(effect("g", { command: "true", timeoutSeconds: 5 }));
+  await j.settled();
+  assert.equal(j.landed.length, 0);
+  assert.equal(await j.executor.poll(effect("g", {})), undefined);
+  await j.settled();
+  assert.deepEqual(j.landed.map(entry => entry[0]), ["g"]);
+  assert.equal(j.rows.size, 0);
+
+  // commit() lands from the background: start returns while its landing waits (the runner holds its queue while it
+  // starts effects, and a landing waits on that queue, so a start that awaited it would never return).
+  j = jobs(() => { throw new Error("never"); });
+  let release!: () => void;
+  const queue = new Promise<void>(resolve => { release = resolve; });
+  const host = j.executor as unknown as { host: { land: (...args: unknown[]) => Promise<void> } };
+  const land = host.host.land;
+  host.host.land = async (...args) => { await queue; return land(...args); };
+  await j.executor.start(effect("h", { fork: 7 }, "commit"));
+  assert.equal(j.landed.length, 0);
+  release();
+  await j.settled();
+  assert.deepEqual(j.landed.map(entry => [entry[0], (entry[2] as { error?: string }).error]), [["h", "commit() needs a fork's volume id"]]);
 });
 
 test("a fork's changes: written paths are those whose content differs from the base it was made from; removed ones", () => {

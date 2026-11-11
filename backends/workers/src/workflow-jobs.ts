@@ -89,12 +89,16 @@ export class WorkflowJobs implements EffectExecutor {
     this.env = env; this.host = host; this.driver = driver;
   }
 
+  /**
+   * Start an effect: its row, then its work in the background. It lands from there, never from inside this call, which
+   * the runner makes while it holds its queue (a landing waits on that queue).
+   */
   async start(effect: StartedEffect): Promise<void> {
-    if (effect.kind === "commit") return this.commit(effect);
-    if (effect.kind !== "job" && effect.kind !== "push") throw new Error(`WorkflowJobs runs job(), commit() and push(), not ${effect.kind}()`);
+    if (effect.kind !== "job" && effect.kind !== "push" && effect.kind !== "commit") throw new Error(`WorkflowJobs runs job(), commit() and push(), not ${effect.kind}()`);
     const id = await jobId(this.host.workflow.id, effect.key, effect.attempt);
     // Its row first: a restart before it lands runs it again (`recover`). A job is run again, not resumed: what a job
-    // does must be safe to do twice (a build, a test, a push of the same tree, which pushes nothing new).
+    // does must be safe to do twice (a build, a test, a push of the same tree, which pushes nothing new); a commit made
+    // again finds its files already landed (commitFork).
     await this.host.storage.put(ROW + id, { key: effect.key, attempt: effect.attempt, kind: effect.kind, args: effect.args });
     this.launch(id, effect);
   }
@@ -103,6 +107,17 @@ export class WorkflowJobs implements EffectExecutor {
   async recover() {
     for (const [name, effect] of await this.host.storage.list<StartedEffect>({ prefix: ROW }))
       if (!this.running.has(name.slice(ROW.length))) this.launch(name.slice(ROW.length), effect);
+  }
+
+  /**
+   * The runner's sweep asks after an effect that has not landed: one whose run is not in flight here (it threw: storage
+   * down, the container's object unreachable) is run again. Its landing comes from that run.
+   */
+  async poll(effect: StartedEffect) {
+    const id = await jobId(this.host.workflow.id, effect.key, effect.attempt);
+    const row = await this.host.storage.get<StartedEffect>(ROW + id);
+    if (row && !this.running.has(id)) this.launch(id, row);
+    return undefined;
   }
 
   async cancel(effect: StartedEffect) {
@@ -129,6 +144,7 @@ export class WorkflowJobs implements EffectExecutor {
       await this.host.land(effect.key, effect.attempt, outcome, usage);
       await this.host.storage.delete(ROW + id);
     };
+    if (effect.kind === "commit") return done(await this.commit(effect.args as { fork?: unknown; snapshot?: unknown }));
     const found = this.driver();
     if (!found.ok) return done({ ok: false, error: `${found.code}: ${found.message}` });
     let spec: JobSpec, secrets: string[] = [], parse: (result: Extract<JobResult, { ok: true }>, value: Record<string, unknown>) => Record<string, unknown> = (_, value) => value;
@@ -229,21 +245,17 @@ export class WorkflowJobs implements EffectExecutor {
     return value;
   }
 
-  /** commit(fork): the fork's edits onto its base, or the conflicts. */
-  private async commit(effect: StartedEffect) {
-    const args = effect.args as { fork?: unknown; snapshot?: unknown };
-    let outcome: EffectOutcome;
+  /** commit(fork): the fork's edits onto its base, or the conflicts. Storage down throws: its row stays, a restart tries again. */
+  private async commit(args: { fork?: unknown; snapshot?: unknown }): Promise<EffectOutcome> {
     try {
       if (typeof args.fork !== "string") throw Object.assign(new Error("commit() needs a fork's volume id"), { status: 400 });
       if (args.snapshot !== undefined && typeof args.snapshot !== "string") throw Object.assign(new Error("commit() snapshot is a name"), { status: 400 });
-      outcome = { ok: true, value: await commitFork(this.env, this.host.workflow.tenant, args.fork, args.snapshot ? { snapshot: args.snapshot } : {}) };
+      return { ok: true, value: await commitFork(this.env, this.host.workflow.tenant, args.fork, args.snapshot ? { snapshot: args.snapshot } : {}) };
     } catch (error) {
       const status = (error as { status?: number }).status;
-      // Not the script's to see as a failure when storage is down: the start is tried again (the runner's sweep).
       if (status === undefined || status >= 500) throw error;
-      outcome = { ok: false, error: error instanceof Error ? error.message : String(error) };
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
-    await this.host.land(effect.key, effect.attempt, outcome);
   }
 }
 

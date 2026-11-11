@@ -73,7 +73,15 @@ export async function commitFork(env: FileBindings, tenant: string, forkId: stri
   const response = await commitFiles(env, tenant, origin.volume, base, { files, ...(options.snapshot ? { snapshot: { name: options.snapshot } } : {}) },
     async source => source === forkId ? fork : await volume(env, tenant, source));
   const body = await response.json() as { conflicts?: { path: string; headVersion: number }[]; seq?: number; files?: { path: string }[]; removed?: string[]; error?: string };
-  if (response.status === 409 && body.conflicts) return { committed: false, conflicts: body.conflicts };
+  if (response.status === 409 && body.conflicts) {
+    // The same commit made again (its landing lost to a restart) conflicts with itself: every path already holds what
+    // the fork has (the same content, or removed). That is this commit, landed.
+    const head = new Map((await base.readSet("/")).files.map(entry => [entry.path, entry]));
+    const sha = (entry: FileEntry | undefined) => entry ? entry.sha256 ?? entry.key.split("/").at(-1) : undefined;
+    const landed = written.every(entry => sha(head.get(entry.path)) === sha(entry)) && removed.every(entry => !head.has(entry.path));
+    if (landed) return { committed: true, seq: (await base.info()).seq, files: written.map(entry => entry.path), removed: removed.map(entry => entry.path) };
+    return { committed: false, conflicts: body.conflicts };
+  }
   if (!response.ok) throw new FileError(body.error ?? `The commit failed (${response.status})`, response.status);
   return { committed: true, seq: body.seq!, files: (body.files ?? []).map(file => file.path), removed: body.removed ?? [] };
 }
