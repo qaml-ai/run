@@ -61,3 +61,12 @@ test('a row older code changed (a rollback, then forward again) is taken from KV
   assert.equal((await next.get('d'))?.status, 'completed');
   assert.deepEqual((await next.running()).map(row => row.key), []);
 });
+
+test('a first load inside a transaction that throws is rolled back with it, and the next load imports again', async () => {
+  const s = storage();
+  s.values.set('delegation:a', child('a'));
+  const rows = new ChildRows(s.storage);
+  await assert.rejects(s.storage.transaction(async () => { await rows.load(); throw new Error('crash'); }));
+  // The table and its import went with the transaction: the memo is not trusted.
+  assert.deepEqual((await rows.running()).map(row => row.key), ['a']);
+});
