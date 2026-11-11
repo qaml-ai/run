@@ -8,8 +8,10 @@ import type { WorkflowSandbox, WorkflowStepRequest } from "../codemode/workflow-
 import { serveWorkflowStep } from "../codemode/workflow-vm.ts";
 import { WorkflowRunner, type EffectExecutor, type EffectOutcome, type EffectUsage, type StartedEffect, type WorkflowInit } from "../src/workflow-runner.ts";
 
+// The QuickJS build production runs: the one pi-codemode bundles (`cloudflareQuickJSWasm` resolves it from pi-codemode).
 const require = createRequire(import.meta.url);
-export const WASM_BYTES = readFileSync(require.resolve("quickjs-wasi/quickjs.wasm"));
+export const PI_QUICKJS = createRequire(import.meta.resolve("@earendil-works/pi-codemode"));
+export const WASM_BYTES = readFileSync(PI_QUICKJS.resolve("quickjs-wasi/quickjs.wasm"));
 export const WASM = new WebAssembly.Module(WASM_BYTES);
 
 /** DO SQLite's surface over node:sqlite, with `crash` hooks inside a transaction. */
@@ -61,8 +63,12 @@ export class World implements EffectExecutor {
   readonly queue: StartedEffect[] = [];
   crash: (where: string) => void = () => {};
   cost = 0;
+  /** Keys whose next starts throw, and how many times. */
+  readonly failStarts = new Map<string, number>();
   async start(effect: StartedEffect) {
     this.crash("executor start");
+    const failing = this.failStarts.get(effect.key) ?? 0;
+    if (failing > 0) { this.failStarts.set(effect.key, failing - 1); throw new Error(`could not start ${effect.key}`); }
     const id = `${effect.key}:${effect.attempt}`;
     const count = (this.starts.get(id) ?? 0) + 1;
     this.starts.set(id, count);

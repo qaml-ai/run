@@ -50,7 +50,7 @@ export interface IssuedEffect { key: string; kind: string; args: string; options
 
 /** What the host must handle as a workflow fault: the script cannot go on as written. */
 export type WorkflowFaultCode =
-  | "key_required" | "key_conflict" | "nondeterministic_script" | "journal_version" | "stalled" | "step_budget" | "effect_limit";
+  | "key_required" | "key_conflict" | "nondeterministic_script" | "journal_version" | "stalled" | "step_budget" | "out_of_memory" | "vm_crash" | "effect_limit";
 
 export type WorkflowStepOutcome =
   | {
@@ -75,6 +75,8 @@ export type WorkflowStepOutcome =
     /** The new gzipped snapshot: absent once the script ended or faulted, or past `snapshotCap`. */
     snapshot?: Uint8Array;
     snapshotBytes: number;
+    /** The VM's linear memory when the step ended: past the sandbox's raw cap no snapshot is taken at all. */
+    snapshotRawBytes: number;
     polls: number;
     heapBytes: number;
   };

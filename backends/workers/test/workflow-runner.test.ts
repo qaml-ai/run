@@ -1,14 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { createRequire } from "node:module";
 import type { WorkflowSandbox } from "../codemode/workflow-protocol.ts";
 import { canonicalJson, fnv1a64, gunzip, gzip, QUICKJS_WASI_VERSION, QUICKJS_WASM_SHA256, serveWorkflowStep, WORKFLOW_HEAP_BYTES } from "../codemode/workflow-vm.ts";
 import { SANDBOX_HEAP_BYTES } from "../codemode/exchange.ts";
 import { WorkflowRunner } from "../src/workflow-runner.ts";
-import { harness, storage, WASM, WASM_BYTES, World } from "./workflow-harness.ts";
-
-const require = createRequire(import.meta.url);
+import { harness, PI_QUICKJS, storage, WASM, WASM_BYTES, World } from "./workflow-harness.ts";
 
 const REVIEW = `
 phase("plan");
@@ -32,7 +29,7 @@ async function drive(code: string, options: Parameters<typeof harness>[0] = {}) 
 
 test("the pinned QuickJS build is the installed one, and host and guest compute the same keys", async () => {
   assert.equal(createHash("sha256").update(WASM_BYTES).digest("hex"), QUICKJS_WASM_SHA256, "update QUICKJS_WASM_SHA256 with quickjs-wasi");
-  assert.equal(require("quickjs-wasi/package.json").version, QUICKJS_WASI_VERSION);
+  assert.equal(PI_QUICKJS("quickjs-wasi/package.json").version, QUICKJS_WASI_VERSION, "the quickjs-wasi pi-codemode bundles");
   assert.equal(WORKFLOW_HEAP_BYTES, SANDBOX_HEAP_BYTES, "a workflow VM takes one of the sandbox's heap slots");
   const h = await drive(`return await agent("a prompt", { type: "reviewer", files: ["x", { b: 1, a: [2, undefined] }] });`);
   assert.equal(h.runner.items().items[0]!.key, `agent:${fnv1a64(canonicalJson({ prompt: "a prompt", type: "reviewer", files: ["x", { b: 1, a: [2, undefined] }] }))}`);
@@ -75,7 +72,7 @@ test("a run restored every step ends exactly as one replayed every step, and as 
       const raw = await gunzip(request.restore);
       const length = new DataView(raw.buffer, raw.byteOffset).getUint32(0, true);
       const header = JSON.parse(new TextDecoder().decode(raw.subarray(4, 4 + length)));
-      header.fingerprint = header.fingerprint.replace("driver 1", "driver 0");
+      header.fingerprint = header.fingerprint.replace(/driver \d+/, "driver 0");
       const head = new TextEncoder().encode(JSON.stringify(header)), image = raw.subarray(4 + length);
       const out = new Uint8Array(4 + head.byteLength + image.byteLength);
       new DataView(out.buffer).setUint32(0, head.byteLength, true);
@@ -105,7 +102,9 @@ test("a crash at every step boundary leaves the same workflow, each effect journ
   const where = new Set<string>();
   for (let crashAt = 1; crashAt <= baseline.ops; crashAt++) {
     const run = await drive(REVIEW, { crashAt });
-    assert.equal(run.crashes, 1, `crash ${crashAt} fired`);
+    // A failed start is handled (recorded, retried by the alarm's sweep), not a crash; every other point kills the process.
+    assert.ok(run.crashed, `crash ${crashAt} fired`);
+    assert.equal(run.crashes, run.crashed === "executor start" ? 0 : 1, `crash ${crashAt} (${run.crashed})`);
     where.add(run.crashed!);
     assert.deepEqual(timeless(run.snapshot()), expected, `crash ${crashAt} (${run.crashed})`);
     assert.deepEqual([...run.world.starts.keys()].sort(), [...baseline.world.starts.keys()].sort());

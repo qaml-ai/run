@@ -203,3 +203,64 @@ test("every Wrangler config adds WorkflowObject with its own new_sqlite_classes 
   }
   assert.match(readFileSync(new URL("../src/index.ts", import.meta.url), "utf8"), /export \{ WorkflowObject \} from "\.\/workflow-object\.ts";/);
 });
+
+test("a failed start is recorded and retried by every later advance and by the alarm's sweep; the others still start", { timeout: 60_000 }, async () => {
+  const h = harness();
+  h.world.failStarts.set("a", 3);
+  h.init({ code: `return (await parallel(["a", "b"], k => agent(k, { key: k }))).map(r => r.answer);` });
+  await h.wake();
+  assert.deepEqual(h.world.queue.map(effect => effect.key), ["b"], "b started; a did not");
+  assert.deepEqual(h.runner.events().filter(event => event.type === "start_failed").map(event => event.data), [{ key: "a", attempt: 1, error: "could not start a" }]);
+  assert.equal(h.runner.items({ status: "pending" }).items[0]!.key, "a");
+  assert.equal(h.alarmAt, h.clock + WORKFLOW_LIMITS.sweepMs, "the sweep is armed while an effect is unstarted");
+  await h.next(); // b lands; that advance tries a again (before and after b's step), and it fails again
+  assert.equal(h.world.queue.length, 0);
+  assert.equal(h.runner.events().filter(event => event.type === "start_failed").length, 3);
+  assert.equal(h.alarmAt, h.clock + WORKFLOW_LIMITS.sweepMs, "still armed: nothing else would ever try a");
+  await h.next(); // the alarm, with no landing to prompt it
+  assert.deepEqual(h.world.queue.map(effect => effect.key), ["a"]);
+  await h.run();
+  assert.deepEqual(at(h).result, ["re: a", "re: b"]);
+});
+
+test("effects issued in the step the script ends in are cancelled, never started", { timeout: 30_000 }, async () => {
+  const h = harness();
+  h.init({ code: `const first = await agent("first"); agent("forgotten", { key: "bg" }); sleep(60, { key: "nap" }); return first.answer;` });
+  await h.wake();
+  await h.run();
+  assert.equal(at(h).status, "completed");
+  assert.deepEqual(h.runner.items().items.map(item => [item.kind, item.status]), [["agent", "done"], ["agent", "cancelled"], ["sleep", "cancelled"]]);
+  assert.equal(h.world.starts.has("bg:1"), false);
+  assert.equal(h.alarmAt, null);
+});
+
+test("a refusal against the workflow's own budget share is budget_exhausted, not payer_exhausted", { timeout: 30_000 }, async () => {
+  const h = harness();
+  h.init({ code: `return (await agent("a")).answer;` });
+  await h.wake();
+  await h.next(() => ({ refused: "the child's share of the budget is spent", code: "budget_exhausted" }));
+  assert.equal(at(h).status, "budget_exhausted");
+  assert.equal(h.runner.items().items[0]!.status, "refused");
+  await h.runner.resume();
+  await h.run();
+  assert.equal(at(h).result, "re: a");
+});
+
+test("a VM past the raw snapshot cap is not snapshotted: the next step replays", { timeout: 60_000 }, async () => {
+  const h = harness();
+  h.init({ code: `const big = "x".repeat(18 * 1024 * 1024); const a = await agent("a"); return a.answer + big.length;` });
+  await h.wake();
+  const dropped = h.runner.events().find(event => event.type === "snapshot_dropped");
+  assert.ok(dropped && dropped.data.rawBytes > 16 * 1024 * 1024 && dropped.data.bytes === 0, JSON.stringify(dropped));
+  await h.run();
+  assert.equal(at(h).result, `re: a${18 * 1024 * 1024}`);
+  assert.equal((h.store.db.prepare("SELECT replayed FROM workflow_steps WHERE step = 2").get() as { replayed: number }).replayed, 1);
+});
+
+test("an uncatchable VM error is the poll budget, the heap or a VM crash, told apart", async () => {
+  const { classifyVmFailure, WORKFLOW_POLL_BUDGET, WORKFLOW_HEAP_BYTES } = await import("../codemode/workflow-vm.ts");
+  assert.equal(classifyVmFailure("a promise job failed", WORKFLOW_POLL_BUDGET + 1, 0).code, "step_budget");
+  assert.equal(classifyVmFailure("a promise job failed", 10, WORKFLOW_HEAP_BYTES).code, "out_of_memory");
+  assert.equal(classifyVmFailure("InternalError: out of memory", 10, 1_000).code, "out_of_memory");
+  assert.deepEqual(classifyVmFailure("a promise job failed", 10, 1_000), { code: "vm_crash", message: "The VM failed: a promise job failed" });
+});

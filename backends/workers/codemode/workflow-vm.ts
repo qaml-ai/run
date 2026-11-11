@@ -14,7 +14,7 @@ import {
 } from "./workflow-protocol.ts";
 
 /** Bumped whenever this driver or its prelude changes what a snapshot holds or what a script observes. */
-export const WORKFLOW_DRIVER_VERSION = 1;
+export const WORKFLOW_DRIVER_VERSION = 2;
 /**
  * sha256 of `quickjs-wasi/quickjs.wasm` as this package pins it. Wrangler compiles the module at build time, so its
  * bytes cannot be read at runtime; a test checks this against the installed file, so a dependency bump fails until it
@@ -27,6 +27,12 @@ export const QUICKJS_WASI_VERSION = "3.6.2";
 export const WORKFLOW_HEAP_BYTES = 24 * 1024 * 1024;
 export const WORKFLOW_STACK_BYTES = 256 * 1024;
 export const WORKFLOW_POLL_BUDGET = 10_000;
+/**
+ * The most linear memory a step snapshots. Taking a snapshot copies the image once (the VM is disposed before it is
+ * compressed), so the peak is about twice this plus the compressed bytes; past it the next step replays instead. The
+ * isolate's 128 MiB is shared with code mode's VMs, so this stays well under the 24 MiB heap's worst case.
+ */
+export const WORKFLOW_SNAPSHOT_RAW_BYTES = 16 * 1024 * 1024;
 
 /** FNV-1a, 64 bits, over each UTF-16 unit's two bytes (low first), as 16 hex digits. The guest's copy is the prelude's. */
 export function fnv1a64(text: string) {
@@ -222,6 +228,8 @@ export function workflowFingerprint() {
 
 /** Host-side state outside linear memory: with the memory image, everything a restore needs. */
 interface DriverState {
+  /** Where quickjs-wasi's state sits in the image (its `Snapshot` fields), set when a snapshot is taken. */
+  image?: { stackPointer: number; runtimePtr: number; contextPtr: number; bytes: number };
   fingerprint: string;
   script: string;
   clock: { startedAt: number; now: number; seed: number };
@@ -230,6 +238,22 @@ interface DriverState {
 }
 
 class Interrupted extends Error {}
+
+/**
+ * What an uncatchable VM error was: the step's poll budget used up, the heap full (QuickJS fails a promise job it
+ * cannot allocate for), or anything else, which is a VM crash rather than something the script did.
+ */
+export function classifyVmFailure(message: string, polls: number, heapBytes: number): { code: WorkflowFaultCode; message: string } {
+  if (polls > WORKFLOW_POLL_BUDGET) return { code: "step_budget", message: `The step used up its budget of ${WORKFLOW_POLL_BUDGET} interrupt polls` };
+  if (/out of memory/i.test(message) || heapBytes >= WORKFLOW_HEAP_BYTES * 0.9)
+    return { code: "out_of_memory", message: `The script ran out of its ${WORKFLOW_HEAP_BYTES / 1024 / 1024} MiB heap (${message})` };
+  return { code: "vm_crash", message: `The VM failed: ${message}` };
+}
+
+const checkVersion = (vm: QuickJS) => {
+  if (vm.versions["quickjs-wasi"] !== QUICKJS_WASI_VERSION)
+    throw new Error(`The sandbox runs quickjs-wasi ${vm.versions["quickjs-wasi"]}, built for ${QUICKJS_WASI_VERSION}: update QUICKJS_WASI_VERSION and QUICKJS_WASM_SHA256`);
+};
 
 /** One VM for one step, started or restored, reporting into `sink`. */
 class WorkflowVm {
@@ -308,7 +332,7 @@ class WorkflowVm {
     const exports = this.vm._getExports();
     let jobs = 0;
     while (exports.qjs_is_job_pending()) {
-      if (exports.qjs_execute_pending_job() < 0) throw new Interrupted("A promise job failed");
+      if (exports.qjs_execute_pending_job() < 0) throw new Interrupted("a promise job failed");
       if (++jobs % 50 === 0 && ++this.polls > WORKFLOW_POLL_BUDGET) throw new Interrupted("Execution interrupted");
     }
   }
@@ -321,8 +345,7 @@ class WorkflowVm {
     self.creating = true;
     const vm = self.vm = await QuickJS.create({ ...self.options(), wasm } as never);
     self.creating = false;
-    if (vm.versions["quickjs-wasi"] !== QUICKJS_WASI_VERSION)
-      throw new Error(`The sandbox runs quickjs-wasi ${vm.versions["quickjs-wasi"]}, built for ${QUICKJS_WASI_VERSION}: update QUICKJS_WASI_VERSION and QUICKJS_WASM_SHA256`);
+    checkVersion(vm);
     const bridge = vm.newFunction("bridge", self.bridge as never);
     self.api = vm.withScope(scope => scope.escape(vm.callFunction(vm.evalCode(WORKFLOW_PRELUDE, "workflow-prelude.js"), vm.undefined, bridge)));
     self.settleFn = self.api.getProp("settle");
@@ -360,9 +383,9 @@ class WorkflowVm {
   }
 
   private crash(error: unknown) {
-    if (error instanceof Interrupted || (error instanceof Error && /interrupted/i.test(error.message)))
-      this.fault ??= { code: "step_budget", message: `The step used up its budget of ${WORKFLOW_POLL_BUDGET} interrupt polls` };
-    else this.fault ??= { code: "nondeterministic_script", message: `The VM failed: ${error instanceof Error ? error.message : String(error)}` };
+    let heap = 0;
+    try { heap = this.heapBytes; } catch { /* a VM too broken to report its heap */ }
+    this.fault ??= classifyVmFailure(error instanceof Error ? error.message : String(error), this.polls, heap);
   }
 
   /** -1 once the script ended, else how many effects it waits on. */
@@ -372,16 +395,22 @@ class WorkflowVm {
     try { return value.toNumber(); } finally { value.dispose(); }
   }
 
-  async snapshot(): Promise<Uint8Array> {
+  get linearBytes() { return this.vm._getExports().memory.buffer.byteLength; }
+
+  /**
+   * The VM's state as the parts of a snapshot: the header (driver state and where quickjs-wasi's state sits) and one
+   * copy of linear memory. The caller disposes the VM before compressing them, so the live memory is not held too.
+   */
+  take(): Uint8Array[] {
     // Exported once: a restored VM keeps exported boxes for good, so the tokens stay valid in every later snapshot.
     this.state.tokens ??= { api: this.vm.exportHandle(this.api), settle: this.vm.exportHandle(this.settleFn), status: this.vm.exportHandle(this.statusFn) };
+    const snapshot = this.vm.snapshot();
+    if (snapshot.extensions.length) throw new Error("A workflow VM has no extensions");
+    this.state.image = { stackPointer: snapshot.stackPointer, runtimePtr: snapshot.runtimePtr, contextPtr: snapshot.contextPtr, bytes: snapshot.memory.byteLength };
     const header = new TextEncoder().encode(JSON.stringify(this.state));
-    const image = QuickJS.serializeSnapshot(this.vm.snapshot());
-    const out = new Uint8Array(4 + header.byteLength + image.byteLength);
-    new DataView(out.buffer).setUint32(0, header.byteLength, true);
-    out.set(header, 4);
-    out.set(image, 4 + header.byteLength);
-    return gzip(out);
+    const length = new Uint8Array(4);
+    new DataView(length.buffer).setUint32(0, header.byteLength, true);
+    return [length, header, snapshot.memory];
   }
 
   /** Read a snapshot's header without restoring it. */
@@ -392,7 +421,11 @@ class WorkflowVm {
 
   static async restore(state: DriverState, image: Uint8Array, wasm: WebAssembly.Module) {
     const self = new WorkflowVm(state);
-    const vm = self.vm = await QuickJS.restore(QuickJS.deserializeSnapshot(image), { ...self.options(), wasm } as never);
+    const at = state.image;
+    if (!at || at.bytes !== image.byteLength) throw new Error("The snapshot's image does not match its header");
+    // The image is a view of the decompressed bytes; restore copies it into the new instance's memory once.
+    const vm = self.vm = await QuickJS.restore({ memory: image, stackPointer: at.stackPointer, runtimePtr: at.runtimePtr, contextPtr: at.contextPtr, extensions: [] }, { ...self.options(), wasm } as never);
+    checkVersion(vm);
     vm.registerHostCallback("bridge", self.bridge as never);
     const tokens = state.tokens!;
     self.api = vm.importHandle(tokens.api);
@@ -405,13 +438,16 @@ class WorkflowVm {
   dispose() { this.vm.dispose(); }
 }
 
-async function pipe(bytes: Uint8Array, stream: { readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> }) {
+async function pipe(parts: Uint8Array[], stream: { readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> }) {
   const writer = stream.writable.getWriter();
-  void writer.write(bytes).then(() => writer.close());
-  return new Uint8Array(await new Response(stream.readable).arrayBuffer());
+  const written = (async () => { for (const part of parts) await writer.write(part); await writer.close(); })();
+  const out = new Uint8Array(await new Response(stream.readable).arrayBuffer());
+  await written;
+  return out;
 }
-export const gzip = (bytes: Uint8Array) => pipe(bytes, new CompressionStream("gzip"));
-export const gunzip = (bytes: Uint8Array) => pipe(bytes, new DecompressionStream("gzip"));
+/** gzip of `parts` in order, without joining them first. */
+export const gzip = (...parts: Uint8Array[]) => pipe(parts, new CompressionStream("gzip"));
+export const gunzip = (bytes: Uint8Array) => pipe([bytes], new DecompressionStream("gzip"));
 
 /**
  * One workflow step, in the sandbox. `wasm` is quickjs-wasi's compiled module (the one Wrangler bundled). Throws only
@@ -422,7 +458,7 @@ export async function serveWorkflowStep(request: WorkflowStepRequest, wasm: WebA
     throw new Error(`Workflow step: protocol ${String(request?.protocol)} is not ${WORKFLOW_STEP_PROTOCOL}, the one this sandbox speaks; the workflow runner and the sandbox Worker run different versions`);
   const fingerprint = workflowFingerprint();
   let vm: WorkflowVm;
-  let replayed = false;
+  let replayed = false, disposed = false;
   if (request.restore) {
     const { state, image } = WorkflowVm.header(await gunzip(request.restore));
     if (state.fingerprint !== fingerprint)
@@ -448,15 +484,22 @@ export async function serveWorkflowStep(request: WorkflowStepRequest, wasm: WebA
     }
     if (!vm.fault && !vm.done && vm.status() === 0)
       vm.fault = { code: "stalled", message: "The script waits on nothing that can ever settle: no effect is pending" };
+    const live = !vm.fault && !vm.done;
+    const heapBytes = live ? vm.heapBytes : 0, rawBytes = live ? vm.linearBytes : 0;
+    // Past the raw cap the image is not even copied: the next step replays.
+    const parts = live && rawBytes <= WORKFLOW_SNAPSHOT_RAW_BYTES ? vm.take() : undefined;
+    vm.dispose();
+    disposed = true;
     let snapshot: Uint8Array | undefined, snapshotBytes = 0;
-    if (!vm.fault && !vm.done) {
-      const bytes = await vm.snapshot();
+    if (parts) {
+      const bytes = await gzip(...parts);
+      parts.length = 0;
       snapshotBytes = bytes.byteLength;
       if (snapshotBytes <= request.snapshotCap) snapshot = bytes;
     }
     return {
       kind: "ran", fingerprint, replayed, issued: vm.issued, logs: vm.logs, phase: vm.phase, done: vm.done, fault: vm.fault,
-      snapshot, snapshotBytes, polls: vm.polls, heapBytes: vm.fault || vm.done ? 0 : vm.heapBytes,
+      snapshot, snapshotBytes, snapshotRawBytes: rawBytes, polls: vm.polls, heapBytes,
     };
-  } finally { vm.dispose(); }
+  } finally { if (!disposed) vm.dispose(); }
 }

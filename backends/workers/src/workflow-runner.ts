@@ -59,6 +59,10 @@ export interface EffectExecutor {
   cancel?(effect: StartedEffect): Promise<void>;
   /** The sweep asks after a started effect that has not landed: its outcome if it ended, else undefined. */
   poll?(effect: StartedEffect): Promise<{ outcome: EffectOutcome; usage?: EffectUsage } | undefined>;
+  /** On every wake (a restart, an alarm): pick up what the executor itself left half done. */
+  recover?(): Promise<void>;
+  /** The workflow was aborted: stop everything it started (after `cancel` for each running effect). */
+  abort?(): Promise<void>;
 }
 
 export type EffectOutcome =
@@ -67,8 +71,11 @@ export type EffectOutcome =
   | { ok: true; handle: { ref: string; bytes: number; sha256: string } }
   /** Failed: the script gets `null`, and the item records why. */
   | { ok: false; error: string }
-  /** Refused for credit (a 402, a cap): not a failure. The workflow pauses with `payer_exhausted`; resume re-issues it. */
-  | { refused: string };
+  /**
+   * Refused (a 402, a tenant cap, the child's share of the budget): not a failure, and never shown to the script. The
+   * workflow pauses with `code` (`payer_exhausted` by default, or `budget_exhausted`); resume re-issues the effect.
+   */
+  | { refused: string; code?: "payer_exhausted" | "budget_exhausted" };
 
 /** One effect's cost, for the ledger. */
 export interface EffectUsage { costUsd: number; model?: string; inputTokens?: number; cachedInputTokens?: number; outputTokens?: number; durationMs?: number }
@@ -83,6 +90,7 @@ export type PauseReason = "user" | "payer_exhausted" | "confirm_rerun" | "waitin
 const TERMINAL = new Set<WorkflowStatus>(["completed", "failed", "aborted"]);
 
 export interface WorkflowSummary {
+  tenant?: string;
   status: WorkflowStatus;
   pauseReason?: PauseReason;
   revision: number;
@@ -101,7 +109,11 @@ export interface WorkflowSummary {
 }
 
 /** What `init` creates a workflow with. `seed` and `startedAt` fix its `random()` and its clock's start. */
-export interface WorkflowInit { code: string; seed: number; startedAt: number; budgetUsd?: number | null; concurrency?: number }
+export interface WorkflowInit {
+  code: string; seed: number; startedAt: number; budgetUsd?: number | null; concurrency?: number;
+  /** Who the workflow belongs to, fixed at create: it bills `tenant` (in `bucket`), attributed to `endUser`. */
+  tenant?: string; bucket?: string; endUser?: string;
+}
 
 /** A sandbox stub without a `step` method is a sandbox Worker from before protocol 3. */
 export function stepUnsupported(error: unknown) {
@@ -119,7 +131,8 @@ const SCHEMA = [
     id INTEGER PRIMARY KEY CHECK (id = 1), seed INTEGER NOT NULL, started_at INTEGER NOT NULL,
     status TEXT NOT NULL, pause_reason TEXT, revision INTEGER NOT NULL, step INTEGER NOT NULL, phase TEXT,
     result TEXT, error TEXT, fault_code TEXT, budget_usd REAL, concurrency INTEGER NOT NULL,
-    throttled_until INTEGER, swept_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, version INTEGER NOT NULL)`,
+    throttled_until INTEGER, swept_at INTEGER, tenant TEXT, bucket TEXT, end_user TEXT,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, version INTEGER NOT NULL)`,
   // A revision is a script and what the journal held when it began (its table): an edit, or a rerun of exact keys.
   `CREATE TABLE IF NOT EXISTS workflow_revisions (
     revision INTEGER PRIMARY KEY, kind TEXT NOT NULL, code TEXT NOT NULL, reason TEXT, at INTEGER NOT NULL, start_step INTEGER NOT NULL,
@@ -195,9 +208,9 @@ export class WorkflowRunner {
     this.storage.transactionSync(() => {
       if (this.sql.exec("SELECT 1 FROM workflow_state WHERE id = 1").toArray().length) return;
       this.sql.exec(
-        `INSERT INTO workflow_state (id, seed, started_at, status, revision, step, budget_usd, concurrency, created_at, updated_at, version)
-         VALUES (1, ?, ?, 'running', 1, 0, ?, ?, ?, ?, ?)`,
-        workflow.seed >>> 0, workflow.startedAt, workflow.budgetUsd ?? null, concurrency, at, at, WORKFLOW_RUNNER_VERSION,
+        `INSERT INTO workflow_state (id, seed, started_at, status, revision, step, budget_usd, concurrency, tenant, bucket, end_user, created_at, updated_at, version)
+         VALUES (1, ?, ?, 'running', 1, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        workflow.seed >>> 0, workflow.startedAt, workflow.budgetUsd ?? null, concurrency, workflow.tenant ?? null, workflow.bucket ?? null, workflow.endUser ?? null, at, at, WORKFLOW_RUNNER_VERSION,
       );
       this.sql.exec("INSERT INTO workflow_revisions (revision, kind, code, at, start_step, rerun_confirm_percent, confirmed) VALUES (1, 'start', ?, ?, 1, 100, 1)", workflow.code, workflow.startedAt);
       this.event("created", { concurrency, budgetUsd: workflow.budgetUsd ?? null });
@@ -226,6 +239,7 @@ export class WorkflowRunner {
       spent: { usd: Number(spent.usd), calls: Number(spent.calls), inputTokens: Number(spent.input), cachedInputTokens: Number(spent.cached), outputTokens: Number(spent.output) },
       counts, createdAt: Number(row.created_at), updatedAt: Number(row.updated_at),
     };
+    if (row.tenant !== null) summary.tenant = row.tenant as string;
     if (row.pause_reason !== null) summary.pauseReason = row.pause_reason as PauseReason;
     if (row.phase !== null) summary.phase = row.phase as string;
     if (row.result !== null) summary.result = JSON.parse(row.result as string);
@@ -303,14 +317,21 @@ export class WorkflowRunner {
 
   /** After a start or a restart: start what was committed but not started, run due steps, arm the alarm. */
   wake(): Promise<void> {
-    return this.serial(() => this.advance());
+    return this.serial(() => this.advance(true));
   }
 
-  private async advance() {
+  /** Who the workflow belongs to, as created. */
+  identity() {
+    const row = this.state();
+    return { tenant: text(row.tenant), bucket: text(row.bucket), endUser: text(row.end_user) };
+  }
+
+  private async advance(recover = false) {
     try {
+      if (recover) await this.executor.recover?.();
+      // Effects held from before (a resume, a raised budget, a failed start) first; then each step's new ones.
       await this.startHeld();
       while (await this.step()) await this.startHeld();
-      await this.startHeld();
     } finally { await this.arm(); }
   }
 
@@ -346,9 +367,12 @@ export class WorkflowRunner {
       if (row.status !== "pending" || row.current !== 1) return;
       if ("refused" in outcome) {
         this.sql.exec("UPDATE workflow_effects SET status = 'refused', reason = ?, ended_at = ? WHERE key = ? AND attempt = ?", outcome.refused, at, key, attempt);
-        const status = this.state().status as WorkflowStatus;
-        if (status === "running" || status === "waiting") this.setStatus("paused", "payer_exhausted");
-        this.event("payer_exhausted", { key, attempt, reason: outcome.refused });
+        const status = this.state().status as WorkflowStatus, code = outcome.code ?? "payer_exhausted";
+        if (status === "running" || status === "waiting") {
+          if (code === "budget_exhausted") this.setStatus("budget_exhausted");
+          else this.setStatus("paused", "payer_exhausted");
+        }
+        this.event(code, { key, attempt, reason: outcome.refused });
         return;
       }
       this.sql.exec(
@@ -390,7 +414,18 @@ export class WorkflowRunner {
         if (running >= Number(row.concurrency)) continue;
         running++;
       }
-      if (EXECUTED.has(effect.kind as string)) await this.executor.start(this.started(effect));
+      if (EXECUTED.has(effect.kind as string)) {
+        try { await this.executor.start(this.started(effect)); }
+        catch (error) {
+          // The effect stays journaled and unstarted; the alarm's sweep (armed while any is unstarted) and every later
+          // landing or wake try it again. Recorded, and the other effects still start.
+          if (effect.kind === "agent") running--;
+          const message = error instanceof Error ? error.message : String(error);
+          console.error(`Workflow effect ${effect.key}:${effect.attempt} did not start`, error);
+          this.storage.transactionSync(() => this.event("start_failed", { key: effect.key, attempt: Number(effect.attempt), error: message }));
+          continue;
+        }
+      }
       this.sql.exec("UPDATE workflow_effects SET started = 1, started_at = ? WHERE key = ? AND attempt = ?", this.now(), effect.key, effect.attempt);
     }
   }
@@ -471,15 +506,19 @@ export class WorkflowRunner {
         const before = this.sql.exec("SELECT attempt FROM workflow_effects WHERE key = ? AND current = 1", effect.key).toArray()[0];
         if (before) this.sql.exec("UPDATE workflow_effects SET current = 0 WHERE key = ? AND current = 1", effect.key);
         this.sql.exec(
-          `INSERT INTO workflow_effects (key, attempt, current, ord, origin, revision, kind, args, options, phase, status, started, due_at, issued_step, seen_revision, issued_at, version)
-           VALUES (?, ?, 1, ?, 'script', ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)`,
+          `INSERT INTO workflow_effects (key, attempt, current, ord, origin, revision, kind, args, options, phase, status, reason, started, due_at, issued_step, seen_revision, issued_at, ended_at, version)
+           VALUES (?, ?, 1, ?, 'script', ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`,
           effect.key, before ? Number(before.attempt) + 1 : 1, ++ord, revision.revision, effect.kind, effect.args, effect.options ?? null, effect.phase ?? null,
-          dueAt(effect.kind, effect.args, effect.options ?? null, at), step, revision.revision, at, WORKFLOW_RUNNER_VERSION,
+          // Issued in the step the script ended in: journaled, never started.
+          ran.done ? "cancelled" : "pending", ran.done ? "the script ended before it was awaited" : null,
+          ran.done ? null : dueAt(effect.kind, effect.args, effect.options ?? null, at), step, revision.revision, at, ran.done ? at : null, WORKFLOW_RUNNER_VERSION,
         );
       }
       for (const effect of ran.issued) if (effect.reused) this.sql.exec("UPDATE workflow_effects SET seen_revision = ? WHERE key = ? AND current = 1", revision.revision, effect.key);
       for (const log of ran.logs) this.sql.exec("INSERT INTO workflow_log (step, phase, text) VALUES (?, ?, ?)", step, log.phase ?? null, log.text);
       if (ran.done) {
+        // Effects issued earlier and still out when the script ended are not needed any more.
+        this.sql.exec("UPDATE workflow_effects SET status = 'cancelled', reason = 'the script ended', due_at = NULL, ended_at = ? WHERE current = 1 AND status = 'pending' AND started = 0", at);
         this.dropSnapshot();
         const done = ran.done;
         this.sql.exec("UPDATE workflow_state SET result = ?, error = ?, fault_code = NULL WHERE id = 1", done.ok ? (done.value ?? null) : null, done.ok ? null : done.error);
@@ -490,7 +529,7 @@ export class WorkflowRunner {
       if (ran.snapshot) this.storeSnapshot(step, Number(revision.revision), ran.fingerprint, ran.snapshot);
       else {
         this.dropSnapshot();
-        if (ran.snapshotBytes > 0) this.event("snapshot_dropped", { step, bytes: ran.snapshotBytes });
+        this.event("snapshot_dropped", { step, bytes: ran.snapshotBytes, rawBytes: ran.snapshotRawBytes });
       }
       this.refreshLiveness();
       // An edit that issues many new effects waits for a confirm (resume) before they start.
@@ -708,6 +747,7 @@ export class WorkflowRunner {
         this.event("aborted", { cancelled: live.length });
       });
       for (const row of live) if (row.started === 1 && EXECUTED.has(row.kind as string)) await this.executor.cancel?.(this.started(row));
+      await this.executor.abort?.();
       await this.arm();
     });
   }
@@ -772,7 +812,7 @@ export class WorkflowRunner {
           }
         }
       }
-      await this.advance();
+      await this.advance(true);
     });
   }
 
