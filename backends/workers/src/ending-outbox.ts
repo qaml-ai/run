@@ -23,6 +23,16 @@ type Row =
 export const OUTBOX_RETRY = { firstMs: 1_000, maxMs: 5 * 60_000, jitter: 0.2 } as const;
 /** An undeliverable row (its owner keeps failing) is dropped after this long, as a made child itself is. */
 export const OUTBOX_GIVE_UP_MS = 7 * 86_400_000;
+const LEGACY_KV_PREFIX = 'child-outbox:';
+
+/**
+ * When a deleted (or expired) agent wakes next: only to finish what it owes (billing, terminal events, its outbox's next
+ * delivery), never for its watchdog. A deleted agent runs nothing, so nothing it would recover from can need it.
+ */
+export function deletedDeadline(owed: { billing: boolean; events: boolean; outbox: number | undefined }, now = Date.now()) {
+  return Math.min(owed.billing ? now + 5000 : Infinity, owed.events ? now + 1000 : Infinity, owed.outbox ?? Infinity);
+}
+
 /** Rows one flush delivers; the rest go in the next, at once if they are due. */
 export const OUTBOX_PAGE = 128;
 
@@ -51,6 +61,7 @@ export class ChildOutbox {
   private readonly host: OutboxHost;
   private flushing?: Promise<number | undefined>;
   private created = false;
+  private kvImported = false;
   constructor(host: OutboxHost) { this.host = host; }
   private now() { return this.host.now?.() ?? Date.now(); }
   private get sql() {
@@ -103,7 +114,22 @@ export class ChildOutbox {
     return this.flushing;
   }
 
+  /**
+   * Rows an earlier build of this branch kept in KV (`child-outbox:<request>:…`) move into the table, once per instance.
+   * That build never reached main; this only makes sure an object a test deploy ran on loses nothing.
+   */
+  private async importKv() {
+    if (this.kvImported) return;
+    const old = await this.host.storage.list<Row>({ prefix: LEGACY_KV_PREFIX });
+    for (const [name, row] of old) {
+      this.sql.exec("INSERT OR IGNORE INTO child_outbox (key, body, attempts, next_at, created_at) VALUES (?, ?, ?, ?, ?)", name.slice(LEGACY_KV_PREFIX.length), JSON.stringify(row), row.attempts ?? 0, row.nextAt ?? this.now(), row.createdAt ?? this.now());
+      await this.host.storage.delete(name);
+    }
+    this.kvImported = true;
+  }
+
   private async flushOnce(): Promise<number | undefined> {
+    await this.importKv();
     const due = this.sql.exec<Stored>("SELECT * FROM child_outbox WHERE next_at <= ? ORDER BY key LIMIT ?", this.now(), OUTBOX_PAGE).toArray();
     for (const stored of due) {
       const row = this.read(stored), now = this.now();
@@ -117,7 +143,8 @@ export class ChildOutbox {
         else await this.host.receiveProgress(row.owner, row.progress);
         this.remove(stored.key);
       } catch {
-        await this.retryLater(stored.key, row);
+        // Armed once below, for the whole outbox, not once per failing row.
+        await this.retryLater(stored.key, row, false);
       }
     }
     // The next deadline over the whole outbox, not this page: due rows past the page make it now, and undue ones
@@ -127,13 +154,13 @@ export class ChildOutbox {
     return next;
   }
 
-  private async retryLater(key: string, row: Row) {
+  private async retryLater(key: string, row: Row, arm = true) {
     const attempts = row.attempts + 1;
     const delay = Math.min(OUTBOX_RETRY.maxMs, OUTBOX_RETRY.firstMs * 2 ** Math.min(20, attempts - 1));
     const nextAt = this.now() + Math.round(delay * (1 + OUTBOX_RETRY.jitter * (this.host.random?.() ?? Math.random())));
     // Only if the row is still there: a delivery that raced this one may have removed it.
     this.sql.exec("UPDATE child_outbox SET attempts = ?, next_at = ? WHERE key = ?", attempts, nextAt, key);
-    await this.host.arm(nextAt);
+    if (arm) await this.host.arm(nextAt);
     return nextAt;
   }
 
