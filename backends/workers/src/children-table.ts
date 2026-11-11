@@ -131,6 +131,12 @@ export class ChildRows {
     return this.rows('SELECT state FROM children WHERE child_id = ? ORDER BY started DESC LIMIT 1', childId)[0];
   }
 
+  /** Every row of one child (its spawn, its messages' and resumes' runs), oldest first. */
+  async ofChild(childId: string): Promise<DelegatedChild[]> {
+    await this.load();
+    return this.rows('SELECT state FROM children WHERE child_id = ? ORDER BY started, key', childId);
+  }
+
   /** Rows a notification request (`child_<request>`) names. */
   async byRequest(requestId: string): Promise<DelegatedChild[]> {
     await this.load();

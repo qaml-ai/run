@@ -114,8 +114,8 @@ test('delegation persists idempotent child, budget and result events', async () 
   assert.equal(f.delegation.answer(done).text, 'helped');
   assert.equal(f.submitted[0].params.spendLimit.usd, 0.05);
   assert.deepEqual(f.submitted[0].delegation, { owner: { kind: 'agent', id: 'parent' }, rootOwner: { kind: 'agent', id: 'parent' }, chain: ['parent'], depth: 1, maxDepth: 2, toolCallId: 'call', ownerRun: 'parent-run' });
-  // Nothing is signed into the prompt: its metadata only says who started it.
-  assert.deepEqual(f.submitted[0].params.metadata, { parentAgentId: 'parent', parentRunId: 'parent-run', parentToolCallId: 'call' });
+  // Nothing is signed into the prompt: its metadata says who started it and where, for readers, and is not trusted.
+  assert.deepEqual(f.submitted[0].params.metadata, { parentAgentId: 'parent', parentRunId: 'parent-run', parentToolCallId: 'call', delegationDepth: '1', delegationMaxDepth: '2', delegationChain: 'parent' });
   assert.match(f.submitted[0].params.text, /Your role:\nBe HELPER/);
   assert.equal((await f.delegation.start({ instructions: 'Be HELPER', task: 'help' }, 'call', signal())).id, first.id);
   assert.equal(f.submitted.length, 1);
@@ -290,7 +290,8 @@ test('a paused background child produces one new completion notice after its hum
   f.host.notify = async child => { notified.push(child.key); };
   f.host.retry = async after => { retries.push(after!); };
   await f.delegation.recover();
-  assert.equal(retries[0], 15_000);
+  // Not resumed yet: nothing to do, and nothing polls (the resumed run's ending will come by the child's outbox).
+  assert.deepEqual(retries, []);
   resumed = true;
   await f.delegation.recover();
   await Promise.all(f.tasks);

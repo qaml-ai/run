@@ -121,3 +121,18 @@ test('the owner records a delivered progress report once and refuses an unknown 
   assert.equal(p.events.filter(event => event.event.type === 'subagent_progress').length, 1);
   assert.deepEqual(await p.delegation.recordProgress({ ...report, requestId: 'other' }), { accepted: false, error: 'Unknown sub-agent run' });
 });
+
+test('a paused child resumed and ended before its parent saw the resume: its ending makes the resume row and lands once', async () => {
+  const p = parent();
+  const paused = { ...running, key: 'spawn-1', requestId: 'spawn_1', background: true, status: 'input_required', endedAt: 2, notified: true, landedBy: 'notice' as const };
+  await p.delegation.rows.put(paused);
+  const { digest } = await import('../src/api-contract.ts');
+  const resume = { agentId: 'child', requestId: `resume_${(await digest('spawn_1')).slice(0, 40)}`, record: { state: 'completed', status: 'completed', outcome: { result: { reply: 'resumed', usage: { costUsd: 0.05 } } } } };
+  assert.deepEqual(await p.delegation.receiveEnding(resume), { accepted: true });
+  assert.deepEqual(await p.delegation.receiveEnding(resume), { accepted: true });
+  const row = await p.delegation.rows.get('spawn-1:resume');
+  assert.equal(row?.status, 'completed');
+  assert.equal(p.delegation.measurements.endings, 1);
+  // Another child's resume, or one of a run that never paused, is not this parent's.
+  assert.deepEqual(await p.delegation.receiveEnding({ ...resume, requestId: 'resume_other' }), { accepted: false });
+});
