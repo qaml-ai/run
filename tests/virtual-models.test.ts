@@ -14,7 +14,7 @@ import { ModelAttempts } from "../src/model-attempts.ts";
 import { Tenants } from "../src/tenants.ts";
 import { resolveModel } from "../src/session-config.ts";
 import { passthroughModel } from "../src/openrouter-model.ts";
-import { currentModel, modelReference, routeModel, virtualChain, virtualMember } from "../src/virtual-models.ts";
+import { askedTier, currentModel, modelReference, routeModel, virtualChain, virtualMember } from "../src/virtual-models.ts";
 import { testDatabase } from "./database.ts";
 import { responses } from "./provider-fixtures.ts";
 import { listen, OPERATOR, OTHER_OPERATOR, runtime, toolCall, toolResults } from "./runtime-server.ts";
@@ -59,6 +59,14 @@ test("camelrun/fast and camelrun/strong: strong asks Gemini 4 Carbon on flex, th
   // Node's fallback names the failed model by its message, which carries no tier: the first member of the model.
   assert.equal((routeModel(strong, { reason: "retry", failed: { provider: "openrouter", model: CARBON } }) as { serviceTier?: string }).serviceTier, "default");
   assert.equal(routeModel(strong, { reason: "retry", failed: standard }), undefined);
+  // Node names a response's member by the tier its request asked (askedTier): a continuation after the move stays on the
+  // default tier, and the default tier's failure has no successor (so it is not superseded).
+  const answered = (requestedServiceTier: string) => ({ provider: "openrouter", model: CARBON, ...askedTier({ usage: { requestedServiceTier, serviceTier: "default" } }) });
+  assert.equal((routeModel(strong, { reason: "continuation", previous: answered("default") }) as { serviceTier?: string }).serviceTier, "default");
+  assert.equal((routeModel(strong, { reason: "continuation", previous: answered("flex") }) as { serviceTier?: string }).serviceTier, "flex");
+  assert.equal(routeModel(strong, { reason: "retry", failed: answered("default") }), undefined);
+  assert.equal((routeModel(strong, { reason: "retry", failed: answered("flex") }) as { serviceTier?: string }).serviceTier, "default");
+  assert.deepEqual(askedTier({ usage: {} }), {});
   assert.deepEqual(withOpenRouterHosts(flex, { model: CARBON }), { model: CARBON, service_tier: "flex" });
   for (const model of [...getModels("openrouter"), ...virtualChain(ALIAS)!]) assert.ok(!("service_tier" in (withOpenRouterHosts(model, { model: model.id }, "deny") as object)), model.id);
   const tokens = { input: 1_000_000, output: 1_000_000, cacheRead: 1_000_000, cacheWrite: 0 };

@@ -17,7 +17,12 @@ export type UsageSink = { cost?: number; credits?: number; host?: string; servic
 export function servedTier(model: Model<Api>, message: AssistantMessage, served: string | undefined) {
   const requested = (model as { serviceTier?: string }).serviceTier;
   if (!requested && !served) return;
+  const first = (message.usage as { requestedServiceTier?: unknown }).requestedServiceTier === undefined;
   Object.assign(message.usage, { ...(requested ? { requestedServiceTier: requested } : {}), ...(served ? { serviceTier: served } : {}) });
+  // Asked flex and answered on another tier (or none said): OpenRouter did not honour it, which no fallback explains
+  // (a fallback asks the default tier, never flex). Once per response.
+  if (first && requested === "flex" && served !== "flex" && message.stopReason !== "error" && message.stopReason !== "aborted")
+    console.log(JSON.stringify({ type: "model_flex_unhonored", provider: model.provider, model: model.id, servedTier: served ?? null }));
   const rates = tierCost(model.provider, model.id, served);
   if (rates) calculateCost({ ...model, cost: rates }, message.usage);
 }

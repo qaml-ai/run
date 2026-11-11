@@ -29,7 +29,7 @@ test("camelrun/fast and camelrun/strong are virtual models; camelrun/default is 
   const strong = resolveModel("camelrun/strong");
   assert.deepEqual([strong.provider, strong.id, (strong as { virtual?: string }).virtual, tier(strong)], ["openrouter", CARBON, "camelrun/strong", "flex"]);
   assert.equal(strong.api, "openai-responses", "Gemini on OpenRouter's Responses API, as every non-Anthropic, non-DeepSeek model");
-  assert.equal(strong.maxTokens, 65_536);
+  assert.equal(strong.maxTokens, 32_768, "every Carbon endpoint serves it, AI Studio's default tier included");
   const listed = listModels("camelrun");
   assert.deepEqual(listed.map(model => [model.id, model.routes, model.serviceTiers]), [
     ["camelrun/default", [`openrouter/${EMBER}`, `openrouter/${FLASH}`], undefined],
@@ -229,4 +229,24 @@ test("every other model's calls are unchanged: no service_tier, no flex wait", a
   const real = await call(`openrouter/${CARBON}`, [{ error: "429 Rate limit exceeded" }]);
   assert.equal(real.calls.length, 1);
   assert.equal(real.last.type, "error");
+});
+
+test("flex asked and not served is logged once as model_flex_unhonored; flex served, errors and the default tier are not", async t => {
+  const logs: string[] = [];
+  t.mock.method(console, "log", (line: string) => { logs.push(line); });
+  const [flex, standard] = virtualChain("camelrun/strong")!;
+  const reply = (stopReason = "stop") => ({ role: "assistant", content: [], stopReason, usage: usage() } as unknown as AssistantMessage);
+  const ignored = reply();
+  servedTier(flex, ignored, "default");
+  servedTier(flex, ignored, "default");
+  servedTier(flex, reply(), undefined);
+  servedTier(flex, reply(), "flex");
+  servedTier(flex, reply("error"), "default");
+  servedTier(standard, reply(), "default");
+  servedTier(getModel("openrouter", EMBER)!, reply(), "default");
+  const unhonored = logs.filter(line => line.includes("model_flex_unhonored")).map(line => JSON.parse(line));
+  assert.deepEqual(unhonored, [
+    { type: "model_flex_unhonored", provider: "openrouter", model: CARBON, servedTier: "default" },
+    { type: "model_flex_unhonored", provider: "openrouter", model: CARBON, servedTier: null },
+  ]);
 });

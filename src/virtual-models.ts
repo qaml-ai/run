@@ -80,3 +80,9 @@ export function routeModel(selection: VirtualSelection, request: { reason: Model
   const previous = request.reason === "continuation" && request.previous ? chain.find(model => same(model, request.previous!)) : undefined;
   return previous ?? chain[0];
 }
+
+/** A response as `routeModel` takes it: its model, and the service tier its request asked for (model-attempt-stream.ts `servedTier`), which names its member. */
+export const askedTier = (message: { usage?: unknown }): { serviceTier?: string } => {
+  const tier = (message.usage as { requestedServiceTier?: unknown } | undefined)?.requestedServiceTier;
+  return typeof tier === "string" ? { serviceTier: tier } : {};
+};

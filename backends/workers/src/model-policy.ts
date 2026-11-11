@@ -293,3 +293,9 @@ export function modelSettingsRefusal(model: AgentConfig['model'], settings: Pick
 }
 
 /** Why an agent's configuration with `update` applied would ask its model for settings it cannot take (`modelSettingsRefusal`). */
+
+/** A response as `routeModel` takes it: its model, and the service tier its request asked for (model-attempt-stream.ts `servedTier`), which names its member. */
+export const askedTier = (message: { usage?: unknown }): { serviceTier?: string } => {
+  const tier = (message.usage as { requestedServiceTier?: unknown } | undefined)?.requestedServiceTier;
+  return typeof tier === "string" ? { serviceTier: tier } : {};
+};
