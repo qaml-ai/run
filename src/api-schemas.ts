@@ -878,7 +878,7 @@ export const EventPoll = z.object({
 
 export const BrowserTokenInput = z.object({
   ttlSeconds: z.number().int().min(5).max(3600).optional().openapi({ description: "How long it lives: 5 to 3600 seconds, default 900. Nothing revokes it sooner" }),
-  scopes: z.array(z.enum(["events", "state", "history", "inputs", "children"])).optional().openapi({ description: "What it reads of the agent: GET /v1/agents/{id}/<scope>. Default events, state, history and inputs. children: it lists the agent's children (GET /v1/agents/{id}/children), and reads the same of its background sub-agents (spawn_agent's), by their ids" }),
+  scopes: z.array(z.enum(["events", "state", "history", "inputs", "children"])).optional().openapi({ description: "What it reads of the agent: GET /v1/agents/{id}/<scope>. Default events, state, history and inputs. children: it lists the agent's children (GET /v1/agents/{id}/children), and reads the same of its sub-agents (delegate's and spawn_agent's), by their ids" }),
   events: z.array(z.string()).max(64).optional().openapi({ description: "Only these event types (message_update, tool_execution_end, ...) reach it; default every one but the runtime's own (compaction_usage, spend_limit_reached, turn_limit_reached). Outcomes (response) and snapshots always do, an outcome only as whether and why its run stopped" }),
   redact: z.array(z.enum(["usage.cost"])).optional().openapi({ description: "Fields it does not see: usage.cost, a response's provider cost, in messages, snapshots and history" }),
   subject: z.string().max(200).optional().openapi({ description: "Whom it is for, in your app (a user id)" }),

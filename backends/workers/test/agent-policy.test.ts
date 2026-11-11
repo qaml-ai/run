@@ -5,7 +5,7 @@ import { delegateInput, delegateSettings } from '../src/multi-agent-policy.ts';
 import { Delegation, type DelegationHost } from '../src/delegation.ts';
 import { DecisionRuntime } from '../src/decision-runtime.ts';
 import type { ToolExecutionApi } from '@earendil-works/pi-durable';
-import { withSql, submitViaFetch } from './sql-storage.ts';
+import { withSql, submitViaFetch, childAlarms } from './sql-storage.ts';
 
 const questions = { valid: { type: 'noul' as const, instructions: 'Is valid?' } };
 const signal = () => new AbortController().signal;
@@ -38,16 +38,9 @@ test('stock delegation configuration validates named targets and depth ceilings'
   assert.throws(() => delegateSettings(['delegate'], undefined));
   assert.deepEqual(delegateSettings(['delegate'], { agents: ['helper'] })?.agents, [{ name: 'helper', definition: 'helper' }]);
 });
-const fixtures: { delegation: Delegation; host: DelegationHost }[] = [];
-after(async () => {
-  // Complete mock children left running by assertion-only fixtures, so the
-  // real recovery timers do not survive the file.
-  for (const { delegation, host } of fixtures) {
-    host.fetch = async () => Response.json({ state: 'completed', status: 'completed' });
-    host.notify = undefined;
-    await delegation.recover();
-  }
-});
+const fixtures: { delegation: Delegation; host: DelegationHost; stop: () => Promise<void> }[] = [];
+// The simulated children's alarms stop with the file.
+after(async () => { for (const { stop } of fixtures) await stop(); });
 function fixture() {
   const values = new Map<string, unknown>();
   let transaction = Promise.resolve<unknown>(undefined);
@@ -92,7 +85,7 @@ function fixture() {
   };
   host.submitChild = submitViaFetch(host);
   const delegation = new Delegation(host);
-  fixtures.push({ delegation, host });
+  fixtures.push({ delegation, host, stop: childAlarms(host, delegation) });
   return { delegation, host, events, submitted, tasks, setRun: (value: unknown) => { run = value; }, setId: (value: string) => { parentId = value; }, values };
 }
 test('decision and delegation tools resolve context from the executing conversation', async () => {
@@ -301,6 +294,9 @@ test('a paused background child produces one new completion notice after its hum
   resumed = true;
   await f.delegation.recover();
   await Promise.all(f.tasks);
+  // The resumed run's ending comes by the child's outbox (simulated by the fixture's child alarms).
+  for (let i = 0; i < 400 && !notified.length; i++) await new Promise(resolve => setTimeout(resolve, 5));
+  await Promise.all(f.tasks);
   await f.delegation.recover();
   await Promise.all(f.tasks);
   assert.deepEqual(notified, ['paused:resume']);
@@ -480,7 +476,7 @@ test('a message that never reached its child ends failed, with no notification, 
 test('progress is idempotent, shown once in tool results, and never starts a turn', async () => {
   const parent = fixture(), child = await childFixture();
   parent.values.set('delegation:live', { id: 'child', key: 'live', requestId: 'child-run', parentRequestId: 'parent-run', toolCallId: 'spawn', task: 'go', name: 'helper', depth: 1, createdAt: 1, status: 'running', made: true, background: true, accepted: true });
-  child.host.reportProgress = async (id, report) => { assert.equal(id, 'parent'); await parent.delegation.recordProgress(report); };
+  child.host.reportProgress = async (owner, report) => { assert.deepEqual(owner, { kind: 'agent', id: 'parent' }); return parent.delegation.recordProgress(report); };
   const progress = child.delegation.tools({}, [], true).find(tool => tool.name === 'report_progress')!;
   await (progress.execute as any)({ text: 'Read the first source' }, toolApi('progress'), { abortSignal: signal() });
   await (progress.execute as any)({ text: 'Read the first source' }, toolApi('progress'), { abortSignal: signal() });
@@ -494,7 +490,7 @@ test('progress is idempotent, shown once in tool results, and never starts a tur
   assert.match(first.output[1].text, /Read the first source/);
   const second = await (list.execute as any)({}, toolApi('list2'), { abortSignal: signal() });
   assert.equal(second.output.length, 1);
-  await assert.rejects(parent.delegation.recordProgress({ agentId: 'stranger', requestId: 'child-run', callId: 'fake', text: 'fake' }), /Unknown sub-agent/);
+  assert.deepEqual(await parent.delegation.recordProgress({ agentId: 'stranger', requestId: 'child-run', callId: 'fake', text: 'fake' }), { accepted: false, error: 'Unknown sub-agent run' });
 });
 test('wait_agent takes a background ending exactly once and excludes direct delegates', async () => {
   const f = fixture();

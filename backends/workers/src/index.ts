@@ -297,7 +297,10 @@ const worker = {
           entry = await new Directory(env, browser.tenant).get(idOrKey);
         else if (browser) {
           const candidate = await new Directory(env, browser.tenant).get(idOrKey);
-          if (!candidate || !browser.scopes.includes('children') || !await env.AGENTS.getByName(browser.agent).hasBackgroundChild(candidate.id))
+          // The children scope reads a sub-agent's events, state, history and inputs; the events scope its events alone
+          // (what the parent's stream once relayed): a watcher follows each child on its own stream.
+          const readsChild = browser.scopes.includes('children') || match[3] === '/events';
+          if (!candidate || !readsChild || !await env.AGENTS.getByName(browser.agent).hasChild(candidate.id))
             throw new ApiError(403, 'This browser token does not grant this agent', 'FORBIDDEN');
           entry = candidate;
         }

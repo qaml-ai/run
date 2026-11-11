@@ -121,6 +121,12 @@ export class ChildRows {
     return this.rows('SELECT state FROM children WHERE child_id = ? AND request_id = ? ORDER BY started DESC LIMIT 1', childId, requestId)[0];
   }
 
+  /** The latest row of a child, by its agent id. */
+  async byChild(childId: string): Promise<DelegatedChild | undefined> {
+    await this.load();
+    return this.rows('SELECT state FROM children WHERE child_id = ? ORDER BY started DESC LIMIT 1', childId)[0];
+  }
+
   /** Rows a notification request (`child_<request>`) names. */
   async byRequest(requestId: string): Promise<DelegatedChild[]> {
     await this.load();

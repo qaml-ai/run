@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { DelegationNotifications, type NotificationHost } from '../src/delegation-notifications.ts';
 import { Delegation, type DelegatedChild } from '../src/delegation.ts';
 import { renderMessage } from '../src/sender.ts';
-import { withSql, submitViaFetch } from './sql-storage.ts';
+import { withSql } from './sql-storage.ts';
 
 // Batched completions (multi-agent.ts BatchedEnding): when one child's notice lands, every other ended child's notice
 // still in the outbox rides in the same turn. Exactly once: no ending is lost or delivered twice, whatever crashes.

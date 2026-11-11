@@ -398,9 +398,9 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
     const requested = decodeSegment(match[2]);
     const auth = checked(await options.authorize(request, { thread, action: "read" }));
     const agent = await agentFor(auth, thread);
-    // The path names an agent; only the user's own is readable (another is not found, as on the runtime).
-    if (requested !== agent.id) fail(404, "not_found", "No such agent");
-    const target = `${url}/v1/agents/${encodeURIComponent(agent.id)}/${match[3]}${new URL(request.url).search}`;
+    // The path names an agent: the user's own, or one of its sub-agents, read with the user's agent's token, which the
+    // runtime lets read a sub-agent's events (and, with the children scope, the rest) and refuses for any other agent.
+    const target = `${url}/v1/agents/${encodeURIComponent(requested)}/${match[3]}${new URL(request.url).search}`;
     const forward = async (fresh: boolean) => {
       const headers: Record<string, string> = { Authorization: `Bearer ${await readToken(agent, auth!, fresh)}` };
       for (const name of ["accept", "last-event-id"]) { const value = request.headers.get(name); if (value !== null) headers[name] = value; }

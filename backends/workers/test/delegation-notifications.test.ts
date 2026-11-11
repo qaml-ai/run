@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { DelegationNotifications, DelegationWakeBudget, type NotificationHost } from '../src/delegation-notifications.ts';
 import type { DelegatedChild } from '../src/delegation.ts';
 import { renderMessage } from '../src/sender.ts';
-import { withSql, submitViaFetch } from './sql-storage.ts';
+import { withSql } from './sql-storage.ts';
 
 function memory() {
   const values = new Map<string, unknown>();

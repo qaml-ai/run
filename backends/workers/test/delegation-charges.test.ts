@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Delegation, type DelegatedChild, type DelegationHost } from '../src/delegation.ts';
-import { withSql, submitViaFetch } from './sql-storage.ts';
+import { withSql } from './sql-storage.ts';
 
 function fixture() {
   const values = new Map<string, unknown>();
@@ -43,10 +43,12 @@ test('a tentatively joined child message keeps a late independent answer', async
   const { storage, delegation, child, host } = fixture();
   const running = { ...child, status: 'running', folded: true, spent: undefined };
   await storage.put('delegation:child', running);
-  host.fetch = async () => Response.json({ state: 'completed', status: 'completed', outcome: { result: { reply: 'new answer', usage: { costUsd: 0.15 } } } });
   const events: unknown[] = [];
   host.emit = async event => { events.push(event); };
-  const finished = await delegation.wait(running);
+  const waiting = delegation.wait(running);
+  // The message's run ended on its own: the child's outbox delivers its ending.
+  await delegation.receiveEnding({ agentId: 'child', requestId: running.requestId, record: { state: 'completed', status: 'completed', outcome: { result: { reply: 'new answer', usage: { costUsd: 0.15 } } } } });
+  const finished = await waiting;
   assert.equal(finished.folded, false);
   assert.equal(finished.outcome?.result?.reply, 'new answer');
   assert.equal(finished.spent, 0.15);
@@ -57,10 +59,11 @@ test('a child message that really joined a run has no second ending or charge', 
   const { storage, delegation, child, host } = fixture();
   const running = { ...child, status: 'running', folded: true, spent: undefined };
   await storage.put('delegation:child', running);
-  host.fetch = async () => Response.json({ state: 'completed', status: 'completed', steeredInto: 'original', outcome: { result: { steeredInto: 'original' } } });
   const events: unknown[] = [];
   host.emit = async event => { events.push(event); };
-  const finished = await delegation.wait(running);
+  const waiting = delegation.wait(running);
+  await delegation.receiveEnding({ agentId: 'child', requestId: running.requestId, record: { state: 'completed', status: 'completed', steeredInto: 'original', outcome: { result: { steeredInto: 'original' } } } });
+  const finished = await waiting;
   assert.equal(finished.folded, true);
   assert.equal(finished.notified, true);
   assert.equal(finished.spent, 0);

@@ -643,9 +643,12 @@ async function sweepDelegate(ctx: ChildrenContext, row: any, now: number) {
   if (landed) console.log(JSON.stringify({ type: "subagent_late_ending", agent: row.parent, child: row.child, request: row.request_id, costUsd: cost }));
 }
 
-/** Whether `child` is one of `parent`'s background sub-agents (a browser token's `children` scope). */
+/**
+ * Whether `child` is one of `parent`'s sub-agents, delegate children included (a browser token's `children` scope): a
+ * watcher follows a child's own events by its id (the SDK's `watch` with `subagents`).
+ */
 export async function isChildOf(ctx: ChildrenContext, child: string, parent: string) {
-  return (await ctx.db.query("select 1 from agent_children where parent = $1 and child = $2 and kind <> 'delegate' limit 1", [parent, child])).rows.length > 0;
+  return (await ctx.db.query("select 1 from agent_children where parent = $1 and child = $2 limit 1", [parent, child])).rows.length > 0;
 }
 
 /** The latest row of one of the agent's children, by its name or id; undefined when it has none by that name. */

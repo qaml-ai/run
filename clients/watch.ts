@@ -42,10 +42,14 @@ export interface WatchOptions {
   /** Close the stream while the page is hidden, after this long (default 30 s; 0: never). */
   hiddenGraceMs?: number;
   fetch?: typeof fetch;
-  /** Also follow the agent's sub-agents (its delegate calls' children): `state.subagents`. */
+  /**
+   * Also follow the agent's sub-agents (its delegate and spawn_agent calls' children): `state.subagents`. Each child's
+   * messages are read from its own stream, by its id, with the same token (a browser token needs the `children` scope),
+   * at most 16 children at once.
+   */
   subagents?: boolean;
 }
-/** A sub-agent a delegate call started, as its relayed events tell it: its finished messages, and how it ended. */
+/** A sub-agent a delegate call started, as its own stream tells it: its run's finished messages, and how it ended. */
 export interface SubagentView { agentId: string; name: string; messages: Message[]; status?: "completed" | "input_required" | "failed" | "aborted"; error?: string; progress?: string }
 /** What a watcher knows of its agent. */
 export interface AgentView {
@@ -266,6 +270,46 @@ export function watchAgent(options: WatchOptions): Watcher {
     if (value) page(value, false, until);
   }
 
+  /**
+   * Children followed by id: a watcher of each child's own stream, whose messages of the child's run (from its prompt,
+   * whose requestId is the run's, to the next run's) become the sub-agent's `messages`.
+   */
+  const following = new Map<string, { watcher: Watcher; ended?: ReturnType<typeof setTimeout> }>();
+  function followChild(toolCallId: string, agentId: string, requestId: string | undefined) {
+    if (!options.subagents || following.has(toolCallId) || following.size >= 16 || closed.signal.aborted) return;
+    const update = (view: AgentView) => {
+      const current = state.subagents.get(toolCallId);
+      if (!current) return;
+      const start = requestId ? view.messages.findIndex(message => message.role === "user" && message.requestId === requestId) : -1;
+      if (start < 0) return;
+      let end = view.messages.length;
+      for (let at = start + 1; at < view.messages.length; at++) {
+        const message = view.messages[at];
+        if (message.role === "user" && message.requestId && message.requestId !== requestId) { end = at; break; }
+      }
+      state.subagents = new Map(state.subagents).set(toolCallId, { ...current, messages: view.messages.slice(start, end) });
+      changed();
+      // Its run ended on its own stream, and the parent said so: nothing more to read.
+      if (current.status && view.lastOutcome?.id === requestId) stopFollowing(toolCallId);
+    };
+    const watcher = watchAgent({ url: options.url, agentId, token, expiresAt, getToken: options.getToken, fetch: options.fetch, transport: options.transport, stallMs: options.stallMs, hiddenGraceMs: options.hiddenGraceMs, pageSize: options.pageSize, onChange: update,
+      // A token that reads only a child's events (no children scope) is refused its history and inputs: the stream does.
+      onError: error => { if (![403, 404].includes((error as { status?: number }).status ?? 0) && !/HTTP 40[34]/.test(error.message)) report(error); } });
+    following.set(toolCallId, { watcher });
+  }
+  function stopFollowing(toolCallId: string) {
+    const entry = following.get(toolCallId);
+    if (!entry) return;
+    clearTimeout(entry.ended);
+    entry.watcher.close();
+    following.delete(toolCallId);
+  }
+  /** The parent says the child's run ended: its last messages may still be on their way on its stream, so a while longer. */
+  function endFollowing(toolCallId: string) {
+    const entry = following.get(toolCallId);
+    if (entry && !entry.ended) entry.ended = setTimeout(() => stopFollowing(toolCallId), 10_000);
+  }
+
   /** Take in one frame of the stream. */
   async function receive(data: any) {
     if (data.type === "snapshot") {
@@ -332,16 +376,16 @@ export function watchAgent(options: WatchOptions): Watcher {
       case "tool_execution_end": state.progress.delete(event.toolCallId); break;
       case "input_required": state.pendingInputs = [...state.pendingInputs.filter(input => input.id !== event.input.id), event.input]; break;
       case "input_resolved": resolved.add(event.id); state.pendingInputs = state.pendingInputs.filter(input => input.id !== event.id); break;
-      // A sub-agent's messages as it finishes them, under its delegate call; each change is a new view and map.
-      case "subagent_start": state.subagents = new Map(state.subagents).set(event.toolCallId, { agentId: event.agentId, name: event.name, messages: [] }); break;
-      case "subagent_event": {
-        const child = state.subagents.get(event.toolCallId);
-        if (child && event.event?.type === "message_end") state.subagents = new Map(state.subagents).set(event.toolCallId, { ...child, messages: [...child.messages, event.event.message] });
+      // A sub-agent under its delegate call: its messages come from its own stream (followChild); each change is a new
+      // view and map. (A `subagent_event` relay, which an older runtime may still send, is not read.)
+      case "subagent_start":
+        state.subagents = new Map(state.subagents).set(event.toolCallId, { agentId: event.agentId, name: event.name, messages: [] });
+        followChild(event.toolCallId, event.agentId, event.requestId);
         break;
-      }
       case "subagent_end": {
         const child = state.subagents.get(event.toolCallId);
         if (child) state.subagents = new Map(state.subagents).set(event.toolCallId, { ...child, status: event.status, ...(event.error ? { error: event.error } : {}) });
+        endFollowing(event.toolCallId);
         break;
       }
       // Its latest report, while it runs: an ending above keeps the last one.
@@ -476,6 +520,7 @@ export function watchAgent(options: WatchOptions): Watcher {
     },
     close() {
       closed.abort();
+      for (const toolCallId of [...following.keys()]) stopFollowing(toolCallId);
       clearTimeout(hiding);
       doc?.removeEventListener("visibilitychange", onVisibility);
     },

@@ -334,8 +334,8 @@ export interface AgentOptions {
    */
   syncTools?: boolean;
   /**
-   * Also receive the agent's sub-agents' progress (its delegate calls' children): `subagent_start`, `subagent_event`
-   * (a child's event, its streamed text left out) and `subagent_end`. Default false: none of them.
+   * Also receive the agent's sub-agents' progress (its delegate calls' children): `subagent_start` and
+   * `subagent_end` (a child's own events are on its own stream, by its id). Default false: none of them.
    */
   subagents?: boolean;
   /**
