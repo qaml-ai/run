@@ -24,7 +24,7 @@ import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
 import { isStalled, streamTimeouts } from "./model-stream.ts";
 import { MODEL_INTERRUPTED, modelFailure, retriesModelError, isContentFilterBlock, isImageRejection, isModelUnavailable } from "./model-errors.ts";
 import { withModelFallback } from "./model-fallback.ts";
-import { routeModel, type ModelRouteReason } from "./virtual-models.ts";
+import { askedTier, routeModel, type ModelRouteReason } from "./virtual-models.ts";
 import { forcedToolChoice } from "./tool-choice.ts";
 import { filesRefused, namespaceOf, schemaAccepts } from "./tool-policy.ts";
 import { callSettings } from "./pi-catalog.ts";
@@ -941,14 +941,14 @@ export function createAgentHost(hostIO: HostIO) {
             aborted: () => !!signal?.aborted,
           });
         };
-        return attempt(routeModel(selected, { reason, ...(previous ? { previous: { provider: previous.provider, model: previous.model } } : {}) })!);
+        return attempt(routeModel(selected, { reason, ...(previous ? { previous: { provider: previous.provider, model: previous.model, ...askedTier(previous) } } : {}) })!);
       };
       // A request whose stream goes quiet ends as a retryable error (model-stream.ts), said on the run's stream as it happens.
       // A response the agent's content-filter fallback replaces (`streamFn`) is recorded but never charged: the platform's filter blocked it.
       const replaced = (message: AssistantMessage) => {
         if (config.contentFilterFallback?.from === `${config.model.provider}/${config.model.id}` && isContentFilterBlock(message)) return "content_filter" as const;
         // A virtual model's next member takes this request (`routedCall`): this attempt was never the answer, and counts as no response.
-        return config.model.virtual && !message.content.length && isModelUnavailable(message) && routeModel(config.model, { reason: "retry", failed: { provider: message.provider, model: message.model } }) ? "unavailable" as const : undefined;
+        return config.model.virtual && !message.content.length && isModelUnavailable(message) && routeModel(config.model, { reason: "retry", failed: { provider: message.provider, model: message.model, ...askedTier(message) } }) ? "unavailable" as const : undefined;
       };
       const stream = explicitKeyStream(() => perCall() ? io.modelAuth() : undefined, () => config.modelHeaders, gate,
         (model, reasoning) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts),
