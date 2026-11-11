@@ -35,40 +35,51 @@ browsers, and for people's managed machines. They are not removed; they are not 
 
 ## Recommendation
 
-1. **A workflow is a new durable resource, `wf_…`, with a Durable Object of its own on Workers** (an actor on Node,
-   as volumes are). It owns a deterministic script, a journal of every effect the script made, a budget, a status
-   and its children. It is not a turn of any agent: a script that waits a week holds no code slot, no connection and
-   no model.
-2. **The script runs by replay.** Every event (a child ended, a gate was answered, a job finished, a timer fired)
-   runs the script from the top in v8-exec; effects already in the journal return their recorded result at once;
-   the first effect not in the journal is started; and when nothing can go on, the isolate ends. Effects are keyed
-   by an explicit `key` or by a content hash of their arguments, so editing the script and resuming reruns only
-   what changed. This is Claude Code's Workflow tool with stronger keys and no process to keep alive.
-3. **Children are remote, always.** A workflow's `agent()` starts a real agent in its own object or node, through
+1. **A workflow is a new durable resource, `wf_…`, with a Durable Object of its own on Workers, and delegation
+   gets an owner model so it can be one.** A child's parent is an **owner**, `{ kind: "agent" | "workflow", id }`,
+   not an agent id: child rows, the chain root, lineage and inbox ownership are keyed by owner, and the agent-only
+   assumptions (`parentAgentId` in a JSON header, a recursive walk over `agents` for the chain root, HMAC-signed
+   lineage in prompt metadata) are deleted. A workflow is not an agent: it has no history, no prompts, no model,
+   no compaction, and making it an agent kind would drag all of that along. It owns a deterministic script, a
+   journal of every effect the script made, a budget, a status and its children; a script that waits a week holds
+   no code slot, no connection and no model.
+2. **Endings are durable for everyone.** A child writes its ending to its own outbox and an alarm delivers it to
+   the owner until acknowledged; the fire-and-forget push, the in-memory sweep and the event firehose to the parent
+   go, for agents and workflows alike, and child bookkeeping is an indexed SQLite table.
+3. **The script runs by replay, on a generalized code-mode exchange.** Every event (a child ended, a gate was
+   answered, a job finished, a timer fired) resumes the script in pi-codemode's sandbox, which already stops a VM
+   that waits on sub-agents and replays delivered results in order on the next one. The exchange's caps and
+   whether result bodies cross into the guest become parameters of the exchange, for every caller, so effects in
+   the journal answer at once from a host-side table, the first effect not in it is started, and when nothing can
+   go on the VM stops. Effects are keyed by an explicit `key` or by a content hash of their arguments, with an
+   attempt number, so editing the script and resuming reruns only what changed, and a rerun is a new child. This
+   is Claude Code's Workflow tool with stronger keys and no process to keep alive.
+4. **Children are remote, always.** A workflow's `agent()` starts a real agent in its own object or node, through
    the existing delegation path, keyed by the effect key for exactly-once. The ~8 concurrent streams one object
    can hold (#696) are not a ceiling: the workflow object streams nothing, it starts and collects.
-4. **Three agent types and three model classes, domain-neutral.** A child is a `worker` (does a task, may write),
+5. **Three agent types and three model classes, domain-neutral.** A child is a `worker` (does a task, may write),
    a `critic` (finds problems in someone else's output, read-only, separate context, answers in a schema, never
    the model instance that did the work) or a `lead` (plans, decides, judges). Its model is a class: `fast`,
    `strong` or `auto` (a Fusion-style router that switches at compaction with judgment kept on strong), as
    late-bound virtual models `camelrun/fast|strong|auto`, pinnable per workflow and per call. Everything
    domain-specific (implementer, porter, researcher, auditor) is a worker with instructions. A changed mapping
    never invalidates cached results; the resolved model is recorded on every effect.
-5. **Code work is an optional module: repositories as a volume kind with a repo object** that holds the tree at a
+6. **Code work is an optional module: repositories as a volume kind with a repo object** that holds the tree at a
    commit, a trigram index, branch heads, and one private **layer** per agent (the files it changed, over the
    base). Agents read, search, edit and commit with the file tools; there is no checkout, no `stash`, no `reset`,
    no branch switch to step on. Commits go to the repo object as compare-and-swap on a branch head with a
    file-level merge. Git objects are written for push and read for pull with the GitHub App token the runtime
    already mints.
-6. **Compute is a job, not a machine, and jobs are a runtime primitive.** `job({ command, at })` materializes a
+7. **Compute is a job, not a machine, and jobs are a runtime primitive.** `job({ command, at })` materializes a
    volume, a commit or an agent's layer into a container started from a warm snapshot (toolchains, dependencies,
    build caches, a query client), runs one command under the container's own limits, collects named output files,
    snapshots the caches if asked, and stops. A build, a test shard, a 500-table audit query and a notebook are the
-   same primitive. Nobody shares a checkout, nobody runs `cargo check` beside 63 others, and a test that eats every socket
+   same primitive. In phase 1 `job()` is workflow-internal; the public `POST /v1/jobs` and the `jobs` builtin come
+   in phase 4. Nobody shares a checkout, nobody runs `cargo check` beside 63 others, and a test that eats every socket
    on the box kills only its job. Jobs are `POST /v1/jobs` and a `jobs` builtin for ordinary agents too, not only
    a workflow global. No forked or persistent VM is in the swarm path; phase 1 is already VM-less for editing,
    on per-child volume forks, with the repo object following in phase 3.
-7. **We run the job VMs ourselves, on AWS Nitro Sandboxes.** Firecracker microVMs created through the Nitro
+8. **We run the job VMs ourselves, on AWS Nitro Sandboxes.** Firecracker microVMs created through the Nitro
    Enclaves driver on Graviton hosts with local NVMe (`r8gd` for builds, `c8gd` spot for test shards), at EC2
    performance, not nested. Measured on `r8gd.4xlarge`: about 1% build overhead on a Bun incremental build, 0.83 s
    cold start, p50 2.3 s for 32 at once. One substrate for phase 2; nested-virtualization Intel hosts with
@@ -76,14 +87,37 @@ browsers, and for people's managed machines. They are not removed; they are not 
    reflink clones of warm disk snapshots on the host, Firecracker's Async disk engine, dedicated build hosts with a
    pre-started build sandbox, our own host agent and scheduler, per-job netns with an egress allowlist and no IMDS. Phase 1 jobs run on the Cloudflare Containers driver only; Bun-class builds wait
    for our hosts in phase 2. Boat and Lambda MicroVMs stay behind the same `JobDriver` seam as fallbacks, not plan.
-8. **Budget, cost and cache-hit reporting per workflow**, hard spend caps, a cap on total effects, and a step-rate
+9. **Budget, cost and cache-hit reporting per workflow**, hard spend caps, a cap on total effects, and a step-rate
    guard, with every number on one console page. Fusion's measured 41–60% saving on implementation-heavy work
    puts a Bun-shaped bill at $65–95k with workers on `fast` and critics on `strong`, if the eval agrees on quality
    at equal rounds.
-9. **Build it in five phases, on Workers only**, the first being the workflow object plus `job()` on the
-   Cloudflare driver with children working on volumes, the second our own job hosts, the third the code module.
-   Node parity comes later, when a Node tenant needs it. The first test is a Bun-shaped
+10. **Build it in five phases, on Workers only.** Phase 1 (8–10 weeks) is an ordered PR stack: the delegation
+   owner model and durable endings first (they fix prior mistakes for every product), then the attempted call
+   ids, the generalized exchange and the atomic volume commit, and the workflow object on top with `agent`,
+   `parallel`, `gate`, `sleep`, the journal, the budget pause, the items API and `job()` on the Cloudflare driver.
+   No compatibility shims: every in-repo caller (SDKs, CLI, console, docs) changes in the same PR, and schema
+   changes that drop a column take two deploys. Then our own job hosts, then the code module. Node parity comes
+   later, when a Node tenant needs it. The first test is a Bun-shaped
    port of one of our repositories; a research sweep and a data audit run on the same phase-1 harness.
+
+## Prior mistakes this fixes
+
+We are our only clients, so where the existing mechanism is the mistake, this design replaces it rather than
+working around it. Rolling deploys are real (nodes migrate at boot and old nodes run against the new schema), so a
+change that drops a column takes two deploys: expand, switch readers, contract. camel-bots, camelAI and camel-code
+are production; the last column says which touch each path, and each one's in-repo caller changes in the same PR.
+
+| Mechanism replaced | Why it is wrong | Replacement | Production callers |
+| --- | --- | --- | --- |
+| A child's parent is an agent id: `parentAgentId`/`parentRunId` in the `agents` header JSON (`child-parent.ts:8`), the computer-limit chain root found by a recursive walk over `agents` (`src/core/computer-limit.ts:18`), lineage carried as HMAC-signed prompt metadata (`delegation.ts:259`) | Only an agent can own work; the chain is recomputed by walking and re-verified by signing on every call instead of being stored once | An **owner** (`{ kind, id }`) on every child row, with `rootOwner` and the chain stored at creation; the signing and the walk go | camel-bots (persistent workers by `spawnAgent({ agent })`, `par`/`root` identity claims in tool calls, which keep their values); camel-code (delegate on the pilot) |
+| `agent_inputs.agent` as the input's owner (`migrations/016`) | An input can only belong to an agent, so a gate of a workflow has nowhere to live | `owner_kind`, `owner_id` columns, backfilled from `agent`; `agent` dropped in the contract deploy | camelAI (`ask_user`), camel-bots (approvals), the inbox (#752) |
+| Child endings pushed fire-and-forget to the parent (`agent-transport.ts:111`), recovered by an in-memory `setTimeout` sweep that dies with the isolate and polls every child every 5 s while armed (`delegation.ts:142-166`) | A lost push is recovered only while the parent happens to be resident; a hibernating owner never hears the ending | A **child-side outbox**: the ending is a durable row in the child's storage, delivered by the child's alarm to the owner's `receiveEnding` with backoff until acknowledged; no parent-side sweep | camel-bots (`child_<request>` notifications keep their shape), camel-code |
+| Every child event relayed to the parent (`delegation.ts:181`) | A firehose the parent neither reads nor needs; it exists only so a watcher can see children through the parent | Children push endings and progress only; a watcher that wants a child's live events subscribes to the child by id (`watch` with `subagents: true` follows children itself; the `subagent_event` relay is deleted) | camel-bots (uses `subagent_start`/`subagent_end` and notifications, not the relay; its chat reads children by id with the `children` scope) |
+| Child bookkeeping as `delegation:*` KV rows listed whole on every start, progress report and listing (`delegation.ts:339,539,181`) | O(n) per operation, O(n²) per run; fine at 4 children, not at 64 or 2,000 | A `children` SQLite table in the owner's object, indexed by status and call | all three (every delegate call) |
+| A child's identity is `digest(run.id:callId)` and a stored non-running child is returned as is (`delegation.ts:286,301`) | A call can never be made again on purpose: a rerun, or an abort followed by re-issue, is a no-op | Call identity is `callId:attempt`, with the attempt on the row | all three (no caller sets attempts; the default is 1) |
+| Code mode's exchange caps are fixed per call (256 calls, 32 in flight, 8 MiB of results) and every result body crosses into the 24 MiB guest (`codemode/limits.ts`, `src/limits.ts`) | Right for one model turn, wrong for a runner that replays thousands of effects | Caps and host-side result handles are parameters of the exchange; code mode keeps today's values as its parameters | camelAI and camel-bots (code mode; unchanged values) |
+| Volume writes land file by file with a per-file version check (`volume.ts:342-358`); a multi-file commit interleaves with other writers | A commit of named files cannot be atomic from outside the volume object | `POST /v1/volumes/:id/commit { files: [{ path, version, key }], snapshot? }`: all version checks and writes in one transaction inside the volume object, a snapshot on success | camel-bots (`publish` reads snapshots; unchanged), camel-code |
+| A volume fork pins its source blobs for 24 hours (`files.ts:528-532`) | A fork that lives longer than a day silently loses its base | Pins live as long as the fork | camel-bots (forks of builders), camelAI (thread forks) |
 
 ## The first test: what the Bun port needed, and what camelRun has
 
@@ -126,14 +160,14 @@ browsers, and for people's managed machines. They are not removed; they are not 
 
 ### The script
 
-Plain JavaScript, run in the same v8-exec sandbox as code mode (`docs/operations/sandbox.md`), with no filesystem or
+Plain JavaScript, run in code mode's sandbox (pi-codemode; QuickJS-in-Wasm on Workers today, see Execution), with no filesystem or
 network of its own. Its globals:
 
 | Global | What it does |
 | --- | --- |
 | `agent(task, opts)` | Starts a sub-agent and returns its answer. `opts`: `{ key?, label?, type?, class?, definition?, instructions?, model?, output?, files?, layer?, timeoutSeconds?, phase? }` (`type` is `worker`, `critic` or `lead`; `class` is `fast`, `strong` or `auto`; see Agent types). With `output` (a JSON Schema) the answer is the validated object; without it, the text. A failed or aborted child returns `null` (and the item records why), so `.filter(Boolean)` is the idiom, as in Claude Code |
 | `parallel(thunks)` | Runs thunks at once, up to the workflow's `concurrency`; a barrier |
-| `pipeline(items, ...stages)` | Each item through every stage with no barrier between stages; a stage that throws drops the item to `null` |
+| `pipeline(items, ...stages)` | Each item through every stage with no barrier between stages; a stage that throws drops the item to `null`. Phase 4: phase 1 writes the same thing as `parallel` over per-item async functions with explicit keys |
 | `job(opts)` | A build, test or query run in an ephemeral container (Part 2). Returns `{ exitCode, outputs: { name: text }, durationMs }` |
 | `repo(id)` | A handle on a repository: `commit`, `branch`, `diff`, `read`, `search`, `merge` (Part 2) |
 | `gate(opts)` | A decision for a person: an inbox item. Returns the answer when it comes; `expiresInSeconds` and `recommended` as in `request_decision` |
@@ -149,52 +183,97 @@ The script must be a pure function of its `args` and the journal: no module impo
 
 ### Execution: replay from the top
 
-1. An event arrives at the object: a child's ending, a job's result, a gate's answer, a timer, a `resume`, or a
-   new script revision. Events within 500 ms coalesce into one step.
-2. The object runs the script in v8-exec with the journal loaded. Each effect call computes its key, looks it up,
-   and returns the recorded result if the effect is terminal. A non-terminal effect returns a promise that never
-   settles in this step. A key not in the journal is a **new effect**: the runner records it as `pending`, commits
-   the journal, then starts it (an agent, a job, an inbox item, a timer). A new effect is started only if the step
-   commit succeeded, so a crash between the two leaves a `pending` row the next step re-issues with the same key, and
-   the delegation path's exactly-once by key makes the re-issue find the same child.
-3. When the microtask queue drains with only unsettled effects left, the step ends and the isolate goes away. When
-   the script returns, the workflow completes with its return value (at most 1 MiB, saved to the workflow's volume).
-4. A step is bounded by code mode's limits (2 s CPU, 128 MiB heap, 60 s wall): replaying is cheap because effects
-   answer from the journal without I/O. The script's own compute between effects must stay small, which is what a
-   script that mostly awaits does.
+**The sandbox that exists.** Code mode on Workers is not v8-exec. It is pi-codemode's QuickJS-in-Wasm in a
+separate Worker's `CodemodeSandbox` object (`backends/workers/codemode/index.ts`): three 24 MiB heaps per object,
+an interrupt-poll budget of 10,000 rather than a CPU clock (`codemode/limits.ts`), and per exchange 256 calls,
+32 in flight and 8 MiB of results (`src/limits.ts`). Its `ScriptRun` (`codemode/sandbox.ts`) already does the hard
+part: a VM stops once every call it has out waits on a person or a sub-agent, and the next result starts another
+VM that replays every delivered result in order before going on; the VM is deterministic (same start, seed and
+results), so the replay makes the same calls, which Pi already has. The workflow runner extends that rather than
+reimplementing it. What is wrong for a runner is that the exchange's caps are fixed per call and every result
+body crosses into the guest; so the exchange is generalized for every caller: `caps` (calls, in flight, result
+bytes) and `results: "inline" | "handle"` are parameters an exchange is opened with. Code mode opens its exchange
+with today's values; the runner opens its own with the journal's. Whether QuickJS stays the engine for the runner
+is decided by the 500-effect measurement (Node already retired QuickJS for V8, `tenants.ts:63`; a V8 isolate for
+untrusted scripts on Workers is the candidate if the poll budget does not fit).
 
-**Effect keys.** The key of an effect is `opts.key` if given, else `sha256(kind, canonical JSON of the arguments)` plus
-an occurrence counter, so the third identical call is the third row. A prompt that embeds an earlier result changes
-when that result changes, and reruns; that is right. A prompt shared by a thousand items changes when its wording is
-edited, and all thousand would rerun; that is usually wrong. So any effect whose prompt is a template over an item
-gives an explicit key: `agent(review(file), { key: `review:${file}` })`. The console warns when an edit would rerun
-more than 10% of completed effects, and `resume({ rerun: ["review:src/*"] })` forces a set to rerun on purpose.
-Claude Code's resume keeps the longest unchanged prefix; keys are better because a loop that reorders its items, or a
-new stage inserted in the middle, keeps everything it already paid for.
+1. An event arrives at the workflow object: a child's ending, a job's result, a gate's answer, a timer, a `resume`,
+   or a new script revision. The object runs one step through its own exchange, `results: "handle"`, caps from the
+   journal's size and the workflow's `concurrency`.
+2. The guest runs the script. Each effect call computes its key (an explicit `key`, else a cheap guest hash, FNV-1a
+   over the canonical arguments; the host keeps the sha256) and asks the host for it. **Result bodies stay
+   host-side**: the host ships the guest a key→(status, hash, small result or handle) table at step start, and a
+   terminal effect answers from it with no I/O. A result over 8 KiB is a handle `{ path, bytes, head }` to the
+   workflow's volume, which the script reads through an effect if it needs the body. So 10,000 effects are a table
+   of a few hundred KB in a 24 MiB guest, not 10,000 bodies.
+3. A key not in the table is a **new effect**: the host records `pending` with `attempt: 1`, commits, then starts
+   it (an agent, a job, an inbox item, a timer). A start happens only after the commit, so a crash between the two
+   leaves a `pending` row the next step re-issues under the same `key:attempt`, which the delegation path dedupes.
+4. When every call the script has out is pending, the VM stops, as it does today for sub-agents. When the script
+   returns, the workflow completes with its return value (at most 1 MiB, saved to the workflow's volume).
+5. A step must fit the sandbox: replaying 10,000 journaled effects costs 10,000 table lookups and the script's own
+   logic between them, under the interrupt-poll budget. That is measured at 500 effects before the API is frozen
+   (phase 1), and the journal caps at 2,000 effects until it is.
 
-**Journal size.** An effect's recorded result is at most 64 KiB; a larger one is written to the workflow's volume
-(`/workflow/results/<key>`) and the script gets `{ path, bytes, head }`. A workflow may hold 10,000 effects by default
-(the tenant's `workflowMaxEffects`, up to 100,000). A step loads the journal from SQLite: 10,000 rows of a few KB in
-tens of milliseconds. Past 2,000 completed effects, a completed `phase()` whose effects are all terminal is
-**collapsed**: the runner keeps one row per effect with its result but skips re-validating keys inside it, and the
-script's replay inside the phase is a straight sequence of journal reads. This is the cost to measure first (see
-Open questions).
+**Effect keys.** The key of an effect is `opts.key` if given, else the hash of `(kind, canonical arguments)` plus an
+occurrence counter, so the third identical call outside any `parallel` is the third row. **Inside `parallel`, an
+effect must give an explicit `key`**: branches complete in any order, so an occurrence counter there would hand
+branch A the result branch B produced for the same arguments; the step faults `key_required` rather than guess.
+A prompt that embeds an earlier result changes when that result changes, and reruns; that is right. A prompt
+shared by a thousand items changes when its wording is edited, and all thousand would rerun; that is usually
+wrong, so any effect whose prompt is a template over an item gives an explicit key:
+`agent(review(file), { key: `review:${file}` })`. Each journal row carries `attempt`; the child's call id is
+`${key}:${attempt}`, and the delegation path's dedupe (`digest(run.id:callId)`, `delegation.ts:286`) sees a rerun
+as a new call. Without that, `resume({ rerun })` and abort-then-re-issue would return the stored child unchanged.
+Claude Code's resume keeps the longest unchanged prefix; keys are better because a loop that reorders its items, or
+a new stage inserted in the middle, keeps everything it already paid for.
 
-**Determinism faults.** A step whose effect keys diverge from the journal's committed order of the same phase (a
-script that depends on something unjournaled) fails the step with `nondeterministic_script`, names the key, pauses
-the workflow, and asks the owner. It never silently reruns.
+**Journal.** One SQLite table `effects(key, attempt, kind, status, child, request, hash, result, started, ended,
+cost, model, version)`, indexed by key and by status, so a step, a sweep or the items API never lists every row.
+A workflow may hold 2,000 effects in phase 1 (the tenant's `workflowMaxEffects`, raised to 10,000 once the replay
+measurement passes). `version` is the runner protocol version that wrote the row: the sandbox is a separately
+deployed script, so a runner rolled back to a version that cannot read a row faults `journal_version` and pauses,
+never `nondeterministic_script`.
+
+**Determinism faults.** A step whose effect keys diverge from the journal's committed order (a script that depends
+on something unjournaled) fails the step with `nondeterministic_script`, names the key, pauses the workflow, and
+asks the owner. It never silently reruns.
 
 ### Children and exactly-once
 
-`agent()` uses the delegation path, with the workflow as the parent:
+`agent()` uses the delegation path, with the workflow as the child's **owner**. Today five places in that path
+assume the owner is an agent (the push to `env.AGENTS.getByName(parent)`, `parentAgentId` in the child's header,
+the recursive chain-root walk in `reserveComputer`, the run-bound lineage signature, `agent_inputs.agent`). The
+choice was between making a workflow an agent kind and generalizing the parent. On the merits, the owner model
+wins: a workflow has no history, prompts, model, compaction or tools, and an agent kind without them would be
+special-cased in every agent path (admission, listing, billing, the console); the parent abstraction, by contrast,
+is five call sites that all want the same two fields. So:
 
-- An `agent_children` row (and on Workers the parent's child document) is written with `toolCallId = effect key`
-  before the child is prompted, so a re-issued effect finds the same child, as a resumed turn's `spawn_agent` does
-  today (`docs/guides/multi-agent.md`, Exactly once).
+| Owner model | |
+| --- | --- |
+| `Owner` | `{ kind: "agent" \| "workflow", id }`. Both kinds implement `receiveEnding(ending)`, `receiveProgress(report)`, `remainingBudget()`, `cancelChildren()` and `inbox` ownership. The Workers object for either is found by kind and id; on Node, by actor |
+| Child row | `children(owner_kind, owner_id, call_id, attempt, child_id, request_id, status, root_owner, chain, depth, max_depth, started, ended, cost)` in the owner's SQLite (Workers) or `agent_children` with the same columns (Node), indexed by `(owner, status)` and `(owner, call_id)` |
+| Chain | `root_owner` and `chain` are stored on the row when the child is made, by the runtime, and copied to the child's header as `owner`; nothing is recomputed by walking `agents`, and nothing is signed into prompt metadata. `reserveComputer` reads `root_owner` from the agent's header |
+| Call identity | `callId:attempt`; a rerun or an abort-then-re-issue bumps `attempt` and makes a new child. The workflow's `callId` is the effect key |
+| `DelegationHost` | Implemented by both objects; the workflow's `context()` returns its one run `wf_…:main` (steps are not runs), `remainingBudget()` is budget minus the ledger, `notify()` appends to the journal |
+
+Then:
+
+- The row is written before the child is prompted, so a re-issued effect finds the same child, as a resumed
+  turn's `spawn_agent` does today (`docs/guides/multi-agent.md`, Exactly once).
 - The child is a real agent: a definition's, or an inline one on the workflow's default model. It lives until the
   workflow ends or `ttlSeconds` passes, whichever is first, and its history is readable by id from the item.
-- Its ending is delivered to the workflow object by the node or object that ran it, and by the sweep otherwise; the
-  workflow takes each ending once, keyed by the child's request id.
+- **Endings are durable, for every owner.** The child writes its ending (and each progress report) to an
+  **outbox** in its own storage in the same transaction that records its run's outcome, and its alarm delivers it
+  to the owner's `receiveEnding` with backoff until the owner acknowledges; the owner's receive is idempotent on
+  `(child_id, request_id)`. There is no parent-side sweep and no push that can be lost: a hibernating workflow
+  hears every ending when the child's alarm reaches it. The `setTimeout` sweep and the fire-and-forget push are
+  deleted for agents too. Endings reach a parent agent as the same `child_<request>` notification they do today,
+  so camel-bots's builder sees no change in shape.
+- **No firehose.** A child pushes endings and progress only. A watcher that wants a child's live events subscribes
+  to the child by id; the SDK's `watch` with `subagents: true` does that itself, and `subagent_event` on the
+  parent's stream is removed, with the SDKs, the console and the docs changed in the same PR.
+- The workflow's bookkeeping is the indexed `effects` table joined to `children`, never a scan.
 - The child's chain root is the workflow. Its depth counts from there; `maxDepth` default 2 applies below it, so a
   child may delegate but its grandchildren may not. Children cannot start workflows.
 - The child's run spend limit is the workflow's remaining budget divided by free concurrency slots, as today's
@@ -202,17 +281,20 @@ the workflow, and asks the owner. It never silently reruns.
 - `files` mounts the workflow's volume (read-only by default) into the child beside its workspace; `layer` gives the
   child a private layer on a repository (Part 2). A child has no computer: `computer` is refused on `agent()`, and
   compute is a `job()` from the script or from the child's `jobs` builtin.
+- The one alarm of the workflow object multiplexes its timers, gate expiry and the step-rate guard; it needs no
+  sweep of children, because endings come to it.
 
-This is deliberately independent of #696's choice of child engine. In-object Pi children are the wrong shape for a
-workflow (one object's connection budget is 6–8 streams); the remote-child shape in #696 section 2 is exactly what
-`agent()` needs, and if that lands, `agent()` becomes a `RemoteChild` task owned by the workflow's effect. Until
-then, the existing child rows do the job.
+This is compatible with #696's remote-child shape (a child in its own object, owned by a Pi task): the owner
+model is what that design's `RemoteChild` would call, and the outbox is how its `childDone` callback should be
+delivered. In-object Pi children stay the wrong shape for a workflow (one object's connection budget is 6–8
+streams).
 
 ### Long waits, gates, timers
 
-A workflow that waits burns nothing: no isolate, no connection, no slot. On Workers the object hibernates; its alarm
-is armed only for the next timer or the step-rate window. A `gate()` is an inbox item (#752's `request_decision`,
-with `root` = the workflow and `lineage` = `[workflow]`), so it shows on `/inbox` with the workflow's name, carries
+A workflow that waits burns nothing: no isolate, no connection, no slot. On Workers the object hibernates; its one
+alarm is armed for the earliest of the next timer, gate expiry and the step-rate window. A `gate()` is an inbox
+item whose owner is the workflow (`owner_kind = "workflow"`; #752's `request_decision`, with `root` = the workflow
+and `lineage` = `[workflow]`), so it shows on `/inbox` with the workflow's name, carries
 attachments (a diff, a report in the workflow's volume) and a recommendation, and its answer is the event that runs
 the next step. A gate's default expiry is 7 days; `onExpire: "recommended"` applies the recommendation, else the
 workflow pauses with `waiting_on_gate`.
@@ -221,37 +303,44 @@ workflow pauses with `waiting_on_gate`.
 
 | Action | Effect |
 | --- | --- |
-| `POST /v1/workflows/:id/pause` | No new effects start. Running children and jobs go on (`{ children: "abort" }` stops them; their effects become `failed` and will be re-issued on resume) |
-| `PUT /v1/workflows/:id/script` | A new revision: `{ script, args? }`. The next step replays with it. Returns `{ revision, wouldRerun: n, wouldKeep: m }` computed by a dry replay, so the owner sees what an edit costs before it runs |
-| `POST /v1/workflows/:id/resume` | `{ rerun?: [keys or globs] }` marks those effects as pending and runs a step |
+| `POST /v1/workflows/:id/pause` | No new effects start. Running children and jobs go on (`{ children: "abort" }` stops them; their effects become `aborted` and are re-issued on resume under `attempt + 1`) |
+| `PUT /v1/workflows/:id/script` | A new revision: `{ script, args? }`. The next step replays with it. Phase 1 answers `{ revision }` and the items API then shows the key diff (keys kept, keys newly pending); the dry replay that predicts an edit's cost is phase 4 |
+| `POST /v1/workflows/:id/resume` | `{ rerun?: [exact keys] }` bumps those effects' `attempt` and runs a step; globs are phase 4 |
 | `POST /v1/workflows/:id/abort` | Aborts children and jobs, settles the ledger, keeps the journal readable |
 | `POST /v1/workflows/:id/budget` | Raises or lowers the cap. Lowering below spend pauses |
 
 The Bun story in these terms: two minutes into the port, children run `git stash` over each other. Here they
 cannot (Part 2). Hours in, reviewers accept stubs. The owner edits the reviewer prompt and adds a deterministic
-gate, `PUT …/script`; the dry replay says 1,210 reviews would rerun because the prompt changed; they keep their keys
-(`review:<file>`) so instead only unfinished and new items see the new prompt, and `resume({ rerun: ["review:*"] })`
-is the deliberate choice if the owner wants the old ones redone.
+gate, `PUT …/script`; the reviews keep their keys (`review:<file>`), so only unfinished and new items see the new
+prompt, and `resume({ rerun: [...keys] })` is the deliberate choice if the owner wants the old ones redone.
 
 ### Budget, spend and cache reporting
 
-- `budget.usd` is a hard cap. Children get their run spend limits from it; a job's compute is charged to it at the
-  provider's price; a step that would start an effect with no remaining budget pauses the workflow with
-  `budget_exhausted` and posts an inbox item to the owner with the numbers.
-- The ledger has one row per effect: child agent, model, input tokens, cached input tokens, output tokens, cost,
-  duration, result size. `GET /v1/workflows/:id` sums it: `spent.usd`, `cacheShare` (cached input over all input).
-  Bun's 72B cached against 5.9B uncached is a 92% cache share; a workflow whose share drops below 70% is doing
-  something wrong (prompts that do not share a prefix, or a definition that changes mid-run), and the page says so.
-- Usage records carry `workflow: wf_…` and `effectKey`, so `/v1/usage` and workspaces report per workflow.
-- Alerts at 50%, 80% and 100% of budget go to the owner (an agent owner gets a `<workflow_notification>`; a person
-  gets an inbox item and the tenant's webhook).
+- `budget.usd` is a hard cap enforced by the ledger, not a reservation: nothing in the runtime holds money for
+  longer than one call (`CreditHolds` are per call with a 10-minute expiry, `credit-holds.ts:7,33-41`; end-user
+  pools are daily, #784), so "hold the budget at start" does not exist and is not claimed. Children get their run
+  spend limits from what the ledger says is left; a job's compute is charged at the provider's price; a step that
+  would start an effect past the cap pauses the workflow with `budget_exhausted` and posts an inbox item to the
+  owner with the numbers.
+- **A payer running dry is a pause, not a null.** A child refused for credit (a 402, a tenant cap, a spend limit)
+  is not a failed effect that `.filter(Boolean)` would drop: the runner distinguishes refusal from failure, marks
+  the effect `refused`, and pauses the workflow with `payer_exhausted`. Resume re-issues it under the next attempt.
+- **Who pays.** A workflow bills the tenant that owns it. A workflow started for an end user records `endUser` for
+  attribution and keeps `budget.usd` as its explicit cap; it never draws on the end user's daily pool.
+- **The `workflows` builtin's default budget** is the least of its `maxBudgetUsd` setting, the agent's own remaining
+  `spendLimit`, and the tenant's `workflowBudgetCap`; a start above that becomes an inbox approval. An agent with a
+  $50 limit cannot start twenty $100 workflows because its prompter asked.
+- The ledger has one row per effect: child agent, model, served tier, input tokens, cached input tokens, output
+  tokens, cost, duration, result size. `GET /v1/workflows/:id` sums it as `spent`. Usage records carry
+  `workflow: wf_…` and `effectKey`, so `/v1/usage` and workspaces report per workflow. `cacheShare` on the page and
+  the 50% and 80% alerts are phase 4; phase 1 has the 100% pause only.
 
 ### Limits for 64 at once and thousands in all
 
 | Limit | Today | For workflows |
 | --- | --- | --- |
-| Script wall time | 60–120 s per code run | Per step, unchanged. A workflow has no wall limit but `ttlSeconds` |
-| Tool calls per script | 256, 32 in flight | Effects per workflow 10,000 (tenant max 100,000); in flight = `concurrency`, 1–64, at most the tenant's busy-agent limit minus 10% |
+| Script wall time | 60–120 s per code run; 10,000 interrupt polls; 24 MiB heap | Per step, unchanged. A workflow has no wall limit but `ttlSeconds` |
+| Tool calls per script | 256, 32 in flight, 8 MiB of results per exchange | The runner's own exchange: effects per workflow 2,000 in phase 1, 10,000 once replay is measured (tenant max 100,000); results stay host-side; in flight = `concurrency`, 1–64, at most the tenant's busy-agent limit minus 10% |
 | `delegate.maxParallel` | 4, max 64 | Not used; `concurrency` is the fan-out. A child's own `delegate` keeps its own `maxParallel` |
 | Busy agents | by tier | Unchanged; a workflow at 64 needs Tier 1 (250). The step refuses to start a child at the limit and retries at the next step rather than failing the effect |
 | A sub-agent's life | 1 day | The workflow's `ttlSeconds` |
@@ -264,10 +353,10 @@ at p50. Fine.
 
 ### Observability and the console
 
-`GET /v1/workflows/:id/items?phase=&status=&cursor=` lists effects: `{ key, kind, label, phase, status, agentId?,
-jobId?, startedAt, endedAt, costUsd, model, resultHead (500 chars), error? }`. `GET …/events` is SSE: `step`,
-`effect_started`, `effect_ended`, `gate_opened`, `budget_alert`, `paused`, `completed`. `GET …/stuck` lists running
-effects older than three times the phase's p95 or 30 minutes, with the child's latest `report_progress`.
+`GET /v1/workflows/:id/items?phase=&status=&cursor=` lists effects: `{ key, attempt, kind, label, phase, status,
+agentId?, jobId?, startedAt, endedAt, costUsd, model, resultHead (500 chars), error? }`. `GET …/events` is SSE:
+`step`, `effect_started`, `effect_ended`, `gate_opened`, `paused`, `completed`. `GET …/stuck` (phase 4) lists
+running effects older than three times the phase's p95 or 30 minutes, with the child's latest `report_progress`.
 
 The console page `/workflows/:id` shows the phase tree (Claude Code's progress tree, kept after the run), counts, the
 spend line with cache share, stuck items, the last 50 `log()` lines, each item's sample output and a link to the
@@ -299,7 +388,9 @@ So the runtime handles it: retry flex with backoff inside a bounded window, then
 that call. The window is a per-workflow setting (`flexWaitSeconds`, default 600: workflows are latency-tolerant;
 an ordinary agent's default is 30). A fallback is logged on the effect and in the ledger with its cost delta
 (`items[].tier: { requested: "flex", served: "default", deltaUsd }`), and what is recorded is the response's own
-`service_tier` field, which says which tier served, not what was asked.
+`service_tier` field, which says which tier served, not what was asked. None of this exists yet: phase 1 adds the
+`service_tier` parameter on the OpenRouter provider, the bounded retry, the per-workflow window, and the served
+tier on usage records and the ledger.
 
 **Agent types** are three small sets of behaviours and permissions, shipped as definitions a tenant can copy:
 
@@ -555,12 +646,13 @@ GET    /v1/workflows[?status=&owner=]
 GET    /v1/workflows/{id}                 status, counts, spent, phase, revision
 PUT    /v1/workflows/{id}/script          { script, args? } -> { revision, wouldRerun, wouldKeep }
 POST   /v1/workflows/{id}/pause | resume | abort | budget
-GET    /v1/workflows/{id}/items, /stuck, /events, /script?revision=
+GET    /v1/workflows/{id}/items, /events, /script?revision=      (/stuck in phase 4)
 POST   /v1/workflow-scripts               { name, script }   (saved scripts; `workflow(name)` and `saved` find them)
 ```
 
-SDK: `agents.runtime.workflows.start({ ... })` returns a handle with `status()`, `items()`, `events()`, `pause()`,
-`resume()`, `edit(script)`, `abort()`, `wait()`; Python mirrors it. The CLI gets `camelrun workflows start|status|edit|resume`.
+SDK (phase 4; phase 1 is REST only): `agents.runtime.workflows.start({ ... })` returns a handle with `status()`,
+`items()`, `events()`, `pause()`, `resume()`, `edit(script)`, `abort()`, `wait()`; Python mirrors it. The CLI gets
+`camelrun workflows start|status|edit|resume`.
 
 **An agent starts and steers one.** The `workflows` builtin (plural: the singular name belonged to the removed
 builtin and `rejectWorkflow` still refuses it, so old inputs keep failing loudly) gives the model
@@ -600,7 +692,8 @@ every shared-checkout hazard needed and never had.
 ### Layers instead of worktrees
 
 A layer is the agent's private view: its writes, over one base commit. A read looks in the layer, then the base
-tree. A layer costs the bytes of the files it changed, so 64 layers of a Bun-scale repository are a few MB in all;
+tree. (A volume fork pins its source blobs for 24 hours today, `files.ts:528-532`, which is a mistake for any
+fork that outlives a day; the pin's lifetime becomes the fork's, released when the fork is deleted.) A layer costs the bytes of the files it changed, so 64 layers of a Bun-scale repository are a few MB in all;
 the post's reason for not giving each Claude a worktree disappears. A child gets a layer as a mount:
 
 ```js
@@ -615,11 +708,15 @@ the "changed since you last read it" check. There is no shell, so there is no `g
 **Phase 1: layers from volume forks.** Everything above needs the repo object (phase 3). Phase 1 gets the same shape
 from what volumes do today: `volume.fork({ snapshot })` is metadata-only and shares content
 (`docs/guides/files.md`, Volumes), so a child's layer is a fork of the repository volume at a snapshot, mounted
-read-write at `/repo`. `layer.commit()` in phase 1 is the runner's: `changes(since)` on the fork, then each changed
-file written to the base volume with `{ version }` of the file at the fork's snapshot, so a file someone else
-changed since fails that path (no merge yet: the child reads the new version and edits again), then a snapshot of the
-base volume with the message as a label. That is a commit of named files, serialized by the base volume's owner,
-with no checkout anywhere. Push and pull are jobs in phase 1: `job({ snapshot: "git-base", command: "camel-sync
+read-write at `/repo`. `layer.commit()` in phase 1 is a `commit` effect over a new volume operation,
+`POST /v1/volumes/:id/commit { files: [{ path, version, key }], snapshot?: { name, labels } }`: inside the volume
+object, one SQLite transaction checks every path's version and writes every file, or writes nothing and answers
+`{ conflicts: [{ path, headVersion }] }`; a snapshot is taken in the same transaction on success. Today's writes
+land file by file (`volume.ts:342-358`), which is right for a single write and wrong for a commit, and a lock
+outside the object would only serialize what the object already serializes. The effect reads `changes(since)` on
+the fork, sends the batch, and on a conflict answers `{ conflicts: [{ path, headVersion, ours, theirs }] }` for
+the fix stage. The child's fork is kept until its commit effect settles, so the fix stage edits the same fork and
+no paid effect is repeated for a conflict. That is an atomic commit of named files with no checkout anywhere. Push and pull are jobs in phase 1: `job({ snapshot: "git-base", command: "camel-sync
 /repo --at <snapshot> && git add -A && git commit -m … && git push" })` with the GitHub egress token the job's
 definition grants, as a computer's `git push` gets it today. `grep` keeps today's bounds (1,000 files, 32 MiB), so
 phase 1 children search with `glob` narrowed to their area, and a workflow that needs a whole-tree search runs
@@ -724,7 +821,9 @@ limit) so 64 editors never become 64 compilers.
 **Jobs are a runtime primitive, not a workflow global.** `POST /v1/jobs { snapshot, at, command, outputs, limits,
 timeoutSeconds }` and `GET /v1/jobs/{id}` exist on their own, the workflow's `job()` is one effect over them, and
 ordinary agents get a `jobs` builtin (`job_run`, `job_status`, `job_output`) so an agent that today holds a computer
-to run tests can instead run a job and hold nothing. Recommend yes, for every agent: a coding agent in Slack that
+to run tests can instead run a job and hold nothing. In phase 1 only the workflow's `job()` ships, on the
+Cloudflare driver, and that driver is **pilot-only** until the `containers` block reaches `wrangler.jsonc` (today it
+is in `wrangler.pilot.jsonc` alone); the public route and the builtin are phase 4. Recommend yes, for every agent: a coding agent in Slack that
 answers "do the tests pass?" is better served by a 40 s job from a warm snapshot than by a machine it keeps warm for
 hours, and the same snapshot, `camel-sync` and limits serve both. Computers remain for agents whose work is the
 machine: an interactive shell session, a browser, a person's managed computer. A job is a `computer_connections`
@@ -839,7 +938,8 @@ stand-in for this.
 | --- | --- |
 | A workflow that never ends | `ttlSeconds` (30 days default), `budget.usd` hard cap, `maxEffects` (10,000), the step-rate guard (5,000 steps an hour) |
 | A script that spawns thousands of agents at once | `concurrency` ≤ 64 and ≤ the tenant's busy agents; past it, effects wait for a slot rather than fail; a child that cannot be started in 10 minutes becomes `failed` |
-| A runaway budget from an agent owner | The `workflow` builtin's `maxBudgetUsd`; above it, an inbox approval. The agent's own `spendLimit` does not cap the workflow; the approval does |
+| A runaway budget from an agent owner | The `workflows` builtin's default budget is the least of its `maxBudgetUsd`, the agent's remaining `spendLimit` and the tenant's `workflowBudgetCap`; above it, an inbox approval |
+| A payer running dry mid-run | A refused child is `refused`, not `null`: the workflow pauses with `payer_exhausted` and resumes under the next attempt. End-user-started workflows bill the tenant under their explicit cap |
 | Children of children | `maxDepth` 2 below the workflow; children cannot start workflows; `camelrun/spawn` directives from a child count as its own children |
 | A loop with no progress | Ten consecutive failed effects of one key pattern pause the workflow with a message, as monitors stop at 10 errors |
 | Nondeterministic scripts | Faulted and paused, never silently rerun |
@@ -847,7 +947,8 @@ stand-in for this.
 | An agent holding compute for a swarm | A workflow child has no `computer` tool and no `computer: "share" | "fork" | "fresh"`: its compute is jobs, and `job()` from a child counts against the workflow's `jobConcurrency` |
 | Repository abuse | A repo object takes 100,000 files and 2 GB of text in SQLite; larger trees keep only the index resident and read blobs from the chunk store; layers are capped at 10,000 changed paths |
 | Pushing to GitHub | Only to the repositories and permissions the App grant names, with tokens the model never sees; `repo.push` to a protected branch fails as GitHub says |
-| Cost visibility | The ledger, alerts at 50/80/100%, `cacheShare`, and `/v1/usage` by workflow. Prepaid tenants hold budget against credit at start and settle per effect |
+| Cost visibility | The ledger and `/v1/usage` by workflow; the 100% pause in phase 1, `cacheShare` and the 50/80% alerts in phase 4. No budget is reserved at start: credit holds are per call, so the ledger is the cap |
+| Rollout | `WorkflowObject` ships under a `new_sqlite_classes` migration tag; journal rows and the runner protocol carry `version`; a rollback that cannot read rows faults `journal_version` and pauses. Column drops (`parentAgentId`, `agent_inputs.agent`) are expand/contract across two deploys; no compatibility shims otherwise |
 | Tenant-wide | A tenant's running workflows ≤ 20 (operator-set), effects a minute ≤ the tenant's runs a minute |
 
 Billing: a workflow is a line in usage like an agent, with its children's model calls, its jobs' compute and its
@@ -858,18 +959,33 @@ provider's, storage as volumes are.
 
 ### MVP cut
 
-The MVP is the workflow object plus `job()`, on Workers, with no machine held by anyone: the replay runner with
-`agent`, `parallel`, `pipeline`, `gate`, `sleep`, `log`, `phase`, keys and journal, pause/edit/resume, budget and
-ledger, the items API and a plain console page; `POST /v1/jobs` with the `JobDriver` seam and the Cloudflare
-Containers driver only (Bun-class builds wait for our hosts in phase 2), `camel-sync`, limits and outputs; and
-children editing on per-child volume forks with the phase-1 commit (Part 2, "Phase 1: layers from volume forks").
-Workers only; `fast` is `muse-ember` and `strong` is Gemini 4 Carbon on flex, as decided above. The review loop runs on a real repository from day one: implementers and fixers edit
-forks, reviewers read them, commits land on the base volume by version check, and one job per round runs the
-typecheck and tests and pushes.
+The MVP is the workflow object plus a workflow-internal `job()`, on Workers, with no machine held by anyone, built
+as an ordered PR stack whose first half fixes delegation for every product:
 
-The compromise is in phase 1's commit and search, not in its compute: a conflicting file fails the commit instead
-of merging (the child re-reads and edits again), `grep` stays within today's bounds (an `rg` job covers the whole
-tree), and push is a job rather than the object's own pack. None of these puts a VM back in the path.
+| PR | Delivers | Weeks |
+| --- | --- | --- |
+| 1. Owner model (expand) | `Owner` type; `children` SQLite table on Workers and the new columns on `agent_children`; `root_owner`/`chain` stored at creation; `reserveComputer` reads the root from the header; lineage signing deleted; `owner_kind`/`owner_id` on `agent_inputs` backfilled from `agent`; old columns still written | 2 |
+| 2. Durable endings | Child outbox rows and alarm delivery; `receiveEnding`/`receiveProgress` on agent objects; the fire-and-forget push, the `setTimeout` sweep and the `subagent_event` relay deleted; SDK `watch` follows children by id; console and docs | 2 |
+| 3. Attempted call ids | `callId:attempt` in delegation identity; contract tests | 0.5 |
+| 4. Exchange parameters | `caps` and `results: "inline" \| "handle"` on the code-mode exchange; code mode passes today's values; a 500-effect replay harness | 1 |
+| 5. Atomic volume commit, fork pins | `POST /v1/volumes/:id/commit`; fork pins live with the fork | 1 |
+| 6. Contract deploy | Drop `parentAgentId`/`parentRunId` and `agent_inputs.agent` once no node writes them | 0.5 (overlaps) |
+| 7. `WorkflowObject` | `new_sqlite_classes`; the runner on pi-codemode's stop-and-replay through its own exchange; the `effects` table (`key`, `attempt`, `version`); `agent`, `parallel` (explicit keys inside it), `gate` through the workflow's inbox, `sleep`, `log`, `phase`; pause, edit (new revision, key diff in the items API), resume with exact-key reruns, abort; the budget pause and `payer_exhausted`; the one alarm; items and events APIs; a plain console page; the `workflows` builtin with its bounded default budget | 3 |
+| 8. Jobs and classes | `job()` on the `JobDriver` seam with the Cloudflare Containers driver (pilot-only until `containers` reaches `wrangler.jsonc`; Bun-class builds wait for our hosts in phase 2), `camel-sync`, limits, outputs; children on per-child volume forks with the atomic commit; the three types as definitions; `strong` and `fast` as route names with the flex plumbing | 2 |
+
+That is 10 weeks sequential, about 8 with two people on it, since PRs 4–5 are independent of 1–3. `fast` is
+`muse-ember` and `strong` is Gemini 4 Carbon on flex, as decided above. The review loop runs on a real
+repository from day one: workers edit forks, critics read them, commits land on the base volume atomically, and
+one job per round runs the typecheck and tests and pushes.
+
+Cut from phase 1, into phase 4: `pipeline` (write `parallel` over per-item functions), the dry-replay `wouldRerun`,
+`rerun` globs, phase collapse, cache-prefix warming and `cacheShare`, event coalescing, `GET /stuck`, the public
+`POST /v1/jobs` and the `jobs` builtin, the SDK and CLI surface, and the 50% and 80% alerts.
+
+The compromise is in phase 1's commit and search, not in its compute: a conflicting file stops the commit instead
+of merging (the fix stage gets the conflict and edits the same fork), `grep` stays within today's bounds (an `rg`
+job covers the whole tree), and push is a job rather than the object's own pack. None of these puts a VM back in
+the path.
 
 Dogfood 1: camelCode runs the review loop over the 40-odd files of `backends/workers/src/delegation*` for a refactor
 we want anyway, 8 at once, with the lead in Slack, one typecheck-and-test job per round. Measure: steps, replay time
@@ -880,20 +996,23 @@ conflicts per commit, and cost against the same work done by one agent on a comp
 
 | Phase | Weeks | Delivers | Dogfood |
 | --- | --- | --- | --- |
-| 1. Workflow object and jobs | 4 | `WorkflowObject`, runner, journal, keys, `agent()`, `parallel`, `pipeline`, `gate`, `sleep`, pause/edit/resume, budget, ledger, items API, console page, `workflows` builtin, the three agent types as definitions and the `fast`/`strong` classes as virtual models with the `classes` map and per-call pin (`auto` follows in phase 4); `POST /v1/jobs` with the `JobDriver` seam and the Cloudflare Containers driver only, `camel-sync`, limits, outputs, `jobConcurrency`; `strong`'s flex handling and fallback logging; children on volume forks with the phase-1 commit and `layer` on `agent()`; contract tests. Workers only. The Nitro Sandboxes spike on `r8gd.4xlarge` runs in parallel | camelCode review loop on a chiridion refactor: 8–16 children editing forks, one typecheck-and-test job per round on Cloudflare, push by job; the same run twice, workers on `strong` against `fast`, as the first class eval |
+| 1. Delegation fixes, then the workflow object and jobs | 8–10 | The PR stack above: owner model and durable endings for every product, attempted call ids, exchange parameters, the atomic volume commit, the contract deploy; then `WorkflowObject` with `agent`, `parallel`, `gate`, `sleep`, the journal, the budget pause, the items and events APIs, the console page and the `workflows` builtin; then `job()` on the Cloudflare driver (pilot), volume-fork editing, the three types and the `fast`/`strong` routes with flex. Workers only | camelCode review loop on a chiridion refactor on the pilot: 8–16 children editing forks, one typecheck-and-test job per round, push by job; the same run twice, workers on `strong` against `fast`, as the first class eval |
 | 2. Our job hosts | 4 | The Graviton host image (Nitro Sandboxes enabled, Firecracker v1.18 in direct mode, `io_engine: "Async"`, base rootfs with `quiet`, netns/tap pool, nftables, no IMDS), the host agent, `job_hosts` registration and placement, XFS reflink clones of NVMe snapshots pulled from S3, `saveSnapshot` to S3, the ASG with a dedicated `r8gd` build pool (one pre-started build sandbox per host, nothing else on the host) and a `c8gd` spot test pool scaled on queue depth, lease sweeps and retry by key on host loss | The same loop with jobs on our hosts, Bun-class builds included. Targets from the spike: build overhead ≤ 2%, test-shard start p50 ≤ 2.5 s at 32 parallel, build-sandbox start ≤ 7 s on an idle host, cost per job against Cloudflare |
 | 3. Repositories | 4 | `kind: "repo"` volumes, the repo object, layer rows, commit with three-way merge, `diff`, `branch`, `merge`, the trigram index behind `grep`, import job, push and pull through the GitHub App from the object | The loop at 32 children, commits of one file at a time onto one branch, whole-tree `grep` from the object, one push a phase |
-| 4. Queues and scale | 3 | `queue()`, sharded tests on the spot pool, the `jobs` builtin for ordinary agents, `/stuck`, alerts, phase collapse in the journal, 10,000 effects, saved patterns | A compile-error work queue on a Rust or TypeScript repository of ours: 64 fixers, 8 builds on `r8gd`, 32 shards on `c8gd`, a snapshot refreshed per crate |
+| 4. Queues and scale | 4 | `queue()`, `pipeline`, sharded tests on the spot pool, the public `POST /v1/jobs` and the `jobs` builtin for ordinary agents, the SDK and CLI, `/stuck`, the 50/80% alerts, `cacheShare` and prefix warming, the dry-replay `wouldRerun` and `rerun` globs, event coalescing, phase collapse in the journal, 10,000 effects, `auto`, saved patterns | A compile-error work queue on a Rust or TypeScript repository of ours: 64 fixers, 8 builds on `r8gd`, 32 shards on `c8gd`, a snapshot refreshed per crate |
 | 5. Bun-shaped run | 3 | Docs, the class and `auto` eval harness, the menu's first per-strength evals | A full Bun-shaped run on a public repository, measured against the post's numbers: cost, cache share, wall time, conflicts, jobs per hour |
 | Later | — | Node parity through the shared runner, when a Node tenant needs workflows | — |
 
 ### Open questions
 
-1. **Replay cost at 10,000 effects.** The design assumes a step replays in well under 2 s CPU with phase collapse.
-   Measure in phase 1 with synthetic journals before phase 4; the fallback is checkpointing the script's heap, which
-   v8-exec does not do today.
-2. **Child engine.** #696 is on hold. The workflow needs remote children either way; if Pi-owned children land, the
-   `RemoteChild` task replaces the `agent_children` row for workflows too. Decide before phase 4, not before phase 1.
+1. **Replay cost in the QuickJS sandbox.** A step replays under a 10,000 interrupt-poll budget in a 24 MiB heap,
+   with results host-side. Phase 1 measures a synthetic 500-effect journal before the API is frozen and caps the
+   journal at 2,000 until 10,000 is shown to fit; the fallbacks are phase collapse (phase 4) and, if that is not
+   enough, a V8 sandbox for the runner alone, which the QuickJS removal on Node (`tenants.ts:63`) suggests is the
+   direction anyway.
+2. **Child engine.** #696 is on hold. The owner model and the outbox are what its remote-child shape needs, so it
+   can land on top of PRs 1–2 without undoing them; whether the `children` row then becomes a Pi task document is
+   decided with #696, before phase 4.
 3. **History.** v1 imports no git history and serves `log`/`blame` from GitHub. Is that enough for critics, or do
    they need `git log -p` on the file they review? If so, the import job keeps a shallow history of N commits.
 4. **isomorphic-git in a Durable Object at Bun scale.** Pack building for a few hundred files is fine; a first push
