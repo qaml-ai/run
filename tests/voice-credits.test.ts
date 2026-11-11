@@ -142,3 +142,24 @@ test("with the runtime's end-user credits: a call's responses are held, posted t
   await assert.rejects(a.voice.create("alice", { discord: discordGrant({ guildId: "100000000000000067" }), subject: "ada", bucket: "bot:7" }),
     (error: HttpError) => error.status === 402 && error.code === "END_USER_CREDIT" && error.details?.reason === "balance");
 });
+
+
+test("voice uses the shared bot allowance and ends on budget after another bot spends it", async t => {
+  let credits: EndUserCredits;
+  const credit: VoiceCredit = { refusal: (...args) => credits.refusal(...args), hold: (...args) => credits.hold(...args) };
+  const cluster = await voiceCluster(t, { credit });
+  credits = new EndUserCredits(cluster.db);
+  await credits.setSettings("alice", { enabled: true, sharedAllowances: { "bot:*": 100_000 } });
+  const { a, created, turn } = await liveSession(cluster, { subject: "ada", bucket: "bot:voice" });
+  await turn();
+  await until(async () => (await credits.get("alice", "ada")).today.pools[0].allowanceSpent === 40_000, "voice settled to the pool");
+  await credits.charge("alice", "ada", "bot:text", 60_000, "other-bot");
+  speak(cluster.fake.open()[0], "400000000000000004", 0.6);
+  await until(async () => (await a.voice.get("alice", created.id)).state === "ended", "shared pool exhaustion ends voice");
+  const session = await a.voice.get("alice", created.id);
+  assert.deepEqual([session.endReason, session.limit, session.endUserReason], ["budget", "end_user", "balance"]);
+  const user = await credits.get("alice", "ada");
+  assert.equal(user.balance, 0);
+  assert.equal(user.today.pools[0].allowanceSpent, 100_000);
+  assert.deepEqual(user.today.buckets.map(row => [row.bucket, row.allowanceSpent]), [["bot:text", 60_000], ["bot:voice", 40_000]]);
+});
