@@ -26,7 +26,8 @@ export async function stageEnding(runtime: AgentRuntime, tx: DurableObjectTransa
   if (!owner) return false;
   const ended = { ...record, state: "completed" as const, outcome: (outcome ?? record.outcome) as RequestRecord["outcome"] };
   await runtime.outbox.stageEnding(tx, owner, { agentId: conf.id, requestId: record.id, record: ended as never });
-  await tx.put(reqKey(record.id), { ...record, endingStaged: true } satisfies RequestRecord);
+  const current = await tx.get<RequestRecord>(reqKey(record.id));
+  if (current) await tx.put(reqKey(record.id), { ...current, endingStaged: true } satisfies RequestRecord);
   return true;
 }
 
