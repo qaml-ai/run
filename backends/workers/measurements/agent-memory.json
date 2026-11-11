@@ -1,0 +1,824 @@
+{
+ "note": "benchmarks/agent-memory/run.ts results without per-second samples; see docs/memory-benchmark.md. MB are RSS (Postgres: PSS). Files before the workerd-proxy split (workers-100.json) count Wrangler's dev proxy inside workerd.",
+ "runs": [
+  {
+   "backend": "celld",
+   "agents": 10,
+   "turns": 3,
+   "concurrency": 50,
+   "code": false,
+   "startedAt": "2026-11-11T21:19:23.202Z",
+   "preStartMB": 0,
+   "startupMs": 15237,
+   "baselineMB": 294.203125,
+   "created": 10,
+   "createdMB": 735.69140625,
+   "codeResults": {
+    "ok": 1,
+    "failed": 0
+   },
+   "turnErrors": 9,
+   "firstTurnError": "Error: prompt 503 {\"code\":\"UNAVAILABLE\",\"error\":\"Backend operation failed\"}",
+   "turnsWallMs": 56026,
+   "cpuSecondsPerTurn": {
+    "server": 0,
+    "workerd": 0,
+    "celld": 1.2847619047619045,
+    "v8-exec": 0,
+    "postgres": 0.04619047619047749
+   },
+   "peakMB": 742.6953125,
+   "peakPostgresMB": 517.984375,
+   "residentMB": 640.35546875,
+   "residentDetail": {
+    "harness": 119.71484375,
+    "postgres": 246.76171875,
+    "celld": 637.54296875
+   },
+   "residentProcesses": [
+    {
+     "pid": 117732,
+     "group": "celld",
+     "mb": 33,
+     "cmd": "celld dev /home/sprite/rt/benchmarks/agent-memory/celld/wrangler.jsonc --port 42337 --host 127.0.0.1 --no-watch --logs "
+    },
+    {
+     "pid": 117786,
+     "group": "celld",
+     "mb": 605,
+     "cmd": "/home/sprite/.local/lib/celld/releases/v0.6.3/celld --no-control-plane --bucket celld-dev --listen 127.0.0.1:42337 --internal-listen 127.0.0.1:0 "
+    }
+   ],
+   "marginalMBPerAgent": 34.615234375,
+   "idleMB": 262.0703125,
+   "idleDetail": {
+    "harness": 116.96875,
+    "postgres": 246.76953125,
+    "celld": 263.0625
+   },
+   "postgresIdleMB": 246.76953125,
+   "file": "celld-10-nocode.json"
+  },
+  {
+   "backend": "celld",
+   "agents": 10,
+   "turns": 3,
+   "concurrency": 50,
+   "startedAt": "2026-11-11T20:07:47.133Z",
+   "preStartMB": 0,
+   "startupMs": 6299,
+   "baselineMB": 309.6796875,
+   "created": 10,
+   "createdMB": 787.71875,
+   "codeResults": {
+    "ok": 11,
+    "failed": 0
+   },
+   "turnErrors": 0,
+   "turnsWallMs": 23553,
+   "cpuSecondsPerTurn": {
+    "server": 0,
+    "workerd": 0,
+    "celld": 0.9639999999999999,
+    "v8-exec": 0,
+    "postgres": 0.03799999999999999
+   },
+   "peakMB": 789.96484375,
+   "peakPostgresMB": 619.81640625,
+   "residentMB": 771.95703125,
+   "residentDetail": {
+    "harness": 120.15625,
+    "postgres": 266.13671875,
+    "celld": 772.11328125
+   },
+   "residentProcesses": [
+    {
+     "pid": 16788,
+     "group": "celld",
+     "mb": 35,
+     "cmd": "celld dev /home/sprite/rt/benchmarks/agent-memory/celld/wrangler.jsonc --port 37765 --host 127.0.0.1 --no-watch --logs "
+    },
+    {
+     "pid": 16855,
+     "group": "celld",
+     "mb": 737,
+     "cmd": "/home/sprite/.local/lib/celld/releases/v0.6.3/celld --no-control-plane --bucket celld-dev --listen 127.0.0.1:37765 --internal-listen 127.0.0.1:0 "
+    }
+   ],
+   "marginalMBPerAgent": 46.227734375,
+   "idleMB": 378.6953125,
+   "idleDetail": {
+    "harness": 124.3359375,
+    "postgres": 266.140625,
+    "celld": 369.8046875
+   },
+   "postgresIdleMB": 266.140625,
+   "file": "celld-10.json"
+  },
+  {
+   "backend": "celld",
+   "agents": 100,
+   "turns": 3,
+   "concurrency": 10,
+   "code": true,
+   "startedAt": "2026-11-11T20:45:23.574Z",
+   "preStartMB": 0,
+   "startupMs": 107210,
+   "baselineMB": 300.3515625,
+   "created": 100,
+   "createdMB": 1007.4765625,
+   "codeResults": {
+    "ok": 15,
+    "failed": 32,
+    "sample": "Script failed\nWall time 3.7 seconds\nOutput:\n\nScript error:\nScript sandbox failed: Remote sandbox returned before the script settled\n\nNo tool calls were made."
+   },
+   "turnErrors": 195,
+   "firstTurnError": "Error: prompt 500 {\"error\":\"Backend operation failed\",\"code\":\"INTERNAL\"}",
+   "turnsWallMs": 959454,
+   "cpuSecondsPerTurn": {
+    "server": 0,
+    "workerd": 0,
+    "celld": -0.5819047619047618,
+    "v8-exec": 0,
+    "postgres": 0.1201904761904761
+   },
+   "peakMB": 1294.31640625,
+   "peakPostgresMB": 10427.9609375,
+   "residentMB": 0,
+   "residentDetail": {
+    "postgres": 244.43359375,
+    "harness": 124.6484375
+   },
+   "residentProcesses": [],
+   "marginalMBPerAgent": -3.003515625,
+   "idleMB": 0,
+   "idleDetail": {
+    "postgres": 244.69140625,
+    "harness": 124.796875
+   },
+   "postgresIdleMB": 244.69140625,
+   "file": "celld-100-c10.json"
+  },
+  {
+   "backend": "celld",
+   "agents": 100,
+   "turns": 3,
+   "concurrency": 50,
+   "startedAt": "2026-11-11T20:22:36.811Z",
+   "preStartMB": 0,
+   "startupMs": 9457,
+   "baselineMB": 301.90234375,
+   "created": 100,
+   "createdMB": 1037.7265625,
+   "codeResults": {
+    "ok": 6,
+    "failed": 12,
+    "sample": "Script failed\nWall time 0.7 seconds\nOutput:\n\nScript error:\nScript sandbox failed: Remote sandbox returned before the script settled\n\nNo tool calls were made."
+   },
+   "turnErrors": 290,
+   "firstTurnError": "Error: prompt 503 {\"code\":\"UNAVAILABLE\",\"error\":\"Backend operation failed\"}",
+   "turnsWallMs": 1092785,
+   "cpuSecondsPerTurn": {
+    "server": 0,
+    "workerd": 0,
+    "celld": 82.625,
+    "v8-exec": 0,
+    "postgres": 1.3990000000000005
+   },
+   "peakMB": 1319.8046875,
+   "peakPostgresMB": 4232.79296875,
+   "residentMB": 1288.8515625,
+   "residentDetail": {
+    "harness": 117.6796875,
+    "postgres": 1640.5703125,
+    "celld": 1289.9453125
+   },
+   "residentProcesses": [
+    {
+     "pid": 48834,
+     "group": "celld",
+     "mb": 21,
+     "cmd": "celld dev /home/sprite/rt/benchmarks/agent-memory/celld/wrangler.jsonc --port 44201 --host 127.0.0.1 --no-watch --logs "
+    },
+    {
+     "pid": 48899,
+     "group": "celld",
+     "mb": 1270,
+     "cmd": "/home/sprite/.local/lib/celld/releases/v0.6.3/celld --no-control-plane --bucket celld-dev --listen 127.0.0.1:44201 --internal-listen 127.0.0.1:0 "
+    }
+   ],
+   "marginalMBPerAgent": 9.8694921875,
+   "idleMB": 813.44921875,
+   "idleDetail": {
+    "harness": 107.34765625,
+    "postgres": 1871.8984375,
+    "celld": 785.70703125
+   },
+   "postgresIdleMB": 1871.8984375,
+   "file": "celld-100.json"
+  },
+  {
+   "backend": "node",
+   "agents": 10,
+   "turns": 3,
+   "concurrency": 50,
+   "startedAt": "2026-11-11T20:00:38.963Z",
+   "preStartMB": 0,
+   "startupMs": 28902,
+   "baselineMB": 217.55078125,
+   "created": 10,
+   "createdMB": 202.03125,
+   "codeResults": {
+    "ok": 11,
+    "failed": 0
+   },
+   "turnErrors": 0,
+   "turnsWallMs": 2360,
+   "cpuSecondsPerTurn": {
+    "server": 0.079,
+    "workerd": 0,
+    "celld": 0,
+    "v8-exec": 0,
+    "postgres": 0.054666666666666655
+   },
+   "peakMB": 230.82421875,
+   "peakPostgresMB": 590.25390625,
+   "residentMB": 230.90625,
+   "residentDetail": {
+    "harness": 145.171875,
+    "postgres": 592.07421875,
+    "server": 230.91796875
+   },
+   "residentProcesses": [
+    {
+     "pid": 14404,
+     "group": "server",
+     "mb": 231,
+     "cmd": "/home/sprite/.node22/bin/node --experimental-strip-types --disable-warning=ExperimentalWarning /home/sprite/rt/src/server.ts "
+    }
+   ],
+   "marginalMBPerAgent": 1.335546875,
+   "idleMB": 197.84765625,
+   "idleDetail": {
+    "harness": 145.2265625,
+    "postgres": 369.9296875,
+    "server": 197.84765625
+   },
+   "postgresIdleMB": 369.9296875,
+   "file": "node-10.json"
+  },
+  {
+   "backend": "node",
+   "agents": 100,
+   "turns": 3,
+   "concurrency": 50,
+   "startedAt": "2026-11-11T20:11:34.987Z",
+   "preStartMB": 0,
+   "startupMs": 14816,
+   "baselineMB": 184.98046875,
+   "created": 100,
+   "createdMB": 251.19140625,
+   "codeResults": {
+    "ok": 101,
+    "failed": 0
+   },
+   "turnErrors": 0,
+   "turnsWallMs": 16883,
+   "cpuSecondsPerTurn": {
+    "server": 0.061266666666666664,
+    "workerd": 0,
+    "celld": 0,
+    "v8-exec": 0,
+    "postgres": 0.05063333333333335
+   },
+   "peakMB": 437.109375,
+   "peakPostgresMB": 696.53515625,
+   "residentMB": 441.23828125,
+   "residentDetail": {
+    "harness": 187.3046875,
+    "postgres": 696.93359375,
+    "server": 441.24609375
+   },
+   "residentProcesses": [
+    {
+     "pid": 19345,
+     "group": "server",
+     "mb": 441,
+     "cmd": "/home/sprite/.node22/bin/node --experimental-strip-types --disable-warning=ExperimentalWarning /home/sprite/rt/src/server.ts "
+    }
+   ],
+   "marginalMBPerAgent": 2.562578125,
+   "idleMB": 238.58984375,
+   "idleDetail": {
+    "harness": 153.6328125,
+    "postgres": 402.06640625,
+    "server": 238.58984375
+   },
+   "postgresIdleMB": 402.06640625,
+   "file": "node-100.json"
+  },
+  {
+   "backend": "node",
+   "agents": 1000,
+   "turns": 3,
+   "concurrency": 50,
+   "code": true,
+   "startedAt": "2026-11-11T21:24:04.109Z",
+   "preStartMB": 0,
+   "startupMs": 21638,
+   "baselineMB": 216.93359375,
+   "created": 1000,
+   "createdMB": 519.44140625,
+   "codeResults": {
+    "ok": 1001,
+    "failed": 0
+   },
+   "turnErrors": 0,
+   "turnsWallMs": 165012,
+   "cpuSecondsPerTurn": {
+    "server": 0.059686666666666666,
+    "workerd": 0,
+    "celld": 0,
+    "v8-exec": 0,
+    "postgres": 0.05501999999999998
+   },
+   "peakMB": 1317.47265625,
+   "peakPostgresMB": 1312.171875,
+   "residentMB": 1309.5078125,
+   "residentDetail": {
+    "harness": 325.9921875,
+    "postgres": 1247.203125,
+    "server": 1309.5078125
+   },
+   "residentProcesses": [
+    {
+     "pid": 120016,
+     "group": "server",
+     "mb": 1310,
+     "cmd": "/home/sprite/.node22/bin/node --experimental-strip-types --disable-warning=ExperimentalWarning /home/sprite/rt/src/server.ts "
+    }
+   ],
+   "marginalMBPerAgent": 1.09257421875,
+   "idleMB": 799.07421875,
+   "idleDetail": {
+    "harness": 238.796875,
+    "postgres": 514.046875,
+    "server": 799.08203125
+   },
+   "postgresIdleMB": 514.046875,
+   "file": "node-1000-c50.json"
+  },
+  {
+   "backend": "node",
+   "agents": 300,
+   "turns": 3,
+   "concurrency": 50,
+   "code": true,
+   "startedAt": "2026-11-11T22:10:06.744Z",
+   "preStartMB": 0,
+   "startupMs": 9647,
+   "baselineMB": 218.95703125,
+   "created": 300,
+   "createdMB": 312.6953125,
+   "codeResults": {
+    "ok": 301,
+    "failed": 0
+   },
+   "turnErrors": 0,
+   "turnsWallMs": 47007,
+   "cpuSecondsPerTurn": {
+    "server": 0.057466666666666666,
+    "workerd": 0,
+    "celld": 0,
+    "v8-exec": 0,
+    "postgres": 0.050211111111111074
+   },
+   "peakMB": 579.05859375,
+   "peakPostgresMB": 890.3125,
+   "residentMB": 581.2890625,
+   "residentPeakMB": 581.29296875,
+   "peakMBPerAgent": 1.2077864583333333,
+   "residentDetail": {
+    "harness": 205.95703125,
+    "postgres": 885.84375,
+    "server": 581.29296875
+   },
+   "residentProcesses": [
+    {
+     "pid": 406000,
+     "group": "server",
+     "mb": 581,
+     "cmd": "/home/sprite/.node22/bin/node --experimental-strip-types --disable-warning=ExperimentalWarning /home/sprite/rt/src/server.ts "
+    }
+   ],
+   "marginalMBPerAgent": 1.2077734375,
+   "idleMB": 356.76953125,
+   "idleDetail": {
+    "harness": 165.43359375,
+    "postgres": 939.8046875,
+    "server": 356.76953125
+   },
+   "postgresIdleMB": 939.8046875,
+   "file": "node-300-touch.json"
+  },
+  {
+   "backend": "workers",
+   "agents": 10,
+   "turns": 3,
+   "concurrency": 50,
+   "code": true,
+   "startedAt": "2026-11-11T21:06:57.696Z",
+   "preStartMB": 0,
+   "startupMs": 221131,
+   "baselineMB": 306.53515625,
+   "created": 10,
+   "createdMB": 318.58984375,
+   "codeResults": {
+    "ok": 11,
+    "failed": 0
+   },
+   "turnErrors": 0,
+   "turnsWallMs": 9746,
+   "cpuSecondsPerTurn": {
+    "server": 0,
+    "workerd": 0.31666666666666665,
+    "celld": 0,
+    "v8-exec": 0,
+    "postgres": 0.022999999999999923
+   },
+   "peakMB": 444.6171875,
+   "peakPostgresMB": 823.6953125,
+   "residentMB": 458.80859375,
+   "residentDetail": {
+    "postgres": 246.765625,
+    "harness": 121.4296875,
+    "wrangler": 321.09765625,
+    "esbuild": 732.83984375,
+    "workerd-proxy": 92.55078125,
+    "workerd": 458.74609375
+   },
+   "residentProcesses": [
+    {
+     "pid": 93650,
+     "group": "wrangler",
+     "mb": 321,
+     "cmd": "/home/sprite/.node22/bin/node test/local-worker-process.mjs /tmp/camelrun-proto-workers-test-M8zuYL/wrangler.json 35561 38493 /tmp/camelrun-proto-workers-test-M"
+    },
+    {
+     "pid": 93664,
+     "group": "esbuild",
+     "mb": 733,
+     "cmd": "/home/sprite/rt/backends/workers/node_modules/@esbuild/linux-x64/bin/esbuild --service=0.28.2 --ping "
+    },
+    {
+     "pid": 93675,
+     "group": "workerd-proxy",
+     "mb": 93,
+     "cmd": "/home/sprite/rt/backends/workers/node_modules/@cloudflare/workerd-linux-64/bin/workerd serve --binary --experimental --socket-addr=entry=127.0.0.1:35561 --exter"
+    },
+    {
+     "pid": 93718,
+     "group": "workerd",
+     "mb": 459,
+     "cmd": "/home/sprite/rt/backends/workers/node_modules/@cloudflare/workerd-linux-64/bin/workerd serve --binary --experimental --socket-addr=entry=127.0.0.1:0 --external-"
+    }
+   ],
+   "marginalMBPerAgent": 15.22734375,
+   "idleMB": 458.00390625,
+   "idleDetail": {
+    "postgres": 246.83203125,
+    "harness": 122.62890625,
+    "wrangler": 319.8203125,
+    "esbuild": 581.15234375,
+    "workerd-proxy": 93.18359375,
+    "workerd": 458.00390625
+   },
+   "postgresIdleMB": 246.83203125,
+   "file": "workers-10-c50.json"
+  },
+  {
+   "backend": "workers",
+   "agents": 100,
+   "turns": 3,
+   "concurrency": 10,
+   "code": true,
+   "startedAt": "2026-11-11T21:13:56.452Z",
+   "preStartMB": 0,
+   "startupMs": 6526,
+   "baselineMB": 306.796875,
+   "created": 100,
+   "createdMB": 564.8046875,
+   "codeResults": {
+    "ok": 101,
+    "failed": 0
+   },
+   "turnErrors": 0,
+   "turnsWallMs": 120912,
+   "cpuSecondsPerTurn": {
+    "server": 0,
+    "workerd": 0.37886666666666663,
+    "celld": 0,
+    "v8-exec": 0,
+    "postgres": 0.029966666666666673
+   },
+   "peakMB": 790.4921875,
+   "peakPostgresMB": 925.328125,
+   "residentMB": 819.33203125,
+   "residentDetail": {
+    "esbuild": 683.03515625,
+    "postgres": 246.6015625,
+    "harness": 155.33203125,
+    "wrangler": 333,
+    "workerd-proxy": 132.17578125,
+    "workerd": 819.33203125
+   },
+   "residentProcesses": [
+    {
+     "pid": 102618,
+     "group": "esbuild",
+     "mb": 8,
+     "cmd": "/home/sprite/rt/backends/workers/node_modules/@esbuild/linux-x64/bin/esbuild --service=0.28.2 --ping "
+    },
+    {
+     "pid": 95789,
+     "group": "wrangler",
+     "mb": 333,
+     "cmd": "/home/sprite/.node22/bin/node test/local-worker-process.mjs /tmp/camelrun-proto-workers-test-epvqVn/wrangler.json 45265 45077 /tmp/camelrun-proto-workers-test-e"
+    },
+    {
+     "pid": 95801,
+     "group": "esbuild",
+     "mb": 675,
+     "cmd": "/home/sprite/rt/backends/workers/node_modules/@esbuild/linux-x64/bin/esbuild --service=0.28.2 --ping "
+    },
+    {
+     "pid": 95811,
+     "group": "workerd-proxy",
+     "mb": 132,
+     "cmd": "/home/sprite/rt/backends/workers/node_modules/@cloudflare/workerd-linux-64/bin/workerd serve --binary --experimental --socket-addr=entry=127.0.0.1:45265 --exter"
+    },
+    {
+     "pid": 95850,
+     "group": "workerd",
+     "mb": 819,
+     "cmd": "/home/sprite/rt/backends/workers/node_modules/@cloudflare/workerd-linux-64/bin/workerd serve --binary --experimental --socket-addr=entry=127.0.0.1:0 --external-"
+    }
+   ],
+   "marginalMBPerAgent": 5.1253515625,
+   "idleMB": 816.17578125,
+   "idleDetail": {
+    "esbuild": 546.41796875,
+    "postgres": 246.609375,
+    "harness": 122.890625,
+    "wrangler": 332.9921875,
+    "workerd-proxy": 132.40625,
+    "workerd": 816.17578125
+   },
+   "postgresIdleMB": 246.609375,
+   "file": "workers-100-c10.json"
+  },
+  {
+   "backend": "workers",
+   "agents": 100,
+   "turns": 3,
+   "concurrency": 50,
+   "startedAt": "2026-11-11T20:15:15.102Z",
+   "preStartMB": 0,
+   "startupMs": 68492,
+   "baselineMB": 388.9765625,
+   "created": 100,
+   "createdMB": 627.5546875,
+   "codeResults": {
+    "ok": 64,
+    "failed": 0
+   },
+   "turnErrors": 110,
+   "firstTurnError": "Error: turn failed: {\"result\":{\"error\":\"Session persistence failed\",\"code\":\"model_error\",\"modelError\":{\"errorClass\":\"other\",\"retryable\":false,\"model\":\"openrouter/openai/gpt-4o-mini\"},\"servedModel\":\"openrouter/openai/gpt-4o-mini\",\"usage\":{\"responses\":0,\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0,\"costUsd\":0},\"mess",
+   "turnsWallMs": 168618,
+   "cpuSecondsPerTurn": {
+    "server": 0,
+    "workerd": 0.8470526315789474,
+    "celld": 0,
+    "v8-exec": 0,
+    "postgres": 0.07221052631578949
+   },
+   "peakMB": 1056.3046875,
+   "peakPostgresMB": 3717.97265625,
+   "residentMB": 1070.015625,
+   "residentDetail": {
+    "harness": 141.8125,
+    "postgres": 245.0078125,
+    "wrangler": 317.0703125,
+    "esbuild": 727.24609375,
+    "workerd": 1070.015625
+   },
+   "residentProcesses": [
+    {
+     "pid": 19622,
+     "group": "wrangler",
+     "mb": 317,
+     "cmd": "/home/sprite/.node22/bin/node test/local-worker-process.mjs /tmp/camelrun-proto-workers-test-VqV6HC/wrangler.json 43985 43167 /tmp/camelrun-proto-workers-test-V"
+    },
+    {
+     "pid": 19636,
+     "group": "esbuild",
+     "mb": 720,
+     "cmd": "/home/sprite/rt/backends/workers/node_modules/@esbuild/linux-x64/bin/esbuild --service=0.28.2 --ping "
+    },
+    {
+     "pid": 19646,
+     "group": "workerd",
+     "mb": 133,
+     "cmd": "/home/sprite/rt/backends/workers/node_modules/@cloudflare/workerd-linux-64/bin/workerd serve --binary --experimental --socket-addr=entry=127.0.0.1:43985 --exter"
+    },
+    {
+     "pid": 19680,
+     "group": "workerd",
+     "mb": 937,
+     "cmd": "/home/sprite/rt/backends/workers/node_modules/@cloudflare/workerd-linux-64/bin/workerd serve --binary --experimental --socket-addr=entry=127.0.0.1:0 --external-"
+    },
+    {
+     "pid": 25175,
+     "group": "esbuild",
+     "mb": 7,
+     "cmd": "/home/sprite/rt/backends/workers/node_modules/@esbuild/linux-x64/bin/esbuild --service=0.28.2 --ping "
+    }
+   ],
+   "marginalMBPerAgent": 6.810390625,
+   "idleMB": 1067.6796875,
+   "idleDetail": {
+    "harness": 109.59375,
+    "postgres": 245.58203125,
+    "wrangler": 315.73046875,
+    "esbuild": 534.08203125,
+    "workerd": 1067.6796875
+   },
+   "postgresIdleMB": 245.58203125,
+   "file": "workers-100.json"
+  },
+  {
+   "backend": "workers",
+   "agents": 1000,
+   "turns": 3,
+   "concurrency": 10,
+   "code": true,
+   "startedAt": "2026-11-11T21:30:37.780Z",
+   "preStartMB": 0,
+   "startupMs": 79802,
+   "baselineMB": 298.171875,
+   "created": 1000,
+   "createdMB": 795.19921875,
+   "codeResults": {
+    "ok": 1001,
+    "failed": 0
+   },
+   "turnErrors": 0,
+   "turnsWallMs": 1328456,
+   "cpuSecondsPerTurn": {
+    "server": 0,
+    "workerd": 0.4105433333333333,
+    "celld": 0,
+    "v8-exec": 0,
+    "postgres": 0.03400333333333334
+   },
+   "peakMB": 1102.2734375,
+   "peakPostgresMB": 1026.7265625,
+   "residentMB": 1118.25,
+   "residentDetail": {
+    "harness": 191.64453125,
+    "postgres": 296.87890625,
+    "wrangler": 306.59375,
+    "esbuild": 538.7734375,
+    "workerd-proxy": 255.484375,
+    "workerd": 1116.6875
+   },
+   "residentProcesses": [
+    {
+     "pid": 122131,
+     "group": "wrangler",
+     "mb": 307,
+     "cmd": "/home/sprite/.node22/bin/node test/local-worker-process.mjs /tmp/camelrun-proto-workers-test-Op6z7H/wrangler.json 42727 45621 /tmp/camelrun-proto-workers-test-O"
+    },
+    {
+     "pid": 122144,
+     "group": "esbuild",
+     "mb": 534,
+     "cmd": "/home/sprite/rt/backends/workers/node_modules/@esbuild/linux-x64/bin/esbuild --service=0.28.2 --ping "
+    },
+    {
+     "pid": 122153,
+     "group": "workerd-proxy",
+     "mb": 255,
+     "cmd": "/home/sprite/rt/backends/workers/node_modules/@cloudflare/workerd-linux-64/bin/workerd serve --binary --experimental --socket-addr=entry=127.0.0.1:42727 --exter"
+    },
+    {
+     "pid": 122190,
+     "group": "workerd",
+     "mb": 1116,
+     "cmd": "/home/sprite/rt/backends/workers/node_modules/@cloudflare/workerd-linux-64/bin/workerd serve --binary --experimental --socket-addr=entry=127.0.0.1:0 --external-"
+    },
+    {
+     "pid": 150388,
+     "group": "esbuild",
+     "mb": 5,
+     "cmd": "/home/sprite/rt/backends/workers/node_modules/@esbuild/linux-x64/bin/esbuild --service=0.28.2 --ping "
+    }
+   ],
+   "marginalMBPerAgent": 0.820078125,
+   "idleMB": 1110.3203125,
+   "idleDetail": {
+    "harness": 191.828125,
+    "postgres": 296.98828125,
+    "wrangler": 306.98828125,
+    "esbuild": 538.9921875,
+    "workerd-proxy": 255.39453125,
+    "workerd": 1110.3203125
+   },
+   "postgresIdleMB": 296.98828125,
+   "file": "workers-1000-c10.json"
+  },
+  {
+   "backend": "workers",
+   "agents": 300,
+   "turns": 3,
+   "concurrency": 10,
+   "code": true,
+   "startedAt": "2026-11-11T22:01:17.335Z",
+   "preStartMB": 0,
+   "startupMs": 56660,
+   "baselineMB": 302.16796875,
+   "created": 300,
+   "createdMB": 673.90234375,
+   "codeResults": {
+    "ok": 301,
+    "failed": 0
+   },
+   "turnErrors": 0,
+   "turnsWallMs": 364082,
+   "cpuSecondsPerTurn": {
+    "server": 0,
+    "workerd": 0.37857777777777774,
+    "celld": 0,
+    "v8-exec": 0,
+    "postgres": 0.03126666666666665
+   },
+   "peakMB": 882.49609375,
+   "peakPostgresMB": 734.02734375,
+   "residentMB": 955.0703125,
+   "residentPeakMB": 955.0703125,
+   "peakMBPerAgent": 2.1763411458333333,
+   "residentDetail": {
+    "harness": 170.8359375,
+    "postgres": 297.390625,
+    "wrangler": 363.2421875,
+    "esbuild": 545.203125,
+    "workerd-proxy": 214.4375,
+    "workerd": 955.0703125
+   },
+   "residentProcesses": [
+    {
+     "pid": 341848,
+     "group": "wrangler",
+     "mb": 363,
+     "cmd": "/home/sprite/.node22/bin/node test/local-worker-process.mjs /tmp/camelrun-proto-workers-test-tY8JUG/wrangler.json 44661 38059 /tmp/camelrun-proto-workers-test-t"
+    },
+    {
+     "pid": 341861,
+     "group": "esbuild",
+     "mb": 537,
+     "cmd": "/home/sprite/rt/backends/workers/node_modules/@esbuild/linux-x64/bin/esbuild --service=0.28.2 --ping "
+    },
+    {
+     "pid": 341871,
+     "group": "workerd-proxy",
+     "mb": 214,
+     "cmd": "/home/sprite/rt/backends/workers/node_modules/@cloudflare/workerd-linux-64/bin/workerd serve --binary --experimental --socket-addr=entry=127.0.0.1:44661 --exter"
+    },
+    {
+     "pid": 341912,
+     "group": "workerd",
+     "mb": 955,
+     "cmd": "/home/sprite/rt/backends/workers/node_modules/@cloudflare/workerd-linux-64/bin/workerd serve --binary --experimental --socket-addr=entry=127.0.0.1:0 --external-"
+    },
+    {
+     "pid": 350523,
+     "group": "esbuild",
+     "mb": 8,
+     "cmd": "/home/sprite/rt/backends/workers/node_modules/@esbuild/linux-x64/bin/esbuild --service=0.28.2 --ping "
+    }
+   ],
+   "marginalMBPerAgent": 2.1763411458333333,
+   "idleMB": 945.6796875,
+   "idleDetail": {
+    "harness": 137.66796875,
+    "postgres": 297.39453125,
+    "wrangler": 362.078125,
+    "esbuild": 545.09765625,
+    "workerd-proxy": 213.45703125,
+    "workerd": 945.6796875
+   },
+   "postgresIdleMB": 297.39453125,
+   "file": "workers-300-touch.json"
+  }
+ ]
+}

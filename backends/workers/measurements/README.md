@@ -35,6 +35,13 @@ All 1,750 model attempts settled; no pending attempts or credit holds remained.
 Earlier runs on smaller database and pool settings had 0.4% to 33% errors at 250
 turns and 56% to 63% at 500; PILOT.md has those runs.
 
+## Memory per agent
+
+One Sprite, 2026-11-11, same API calls and fake model on each runtime: **Node (inline hosting) 1.2 MB per resident
+agent, this backend on local workerd 2.2 MB** (300 agents each); the same backend on celld 0.6.3 about 35 MB (45 MB
+with code mode). Method, other sizes, the celld substitutions and what blocks celld: [memory-benchmark.md](../docs/memory-benchmark.md),
+`agent-memory.json`.
+
 ## Contract parity
 
 Full `npm run parity` on six Sprites, 2026-11-06 (this branch, before merge to
