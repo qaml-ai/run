@@ -57,11 +57,14 @@ browsers, and for people's managed machines. They are not removed; they are not 
 4. **Children are remote, always.** A workflow's `agent()` starts a real agent in its own object or node, through
    the existing delegation path, keyed by the effect key for exactly-once. The ~8 concurrent streams one object
    can hold (#696) are not a ceiling: the workflow object streams nothing, it starts and collects.
-5. **Three agent types and three model classes, domain-neutral.** A child is a `worker` (does a task, may write),
+5. **Four agent types and four model classes, domain-neutral.** A child is a `worker` (does a task, may write),
    a `critic` (finds problems in someone else's output, read-only, separate context, answers in a schema, never
-   the model instance that did the work) or a `lead` (plans, decides, judges). Its model is a class: `fast`,
-   `strong` or `auto` (a Fusion-style router that switches at compaction with judgment kept on strong), as
-   late-bound virtual models `camelrun/fast|strong|auto`, pinnable per workflow and per call. Everything
+   the model instance that did the work) or a `lead` (plans, decides, judges inside the workflow); an
+   `orchestrator` owns workflows from outside (writes and edits the script, starts, steers, answers gates, decides
+   reruns, spends the budget within its own cap) and does no item work. Its model is a class: `fast`, `strong`,
+   `auto` (a Fusion-style router that switches at compaction with judgment kept on strong) or `max` (the
+   strongest on the default tier, for orchestrators), as late-bound virtual models `camelrun/fast|strong|auto|max`,
+   pinnable per workflow and per call. Everything
    domain-specific (implementer, porter, researcher, auditor) is a worker with instructions. A changed mapping
    never invalidates cached results; the resolved model is recorded on every effect.
 6. **Code work is an optional module: repositories as a volume kind with a repo object** that holds the tree at a
@@ -392,25 +395,58 @@ an ordinary agent's default is 30). A fallback is logged on the effect and in th
 `service_tier` parameter on the OpenRouter provider, the bounded retry, the per-workflow window, and the served
 tier on usage records and the ledger.
 
-**Agent types** are three small sets of behaviours and permissions, shipped as definitions a tenant can copy:
+**Agent types** are four small sets of behaviours and permissions, shipped as definitions a tenant can copy. Three
+work inside a workflow; one owns it from outside:
 
 | Type | Does | Permissions | Default class |
 | --- | --- | --- | --- |
 | `worker` | One task from instructions; may write | File tools, `commit` on its layer, `report_progress`; no sub-agents by default | `fast` |
 | `critic` | Finds problems in someone else's output | Read-only mounts and layers; answers in a schema (`output` required); its own fresh context; never the model instance that did the work | `strong` |
-| `lead` | Plans, decides, judges; turns a goal into a work-list, resolves conflicts, writes the final answer | May write; may `delegate`; may open gates and start workflows (the `workflows` builtin) | `strong`, or `auto` for a long-lived one |
+| `lead` | Plans, decides, judges inside a workflow, as one of its effects; turns a goal into a work-list, resolves conflicts, writes the final answer | May write; may `delegate`; may open gates | `strong`, or `auto` for a long-lived one |
+| `orchestrator` | Authors and runs workflows from outside: writes and edits the script, starts, pauses, resumes and aborts, reads items, samples and the ledger, answers or escalates gates, decides reruns | The `workflows` builtin; may spend the workflow budget within its own cap and change the script; does no item work and never acts as a critic | `max` |
 
-Why three, not two or five. Two (worker, critic) loses the thing Fusion showed must be protected: judgment has to
+Why four, not three or five. Two (worker, critic) loses the thing Fusion showed must be protected: judgment has to
 live somewhere with a fixed strong class and the permission to decide, and a worker with a strong model is not that
 (it can still be re-pointed at `fast` by a pin). Five (the earlier implementer / fixer / reviewer / planner /
 explorer) encoded a domain in the type system: an explorer is a read-only worker, a fixer is a worker with a
-findings list, a planner is a lead. Types are what the runtime enforces; everything else is a prompt.
+findings list, a planner is a lead. The orchestrator passes the test the others set (a new type must argue for a
+permission the three lack): changing a running workflow's script and spending its budget are permissions no
+worker, critic or lead has, and should not have. Types are what the runtime enforces; everything else is a prompt.
 
-The Bun loop in these terms: the implementer is a `worker` with the porting instructions, the two adversarial
-reviewers are two `critic`s (which resolve to different models when `strong`'s route list has two), the fixer is a
-`worker` with the findings, and the planner that wrote PORTING.md and LIFETIMES.tsv is a `lead`. A research sweep:
-`worker`s per source, `critic`s per claim, a `lead` to synthesize. A data audit: `worker`s per table with a query
-`job()` each, `critic`s on the flagged ones, a `lead` to rank.
+The Bun loop in these terms: Jarred is the `orchestrator` (he "monitored workflows, manually reading the outputs,
+and prompted Claude to edit the loop"), the implementer is a `worker` with the porting instructions, the two
+adversarial reviewers are two `critic`s (which resolve to different models when `strong`'s route list has two),
+the fixer is a `worker` with the findings, and the planner that wrote PORTING.md and LIFETIMES.tsv is a `lead`. A
+research sweep: `worker`s per source, `critic`s per claim, a `lead` to synthesize. A data audit: `worker`s per
+table with a query `job()` each, `critic`s on the flagged ones, a `lead` to rank.
+
+**The orchestrator.** It sits outside the workflow and is the thing the `workflows` builtin is given to. A lead
+plans and judges inside a workflow, as one effect among the script's; the orchestrator owns the workflow: it
+writes the script (usually from a saved pattern), starts it with a budget, watches the items API and the ledger,
+reads sample outputs, answers the gates it can and escalates the rest to a person, edits the script when the loop
+is wrong, resumes, and decides what to rerun. It does none of the items' work itself and is never a critic of
+them. Ordinary agents get a workflow only through an orchestrator (a camelCode lead in Slack delegates "run this
+refactor" to one) or by an explicit grant of the builtin on their definition.
+
+Its model is the strongest available on the default tier, not flex: its token volume is tiny next to the workers'
+while its leverage is the highest, since one bad loop edit wastes thousands of worker calls, and it is often in a
+loop with a person who is waiting. That is a fourth class, `camelrun/max`, rather than a pin: a pin names one
+model and gets no failover, and "the strongest we have" should move when the strongest moves, as `strong` does.
+Day-one candidates, for Miguel to choose: Gemini 4 Carbon on the default tier (the same model as `strong`, so one
+eval covers both, at $2/$10 per M and full priority; the tradeoff is no step up in capability over the critics);
+Claude Opus 5.5 (a different family from the workers and critics, which also satisfies the never-the-same-model
+rule for free when an orchestrator reads a critic's work; the tradeoff is a second provider's cache and key in the
+loop); Fable 5 is the strongest known but its access is suspended, so it is not a candidate until restored.
+
+Orchestrator guardrails, enforced by the runtime, not the prompt:
+
+- every script edit is recorded as a revision with its diff and the orchestrator's stated reason (`reason` is
+  required on `workflow_edit`), visible on the workflow page and in the items API's key diff;
+- a budget increase above `orchestratorRaiseUsd` (default $500, tenant-set) goes to an inbox gate for a person;
+- an edit whose key diff would rerun more than `rerunConfirmPercent` (default 10%) of completed effects needs
+  confirmation: a gate to a person, or `confirm: true` on the edit with the reason;
+- the orchestrator cannot edit its own budget cap (`maxBudgetUsd` on its definition); only the tenant can;
+- it may not call `agent()` for item work and never takes `type: "critic"`; the runtime refuses both.
 
 A workflow names them per call: `agent(task, { type: "critic" })`, with `class` to override the type's default and
 `definition` when the script wants a specific definition instead. A type's prompt is its definition's system
@@ -538,8 +574,12 @@ count). A cheap implementer that needs one more round per item halves the saving
   repository and item set, scored on findings caught, rounds to converge and cost) and a turn-outcome watch after
   the change, as the standing rule for model default changes says. Route lists are operator-set
   (`AGENT_MODEL_CLASSES`) and per-tenant overridable with `PUT /v1/tenants/{id}/classes`.
-- `GET /v1/models` lists `camelrun/fast`, `camelrun/strong` and `camelrun/auto` with their `routes`, and
-  `GET /v1/workflows/:id` shows the resolved map at start and any pins, so nobody has to guess which model ran.
+- `GET /v1/models` lists `camelrun/fast`, `camelrun/strong`, `camelrun/auto` and `camelrun/max` with their
+  `routes`, and `GET /v1/workflows/:id` shows the resolved map at start and any pins, so nobody has to guess which
+  model ran.
+- **The orchestrator's hand is logged and capped.** Its edits carry a diff and a reason, a raise above
+  `orchestratorRaiseUsd` and an edit that reruns more than `rerunConfirmPercent` of completed effects go to a
+  person, and its own `maxBudgetUsd` is the tenant's to set, never its own (above).
 - **Judgment never goes to the cheap class.** `critic` and `lead` default to `strong`, the runtime refuses a
   `class: "fast"` or a `classes` pin that puts a fast-class model on them unless the start says
   `allowFastJudgment: true`, and `camelrun/auto` keeps plan, ambiguity, approvals, shared-branch commits and the
@@ -654,14 +694,16 @@ SDK (phase 4; phase 1 is REST only): `agents.runtime.workflows.start({ ... })` r
 `items()`, `events()`, `pause()`, `resume()`, `edit(script)`, `abort()`, `wait()`; Python mirrors it. The CLI gets
 `camelrun workflows start|status|edit|resume`.
 
-**An agent starts and steers one.** The `workflows` builtin (plural: the singular name belonged to the removed
-builtin and `rejectWorkflow` still refuses it, so old inputs keep failing loudly) gives the model
-`workflow_start({ name | script, args, budgetUsd })`, `workflow_status`, `workflow_edit({ script })`,
-`workflow_pause`, `workflow_resume`, `workflow_abort`. The agent is the owner; the budget may not exceed the builtin's `maxBudgetUsd` (default $100), and
-a start above it becomes an approval in the inbox instead. Phase ends, gates, alerts and the ending reach the agent
-as `<workflow_notification>` runtime notices (the `child_` notification path, with the wake cap). This is how a
-camelCode lead in Slack runs a refactor: it scouts the work-list in its own turn, starts the workflow with the list
-as `args`, and reports as phases end.
+**An orchestrator starts and steers one.** The `workflows` builtin (plural: the singular name belonged to the
+removed builtin and `rejectWorkflow` still refuses it, so old inputs keep failing loudly) is the `orchestrator`
+type's: `workflow_start({ name | script, args, budgetUsd })`, `workflow_status`, `workflow_items`,
+`workflow_edit({ script, reason, confirm? })`, `workflow_pause`, `workflow_resume({ rerun? })`, `workflow_abort`,
+`workflow_budget({ usd })`. The orchestrator is the owner; the budget may not exceed its `maxBudgetUsd` (default
+$100, tenant-set), and a start above it becomes an approval in the inbox instead. Phase ends, gates, alerts and
+the ending reach it as `<workflow_notification>` runtime notices (the `child_` notification path, with the wake
+cap). An ordinary agent reaches a workflow only through an orchestrator, or by an explicit grant of the builtin on
+its definition. This is how a camelCode lead in Slack runs a refactor: it scouts the work-list in its own turn,
+delegates to its orchestrator, which starts the workflow with the list as `args`, and reports as phases end.
 
 ## Part 2: the code module and jobs
 
@@ -938,7 +980,8 @@ stand-in for this.
 | --- | --- |
 | A workflow that never ends | `ttlSeconds` (30 days default), `budget.usd` hard cap, `maxEffects` (10,000), the step-rate guard (5,000 steps an hour) |
 | A script that spawns thousands of agents at once | `concurrency` ≤ 64 and ≤ the tenant's busy agents; past it, effects wait for a slot rather than fail; a child that cannot be started in 10 minutes becomes `failed` |
-| A runaway budget from an agent owner | The `workflows` builtin's default budget is the least of its `maxBudgetUsd`, the agent's remaining `spendLimit` and the tenant's `workflowBudgetCap`; above it, an inbox approval |
+| A runaway budget from an orchestrator | The `workflows` builtin's default budget is the least of the orchestrator's `maxBudgetUsd` (tenant-set, never its own to edit), its remaining `spendLimit` and the tenant's `workflowBudgetCap`; above it, an inbox approval; a raise above `orchestratorRaiseUsd` is a gate |
+| A bad loop edit | Every edit carries a diff and a reason; an edit that would rerun more than `rerunConfirmPercent` of completed effects needs a person's confirmation; the orchestrator does no item work, so its own calls are few |
 | A payer running dry mid-run | A refused child is `refused`, not `null`: the workflow pauses with `payer_exhausted` and resumes under the next attempt. End-user-started workflows bill the tenant under their explicit cap |
 | Children of children | `maxDepth` 2 below the workflow; children cannot start workflows; `camelrun/spawn` directives from a child count as its own children |
 | A loop with no progress | Ten consecutive failed effects of one key pattern pause the workflow with a message, as monitors stop at 10 errors |
@@ -970,8 +1013,8 @@ as an ordered PR stack whose first half fixes delegation for every product:
 | 4. Exchange parameters | `caps` and `results: "inline" \| "handle"` on the code-mode exchange; code mode passes today's values; a 500-effect replay harness | 1 |
 | 5. Atomic volume commit, fork pins | `POST /v1/volumes/:id/commit`; fork pins live with the fork | 1 |
 | 6. Contract deploy | Drop `parentAgentId`/`parentRunId` and `agent_inputs.agent` once no node writes them | 0.5 (overlaps) |
-| 7. `WorkflowObject` | `new_sqlite_classes`; the runner on pi-codemode's stop-and-replay through its own exchange; the `effects` table (`key`, `attempt`, `version`); `agent`, `parallel` (explicit keys inside it), `gate` through the workflow's inbox, `sleep`, `log`, `phase`; pause, edit (new revision, key diff in the items API), resume with exact-key reruns, abort; the budget pause and `payer_exhausted`; the one alarm; items and events APIs; a plain console page; the `workflows` builtin with its bounded default budget | 3 |
-| 8. Jobs and classes | `job()` on the `JobDriver` seam with the Cloudflare Containers driver (pilot-only until `containers` reaches `wrangler.jsonc`; Bun-class builds wait for our hosts in phase 2), `camel-sync`, limits, outputs; children on per-child volume forks with the atomic commit; the three types as definitions; `strong` and `fast` as route names with the flex plumbing | 2 |
+| 7. `WorkflowObject` | `new_sqlite_classes`; the runner on pi-codemode's stop-and-replay through its own exchange; the `effects` table (`key`, `attempt`, `version`); `agent`, `parallel` (explicit keys inside it), `gate` through the workflow's inbox, `sleep`, `log`, `phase`; pause, edit (new revision, key diff in the items API), resume with exact-key reruns, abort; the budget pause and `payer_exhausted`; the one alarm; items and events APIs; a plain console page; the `orchestrator` type as a definition with the `workflows` builtin, its bounded default budget, edit revisions with diff and reason, the raise gate and the rerun-percent confirmation | 3.5 |
+| 8. Jobs and classes | `job()` on the `JobDriver` seam with the Cloudflare Containers driver (pilot-only until `containers` reaches `wrangler.jsonc`; Bun-class builds wait for our hosts in phase 2), `camel-sync`, limits, outputs; children on per-child volume forks with the atomic commit; the three in-workflow types as definitions; `strong`, `fast` and `max` as route names with the flex plumbing | 2 |
 
 That is 10 weeks sequential, about 8 with two people on it, since PRs 4–5 are independent of 1–3. `fast` is
 `muse-ember` and `strong` is Gemini 4 Carbon on flex, as decided above. The review loop runs on a real
@@ -996,7 +1039,7 @@ conflicts per commit, and cost against the same work done by one agent on a comp
 
 | Phase | Weeks | Delivers | Dogfood |
 | --- | --- | --- | --- |
-| 1. Delegation fixes, then the workflow object and jobs | 8–10 | The PR stack above: owner model and durable endings for every product, attempted call ids, exchange parameters, the atomic volume commit, the contract deploy; then `WorkflowObject` with `agent`, `parallel`, `gate`, `sleep`, the journal, the budget pause, the items and events APIs, the console page and the `workflows` builtin; then `job()` on the Cloudflare driver (pilot), volume-fork editing, the three types and the `fast`/`strong` routes with flex. Workers only | camelCode review loop on a chiridion refactor on the pilot: 8–16 children editing forks, one typecheck-and-test job per round, push by job; the same run twice, workers on `strong` against `fast`, as the first class eval |
+| 1. Delegation fixes, then the workflow object and jobs | 8–10 | The PR stack above: owner model and durable endings for every product, attempted call ids, exchange parameters, the atomic volume commit, the contract deploy; then `WorkflowObject` with `agent`, `parallel`, `gate`, `sleep`, the journal, the budget pause, the items and events APIs, the console page and the `workflows` builtin; then `job()` on the Cloudflare driver (pilot), volume-fork editing, the four types and the `fast`/`strong`/`max` routes with flex. Workers only | camelCode review loop on a chiridion refactor on the pilot: 8–16 children editing forks, one typecheck-and-test job per round, push by job; the same run twice, workers on `strong` against `fast`, as the first class eval |
 | 2. Our job hosts | 4 | The Graviton host image (Nitro Sandboxes enabled, Firecracker v1.18 in direct mode, `io_engine: "Async"`, base rootfs with `quiet`, netns/tap pool, nftables, no IMDS), the host agent, `job_hosts` registration and placement, XFS reflink clones of NVMe snapshots pulled from S3, `saveSnapshot` to S3, the ASG with a dedicated `r8gd` build pool (one pre-started build sandbox per host, nothing else on the host) and a `c8gd` spot test pool scaled on queue depth, lease sweeps and retry by key on host loss | The same loop with jobs on our hosts, Bun-class builds included. Targets from the spike: build overhead ≤ 2%, test-shard start p50 ≤ 2.5 s at 32 parallel, build-sandbox start ≤ 7 s on an idle host, cost per job against Cloudflare |
 | 3. Repositories | 4 | `kind: "repo"` volumes, the repo object, layer rows, commit with three-way merge, `diff`, `branch`, `merge`, the trigram index behind `grep`, import job, push and pull through the GitHub App from the object | The loop at 32 children, commits of one file at a time onto one branch, whole-tree `grep` from the object, one push a phase |
 | 4. Queues and scale | 4 | `queue()`, `pipeline`, sharded tests on the spot pool, the public `POST /v1/jobs` and the `jobs` builtin for ordinary agents, the SDK and CLI, `/stuck`, the 50/80% alerts, `cacheShare` and prefix warming, the dry-replay `wouldRerun` and `rerun` globs, event coalescing, phase collapse in the journal, 10,000 effects, `auto`, saved patterns | A compile-error work queue on a Rust or TypeScript repository of ours: 64 fixers, 8 builds on `r8gd`, 32 shards on `c8gd`, a snapshot refreshed per crate |
@@ -1039,10 +1082,14 @@ conflicts per commit, and cost against the same work done by one agent on a comp
    compaction-boundary switch costs on providers whose cache keys include the model.
 9. **Layers for whole-tree refactors.** A refactor that touches 10,000 paths at once (the crate split) is one layer
    at the cap. Raise the cap, or run that phase as a job that commits through the object's bulk API?
-10. **Types for other domains.** Three types cover code, research and audits in this document. A domain that needs
+10. **`max` on day one.** Gemini 4 Carbon on the default tier (one eval, no capability step over the critics) or
+    Claude Opus 5.5 (a second family, which keeps the orchestrator's reading of a critic's work on a different
+    model, at the cost of a second provider in the loop)? Miguel's call. Also whether `max` needs its own eval or
+    rides on the class eval's orchestrator transcripts.
+11. **Types for other domains.** Four types cover code, research and audits in this document. A domain that needs
     a fourth (a `negotiator` that may spend, an `operator` that may run side effects without a gate) should argue
     for a permission the three lack, not a job title.
-11. **Who curates the menu, and how often.** The operator's menu needs an owner who runs the per-strength evals
+12. **Who curates the menu, and how often.** The operator's menu needs an owner who runs the per-strength evals
     and decides admissions and removals; a tenant's menu is its own. Re-evaluate every entry on a schedule (monthly?)
     and on every model or route change, and retire an entry whose ledger shows it losing for two weeks. Whether a
     tenant may add an entry with its own eval evidence, or only choose among the operator's, is open.
