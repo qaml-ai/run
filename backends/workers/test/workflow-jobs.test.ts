@@ -16,7 +16,7 @@ const hooks = registerHooks({ resolve(specifier, context, nextResolve) {
   return nextResolve(specifier, context);
 } });
 const { WorkflowJobs, jobId, redact, PUSH_SCRIPT } = await import("../src/workflow-jobs.ts");
-const { executorsByKind } = await import("../src/workflow-object.ts");
+const { byKind } = await import("../src/workflow-object.ts");
 const { forkChanges } = await import("../src/workflow-volumes.ts");
 hooks.deregister();
 const run = promisify(execFile);
@@ -70,7 +70,7 @@ test("the script's job(), commit() and push() check their arguments", { timeout:
   }
 });
 
-test("executorsByKind sends agents and gates to the children, job/commit/push to the jobs, and recovers both", async () => {
+test("byKind sends agents and gates to the children, job/commit/push to the jobs, polls by kind, and recovers both", async () => {
   const calls: string[] = [];
   const executor = (name: string) => ({
     start: async (effect: StartedEffect) => { calls.push(`${name} start ${effect.kind}`); },
@@ -78,13 +78,15 @@ test("executorsByKind sends agents and gates to the children, job/commit/push to
     recover: async () => { calls.push(`${name} recover`); },
     abort: async () => { calls.push(`${name} abort`); },
   });
-  const both = executorsByKind(executor("children"), executor("jobs"));
+  const children = executor("children"), jobs = { ...executor("jobs"), poll: async (effect: StartedEffect) => { calls.push(`jobs poll ${effect.kind}`); return undefined; } };
+  const both = byKind({ agent: children, gate: children, job: jobs, commit: jobs, push: jobs });
   const effect = (kind: string) => ({ key: kind, attempt: 1, kind, args: {}, options: undefined, phase: undefined });
   for (const kind of ["agent", "gate", "job", "commit", "push"]) await both.start(effect(kind));
   await both.cancel!(effect("job"));
+  await both.poll!(effect("commit"));
   await both.recover!();
   await both.abort!();
-  assert.deepEqual(calls, ["children start agent", "children start gate", "jobs start job", "jobs start commit", "jobs start push", "jobs cancel job", "children recover", "jobs recover", "children abort", "jobs abort"]);
+  assert.deepEqual(calls, ["children start agent", "children start gate", "jobs start job", "jobs start commit", "jobs start push", "jobs cancel job", "jobs poll commit", "children recover", "jobs recover", "children abort", "jobs abort"]);
 });
 
 /** WorkflowJobs over a fake driver and storage: what it lands. */
