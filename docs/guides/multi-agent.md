@@ -492,8 +492,8 @@ parent's, or both) delays the notification by a sweep and never repeats it.
 
 On Workers the parent keeps a `children` table in its own storage, and the sub-agent's ending is durable on the
 sub-agent's side: the run's outcome and its ending are written together to the sub-agent's outbox, and the
-sub-agent's alarm delivers the ending to its parent, with backoff, until the parent takes it (once: it checks its
-row). A parent that is evicted or hibernating hears it when the delivery wakes it; nothing on its side polls its
+sub-agent's alarm delivers the ending to its parent, with jittered backoff (1 s doubling to 5 minutes), until the
+parent takes it (once: it checks its row). A parent that is evicted or hibernating hears it when the delivery wakes it; nothing on its side polls its
 sub-agents. Progress reports travel the same way.
 
 ### Cost and loop guards
