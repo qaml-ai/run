@@ -1,7 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Placement } from "../../../shared/owner.ts";
 import { type RuntimeNotice, type NoticeRequest, type WakeDecision } from "./delegation-notifications.ts";
-import type { ChildEvent, ChildProgressReport } from "./delegation.ts";
+import type { ChildProgressReport } from "./delegation.ts";
+import type { ChildEnding, Receipt } from "./ending-outbox.ts";
 import { Env } from "./agent-types.ts";
 import { AgentRuntime } from "./agent-runtime.ts";
 import { ARM_AGENT, DUE_HUMAN_INPUTS } from "./agent-internals.ts";
@@ -44,19 +45,23 @@ export class CamelAgent extends DurableObject<Env> {
     return this.#runtime.receiveAgentMessage(request, notice);
   }
 
-  receiveAgentProgress(report: ChildProgressReport): Promise<unknown> {
-    return this.#runtime.receiveAgentProgress(report);
+  /** A child's progress report, delivered by the child's outbox (binding-only). */
+  receiveProgress(report: ChildProgressReport): Promise<Receipt> {
+    return this.#runtime.receiveProgress(report);
   }
 
-  receiveChildEvent(event: ChildEvent) { return this.#runtime.receiveChildEvent(event); }
+  /** A child's ending, delivered by the child's outbox until this answers (binding-only). */
+  receiveEnding(ending: ChildEnding): Promise<Receipt> {
+    return this.#runtime.receiveEnding(ending);
+  }
 
   /** A child run its owner starts, with its placement in the chain (binding-only). */
   admitDelegated(request: unknown, placement: Placement) {
     return this.#runtime.admitDelegated(request, placement);
   }
 
-  hasBackgroundChild(id: string): Promise<boolean> {
-    return this.#runtime.hasBackgroundChild(id);
+  hasChild(id: string): Promise<boolean> {
+    return this.#runtime.hasChild(id);
   }
 
   cancelRequest(id: string) {

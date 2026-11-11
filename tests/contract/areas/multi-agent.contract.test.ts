@@ -191,8 +191,9 @@ contractTest("delegation", "tests/multi-agent.test.ts:179", "aborting a parent a
   const accepted = await r.call(`/v1/agents/${parent}/prompt`, { body: { text: "go" } });
   const start = await until(() => nested.frames.find(frame => frame.data.event?.type === "subagent_start"), "subagent_start");
   const child = start.data.event.agentId;
-  // The child's own events are relayed as it works.
-  await until(() => nested.frames.some(frame => frame.data.event?.type === "subagent_event" && frame.data.event.agentId === child && frame.data.event.event.type === "turn_opened"), "the child's run began, relayed");
+  // A watcher follows the child's own events by its id (nothing relays them through the parent).
+  const own = await watchEvents(t, `${r.base}/v1/agents/${child}/events`, { Authorization: `Bearer ${OPERATOR}` }, { query: "watch=1" });
+  await until(() => own.frames.some(frame => frame.data.event?.type === "turn_opened"), "the child's run began, seen on its own stream");
   const aborted = Date.now();
   assert.equal((await r.call(`/v1/agents/${parent}/abort`, { method: "POST" })).status, 200);
   const childRun = await until(async () => (await r.call(`/v1/agents/${child}`)).json.requests.find((request: any) => request.method === "prompt" && request.state === "completed"), "the child's run ended");

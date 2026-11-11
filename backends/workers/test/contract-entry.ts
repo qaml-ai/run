@@ -3,7 +3,7 @@ import application from "../src/index.ts";
 import { CamelAgent as RuntimeAgent } from "../src/agent.ts";
 import { ARM_AGENT, DUE_HUMAN_INPUTS, testAgentRuntimes } from "../src/agent-internals.ts";
 import type { Env } from "../src/agent.ts";
-import type { DelegatedChild } from "../src/delegation.ts";
+import { stageMissedEndings } from "../src/agent-endings.ts";
 import { databaseUnavailable, withSql } from "../src/postgres.ts";
 export * from "../src/index.ts";
 
@@ -140,18 +140,32 @@ export class CamelAgent extends RuntimeAgent {
       return Response.json({ updated: true });
     }
     if (this.env.TEST_MODE === "1" && new URL(request.url).pathname === "/__test/contract-child-settlement" && request.method === "POST") {
-      // Match the Node fixture's lost-settlement state. Prior charges remain;
-      // recovery must discover and land the completed child again itself.
-      const children = await this.ctx.storage.list<DelegatedChild>({ prefix: "delegation:" });
-      if (!children.size) return Response.json({ error: "Fixture child settlement not found" }, { status: 404 });
+      // Match the Node fixture's lost-settlement state, as durable endings lose it: the owner's row is open again (its
+      // ending not taken, its charge not made; prior charges remain) and each child's outbox holds the ending again,
+      // as if the owner's acknowledgement were lost. The child's alarm must deliver it and the owner land it once.
+      const runtime = testAgentRuntimes.get(this)!;
+      const children = (await runtime.delegation.rows.all()).filter(child => child.id && child.status !== "running");
+      if (!children.length) return Response.json({ error: "Fixture child settlement not found" }, { status: 404 });
       await this.ctx.storage.transaction(async tx => {
-        for (const [key, child] of children) await tx.put(key, {
-          ...child, status: "running", endedAt: undefined, landedBy: undefined,
-          charged: undefined,
-        });
+        for (const child of children) await runtime.delegation.rows.put({ ...child, status: "running", endedAt: undefined, landedBy: undefined, charged: undefined }, tx);
       });
-      await this[ARM_AGENT](Date.now() + 300);
-      return Response.json({ updated: children.size });
+      for (const child of children) {
+        const restaged = await this.env.AGENTS.getByName(child.id).fetch(new Request(`https://agent/__test/contract-restage-ending`, { method: "POST", body: JSON.stringify({ requestId: child.requestId }) }));
+        if (restaged.status !== 200) return Response.json({ error: `Child ending fixture: ${restaged.status} ${await restaged.text()}` }, { status: 500 });
+      }
+      return Response.json({ updated: children.length });
+    }
+    if (this.env.TEST_MODE === "1" && new URL(request.url).pathname === "/__test/contract-restage-ending" && request.method === "POST") {
+      // The child's side of the above: its run's ending back in its outbox, staged as at start-up for a run whose
+      // ending was never staged, then delivered by its alarm.
+      const runtime = testAgentRuntimes.get(this)!;
+      const { requestId } = await request.json() as { requestId: string };
+      const record = await this.ctx.storage.get<Record<string, unknown>>(`request:${requestId}`);
+      if (!record) return Response.json({ error: "Unknown child run" }, { status: 404 });
+      const { endingStaged: _staged, ...unstaged } = record;
+      await this.ctx.storage.put(`request:${requestId}`, unstaged);
+      await stageMissedEndings(runtime, [unstaged as never]);
+      return Response.json({ restaged: true });
     }
     if (this.env.TEST_MODE === "1" && new URL(request.url).pathname === "/__test/contract-inputs-due" && request.method === "POST") {
       // Match the Node fixture's due inputs: each pending input's time is up now. The runtime's own alarm then expires
