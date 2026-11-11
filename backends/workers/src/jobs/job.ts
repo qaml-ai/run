@@ -143,7 +143,7 @@ const positive = (value: unknown, name: string, max: number, integer = false) =>
 export function jobSpec(value: unknown): JobSpec & { image: string; outputs: string[]; instance: InstanceType } {
   const v = value as Partial<JobSpec> | null;
   if (!v || typeof v !== "object") throw bad("A job is an object");
-  const known = ["id", "image", "snapshot", "files", "volume", "command", "timeoutSeconds", "outputs", "limits", "internet", "saveSnapshot", "payer"];
+  const known = ["id", "image", "snapshot", "files", "volume", "command", "timeoutSeconds", "outputs", "limits", "internet", "saveSnapshot", "payer", "instance"];
   const extra = Object.keys(v).find(key => !known.includes(key));
   if (extra) throw bad(`Unknown job field: ${extra}`);
   if (typeof v.id !== "string" || !JOB_ID.test(v.id)) throw bad("A job id is 1-100 letters, digits, _ or -");
@@ -202,11 +202,15 @@ export function jobSpec(value: unknown): JobSpec & { image: string; outputs: str
   if (!v.payer || typeof v.payer.tenant !== "string" || !v.payer.tenant || typeof v.payer.agent !== "string" || !v.payer.agent) throw bad("A job needs a payer: { tenant, agent }");
   const payer: ComputerPayer = { tenant: v.payer.tenant, agent: v.payer.agent };
   if (volume && volume.tenant !== payer.tenant) throw bad("A job reads volumes of its payer's tenant only");
+  // A checked spec is checked again where it runs (ContainerComputer.runJob): its derived instance must be the one its limits give.
+  const instance = jobInstance(limits);
+  const given = (v as { instance?: unknown }).instance;
+  if (given !== undefined && given !== instance) throw bad(`instance is derived from limits (${instance}), not set`);
   return {
     id: v.id, image: v.image ?? "workspace", command: v.command, timeoutSeconds: v.timeoutSeconds!, outputs,
     ...snapshot ? { snapshot } : {}, ...files ? { files } : {}, ...volume ? { volume } : {},
     ...Object.keys(limits).length ? { limits } : {}, ...v.internet ? { internet: true } : {},
     ...v.saveSnapshot ? { saveSnapshot: v.saveSnapshot } : {}, payer,
-    instance: jobInstance(limits),
+    instance,
   };
 }

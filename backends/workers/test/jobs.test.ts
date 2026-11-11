@@ -105,6 +105,11 @@ test("a job spec is checked before any compute starts, and picks the smallest in
   assert.deepEqual(Object.keys(spec.files!), ["src/a.ts"]);
   assert.equal(spec.image, "workspace");
   assert.throws(() => jobSpec({ id: "j", command: "x", timeoutSeconds: 1 }), /needs a payer/, "a job without a payer is refused");
+  // A checked spec checks again unchanged (the driver checks, the container object checks what it is sent).
+  const checked = jobSpec({ payer: PAYER, id: "rt", command: "x", timeoutSeconds: 5, outputs: ["a.txt"], limits: { cpus: 2, pids: 128 }, files: { "a.txt": bytes("a") }, saveSnapshot: "warm" });
+  assert.deepEqual(jobSpec(checked), checked);
+  assert.deepEqual(jobSpec(structuredClone(checked)), checked, "as it arrives over RPC");
+  assert.throws(() => jobSpec({ ...checked, instance: "standard-4" }), /derived from limits/);
   assert.throws(() => jobSpec({ id: "j", command: "x", timeoutSeconds: 1, volume: { tenant: "other", volume: "v", snapshot: "s" }, payer: PAYER }), /payer's tenant only/);
   for (const bad of [
     { payer: PAYER, id: "job:1", command: "x", timeoutSeconds: 1 },
@@ -306,6 +311,7 @@ test("jobDriver: JOBS_UNAVAILABLE without the container binding; with it, one ob
   assert.deepEqual(await driver.stop("abc"), { stopped: true });
   assert.deepEqual(names, [jobObjectName("abc"), "job:abc"]);
   assert.equal(specs.length, 1);
+  assert.deepEqual(jobSpec(specs[0]), specs[0], "the object is sent the checked spec, which it accepts");
   await assert.rejects(driver.run({ payer: PAYER, id: "bad id", command: "true", timeoutSeconds: 5 }), JobSpecError);
   assert.equal(specs.length, 1, "a bad spec never reaches the container object");
 });
