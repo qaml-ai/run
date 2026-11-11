@@ -68,6 +68,21 @@ real models behind it that we can change without touching agents. Today they are
 `openrouter/meta/muse-ember`, then `openrouter/deepseek/deepseek-v4.1-flash-1017`.
 `GET /v1/models` lists it with `routes`, and you can name it like any model.
 
+Two more name a class of work rather than one model, so what is behind them can move to a
+better or cheaper model without touching agents:
+
+- `camelrun/fast`, for bulk work (port a file, apply listed findings, extract, summarize):
+  `openrouter/meta/muse-ember`.
+- `camelrun/strong`, for judgment (review, plan, decide, final answers):
+  `openrouter/google/gemini-4-carbon` on OpenRouter's flex
+  [service tier](https://openrouter.ai/docs/guides/features/service-tiers), half the default
+  tier's price ($1/$5 per million tokens in and out, $0.05 cached, against $2/$10) and slower.
+  When flex has no capacity, a request waits for it, asking again with backoff for up to 30
+  seconds, then is made on the default tier; the rest of that turn stays there. `GET /v1/models`
+  lists each route's tier as `serviceTiers`.
+
+A response is charged at the tier that served it, which `usage.recorded` says as `serviceTier`.
+
 Each new message starts on the first. A request it cannot take now (a 429, a 5xx, no
 provider, a timeout, a stream that goes quiet) before any output moves to the next, at
 once, and the rest of that turn stays there. A request a model would refuse anywhere (a

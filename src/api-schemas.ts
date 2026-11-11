@@ -323,6 +323,7 @@ export const WebhookEvents = {
 
 export const Model = z.object({
   routes: z.array(z.string()).optional().openapi({ description: "A virtual model's physical models, most preferred first: each request is made on the first that can take it, and its run and usage name the one that did. Its other fields are the first's" }),
+  serviceTiers: z.array(z.string().nullable()).optional().openapi({ description: "For each of routes, the OpenRouter service tier the request is asked on (flex, default), or null for the provider's choice; present when a route names one. camelrun/strong asks flex first, then the default tier when flex has no capacity" }),
   id: z.string().openapi({ description: "Pass this as `model` when creating or configuring an agent", example: "anthropic/claude-sonnet-5" }),
   provider: z.string(),
   modelId: z.string(),

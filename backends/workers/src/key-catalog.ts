@@ -2,7 +2,7 @@
 // Run node backends/workers/scripts/reuse-security.mjs --check to check source drift.
 import { getProviders } from "@earendil-works/pi-ai/compat";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import { getModels } from "./pi-catalog.ts";
+import { getModels } from "./model-catalog.ts";
 import { deepseekOnOpenRouter } from "./security-deepseek.ts";
 export const SEARCH_PROVIDERS = ["exa", "brave", "parallel"] as const;
 /** Page renderers web_fetch can use, by the provider key they take. */

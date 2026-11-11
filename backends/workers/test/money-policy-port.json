@@ -603,6 +603,11 @@
     "included": true
   },
   {
+    "file": "tests/model-attempts.test.ts",
+    "test": "a served service tier is kept with the attempt in settle's own write: no extra query per call",
+    "included": true
+  },
+  {
     "file": "tests/oauth-clients.test.ts",
     "test": "registering a confidential client's public metadata again never yields its secret",
     "included": true

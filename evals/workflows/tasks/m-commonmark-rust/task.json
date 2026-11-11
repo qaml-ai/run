@@ -1,0 +1,19 @@
+{
+  "id": "m-commonmark-rust",
+  "version": 0,
+  "tier": "M",
+  "title": "Port commonmark.js to Rust, judged by the CommonMark spec examples",
+  "status": "planned",
+  "prompt": "/workspace holds commonmark.js, the reference CommonMark parser and HTML renderer in JavaScript. Port it to a Rust crate in /workspace/rust (edition 2021, no dependencies but std) with the same behaviour, and a binary, cmark-port, that reads Markdown on stdin and writes HTML on stdout. Do not change the JavaScript. Reply with a short summary when done.",
+  "budget": { "usd": 50, "wallMinutes": 120 },
+  "units": 14,
+  "source": {
+    "port": { "repo": "commonmark/commonmark.js", "ref": "0.31.2", "license": "BSD-2-Clause", "paths": ["lib/"], "language": "JavaScript", "approxLines": 4500 },
+    "judge": { "repo": "commonmark/commonmark-spec", "ref": "0.31.2", "license": "CC-BY-SA-4.0 (spec text and examples)", "language": "language-independent (Markdown in, HTML out)",
+      "command": "cargo build --release && python3 test/spec_tests.py --spec spec.txt --program target/release/cmark-port && python3 test/spec_tests.py --spec test/smart_punct.txt --program 'target/release/cmark-port --smart'",
+      "cases": "652 spec examples plus the smart punctuation examples", "parse": "'N passed, M failed, K errored, J skipped'",
+      "image": "rust:1.84-bookworm with python3; --cpus 4, no network; dependencies vendored (none expected)" },
+    "why": "The closest Tier M analogue of the Bun port: a mid-size parser whose output is judged byte for byte by a fixed, language-independent example set, with semantic subtleties (emphasis, link reference definitions, lazy continuation) that a cheap implementer gets wrong and a critic must catch.",
+    "prepare": "Clone the port at ref into input/ (lib/, README, LICENSE; no test/ or spec.txt); the judge image holds the spec at its ref."
+  }
+}
