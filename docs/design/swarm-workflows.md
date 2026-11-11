@@ -379,6 +379,39 @@ port) and one non-code workflow (the research sweep above) three ways, all-`stro
 reports cost per completed task and quality for each; `auto` ships as a default for leads only when it is within
 2% of all-`strong` on quality at a third or more off its cost.
 
+**A menu of strengths, not only fast or strong.** Models differ in kind, not only in price: one is better at UI
+and frontend work, another at reading a long context, another at math and data, at multilingual writing, at
+vision. So Jev chooses from a small **menu** rather than a pair. The menu is operator-set (`AGENT_MODEL_MENU`),
+overridable per tenant (`PUT /v1/tenants/{id}/menu`) and per workflow (`menu` on the start). Each entry is:
+
+```json
+{ "name": "ui", "model": "openrouter/…", "class": "fast", "strengths": "React, CSS, component layout, accessibility; weak at concurrency and systems code",
+  "evidence": { "eval": "ui-tasks-v3", "score": 0.81, "baseline": { "strong": 0.78, "fast": 0.61 }, "at": "2026-11-02" } }
+```
+
+`strengths` is the text Jev sees as that option; `class` sets its cost and speed and whether it may take judgment
+(a `fast` entry never does); `evidence` names the per-strength eval that admitted it. Jev's question stays one typed
+question at the same checkpoints as before (turn start, compaction, after a tool-heavy stretch, a worker's help
+request): `{ next: one of the menu's names, effort: low | high }` over the compaction window and pending input.
+Nothing changes about when: never per request, since a mid-segment switch throws the prompt cache away. Below the
+confidence threshold the answer is the class default (`strong` for a lead, `fast` for a worker); judgment stays on
+`strong` whatever Jev says. Each decision is logged with the probabilities for every entry and the chosen name, so
+an entry that keeps being chosen and keeps losing (critics' findings up, rounds up) shows in the ledger by strength.
+
+The same menu serves the `worker` type: `agent(task, { type: "worker" })` under `auto` sends a UI task to the `ui`
+entry and a parser to a systems-strong one; its critics stay on `strong` and on a different model than the worker's,
+as the guardrail says. An author who already knows pins a specialist directly, with no Jev call:
+`agent(task, { model: "camelrun/ui" })`, or `"model": "camelrun/ui"` in a definition, which resolves to the entry's
+model with the class's failover and is recorded as `servedModel` like any virtual model.
+
+**A strength is admitted by an eval, not a vibe.** An entry enters the menu only with `evidence` from a
+per-strength eval the runtime keeps under `evals/menu/<strength>/`: a fixed task set for that strength (for `ui`,
+40 component and layout tasks from real sessions), run on the candidate, on `strong` and on `fast`, scored by two
+`critic`s with a rubric and, for UI, by a screenshot diff against the reference in a `job()`; the candidate enters
+if it beats `fast` by a margin and is within a few points of `strong` at a lower cost. The same eval reruns when the
+entry's model or the route list changes, and the entry's `evidence` is replaced or the entry removed. Routes under a
+menu entry use OpenRouter `provider.only` and `ignore` filters only, never `order` or `sort`.
+
 **Cost for the Bun shape, sharpened by Fusion's numbers.** Fusion's implementation-heavy sessions saved 41–62%
 against a pure frontier harness, and its judgment-heavy ones 25–38% or went wrong. The port is overwhelmingly
 implementation-heavy: 1,448 mechanical ports, 16,000 compiler errors, test fixes from stack traces, each behind two
@@ -821,8 +854,12 @@ cost against the same work done by one agent on a computer.
    at 32 in parallel from one NVMe snapshot; whether Intel-only nested virt is acceptable against Bun CI's Graviton
    build numbers; dm-thin against reflink for clones; how long a warm snapshot stays warm (`target/` invalidation
    after a toolchain bump). The week-1 spike answers the first two; the rest is phase 2.
-10. **Bridges after our hosts land.** Keep Boat and Cloudflare as fallbacks indefinitely (a region down, a pool at
+11. **Bridges after our hosts land.** Keep Boat and Cloudflare as fallbacks indefinitely (a region down, a pool at
     zero), or retire them once the pool has run a month? Keeping them costs two drivers to maintain under one seam.
+12. **Who curates the menu, and how often.** The operator's menu needs an owner who runs the per-strength evals
+    and decides admissions and removals; a tenant's menu is its own. Re-evaluate every entry on a schedule (monthly?)
+    and on every model or route change, and retire an entry whose ledger shows it losing for two weeks. Whether a
+    tenant may add an entry with its own eval evidence, or only choose among the operator's, is open.
 7. **Pricing of steps and the repo object.** Steps and searches are Durable Object time today, unbilled to tenants,
    as monitor checks are. Measure before deciding.
 8. **Day-one models and `auto`'s classifier.** Which model backs `fast` (DeepSeek V4.1 Flash on vetted OpenRouter
@@ -833,7 +870,7 @@ cost against the same work done by one agent on a computer.
    judgment is worse than a strong model on bulk), where the confidence threshold sits, whether to keep the
    sidekick's cache warm while the main model holds the turn (Fusion runs both in parallel; we would pay for two
    prefixes), and what a compaction-boundary switch costs on providers whose cache keys include the model.
-11. **Types for other domains.** Three types cover code, research and audits in this document. A domain that needs
+10. **Types for other domains.** Three types cover code, research and audits in this document. A domain that needs
     a fourth (a `negotiator` that may spend, a `operator` that may run side effects without a gate) should argue
     for a permission the three lack, not a job title.
 9. **Layers for whole-tree refactors.** A refactor that touches 10,000 paths at once (the crate split) is one layer
