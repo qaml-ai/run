@@ -39,7 +39,8 @@ const ORCHESTRATOR = "You are the lead agent on a large task. You may hand parts
 /** `--split required`: the orchestrator type as the design defines it, doing no item work itself, so worker classes can be compared. Model-facing. */
 const SPLIT_REQUIRED = " Do none of the item work yourself: split it among workers, have critics check their work, and send fixes back to workers.";
 
-export interface RunOptions { label: string; mode: Mode; workerClass: ModelClass; classes: Classes; run: number; dir: string; budgetUsd: number; split: "free" | "required" }
+export type WorkflowApiKind = "public" | "test-hook";
+export interface RunOptions { label: string; mode: Mode; workerClass: ModelClass; classes: Classes; run: number; dir: string; budgetUsd: number; split: "free" | "required"; workflowApi: "auto" | WorkflowApiKind }
 
 export class Runtime {
   readonly client: AgentRuntime;
@@ -54,8 +55,27 @@ export class Runtime {
     try { body = JSON.parse(text); } catch { /* text */ }
     return { status: response.status, body };
   }
-  /** Whether this runtime has the workflow API (phase-1 PR 7). */
-  async hasWorkflows() { const { status } = await this.api("/v1/workflows?limit=1"); return status === 200; }
+  /**
+   * Which workflow API this runtime has: the designed public one (`/v1/workflows`), the TEST_MODE operator hook the
+   * internal WorkflowObject ships with before the public route (#806: `/__test/workflows/:name`, a local Workers
+   * runtime and the operator token only), or none.
+   */
+  async workflowApi(prefer: "auto" | WorkflowApiKind = "auto"): Promise<WorkflowApiKind | null> {
+    if (prefer !== "test-hook" && (await this.api("/v1/workflows?limit=1")).status === 200) return "public";
+    if (prefer !== "public" && (await this.api("/__test/workflows/wfeval-probe")).status !== 404) return "test-hook";
+    return null;
+  }
+  private workflowPath(kind: WorkflowApiKind, id: string, action = "") { return `${kind === "public" ? "/v1/workflows" : "/__test/workflows"}/${encodeURIComponent(id)}${action ? `/${action}` : ""}`; }
+  /** Starts a script. The test hook takes no args and no name (the name is in the path), so args are inlined as a const either way. */
+  async startWorkflow(kind: WorkflowApiKind, name: string, input: { script: string; args: Record<string, unknown>; budgetUsd: number; concurrency: number }) {
+    const code = `const args = ${JSON.stringify(input.args)};\n${input.script.replace(/^export\s+/gm, "")}`;
+    const { status, body } = kind === "public"
+      ? await this.api("/v1/workflows", { method: "POST", body: { name, script: code, args: input.args, budget: { usd: input.budgetUsd }, concurrency: input.concurrency, ttlSeconds: 86_400 } })
+      : await this.api(this.workflowPath(kind, name), { method: "POST", body: { code, budgetUsd: input.budgetUsd, concurrency: input.concurrency } });
+    if (status !== 201 && status !== 200) throw new Error(`starting the workflow: ${status} ${JSON.stringify(body).slice(0, 300)}`);
+    return kind === "public" ? String(body.id) : name;
+  }
+  abortWorkflow(kind: WorkflowApiKind, id: string) { return this.api(this.workflowPath(kind, id, "abort"), { method: "POST", body: {} }); }
 
   async upload(task: Task, name: string) {
     const volume = await this.client.createVolume({ name });
@@ -140,23 +160,24 @@ export class Runtime {
       /conflict|changed since|was modified|COMMIT_CONFLICT|not at version/i.test((message.content ?? []).map(part => part.text ?? "").join(" "))).length;
   }
 
-  /** Lists every page of a workflow's items (the designed `GET /v1/workflows/:id/items`). */
-  async workflowItems(id: string) {
+  /** Every item of a workflow, all attempts (`GET …/items`, paged by `next`: a cursor, or the hook's `ord` as `after`). */
+  async workflowItems(kind: WorkflowApiKind, id: string) {
     const items: Record<string, any>[] = [];
-    let cursor: string | undefined;
+    let next: string | number | undefined;
     do {
-      const { status, body } = await this.api(`/v1/workflows/${encodeURIComponent(id)}/items${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`);
+      const query = new URLSearchParams({ attempts: "true", limit: "500", ...(next === undefined ? {} : typeof next === "number" ? { after: String(next) } : { cursor: next }) });
+      const { status, body } = await this.api(`${this.workflowPath(kind, id, "items")}?${query}`);
       if (status !== 200) throw new Error(`workflow items ${status}: ${JSON.stringify(body).slice(0, 200)}`);
       items.push(...(body.items ?? []));
-      cursor = body.next ?? body.cursor ?? undefined;
-    } while (cursor);
+      next = body.next ?? undefined;
+    } while (next !== undefined && next !== null);
     return items;
   }
   /** Waits for a workflow to end (completed, failed, aborted, budget_exhausted), or to sit paused or waiting past `stallMs`. */
-  async waitWorkflow(id: string, deadline: number, stallMs = 600_000) {
+  async waitWorkflow(kind: WorkflowApiKind, id: string, deadline: number, stallMs = 600_000) {
     let since = Date.now(), last = "";
     for (;;) {
-      const { status, body } = await this.api(`/v1/workflows/${encodeURIComponent(id)}`);
+      const { status, body } = await this.api(this.workflowPath(kind, id));
       if (status !== 200) throw new Error(`workflow ${id}: ${status}`);
       if (["completed", "failed", "aborted", "budget_exhausted"].includes(body.status)) return body;
       if (body.status !== last) { last = body.status; since = Date.now(); }
@@ -165,14 +186,16 @@ export class Runtime {
     }
   }
   /** Effects, children, jobs, retries and conflicts from a workflow's items; cost from its ledger. */
-  workflowStats(items: Record<string, any>[], workflow: Record<string, any>) {
+  workflowStats(items: Record<string, any>[], workflow: Record<string, any>, types: Record<string, AgentType> = {}) {
     const byStatus: Record<string, number> = {};
     for (const item of items) byStatus[item.status] = (byStatus[item.status] ?? 0) + 1;
     const agents = items.filter(item => item.kind === "agent");
     const cost: CostBreakdown = { totalUsd: Number(workflow.spent?.usd ?? 0), byType: {}, byModel: {}, byClass: {}, responses: 0,
       tokens: { input: Number(workflow.spent?.inputTokens ?? 0), output: Number(workflow.spent?.outputTokens ?? 0), cacheRead: Number(workflow.spent?.cachedInputTokens ?? 0), cacheWrite: 0 }, cacheShare: 0 };
     for (const item of items) {
-      const usd = Number(item.costUsd ?? 0), model = String(item.model ?? "unknown"), type = (item.type ?? "other") as AgentType;
+      // An item's type: its own field once PR 8 adds one, else the definition the effect named.
+      const usd = Number(item.costUsd ?? 0), model = String(item.model ?? "unknown");
+      const type = (item.type ?? item.args?.type ?? types[String(item.args?.definition)] ?? "other") as AgentType;
       cost.byType[type] = (cost.byType[type] ?? 0) + usd;
       cost.byModel[model] = (cost.byModel[model] ?? 0) + usd;
       cost.byClass[classOf(model)] = (cost.byClass[classOf(model)] ?? 0) + usd;
@@ -181,8 +204,8 @@ export class Runtime {
     cost.cacheShare = inputs ? +(cost.tokens.cacheRead / inputs).toFixed(4) : 0;
     return {
       effects: { children: agents.length, grandchildren: 0, effects: items.length, jobs: items.filter(item => item.kind === "job").length, failedChildren: agents.filter(item => ["failed", "aborted", "refused"].includes(item.status)).length, byStatus },
-      retries: items.reduce((sum, item) => sum + Math.max(0, Number(item.attempt ?? 1) - 1), 0),
-      conflicts: items.filter(item => /conflict/i.test(String(item.error ?? ""))).length,
+      retries: items.filter(item => Number(item.attempt ?? 1) > 1 && item.current !== false).reduce((sum, item) => sum + Number(item.attempt) - 1, 0),
+      conflicts: items.filter(item => /conflict/i.test(String(item.error ?? item.reason ?? ""))).length,
       cost,
     };
   }
@@ -202,24 +225,28 @@ export async function orchestrate(runtime: Runtime, task: Task, options: RunOpti
     effects: { children: 0, grandchildren: 0, failedChildren: 0, byStatus: {} }, conflicts: 0, retries: 0,
     choice: { delegated: false, delegateCalls: 0, workflowStarted: false, workflowIds: [], toolCalls: {} }, artifacts: options.dir,
   };
-  if (options.mode !== "dry" && !await runtime.hasWorkflows())
-    return { ...base, status: "unavailable", error: "This runtime has no /v1/workflows: the workflow modes need phase-1 PR 7 (WorkflowObject and the workflows builtin)", cleanup: async () => {} };
+  const api = options.mode === "dry" ? null : await runtime.workflowApi(options.mode === "workflow" ? "public" : options.workflowApi);
+  if (options.mode !== "dry" && !api)
+    return { ...base, status: "unavailable", error: options.mode === "workflow"
+      ? "This runtime has no /v1/workflows: workflow mode needs the public route and the workflows builtin (phase-1 PR 7)"
+      : "This runtime has no workflow API: workflow-direct needs /v1/workflows, or on a local TEST_MODE runtime the WorkflowObject's operator hook (#806) with the agent() executor (#804)", cleanup: async () => {} };
 
   const volumeId = await runtime.upload(task, prefix);
   const cleanups: (() => Promise<unknown>)[] = [() => runtime.client.volume(volumeId).delete()];
   const cleanup = async () => { for (const step of cleanups.reverse()) await step().catch(error => log({ cleanupError: String(error) })); };
 
   if (options.mode === "workflow-direct") {
-    const script = readFileSync(join(task.dir, "workflow.js"), "utf8");
-    const { status, body } = await runtime.api("/v1/workflows", { method: "POST", body: { name: prefix, script, args: { ...task.workflowArgs, volume: volumeId, workerClass: options.workerClass },
-      budget: { usd: options.budgetUsd }, concurrency: 8, ttlSeconds: 86_400, classes: { fast: CLASS_MODELS.fast, strong: CLASS_MODELS.strong } } });
-    if (status !== 201 && status !== 200) return { ...base, status: "error", error: `POST /v1/workflows ${status}: ${JSON.stringify(body).slice(0, 300)}`, volumeId, cleanup };
-    cleanups.push(() => runtime.api(`/v1/workflows/${body.id}/abort`, { method: "POST", body: {} }));
-    const ended = await runtime.waitWorkflow(body.id, deadline);
-    const stats = runtime.workflowStats(await runtime.workflowItems(body.id), ended);
+    // The task's reference script, its children made from the run's type definitions (which mount the task's volume).
+    const types = await runtime.defineTypes(prefix, volumeId, options.classes);
+    for (const key of Object.values(types.keys)) cleanups.push(() => runtime.client.deleteDefinition(key));
+    const id = await runtime.startWorkflow(api!, prefix.slice(0, 64), { script: readFileSync(join(task.dir, "workflow.js"), "utf8"),
+      args: { ...task.workflowArgs, definitions: types.keys, workerClass: options.workerClass }, budgetUsd: options.budgetUsd, concurrency: 8 });
+    cleanups.push(() => runtime.abortWorkflow(api!, id));
+    const ended = await runtime.waitWorkflow(api!, id, deadline);
+    const stats = runtime.workflowStats(await runtime.workflowItems(api!, id), ended, types.ids);
     log({ workflow: ended });
     return { ...base, ...stats, status: ended.status === "completed" ? "completed" : ended.status === "budget_exhausted" ? "budget" : ended.stalled ? "timeout" : "failed",
-      choice: { ...base.choice, workflowStarted: true, workflowIds: [body.id] }, wallMs: Date.now() - started, volumeId, cleanup };
+      error: ended.error ?? ended.fault?.message, choice: { ...base.choice, workflowStarted: true, workflowIds: [id] }, wallMs: Date.now() - started, volumeId, cleanup };
   }
 
   // dry and workflow: an orchestrator agent given the task, with the agent types to delegate to.
@@ -273,9 +300,9 @@ export async function orchestrate(runtime: Runtime, task: Task, options: RunOpti
     const { body } = await runtime.api(`/v1/workflows?owner=${encodeURIComponent(agent.id)}`);
     for (const workflow of body.workflows ?? body.data ?? []) {
       workflowIds.push(workflow.id);
-      cleanups.push(() => runtime.api(`/v1/workflows/${workflow.id}/abort`, { method: "POST", body: {} }));
-      const ended = await runtime.waitWorkflow(workflow.id, deadline);
-      const stats = runtime.workflowStats(await runtime.workflowItems(workflow.id), ended);
+      cleanups.push(() => runtime.abortWorkflow("public", workflow.id));
+      const ended = await runtime.waitWorkflow("public", workflow.id, deadline);
+      const stats = runtime.workflowStats(await runtime.workflowItems("public", workflow.id), ended, types.ids);
       log({ workflow: ended });
       workflowStats = workflowStats ? { ...stats, retries: workflowStats.retries + stats.retries, conflicts: workflowStats.conflicts + stats.conflicts } : stats;
       if (ended.status === "budget_exhausted") runStatus = "budget"; else if (ended.stalled) runStatus = "timeout"; else if (ended.status !== "completed" && runStatus === "completed") runStatus = "failed";

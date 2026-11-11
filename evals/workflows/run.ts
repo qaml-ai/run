@@ -6,7 +6,7 @@
 //   … run.ts score <task> <dir> [--sandbox host]                  score a tree you have
 //   AGENT_URL=https://run-pilot.camelai.dev AGENT_RUNTIME_TOKEN=… \
 //   … run.ts run [--tasks s-ts-port,s-esm-refactor] [--modes dry] [--workers fast,strong] [--runs 1] [--label name] [--max-usd 5]
-//               [--orchestrator camelrun/strong] [--split free|required] [--allow-host dev.example] [--keep]
+//               [--orchestrator camelrun/strong] [--split free|required] [--workflow-api auto|public|test-hook] [--allow-host dev.example] [--keep]
 //   … run.ts summary .agent-runtime/eval/workflows-<label>.jsonl [more.jsonl]
 //
 // `run` appends one JSON line per run to .agent-runtime/eval/workflows-<label>.jsonl, writes
@@ -81,7 +81,7 @@ async function main() {
     const dir = join(out, `${task.id}-${mode}-${workerClass}-${run}`);
     let result: RunResult;
     try {
-      const ran = await orchestrate(runtime, task, { label, mode, workerClass, classes, run, dir, budgetUsd: task.budget.usd, split });
+      const ran = await orchestrate(runtime, task, { label, mode, workerClass, classes, run, dir, budgetUsd: task.budget.usd, split, workflowApi: (arg("workflow-api") ?? "auto") as "auto" | "public" | "test-hook" });
       const { cleanup, volumeId, ...rest } = ran;
       let score = null;
       if (volumeId && rest.status !== "unavailable") {
@@ -107,4 +107,6 @@ async function main() {
   console.log(`\n${markdown}\nTotal spend: $${spent.toFixed(3)}. Results: ${out}.jsonl, ${out}.md`);
 }
 
+// Exit explicitly: an agent client's sockets can outlive its agent and keep the process up.
 await main().catch(error => { console.error(error instanceof Error ? error.message : error); process.exitCode = 1; });
+process.exit();

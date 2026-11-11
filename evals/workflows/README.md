@@ -57,12 +57,13 @@ first: it is cheap and shakes out the judge images and `job()`.
 | --- | --- | --- |
 | `dry` | An orchestrator agent with `delegate` to `worker`, `critic` and `lead` definitions on the task's volume. No workflow object. | Today |
 | `workflow` | The same agent and prompt. With delegate settings it also gets the `workflows` builtin, so whether it writes a workflow is its own choice, and is measured (`choice.workflowStarted`). The harness waits for each workflow it started, then reads its items and ledger. | Phase-1 PR 7 (`WorkflowObject`, `/v1/workflows`, the builtin) |
-| `workflow-direct` | The harness starts the task's reference script (`tasks/<id>/workflow.js`) with `POST /v1/workflows`, so the runtime is measured apart from the agent's judgment. | PR 7; `type`/`class` on `agent()` need PR 8 |
+| `workflow-direct` | The harness starts the task's reference script (`tasks/<id>/workflow.js`) itself, so the runtime is measured apart from the agent's judgment. Children are made from the run's worker, critic and lead definitions, which mount the task's volume and carry the model class. | `/v1/workflows` (PR 7), or on a local TEST_MODE runtime the WorkflowObject's operator hook `/__test/workflows/:name` (#806) once the `agent()` executor (#804) is wired into it |
 
-Workflow modes answer `unavailable` on a runtime without `/v1/workflows`, so the same command runs before and after
-PR 7. The model classes are the virtual models `camelrun/fast` (Muse Ember) and `camelrun/strong` (Gemini 4 Carbon
-on flex), which exist today (#796); the orchestrator defaults to `camelrun/strong` (`--orchestrator` to change it,
-e.g. to `camelrun/max` once it exists).
+Workflow modes answer `unavailable` on a runtime without a workflow API, so the same command runs before and after
+PR 7 (`--workflow-api auto|public|test-hook` picks the transport; `auto` tries the public route, then the hook). The
+model classes are the virtual models `camelrun/fast` (Muse Ember) and `camelrun/strong` (Gemini 4 Carbon on flex),
+which exist today (#796); the orchestrator defaults to `camelrun/strong` (`--orchestrator` to change it, e.g. to
+`camelrun/max` once it exists).
 
 `--split required` adds one sentence to the orchestrator's prompt telling it to do no item work itself (the design's
 orchestrator type). Without it, the agent chooses, and on Tier S a strong orchestrator often does the work alone.
@@ -70,10 +71,13 @@ orchestrator type). Without it, the agent chooses, and on Tier S a strong orches
 **Adapter assumptions to check when PR 7 and PR 8 land** (all in `lib/runtime.ts` and the `workflow.js` files):
 
 - `GET /v1/workflows?owner=<agentId>` lists an agent's workflows (`workflows` or `data` array);
-- `GET /v1/workflows/:id/items` pages with `next`, and items carry `kind`, `status`, `attempt`, `costUsd`, `model`,
-  `error`, and ideally `type`, for cost by agent type;
+- `GET /v1/workflows/:id/items` pages with `next` (the hook's is an `ord`, sent back as `after`) and takes
+  `attempts=true`; items carry `kind`, `status`, `attempt`, `current`, `costUsd`, `model`, `reason` and `args` (as in
+  #806), and cost by agent type comes from `args.definition` until items carry a `type`;
 - `spent` on the workflow has `usd`, `inputTokens`, `cachedInputTokens`, `outputTokens`;
-- a child reaches the task's volume through `agent(…, { files: { volume, path, mode } })`;
+- the runner evaluates a script as an async function body (#806), so the harness strips `export` and inlines `args`
+  as a const; if the public route passes `args` as a global, the const shadows it with the same value;
+- `agent()` takes `definition` (#804); `type` is passed too and ignored until PR 8 makes it an option;
 - usage rolled up under the orchestrator does not already include its workflows' children (else `mergeCost` double
   counts: compare with `GET /v1/usage` once).
 

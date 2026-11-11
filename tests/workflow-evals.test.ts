@@ -24,6 +24,26 @@ test("every task manifest is complete, and planned ones say where their input an
   assert.deepEqual([...new Set(loadTasks().map(task => task.tier))].sort(), ["L", "M", "N", "S"]);
 });
 
+test("each reference workflow script runs against stand-in globals: every agent() has a unique key and a definition", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  for (const task of loadTasks().filter(task => task.status === "ready")) {
+    const calls: { key?: string; definition?: string; type?: string }[] = [];
+    const args = { ...task.workflowArgs, definitions: { worker: "def-worker", critic: "def-critic", lead: "def-lead" }, workerClass: "fast" };
+    const code = `const args = ${JSON.stringify(args)};\n${readFileSync(join(task.dir, "workflow.js"), "utf8").replace(/^export\s+/gm, "")}`;
+    const globals = {
+      agent: async (_prompt: string, options: { key?: string; definition?: string; type?: string; output?: unknown }) => { calls.push(options); return options.output ? { findings: calls.length % 3 ? [] : [{ file: "lib/m01.js", problem: "p", table: "t", column: "c", kind: "k", rows: [1] }] } : "done"; },
+      parallel: (thunks: (() => unknown)[]) => Promise.all(thunks.map(thunk => thunk())),
+      phase: () => {}, log: () => {},
+    };
+    const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+    await new AsyncFunction(...Object.keys(globals), code)(...Object.values(globals));
+    assert.ok(calls.length >= task.units, `${task.id} starts at least one agent per unit`);
+    assert.equal(new Set(calls.map(call => call.key)).size, calls.length, `${task.id}: keys are unique`);
+    for (const call of calls) assert.ok(call.key && call.definition?.startsWith("def-") && call.type, `${task.id}: ${JSON.stringify(call)}`);
+  }
+});
+
 test("evals refuse production runtimes and unknown hosts", () => {
   assert.throws(() => guardUrl("https://run.camelai.com"), /production/);
   assert.throws(() => guardUrl("https://agents.camelai.dev/v1"), /production/);
