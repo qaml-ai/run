@@ -3,7 +3,8 @@ import { CPU_STAT, SNAPSHOT_TTL_MS, type ComputerSnapshot, type ContainerApi, ty
 import { camelSync, SyncError, type SyncFile } from "./camel-sync.ts";
 import { JOB_LIMITS, JOB_OUT, JOB_REPO, JOB_SYNC_MS, jobLifetimeMs, type JobFailureCode, type JobOutput, type JobResult, type JobSpec, type JobStream, type JobTimings } from "./job.ts";
 
-/** Container time for whoever pays for a job (computers/meter.ts), and its computer slot. Absent: unmetered. */
+/** Container time for whoever pays for a job (computers/meter.ts), and its computer slot. ContainerComputer.runJob always
+ * passes one for the job's payer; only tests run a job without it. */
 export interface JobMeter {
   /** Before the container starts: throws when the payer may not start compute or its tree is at its computer limit. */
   admit(instance: InstanceType, until: number): Promise<void>;
