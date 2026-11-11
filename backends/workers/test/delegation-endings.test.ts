@@ -184,3 +184,35 @@ test('a deleted (or expired) child keeps delivering its ending: its wakes flush 
   assert.equal(c.outbox.size(), 0);
   assert.equal(armed.at(-1), undefined, 'nothing left to wake for');
 });
+
+test('a deleted agent is never woken by its watchdog: an ended, unnotified child row (its notify refused, 410) arms nothing', async () => {
+  const { deletedDeadline } = await import('../src/ending-outbox.ts');
+  // The path the review found: the parent expired, its cancelled background child delivered its ending, the notify
+  // threw 410 on the deleted agent's config, and the row stayed ended and unnotified ("recovering"). Deleted, the
+  // agent's next wake is only what it owes.
+  assert.equal(deletedDeadline({ billing: false, events: false, outbox: undefined }, 1_000), Infinity, 'nothing owed: no wake at all');
+  assert.equal(deletedDeadline({ billing: false, events: false, outbox: 61_000 }, 1_000), 61_000, 'the outbox\'s next retry, not now + 1 s');
+  assert.equal(deletedDeadline({ billing: true, events: false, outbox: 61_000 }, 1_000), 6_000);
+  // armImpl takes this branch for a deleted agent before it computes recovering or its watchdog.
+  const source = readFileSync(new URL('../src/agent-lifecycle.ts', import.meta.url), 'utf8');
+  const arm = source.slice(source.indexOf('export async function armImpl'), source.indexOf('export async function onStartImpl'));
+  assert.ok(arm.indexOf('if (deleted) {') > 0 && arm.indexOf('if (deleted) {') < arm.indexOf('const recovering'), 'the deleted branch comes before recovering');
+  assert.match(arm.slice(arm.indexOf('if (deleted) {'), arm.indexOf('const records')), /deletedDeadline\([^)]*\)[\s\S]*return;/);
+});
+
+test('a flush arms the alarm once, however many rows failed', async () => {
+  const c = child({ ending: async () => { throw new Error('owner unavailable'); } });
+  for (let i = 0; i < 40; i++) await c.store.storage.transaction(async tx => c.outbox.stageEnding(tx, owner, { ...ending, requestId: `r${i}` }));
+  c.armed.length = 0;
+  await c.outbox.flush();
+  assert.equal(c.armed.length, 1);
+});
+
+test('outbox rows an earlier build kept in KV move into the table and are delivered', async () => {
+  const delivered: string[] = [];
+  const c = child({ ending: async (_owner, value) => { delivered.push(value.requestId); return { accepted: true }; } });
+  await c.store.storage.put('child-outbox:old_run:z', { kind: 'ending', owner, ending: { ...ending, requestId: 'old_run' }, attempts: 2, nextAt: 0, createdAt: 900 });
+  await c.outbox.flush();
+  assert.deepEqual(delivered, ['old_run']);
+  assert.equal(c.store.values.has('child-outbox:old_run:z'), false);
+});
