@@ -64,7 +64,7 @@ export type JobSpec = {
   /** Save the container's disk under this name when the command exits 0, for the next job to start from. */
   saveSnapshot?: string;
   /** Who pays for the container time and whose computer limit the job counts against; none runs unmetered. */
-  payer?: ComputerPayer;
+  payer: ComputerPayer;
 };
 export type JobStream = { bytes: Uint8Array; size: number; truncated: boolean };
 export type JobOutput = { bytes: Uint8Array; size: number; truncated: boolean };
@@ -198,17 +198,15 @@ export function jobSpec(value: unknown): JobSpec & { image: string; outputs: str
   }
   if (v.internet !== undefined && typeof v.internet !== "boolean") throw bad("internet is true or false");
   if (v.saveSnapshot !== undefined && (typeof v.saveSnapshot !== "string" || !SNAPSHOT_NAME.test(v.saveSnapshot))) throw bad("Invalid saveSnapshot name");
-  let payer: ComputerPayer | undefined;
-  if (v.payer !== undefined) {
-    if (!v.payer || typeof v.payer.tenant !== "string" || !v.payer.tenant || typeof v.payer.agent !== "string" || !v.payer.agent) throw bad("A job payer names a tenant and an agent");
-    payer = { tenant: v.payer.tenant, agent: v.payer.agent };
-  }
-  if (volume && payer && volume.tenant !== payer.tenant) throw bad("A job reads volumes of its payer's tenant only");
+  // Every job has a payer: it is metered, holds a computer slot, and reads volumes of the payer's tenant only.
+  if (!v.payer || typeof v.payer.tenant !== "string" || !v.payer.tenant || typeof v.payer.agent !== "string" || !v.payer.agent) throw bad("A job needs a payer: { tenant, agent }");
+  const payer: ComputerPayer = { tenant: v.payer.tenant, agent: v.payer.agent };
+  if (volume && volume.tenant !== payer.tenant) throw bad("A job reads volumes of its payer's tenant only");
   return {
     id: v.id, image: v.image ?? "workspace", command: v.command, timeoutSeconds: v.timeoutSeconds!, outputs,
     ...snapshot ? { snapshot } : {}, ...files ? { files } : {}, ...volume ? { volume } : {},
     ...Object.keys(limits).length ? { limits } : {}, ...v.internet ? { internet: true } : {},
-    ...v.saveSnapshot ? { saveSnapshot: v.saveSnapshot } : {}, ...payer ? { payer } : {},
+    ...v.saveSnapshot ? { saveSnapshot: v.saveSnapshot } : {}, payer,
     instance: jobInstance(limits),
   };
 }

@@ -30,7 +30,7 @@ class CloudflareContainersJobDriver implements JobDriver {
   }
   async run(spec: JobSpec): Promise<JobResult> {
     const checked = jobSpec(spec);
-    return await this.namespace.getByName(jobObjectName(checked.id)).runJob(spec) as JobResult;
+    return await this.namespace.getByName(jobObjectName(checked.id)).runJob(checked) as JobResult;
   }
   async stop(id: string) {
     return await this.namespace.getByName(jobObjectName(id)).stopJob() as { stopped: boolean };

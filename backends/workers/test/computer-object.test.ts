@@ -97,13 +97,13 @@ test('a job object runs one job at a time, stops it on request, and its alarm de
     COMPUTER_LIMITS: { idleSeconds: { default: 60 } },
   });
   const computer = new Computer({ container, storage }, {});
-  const first = computer.runJob({ id: 'j1', command: 'x', timeoutSeconds: 10, files: { a: new Uint8Array() } });
+  const first = computer.runJob({ id: 'j1', payer: { tenant: 't', agent: 'a' }, command: 'x', timeoutSeconds: 10, files: { a: new Uint8Array() } });
   while (!runs.length) await new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(data.get('job:deadline'), 1000 + 10_000 + 720_000);
   assert.equal(alarm, 1000 + 10_000 + 720_000, 'the backstop alarm is set before the container starts');
   assert.equal(Object.keys((runs[0].files as { inline: object }).inline).join(), 'a');
-  assert.equal(runs[0].meter, undefined, 'a job without a payer runs unmetered');
-  const second = await computer.runJob({ id: 'j1', command: 'x', timeoutSeconds: 10 });
+  assert.equal(typeof (runs[0].meter as { admit?: unknown }).admit, 'function', 'every job is metered to its payer');
+  const second = await computer.runJob({ id: 'j1', payer: { tenant: 't', agent: 'a' }, command: 'x', timeoutSeconds: 10 });
   assert.equal(second.code, 'job_running');
   assert.equal((await computer.stopJob()).stopped, true);
   assert.equal((await first).code, 'stopped');
@@ -111,7 +111,7 @@ test('a job object runs one job at a time, stops it on request, and its alarm de
   assert.equal((await computer.stopJob()).stopped, false);
 
   // A run whose object died: its deadline stays, its container may still run. The alarm waits for the deadline.
-  const third = computer.runJob({ id: 'j2', command: 'x', timeoutSeconds: 10 });
+  const third = computer.runJob({ id: 'j2', payer: { tenant: 't', agent: 'a' }, command: 'x', timeoutSeconds: 10 });
   while (runs.length < 2) await new Promise(resolve => setTimeout(resolve, 0));
   release();
   assert.equal((await third).ok, true);

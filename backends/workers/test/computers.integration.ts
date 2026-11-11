@@ -907,25 +907,25 @@ test("jobs: one command in a container of its own, its files synced in and its o
   const snap = await call(`/v1/volumes/${volume.id}/snapshots`, { name: "for-job" });
   await call(`/v1/volumes/${volume.id}/files/pkg/a.txt`, undefined, "changed after the snapshot");
   const warm = await call("/__test/jobs", {
-    id: "volume-1", command: "cat pkg/a.txt; echo warm > /var/tmp/cache", timeoutSeconds: 120,
+    id: "volume-1", payer: { tenant, agent: agent.id }, command: "cat pkg/a.txt; echo warm > /var/tmp/cache", timeoutSeconds: 120,
     volume: { tenant, volume: volume.id, snapshot: snap.id }, saveSnapshot: "warm-1",
   });
   assert.equal(warm.ok, true, JSON.stringify(warm));
   assert.equal(text(warm.stdout), "from the volume");
   assert.equal(warm.snapshot?.name, "warm-1");
-  const resumed = await call("/__test/jobs", { id: "warm-2", snapshot: warm.snapshot, command: "cat /var/tmp/cache; ls", timeoutSeconds: 120 });
+  const resumed = await call("/__test/jobs", { id: "warm-2", payer: { tenant, agent: agent.id }, snapshot: warm.snapshot, command: "cat /var/tmp/cache; ls", timeoutSeconds: 120 });
   assert.equal(resumed.ok, true, JSON.stringify(resumed));
   assert.equal(text(resumed.stdout), "warm\npkg\n", "a job from a snapshot starts with that job's disk");
 
   // A command past its timeout is killed; its outputs still come back.
-  const slow = await call("/__test/jobs", { id: "slow-1", command: "echo partial > $JOB_OUT/p.txt; sleep 60", timeoutSeconds: 3, outputs: ["p.txt"] });
+  const slow = await call("/__test/jobs", { id: "slow-1", payer: { tenant, agent: agent.id }, command: "echo partial > $JOB_OUT/p.txt; sleep 60", timeoutSeconds: 3, outputs: ["p.txt"] });
   assert.equal(slow.ok, true, JSON.stringify(slow));
   assert.equal(slow.timedOut, true);
   assert.equal(slow.exitCode, null);
   assert.equal(text(slow.outputs["p.txt"]), "partial\n");
 
   // stop() ends a running job.
-  const running = call("/__test/jobs", { id: "stop-1", command: "sleep 60", timeoutSeconds: 120 });
+  const running = call("/__test/jobs", { id: "stop-1", payer: { tenant, agent: agent.id }, command: "sleep 60", timeoutSeconds: 120 });
   let stopped = false;
   for (let i = 0; i < 120 && !stopped; i++) {
     await new Promise(resolve => setTimeout(resolve, 500));

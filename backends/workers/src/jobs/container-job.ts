@@ -110,7 +110,7 @@ export async function runContainerJob(spec: Spec, options: ContainerJobOptions):
   let began = false;
   try {
     // Start.
-    const image = container.images[spec.image];
+    const image = Object.hasOwn(container.images, spec.image) ? container.images[spec.image] : undefined;
     if (!image) throw new JobFailure("start_failed", `Job image ${spec.image} is not configured`);
     if (spec.snapshot) {
       if (spec.snapshot.expiresAt <= now()) throw new JobFailure("start_failed", `Snapshot ${spec.snapshot.name} expired; take a new one`);

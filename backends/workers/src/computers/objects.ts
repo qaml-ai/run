@@ -269,7 +269,7 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
       const files = spec.files ? inlineFiles(spec.files) : spec.volume ? volumeFiles(this.env as unknown as VolumeSyncEnv, spec.volume) : undefined;
       return await runContainerJob(spec, {
         container: this.ctx.container, stop: stop.signal, ...files ? { files } : {},
-        ...spec.payer ? { meter: this.jobMeter(spec.id, spec.payer) } : {},
+        meter: this.jobMeter(spec.id, spec.payer),
       });
     } finally {
       this.job = undefined;

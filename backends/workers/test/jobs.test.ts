@@ -92,6 +92,7 @@ function keepAlive(t: { after(fn: () => void): void }) {
 }
 const ok = (result: JobResult) => { if (!result.ok) assert.fail(`${result.code}: ${result.message}`); return result; };
 
+const PAYER = { tenant: "t", agent: "a" };
 test("a job spec is checked before any compute starts, and picks the smallest instance its limits fit", () => {
   assert.equal(jobInstance(), "standard-1");
   assert.equal(jobInstance({ cpus: 4, memoryMiB: 12288, diskMiB: 16384 }), "standard-4", "the design's example");
@@ -99,25 +100,29 @@ test("a job spec is checked before any compute starts, and picks the smallest in
   assert.equal(jobInstance({ memoryMiB: 8192 }), "standard-3");
   assert.throws(() => jobInstance({ cpus: 16 }), JobSpecError);
   assert.throws(() => jobInstance({ diskMiB: 32 * 1024 }), /largest has 4 vCPUs/);
-  const spec = jobSpec({ id: "test-1", command: "bun test", timeoutSeconds: 60, outputs: ["junit.xml", "/junit.xml", "logs/a.txt"], files: { "/src/a.ts": bytes("a") } });
+  const spec = jobSpec({ payer: PAYER, id: "test-1", command: "bun test", timeoutSeconds: 60, outputs: ["junit.xml", "/junit.xml", "logs/a.txt"], files: { "/src/a.ts": bytes("a") } });
   assert.deepEqual(spec.outputs, ["junit.xml", "logs/a.txt"]);
   assert.deepEqual(Object.keys(spec.files!), ["src/a.ts"]);
   assert.equal(spec.image, "workspace");
+  assert.throws(() => jobSpec({ id: "j", command: "x", timeoutSeconds: 1 }), /needs a payer/, "a job without a payer is refused");
+  assert.throws(() => jobSpec({ id: "j", command: "x", timeoutSeconds: 1, volume: { tenant: "other", volume: "v", snapshot: "s" }, payer: PAYER }), /payer's tenant only/);
   for (const bad of [
-    { id: "job:1", command: "x", timeoutSeconds: 1 },
-    { id: "j", command: "", timeoutSeconds: 1 },
-    { id: "j", command: "x", timeoutSeconds: 0 },
-    { id: "j", command: "x", timeoutSeconds: 3601 },
-    { id: "j", command: "x", timeoutSeconds: 1, outputs: ["../etc/passwd"] },
-    { id: "j", command: "x", timeoutSeconds: 1, files: { "a/../../b": bytes("x") } },
-    { id: "j", command: "x", timeoutSeconds: 1, files: { "a": "text" } },
-    { id: "j", command: "x", timeoutSeconds: 1, files: {}, volume: { tenant: "t", volume: "v", snapshot: "s" } },
-    { id: "j", command: "x", timeoutSeconds: 1, limits: { pids: 1 } },
-    { id: "j", command: "x", timeoutSeconds: 1, limits: { gpus: 1 } },
-    { id: "j", command: "x", timeoutSeconds: 1, snapshot: { id: "s" } },
+    { payer: PAYER, id: "job:1", command: "x", timeoutSeconds: 1 },
+    { payer: PAYER, id: "j", command: "", timeoutSeconds: 1 },
+    { payer: PAYER, id: "j", command: "x", timeoutSeconds: 0 },
+    { payer: PAYER, id: "j", command: "x", timeoutSeconds: 3601 },
+    { payer: PAYER, id: "j", command: "x", timeoutSeconds: 1, outputs: ["../etc/passwd"] },
+    { payer: PAYER, id: "j", command: "x", timeoutSeconds: 1, files: { "a/../../b": bytes("x") } },
+    { payer: PAYER, id: "j", command: "x", timeoutSeconds: 1, files: { "a": "text" } },
+    { payer: PAYER, id: "j", command: "x", timeoutSeconds: 1, files: {}, volume: { tenant: "t", volume: "v", snapshot: "s" } },
+    { payer: PAYER, id: "j", command: "x", timeoutSeconds: 1, limits: { pids: 1 } },
+    { payer: PAYER, id: "j", command: "x", timeoutSeconds: 1, limits: { gpus: 1 } },
+    { payer: PAYER, id: "j", command: "x", timeoutSeconds: 1, snapshot: { id: "s" } },
     { id: "j", command: "x", timeoutSeconds: 1, volume: { tenant: "a", volume: "v", snapshot: "s" }, payer: { tenant: "b", agent: "x" } },
-    { id: "j", command: "x", timeoutSeconds: 1, extra: true },
-    { id: "j", command: "x", timeoutSeconds: 1, files: { a: new Uint8Array(JOB_LIMITS.inlineBytes + 1) } },
+    { payer: PAYER, id: "j", command: "x", timeoutSeconds: 1, extra: true },
+    { payer: PAYER, id: "j", command: "x", timeoutSeconds: 1, files: { a: new Uint8Array(JOB_LIMITS.inlineBytes + 1) } },
+    { id: "j", command: "x", timeoutSeconds: 1 },
+    { id: "j", command: "x", timeoutSeconds: 1, payer: { tenant: "t" } },
   ]) assert.throws(() => jobSpec(bad), JobSpecError, JSON.stringify(bad).slice(0, 120));
 });
 
@@ -172,7 +177,7 @@ test("a job starts, syncs, runs one command in /repo, collects its outputs and i
     outputs: { "junit.xml": "<testsuite/>", "big.bin": new Uint8Array(JOB_LIMITS.outputBytes + 5) },
   });
   const { meter, events: metered } = recordingMeter();
-  const spec = jobSpec({ id: "run-1", command: "bun test", timeoutSeconds: 60, outputs: ["junit.xml", "nope.txt", "big.bin"], files: { "a.txt": bytes("a") }, limits: { cpus: 2, pids: 4096 } });
+  const spec = jobSpec({ payer: PAYER, id: "run-1", command: "bun test", timeoutSeconds: 60, outputs: ["junit.xml", "nope.txt", "big.bin"], files: { "a.txt": bytes("a") }, limits: { cpus: 2, pids: 4096 } });
   const result = ok(await runContainerJob(spec, { container: container as never, meter, files: inlineFiles(spec.files!) }));
   assert.equal(result.instance, "standard-3");
   assert.deepEqual(starts, [{ image: "registry/workspace@sha256:1", instance: "standard-3", enableInternet: false }]);
@@ -201,7 +206,7 @@ test("a job starts, syncs, runs one command in /repo, collects its outputs and i
 test("a container with less than 2 GiB free fails disk_low before the command, naming the snapshot", async () => {
   const snapshot: ComputerSnapshot = { id: "snap-1", name: "bun-rust-warm", size: 1, image: "registry/workspace@sha256:1", createdAt: Date.now(), expiresAt: Date.now() + SNAPSHOT_TTL_MS };
   const { container, calls, starts } = fakeContainer({ df: "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/vda 8000000 7000000 1048576 90% /\n" });
-  const result = await runContainerJob(jobSpec({ id: "d", snapshot, command: "make", timeoutSeconds: 10 }), { container: container as never });
+  const result = await runContainerJob(jobSpec({ payer: PAYER, id: "d", snapshot, command: "make", timeoutSeconds: 10 }), { container: container as never });
   assert.equal(result.ok, false);
   assert.equal(!result.ok && result.code, "disk_low");
   assert.equal(!result.ok && result.freeBytes, 1024 ** 3);
@@ -214,7 +219,7 @@ test("a container with less than 2 GiB free fails disk_low before the command, n
 test("a command past its timeout is killed, keeps its outputs, and the container is destroyed", async (t) => {
   keepAlive(t);
   const { container, events } = fakeContainer({ command: () => ({ hang: true }), outputs: { "partial.txt": "half" } });
-  const result = ok(await runContainerJob(jobSpec({ id: "t", command: "sleep 100", timeoutSeconds: 1, outputs: ["partial.txt"] }), { container: container as never }));
+  const result = ok(await runContainerJob(jobSpec({ payer: PAYER, id: "t", command: "sleep 100", timeoutSeconds: 1, outputs: ["partial.txt"] }), { container: container as never }));
   assert.equal(result.timedOut, true);
   assert.equal(result.exitCode, null);
   assert.equal(decoder.decode(result.outputs["partial.txt"].bytes), "half");
@@ -227,13 +232,13 @@ test("stop() ends a running job as stopped; refused admission starts nothing", a
   const controller = new AbortController();
   const { container, events } = fakeContainer({ command: () => { setTimeout(() => controller.abort(), 10); return { hang: true }; } });
   const { meter, events: metered } = recordingMeter();
-  const stopped = await runContainerJob(jobSpec({ id: "s", command: "sleep 100", timeoutSeconds: 60 }), { container: container as never, meter, stop: controller.signal });
+  const stopped = await runContainerJob(jobSpec({ payer: PAYER, id: "s", command: "sleep 100", timeoutSeconds: 60 }), { container: container as never, meter, stop: controller.signal });
   assert.equal(!stopped.ok && stopped.code, "stopped");
   assert.equal(events.at(-1), "destroy");
   assert.equal(metered.at(-1), "stopped:4200000");
 
   const refused = fakeContainer(), refusing = recordingMeter(true);
-  const result = await runContainerJob(jobSpec({ id: "r", command: "true", timeoutSeconds: 60 }), { container: refused.container as never, meter: refusing.meter });
+  const result = await runContainerJob(jobSpec({ payer: PAYER, id: "r", command: "true", timeoutSeconds: 60 }), { container: refused.container as never, meter: refusing.meter });
   assert.equal(!result.ok && result.code, "admission_refused");
   assert.match(!result.ok ? result.message : "", /Spending limit/);
   assert.deepEqual(refused.starts, []);
@@ -243,19 +248,19 @@ test("stop() ends a running job as stopped; refused admission starts nothing", a
 test("snapshots: one from another image version is refused; saveSnapshot saves only after exit 0", async () => {
   const old: ComputerSnapshot = { id: "snap-old", name: "warm", size: 1, image: "registry/workspace@sha256:0", createdAt: 1, expiresAt: Date.now() + 1000 };
   const mismatch = fakeContainer();
-  const refused = await runContainerJob(jobSpec({ id: "m", snapshot: old, command: "true", timeoutSeconds: 5 }), { container: mismatch.container as never });
+  const refused = await runContainerJob(jobSpec({ payer: PAYER, id: "m", snapshot: old, command: "true", timeoutSeconds: 5 }), { container: mismatch.container as never });
   assert.equal(!refused.ok && refused.code, "start_failed");
   assert.match(!refused.ok ? refused.message : "", /another image version/);
   assert.deepEqual(mismatch.starts, []);
 
   const saved = fakeContainer();
-  const result = ok(await runContainerJob(jobSpec({ id: "w", command: "bun install", timeoutSeconds: 5, saveSnapshot: "bun-warm" }), { container: saved.container as never }));
+  const result = ok(await runContainerJob(jobSpec({ payer: PAYER, id: "w", command: "bun install", timeoutSeconds: 5, saveSnapshot: "bun-warm" }), { container: saved.container as never }));
   assert.equal(result.snapshot?.id, "snap-new");
   assert.equal(result.snapshot?.image, "registry/workspace@sha256:1", "a saved snapshot records the image its disk came from");
   assert.ok(saved.events.indexOf("snapshot:bun-warm") < saved.events.lastIndexOf("destroy"));
 
   const failing = fakeContainer({ command: () => ({ exitCode: 1 }) });
-  const failed = ok(await runContainerJob(jobSpec({ id: "f", command: "false", timeoutSeconds: 5, saveSnapshot: "bun-warm" }), { container: failing.container as never }));
+  const failed = ok(await runContainerJob(jobSpec({ payer: PAYER, id: "f", command: "false", timeoutSeconds: 5, saveSnapshot: "bun-warm" }), { container: failing.container as never }));
   assert.equal(failed.exitCode, 1);
   assert.equal(failed.snapshot, undefined);
   assert.ok(!failing.events.some(event => event.startsWith("snapshot:")));
@@ -263,19 +268,19 @@ test("snapshots: one from another image version is refused; saveSnapshot saves o
 
 test("start and sync failures are results, and the container never outlives them", async () => {
   const notReady = fakeContainer({ startFails: true });
-  const start = await runContainerJob(jobSpec({ id: "n", command: "true", timeoutSeconds: 5 }), { container: notReady.container as never, imageWaitMs: 100, startWaitMs: 100 });
+  const start = await runContainerJob(jobSpec({ payer: PAYER, id: "n", command: "true", timeoutSeconds: 5 }), { container: notReady.container as never, imageWaitMs: 100, startWaitMs: 100 });
   assert.equal(!start.ok && start.code, "start_failed");
   assert.equal(notReady.container.running, false);
   const sync = fakeContainer({ tar: 2 });
-  const synced = await runContainerJob(jobSpec({ id: "y", command: "true", timeoutSeconds: 5 }), { container: sync.container as never, files: inlineFiles({ a: bytes("a") }) });
+  const synced = await runContainerJob(jobSpec({ payer: PAYER, id: "y", command: "true", timeoutSeconds: 5 }), { container: sync.container as never, files: inlineFiles({ a: bytes("a") }) });
   assert.equal(!synced.ok && synced.code, "sync_failed");
   assert.ok(!sync.calls.some(call => call.argv[0] === "bash"));
   assert.equal(sync.container.running, false);
   const unconfigured = fakeContainer();
-  const image = await runContainerJob(jobSpec({ id: "i", image: "other", command: "true", timeoutSeconds: 5 }), { container: unconfigured.container as never });
+  const image = await runContainerJob(jobSpec({ payer: PAYER, id: "i", image: "other", command: "true", timeoutSeconds: 5 }), { container: unconfigured.container as never });
   assert.match(!image.ok ? image.message : "", /Job image other is not configured/);
   const unenforced = fakeContainer({ pids: 1 });
-  assert.equal(ok(await runContainerJob(jobSpec({ id: "p", command: "true", timeoutSeconds: 5, limits: { pids: 64 } }), { container: unenforced.container as never })).pids, "unenforced");
+  assert.equal(ok(await runContainerJob(jobSpec({ payer: PAYER, id: "p", command: "true", timeoutSeconds: 5, limits: { pids: 64 } }), { container: unenforced.container as never })).pids, "unenforced");
 });
 
 test("readCapped keeps the first bytes and counts the rest", async () => {
@@ -297,10 +302,10 @@ test("jobDriver: JOBS_UNAVAILABLE without the container binding; with it, one ob
   const found = jobDriver({ COMPUTER_CONTAINERS: { getByName: (name: string) => { names.push(name); return namespace.getByName(name); } } as never });
   assert.ok(found.ok);
   const driver = found.driver;
-  await driver.run({ id: "abc", command: "true", timeoutSeconds: 5 });
+  await driver.run({ payer: PAYER, id: "abc", command: "true", timeoutSeconds: 5 });
   assert.deepEqual(await driver.stop("abc"), { stopped: true });
   assert.deepEqual(names, [jobObjectName("abc"), "job:abc"]);
   assert.equal(specs.length, 1);
-  await assert.rejects(driver.run({ id: "bad id", command: "true", timeoutSeconds: 5 }), JobSpecError);
+  await assert.rejects(driver.run({ payer: PAYER, id: "bad id", command: "true", timeoutSeconds: 5 }), JobSpecError);
   assert.equal(specs.length, 1, "a bad spec never reaches the container object");
 });
