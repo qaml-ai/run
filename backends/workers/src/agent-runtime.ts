@@ -8,6 +8,7 @@ import { RecentEvents } from "./recent-events.ts";
 import { type Message, type AssistantMessage } from "@earendil-works/pi-ai";
 import { createRegistry, type ToolRegistration, type ConversationView, type Extension } from "@earendil-works/pi-durable";
 import { isolatedSandboxRemote } from "../codemode/routing.ts";
+import { CODE_MODE_EXCHANGE } from "../codemode/exchange.ts";
 import { PiHarness } from "agents/harness/pi";
 import { Lifecycle } from "agents/lifecycle";
 import { body } from "./validation.ts";
@@ -237,6 +238,7 @@ export class AgentRuntime extends AgentContext {
   readonly sandboxRemote = isolatedSandboxRemote({
     agentKey: this.ctx.id.toString(),
     getByName: (key) => this.env.CODEMODE_SANDBOX.getByName(key),
+    exchange: CODE_MODE_EXCHANGE,
     maxConcurrent: 3,
   });
 

@@ -1,0 +1,589 @@
+{
+ "date": "2026-11-11",
+ "what": "500-effect replay harness (backends/workers/test/exchange-replay.ts): one workflow step = a fresh deterministic QuickJS VM replaying the script from the top through the code mode exchange (protocol 2), in process on Node; no RPC. Step k replays effects 1..k-1 and stops at effect k.",
+ "machine": "exe.dev VM, 4 vCPU, v22.21.1",
+ "sandbox": {
+  "heapBytes": 25165824,
+  "interruptBudget": 10000,
+  "exchangeCeilings": {
+   "calls": 10000,
+   "inFlight": 64
+  }
+ },
+ "pollRate": {
+  "budget": 10000,
+  "ms": 5923.0,
+  "pollsPerMs": 1.69
+ },
+ "guestHashes": [
+  {
+   "hash": "fnv1a32",
+   "count": 500,
+   "ms": 106.6,
+   "polls": 35,
+   "last": "ece1996c"
+  },
+  {
+   "hash": "fnv1a64",
+   "count": 500,
+   "ms": 155.9,
+   "polls": 43,
+   "last": "c372c624f3875040"
+  },
+  {
+   "hash": "sha256",
+   "count": 500,
+   "ms": 286.9,
+   "polls": 115,
+   "last": "133c829e5d5978a010bae638c65a6d9139ea0767f2f0d6f4d7bc50bdb9d7092e"
+  }
+ ],
+ "runs500": [
+  {
+   "mode": "calls",
+   "results": "handle",
+   "hash": "fnv1a64",
+   "budgetNeeded": 45,
+   "steps": [
+    {
+     "step": 1,
+     "ms": 23.4,
+     "calls": 1,
+     "crossedBytes": 0,
+     "polls": 4,
+     "heapBytes": 212321,
+     "linearBytes": 1638400
+    },
+    {
+     "step": 10,
+     "ms": 34.3,
+     "calls": 10,
+     "crossedBytes": 1044,
+     "polls": 5,
+     "heapBytes": 212690,
+     "linearBytes": 1638400
+    },
+    {
+     "step": 50,
+     "ms": 51.4,
+     "calls": 50,
+     "crossedBytes": 5724,
+     "polls": 8,
+     "heapBytes": 214332,
+     "linearBytes": 1638400
+    },
+    {
+     "step": 100,
+     "ms": 74.3,
+     "calls": 100,
+     "crossedBytes": 11574,
+     "polls": 12,
+     "heapBytes": 216382,
+     "linearBytes": 1638400
+    },
+    {
+     "step": 200,
+     "ms": 181.3,
+     "calls": 200,
+     "crossedBytes": 23374,
+     "polls": 20,
+     "heapBytes": 220484,
+     "linearBytes": 1638400
+    },
+    {
+     "step": 300,
+     "ms": 294.2,
+     "calls": 300,
+     "crossedBytes": 35174,
+     "polls": 29,
+     "heapBytes": 224584,
+     "linearBytes": 1638400
+    },
+    {
+     "step": 400,
+     "ms": 430.2,
+     "calls": 400,
+     "crossedBytes": 46974,
+     "polls": 37,
+     "heapBytes": 228684,
+     "linearBytes": 1638400
+    },
+    {
+     "step": 500,
+     "ms": 462.7,
+     "calls": 500,
+     "crossedBytes": 58774,
+     "polls": 45,
+     "heapBytes": 232784,
+     "linearBytes": 1638400
+    }
+   ]
+  },
+  {
+   "mode": "calls",
+   "results": "inline",
+   "hash": "fnv1a64",
+   "steps": [
+    {
+     "step": 1,
+     "ms": 13.7,
+     "calls": 1,
+     "crossedBytes": 0,
+     "polls": 4,
+     "heapBytes": 212321,
+     "linearBytes": 1638400
+    },
+    {
+     "step": 10,
+     "ms": 16.8,
+     "calls": 10,
+     "crossedBytes": 180216,
+     "polls": 5,
+     "heapBytes": 212393,
+     "linearBytes": 1703936
+    },
+    {
+     "step": 50,
+     "ms": 33.1,
+     "calls": 50,
+     "crossedBytes": 981215,
+     "polls": 8,
+     "heapBytes": 212715,
+     "linearBytes": 1703936
+    },
+    {
+     "step": 100,
+     "ms": 52.3,
+     "calls": 100,
+     "crossedBytes": 1982465,
+     "polls": 12,
+     "heapBytes": 213115,
+     "linearBytes": 1703936
+    },
+    {
+     "step": 200,
+     "ms": 97.5,
+     "calls": 200,
+     "crossedBytes": 3985064,
+     "polls": 20,
+     "heapBytes": 213917,
+     "linearBytes": 1703936
+    },
+    {
+     "step": 300,
+     "ms": 134.9,
+     "calls": 300,
+     "crossedBytes": 5987664,
+     "polls": 28,
+     "heapBytes": 214717,
+     "linearBytes": 1703936
+    },
+    {
+     "step": 400,
+     "ms": 175.3,
+     "calls": 400,
+     "crossedBytes": 7990264,
+     "polls": 37,
+     "heapBytes": 215517,
+     "linearBytes": 1703936
+    },
+    {
+     "step": 500,
+     "ms": 200.8,
+     "calls": 419,
+     "crossedBytes": 8370899,
+     "polls": 38,
+     "heapBytes": 0,
+     "linearBytes": 0,
+     "error": "script: This script's calls have returned more than 8,388,608 bytes in all, the most one script gets. Ask for less, or split the work across scripts."
+    }
+   ]
+  },
+  {
+   "mode": "calls",
+   "results": "handle",
+   "hash": "sha256",
+   "budgetNeeded": 117,
+   "steps": [
+    {
+     "step": 1,
+     "ms": 13.1,
+     "calls": 1,
+     "crossedBytes": 0,
+     "polls": 4,
+     "heapBytes": 219071,
+     "linearBytes": 1638400
+    },
+    {
+     "step": 10,
+     "ms": 19.8,
+     "calls": 10,
+     "crossedBytes": 1044,
+     "polls": 6,
+     "heapBytes": 219440,
+     "linearBytes": 1638400
+    },
+    {
+     "step": 50,
+     "ms": 43.3,
+     "calls": 50,
+     "crossedBytes": 5724,
+     "polls": 15,
+     "heapBytes": 221082,
+     "linearBytes": 1638400
+    },
+    {
+     "step": 100,
+     "ms": 75.7,
+     "calls": 100,
+     "crossedBytes": 11574,
+     "polls": 27,
+     "heapBytes": 223132,
+     "linearBytes": 1638400
+    },
+    {
+     "step": 200,
+     "ms": 143.8,
+     "calls": 200,
+     "crossedBytes": 23374,
+     "polls": 49,
+     "heapBytes": 227234,
+     "linearBytes": 1638400
+    },
+    {
+     "step": 300,
+     "ms": 216.3,
+     "calls": 300,
+     "crossedBytes": 35174,
+     "polls": 72,
+     "heapBytes": 231334,
+     "linearBytes": 1638400
+    },
+    {
+     "step": 400,
+     "ms": 282.4,
+     "calls": 400,
+     "crossedBytes": 46974,
+     "polls": 95,
+     "heapBytes": 235434,
+     "linearBytes": 1638400
+    },
+    {
+     "step": 500,
+     "ms": 341.1,
+     "calls": 500,
+     "crossedBytes": 58774,
+     "polls": 117,
+     "heapBytes": 239534,
+     "linearBytes": 1638400
+    }
+   ]
+  },
+  {
+   "mode": "table",
+   "results": "handle",
+   "hash": "fnv1a64",
+   "budgetNeeded": 52,
+   "steps": [
+    {
+     "step": 1,
+     "ms": 13.3,
+     "calls": 1,
+     "crossedBytes": 0,
+     "polls": 4,
+     "heapBytes": 212360,
+     "linearBytes": 1638400
+    },
+    {
+     "step": 10,
+     "ms": 14.6,
+     "calls": 1,
+     "crossedBytes": 0,
+     "polls": 5,
+     "heapBytes": 215545,
+     "linearBytes": 1638400
+    },
+    {
+     "step": 50,
+     "ms": 23.5,
+     "calls": 1,
+     "crossedBytes": 0,
+     "polls": 8,
+     "heapBytes": 229243,
+     "linearBytes": 1638400
+    },
+    {
+     "step": 100,
+     "ms": 34.6,
+     "calls": 1,
+     "crossedBytes": 0,
+     "polls": 12,
+     "heapBytes": 247059,
+     "linearBytes": 1638400
+    },
+    {
+     "step": 200,
+     "ms": 61.0,
+     "calls": 1,
+     "crossedBytes": 0,
+     "polls": 20,
+     "heapBytes": 279881,
+     "linearBytes": 1703936
+    },
+    {
+     "step": 300,
+     "ms": 110.3,
+     "calls": 1,
+     "crossedBytes": 0,
+     "polls": 28,
+     "heapBytes": 316417,
+     "linearBytes": 1835008
+    },
+    {
+     "step": 400,
+     "ms": 118.8,
+     "calls": 1,
+     "crossedBytes": 0,
+     "polls": 35,
+     "heapBytes": 350645,
+     "linearBytes": 1900544
+    },
+    {
+     "step": 500,
+     "ms": 124.2,
+     "calls": 1,
+     "crossedBytes": 0,
+     "polls": 43,
+     "heapBytes": 388185,
+     "linearBytes": 1966080
+    }
+   ]
+  },
+  {
+   "mode": "table",
+   "results": "handle",
+   "hash": "sha256",
+   "budgetNeeded": 125,
+   "steps": [
+    {
+     "step": 1,
+     "ms": 13.2,
+     "calls": 1,
+     "crossedBytes": 0,
+     "polls": 4,
+     "heapBytes": 219110,
+     "linearBytes": 1638400
+    },
+    {
+     "step": 10,
+     "ms": 15.8,
+     "calls": 1,
+     "crossedBytes": 0,
+     "polls": 6,
+     "heapBytes": 222697,
+     "linearBytes": 1638400
+    },
+    {
+     "step": 50,
+     "ms": 30.3,
+     "calls": 1,
+     "crossedBytes": 0,
+     "polls": 15,
+     "heapBytes": 238315,
+     "linearBytes": 1638400
+    },
+    {
+     "step": 100,
+     "ms": 47.5,
+     "calls": 1,
+     "crossedBytes": 0,
+     "polls": 26,
+     "heapBytes": 258531,
+     "linearBytes": 1703936
+    },
+    {
+     "step": 200,
+     "ms": 83.2,
+     "calls": 1,
+     "crossedBytes": 0,
+     "polls": 49,
+     "heapBytes": 298285,
+     "linearBytes": 1769472
+    },
+    {
+     "step": 300,
+     "ms": 136.3,
+     "calls": 1,
+     "crossedBytes": 0,
+     "polls": 71,
+     "heapBytes": 337489,
+     "linearBytes": 1835008
+    },
+    {
+     "step": 400,
+     "ms": 168.9,
+     "calls": 1,
+     "crossedBytes": 0,
+     "polls": 93,
+     "heapBytes": 376517,
+     "linearBytes": 1966080
+    },
+    {
+     "step": 500,
+     "ms": 198.8,
+     "calls": 1,
+     "crossedBytes": 0,
+     "polls": 116,
+     "heapBytes": 418857,
+     "linearBytes": 1966080
+    }
+   ]
+  }
+ ],
+ "runs10000": [
+  {
+   "mode": "calls",
+   "hash": "fnv1a64",
+   "results": "handle",
+   "budgetNeeded": 826,
+   "budgetStep": 10000,
+   "steps": [
+    {
+     "step": 2000,
+     "ms": 1457.7,
+     "calls": 2000,
+     "crossedBytes": 236774,
+     "polls": 168,
+     "heapBytes": 294288,
+     "linearBytes": 1703936
+    },
+    {
+     "step": 5000,
+     "ms": 2983.9,
+     "calls": 5000,
+     "crossedBytes": 593774,
+     "polls": 415,
+     "heapBytes": 417288,
+     "linearBytes": 1900544
+    },
+    {
+     "step": 10000,
+     "ms": 5632.5,
+     "calls": 10000,
+     "crossedBytes": 1188774,
+     "polls": 826,
+     "heapBytes": 622288,
+     "linearBytes": 2162688
+    }
+   ]
+  },
+  {
+   "mode": "table",
+   "hash": "fnv1a64",
+   "results": "handle",
+   "budgetNeeded": 995,
+   "budgetStep": 10000,
+   "steps": [
+    {
+     "step": 2000,
+     "ms": 437.7,
+     "calls": 1,
+     "crossedBytes": 0,
+     "polls": 162,
+     "heapBytes": 916057,
+     "linearBytes": 3014656
+    },
+    {
+     "step": 5000,
+     "ms": 1114.1,
+     "calls": 1,
+     "crossedBytes": 0,
+     "polls": 400,
+     "heapBytes": 1960565,
+     "linearBytes": 5177344
+    },
+    {
+     "step": 10000,
+     "ms": 2204.2,
+     "calls": 1,
+     "crossedBytes": 0,
+     "polls": 796,
+     "heapBytes": 3723789,
+     "linearBytes": 8847360
+    }
+   ]
+  },
+  {
+   "mode": "table",
+   "hash": "sha256",
+   "results": "handle",
+   "budgetNeeded": 2440,
+   "budgetStep": 10000,
+   "steps": [
+    {
+     "step": 2000,
+     "ms": 735.1,
+     "calls": 1,
+     "crossedBytes": 0,
+     "polls": 451,
+     "heapBytes": 1018729,
+     "linearBytes": 3276800
+    },
+    {
+     "step": 5000,
+     "ms": 1803.6,
+     "calls": 1,
+     "crossedBytes": 0,
+     "polls": 1122,
+     "heapBytes": 2207237,
+     "linearBytes": 5570560
+    },
+    {
+     "step": 10000,
+     "ms": 3710.1,
+     "calls": 1,
+     "crossedBytes": 0,
+     "polls": 2241,
+     "heapBytes": 4210461,
+     "linearBytes": 9568256
+    }
+   ]
+  },
+  {
+   "mode": "calls",
+   "hash": "sha256",
+   "results": "handle",
+   "budgetNeeded": 2271,
+   "budgetStep": 10000,
+   "steps": [
+    {
+     "step": 2000,
+     "ms": 1936.9,
+     "calls": 2000,
+     "crossedBytes": 236774,
+     "polls": 457,
+     "heapBytes": 301038,
+     "linearBytes": 1703936
+    },
+    {
+     "step": 5000,
+     "ms": 3550.6,
+     "calls": 5000,
+     "crossedBytes": 593774,
+     "polls": 1137,
+     "heapBytes": 424038,
+     "linearBytes": 1900544
+    },
+    {
+     "step": 10000,
+     "ms": 6926.1,
+     "calls": 10000,
+     "crossedBytes": 1188774,
+     "polls": 2271,
+     "heapBytes": 629038,
+     "linearBytes": 2162688
+    }
+   ]
+  }
+ ]
+}

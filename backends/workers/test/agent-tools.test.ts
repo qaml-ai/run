@@ -12,6 +12,7 @@ import { isolatedSandboxRemote } from "../codemode/routing.ts";
 import { compatibleFileTools } from "../src/fs-tools.ts";
 import { FS_SHIM } from "../codemode/fs-shim.ts";
 import { boundedExchange } from "../codemode/limits.ts";
+import { CODE_MODE_EXCHANGE } from "../codemode/exchange.ts";
 import type { ToolRegistration } from "@earendil-works/pi-durable";
 
 test("attached tools initialize on their connection and preserve a tool result", async () => {
@@ -235,21 +236,21 @@ test("MCP streamed responses settle at their matching JSON-RPC result", async t 
 
 test("remote code limits reject excessive calls and arguments and bound each result", async () => {
   const seen: any[] = [];
-  const oversized = boundedExchange(async messages => { seen.push(...messages); return null; });
+  const oversized = boundedExchange(async messages => { seen.push(...messages); return null; }, CODE_MODE_EXCHANGE);
   assert.deepEqual(await oversized([{ type: "call", target: "tool", id: 1, name: "echo", args: "x".repeat(131073) }]), { type: "stop" });
   assert.match(seen[0].error.message, /arguments exceed/);
   assert.equal(seen.some(message => message.type === "call"), false);
-  const limited = boundedExchange(async () => ({ type: "result", id: 1, ok: true, payload: "x".repeat(1024 * 1024) }));
+  const limited = boundedExchange(async () => ({ type: "result", id: 1, ok: true, payload: "x".repeat(1024 * 1024) }), CODE_MODE_EXCHANGE);
   const result = await limited([{ type: "call", target: "tool", id: 1, name: "echo", args: "{}" }]);
   assert.equal(result?.type === "result" && result.ok, false);
   assert.match(result?.type === "result" ? result.payload! : "", /a script gets at most/);
-  const counted = boundedExchange(async messages => messages[0]?.type === "call" ? { type: "result", id: messages[0].id, ok: true, payload: "null" } : null);
+  const counted = boundedExchange(async messages => messages[0]?.type === "call" ? { type: "result", id: messages[0].id, ok: true, payload: "null" } : null, CODE_MODE_EXCHANGE);
   for (let i = 1; i <= 256; i++) assert.equal((await counted([{ type: "call", target: "tool", id: i, name: "echo", args: "{}" }]))?.type, "result");
   assert.deepEqual(await counted([{ type: "call", target: "tool", id: 257, name: "echo", args: "{}" }]), { type: "stop" });
 });
 
 test("remote output preserves bounded UTF-8 text and limits image output", async () => {
-  const seen: any[] = [], limited = boundedExchange(async messages => { seen.push(...messages); return null; });
+  const seen: any[] = [], limited = boundedExchange(async messages => { seen.push(...messages); return null; }, CODE_MODE_EXCHANGE);
   await limited([{ type: "output", item: { type: "text", text: "a".repeat(127999) + "€" } }]);
   assert.equal(seen[0].item.text, "a".repeat(127999));
   assert.match(seen[1].item.text, /Output stops here/);
@@ -268,14 +269,14 @@ test("ask_user validates answers against the same question policy as src", () =>
 
 test("sandbox routing shares the session and retains three slots until RPC completion", async () => {
   const releases: (() => void)[] = [], names: string[] = [];
-  const remote = isolatedSandboxRemote({ agentKey: "session", getByName: name => { names.push(name); return { execute: () => new Promise<void>(resolve => releases.push(resolve)) }; } });
+  const remote = isolatedSandboxRemote({ agentKey: "session", exchange: CODE_MODE_EXCHANGE, getByName: name => { names.push(name); return { execute: () => new Promise<void>(resolve => releases.push(resolve)) }; } });
   const request = {} as never, exchange = async () => null;
   const active = [remote().execute(request, exchange), remote().execute(request, exchange), remote().execute(request, exchange)];
   await assert.rejects(remote().execute(request, exchange), /concurrency limit/);
   assert.deepEqual(names, ["session", "session", "session"]);
   releases.forEach(release => release());
   await Promise.all(active);
-  assert.throws(() => isolatedSandboxRemote({ agentKey: "session", getByName: () => ({ execute: async () => {} }), maxConcurrent: 4 }), /Invalid/);
+  assert.throws(() => isolatedSandboxRemote({ agentKey: "session", exchange: CODE_MODE_EXCHANGE, getByName: () => ({ execute: async () => {} }), maxConcurrent: 4 }), /Invalid/);
 });
 
 test("shared fs shim reads UTF-8 windows and round-trips typed bytes through file tools", async () => {
