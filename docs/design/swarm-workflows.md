@@ -7,6 +7,29 @@ The yardstick is Jarred Sumner's Bun port (Zig to Rust, May 2026): about 50 dyna
 worktrees times 16 Claudes (64 at once), 6,778 commits, 1,448 files ported, $165k at API prices with 72B cached
 input reads against 5.9B uncached. Every failure he hit has a line in this document, and the design answers each one.
 
+## Swarm agents are not the traditional agent shape
+
+The agent camelRun was built for is long-lived: it keeps a conversation for weeks, owns files, and may own a
+machine (a computer attached to it, with a session that survives between turns). That shape is right for a chat
+agent, a bot's builder, a person's managed computer, a browser session. It is the wrong shape for a swarm.
+
+A swarm child exists for one effect: port this file, review that diff, fix these errors. It is stateless beyond its
+task, it reads and edits through tools over storage the runtime owns, and when something must compile or run it
+borrows compute for exactly that long. Nothing of it needs to outlive its answer. Designing around that, rather than
+around a machine each child holds, is what makes the rest work:
+
+| | A machine per agent (shared, forked or persistent) | Compute per job |
+| --- | --- | --- |
+| Cost | A VM is billed while it waits for a model; 64 of them wait 90% of the time | A job is billed while a command runs; editing costs storage only |
+| Isolation | A shared checkout: `git stash` over someone else's work. A fork each: disk per fork (#702: 1.7 GB per worktree, OOM at ten builds on one box) | Each job is its own cgroup, namespace and disk, from a snapshot; nothing shared but the snapshot |
+| Failure | A stress test exhausts the box's sockets, pids or disk for everyone | It exhausts its job, which fails with its outputs; the next job starts clean |
+| Scaling to 64+ | 64 machines to start, lease, snapshot and sweep; `computerLimit` default 4 | 64 editors cost nothing extra; builds are `jobConcurrency` jobs, however many editors |
+| Merging | Each fork's branch pushed and merged by hand | One object serializes commits onto a branch with a file-level merge |
+
+So the swarm primitive is `agent()` over a repository on our storage plus `job()` for compute, and **no forked or
+persistent VM appears in the swarm path**. Computers stay what they are: for interactive or long-lived agents, for
+browsers, and for people's managed machines. They are not removed; they are not the primitive here.
+
 ## Recommendation
 
 1. **A workflow is a new durable resource, `wf_…`, with a Durable Object of its own on Workers** (an actor on Node,
@@ -26,17 +49,21 @@ input reads against 5.9B uncached. Every failure he hit has a line in this docum
    read, search, edit and commit with the file tools; there is no checkout, no `stash`, no `reset`, no branch switch
    to step on. Commits go to the repo object as compare-and-swap on a branch head with a file-level merge. Git
    objects are written for push and read for pull with the GitHub App token the runtime already mints.
-5. **Compute is a job, not a machine.** `job({ command, at })` materializes a commit (or an agent's layer) into a
-   container started from a warm snapshot (dependencies and build caches), runs one command under the container's
-   own limits, collects named output files, snapshots the caches if asked, and stops. Nobody shares a checkout,
-   nobody runs `cargo check` beside 63 others, and a test that eats every socket on the box kills only its job.
+5. **Compute is a job, not a machine, and jobs are a runtime primitive.** `job({ command, at })` materializes a
+   commit (or an agent's layer) into a container started from a warm snapshot (dependencies and build caches), runs
+   one command under the container's own limits, collects named output files, snapshots the caches if asked, and
+   stops. Nobody shares a checkout, nobody runs `cargo check` beside 63 others, and a test that eats every socket
+   on the box kills only its job. Jobs are `POST /v1/jobs` and a `jobs` builtin for ordinary agents too, not only
+   a workflow global. No forked or persistent VM is in the swarm path; phase 1 is already VM-less for editing,
+   on per-child volume forks, with the repo object following in phase 2.
 6. **Budget, cost and cache-hit reporting per workflow**, hard spend caps, a cap on total effects, and a step-rate
    guard, with every number on one console page.
 7. **Roles with late-bound models.** `agent(task, { role: "reviewer" })` names a definition whose model is a
    virtual `camelrun/role:<role>` resolved at each call; a workflow may pin roles to models at start and a call may
    override its own. A changed mapping never invalidates cached results; the resolved model is recorded on every
    effect. A cheap implementer class under strong reviewers roughly halves a Bun-shaped bill, if the eval agrees.
-8. **Build it in four phases**, dogfooding with camelCode on a real refactor of one of our repositories after each.
+8. **Build it in four phases**, the first being the workflow object plus `job()` with children editing on volumes,
+   dogfooding with camelCode on a real refactor of one of our repositories after each.
 
 ## What the Bun port needed, and what camelRun has
 
@@ -45,7 +72,7 @@ input reads against 5.9B uncached. Every failure he hit has a line in this docum
 | A loop that runs for days and is edited and resumed | Code mode scripts run inside one turn: 60–120 s wall, 256 tool calls, 32 in flight (`docs/reference/limits.md`). Pi owns the script's calls and their replay after a node loss (`src/codemode-pi-launcher.ts:56`), so finished `delegate` calls are not made again, but only within that turn and that script text. An older `workflow` builtin was removed in favour of this, and its name is refused on input today (`backends/workers/src/workflow-refusal.ts`) | A workflow object that outlives turns, with resume across edits |
 | 64 agents at once, thousands in total | `delegate.maxParallel` up to 64; busy agents 250 on Tier 1, 4,000 on Tier 3; a sub-agent lives a day; `agent_children` gives exactly-once | A parent that is not an agent; start and collection that does not pass through one object's connection budget |
 | Implementer, two adversarial reviewers, a fixer, per item | Definitions, `delegate` from code with `output` schemas | A pattern, not a feature |
-| Work queues refilled from `cargo check` and failing tests | Computers (`computer_exec`), forks of a computer's disk (#702) | A job primitive with collected outputs and no shared machine |
+| Work queues refilled from `cargo check` and failing tests | Computers (`computer_exec`) held by an agent; disk forks measured in #702 | A job primitive with collected outputs and no machine held by anyone |
 | A prepared PORTING.md and LIFETIMES.tsv every agent reads | Volumes, mounts, mount `instructions` | Nothing; put them in the definition's system prompt for cache hits |
 | One repository, 64 editors, commits of one file at a time, no stash, no reset | A git checkout on a computer, shared by children (`computer: "share"`) or forked | A repository that is not a checkout |
 | grep that does not freeze a disk | `grep` over a volume lists then reads the files it scans: at most 1,000 files, 32 MiB in all, 4 MiB a file, 10 s (`src/volume-tools.ts:28`). A Bun-scale tree (1,448 files, ~35 MB) cannot be searched whole today | An index, and a search that never leaves one object |
@@ -153,7 +180,8 @@ the workflow, and asks the owner. It never silently reruns.
 - The child's run spend limit is the workflow's remaining budget divided by free concurrency slots, as today's
   `holdBudget` share, and its cost lands in the ledger when its ending does.
 - `files` mounts the workflow's volume (read-only by default) into the child beside its workspace; `layer` gives the
-  child a private layer on a repository (Part 2).
+  child a private layer on a repository (Part 2). A child has no computer: `computer` is refused on `agent()`, and
+  compute is a `job()` from the script or from the child's `jobs` builtin.
 
 This is deliberately independent of #696's choice of child engine. In-object Pi children are the wrong shape for a
 workflow (one object's connection budget is 6–8 streams); the remote-child shape in #696 section 2 is exactly what
@@ -411,6 +439,20 @@ Inside the child, `/repo` is a mount like any volume: `read`, `write`, `edit`, `
 the "changed since you last read it" check. There is no shell, so there is no `git` to misuse: the layer has
 `commit` as a tool, nothing else. The reviewer's layer is `readOnly()`: the same files, no writes.
 
+**Phase 1: layers from volume forks.** Everything above needs the repo object (phase 2). Phase 1 gets the same shape
+from what volumes do today: `volume.fork({ snapshot })` is metadata-only and shares content
+(`docs/guides/files.md`, Volumes), so a child's layer is a fork of the repository volume at a snapshot, mounted
+read-write at `/repo`. `layer.commit()` in phase 1 is the runner's: `changes(since)` on the fork, then each changed
+file written to the base volume with `{ version }` of the file at the fork's snapshot, so a file someone else
+changed since fails that path (no merge yet: the child reads the new version and edits again), then a snapshot of the
+base volume with the message as a label. That is a commit of named files, serialized by the base volume's owner,
+with no checkout anywhere. Push and pull are jobs in phase 1: `job({ snapshot: "git-base", command: "camel-sync
+/repo --at <snapshot> && git add -A && git commit -m … && git push" })` with the GitHub egress token the job's
+definition grants, as a computer's `git push` gets it today. `grep` keeps today's bounds (1,000 files, 32 MiB), so
+phase 1 children search with `glob` narrowed to their area, and a workflow that needs a whole-tree search runs
+`rg` as a job. Phase 2 replaces the fork with a layer row, the version check with the three-way merge, the job push
+with the object's thin pack, and the bounded grep with the index; `agent()`'s `layer` option does not change.
+
 ### Commits, branches, merge
 
 `repo.commit({ layer, onto, message, paths? })`:
@@ -506,11 +548,27 @@ round as a job and hands the grouped errors to 64 fixers who only edit. A job's 
 the only knobs, and `concurrency` for jobs is separate (`jobConcurrency`, default 8, at most the tenant's computer
 limit) so 64 editors never become 64 compilers.
 
-**Sizing, honestly.** A Bun-scale Rust debug build wants more than Cloudflare's `standard-4` (4 vCPU, 12 GiB, 20 GB
-disk): a 100-crate `target/` runs past 20 GB. So the default job provider is Cloudflare Containers for repositories
-that fit, and Boat `large`/`xlarge` with a saved snapshot for the Bun class; `job({ provider })` and the tenant's
-default choose. Both are billed to the workflow's budget at the provider's price. A job is a `computer_connections`
-row with a lease, so the existing sweep and uncertain-cleanup paths apply.
+**Jobs are a runtime primitive, not a workflow global.** `POST /v1/jobs { snapshot, at, command, outputs, limits,
+timeoutSeconds }` and `GET /v1/jobs/{id}` exist on their own, the workflow's `job()` is one effect over them, and
+ordinary agents get a `jobs` builtin (`job_run`, `job_status`, `job_output`) so an agent that today holds a computer
+to run tests can instead run a job and hold nothing. Recommend yes, for every agent: a coding agent in Slack that
+answers "do the tests pass?" is better served by a 40 s job from a warm snapshot than by a machine it keeps warm for
+hours, and the same snapshot, `camel-sync` and limits serve both. Computers remain for agents whose work is the
+machine: an interactive shell session, a browser, a person's managed computer. A job is a `computer_connections`
+row with a lease and `kind: "job"`, so the existing sweep and uncertain-cleanup paths apply, and it is billed to the
+workflow's budget or the agent's payer at the provider's price.
+
+**Provider, decided by the Bun class.** A Bun-scale Rust debug build wants more than Cloudflare's `standard-4`
+(4 vCPU, 12 GiB, 20 GB disk): a 100-crate `target/` runs past 20 GB. Lambda MicroVMs, the managed computer default,
+are smaller still (1 vCPU, 2 GiB, 15 minutes) and cannot be the job provider for builds. Since jobs are central and
+must carry the heaviest case, **Boat is built first**: saved snapshots (9.6 s, exact, the source keeps running),
+`POST /sandboxes { from }` with an idempotency key, `large`/`xlarge` at 8–16 vCPU and 111–251 GB, $0.036/h, Docker
+inside (#702). Its FUSE-slow first minutes matter less for a job than for an interactive fork: `camel-sync` and a
+build read the tree once, and a warm snapshot that already holds `target/` is read lazily anyway. Cloudflare
+Containers come second, for repositories that fit 20 GB, because restore is fastest (p50 200–350 ms in-object) and
+`ContainerProvider.snapshot`/`restore` already exist in `backends/workers/src/computers/objects.ts`; they are the
+right choice for camelCode's TypeScript repositories on the pilot. One `JobDriver` seam (`snapshot`, `create({ from
+})`, `run`, `collect`, `destroy`) serves both; `job({ provider })` and the tenant's default choose.
 
 **Sharded tests.** The script lists tests (one job: `bun test --list > /out/tests.txt`), slices them into N shards,
 runs N jobs at once, and feeds failures to the review loop. The post's four worktrees sharded by folder were a
@@ -526,7 +584,8 @@ stand-in for this.
 | Children of children | `maxDepth` 2 below the workflow; children cannot start workflows; `camelrun/spawn` directives from a child count as its own children |
 | A loop with no progress | Ten consecutive failed effects of one key pattern pause the workflow with a message, as monitors stop at 10 errors |
 | Nondeterministic scripts | Faulted and paused, never silently rerun |
-| Jobs | Per-job container with `limits`; `jobConcurrency`; a job past `timeoutSeconds` is destroyed; a snapshot over 20 GB is refused |
+| Jobs | Per-job container with `limits`; `jobConcurrency`; a job past `timeoutSeconds` is destroyed; a snapshot over the provider's cap is refused; a job never idles: there is no session to keep, so nothing is billed between commands |
+| An agent holding compute for a swarm | A workflow child has no `computer` tool and no `computer: "share" | "fork" | "fresh"`: its compute is jobs, and `job()` from a child counts against the workflow's `jobConcurrency` |
 | Repository abuse | A repo object takes 100,000 files and 2 GB of text in SQLite; larger trees keep only the index resident and read blobs from the chunk store; layers are capped at 10,000 changed paths |
 | Pushing to GitHub | Only to the repositories and permissions the App grant names, with tokens the model never sees; `repo.push` to a protected branch fails as GitHub says |
 | Cost visibility | The ledger, alerts at 50/80/100%, `cacheShare`, and `/v1/usage` by workflow. Prepaid tenants hold budget against credit at start and settle per effect |
@@ -540,24 +599,31 @@ provider's, storage as volumes are.
 
 ### MVP cut
 
-The MVP is Part 1 on Workers with today's computers for code work: a workflow object, the replay runner with
+The MVP is the workflow object plus `job()`, on Workers, with no machine held by anyone: the replay runner with
 `agent`, `parallel`, `pipeline`, `gate`, `sleep`, `log`, `phase`, keys and journal, pause/edit/resume, budget and
-ledger, the items API and a plain console page. Children work on forked computers (#702's `computer: "fork"`), so the
-MVP already runs the review loop on a real repository, with the shared-checkout hazards still present but contained
-to each fork.
+ledger, the items API and a plain console page; `POST /v1/jobs` with the Boat and Cloudflare drivers, `camel-sync`,
+limits and outputs; and children editing on per-child volume forks with the phase-1 commit (Part 2, "Phase 1:
+layers from volume forks"). The review loop runs on a real repository from day one: implementers and fixers edit
+forks, reviewers read them, commits land on the base volume by version check, and one job per round runs the
+typecheck and tests and pushes.
+
+The compromise is in phase 1's commit and search, not in its compute: a conflicting file fails the commit instead
+of merging (the child re-reads and edits again), `grep` stays within today's bounds (an `rg` job covers the whole
+tree), and push is a job rather than the object's own pack. None of these puts a VM back in the path.
 
 Dogfood 1: camelCode runs the review loop over the 40-odd files of `backends/workers/src/delegation*` for a refactor
-we want anyway, 8 at once, with the lead in Slack. Measure: steps, replay time at 500 effects, cache share, cost
-against the same work done by one agent.
+we want anyway, 8 at once, with the lead in Slack, one typecheck-and-test job per round. Measure: steps, replay time
+at 500 effects, cache share, job start-to-first-command and cost per job on each driver, conflicts per commit, and
+cost against the same work done by one agent on a computer.
 
 ### Phases
 
 | Phase | Weeks | Delivers | Dogfood |
 | --- | --- | --- | --- |
-| 1. Workflow object | 3 | `WorkflowObject`, runner, journal, keys, `agent()`, `parallel`, `pipeline`, `gate`, `sleep`, pause/edit/resume, budget, ledger, items API, console page, `workflows` builtin, the five default roles as definitions with `camelrun/role:*` virtual models, the `roles` map and per-call pin, the resolved model on every item, contract tests | camelCode review loop on a chiridion refactor, 8–16 children on forked computers; the same run twice, strong implementer against cheap, as the first role eval |
-| 2. Repositories | 4 | `kind: "repo"` volumes, the repo object, layers, commit/merge/diff, the trigram index behind `grep`, import and push through the GitHub App, `layer` on `agent()` | The same loop with no computers for editing: 32 children on layers, commits of one file at a time, one push a phase |
-| 3. Jobs | 3 | `job()`, snapshots on Cloudflare Containers and Boat, `camel-sync`, limits, outputs, `queue()`, sharded tests, `jobConcurrency` | A compile-error work queue on a Rust or TypeScript repository of ours, 64 fixers, 8 jobs |
-| 4. Scale and Node | 3 | Phase collapse in the journal, 10,000 effects, `/stuck`, alerts, saved patterns, Node parity through the shared runner, docs | A full Bun-shaped run on a public repository, measured against the post's numbers |
+| 1. Workflow object and jobs | 4 | `WorkflowObject`, runner, journal, keys, `agent()`, `parallel`, `pipeline`, `gate`, `sleep`, pause/edit/resume, budget, ledger, items API, console page, `workflows` builtin, the five default roles on `camelrun/role:*` virtual models with the `roles` map and per-call pin; `POST /v1/jobs` with the `JobDriver` seam, Boat and Cloudflare drivers, `camel-sync`, limits, outputs, `jobConcurrency`; children on volume forks with the phase-1 commit and `layer` on `agent()`; contract tests | camelCode review loop on a chiridion refactor: 8–16 children editing forks, one typecheck-and-test job per round, push by job; the same run twice, strong implementer against cheap, as the first role eval |
+| 2. Repositories | 4 | `kind: "repo"` volumes, the repo object, layer rows, commit with three-way merge, `diff`, `branch`, `merge`, the trigram index behind `grep`, import job, push and pull through the GitHub App from the object | The same loop at 32 children, commits of one file at a time onto one branch, whole-tree `grep` from the object, one push a phase |
+| 3. Queues and scale | 3 | `queue()`, sharded tests, `saveSnapshot` per phase, the `jobs` builtin for ordinary agents, `/stuck`, alerts, phase collapse in the journal, 10,000 effects, saved patterns | A compile-error work queue on a Rust or TypeScript repository of ours: 64 fixers, 8 jobs on Boat `large`, a snapshot refreshed per crate |
+| 4. Bun-shaped run and Node | 3 | Node parity through the shared runner and the Boat driver, docs, the role eval harness | A full Bun-shaped run on a public repository, measured against the post's numbers: cost, cache share, wall time, conflicts, jobs per hour |
 
 ### Open questions
 
@@ -572,9 +638,10 @@ against the same work done by one agent.
    they need `git log -p` on the file they review? If so, the import job keeps a shallow history of N commits.
 5. **isomorphic-git in a Durable Object at Bun scale.** Pack building for a few hundred files is fine; a first push
    of a 1,500-file port is a 35 MB pack. Build it in a job if the object cannot.
-6. **Job provider for the Bun class.** Cloudflare's 20 GB and 4 vCPU rule it out for a 100-crate Rust build. Boat is
-   EU-only with FUSE-slow first minutes. Is a third provider (exe.dev standalone, measured as fast as fresh NVMe)
-   worth a driver for jobs?
+6. **Boat as the first job driver.** It is EU-only, its write path is 46–48 MB/s, and its first minutes read through
+   FUSE (#702). Those cost a job little, but a tenant with data-residency needs or a build that writes tens of GB
+   may want another: exe.dev standalone (fresh-NVMe speed, needs plan approval) or Incus on Azure (the 11-02 spike).
+   Decide after phase 1's job measurements, not before.
 7. **Pricing of steps and the repo object.** Steps and searches are Durable Object time today, unbilled to tenants,
    as monitor checks are. Measure before deciding.
 8. **Role defaults.** Which cheap model is the implementer class on day one, and what the eval's pass bar is
@@ -591,6 +658,6 @@ against the same work done by one agent.
 - Handoffs between agents, or long-lived agents per worker across workflows. A child is made for an effect.
 - A general durable-execution service (Temporal). Effects are the six kinds above, and the runtime owns their
   semantics.
-- Persistent machines per agent. A computer stays available for the agents that need one; a workflow's code work
-  does not.
+- Forked or persistent machines anywhere in the swarm path. A computer stays available for the agents whose work is
+  the machine (interactive sessions, browsers, people's managed computers); a workflow's children never hold one.
 - Multi-repository workflows in v1. One `repo` per workflow; a second repository is a second workflow or a job.
