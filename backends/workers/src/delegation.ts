@@ -389,8 +389,9 @@ export class Delegation {
           if (!resolved?.id) await this.host.inheritComputer?.(id, made.id!, choice === 'none' || choice === 'share' ? choice : fork);
           Object.assign(admitted, await this.update(admitted, { id: made.id! }));
           await this.checkCancellation(admitted, signal);
-          // Who started the run, for readers of its metadata; its place in the chain goes with it through the binding.
-          const metadata = { [PARENT_KEYS.agent]: id, [PARENT_KEYS.run]: run.id, [PARENT_KEYS.toolCall]: toolCallId };
+          // Who started the run and where it stands, for readers of its metadata (the API shows it). The place that
+          // counts goes with it through the binding; nothing here is signed or trusted.
+          const metadata = { [PARENT_KEYS.agent]: id, [PARENT_KEYS.run]: run.id, [PARENT_KEYS.toolCall]: toolCallId, [PARENT_KEYS.depth]: String(place.depth), [PARENT_KEYS.maxDepth]: String(place.maxDepth), [PARENT_KEYS.chain]: place.chain.join(',') };
           const placement: Placement = { owner: place.owner, rootOwner: place.rootOwner, chain: place.chain, depth: place.depth, maxDepth: place.maxDepth, toolCallId, ownerRun: run.id };
           await this.host.emit({ type: 'event', requestId: run.id, event: { type: 'subagent_start', toolCallId, agentId: admitted.id, requestId: admitted.requestId, name: admitted.name, depth: admitted.depth, ...(admitted.background ? { background: true } : {}) } });
           await this.host.storage.put(`delegation-run:${admitted.id}:${admitted.requestId}`, admitted.key);
@@ -614,7 +615,7 @@ export class Delegation {
     const next: DelegatedChild = existing ?? { ...child, outbox: true, payer: run.params?.endUser, bucket: run.params?.bucket ?? config.bucket, key, requestId, parentRequestId: run.id, toolCallId: callId, task: args.text, background: true, createdAt: Date.now(), endedAt: undefined, status: 'running', held: undefined, spent: undefined, charged: undefined, outcome: undefined, error: undefined, notified: undefined, landedBy: undefined, accepted: false, cancelRequested: undefined, folded: undefined, progress: undefined, progressCalls: undefined, progressShown: undefined };
     await this.putChild(this.host.storage, next);
     const chain = child.chain ?? [...lineage?.chain ?? [], id], maxDepth = child.maxDepth ?? config.delegate?.maxDepth ?? MULTI_AGENT_LIMITS.maxDepth;
-    const metadata = { [PARENT_KEYS.agent]: id, [PARENT_KEYS.run]: run.id, [PARENT_KEYS.toolCall]: callId };
+    const metadata = { [PARENT_KEYS.agent]: id, [PARENT_KEYS.run]: run.id, [PARENT_KEYS.toolCall]: callId, [PARENT_KEYS.depth]: String(child.depth), [PARENT_KEYS.maxDepth]: String(maxDepth), [PARENT_KEYS.chain]: chain.join(',') };
     // The child's turn this message starts runs where the child was placed: the placement goes with the notice.
     const rootOwner = ownerOf(child.rootOwner) ?? agentOwner(chain[0] ?? id);
     const delegation: Placement = { owner: agentOwner(id), rootOwner, chain, depth: child.depth, maxDepth, toolCallId: callId, ownerRun: run.id };
