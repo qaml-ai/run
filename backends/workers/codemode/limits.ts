@@ -1,18 +1,36 @@
-import type { CodemodeRemoteExchange, CodemodeRemoteMessage } from "@earendil-works/pi-codemode/portable";
+import type { CodemodeRemoteExchange, CodemodeRemoteMessage, CodemodeRemoteRequest } from "@earendil-works/pi-codemode/portable";
 import { SANDBOX_LIMITS } from "../../../src/limits.ts";
+import { EXCHANGE_PROTOCOL, requestExchange, type ExchangeParameters, type ExchangeRequest } from "./exchange.ts";
 
-// QuickJS counts interrupt polls because Workers clocks freeze during synchronous code.
-// Keep non-yielding scripts below the isolate CPU reset threshold. This is not a wall-clock CPU limit.
-export const SANDBOX_INTERRUPT_BUDGET = 10_000;
+export { SANDBOX_INTERRUPT_BUDGET } from "./exchange.ts";
 
 /**
- * Enforce the v8 bridge budgets at the remote boundary, before invoking host capabilities. Past `concurrentTools` calls
- * out at once, a call waits its turn here, as v8-exec queues it in the guest: Promise.all over many calls works within
- * the script's `toolCalls`.
+ * The sandbox's side of one execution: `serve` (the stock VM server) runs `request` under the caps it was made with,
+ * at most their poll budget. Throws, before serving, for a request this sandbox cannot serve.
  */
-export function boundedExchange(exchange: CodemodeRemoteExchange): CodemodeRemoteExchange {
-  const maxCalls = SANDBOX_LIMITS.toolCalls, maxConcurrent = SANDBOX_LIMITS.concurrentTools;
-  const maxArgs = SANDBOX_LIMITS.argumentBytes, maxResultBytes = SANDBOX_LIMITS.totalToolBytes;
+export async function serveExchange(
+  request: ExchangeRequest, exchange: CodemodeRemoteExchange,
+  serve: (request: CodemodeRemoteRequest, exchange: CodemodeRemoteExchange) => Promise<void>,
+): Promise<void> {
+  const { parameters, hello } = requestExchange(request);
+  const most = parameters.caps.interruptBudget;
+  await serve({ data: request.data, interruptBudget: Math.min(request.interruptBudget ?? most, most) }, boundedExchange(exchange, parameters, hello));
+}
+
+/**
+ * Enforce an exchange's caps at the remote boundary, before invoking host capabilities. Past `caps.inFlight` calls
+ * out at once, a call waits its turn here, as v8-exec queues it in the guest: Promise.all over many calls works within
+ * the script's `caps.calls`. With `hello`, the first batch sent opens with the protocol 2 hello.
+ */
+export function boundedExchange(upstream: CodemodeRemoteExchange, parameters: ExchangeParameters, hello = false): CodemodeRemoteExchange {
+  const { calls: maxCalls, inFlight: maxConcurrent, argumentBytes: maxArgs, resultBytes: most, totalResultBytes: maxResultBytes } = parameters.caps;
+  let greeted = !hello;
+  // The hello is not a VM message, so it is typed as one only to cross the stock exchange.
+  const exchange: CodemodeRemoteExchange = messages => {
+    if (greeted) return upstream(messages);
+    greeted = true;
+    return upstream([{ type: "exchange", protocol: EXCHANGE_PROTOCOL } as unknown as CodemodeRemoteMessage, ...messages]);
+  };
   const turns: (() => void)[] = [];
   let calls = 0, pending = 0, totalResults = 0, textBytes = 0, outputEvents = 0, cut = false, failed = false, images = 0, imageBytes = 0, imageCut = false;
   const size = (text: string | undefined) => text === undefined ? 0 : new TextEncoder().encode(text).byteLength;
@@ -57,7 +75,7 @@ export function boundedExchange(exchange: CodemodeRemoteExchange): CodemodeRemot
     try {
       const reply = await exchange(kept);
       if (reply?.type === "result" && reply.ok) {
-        const bytes = size(reply.payload), most = SANDBOX_LIMITS.resultBytes - 1024;
+        const bytes = size(reply.payload);
         let error: string | undefined;
         if (bytes > most) error = `The result is ${bytes.toLocaleString("en-US")} bytes; a script gets at most ${most.toLocaleString("en-US")} from one call. Ask the tool for less.`;
         else if ((totalResults += bytes) > maxResultBytes) error = `This script's calls have returned more than ${maxResultBytes.toLocaleString("en-US")} bytes in all, the most one script gets. Ask for less, or split the work across scripts.`;
