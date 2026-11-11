@@ -715,13 +715,13 @@ export type WebhookEvent = { id: string; created: number } & (
       endUser: string; balance: number; previousBalance: number; threshold: number; cause: EndUserBalanceCause;
     } }
   | { type: "end_user.credit.exhausted"; data: {
-      /** allowance: a bucket's free allowance for the day is used up (the balance may still pay); balance: no credit left; daily_limit: the day's paid spend reached its limit; bucket_limit: the bucket's paid spend reached its own. */
-      endUser: string; reason: "allowance" | "balance" | "daily_limit" | "bucket_limit"; bucket: string | null; balance: number; day: string; allowance?: number; dailyLimit?: number | null; bucketLimit?: number | null;
+      /** allowance: a bucket or pool's free allowance for the day is used up (the balance may still pay); balance: no credit left; daily_limit: the day's paid spend reached its limit; bucket_limit: the bucket's paid spend reached its own. */
+      endUser: string; reason: "allowance" | "balance" | "daily_limit" | "bucket_limit"; bucket: string | null; balance: number; day: string; pool?: string; allowance?: number; dailyLimit?: number | null; bucketLimit?: number | null;
       /** With reason balance: what moved it. */
       cause?: EndUserBalanceCause;
     } }
   | { type: "end_user.credit.granted" | "end_user.credit.refunded" | "end_user.credit.adjusted" | "end_user.credit.spent" | "end_user.credit.expired"; data: EndUserEntryEvent }
-  | { type: "end_user.allowance.low"; data: { endUser: string; bucket: string; day: string; allowance: number; allowanceSpent: number; percent: number } }
+  | { type: "end_user.allowance.low"; data: { endUser: string; bucket: string; day: string; pool?: string; allowance: number; allowanceSpent: number; percent: number } }
   | { type: "run.started"; data: RunFacts & { resumes?: number } }
   | { type: "run.completed"; data: RunFacts & { usage: RunUsage | null; servedModel?: string; stopped?: "input_required" | "spend_limit" | "turn_limit"; inputIds?: string[]; replyIndex?: number; messageCount?: number; steeredInto?: string; batchedInto?: string; batch?: string[] } }
   | { type: "run.failed"; data: RunFacts & Partial<ModelFailure> & { usage: RunUsage | null; servedModel?: string; error: string; code?: string; uncertain?: boolean; steeredInto?: string; batchedInto?: string; batch?: string[] } }
@@ -1301,10 +1301,10 @@ export type Micros = number;
  * ("bot:*") or "*"; bucket limits, keyed the same way, are the most a bucket may charge the balance per UTC day.
  */
 export interface EndUserSettings {
-  enabled: boolean; allowances: Record<string, Micros>; bucketLimits: Record<string, Micros>; dailyLimit: Micros | null; markupBps: number;
+  enabled: boolean; allowances: Record<string, Micros>; sharedAllowances: Record<string, Micros>; bucketLimits: Record<string, Micros>; dailyLimit: Micros | null; markupBps: number;
   /** end_user.balance.low below this (a person's own `lowBalance` over it); null: never. */
   lowBalance: Micros | null;
-  /** end_user.allowance.low once per person, bucket and day as spend passes this percent (1–100) of the bucket's allowance; null: never. */
+  /** end_user.allowance.low once per person, bucket or pool and day as spend passes this percent (1–100) of its allowance; null: never. */
   allowanceWarningPercent: number | null;
   updatedAt: number | null;
 }
@@ -1325,7 +1325,8 @@ export interface EndUserEntryEvent {
  * One bucket's day for an end user: its allowance, spent from it (raw) and from the balance (charged), written off (raw:
  * cost past what was left, which the user is not charged), held, left, and its own limit on paid spend (null: none).
  */
-export interface EndUserBucketDay { bucket: string; allowance: Micros; allowanceSpent: Micros; paidSpent: Micros; writtenOff: Micros; held: Micros; allowanceLeft: Micros; paidLimit: Micros | null }
+export interface EndUserAllowancePool { key: string; allowance: Micros; allowanceSpent: Micros; held: Micros; allowanceLeft: Micros }
+export interface EndUserBucketDay { pool: EndUserAllowancePool | null; bucket: string; allowance: Micros; allowanceSpent: Micros; paidSpent: Micros; writtenOff: Micros; held: Micros; allowanceLeft: Micros; paidLimit: Micros | null }
 /**
  * Part of an end user's balance by when it expires: a grant made with `expiresAt` (or a part you marked, `markLot`), or
  * (key null, `expiresAt` null) the rest, which never expires.
@@ -1339,8 +1340,8 @@ export interface EndUser {
   /** The low-balance threshold that applies: their own, else the tenant's; null: none. */
   lowBalance: Micros | null;
   markupBps: number;
-  overrides: { allowances: Record<string, Micros>; bucketLimits: Record<string, Micros>; dailyLimit: Micros | null; lowBalance: Micros | null };
-  today: { day: string; paidSpent: Micros; buckets: EndUserBucketDay[] };
+  overrides: { allowances: Record<string, Micros>; sharedAllowances: Record<string, Micros>; bucketLimits: Record<string, Micros>; dailyLimit: Micros | null; lowBalance: Micros | null };
+  today: { day: string; paidSpent: Micros; buckets: EndUserBucketDay[]; pools: EndUserAllowancePool[] };
   createdAt: number | null; updatedAt: number | null;
 }
 /**
@@ -1405,8 +1406,8 @@ export class EndUsers {
   settings(): Promise<EndUserSettings> { return this.transport.json("/v1/end-user-settings", this.key()); }
   /** Change the settings; fields left out keep their values. A changed allowance keeps what was spent today. */
   configure(input: Partial<Omit<EndUserSettings, "updatedAt">>): Promise<EndUserSettings> { return this.transport.json("/v1/end-user-settings", this.key(), "PUT", input); }
-  /** Change only what is sent: `allowances` and `bucketLimits` merged key by key (null removes a key), unlike `configure`, which replaces a map it is sent. */
-  amend(input: Partial<Omit<EndUserSettings, "updatedAt" | "allowances" | "bucketLimits">> & { allowances?: Record<string, Micros | null>; bucketLimits?: Record<string, Micros | null> }): Promise<EndUserSettings> { return this.transport.json("/v1/end-user-settings", this.key(), "PATCH", input); }
+  /** Change only what is sent: Allowance maps and `bucketLimits` merge key by key (null removes a key), unlike `configure`, which replaces a map it is sent. */
+  amend(input: Partial<Omit<EndUserSettings, "updatedAt" | "allowances" | "sharedAllowances" | "bucketLimits">> & { allowances?: Record<string, Micros | null>; sharedAllowances?: Record<string, Micros | null>; bucketLimits?: Record<string, Micros | null> }): Promise<EndUserSettings> { return this.transport.json("/v1/end-user-settings", this.key(), "PATCH", input); }
   /** An end user: balance, limits and today's spend by bucket (`buckets` adds ones unused today). One never seen is at zero. */
   get(id: string, options: { buckets?: string[] } = {}): Promise<EndUser> {
     return this.transport.json(`${this.path(id)}${options.buckets?.length ? `?buckets=${options.buckets.map(encodeURIComponent).join(",")}` : ""}`, this.key());
@@ -1420,7 +1421,7 @@ export class EndUsers {
    * A person's own allowances and bucket limits (merged key by key; null removes one), daily limit and low-balance
    * threshold (null: the tenant's). A threshold set above their balance fires end_user.balance.low once.
    */
-  update(id: string, overrides: { allowances?: Record<string, Micros | null>; bucketLimits?: Record<string, Micros | null>; dailyLimit?: Micros | null; lowBalance?: Micros | null }): Promise<EndUser> { return this.transport.json(this.path(id), this.key(), "PATCH", overrides); }
+  update(id: string, overrides: { allowances?: Record<string, Micros | null>; sharedAllowances?: Record<string, Micros | null>; bucketLimits?: Record<string, Micros | null>; dailyLimit?: Micros | null; lowBalance?: Micros | null }): Promise<EndUser> { return this.transport.json(this.path(id), this.key(), "PATCH", overrides); }
   /**
    * Their ledger, newest first, a page at a time: pass `next` as `before`. Narrow it by `kind` (a credit history without
    * usage: `["grant", "refund", "adjustment", "spend"]`), a time range on `createdAt` (`to` exclusive), `bucket`, and `moved` (only

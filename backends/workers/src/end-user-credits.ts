@@ -39,6 +39,8 @@ export type LedgerKind = EntryKind | "usage" | "expiry";
 export type Allowances = Record<string, number>;
 export type EndUserSettings = {
   enabled: boolean; allowances: Allowances;
+  /** Daily raw-cost pools shared by matching buckets, per person. */
+  sharedAllowances: Allowances;
   /** The most each user's paid spend may be per UTC day (charged micro-USD); null: none. */
   dailyLimit: number | null;
   /**
@@ -50,11 +52,11 @@ export type EndUserSettings = {
   markupBps: number;
   /** end_user.balance.low fires when a balance falls below this (a person's own `lowBalance` over it); null: never. */
   lowBalance: number | null;
-  /** end_user.allowance.low fires once per person, bucket and day as spend passes this percent of the bucket's allowance; null: never. */
+  /** end_user.allowance.low fires once per person, bucket or pool and day as spend passes this percent of its allowance; null: never. */
   allowanceWarningPercent: number | null;
   updatedAt: number | null;
 };
-export const DEFAULT_SETTINGS: Readonly<EndUserSettings> = Object.freeze({ enabled: false, allowances: {}, bucketLimits: {}, dailyLimit: null, markupBps: 0, lowBalance: null, allowanceWarningPercent: null, updatedAt: null });
+export const DEFAULT_SETTINGS: Readonly<EndUserSettings> = Object.freeze({ enabled: false, allowances: {}, sharedAllowances: {}, bucketLimits: {}, dailyLimit: null, markupBps: 0, lowBalance: null, allowanceWarningPercent: null, updatedAt: null });
 
 /**
  * What moved a balance, on end_user.balance.low and end_user.credit.exhausted (reason balance): a call's usage, a later
@@ -81,7 +83,8 @@ export type LedgerEntry = {
  * of the allowance, its own limit on paid spend (null: none), and what was written off (raw: cost past every limit,
  * which the tenant bears).
  */
-export type BucketDay = { bucket: string; allowance: number; allowanceSpent: number; paidSpent: number; writtenOff: number; held: number; allowanceLeft: number; paidLimit: number | null };
+export type AllowancePool = { key: string; allowance: number; allowanceSpent: number; held: number; allowanceLeft: number };
+export type BucketDay = { pool: AllowancePool | null; bucket: string; allowance: number; allowanceSpent: number; paidSpent: number; writtenOff: number; held: number; allowanceLeft: number; paidLimit: number | null };
 
 export const LEDGER_KINDS: readonly LedgerKind[] = [...ENTRY_KINDS, "usage", "expiry"];
 /** How a ledger read is narrowed (`EndUserCredits.ledger`): times are epoch ms, `to` exclusive. */
@@ -173,13 +176,36 @@ export function bucketLimitFor(tenant: Allowances, own: Allowances, bucket: stri
 }
 
 function keyedFor(merged: Allowances, bucket: string): number | undefined {
-  if (Object.hasOwn(merged, bucket)) return merged[bucket];
+  const key = keyFor(merged, bucket);
+  return key === undefined ? undefined : merged[key];
+}
+
+function keyFor(merged: Allowances, bucket: string): string | undefined {
+  if (Object.hasOwn(merged, bucket)) return bucket;
   let best: string | undefined;
   for (const key of Object.keys(merged)) {
     if (key === "*" || !key.endsWith("*") || !bucket.startsWith(key.slice(0, -1))) continue;
     if (!best || key.length > best.length) best = key;
   }
-  return best ? merged[best] : merged["*"];
+  return best ?? (Object.hasOwn(merged, "*") ? "*" : undefined);
+}
+
+/** Resolve each bucket to one pool. A matching pool takes precedence over its per-bucket allowance. */
+function allowanceScope(settings: EndUserSettings, user: any, bucket: string) {
+  const shared = { ...settings.sharedAllowances, ...user?.shared_allowances };
+  const key = keyFor(shared, bucket);
+  return {
+    key: key ?? null,
+    allowance: key === undefined ? allowanceFor(settings.allowances, user?.allowances ?? {}, bucket) : shared[key],
+    includes: (other: string) => key === undefined ? other === bucket : keyFor(shared, other) === key,
+  };
+}
+
+/** Current policy groups historical per-bucket spend and live reservations without rewriting either. */
+function allowanceTotals(scope: ReturnType<typeof allowanceScope>, days: DaySpend[], holds: { bucket: string; allowance: number | string }[]) {
+  const allowanceSpent = days.filter(row => scope.includes(row.bucket)).reduce((total, row) => total + Number(row.allowance_spent), 0);
+  const held = holds.filter(row => scope.includes(row.bucket)).reduce((total, row) => total + Number(row.allowance), 0);
+  return { allowance: scope.allowance, allowanceSpent, held, allowanceLeft: Math.max(0, scope.allowance - allowanceSpent - held) };
 }
 
 /** Raw cost with the markup: what the user is charged for `raw`, rounded up. */
@@ -195,10 +221,10 @@ export function unmarked(charged: number, markupBps: number): number {
 export const utcDay = (at: number) => new Date(at).toISOString().slice(0, 10);
 
 const settingsView = (row: any): EndUserSettings => row ? {
-  enabled: row.enabled, allowances: row.allowances ?? {}, bucketLimits: row.bucket_limits ?? {}, dailyLimit: row.daily_limit === null ? null : Number(row.daily_limit),
+  enabled: row.enabled, allowances: row.allowances ?? {}, sharedAllowances: row.shared_allowances ?? {}, bucketLimits: row.bucket_limits ?? {}, dailyLimit: row.daily_limit === null ? null : Number(row.daily_limit),
   markupBps: row.markup_bps, lowBalance: row.low_balance === null ? null : Number(row.low_balance),
   allowanceWarningPercent: row.allowance_warning_percent ?? null, updatedAt: Number(row.updated_at),
-} : { ...DEFAULT_SETTINGS, allowances: {}, bucketLimits: {} };
+} : { ...DEFAULT_SETTINGS, allowances: {}, sharedAllowances: {}, bucketLimits: {} };
 
 const entryView = (row: any): LedgerEntry => ({
   id: Number(row.id), kind: row.kind, amount: Number(row.amount), raw: Number(row.raw), allowance: Number(row.allowance), writtenOff: Number(row.written_off ?? 0), bucket: row.bucket,
@@ -287,7 +313,7 @@ export class EndUserCredits {
   }
 
   /**
-   * Change the tenant's settings: fields left out keep their current values. `allowances` and `bucketLimits`, when given,
+   * Change the tenant's settings. Fields left out keep their current values. Allowance maps and `bucketLimits`, when given,
    * replace the whole map (PUT); with `merge` (PATCH) they are merged into it key by key, a key set to null removed.
    *
    * One statement writes only the columns sent, and merges a PATCH's keys into the map as the row stands when the write
@@ -295,11 +321,12 @@ export class EndUserCredits {
    * other's fields or keys: of two writes to the same field or key, the later one wins.
    */
   async setSettings(tenant: string, input: Record<string, unknown>, { merge = false } = {}): Promise<EndUserSettings> {
-    const known = ["enabled", "allowances", "bucketLimits", "dailyLimit", "markupBps", "lowBalance", "allowanceWarningPercent"];
+    const known = ["enabled", "allowances", "sharedAllowances", "bucketLimits", "dailyLimit", "markupBps", "lowBalance", "allowanceWarningPercent"];
     const unknown = Object.keys(input).find(key => !known.includes(key));
     if (unknown) throw new HttpError(400, `Unknown setting ${unknown}: settings are ${known.join(", ")}`);
     if (input.enabled !== undefined && typeof input.enabled !== "boolean") throw new HttpError(400, "enabled must be true or false");
     const allowances = input.allowances === undefined ? undefined : allowancesInput(input.allowances, merge);
+    const sharedAllowances = input.sharedAllowances === undefined ? undefined : allowancesInput(input.sharedAllowances, merge, "sharedAllowances");
     const bucketLimits = input.bucketLimits === undefined ? undefined : allowancesInput(input.bucketLimits, merge, "bucketLimits");
     const dailyLimit = input.dailyLimit === undefined ? undefined : amountInput(input.dailyLimit, "dailyLimit", { nullable: true });
     const lowBalance = input.lowBalance === undefined ? undefined : amountInput(input.lowBalance, "lowBalance", { nullable: true });
@@ -316,7 +343,7 @@ export class EndUserCredits {
     const params: unknown[] = [tenant, Date.now()];
     const param = (value: unknown) => `$${params.push(value)}`;
     const sets: string[] = [], limits: string[] = [];
-    const values: Record<string, string> = { enabled: "false", allowances: "'{}'::jsonb", bucket_limits: "'{}'::jsonb", daily_limit: "null", markup_bps: "0", low_balance: "null", allowance_warning_percent: "null" };
+    const values: Record<string, string> = { enabled: "false", allowances: "'{}'::jsonb", shared_allowances: "'{}'::jsonb", bucket_limits: "'{}'::jsonb", daily_limit: "null", markup_bps: "0", low_balance: "null", allowance_warning_percent: "null" };
     const column = (name: string, value: unknown) => {
       values[name] = param(value);
       sets.push(`${name} = excluded.${name}`);
@@ -333,6 +360,7 @@ export class EndUserCredits {
     };
     if (input.enabled !== undefined) column("enabled", input.enabled);
     map("allowances", allowances);
+    map("shared_allowances", sharedAllowances);
     map("bucket_limits", bucketLimits);
     if (dailyLimit !== undefined) column("daily_limit", dailyLimit);
     if (input.markupBps !== undefined) column("markup_bps", input.markupBps);
@@ -351,7 +379,7 @@ export class EndUserCredits {
       return row;
     });
     // No row: the row is there, and a PATCH would take one of its maps past 100 keys. Nothing was written.
-    if (!row) throw new HttpError(400, "At most 100 keys in allowances, and 100 in bucketLimits");
+    if (!row) throw new HttpError(400, "At most 100 keys in each of allowances, sharedAllowances and bucketLimits");
     return settingsView(row);
   }
 
@@ -391,17 +419,25 @@ export class EndUserCredits {
       this.settings(tenant),
       this.db.query("select * from end_users where tenant = $1 and id = $2", [tenant, id]).then(result => result.rows[0]),
       this.db.query("select bucket, allowance_spent, paid_spent, written_off from end_user_days where tenant = $1 and end_user = $2 and day = $3", [tenant, id, day]).then(result => result.rows),
-      this.db.query("select bucket, sum(allowance)::bigint as allowance, sum(paid)::bigint as paid from end_user_holds where tenant = $1 and end_user = $2 and expires_at > $3 group by bucket", [tenant, id, now]).then(result => result.rows),
+      this.db.query("select bucket, day, sum(allowance)::bigint as allowance, sum(paid)::bigint as paid from end_user_holds where tenant = $1 and end_user = $2 and expires_at > $3 group by bucket, day", [tenant, id, now]).then(result => result.rows),
     ]);
     const own: Allowances = user?.allowances ?? {}, ownLimits: Allowances = user?.bucket_limits ?? {};
     const names = new Set<string>([...days.map(row => row.bucket), ...holds.map(row => row.bucket), ...buckets.map(bucket => bucketInput(bucket)),
-      ...[...Object.keys(settings.allowances), ...Object.keys(own), ...Object.keys(settings.bucketLimits), ...Object.keys(ownLimits)].filter(key => !key.endsWith("*"))]);
+      ...[...Object.keys(settings.allowances), ...Object.keys(own), ...Object.keys(settings.sharedAllowances), ...Object.keys(user?.shared_allowances ?? {}), ...Object.keys(settings.bucketLimits), ...Object.keys(ownLimits)].filter(key => !key.endsWith("*"))]);
+    const todayHolds = holds.filter(row => dayText(row.day) === day);
+    const shared = { ...settings.sharedAllowances, ...user?.shared_allowances };
+    const pools: AllowancePool[] = Object.keys(shared).sort().map(key => {
+      const scope = { key, allowance: shared[key], includes: (bucket: string) => keyFor(shared, bucket) === key };
+      return { key, ...allowanceTotals(scope, days, todayHolds) };
+    });
     const today: BucketDay[] = [...names].sort().map(bucket => {
-      const spent = days.find(row => row.bucket === bucket), held = holds.find(row => row.bucket === bucket);
-      const allowance = allowanceFor(settings.allowances, own, bucket);
-      const allowanceSpent = Number(spent?.allowance_spent ?? 0), paidSpent = Number(spent?.paid_spent ?? 0);
-      const heldAllowance = Number(held?.allowance ?? 0), heldPaid = Number(held?.paid ?? 0);
-      return { bucket, allowance, allowanceSpent, paidSpent, writtenOff: Number(spent?.written_off ?? 0), held: heldAllowance + heldPaid, allowanceLeft: Math.max(0, allowance - allowanceSpent - heldAllowance), paidLimit: bucketLimitFor(settings.bucketLimits, ownLimits, bucket) };
+      const spent = days.find(row => row.bucket === bucket);
+      const scope = allowanceScope(settings, user, bucket);
+      const totals = allowanceTotals(scope, days, todayHolds);
+      const held = holds.filter(row => row.bucket === bucket).reduce((sum, row) => sum + Number(row.paid) + (dayText(row.day) === day ? Number(row.allowance) : 0), 0);
+      return { bucket, allowance: totals.allowance, allowanceSpent: Number(spent?.allowance_spent ?? 0), paidSpent: Number(spent?.paid_spent ?? 0),
+        writtenOff: Number(spent?.written_off ?? 0), held, allowanceLeft: totals.allowanceLeft,
+        pool: scope.key === null ? null : pools.find(pool => pool.key === scope.key)!, paidLimit: bucketLimitFor(settings.bucketLimits, ownLimits, bucket) };
     });
     const ownLimit = user && user.daily_limit !== null ? Number(user.daily_limit) : null;
     const dailyLimit = ownLimit ?? settings.dailyLimit;
@@ -417,30 +453,31 @@ export class EndUserCredits {
       /** What paid spend may still take today: the balance less holds, within the daily limit. */
       available: Math.max(0, Math.min(balance - heldPaid, dailyLimit === null ? Infinity : dailyLimit - paidSpent - heldPaid)),
       dailyLimit, lowBalance: ownLow ?? settings.lowBalance, markupBps: settings.markupBps,
-      overrides: { allowances: own, bucketLimits: ownLimits, dailyLimit: ownLimit, lowBalance: ownLow },
-      today: { day, paidSpent, buckets: today },
+      overrides: { allowances: own, sharedAllowances: user?.shared_allowances ?? {}, bucketLimits: ownLimits, dailyLimit: ownLimit, lowBalance: ownLow },
+      today: { day, paidSpent, buckets: today, pools },
       createdAt: user ? Number(user.created_at) : null, updatedAt: user ? Number(user.updated_at) : null,
     };
   }
 
   /**
-   * Set a user's own overrides: `allowances` and `bucketLimits` merged key by key into theirs (a key set to null is
+   * Set a user's own overrides. Allowance maps and `bucketLimits` merge key by key into theirs (a key set to null is
    * removed), their `dailyLimit` and their `lowBalance` (null: the tenant's). Makes the user if they are new. Never
    * touches what they spent. A threshold set above their balance fires end_user.balance.low once (`threshold_changed`).
    */
   async update(tenant: string, id: string, input: Record<string, unknown>) {
     endUserInput(id);
-    const unknown = Object.keys(input).find(key => !["allowances", "bucketLimits", "dailyLimit", "lowBalance"].includes(key));
-    if (unknown) throw new HttpError(400, `Unknown field ${unknown}: an end user's overrides are allowances, bucketLimits, dailyLimit and lowBalance`);
+    const unknown = Object.keys(input).find(key => !["allowances", "sharedAllowances", "bucketLimits", "dailyLimit", "lowBalance"].includes(key));
+    if (unknown) throw new HttpError(400, `Unknown field ${unknown}: an end user's overrides are allowances, sharedAllowances, bucketLimits, dailyLimit and lowBalance`);
     const allowances = input.allowances === undefined ? undefined : allowancesInput(input.allowances, true);
+    const sharedAllowances = input.sharedAllowances === undefined ? undefined : allowancesInput(input.sharedAllowances, true, "sharedAllowances");
     const bucketLimits = input.bucketLimits === undefined ? undefined : allowancesInput(input.bucketLimits, true, "bucketLimits");
     const dailyLimit = input.dailyLimit === undefined ? undefined : amountInput(input.dailyLimit, "dailyLimit", { nullable: true });
     const lowBalance = input.lowBalance === undefined ? undefined : amountInput(input.lowBalance, "lowBalance", { nullable: true });
     await transaction(this.db, async sql => {
       const user = await lockEndUser(sql, tenant, id);
-      await sql.query("update end_users set allowances = $3, bucket_limits = $4, daily_limit = $5, low_balance = $6, updated_at = $7 where tenant = $1 and id = $2",
+      await sql.query("update end_users set allowances = $3, bucket_limits = $4, daily_limit = $5, low_balance = $6, updated_at = $7, shared_allowances = $8 where tenant = $1 and id = $2",
         [tenant, id, JSON.stringify(mergeKeys(user.allowances, allowances, "allowance")), JSON.stringify(mergeKeys(user.bucket_limits, bucketLimits, "bucket limit")),
-          dailyLimit === undefined ? user.daily_limit : dailyLimit, lowBalance === undefined ? user.low_balance : lowBalance, Date.now()]);
+          dailyLimit === undefined ? user.daily_limit : dailyLimit, lowBalance === undefined ? user.low_balance : lowBalance, Date.now(), JSON.stringify(mergeKeys(user.shared_allowances ?? {}, sharedAllowances, "shared allowance"))]);
       if (lowBalance !== undefined) await thresholdChanged(sql, tenant, null, id);
     });
     return this.get(tenant, id);
@@ -825,7 +862,7 @@ export type Reserved = { hold: Hold; refused?: undefined; most?: number } | { re
 
 /** What an end user may still spend now in a bucket: its allowance left (raw), and room on the balance (charged). */
 type DaySpend = { bucket: string; allowance_spent: number | string; paid_spent: number | string };
-type Room = { day: string; spent: DaySpend[]; allowance: number; allowanceLeft: number; paidRoom: number; bound: CreditRefusal["reason"]; balance: number; dailyLimit: number | null; bucketLimit: number | null; markupBps: number };
+type Room = { pool: string | null; allowanceSpent: number; day: string; spent: DaySpend[]; allowance: number; allowanceLeft: number; paidRoom: number; bound: CreditRefusal["reason"]; balance: number; dailyLimit: number | null; bucketLimit: number | null; markupBps: number };
 
 const dayText = (day: unknown) => day instanceof Date ? day.toISOString().slice(0, 10) : String(day).slice(0, 10);
 const dollars = (micros: number) => `${micros < 0 ? "-" : ""}$${(Math.abs(micros) / MICROS).toFixed(2)}`;
@@ -848,10 +885,9 @@ async function room(sql: Sql, tenant: string, user: any, settings: EndUserSettin
     coalesce((select jsonb_agg(h) from (
       select bucket, day, allowance, paid from end_user_holds where tenant = $1 and end_user = $2 and expires_at > $4
     ) h), '[]'::jsonb) as holds`, [tenant, user.id, day, now]);
-  const allowance = allowanceFor(settings.allowances, user.allowances ?? {}, bucket);
-  const spent = Number(days.find(row => row.bucket === bucket)?.allowance_spent ?? 0);
+  const scope = allowanceScope(settings, user, bucket);
+  const totals = allowanceTotals(scope, days, holds.filter(row => dayText(row.day) === day));
   const paidToday = days.reduce((total, row) => total + Number(row.paid_spent), 0);
-  const heldAllowance = holds.filter(row => row.bucket === bucket && dayText(row.day) === day).reduce((total, row) => total + Number(row.allowance), 0);
   const heldPaid = holds.reduce((total, row) => total + Number(row.paid), 0);
   const heldPaidToday = holds.filter(row => dayText(row.day) === day).reduce((total, row) => total + Number(row.paid), 0);
   const dailyLimit = user.daily_limit !== null && user.daily_limit !== undefined ? Number(user.daily_limit) : settings.dailyLimit;
@@ -864,7 +900,7 @@ async function room(sql: Sql, tenant: string, user: any, settings: EndUserSettin
   const byBucket = bucketLimit === null ? Infinity : bucketLimit - bucketPaid;
   const least = Math.min(byBalance, byLimit, byBucket);
   return {
-    day, spent: days, allowance, allowanceLeft: Math.max(0, allowance - spent - heldAllowance), paidRoom: Math.max(0, least),
+    day, spent: days, pool: scope.key, allowance: totals.allowance, allowanceSpent: totals.allowanceSpent, allowanceLeft: totals.allowanceLeft, paidRoom: Math.max(0, least),
     bound: least === byBucket ? "bucket_limit" : least === byBalance ? "balance" : "daily_limit", balance, dailyLimit, bucketLimit, markupBps: settings.markupBps,
   };
 }
@@ -931,16 +967,19 @@ export async function settleUsage(sql: Sql, call: { tenant: string; endUser: str
     const balance = Number(user.balance) - charged;
     const spent = left.spent;
     const mine = spent.find(row => row.bucket === bucket);
-    // The bucket's allowance for the day is used up with this call: said once per user, bucket and day.
-    const before = Number(mine?.allowance_spent ?? 0);
+    // The allowance is used up with this call. Said once per user, bucket or pool and day.
+    const before = left.allowanceSpent;
+    const allowanceKey = left.pool ?? bucket;
+    const allowanceEvent = left.pool === null ? "allowance" : "allowance_pool";
+    const poolDetails = left.pool === null ? {} : { pool: left.pool };
     if (left.allowance > 0 && before < left.allowance && before + covered >= left.allowance) {
-      await exhausted(sql, tenant, endUser, { bucket, reason: "allowance", day, allowance: left.allowance, balance }, `allowance:${tenant}:${endUser}:${bucket}:${day}`);
+      await exhausted(sql, tenant, endUser, { bucket, reason: "allowance", day, allowance: left.allowance, balance, ...poolDetails }, `${allowanceEvent}:${tenant}:${endUser}:${allowanceKey}:${day}`);
     }
-    // Spend passed the tenant's warning percent of the bucket's allowance: said once per user, bucket and day.
+    // Spend passed the warning percent. Said once per user, bucket or pool and day.
     const percent = settings.allowanceWarningPercent, allowed = left.allowance;
     const warnAt = percent === null ? 0 : Math.ceil(allowed * percent / 100);
     if (allowed > 0 && percent !== null && before < warnAt && before + covered >= warnAt) {
-      await enqueueEvents(sql, [webhookEvent("end_user.allowance.low", tenant, { endUser, bucket, day, allowance: allowed, allowanceSpent: before + covered, percent }, `allowance_low:${tenant}:${endUser}:${bucket}:${day}`)]);
+      await enqueueEvents(sql, [webhookEvent("end_user.allowance.low", tenant, { endUser, bucket, day, allowance: allowed, allowanceSpent: before + covered, percent, ...poolDetails }, `${allowanceEvent}_low:${tenant}:${endUser}:${allowanceKey}:${day}`)]);
     }
     // So is the bucket's own limit on paid spend: once per user, bucket and day.
     const bucketPaid = Number(mine?.paid_spent ?? 0);

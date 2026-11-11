@@ -1,5 +1,41 @@
 [
   {
+    "file": "tests/shared-allowances.test.ts",
+    "test": "parallel bots reserve one pool, keep per-bucket spend, and settle idempotently",
+    "included": true
+  },
+  {
+    "file": "tests/shared-allowances.test.ts",
+    "test": "exact, prefix, and fallback pools have separate membership, including zero overrides",
+    "included": true
+  },
+  {
+    "file": "tests/shared-allowances.test.ts",
+    "test": "pool extensions, refunds, and paid bucket limits share the same budget",
+    "included": true
+  },
+  {
+    "file": "tests/shared-allowances.test.ts",
+    "test": "policy changes regroup existing spend, most-specific pools win, and overrides merge safely",
+    "included": true
+  },
+  {
+    "file": "tests/shared-allowances.test.ts",
+    "test": "pool warnings and exhaustion fire once per day even after a correction",
+    "included": true
+  },
+  {
+    "file": "tests/shared-allowances.test.ts",
+    "test": "a hold begun yesterday extends from yesterday's pool and leaves today's pool free",
+    "included": true
+  },
+  {
+    "file": "tests/shared-allowances.test.ts",
+    "test": "HTTP exposes settings, overrides, and unused pool reads",
+    "included": false,
+    "reason": "ECS HTTP fixture"
+  },
+  {
     "file": "tests/credit-holds.test.ts",
     "test": "a dear call a small balance cannot pay for is refused before it is made, and leaves no attempt",
     "included": true
