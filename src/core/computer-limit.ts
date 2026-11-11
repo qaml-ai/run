@@ -25,7 +25,9 @@ export const STORED_ROOT = (agents: string) => `coalesce(${agents}.header->'root
 export async function reserveComputer(sql: Sql, tenant: string, agent: string, machine: string, expiresAt: number, now = Date.now(), tenantDefault?: number) {
   const root = (await sql.query(`select ${STORED_ROOT('a')} as root from agents a where a.tenant=$1 and a.id=$2`, [tenant, agent])).rows[0]?.root as string | undefined ?? agent;
   await sql.query('select pg_advisory_xact_lock(hashtextextended($1,0))', [`computer-limit:${tenant}:${root}`]);
-  // The tree's own limit is its root agent's (a workflow root has none: the tenant's applies).
+  // The tree's own limit is its root agent's. A tree whose root is gone (deleted: its made children go with it, so only
+  // a named worker it started can still be running) or is a workflow has none: the tenant's applies. The walk this
+  // replaced took the last ancestor still there instead; the stored root keeps one ledger key per tree either way.
   const rootHeader = (await sql.query('select header from agents where tenant=$1 and id=$2', [tenant, root])).rows[0]?.header;
   const own = computerLimit(rootHeader?.config?.computerLimit);
   const defaults = (await sql.query('select limits from tenants where id=$1', [tenant])).rows[0]?.limits;
