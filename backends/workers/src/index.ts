@@ -94,6 +94,7 @@ import {
 } from "./agent-spend.ts";
 export { CamelAgent };
 export { TenantAdmission } from "./tenant.ts";
+export { WorkflowCapacity } from "./workflow-capacity-object.ts";
 export { Volume } from "./volume.ts";
 export { ContainerComputer } from "./computers/objects.ts";
 export { ComputerEgress } from "./computers/egress-gateway.ts";

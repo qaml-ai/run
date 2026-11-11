@@ -1,6 +1,6 @@
 // Generated from src/platform-pricing.ts; infrastructure imports only.
 import { calculateCost, type Api, type Model } from "@earendil-works/pi-ai";
-import { getModel, getModels } from "./pi-catalog.ts";
+import { getModel, getModels, tierCost } from "./model-catalog.ts";
 
 /** Token counts and costs as a response reports them; `cost` and `providerCost` are what billing reads (`usageCost`). */
 type Usage = { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cacheWrite1h?: number; cost?: Record<string, number>; providerCost?: number; [key: string]: unknown };
@@ -83,7 +83,9 @@ export function usageMissing(usage: { input?: unknown; output?: unknown; cacheRe
  */
 export function platformUsage<T extends Usage>(usage: T, provider: string, id: string, estimate?: { chars: number; inputTokens?: number; completed?: boolean }): { usage: T; estimated: boolean; known: boolean } {
   const model = catalogModel(provider, id);
-  const rates = model ? { ...model.cost, contextWindow: model.contextWindow, maxTokens: model.maxTokens } : dearest(provider);
+  // A response served on a service tier with its own prices (flex) is billed at them: what served it, not what was asked.
+  const prices = model && (tierCost(provider, id, usage.serviceTier) ?? model.cost);
+  const rates = model ? { ...prices!, contextWindow: model.contextWindow, maxTokens: model.maxTokens } : dearest(provider);
   const reported = typeof usage.providerCost === "number" && Number.isFinite(usage.providerCost) && usage.providerCost > 0;
   const missing = usageMissing(usage);
   const outputEstimate = Math.ceil(count(estimate?.chars) / 2), inputEstimate = Math.min(rates.contextWindow, count(estimate?.inputTokens));

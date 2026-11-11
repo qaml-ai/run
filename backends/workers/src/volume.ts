@@ -5,6 +5,7 @@ import {
   normalizePath as sourceNormalizePath,
   labelsInput as sourceLabelsInput,
   VOLUME_LIMITS,
+  COMMIT_LIMITS,
   globRegex as sourceGlobRegex,
 } from "./volume-policy.ts";
 const policy = <T>(run: () => T): T => {
@@ -22,7 +23,22 @@ const labelsInput = (value: unknown) => policy(() => sourceLabelsInput(value));
 const globRegex = (value: string) => policy(() => sourceGlobRegex(value));
 export interface VolumeBindings extends NativeStorageBindings {
   BUCKET: R2Bucket;
+  VOLUMES: DurableObjectNamespace<Volume>;
+  TEST_MODE?: string;
 }
+/** One file of an atomic commit: `key` names content this volume owns (an upload or a reused blob); none removes the path. */
+export type CommitFile = {
+  path: string;
+  version: number;
+  key?: string;
+  size?: number;
+  sha256?: string;
+  contentType?: string;
+};
+export type CommitConflict = { path: string; headVersion: number };
+export type CommitResult =
+  | { conflicts: CommitConflict[] }
+  | { seq: number; files: FileEntry[]; removed: string[]; snapshot?: Snapshot };
 export type FileEntry = {
   path: string;
   version: number;
@@ -41,7 +57,7 @@ export type VolumeInfo = {
   bytes: number;
   origin?: { volume: string; snapshot?: string; seq: number };
 };
-type Snapshot = {
+export type Snapshot = {
   id: string;
   volume: string;
   name: string;
@@ -98,6 +114,10 @@ export class Volume extends DurableObject<VolumeBindings> {
     );
     ctx.storage.sql.exec(
       "CREATE TABLE IF NOT EXISTS pins(owner TEXT NOT NULL,key TEXT NOT NULL,expiresAt INTEGER,PRIMARY KEY(owner,key))",
+    );
+    // A pin on content another volume owns is kept there; this records where, so unpin finds it.
+    ctx.storage.sql.exec(
+      "CREATE TABLE IF NOT EXISTS forwarded_pins(owner TEXT NOT NULL,volume TEXT NOT NULL,expiresAt INTEGER,PRIMARY KEY(owner,volume))",
     );
   }
   private sql() {
@@ -424,6 +444,91 @@ export class Volume extends DurableObject<VolumeBindings> {
       return file;
     });
   }
+  /**
+   * Write and remove named files as one change: every expected version is checked and every file written in one
+   * transaction, or nothing is written and the answer names each path whose head version differs. A `snapshot` is
+   * taken in the same transaction, so it holds exactly this commit over what was there.
+   */
+  commit(
+    files: CommitFile[],
+    snapshot?: { name?: string; pinned?: boolean; labels?: Record<string, string> },
+  ): CommitResult {
+    return this.ctx.storage.transactionSync(() => {
+      this.alive();
+      if (!Array.isArray(files) || !files.length || files.length > COMMIT_LIMITS.files)
+        throw new FileError(`A commit names 1 to ${COMMIT_LIMITS.files} files`);
+      const named = new Set<string>();
+      const batch = files.map((file) => {
+        const path = normalizePath(file.path);
+        if (path === "/") throw new FileError("A file needs a name");
+        if (named.has(path)) throw new FileError(`${path} is named twice`);
+        named.add(path);
+        if (!Number.isSafeInteger(file.version) || file.version < 0)
+          throw new FileError("version must be a non-negative integer (0: the file must not exist)");
+        if (file.key === undefined && file.version === 0)
+          throw new FileError(`Removing ${path} takes its version`);
+        return { ...file, path };
+      });
+      const head = (path: string) =>
+        [...this.sql().exec<FileEntry>("SELECT * FROM files WHERE path=?", path)][0];
+      const conflicts = batch.flatMap((file) => {
+        const version = head(file.path)?.version ?? 0;
+        return version === file.version ? [] : [{ path: file.path, headVersion: version }];
+      });
+      if (conflicts.length) return { conflicts };
+      // Removals first, so a path one frees can take another's file or directory.
+      const removed: string[] = [];
+      for (const file of batch.filter((f) => f.key === undefined)) {
+        this.sql().exec("DELETE FROM files WHERE path=?", file.path);
+        this.record(file.path, "delete");
+        removed.push(file.path);
+      }
+      const written: FileEntry[] = [];
+      for (const file of batch.filter((f) => f.key !== undefined)) {
+        if (![...this.sql().exec("SELECT 1 FROM objects WHERE key=?", file.key!)].length)
+          throw new FileError("Unknown upload", 400);
+        if (!Number.isSafeInteger(file.size) || file.size! < 0 || file.size! > VOLUME_LIMITS.fileBytes)
+          throw new FileError("File exceeds byte limit", 413);
+        this.pathConflict(file.path);
+        const previous = head(file.path);
+        if (!previous && this.info().files >= VOLUME_LIMITS.files)
+          throw new FileError("Volume file limit reached", 507);
+        const entry: FileEntry = {
+          path: file.path,
+          version: this.sequence() + 1,
+          size: file.size!,
+          key: file.key!,
+          contentType: file.contentType ?? "application/octet-stream",
+          updatedAt: Date.now(),
+          ...(file.sha256 ? { sha256: file.sha256 } : {}),
+        };
+        this.sql().exec(
+          "INSERT OR REPLACE INTO files(path,version,size,key,contentType,updatedAt,sha256) VALUES(?,?,?,?,?,?,?)",
+          entry.path,
+          entry.version,
+          entry.size,
+          entry.key,
+          entry.contentType,
+          entry.updatedAt,
+          entry.sha256 ?? null,
+        );
+        this.record(entry.path, "write", entry);
+        written.push(entry);
+      }
+      const taken = snapshot
+        ? this.takeSnapshot(snapshot.name, { pinned: snapshot.pinned, labels: snapshot.labels })
+        : undefined;
+      return { seq: this.sequence(), files: written, removed, ...(taken ? { snapshot: taken } : {}) };
+    });
+  }
+  /** Why `path` cannot be a file now: it is a directory, or below a file. Indexed, unlike `conflict`. */
+  private pathConflict(path: string) {
+    if ([...this.sql().exec("SELECT 1 FROM files WHERE path>? AND path<? LIMIT 1", path + "/", path + "0")].length)
+      throw new FileError(`${path} is a directory`, 409);
+    for (let parent = path.slice(0, path.lastIndexOf("/")); parent; parent = parent.slice(0, parent.lastIndexOf("/")))
+      if ([...this.sql().exec("SELECT 1 FROM files WHERE path=?", parent)].length)
+        throw new FileError(`${parent} is a file`, 409);
+  }
   async storeDetached(
     bytes: Uint8Array,
     contentType = "application/octet-stream",
@@ -489,50 +594,60 @@ export class Volume extends DurableObject<VolumeBindings> {
     } = {},
   ) {
     this.alive();
-    const snapshot = this.ctx.storage.transactionSync(() => {
-      name = name === undefined ? `seq ${this.sequence()}` : name;
-      if (typeof name !== "string" || !name.trim() || name.length > 120)
-        throw new FileError("name must be 1–120 characters");
-      if (options.pinned !== undefined && typeof options.pinned !== "boolean")
-        throw new FileError("pinned is true or false");
-      const pinned = options.pinned ?? false,
-        labels =
-          options.labels === undefined ? {} : labelsInput(options.labels),
-        cap = pinned ? VOLUME_LIMITS.pinnedSnapshots : VOLUME_LIMITS.snapshots;
-      if (this.snapshots(undefined, true).filter((s) => s.pinned === pinned).length >= cap)
-        throw new FileError(
-          `A volume keeps at most ${cap} ${pinned ? "pinned " : ""}snapshots`,
-          409,
-        );
-      const id = "snap_" + crypto.randomUUID().replaceAll("-", "").slice(0, 16),
-        entries = options.given ?? this.list();
-      const seq = this.sequence(),
-        createdAt = Date.now(),
-        serialized = JSON.stringify(entries);
-      if (new TextEncoder().encode(serialized).length > 16 * 1024 * 1024)
-        throw new FileError("Snapshot metadata exceeds 16 MiB", 413);
-      this.sql().exec(
-        "INSERT INTO snapshots VALUES(?,?,?,?,?)",
-        id,
-        name.trim(),
-        seq,
-        createdAt,
-        serialized,
-      );
-      this.sql().exec(
-        "INSERT INTO snapshot_options VALUES(?,?,?)",
-        id,
-        pinned ? 1 : 0,
-        JSON.stringify(labels),
-      );
-      if (options.expiresAt) this.sql().exec("INSERT INTO temporary_snapshots VALUES(?,?)", id, options.expiresAt);
-      return this.snapshotSummary(id);
-    });
+    const snapshot = this.ctx.storage.transactionSync(() => this.takeSnapshot(name, options));
     if (options.expiresAt) {
       const alarm = await this.ctx.storage.getAlarm();
       if (alarm === null || alarm > options.expiresAt) await this.ctx.storage.setAlarm(options.expiresAt);
     }
     return snapshot;
+  }
+  /** Inside a transaction: a snapshot of the volume as it is now (or of `given`). */
+  private takeSnapshot(
+    name: string | undefined,
+    options: {
+      pinned?: boolean;
+      labels?: Record<string, string>;
+      given?: FileEntry[];
+      expiresAt?: number;
+    },
+  ): Snapshot {
+    name = name === undefined ? `seq ${this.sequence()}` : name;
+    if (typeof name !== "string" || !name.trim() || name.length > 120)
+      throw new FileError("name must be 1–120 characters");
+    if (options.pinned !== undefined && typeof options.pinned !== "boolean")
+      throw new FileError("pinned is true or false");
+    const pinned = options.pinned ?? false,
+      labels =
+        options.labels === undefined ? {} : labelsInput(options.labels),
+      cap = pinned ? VOLUME_LIMITS.pinnedSnapshots : VOLUME_LIMITS.snapshots;
+    if (this.snapshots(undefined, true).filter((s) => s.pinned === pinned).length >= cap)
+      throw new FileError(
+        `A volume keeps at most ${cap} ${pinned ? "pinned " : ""}snapshots`,
+        409,
+      );
+    const id = "snap_" + crypto.randomUUID().replaceAll("-", "").slice(0, 16),
+      entries = options.given ?? this.list();
+    const seq = this.sequence(),
+      createdAt = Date.now(),
+      serialized = JSON.stringify(entries);
+    if (new TextEncoder().encode(serialized).length > 16 * 1024 * 1024)
+      throw new FileError("Snapshot metadata exceeds 16 MiB", 413);
+    this.sql().exec(
+      "INSERT INTO snapshots VALUES(?,?,?,?,?)",
+      id,
+      name.trim(),
+      seq,
+      createdAt,
+      serialized,
+    );
+    this.sql().exec(
+      "INSERT INTO snapshot_options VALUES(?,?,?)",
+      id,
+      pinned ? 1 : 0,
+      JSON.stringify(labels),
+    );
+    if (options.expiresAt) this.sql().exec("INSERT INTO temporary_snapshots VALUES(?,?)", id, options.expiresAt);
+    return this.snapshotSummary(id);
   }
   private snapshotSummary(id: string): Snapshot {
     const row = [
@@ -669,7 +784,10 @@ export class Volume extends DurableObject<VolumeBindings> {
       return { snapshot: id, seq: this.sequence(), written, removed };
     });
   }
-  /** Copy immutable bytes into this volume's ownership before the source pin expires. */
+  /**
+   * Make this new volume a fork: its files are the source's entries, sharing their content. The content stays where it
+   * is, pinned by this fork (`fork:<id>`) in the volume that owns each blob until this fork is deleted.
+   */
   async seed(
     entries: FileEntry[],
     origin: { volume: string; snapshot?: string; seq: number },
@@ -677,67 +795,156 @@ export class Volume extends DurableObject<VolumeBindings> {
     this.alive();
     if (this.info().files)
       throw new FileError("Destination volume is not empty", 409);
-    for (const entry of entries) {
-      if (
-        !entry.key.startsWith(
-          `files/${encodeURIComponent(this.meta("tenant")!)}/`,
-        )
-      )
-        throw new FileError("Invalid source", 403);
-      const object = await this.env.BUCKET.get(entry.key);
-      if (!object) throw new FileError("Source object missing", 503);
-      const key = this.freshKey(entry.key.split("/").at(-1)!);
-      this.sql().exec("INSERT INTO objects VALUES(?,?)", key, Date.now());
-      await this.env.BUCKET.put(key, object.body, {
-        httpMetadata: { contentType: entry.contentType },
-      });
-      await recordNativeFile(this.env, this.meta("tenant")!, key, object.size);
+    if (entries.length > VOLUME_LIMITS.files)
+      throw new FileError("Volume file limit reached", 507);
+    const tenantPrefix = `files/${encodeURIComponent(this.meta("tenant")!)}/`;
+    for (const entry of entries)
+      if (!entry.key.startsWith(tenantPrefix)) throw new FileError("Invalid source", 403);
+    // Pinned before the files point at them, so a crash leaves at worst a pin this fork's deletion releases.
+    await this.pin(this.forkOwner(), entries.map((entry) => entry.key));
+    this.ctx.storage.transactionSync(() => {
+      this.alive();
+      if (this.info().files)
+        throw new FileError("Destination volume is not empty", 409);
+      for (const entry of entries) {
+        this.sql().exec(
+          "INSERT INTO files(path,version,size,key,contentType,updatedAt,sha256) VALUES(?,?,?,?,?,?,?)",
+          entry.path,
+          entry.version,
+          entry.size,
+          entry.key,
+          entry.contentType,
+          entry.updatedAt,
+          entry.sha256 ?? null,
+        );
+        this.sql().exec(
+          "INSERT OR IGNORE INTO changes(seq,path,kind,version,size,at) VALUES(?,?,?,?,?,?)",
+          entry.version,
+          entry.path,
+          "write",
+          entry.version,
+          entry.size,
+          entry.updatedAt,
+        );
+      }
       this.sql().exec(
-        "INSERT INTO files(path,version,size,key,contentType,updatedAt,sha256) VALUES(?,?,?,?,?,?,?)",
-        entry.path,
-        entry.version,
-        entry.size,
-        key,
-        entry.contentType,
-        entry.updatedAt,
-        entry.sha256 ?? null,
+        "INSERT OR REPLACE INTO metadata VALUES('origin',?)",
+        JSON.stringify(origin),
       );
-      this.sql().exec(
-        "INSERT OR IGNORE INTO changes(seq,path,kind,version,size,at) VALUES(?,?,?,?,?,?)",
-        entry.version,
-        entry.path,
-        "write",
-        entry.version,
-        entry.size,
-        entry.updatedAt,
-      );
-    }
-    this.sql().exec(
-      "INSERT OR REPLACE INTO metadata VALUES('origin',?)",
-      JSON.stringify(origin),
-    );
-    await this.scheduleCollection();
+    });
     return this.info();
   }
+  /**
+   * The owner of a fork's base pins. Not `fork:<id>`: the route before metadata-only forks pinned and then unpinned that
+   * name around its copy, and an old route finishing mid-deploy must not release a new fork's base.
+   */
+  private forkOwner() {
+    return `fork-base:${this.meta("id")!}`;
+  }
+  /** The volume whose collection owns a blob (the one named in its key), or undefined for this one. */
+  private ownerOf(key: string) {
+    const self = this.meta("id"), tenant = this.meta("tenant");
+    if (!self || !tenant) return undefined;
+    const [root, keyTenant, volume] = key.split("/");
+    if (root !== "files" || keyTenant !== encodeURIComponent(tenant) || !volume) return undefined;
+    const owner = decodeURIComponent(volume);
+    return owner === self ? undefined : owner;
+  }
+  private peer(volume: string) {
+    return this.env.VOLUMES.getByName(`${this.meta("tenant")!}:${volume}`);
+  }
+  /** Keep blobs while `owner` holds them. A blob another volume owns (a fork's base) is pinned in that volume. */
   async pin(owner: string, keys: string[], expiresAt?: number) {
     if (!owner || keys.length > VOLUME_LIMITS.files)
       throw new FileError("Invalid pin");
+    const elsewhere = new Map<string, string[]>(),
+      local: string[] = [];
+    for (const key of new Set(keys)) {
+      const volume = this.ownerOf(key);
+      if (volume === undefined) local.push(key);
+      else if (elsewhere.has(volume)) elsewhere.get(volume)!.push(key);
+      else elsewhere.set(volume, [key]);
+    }
     this.ctx.storage.transactionSync(() => {
-      for (const key of new Set(keys))
+      for (const key of local)
         this.sql().exec(
           "INSERT OR REPLACE INTO pins VALUES(?,?,?)",
           owner,
           key,
           expiresAt ?? null,
         );
+      // Recorded before the remote pin, so an unpin after a crash still reaches it.
+      for (const volume of elsewhere.keys())
+        // Kept as long as the longest pin it records (NULL: until unpinned), then collected with expired pins.
+        this.sql().exec(
+          "INSERT INTO forwarded_pins VALUES(?,?,?) ON CONFLICT(owner,volume) DO UPDATE SET expiresAt=CASE WHEN forwarded_pins.expiresAt IS NULL OR excluded.expiresAt IS NULL THEN NULL ELSE max(forwarded_pins.expiresAt,excluded.expiresAt) END",
+          owner,
+          volume,
+          expiresAt ?? null,
+        );
     });
-    await this.scheduleCollection();
+    for (const [volume, owned] of elsewhere) await this.peer(volume).pin(owner, owned, expiresAt);
+    if (local.length) await this.scheduleCollection();
+    // A record of an expiring pin kept elsewhere is collected by this volume's own alarm, which may have none yet.
+    if (elsewhere.size && expiresAt !== undefined) await this.alarmBy(expiresAt);
   }
-  hasPin(owner: string, key: string) {
+  async hasPin(owner: string, key: string): Promise<boolean> {
+    const volume = this.ownerOf(key);
+    if (volume !== undefined) return this.peer(volume).hasPin(owner, key);
     return [...this.sql().exec("SELECT 1 FROM pins WHERE owner=? AND key=? AND (expiresAt IS NULL OR expiresAt>?)", owner, key, Date.now())].length > 0;
   }
-  unpin(owner: string) {
+  async unpin(owner: string) {
+    if (this.env.TEST_MODE === "1" && Number(this.meta("test:fail-unpin") ?? 0) > 0) {
+      this.sql().exec("UPDATE metadata SET value=value-1 WHERE key='test:fail-unpin'");
+      throw new FileError("Injected unpin failure", 503);
+    }
     this.sql().exec("DELETE FROM pins WHERE owner=?", owner);
+    for (const { volume } of [...this.sql().exec<{ volume: string }>("SELECT volume FROM forwarded_pins WHERE owner=?", owner)]) {
+      await this.peer(volume).unpin(owner);
+      this.sql().exec("DELETE FROM forwarded_pins WHERE owner=? AND volume=?", owner, volume);
+    }
+  }
+  /** Local tests only (TEST_MODE): fail the next `times` unpins here, to exercise the release retry. */
+  testFailUnpin(times: number) {
+    if (this.env.TEST_MODE !== "1") throw new FileError("Not found", 404);
+    this.sql().exec("INSERT OR REPLACE INTO metadata VALUES('test:fail-unpin',?)", String(times));
+  }
+  /** Local tests only (TEST_MODE): pin every current file as `owner`, as another route would. */
+  async testPinFiles(owner: string, expiresAt?: number) {
+    if (this.env.TEST_MODE !== "1") throw new FileError("Not found", 404);
+    await this.pin(owner, this.list().map((file) => file.key), expiresAt);
+  }
+  /** Local tests only (TEST_MODE): run the alarm now, as if it had fired. */
+  async testRunAlarm() {
+    if (this.env.TEST_MODE !== "1") throw new FileError("Not found", 404);
+    await this.alarm();
+    return { alarm: await this.ctx.storage.getAlarm() };
+  }
+  /** Local tests only (TEST_MODE): when the alarm is set to fire, or null. */
+  testAlarm() {
+    if (this.env.TEST_MODE !== "1") throw new FileError("Not found", 404);
+    return this.ctx.storage.getAlarm().then((alarm) => ({ alarm }));
+  }
+  /** Local tests only (TEST_MODE): what the forwarded pin records hold. */
+  testForwardedPins() {
+    if (this.env.TEST_MODE !== "1") throw new FileError("Not found", 404);
+    return [...this.sql().exec<{ owner: string; volume: string; expiresAt: number | null }>("SELECT * FROM forwarded_pins ORDER BY owner,volume")];
+  }
+  /** A deleted fork lets go of its base; retried by the alarm until every owning volume has heard. */
+  private async releaseFork() {
+    if (!this.meta("id") || !this.meta("tenant")) return true;
+    try {
+      await this.unpin(this.forkOwner());
+      return true;
+    } catch (error) {
+      console.error("fork pin release failed; the alarm retries", error);
+      return false;
+    }
+  }
+  /** The alarm fires by `at` at the latest. */
+  private async alarmBy(at: number) {
+    const alarm = await this.ctx.storage.getAlarm();
+    if (alarm === null || alarm > at) await this.ctx.storage.setAlarm(at);
   }
   private async scheduleCollection() {
     if ((await this.ctx.storage.getAlarm()) === null)
@@ -749,6 +956,8 @@ export class Volume extends DurableObject<VolumeBindings> {
       "DELETE FROM pins WHERE expiresAt IS NOT NULL AND expiresAt<=?",
       now,
     );
+    // The pins they record expired in their own volumes too.
+    this.sql().exec("DELETE FROM forwarded_pins WHERE expiresAt IS NOT NULL AND expiresAt<=?", now);
     const held = new Set(
       [...this.sql().exec<{ key: string }>("SELECT key FROM files")].map(
         (f) => f.key,
@@ -800,11 +1009,16 @@ export class Volume extends DurableObject<VolumeBindings> {
       this.sql().exec("DELETE FROM snapshot_options WHERE id=?", id);
       this.sql().exec("DELETE FROM temporary_snapshots WHERE id=?", id);
     }
+    const released = !this.meta("deleted") || (await this.releaseFork());
     await this.collectGarbage();
-    if (
+    if (!released) await this.ctx.storage.setAlarm(Date.now() + 10 * 60_000);
+    else if (
       this.sql().exec<{ n: number }>("SELECT count(*) n FROM objects").one().n
     )
       await this.ctx.storage.setAlarm(Date.now() + DAY);
+    // Records of expiring pins kept elsewhere are collected when the first of them expires.
+    const next = this.sql().exec<{ at: number | null }>("SELECT min(expiresAt) at FROM forwarded_pins WHERE expiresAt IS NOT NULL").one().at;
+    if (next !== null) await this.alarmBy(next);
   }
   /** Erase metadata after account deletion has removed the volume's live files. */
   async purgeAccountData(tenant: string) {
@@ -826,7 +1040,9 @@ export class Volume extends DurableObject<VolumeBindings> {
       this.sql().exec("DELETE FROM snapshots");
       this.sql().exec("DELETE FROM snapshot_options");
     });
-    await this.scheduleCollection();
+    // A fork's base is held for as long as the fork lives, and no longer.
+    if (!(await this.releaseFork())) await this.ctx.storage.setAlarm(Date.now() + 10 * 60_000);
+    else await this.scheduleCollection();
     return { deleted: true };
   }
 }

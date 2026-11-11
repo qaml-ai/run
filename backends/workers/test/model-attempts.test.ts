@@ -20,7 +20,7 @@ import type { Db } from "../src/postgres.ts";
 
 import { testDatabase } from "./billing-database.ts";
 
-import { getModel } from "../src/pi-catalog.ts";
+import { getModel } from "../src/model-catalog.ts";
 
 import { createServer } from "node:http";
 
@@ -433,4 +433,36 @@ test("a stale direct OpenRouter failure without generation or usage settles at z
   assert.equal(Number(row.charge), 0);
   assert.equal(row.last_error, null);
   assert.equal(await total(db), 0);
+});
+
+test("a served service tier is kept with the attempt in settle's own write: no extra query per call", async () => {
+  const { db, account } = await setup();
+  let queries = 0;
+  const counted = new Proxy(db, { get(target, property) {
+    if (property === "query") return async (...args: any[]) => { queries++; return (db.query as any)(...args); };
+    if (property !== "connect") { const value = Reflect.get(target, property); return typeof value === "function" ? value.bind(target) : value; }
+    return async () => {
+      const client = await db.connect();
+      return new Proxy(client, { get(target, prop) {
+        if (prop !== "query") { const value = Reflect.get(target, prop); return typeof value === "function" ? value.bind(target) : value; }
+        return async (...args: any[]) => { queries++; return (client.query as any)(...args); };
+      } });
+    };
+  } }) as Db;
+  const attempts = new ModelAttempts(counted, account);
+  const settled = async (usage: Record<string, unknown>) => {
+    const id = await begin(attempts);
+    queries = 0;
+    await attempts.event("payg", "agent", true, true, { ...finish(id, 0.1), usage: { ...finish(id, 0.1).usage, ...usage } });
+    return { id, queries };
+  };
+  const plain = await settled({});
+  const tiered = await settled({ serviceTier: "default" });
+  const flex = await settled({ serviceTier: "flex", requestedServiceTier: "flex" });
+  assert.equal(tiered.queries, plain.queries, "a response that names its tier costs no extra query");
+  assert.equal(flex.queries, plain.queries);
+  const context = async (id: string) => (await db.query("select context from model_attempts where id=$1", [id])).rows[0].context;
+  assert.equal((await context(plain.id)).serviceTier, undefined);
+  assert.equal((await context(tiered.id)).serviceTier, "default");
+  assert.deepEqual([(await context(flex.id)).serviceTier, (await context(flex.id)).requestedServiceTier], ["flex", "flex"]);
 });

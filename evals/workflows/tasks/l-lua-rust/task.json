@@ -1,0 +1,21 @@
+{
+  "id": "l-lua-rust",
+  "version": 0,
+  "tier": "L",
+  "title": "Port Lua 5.4 (C) to Rust, judged by the official Lua test suite",
+  "status": "planned",
+  "prompt": "Port Lua 5.4 to Rust with the same behaviour, to the same pass list on the official Lua test suite as the C build.",
+  "budget": { "usd": 5000, "wallMinutes": 4320 },
+  "units": 60,
+  "source": {
+    "port": { "repo": "lua/lua", "ref": "v5.4.7", "license": "MIT", "language": "C", "approxLines": 30000 },
+    "judge": { "repo": "lua.org lua-5.4.7-tests", "ref": "5.4.7", "license": "MIT", "language": "Lua scripts run by the interpreter under test",
+      "command": "the port's lua binary runs all.lua in the test directory (in a job); plus a differential corpus: each script's stdout from the C build vs the port", "cases": "about 30 test files, thousands of assertions; the differential corpus is ours" },
+    "why": "A dress rehearsal for the Bun-shaped run at a quarter of the size: the same queue and sharding patterns, an afternoon on our hosts.",
+    "needs": [
+      "Phase 2, our job hosts for cargo builds and the test run",
+      "Phase 3, repositories for one branch with many editors",
+      "Phase 4, queue() for compile errors"
+    ]
+  }
+}

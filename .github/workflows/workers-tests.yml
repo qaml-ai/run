@@ -2,7 +2,8 @@ name: Workers tests
 # The experimental Workers backend (backends/workers). Not part of CI's required checks and never gates the ECS deploy.
 # It runs only when something the Workers code imports can change: its own tree, the shared runtime source it imports
 # (most of src/, but not admin, channels, voice or the console's sign-in), the SDK clients, the contract suite and
-# test helpers, migrations and dependencies. Keep this list in step with backends/workers' imports.
+# test helpers, the CLI source the hosted MCP server is generated from, migrations and dependencies. Keep this list in
+# step with backends/workers' imports and generators (scripts/reuse-*.mjs).
 on:
   push:
     branches: [main]
@@ -19,6 +20,7 @@ on:
       - "!src/ops-*.ts"
       - "!src/email-accounts.ts"
       - clients/*.ts
+      - packages/cli/src/**
       - shared/**
       - tests/contract/**
       - tests/database.ts
@@ -47,6 +49,7 @@ on:
       - "!src/ops-*.ts"
       - "!src/email-accounts.ts"
       - clients/*.ts
+      - packages/cli/src/**
       - shared/**
       - tests/contract/**
       - tests/database.ts
@@ -108,6 +111,11 @@ jobs:
       - name: Check local Docker for native computer fixtures
         if: matrix.suite == 'integration'
         run: docker info --format '{{.ServerVersion}}' && docker buildx version
+      # Generated copies of src/ (scripts/reuse-*.mjs, scripts/port-*-tests.mjs) must match what their scripts write.
+      - name: Check generated copies of src/
+        if: matrix.suite == 'unit'
+        run: npm run check:reuse
+        working-directory: backends/workers
       - name: Start test Postgres
         id: postgres
         uses: ./.github/actions/test-postgres
