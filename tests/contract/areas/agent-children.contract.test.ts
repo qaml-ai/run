@@ -46,6 +46,7 @@ contractTest("delegation", SOURCE, "an agent's children: running with progress, 
   assert.match(running.agentId, /^client_/);
   assert.equal(typeof running.requestId, "string");
   assert.equal(typeof running.toolCallId, "string");
+  assert.equal(running.attempt, 1, "a call's first attempt (no caller makes a call again yet)");
   assert.equal(typeof running.startedAt, "number");
   assert.equal(typeof running.progressAt, "number");
   assert.equal(running.endedAt, undefined);
@@ -66,7 +67,7 @@ contractTest("delegation", SOURCE, "an agent's children: running with progress, 
   // A delegate call's child is listed too (its answer is the call's result), newest first.
   assert.equal((await r.prompt(parent, "delegate")).outcome.result.reply, "delegated");
   const [helper, worker] = await children(r, parent);
-  assert.deepEqual({ background: helper.background, status: helper.status, delivered: helper.delivered }, { background: false, status: "completed", delivered: true });
+  assert.deepEqual({ background: helper.background, status: helper.status, delivered: helper.delivered, attempt: helper.attempt }, { background: false, status: "completed", delivered: true, attempt: 1 });
   assert.notEqual(helper.agentId, worker.agentId);
   assert.equal(worker.name, "w");
   assert.deepEqual(await children(r, helper.agentId), [], "the helper started no children of its own");

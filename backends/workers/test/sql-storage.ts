@@ -47,3 +47,27 @@ export function submitViaFetch(host: { fetch(id: string, request: Request): Prom
     return { ok: false as const, status: response.status, error: typeof detail?.error === 'string' ? detail.error : '' };
   };
 }
+
+/**
+ * The children's outboxes, simulated for a fake host: every few milliseconds each running child run the owner
+ * accepted is read (its host's `fetch` GET /requests/:id, so a test's double decides how and when it ends), and an
+ * ended one's ending is delivered to the owner's `receiveEnding`, as the child's alarm would. The owner itself never
+ * reads its children. Returns the stop.
+ */
+export function childAlarms(host: { fetch(id: string, request: Request): Promise<Response> }, owner: { rows: { running(): Promise<{ id: string; requestId: string; accepted?: boolean }[]> }; receiveEnding(ending: { agentId: string; requestId: string; record: any }): Promise<unknown> }, everyMs = 5) {
+  let stopped = false;
+  const loop = (async () => {
+    while (!stopped) {
+      await new Promise(resolve => setTimeout(resolve, everyMs));
+      for (const child of await owner.rows.running().catch(() => [])) {
+        if (stopped || !child.id || !child.accepted) continue;
+        const response = await host.fetch(child.id, new Request(`https://agent/requests/${child.requestId}`)).catch(() => undefined);
+        if (!response) continue;
+        const record = response.ok ? await response.json().catch(() => undefined) as { state?: string } | undefined
+          : response.status === 404 ? { state: 'completed', status: 'failed', error: 'The sub-agent was deleted before it answered' } : undefined;
+        if (record?.state === 'completed') await owner.receiveEnding({ agentId: child.id, requestId: child.requestId, record }).catch(() => {});
+      }
+    }
+  })();
+  return async () => { stopped = true; await loop; };
+}

@@ -1,10 +1,12 @@
+import { ChildOutbox, deletedDeadline } from "./ending-outbox.ts";
+import { stageMissedEndings } from "./agent-endings.ts";
 import { checkGcDeadline, collectChecks, flushMonitors, monitorDeadline, monitorDue } from "./agent-monitors.ts";
 import { flushScheduleOutcomes } from './schedule-outcomes.ts';
 import { HttpError } from "./errors.ts";
 import { expireDecisions } from "./inbox-decisions.ts";
 import { restageInputMirrors } from "./agent-input-mirror.ts";
 import { inputAdmissionDeadline } from "./input-admission.ts";
-import { MULTI_AGENT_LIMITS, viaParent } from "./multi-agent-policy.ts";
+import { viaParent } from "./multi-agent-policy.ts";
 import { childParent } from "./child-parent.ts";
 import { type EventSubscription } from "./event-socket.ts";
 import { withMoneyMetrics } from "./money-metrics.ts";
@@ -105,19 +107,27 @@ export async function armImpl(this: AgentRuntime,
     const pendingEvents = (
       await this.ctx.storage.list({ prefix: TERMINAL_EVENTS_PREFIX, limit: 1 })
     ).size;
+    if (deleted) {
+      // A deleted agent wakes only for what it still owes, never for the watchdog: a child row left ended and
+      // unnotified (its notify refused by the deleted agent's own config) would otherwise wake it every second.
+      const at = deletedDeadline({ billing: !!pendingBilling, events: !!pendingEvents, outbox: await this.outbox.deadline() });
+      if (generation === this.maintenanceGeneration) this.maintenance = { at, tracksRuns: false };
+      if (Number.isFinite(at)) await this.lifecycle.jobs.push({ id: "camel-wake", fn: "camel-wake", time: Math.max(Date.now() + 1, at) });
+      return;
+    }
     const records = await this.records();
     const pendingRuns = records.filter(record => record.accepted && record.state !== "completed");
     const children = await this.delegation.children();
-    const childKeys = new Set(children.map(child => child.key));
     const recovering = records.some(record => record.state !== "completed" && !record.accepted && !record.heldForInput) ||
       this.cancellations.size > 0 ||
       (await Promise.all(pendingRuns.map(record => this.ctx.storage.get(`cancelled-request:${record.id}`)))).some(Boolean) ||
       !!await this.ctx.storage.get("resume-kept-queue") ||
       await this.notifications.pending() ||
-      children.some(child => child.status === "running" ||
-        (child.background && ((child.status === "input_required" && !child.cancelRequested &&
-          !childKeys.has(`${child.key}:resume`) && Date.now() - child.createdAt < MULTI_AGENT_LIMITS.childTtlSeconds * 1000) ||
-          (child.accepted && !child.notified && child.landedBy !== "wait"))));
+      // A running child needs nothing from here: its ending comes by its own outbox. Only a child older code started
+      // (no outbox) is asked, on each wake until it ends (Delegation.reconcileLegacy).
+      // A child waiting on a person needs nothing either: its resumed run's ending comes the same way.
+      children.some(child => (child.status === "running" && child.accepted && !child.outbox) ||
+        (child.background && child.status !== "running" && child.accepted && !child.notified && child.landedBy !== "wait"));
     const next = Math.min(
       config?.expiresAt ?? Infinity,
       config
@@ -132,6 +142,7 @@ export async function armImpl(this: AgentRuntime,
       await checkGcDeadline(this),
       pendingBilling ? Date.now() + 5000 : Infinity,
       pendingEvents ? Date.now() + 1000 : Infinity,
+      await this.outbox.deadline() ?? Infinity,
       records.some(record => record.method === 'configure' && record.state !== 'completed') ? Date.now() + 1000 : Infinity,
       await this.promptPreparations.deadline(),
       await this.batchQueue.deadline(config),
@@ -196,6 +207,7 @@ export async function restorePendingImpl(this: AgentRuntime) {
     await timed(this, "restoreHostAdmissions", () => this.restoreHostAdmissions());
     await timed(this, "delegation.recover", () => this.delegation.recover());
     await timed(this, "notifications.drain", () => this.notifications.drain());
+    await timed(this, "outbox", async () => { await stageMissedEndings(this, await this.records()); await this.outbox.flush(); });
     // Pi restores its own work on startup. Restore the adapter's result/receipt
     // waiters too, so completion is billed without requiring a client poll.
     for (const record of await this.records())
@@ -248,6 +260,9 @@ export async function wakeImpl(this: AgentRuntime) {
     if (await this.ctx.storage.get("deleted")) {
       await this.flushBilling();
       await this.flushTerminalEvents();
+      // A child deleted or expired mid-run staged a failed ending for its owner: deliver it, and keep retrying (the
+      // alarm, re-armed for the outbox's next row) while the owner is unreachable.
+      await ChildOutbox.deletedWake(this);
     this.ctx.waitUntil(flushScheduleOutcomes(this));
       return;
     }
@@ -296,6 +311,7 @@ export async function wakeImpl(this: AgentRuntime) {
     if (await this.limits.check(Date.now(), false)) await this.harness.session().abort();
     await this.delegation.recover();
     await this.notifications.drain();
+    await this.outbox.flush();
     this.batchQueue.kick();
     for (const record of await this.records()) {
       if (record.accepted && record.state !== "completed")

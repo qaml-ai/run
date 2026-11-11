@@ -9,6 +9,8 @@ import { Delegation } from "./delegation.ts";
 import { resolveDefinition, provisionDefinition } from "./definitions.ts";
 import { DelegationNotifications, type RuntimeNotice, type NoticeRequest, type WakeDecision } from "./delegation-notifications.ts";
 import type { ChildProgressReport } from "./delegation.ts";
+import { ChildOutbox, type ChildEnding, type Receipt } from "./ending-outbox.ts";
+import type { Owner } from "../../../shared/owner.ts";
 import { runSpend } from "./agent-spend.ts";
 import { withSql, database } from "./postgres.ts";
 import { Workspaces } from "./workspaces.ts";
@@ -27,16 +29,51 @@ export async function receiveAgentMessageImpl(this: AgentRuntime,
     return this.notifications.deliverMessage(request, notice);
   }
 
-export async function receiveAgentProgressImpl(this: AgentRuntime,
-  report: ChildProgressReport): Promise<unknown> {
+/** A child's progress report, from its outbox. */
+export async function receiveProgressImpl(this: AgentRuntime,
+  report: ChildProgressReport): Promise<Receipt> {
     this.invalidateMaintenance();
     return this.delegation.recordProgress(report);
   }
 
-export async function hasBackgroundChildImpl(this: AgentRuntime,
-  id: string): Promise<boolean> {
-    return (await this.delegation.children()).some(child => child.background && child.id === id);
+/** A child's ending, from its outbox: taken once, however often it is delivered. */
+export async function receiveEndingImpl(this: AgentRuntime,
+  ending: ChildEnding): Promise<Receipt> {
+    this.invalidateMaintenance();
+    const receipt = await this.delegation.receiveEnding(ending);
+    // The ending may owe a notification, or free a slot a start waits on: plan the next wake.
+    this.ctx.waitUntil(this.arm().catch(() => {}));
+    return receipt;
   }
+
+/** Whether `id` is one of this agent's children (a browser token's `children` scope reads them by id). */
+export async function hasChildImpl(this: AgentRuntime,
+  id: string): Promise<boolean> {
+    return (await this.delegation.rows.byChild(id)) !== undefined;
+  }
+
+/** What an owner of either kind answers its children's outboxes with. */
+type OwnerStub = { receiveEnding(ending: ChildEnding): Promise<Receipt>; receiveProgress(report: ChildProgressReport): Promise<Receipt> };
+/**
+ * Where this agent's runs' endings and progress go: their owners, by kind and id. A workflow is reached through the
+ * `WORKFLOWS` namespace once the workflow object is deployed (its `receiveEnding`/`receiveProgress` are
+ * workflow-agents.ts's); until then a delivery to one fails and the outbox retries it.
+ */
+export function ownerAgent(env: AgentRuntime["env"], owner: Owner): OwnerStub {
+  if (owner.kind === "agent") return env.AGENTS.getByName(owner.id);
+  const workflows = (env as { WORKFLOWS?: { getByName(name: string): OwnerStub } }).WORKFLOWS;
+  if (!workflows) throw new Error(`No workflow objects on this runtime yet: ${owner.id}'s delivery waits`);
+  return workflows.getByName(owner.id);
+}
+
+export function createOutbox(this: AgentRuntime): ChildOutbox {
+  return new ChildOutbox({
+    storage: this.ctx.storage,
+    receiveEnding: (owner, ending) => ownerAgent(this.env, owner).receiveEnding(ending),
+    receiveProgress: (owner, report) => ownerAgent(this.env, owner).receiveProgress(report),
+    arm: (at) => this.arm(at),
+  });
+}
 
 export function createNotifications(this: AgentRuntime): DelegationNotifications {
   return new DelegationNotifications({
@@ -70,8 +107,10 @@ export function createNotifications(this: AgentRuntime): DelegationNotifications
       !delivery.run && delivery.stopped === 'aborted'
         ? this.admit(request, notice, delivery)
         : this.submit(request, notice, delivery),
+    // The chain's root counts its wakes. A workflow's chain (its ids are wf_…) counts them at its child, the first agent
+    // below it: a workflow has no notifications of its own to loop on.
     admitWake: (root, id) =>
-      root === this.ctx.id.name
+      root === this.ctx.id.name || root.startsWith("wf_")
         ? this.admitDelegateWake(id)
         : this.env.AGENTS.getByName(root).admitDelegateWake(id),
     humanPending: async () => {
@@ -179,8 +218,7 @@ export function createDelegation(this: AgentRuntime): Delegation {
     notify: (child) => this.notifications.deliver(child),
     sendMessage: (id, request, notice) =>
       this.env.AGENTS.getByName(id).receiveAgentMessage(request, notice),
-    reportProgress: (id, report) =>
-      this.env.AGENTS.getByName(id).receiveAgentProgress(report),
+    reportProgress: (owner, report) => this.outbox.report(owner, report),
     retry: (afterMs = 1000) => this.arm(Date.now() + afterMs),
   });
 }

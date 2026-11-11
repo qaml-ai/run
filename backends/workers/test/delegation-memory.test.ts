@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Delegation, type DelegatedChild, type DelegationHost } from '../src/delegation.ts';
-import { withSql, submitViaFetch } from './sql-storage.ts';
+import { withSql } from './sql-storage.ts';
 
 function fixture() {
   const values = new Map<string, unknown>();
@@ -31,9 +31,9 @@ test('completion spills payloads, keeps status small and recovers the exact resu
   await f.storage.put('delegation:child', f.child);
   await f.storage.put('delegation-run:child:request', 'child');
   const result = { reply: 'answer'.repeat(8_000), output: { value: 'output'.repeat(2_000) }, usage: { costUsd: 0.25 } };
-  const event = { agentId: 'child', requestId: 'request', event: { type: 'response' }, record: { state: 'completed', status: 'completed', outcome: { result } } };
-  await f.delegation.receive(event);
-  await f.delegation.receive(event);
+  const ending = { agentId: 'child', requestId: 'request', record: { state: 'completed', status: 'completed', outcome: { result } } };
+  await f.delegation.receiveEnding(ending);
+  await f.delegation.receiveEnding(ending);
   const stored = await f.storage.get<DelegatedChild>('delegation:child');
   assert.equal(stored?.task, undefined);
   assert.equal(stored?.outcome, undefined);

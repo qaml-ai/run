@@ -81,7 +81,7 @@ export interface AgentConfig {
    * tokens naming the agent and its subject) or none. A server that needs a token or headers goes in a definition.
    */
   mcpServers?: InlineMcpServer[];
-  /** Also receive its sub-agents' progress as events (subagent_start, subagent_event, subagent_end, subagent_message, subagent_progress), in `onEvent` and `stream()`. */
+  /** Also receive its sub-agents' progress as events (subagent_start, subagent_end, subagent_message, subagent_progress), in `onEvent` and `stream()`. */
   subagents?: boolean;
   thinkingLevel?: ThinkingLevel;
   /** The most the model writes in one response, within its own maximum (maxTokens in GET /v1/models). Not compaction summaries. */

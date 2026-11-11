@@ -33,7 +33,8 @@ import { Delegation } from "./delegation.ts";
 import { decisionService } from "./decision-service.ts";
 import { hostExecutionRequest } from "./host-execution.ts";
 import { DelegationNotifications, DelegationWakeBudget, type RuntimeNotice, type NoticeDelivery, type NoticeRequest, type WakeDecision } from "./delegation-notifications.ts";
-import type { ChildEvent, ChildProgressReport } from "./delegation.ts";
+import type { ChildProgressReport } from "./delegation.ts";
+import { ChildOutbox, type ChildEnding, type Receipt } from "./ending-outbox.ts";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { AgentRunLimits } from "./run-limits.ts";
 import { DurableEventLog, type TerminalDelivery } from "./event-log.ts";
@@ -50,7 +51,7 @@ import { releaseConfigurationWaitersImpl, configureRequestImpl, acceptConfigurat
 import { imageToolsImpl, sourceIdentityImpl, fileRequestIdImpl } from "./agent-attachments.ts";
 import { computerNamesImpl, refreshComputerToolsImpl, enabledToolsImpl, hasNativeComputerImpl, createDecisions, createModels, createHarness } from "./agent-tools.ts";
 import { agentSpendImpl, admitRequestImpl, endUserLimitImpl, requestUsageImpl, usageViewImpl, usageForRequestImpl, flushBillingImpl, createLimits } from "./agent-billing.ts";
-import { admitDelegateWakeImpl, receiveAgentMessageImpl, receiveAgentProgressImpl, hasBackgroundChildImpl, createNotifications, createDelegation } from "./agent-delegation.ts";
+import { admitDelegateWakeImpl, receiveAgentMessageImpl, receiveProgressImpl, receiveEndingImpl, hasChildImpl, createNotifications, createDelegation, createOutbox } from "./agent-delegation.ts";
 import { replayedRequestImpl, requestResponseImpl, activityImpl, stateImpl, historyImpl, fetchImpl, fetchRequestImpl, admitDelegatedImpl } from "./agent-http.ts";
 import { emitImpl, flushTerminalEventsImpl, recoverWatchersImpl, closeWatchersImpl, checkWatchersImpl, webSocketEventsImpl, negotiateAgentEventsImpl, restoreWebSocketsImpl, sendAttachedSocketImpl, closeBrowserSocketImpl, retireAttachedSocketImpl, webSocketMessageImpl, webSocketCloseImpl, webSocketErrorImpl, replayEventsImpl, runReplayImpl, eventsImpl } from "./agent-transport.ts";
 import { purgeAccountDataImpl, configImpl, scheduleToolsImpl, createScheduleImpl, armImpl, onStartImpl, restorePendingImpl, onJobImpl, wakeImpl } from "./agent-lifecycle.ts";
@@ -141,14 +142,16 @@ export class AgentRuntime extends AgentContext {
     return receiveAgentMessageImpl.call(this, request, notice);
   }
 
-  receiveAgentProgress(report: ChildProgressReport): Promise<unknown> {
-    return receiveAgentProgressImpl.call(this, report);
+  receiveProgress(report: ChildProgressReport): Promise<Receipt> {
+    return receiveProgressImpl.call(this, report);
   }
 
-  receiveChildEvent(event: ChildEvent) { return this.delegation.receive(event); }
+  receiveEnding(ending: ChildEnding): Promise<Receipt> {
+    return receiveEndingImpl.call(this, ending);
+  }
 
-  hasBackgroundChild(id: string): Promise<boolean> {
-    return hasBackgroundChildImpl.call(this, id);
+  hasChild(id: string): Promise<boolean> {
+    return hasChildImpl.call(this, id);
   }
 
   /** This agent's children (children-table.ts), shared by its delegation and its notifications. */
@@ -296,7 +299,8 @@ export class AgentRuntime extends AgentContext {
   readonly webhooks = new AgentWebhooks(this.ctx.storage, this.env);
   /** A channel agent's typing indicator, replies and send_message (agent-channels.ts). */
   readonly channels = new AgentChannels(this.ctx, this.env);
-  delegationPush: Promise<unknown> = Promise.resolve();
+  /** This agent's outbox to its owner: its runs' endings and progress reports (ending-outbox.ts). */
+  outbox: ChildOutbox = createOutbox.call(this);
 
   emit(event: unknown, delivery?: TerminalDelivery, webhook?: WebhookEvent) {
     return emitImpl.call(this, event, delivery, webhook);
