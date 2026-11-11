@@ -455,3 +455,32 @@ test("money: a redelivered ending is charged once, an ending after abort is char
   await assert.rejects(big.runner.land(g.key, g.attempt, { ok: true, value: "x".repeat(10_000) }, usage), /must be landed as a handle/);
   assert.equal(at(big).spent.usd, 0.25);
 });
+
+test("a cancel that fails at the end is retried by the alarm, with backoff; a failed step on a landing backs off too", { timeout: 60_000 }, async () => {
+  const h = harness();
+  h.world.failCancels.set("slow", 1);
+  h.init({ code: `agent("slow", { key: "slow" }); return (await agent("fast", { key: "fast" })).answer;` });
+  await h.wake();
+  const fast = h.world.queue.find(effect => effect.key === "fast")!;
+  await h.runner.land(fast.key, fast.attempt, h.world.answer(fast));
+  assert.equal(at(h).status, "completed");
+  assert.equal(h.world.cancelled.length, 0, "the cancel failed");
+  assert.deepEqual(h.runner.events().filter(event => event.type === "cancel_failed").map(event => event.data.key), ["slow"]);
+  assert.equal(h.alarmAt, h.clock + 30_000, "a completed workflow keeps an alarm while a child is not cancelled, backed off");
+  h.clock = h.alarmAt!;
+  await h.runner.alarm();
+  assert.deepEqual(h.world.cancelled, ["slow:1"]);
+  assert.equal(h.alarmAt, null, "nothing left: no alarm");
+
+  // A step that fails when a result lands: the alarm retries it no sooner than 30 s later.
+  let failures = 1;
+  const s = harness({ rewrite: async request => { if (request.deliver && failures-- > 0) throw new Error("the sandbox is down"); return request; } });
+  s.init({ code: `return (await agent("a")).answer;` });
+  await s.wake();
+  const a = s.world.queue.shift()!;
+  await assert.rejects(s.runner.land(a.key, a.attempt, s.world.answer(a)), /the sandbox is down/);
+  assert.equal(s.alarmAt, s.clock + 30_000);
+  s.clock = s.alarmAt!;
+  await s.runner.alarm();
+  assert.equal(at(s).result, "re: a");
+});

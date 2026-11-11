@@ -172,6 +172,8 @@ type Row = Record<string, SqlStorageValue>;
 const bytesOf = (value: SqlStorageValue) => value instanceof Uint8Array ? value : new Uint8Array(value as ArrayBuffer);
 const text = (value: SqlStorageValue) => value === null || value === undefined ? undefined : String(value);
 const EXECUTED = new Set(["agent", "gate"]);
+/** Effects that ended without landing whose child has not been told to stop. */
+const UNCANCELLED = "status IN ('cancelled', 'aborted') AND started = 1 AND cancel_sent = 0 AND kind IN ('agent', 'gate')";
 
 /**
  * The tenant's capacity limiter (WorkflowCapacity), as the runner uses it: one slot per running agent, leased and
@@ -348,15 +350,20 @@ export class WorkflowRunner {
   }
 
   private async advance(recover = false) {
+    // The alarm comes no sooner than a second from now, thirty after a failure: a step that keeps failing on every
+    // landing, or a child that will not cancel, is retried with backoff, not at once.
+    const now = this.now();
+    let failed = true;
     try {
       if (recover) await this.executor.recover?.();
       await this.capacityHousekeeping();
       // Effects held from before (a resume, a raised budget, a failed start, a slot granted) first; then each step's new ones.
       await this.startHeld();
       while (await this.step()) await this.startHeld();
-      await this.cancelEnded();
+      const uncancelled = await this.cancelEnded();
       await this.capacityHousekeeping();
-    } finally { await this.arm(); }
+      failed = uncancelled;
+    } finally { await this.arm(now + (failed ? 30_000 : 1_000)); }
   }
 
   /** Effect `key:attempt` ended. A second landing, or one for a superseded attempt, is ignored. */
@@ -452,11 +459,24 @@ export class WorkflowRunner {
    * stopped them). Marked in the journal first, stopped after the commit, once each, so a crash between the two
    * stops them on the next advance.
    */
-  private async cancelEnded() {
-    for (const row of this.sql.exec("SELECT key, attempt, kind, args, options, phase FROM workflow_effects WHERE status IN ('cancelled', 'aborted') AND started = 1 AND cancel_sent = 0 AND kind IN ('agent', 'gate')").toArray()) {
-      await this.executor.cancel?.(this.started(row));
-      this.sql.exec("UPDATE workflow_effects SET cancel_sent = 1 WHERE key = ? AND attempt = ?", row.key, row.attempt);
+  private async cancelEnded(): Promise<boolean> {
+    let failed = false;
+    for (const row of this.sql.exec(`SELECT key, attempt, kind, args, options, phase, reason FROM workflow_effects WHERE ${UNCANCELLED} ORDER BY ord`).toArray()) {
+      try {
+        await this.executor.cancel?.(this.started(row));
+        this.sql.exec("UPDATE workflow_effects SET cancel_sent = 1 WHERE key = ? AND attempt = ?", row.key, row.attempt);
+      } catch (error) {
+        // Left for the alarm, which stays armed while a child is not yet cancelled (with backoff); the others go on.
+        failed = true;
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`Workflow effect ${row.key}:${row.attempt} was not cancelled`, error);
+        if (!String(row.reason ?? "").startsWith("not cancelled yet")) this.storage.transactionSync(() => {
+          this.event("cancel_failed", { key: row.key, attempt: Number(row.attempt), error: message });
+          this.sql.exec("UPDATE workflow_effects SET reason = ? WHERE key = ? AND attempt = ?", `not cancelled yet: ${message}`, row.key, row.attempt);
+        });
+      }
     }
+    return failed;
   }
 
   /** Slots the limiter granted (a wake, or a renew's `held`): each goes to its effect, or straight back if it has none. */
@@ -905,7 +925,12 @@ export class WorkflowRunner {
       };
       try {
         const state = this.state();
-        if (TERMINAL.has(state.status as WorkflowStatus)) { await isolated("capacity", () => this.capacityHousekeeping()); return; }
+        if (TERMINAL.has(state.status as WorkflowStatus)) {
+          // An ended workflow's alarm finishes what the end left: children not yet cancelled, the capacity lease.
+          await isolated("cancel", async () => { if (await this.cancelEnded()) failed = true; });
+          await isolated("capacity", () => this.capacityHousekeeping());
+          return;
+        }
         for (const row of this.sql.exec("SELECT key, attempt, kind, args, options FROM workflow_effects WHERE current = 1 AND status = 'pending' AND due_at IS NOT NULL AND due_at <= ? ORDER BY due_at, ord", now).toArray()) {
           await isolated(`${row.kind} ${row.key}`, () => this.expire(row));
         }
@@ -974,8 +999,13 @@ export class WorkflowRunner {
   nextAlarm(): number | null {
     const state = this.state();
     const capacity = this.options.capacity && state.capacity_open ? this.options.capacity : undefined;
-    if (TERMINAL.has(state.status as WorkflowStatus)) return capacity ? this.now() + 30_000 : null;
     const candidates: number[] = [];
+    // A child the end (or a pause) did not manage to cancel yet: try again (arm's floor spaces the tries out).
+    if (this.sql.exec(`SELECT 1 FROM workflow_effects WHERE ${UNCANCELLED} LIMIT 1`).toArray().length) candidates.push(this.now());
+    if (TERMINAL.has(state.status as WorkflowStatus)) {
+      if (capacity) candidates.push(this.now() + 30_000);
+      return candidates.length ? Math.min(...candidates) : null;
+    }
     const due = this.sql.exec("SELECT MIN(due_at) AS at FROM workflow_effects WHERE current = 1 AND status = 'pending' AND due_at IS NOT NULL").one().at;
     if (due !== null) candidates.push(Number(due));
     if (state.throttled_until !== null) candidates.push(Number(state.throttled_until));

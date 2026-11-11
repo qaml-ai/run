@@ -179,7 +179,7 @@ export class WorkflowAgents implements EffectExecutor {
     const ended = await this.host.storage.transaction(async tx => {
       const current = await this.rows.get(row.key) as Row | undefined;
       if (current && current.status !== row.status) return undefined;
-      const next: Row = { ...row, status, endedAt: Date.now(), held: undefined, ...("refused" in outcome ? { refusal: outcome, error: outcome.refused } : outcome.ok ? {} : { error: outcome.error }) };
+      const next: Row = { ...row, status, endedAt: Date.now(), held: undefined, ...("refused" in outcome ? { refusal: { refused: outcome.refused, code: outcome.code ?? "payer_exhausted" }, error: outcome.refused } : outcome.ok ? {} : { error: outcome.error }) };
       await this.rows.put(next, tx);
       return next;
     });
