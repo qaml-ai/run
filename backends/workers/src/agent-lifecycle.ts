@@ -1,3 +1,4 @@
+import { ChildOutbox } from "./ending-outbox.ts";
 import { stageMissedEndings } from "./agent-endings.ts";
 import { checkGcDeadline, collectChecks, flushMonitors, monitorDeadline, monitorDue } from "./agent-monitors.ts";
 import { flushScheduleOutcomes } from './schedule-outcomes.ts';
@@ -118,7 +119,7 @@ export async function armImpl(this: AgentRuntime,
       // (no outbox) is asked, on each wake until it ends (Delegation.reconcileLegacy).
       // A child waiting on a person needs nothing either: its resumed run's ending comes the same way.
       children.some(child => (child.status === "running" && child.accepted && !child.outbox) ||
-        (child.background && child.accepted && !child.notified && child.landedBy !== "wait"));
+        (child.background && child.status !== "running" && child.accepted && !child.notified && child.landedBy !== "wait"));
     const next = Math.min(
       config?.expiresAt ?? Infinity,
       config
@@ -251,6 +252,9 @@ export async function wakeImpl(this: AgentRuntime) {
     if (await this.ctx.storage.get("deleted")) {
       await this.flushBilling();
       await this.flushTerminalEvents();
+      // A child deleted or expired mid-run staged a failed ending for its owner: deliver it, and keep retrying (the
+      // alarm, re-armed for the outbox's next row) while the owner is unreachable.
+      await ChildOutbox.deletedWake(this);
     this.ctx.waitUntil(flushScheduleOutcomes(this));
       return;
     }

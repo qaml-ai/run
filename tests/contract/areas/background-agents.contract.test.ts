@@ -343,16 +343,19 @@ contractTest("delegation", "tests/background-agents.test.ts:326", "with delegate
     return toolCall("spawn_agent", { instructions: "You are a WORKER.", task: "find the answer" }, "call_spawn");
   });
   const parent = (await r.call("/v1/agents", { body: { builtins: ["agents"], delegate: { instructions: true, notify: "asap" } } })).json.id;
+  const events = await watchEvents(t, `${r.base}/v1/agents/${parent}/events`, { Authorization: `Bearer ${OPERATOR}` });
   const turn = r.prompt(parent, "start a worker and wait for it");
-  await until(async () => (await parentRequests(r, parent)).length && true, "the turn to start");
-  await sleep(500);
+  // The worker ends only once the parent's wait_agent is in flight.
+  await until(() => events.frames.some(frame => frame.data.event?.type === "tool_execution_start" && frame.data.event.toolName === "wait_agent"), "the wait to start");
   release();
   const record = await turn;
   assert.match(record.outcome.result.reply, /^waited: .*the answer is 42/, JSON.stringify(record.outcome));
-  // Its notification, if one was sent, lands nothing: the wait had it.
-  await sleep(1_000);
-  const notices = (await parentRequests(r, parent)).filter(request => request.id.startsWith("child_"));
-  for (const notice of notices) assert.ok(notice.state === "completed" && notice.outcome.result.skipped, JSON.stringify(notice));
+  // Its notification, if one was sent, lands nothing: the wait had it. Each one ends (discarded) as its send finds that.
+  const notices = await until(async () => {
+    const notices = (await parentRequests(r, parent)).filter(request => request.id.startsWith("child_"));
+    return notices.every(notice => notice.state === "completed") && notices;
+  }, "any notification to be settled");
+  for (const notice of notices) assert.ok(notice.outcome.result.skipped, JSON.stringify(notice));
   const history = (await r.call(`/v1/agents/${parent}/history`)).json.messages;
   assert.equal(history.filter((entry: any) => entry.role === "user" && entry.source).length, 0, "no notification in history");
 });

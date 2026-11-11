@@ -36,7 +36,7 @@ test("an older node's child rows are first attempts (138), and an attempt below 
   await assert.rejects(db.query("update agent_children set attempt = 0 where id='old-attempt'"), /check/);
 });
 
-test("the migration backfills every existing input's owner from its agent", async () => {
+test("the migration adds the owner columns without rewriting existing rows: they read as owned by their agent", async () => {
   const { db } = await testDatabase();
   // The schema as it was before 137, with an input in it.
   await db.query("alter table agent_inputs drop column owner_kind, drop column owner_id");
@@ -44,6 +44,6 @@ test("the migration backfills every existing input's owner from its agent", asyn
   await db.query(OLD_INPUT, ["before"]);
   await db.query(OLD_CHILD, ["before-child"]);
   await db.query(readFileSync(new URL("../migrations/137_owner_model.sql", import.meta.url), "utf8"));
-  assert.deepEqual((await db.query("select owner_kind, owner_id from agent_inputs where id='before'")).rows[0], { owner_kind: "agent", owner_id: "agent-1" });
+  assert.deepEqual((await db.query("select owner_kind, owner_id, coalesce(owner_id, agent) as owner from agent_inputs where id='before'")).rows[0], { owner_kind: "agent", owner_id: null, owner: "agent-1" });
   assert.equal((await db.query("select owner_kind from agent_children where id='before-child'")).rows[0].owner_kind, "agent");
 });

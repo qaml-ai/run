@@ -18,11 +18,13 @@ type Row =
   | { kind: 'ending'; owner: Owner; ending: ChildEnding; attempts: number; nextAt: number; createdAt: number }
   | { kind: 'progress'; owner: Owner; progress: ChildProgress; attempts: number; nextAt: number; createdAt: number };
 
-export const OUTBOX_PREFIX = 'child-outbox:';
-/** First retry after 1 s, doubling to at most 5 minutes. */
-export const OUTBOX_RETRY = { firstMs: 1_000, maxMs: 5 * 60_000 } as const;
+/** First retry after 1 s, doubling to at most 5 minutes, each with up to a fifth more at random (deliveries to one
+ * owner that failed together do not all come back at once). */
+export const OUTBOX_RETRY = { firstMs: 1_000, maxMs: 5 * 60_000, jitter: 0.2 } as const;
 /** An undeliverable row (its owner keeps failing) is dropped after this long, as a made child itself is. */
 export const OUTBOX_GIVE_UP_MS = 7 * 86_400_000;
+/** Rows one flush delivers; the rest go in the next, at once if they are due. */
+export const OUTBOX_PAGE = 128;
 
 export interface OutboxHost {
   storage: DurableObjectStorage;
@@ -32,24 +34,48 @@ export interface OutboxHost {
   /** The child's alarm at `at`, keeping any earlier work. */
   arm(at: number): Promise<void>;
   now?(): number;
+  random?(): number;
 }
 
 // Progress sorts before the ending of the same run (`p` < `z`): a report made before the run ended reaches the owner first.
-const endingKey = (requestId: string) => `${OUTBOX_PREFIX}${requestId}:z`;
-const progressKey = (requestId: string, callId: string) => `${OUTBOX_PREFIX}${requestId}:p:${callId}`;
+const endingKey = (requestId: string) => `${requestId}:z`;
+const progressKey = (requestId: string, callId: string) => `${requestId}:p:${callId}`;
 
+type Stored = { key: string; body: string; attempts: number; next_at: number; created_at: number };
+
+/**
+ * The outbox is a table in the child's own SQLite, indexed by when each row is next due, so a flush reads only due rows
+ * and the next deadline is one query whatever the outbox holds.
+ */
 export class ChildOutbox {
   private readonly host: OutboxHost;
   private flushing?: Promise<number | undefined>;
+  private created = false;
   constructor(host: OutboxHost) { this.host = host; }
   private now() { return this.host.now?.() ?? Date.now(); }
+  private get sql() {
+    const sql = this.host.storage.sql;
+    if (!this.created) {
+      sql.exec("CREATE TABLE IF NOT EXISTS child_outbox (key TEXT PRIMARY KEY, body TEXT NOT NULL, attempts INTEGER NOT NULL, next_at INTEGER NOT NULL, created_at INTEGER NOT NULL)");
+      sql.exec("CREATE INDEX IF NOT EXISTS child_outbox_due ON child_outbox (next_at, key)");
+      this.created = true;
+    }
+    return sql;
+  }
+  private insert(key: string, row: Row) {
+    // INSERT OR IGNORE: staged again (a repeated emit, a report made again), it is the same row.
+    this.sql.exec("INSERT OR IGNORE INTO child_outbox (key, body, attempts, next_at, created_at) VALUES (?, ?, 0, ?, ?)", key, JSON.stringify(row), row.nextAt, row.createdAt);
+  }
+  private remove(key: string) { this.sql.exec("DELETE FROM child_outbox WHERE key = ?", key); }
+  private read(stored: Stored): Row { return { ...JSON.parse(stored.body) as Row, attempts: stored.attempts, nextAt: stored.next_at, createdAt: stored.created_at }; }
 
-  /** Stage a run's ending in `tx`, the transaction recording its outcome. Staged again (a repeated emit), it is the same row. */
-  async stageEnding(tx: Pick<DurableObjectTransaction, 'get' | 'put'>, owner: Owner, ending: ChildEnding) {
-    const key = endingKey(ending.requestId);
-    if (await tx.get(key)) return;
+  /**
+   * Stage a run's ending in the transaction recording its outcome (the SQL write joins whatever transaction is open:
+   * `tx` names it for the caller). Staged again, it is the same row.
+   */
+  async stageEnding(_tx: unknown, owner: Owner, ending: ChildEnding) {
     const now = this.now();
-    await tx.put(key, { kind: 'ending', owner, ending, attempts: 0, nextAt: now, createdAt: now } satisfies Row);
+    this.insert(endingKey(ending.requestId), { kind: 'ending', owner, ending, attempts: 0, nextAt: now, createdAt: now });
   }
 
   /**
@@ -58,15 +84,15 @@ export class ChildOutbox {
    */
   async report(owner: Owner, progress: ChildProgress): Promise<Receipt> {
     const key = progressKey(progress.requestId, progress.callId), now = this.now();
-    if (!await this.host.storage.get(key)) await this.host.storage.put(key, { kind: 'progress', owner, progress, attempts: 0, nextAt: now, createdAt: now } satisfies Row);
-    const row = await this.host.storage.get<Row>(key);
-    if (!row) return { accepted: true };
+    this.insert(key, { kind: 'progress', owner, progress, attempts: 0, nextAt: now, createdAt: now });
+    const stored = this.sql.exec<Stored>("SELECT * FROM child_outbox WHERE key = ?", key).toArray()[0];
+    if (!stored) return { accepted: true };
     try {
       const receipt = await this.host.receiveProgress(owner, progress);
-      await this.host.storage.delete(key);
+      this.remove(key);
       return receipt;
     } catch {
-      await this.retryLater(key, row);
+      await this.retryLater(key, this.read(stored));
       return { accepted: true };
     }
   }
@@ -78,43 +104,54 @@ export class ChildOutbox {
   }
 
   private async flushOnce(): Promise<number | undefined> {
-    const rows = await this.host.storage.list<Row>({ prefix: OUTBOX_PREFIX, limit: 128 });
-    let next: number | undefined;
-    for (const [key, row] of rows) {
-      const now = this.now();
-      if (row.nextAt > now) { next = Math.min(next ?? Infinity, row.nextAt); continue; }
+    const due = this.sql.exec<Stored>("SELECT * FROM child_outbox WHERE next_at <= ? ORDER BY key LIMIT ?", this.now(), OUTBOX_PAGE).toArray();
+    for (const stored of due) {
+      const row = this.read(stored), now = this.now();
       if (now - row.createdAt > OUTBOX_GIVE_UP_MS) {
         console.error(JSON.stringify({ type: 'child_outbox_dropped', kind: row.kind, owner: row.owner, requestId: row.kind === 'ending' ? row.ending.requestId : row.progress.requestId, attempts: row.attempts }));
-        await this.host.storage.delete(key);
+        this.remove(stored.key);
         continue;
       }
       try {
         if (row.kind === 'ending') await this.host.receiveEnding(row.owner, row.ending);
         else await this.host.receiveProgress(row.owner, row.progress);
-        await this.host.storage.delete(key);
+        this.remove(stored.key);
       } catch {
-        next = Math.min(next ?? Infinity, await this.retryLater(key, row));
+        await this.retryLater(stored.key, row);
       }
     }
-    // More than a page: the rest go at once.
-    if (rows.size === 128) next = Math.min(next ?? Infinity, this.now());
+    // The next deadline over the whole outbox, not this page: due rows past the page make it now, and undue ones
+    // their own time, never a loop of alarms that find nothing due.
+    const next = await this.deadline();
     if (next !== undefined) await this.host.arm(next);
     return next;
   }
 
   private async retryLater(key: string, row: Row) {
     const attempts = row.attempts + 1;
-    const nextAt = this.now() + Math.min(OUTBOX_RETRY.maxMs, OUTBOX_RETRY.firstMs * 2 ** Math.min(20, attempts - 1));
+    const delay = Math.min(OUTBOX_RETRY.maxMs, OUTBOX_RETRY.firstMs * 2 ** Math.min(20, attempts - 1));
+    const nextAt = this.now() + Math.round(delay * (1 + OUTBOX_RETRY.jitter * (this.host.random?.() ?? Math.random())));
     // Only if the row is still there: a delivery that raced this one may have removed it.
-    if (await this.host.storage.get(key)) await this.host.storage.put(key, { ...row, attempts, nextAt });
+    this.sql.exec("UPDATE child_outbox SET attempts = ?, next_at = ? WHERE key = ?", attempts, nextAt, key);
     await this.host.arm(nextAt);
     return nextAt;
   }
 
   /** When the next row is due (the alarm's deadline), undefined when the outbox is empty. */
   async deadline(): Promise<number | undefined> {
-    let next: number | undefined;
-    for (const row of (await this.host.storage.list<Row>({ prefix: OUTBOX_PREFIX, limit: 128 })).values()) next = Math.min(next ?? Infinity, row.nextAt);
-    return next;
+    const next = this.sql.exec<{ next: number | null }>("SELECT MIN(next_at) AS next FROM child_outbox").one().next;
+    return next === null ? undefined : Number(next);
   }
+
+  /**
+   * A deleted (or expired) agent's wake: it runs nothing more, but a run it ended as it went (a failed ending for its
+   * owner) must still be delivered, so its outbox is flushed and its alarm re-armed for the next retry.
+   */
+  static async deletedWake(runtime: { outbox: ChildOutbox; arm(): Promise<void> }) {
+    await runtime.outbox.flush().catch(() => {});
+    await runtime.arm();
+  }
+
+  /** Rows waiting (tests, telemetry). */
+  size(): number { return Number(this.sql.exec<{ n: number }>("SELECT count(*) AS n FROM child_outbox").one().n); }
 }

@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Delegation, type DelegatedChild, type DelegationHost } from '../src/delegation.ts';
-import { ChildOutbox, OUTBOX_PREFIX, OUTBOX_RETRY, type ChildEnding, type ChildProgress } from '../src/ending-outbox.ts';
+import { ChildOutbox, OUTBOX_PAGE, OUTBOX_RETRY, type ChildEnding, type ChildProgress } from '../src/ending-outbox.ts';
+import { readFileSync } from 'node:fs';
 import { withSql } from './sql-storage.ts';
 import type { Owner } from '../../../shared/owner.ts';
 
@@ -58,7 +59,7 @@ test('the owner evicted while its child ran: a fresh instance takes the ending, 
 function child(deliver: { ending: (owner: Owner, ending: ChildEnding) => Promise<{ accepted: boolean }>; progress?: (owner: Owner, report: ChildProgress) => Promise<{ accepted: boolean; error?: string }> }, store = memory()) {
   let now = 1_000;
   const armed: number[] = [];
-  const outbox = new ChildOutbox({ storage: store.storage, receiveEnding: deliver.ending, receiveProgress: deliver.progress ?? (async () => ({ accepted: true })), arm: async at => { armed.push(at); }, now: () => now });
+  const outbox = new ChildOutbox({ storage: store.storage, receiveEnding: deliver.ending, receiveProgress: deliver.progress ?? (async () => ({ accepted: true })), arm: async at => { armed.push(at); }, now: () => now, random: () => 0 });
   return { store, outbox, armed, advance: (ms: number) => { now += ms; } };
 }
 
@@ -68,12 +69,12 @@ test('an ending staged but undelivered (the child lost before its alarm) is deli
   await first.store.storage.transaction(async tx => first.outbox.stageEnding(tx as never, owner, ending));
   // Staged again (a repeated emit): still one row.
   await first.store.storage.transaction(async tx => first.outbox.stageEnding(tx as never, owner, ending));
-  assert.equal([...first.store.values.keys()].filter(key => key.startsWith(OUTBOX_PREFIX)).length, 1);
+  assert.equal(first.outbox.size(), 1);
   const next = child({ ending: async (_owner, value) => { delivered.push(value); return { accepted: true }; } }, first.store);
   assert.equal(await next.outbox.deadline(), 1_000);
   assert.equal(await next.outbox.flush(), undefined);
   assert.deepEqual(delivered, [ending]);
-  assert.equal([...first.store.values.keys()].filter(key => key.startsWith(OUTBOX_PREFIX)).length, 0);
+  assert.equal(next.outbox.size(), 0);
 });
 
 test('a failed delivery is retried with backoff until the owner answers, then the row goes', async () => {
@@ -135,4 +136,51 @@ test('a paused child resumed and ended before its parent saw the resume: its end
   assert.equal(p.delegation.measurements.endings, 1);
   // Another child's resume, or one of a run that never paused, is not this parent's.
   assert.deepEqual(await p.delegation.receiveEnding({ ...resume, requestId: 'resume_other' }), { accepted: false });
+});
+
+test('a full page of rows none of which is due arms the alarm for the first one due, not now (no wake loop)', async () => {
+  let failing = true;
+  const c = child({ ending: async () => { if (failing) throw new Error('owner unavailable'); return { accepted: true }; } });
+  for (let i = 0; i < OUTBOX_PAGE + 2; i++) await c.store.storage.transaction(async tx => c.outbox.stageEnding(tx, owner, { ...ending, requestId: `run_${String(i).padStart(4, '0')}` }));
+  // Every delivery fails: each row is due again in a second.
+  assert.equal(await c.outbox.flush(), 1_000, 'the rows past the page are due: the next flush is now');
+  assert.equal(await c.outbox.flush(), 1_000 + OUTBOX_RETRY.firstMs, 'now all wait for their retry');
+  c.armed.length = 0;
+  // Nothing is due: a flush (as an alarm would run it) arms for the earliest retry, never for now.
+  for (let i = 0; i < 3; i++) assert.equal(await c.outbox.flush(), 1_000 + OUTBOX_RETRY.firstMs);
+  assert.ok(c.armed.every(at => at > 1_000), JSON.stringify(c.armed));
+  failing = false;
+  c.advance(OUTBOX_RETRY.firstMs);
+  await c.outbox.flush();
+  assert.equal(await c.outbox.flush(), undefined);
+  assert.equal(c.outbox.size(), 0);
+});
+
+test('backoff has jitter: retries of rows that failed together spread out', async () => {
+  const store = memory();
+  let roll = 0;
+  const armed: number[] = [];
+  const outbox = new ChildOutbox({ storage: store.storage, receiveEnding: async () => { throw new Error('down'); }, receiveProgress: async () => ({ accepted: true }), arm: async at => { armed.push(at); }, now: () => 1_000, random: () => [0, 0.5, 1][roll++ % 3]! });
+  for (const id of ['a', 'b', 'c']) await store.storage.transaction(async tx => outbox.stageEnding(tx, owner, { ...ending, requestId: id }));
+  await outbox.flush();
+  const retries = store.storage.sql.exec<{ next_at: number }>('SELECT next_at FROM child_outbox ORDER BY key').toArray().map(row => row.next_at - 1_000);
+  assert.deepEqual(retries, [OUTBOX_RETRY.firstMs, OUTBOX_RETRY.firstMs * 1.1, OUTBOX_RETRY.firstMs * 1.2]);
+});
+
+test('a deleted (or expired) child keeps delivering its ending: its wakes flush the outbox and re-arm for the next retry', async () => {
+  let reachable = false;
+  const c = child({ ending: async () => { if (!reachable) throw new Error('owner evicted'); return { accepted: true }; } });
+  await c.store.storage.transaction(async tx => c.outbox.stageEnding(tx, owner, { ...ending, record: { state: 'completed', status: 'aborted', error: 'The sub-agent was deleted' } }));
+  const armed: (number | undefined)[] = [];
+  const runtime = { outbox: c.outbox, arm: async () => { armed.push(await c.outbox.deadline()); } };
+  // The deleted branch of the agent's wake runs exactly this (agent-lifecycle.ts).
+  assert.match(readFileSync(new URL('../src/agent-lifecycle.ts', import.meta.url), 'utf8'), /if \(await this\.ctx\.storage\.get\("deleted"\)\) \{[^}]*ChildOutbox\.deletedWake\(this\)/);
+  await ChildOutbox.deletedWake(runtime);
+  assert.equal(c.outbox.size(), 1, 'the owner was unreachable: the row stays');
+  assert.equal(armed[0], 1_000 + OUTBOX_RETRY.firstMs, 'and the alarm is armed for its retry');
+  reachable = true;
+  c.advance(OUTBOX_RETRY.firstMs * 2);
+  await ChildOutbox.deletedWake(runtime);
+  assert.equal(c.outbox.size(), 0);
+  assert.equal(armed.at(-1), undefined, 'nothing left to wake for');
 });

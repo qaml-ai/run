@@ -123,6 +123,8 @@ export async function admitDelegatedImpl(this: AgentRuntime,
     return withMoneyMetrics(this.env, async () => {
       try {
         await this.config();
+        // As the HTTP path did for a child's start (`fetch POST https://agent/requests` stored its request's origin).
+        await this.ctx.storage.put("file-origin", "https://agent");
         await this.submit(input, undefined, undefined, undefined, undefined, placementOf(placement));
         return { ok: true as const };
       } catch (error) {

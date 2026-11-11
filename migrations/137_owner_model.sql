@@ -13,10 +13,10 @@ alter table agent_children add column chain jsonb;
 -- Not valid, as 116 does: the table is live and every row it has holds the default; the writers check it from now on.
 alter table agent_children add constraint agent_children_owner_kind_check check (owner_kind in ('agent', 'workflow')) not valid;
 
--- agent_inputs: an input's owner (a gate of a workflow has no agent). Backfilled from `agent`; a row an older node
--- writes during the rollout has no owner_id until the contract deploy backfills again, so readers take
--- coalesce(owner_id, agent) until then.
+-- agent_inputs: an input's owner (a gate of a workflow has no agent). Not backfilled here: an update of every row in
+-- this transaction would hold the add column's ACCESS EXCLUSIVE lock for the whole rewrite, and the table is too busy for
+-- that (117-119). Rows written before this (and by older nodes during the rollout) have no owner_id, so readers take
+-- coalesce(owner_id, agent); the contract deploy backfills in batches, outside a transaction, before dropping `agent`.
 alter table agent_inputs add column owner_kind text not null default 'agent';
 alter table agent_inputs add column owner_id text;
 alter table agent_inputs add constraint agent_inputs_owner_kind_check check (owner_kind in ('agent', 'workflow')) not valid;
-update agent_inputs set owner_id = agent where owner_id is null;
