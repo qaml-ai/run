@@ -20,7 +20,7 @@ import type { Db } from "../src/postgres.ts";
 
 import { testDatabase } from "./billing-database.ts";
 
-import { getModel } from "../src/pi-catalog.ts";
+import { getModel } from "../src/model-catalog.ts";
 
 import { createServer } from "node:http";
 

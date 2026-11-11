@@ -3,7 +3,6 @@ import test from "node:test";
 import { createAssistantMessageEventStream, type Api, type AssistantMessage, type Model } from "@earendil-works/pi-ai";
 import { resolveModel, routeModel, virtualChain, virtualModelReferences } from "../src/model-policy.ts";
 import { getModel, getModels, tierCost, withOpenRouterHosts } from "../src/model-catalog.ts";
-import { getModel as pricingCatalogModel } from "../src/pi-catalog.ts";
 import { listModels } from "../src/catalog-policy.ts";
 import { platformUsage } from "../src/platform-pricing.ts";
 import { withSettings } from "../src/model-settings.ts";
@@ -80,8 +79,6 @@ test("a response is priced at the tier that served it; other models ignore servi
   assert.equal(tierCost("openrouter", EMBER, "flex"), undefined);
   assert.equal(tierCost("anthropic", CARBON, "flex"), undefined);
   assert.deepEqual(getModel("openrouter", CARBON)!.cost, { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 0.1875 });
-  // Platform pricing reads the same catalog as model routing (it once read a stale copy without Muse Ember).
-  assert.deepEqual(pricingCatalogModel("openrouter", EMBER)?.cost, getModel("openrouter", EMBER)?.cost);
   const tokens = { input: 1_000_000, output: 1_000_000, cacheRead: 1_000_000, cacheWrite: 0 };
   assert.equal(priced({ ...tokens, serviceTier: "flex" }, CARBON), 6.05);
   assert.equal(priced({ ...tokens, serviceTier: "default" }, CARBON), 12.1);

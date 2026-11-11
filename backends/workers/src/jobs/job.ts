@@ -63,7 +63,7 @@ export type JobSpec = {
   internet?: boolean;
   /** Save the container's disk under this name when the command exits 0, for the next job to start from. */
   saveSnapshot?: string;
-  /** Who pays for the container time and whose computer limit the job counts against; none runs unmetered. */
+  /** Who pays for the container time and whose computer limit the job counts against. Every job has one. */
   payer: ComputerPayer;
 };
 export type JobStream = { bytes: Uint8Array; size: number; truncated: boolean };

@@ -4,7 +4,7 @@ import type { Accounts, Sealed } from "./accounts.ts";
 import type { Db } from "./postgres.ts";
 import { HttpError } from "./errors.ts";
 import { openRouterApi, providerInfo } from "./key-catalog.ts";
-import { getModels } from "./pi-catalog.ts";
+import { getModels } from "./model-catalog.ts";
 import { FETCH_APIS } from "./security-types.ts";
 import { OutboundBlocked, type Outbound } from "./security-outbound.ts";
 

@@ -627,8 +627,8 @@ sub-agent) and code mode see the `computer` tool; its container time is charged 
 Jobs (`src/jobs/`, internal: no route and no builtin yet) use the same class and image: a job runs
 in an object named `job:<id>`, which starts a container sized from the job's limits (`standard-1`
 to `standard-4`), syncs its files into `/repo`, runs one command, returns the named files from
-`/out` and destroys the container. A job with a payer holds a computer slot (`job:<id>`) and is
-charged like a computer. Deployments without `COMPUTER_CONTAINERS` answer `JOBS_UNAVAILABLE`.
+`/out` and destroys the container. Every job has a payer: it holds a computer slot (`job:<id>`) and
+is charged like a computer. Deployments without `COMPUTER_CONTAINERS` answer `JOBS_UNAVAILABLE`.
 A deploy needs Docker on the deploying machine. A
 new image digest makes earlier snapshots unusable (they are refused, not
 restored); snapshots expire 30 days after creation or their latest restore.

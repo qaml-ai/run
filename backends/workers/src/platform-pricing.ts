@@ -1,6 +1,6 @@
 // Generated from src/platform-pricing.ts; infrastructure imports only.
 import { calculateCost, type Api, type Model } from "@earendil-works/pi-ai";
-import { getModel, getModels, tierCost } from "./pi-catalog.ts";
+import { getModel, getModels, tierCost } from "./model-catalog.ts";
 
 /** Token counts and costs as a response reports them; `cost` and `providerCost` are what billing reads (`usageCost`). */
 type Usage = { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cacheWrite1h?: number; cost?: Record<string, number>; providerCost?: number; [key: string]: unknown };

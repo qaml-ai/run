@@ -13,7 +13,8 @@
     "test:compat": "node scripts/compatibility.mjs",
     "measure": "node scripts/measure.mjs",
     "test:python": "python3 scripts/python-compat.py",
-    "parity": "node ../../tests/contract/run.mjs"
+    "parity": "node ../../tests/contract/run.mjs",
+    "check:reuse": "node scripts/check-reuse.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "3.1127.0",
