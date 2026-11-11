@@ -111,6 +111,12 @@ export function routeModel(selection: VirtualSelection, request: { reason: Model
   const previous = request.reason === "continuation" && request.previous ? chain.find(model => same(model, request.previous!)) : undefined;
   return previous ?? chain[0];
 }
+
+/** A response as `routeModel` takes it: its model, and the service tier its request asked for (model-attempt-stream.ts `servedTier`), which names its member. */
+export const askedTier = (message: { usage?: unknown }): { serviceTier?: string } => {
+  const tier = (message.usage as { requestedServiceTier?: unknown } | undefined)?.requestedServiceTier;
+  return typeof tier === "string" ? { serviceTier: tier } : {};
+};
 /** What a model on a tenant's own endpoint can do, for a model the catalog lacks. */
 export type EndpointModel = { contextWindow: number; maxTokens: number; reasoning?: boolean; input?: ('text' | 'image')[] };
 export type ModelEndpoint = { baseUrl: string; models?: Record<string, EndpointModel> };
@@ -293,9 +299,3 @@ export function modelSettingsRefusal(model: AgentConfig['model'], settings: Pick
 }
 
 /** Why an agent's configuration with `update` applied would ask its model for settings it cannot take (`modelSettingsRefusal`). */
-
-/** A response as `routeModel` takes it: its model, and the service tier its request asked for (model-attempt-stream.ts `servedTier`), which names its member. */
-export const askedTier = (message: { usage?: unknown }): { serviceTier?: string } => {
-  const tier = (message.usage as { requestedServiceTier?: unknown } | undefined)?.requestedServiceTier;
-  return typeof tier === "string" ? { serviceTier: tier } : {};
-};

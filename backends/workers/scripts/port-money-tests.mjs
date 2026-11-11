@@ -23,6 +23,7 @@ for (const name of names) {
       if (["./runtime-server.ts", "./client-fixture.ts", "../clients/node.ts"].includes(path)) continue;
       if (path === "./database.ts") text = 'import { testDatabase } from "./billing-database.ts";';
       if (path === "../src/db.ts") text = text.replace(path, "../src/postgres.ts");
+      if (path === "../src/pi-catalog.ts") text = text.replace(path, "../src/model-catalog.ts");
       if (path === "../src/pricing.ts") text = text.replace(path, "../../../src/pricing.ts");
       if (path === "../src/oauth.ts") text = text.replace(path, "../src/account-oauth.ts");
       if (path === "../src/origins.ts") text = text.replace(path, "../src/account-origins.ts");
