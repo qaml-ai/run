@@ -476,6 +476,8 @@ test('a message that never reached its child ends failed, with no notification, 
 });
 test('progress is idempotent, shown once in tool results, and never starts a turn', async () => {
   const parent = fixture(), child = await childFixture();
+  // The child is still working: its simulated alarm has no ending to deliver while the test reads its progress.
+  parent.host.fetch = async () => Response.json({ state: 'running' });
   parent.values.set('delegation:live', { id: 'child', key: 'live', requestId: 'child-run', parentRequestId: 'parent-run', toolCallId: 'spawn', task: 'go', name: 'helper', depth: 1, createdAt: 1, status: 'running', made: true, background: true, accepted: true });
   child.host.reportProgress = async (owner, report) => { assert.deepEqual(owner, { kind: 'agent', id: 'parent' }); return parent.delegation.recordProgress(report); };
   const progress = child.delegation.tools({}, [], true).find(tool => tool.name === 'report_progress')!;
