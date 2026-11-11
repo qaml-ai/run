@@ -7,7 +7,8 @@ const outputs = new Map();
 const generated = (from, text) => `// Generated from src/${from}; only host imports are replaced.\n// Run node backends/workers/scripts/reuse-security.mjs --check to check source drift.\n${text}`;
 for (const name of ["accounts.ts", "tenants.ts", "key-scopes.ts", "model-providers.ts", "browser-tokens.ts", "key-check.ts"]) {
   let text = await source(name);
-  text = text.replaceAll('"./db.ts"', '"./postgres.ts"').replaceAll('"./http.ts"', '"./errors.ts"');
+  // src/pi-catalog.ts is model-catalog.ts on Workers (scripts/reuse-model-policy.mjs), its only copy.
+  text = text.replaceAll('"./db.ts"', '"./postgres.ts"').replaceAll('"./http.ts"', '"./errors.ts"').replaceAll('"./pi-catalog.ts"', '"./model-catalog.ts"');
   if (name === "accounts.ts") text = text
     .replace('"../shared/usage-details.ts"', '"../../../shared/usage-details.ts"')
     .replace('"./anthropic-federation.ts"', '"./security-host.ts"')
@@ -42,7 +43,7 @@ const catalog = await source("catalog.ts");
 outputs.set("key-catalog.ts", generated("catalog.ts + web-search.ts", [
   'import { getProviders } from "@earendil-works/pi-ai/compat";',
   'import type { Api, Model } from "@earendil-works/pi-ai";',
-  'import { getModels } from "./pi-catalog.ts";',
+  'import { getModels } from "./model-catalog.ts";',
   'import { deepseekOnOpenRouter } from "./security-deepseek.ts";',
   (await source("web-search.ts")).match(/export const SEARCH_PROVIDERS = .*?;/)[0],
   catalog.slice(catalog.indexOf("/** Page renderers"), catalog.indexOf("export interface ModelInfo")),

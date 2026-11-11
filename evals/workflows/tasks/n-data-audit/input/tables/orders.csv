@@ -1,0 +1,201 @@
+order_id,customer_id,ordered_on,currency,notes
+1,101,2026-05-18,USD,reorder; late
+2,110,2025-01-29,USD,
+3,97,2025-01-09,EUR,
+4,8,2025-09-30,EUR,checked; follow up
+5,24,2025-08-23,GBP,
+6,114,2025-05-14,USD,
+7,99,2025-03-02,GBP,
+8,44,2025-12-31,EUR,fragile; priority
+9,83,2025-01-27,EUR,reorder; gift
+10,115,2026-09-02,USD,
+11,103,2025-05-10,EUR,pending review; reorder
+12,21,2026-01-16,USD,"leave with neighbour, phone +44 7700 900123"
+13,83,2026-03-31,USD,checked; late
+14,20,2025-08-14,EUR,priority; priority
+15,30,2025-09-01,EUR,approved; priority
+16,89,2026-04-08,GBP,
+17,16,2026-02-09,USD,priority; checked
+18,76,2025-04-17,EUR,
+19,107,2025-04-10,USD,
+20,78,2025-02-03,GBP,follow up; approved
+21,22,2026-05-03,GBP,follow up; follow up
+22,13,2026-06-17,EUR,
+23,61,2025-09-06,GBP,approved; priority
+24,64,2025-06-01,EUR,
+25,51,2025-01-12,EUR,
+26,103,2025-02-08,GBP,approved; approved
+27,27,2026-05-05,USD,
+28,114,2025-03-31,GBP,
+29,31,2025-03-23,USD,
+30,49,2025-02-19,EUR,
+31,94,2025-10-28,EUR,checked; priority
+32,24,2026-01-16,EUR,late; follow up
+33,14,2026-10-06,USD,
+34,97,2026-01-11,EUR,bulk; late
+35,27,2025-05-30,EUR,bulk; pending review
+36,62,2026-02-27,EUR,
+37,26,2025-02-11,USD,fragile; checked
+38,86,2026-03-15,USD,
+39,29,2025-04-22,EUR,
+40,1,2025-06-23,GBP,
+41,1,2025-04-24,EUR,priority; checked
+42,106,2025-05-18,GBP,approved; bulk
+43,36,2026-02-07,GBP,gift; bulk
+44,24,2026-04-04,USD,
+45,38,2026-02-07,EUR,follow up; pending review
+46,95,2025-07-30,GBP,
+47,5,2025-10-11,USD,fragile; gift
+48,4,2026-02-22,GBP,gift; checked
+49,58,2026-09-01,USD,
+50,19,2026-10-02,USD,pending review; reorder
+51,26,2025-10-17,EUR,pending review; bulk
+52,102,2026-04-09,USD,
+53,29,2025-01-25,USD,late; priority
+54,16,2026-01-30,GBP,bulk; approved
+55,94,2025-01-15,EUR,pending review; approved
+56,76,2026-01-28,USD,follow up; follow up
+57,86,2025-07-31,GBP,approved; pending review
+58,35,2026-02-22,USD,
+59,80,2025-03-10,USD,approved; pending review
+60,80,2026-08-31,GBP,checked; checked
+61,78,2025-06-23,USD,
+62,85,2025-08-16,GBP,bulk; approved
+63,111,2026-09-24,EUR,reorder; follow up
+64,66,2026-02-16,USD,
+65,65,2025-04-24,GBP,
+66,44,2025-01-07,EUR,
+67,90,2025-09-25,EUR,priority; late
+68,83,2025-03-28,USD,
+69,93,2025-07-06,USD,gift; bulk
+70,37,2025-05-29,USD,reorder; fragile
+71,57,2025-02-18,GBP,
+72,99,2026-07-18,GBP,approved; pending review
+73,78,2026-07-19,GBP,
+74,23,2025-09-09,GBP,checked; approved
+75,68,2026-01-24,GBP,
+76,111,2026-08-29,USD,gift; fragile
+77,113,2025-01-17,eur,follow up; gift
+78,29,2025-11-17,EUR,checked; fragile
+79,38,2025-05-14,GBP,reorder; gift
+80,38,2025-05-31,USD,
+81,4,2026-08-11,USD,late; bulk
+82,6,2025-08-04,GBP,
+83,56,2026-03-28,EUR,priority; pending review
+84,120,2025-02-16,USD,
+85,20,2025-07-09,EUR,
+86,79,2026-03-22,EUR,
+87,50,2026-07-22,GBP,
+88,59,2025-02-21,USD,
+89,24,2026-09-18,USD,late; pending review
+90,59,2025-11-30,GBP,
+91,115,2026-07-11,GBP,
+92,15,2025-12-25,GBP,late; approved
+93,44,2026-08-12,GBP,
+94,26,2025-06-06,GBP,
+95,55,2026-07-13,EUR,reorder; pending review
+96,18,2026-05-06,EUR,fragile; follow up
+97,43,2025-05-30,USD,follow up; pending review
+98,106,2026-10-23,GBP,late; approved
+99,53,2025-04-26,EUR,
+100,75,2025-05-13,GBP,
+101,80,2025-08-17,GBP,gift; gift
+102,88,2026-06-04,USD,late; gift
+103,74,2025-04-25,USD,follow up; fragile
+104,55,2026-09-20,USD,checked; bulk
+105,87,2025-01-03,GBP,
+106,56,2025-01-13,EUR,fragile; gift
+107,70,2026-07-24,USD,checked; bulk
+108,20,2026-03-24,EUR,checked; fragile
+109,51,2026-03-06,GBP,bulk; pending review
+110,65,2025-04-28,USD,
+111,64,2025-01-31,GBP,bulk; priority
+112,40,2026-09-16,EUR,fragile; late
+113,47,2025-09-06,USD,
+114,45,2025-04-05,GBP,checked; pending review
+115,99,2026-10-22,EUR,
+116,24,2025-03-06,EUR,checked; checked
+117,61,2025-05-19,EUR,fragile; follow up
+118,42,2025-08-15,EUR,approved; bulk
+119,37,2025-09-16,GBP,
+120,79,2026-07-31,USD,approved; priority
+121,15,2025-05-01,USD,priority; late
+122,2,2025-07-12,EUR,
+123,60,2026-07-06,GBP,reorder; priority
+124,4,2025-04-11,GBP,checked; reorder
+125,99,2025-03-24,EUR,
+126,69,2025-09-26,GBP,fragile; priority
+127,98,2026-01-25,USD,
+128,87,2026-04-11,EUR,reorder; pending review
+129,104,2026-06-25,USD,
+130,1,2025-11-05,EUR,
+131,110,2025-06-30,USD,late; bulk
+132,33,2026-07-22,GBP,checked; pending review
+133,93,2026-05-16,USD,
+134,107,2025-05-05,GBP,
+135,55,2026-02-07,USD,
+136,9,2026-02-03,GBP,
+137,12,2026-06-23,EUR,follow up; checked
+138,58,2025-01-24,EUR,
+139,59,2025-10-18,EUR,
+140,73,2025-05-13,GBP,gift; reorder
+141,28,2025-05-01,USD,reorder; checked
+142,55,2026-04-07,EUR,gift; follow up
+143,30,2026-01-01,GBP,
+144,34,2025-08-23,EUR,approved; checked
+145,109,2026-05-06,GBP,
+146,92,2025-01-25,USD,follow up; fragile
+147,119,2026-08-02,USD,
+148,14,2026-05-10,GBP,bulk; priority
+149,63,2025-07-30,USD,checked; priority
+150,108,2026-12-24,GBP,approved; late
+151,32,2025-09-17,USD,late; bulk
+152,84,2025-08-09,GBP,follow up; checked
+153,12,2025-12-15,EUR,
+154,47,2026-05-23,EUR,fragile; fragile
+155,100,2025-03-03,USD,follow up; fragile
+156,5,2026-07-24,EUR,checked; pending review
+157,23,2025-08-29,EUR,follow up; gift
+158,77,2025-07-12,GBP,gift; approved
+159,115,2025-06-09,EUR,follow up; bulk
+160,69,2025-02-08,EUR,
+161,109,2025-07-22,EUR,gift; reorder
+162,91,2026-09-30,GBP,priority; checked
+163,9,2025-03-31,EUR,
+164,56,2025-12-11,EUR,bulk; follow up
+165,32,2025-06-12,GBP,gift; approved
+166,83,2025-09-29,USD,gift; approved
+167,80,2025-07-19,EUR,
+168,25,2026-02-13,EUR,
+169,9,2026-10-22,EUR,approved; bulk
+170,1,2026-07-07,EUR,fragile; follow up
+171,102,2025-12-06,GBP,
+172,114,2026-09-25,EUR,gift; approved
+173,8,2025-05-29,GBP,bulk; reorder
+174,70,2025-03-01,EUR,fragile; follow up
+175,14,2026-06-05,USD,
+176,69,2026-09-07,EUR,
+177,17,2025-02-02,EUR,approved; bulk
+178,25,2026-03-03,GBP,
+179,87,2026-05-26,USD,follow up; bulk
+180,47,2026-03-20,EUR,"leave with neighbour, phone +44 7700 900123"
+181,84,2025-08-27,USD,pending review; approved
+182,40,2026-06-14,GBP,follow up; checked
+183,35,2026-04-10,USD,
+184,105,2025-07-31,USD,checked; bulk
+185,11,2025-08-02,EUR,bulk; late
+186,1,2026-07-16,USD,approved; gift
+187,52,2025-06-25,GBP,reorder; checked
+188,1,2026-09-22,EUR,checked; pending review
+189,39,2025-07-13,GBP,
+190,50,2026-09-29,GBP,
+191,97,2025-09-20,USD,bulk; pending review
+192,88,2025-02-01,EUR,priority; fragile
+193,35,2025-05-26,USD,
+194,97,2025-02-07,GBP,priority; fragile
+195,48,2026-03-04,EUR,bulk; checked
+196,18,2026-02-15,GBP,approved; follow up
+197,82,2026-02-01,GBP,
+198,99,2025-12-03,EUR,pending review; priority
+199,68,2026-05-28,USD,bulk; reorder
+200,71,2025-08-25,EUR,pending review; late

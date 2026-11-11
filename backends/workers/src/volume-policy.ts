@@ -4,6 +4,8 @@ import { HttpError } from "./errors.ts";
 export const CHUNK_BYTES = 1024 * 1024;
 /** What one read of many files (GET /v1/volumes/:id/files?content=true) returns at most. */
 export const READ_ALL_LIMITS = Object.freeze({ files: 1000, bytes: 16 * 1024 * 1024 });
+/** What one atomic commit (POST /v1/volumes/:id/commit) names at most, and the most content it carries inline. */
+export const COMMIT_LIMITS = Object.freeze({ files: 1000, inlineBytes: 16 * 1024 * 1024, copyBytes: 1024 * 1024 * 1024 });
 /** The most one archive (GET /v1/volumes/:id/archive) holds. */
 export const ARCHIVE_LIMITS = Object.freeze({ files: 10_000, bytes: 1024 * 1024 * 1024 });
 export const VOLUME_LIMITS = Object.freeze({ fileBytes: 256 * 1024 * 1024, files: 100_000, mounts: 16, snapshots: 100, pinnedSnapshots: 10_000, changes: 1000, listing: 1000 });

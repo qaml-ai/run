@@ -34,7 +34,7 @@ export type UsageEvent = {
   id: string; agent: string; requestId: string | null; tenant: string; subject: string; actor: string | null; context: Record<string, unknown>;
   keyScope: string | null; provider: string; model: string; kind: "response" | "compaction";
   input: number; output: number; cacheRead: number; cacheWrite: number; reasoning?: number;
-  cost: { usd: number; source: "provider" | "catalog" }; at: number;
+  cost: { usd: number; source: "provider" | "catalog" }; serviceTier?: string; at: number;
 };
 type Receiver = { url: string; secrets: string[] };
 /** `setBy`: who last set it (Webhooks.setBy), null if before that was recorded. */
@@ -109,6 +109,8 @@ export function usageEvent(tenant: string, agent: string, message: UsageRecord):
     kind: message.kind === "compaction" ? "compaction" as const : transcription ? "transcription" as const : speech ? "speech" as const : image ? "image" as const : decision ? "decision" as const : "response" as const,
     input: usage.input ?? 0, output: usage.output ?? 0, cacheRead: usage.cacheRead ?? 0, cacheWrite: usage.cacheWrite ?? 0,
     ...(typeof usage.reasoning === "number" ? { reasoning: usage.reasoning } : {}), ...(transcription || speech ? { audioSeconds: message.audioSeconds ?? 0 } : {}), ...(image ? { images: message.images ?? 0 } : {}), ...(decision ? { decisions: message.decisions ?? 0 } : {}), cost: usageCost(usage),
+    // The OpenRouter service tier that served the response, as it said (flex, default), when it said one.
+    ...(typeof usage.serviceTier === "string" ? { serviceTier: usage.serviceTier } : {}),
   };
   const at = message.timestamp ?? Date.now();
   const host = typeof usage.providerHost === "string" && usage.providerHost ? usage.providerHost : undefined;

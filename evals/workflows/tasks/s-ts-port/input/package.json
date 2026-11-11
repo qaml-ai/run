@@ -1,0 +1,9 @@
+{
+  "name": "strkit",
+  "version": "1.4.0",
+  "description": "Small string utilities: cases, slugs, wrapping, templates, CSV, tables, sizes and durations.",
+  "license": "MIT",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": { "test": "node --test test/*.test.js" }
+}

@@ -18,8 +18,10 @@ import { contentFilterFallbacks } from "./default-model-policy.ts";
 import { isContentFilterBlock, isModelUnavailable } from "./model-errors.ts";
 import { ModelReplayRetry, type ModelRetryEvent } from "./model-replay-retry.ts";
 import { missingModelKey } from "./selfhost-policy.ts";
+import { FlexWait, asksFlex, flexFallbackDeltaUsd, flexWaitMs } from "./model-flex-wait.ts";
 
-export type ModelRequestSettings = AgentConfiguration & { requestId?: string; outputReminded?: boolean; output?: { schema?: Record<string, unknown>; [key: string]: unknown } };
+/** `flexWaitSeconds`: how long a call asked on flex waits for flex capacity before the default tier takes it (model-flex-wait.ts). */
+export type ModelRequestSettings = AgentConfiguration & { requestId?: string; outputReminded?: boolean; flexWaitSeconds?: number; output?: { schema?: Record<string, unknown>; [key: string]: unknown } };
 export type ModelCredentials = { apiKey?: string; baseUrl?: string; headers?: Record<string, string>; region?: string; bearer?: true; identity?: true; deployments?: Record<string, string> };
 export type ModelHooks = {
   agentId?: () => Promise<string>;
@@ -35,7 +37,7 @@ export type ModelHooks = {
   customProviders?: CustomProviders;
 };
 
-export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEnv & { TEST_MODE?: string; TEST_MODEL?: string; TEST_MODEL_BASE_URL?: string; TEST_MODEL_API?: Api; AGENT_CONTENT_FILTER_FALLBACKS?: string; AGENT_TENANT?: string }): Provider {
+export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEnv & { TEST_MODE?: string; TEST_MODEL?: string; TEST_MODEL_BASE_URL?: string; TEST_MODEL_API?: Api; AGENT_CONTENT_FILTER_FALLBACKS?: string; AGENT_TENANT?: string; AGENT_FLEX_WAIT_SECONDS?: string }): Provider {
   const timeouts = runtimeStreamTimeouts(env);
   let routing: { user: string; previous?: Model<Api>; failed?: Model<Api> } | undefined;
   const outputRequest = new OutputRequest();
@@ -123,6 +125,8 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
       try {
         let prepared = await prepare(model, context, options);
         replayRetry.begin(prepared.config.requestId ?? String(context.messages.findLast(message => message.role === "user")?.timestamp ?? 0));
+        // A call asked on flex that found no flex capacity: its wait (`flex`), and, once it moved to the default tier, from what.
+        let flex: FlexWait | undefined, fellBack: { model: string; waitedMs: number; attempts: number } | undefined;
         let retry = false;
         do {
         retry = false;
@@ -145,6 +149,22 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
               !options?.signal?.aborted && await replayRetry.retry(event.error, options?.signal)) {
             retry = true;
             continue;
+          }
+          // Flex with no capacity: asked again within the call's flex wait, then the next member (the default tier) takes it below.
+          if (event.type === "error" && event.reason !== "aborted" && asksFlex(prepared.model) && !event.error.content.length && isModelUnavailable(event.error) && !options?.signal?.aborted) {
+            flex ??= new FlexWait(flexWaitMs(env, prepared.config.flexWaitSeconds), hooks.onRetryEvent);
+            if (await flex.retry(event.error, options?.signal)) { retry = true; continue; }
+            if (prepared.virtualNext) {
+              fellBack = { model: `${prepared.model.provider}/${prepared.model.id}`, waitedMs: flex.waitedMs(), attempts: flex.attempts };
+              console.log(JSON.stringify({ type: "model_flex_fallback", tenant: env.AGENT_TENANT ?? null, agent: await hooks.agentId?.().catch(() => undefined) ?? null, model: fellBack.model,
+                to: `${prepared.virtualNext.provider}/${prepared.virtualNext.id}`, toTier: (prepared.virtualNext as { serviceTier?: string }).serviceTier ?? null, waitedMs: fellBack.waitedMs, attempts: fellBack.attempts, error: event.error.errorMessage?.slice(0, 300) ?? null }));
+            }
+          }
+          if (event.type === "done" && flex && asksFlex(prepared.model)) await flex.success();
+          if (event.type === "done" && fellBack) {
+            // What the move cost over flex, for the same tokens: the default tier's prices against flex's.
+            console.log(JSON.stringify({ type: "model_flex_fallback_cost", tenant: env.AGENT_TENANT ?? null, model: fellBack.model, servedTier: (event.message.usage as { serviceTier?: string }).serviceTier ?? null,
+              deltaUsd: flexFallbackDeltaUsd(prepared.model, event.message.usage) ?? null, waitedMs: fellBack.waitedMs, attempts: fellBack.attempts }));
           }
           if (event.type === "error" && event.reason !== "aborted" && prepared.virtualNext && !event.error.content.length && isModelUnavailable(event.error) && !options?.signal?.aborted) {
             routing!.failed = prepared.model;

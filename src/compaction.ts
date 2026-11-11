@@ -1,4 +1,4 @@
-import { attemptStream, type UsageSink } from "./model-attempt-stream.ts";
+import { attemptStream, servedTier, type UsageSink } from "./model-attempt-stream.ts";
 import type { CreditStop, ModelAttemptHook, Superseded } from "./model-attempt.ts";
 import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
 import { getProviders, streamSimple, type Api, type AssistantMessage, type Model } from "@earendil-works/pi-ai/compat";
@@ -142,6 +142,10 @@ export function callFetch(sink: UsageSink, plan: { rebase?: { from: string[]; to
       const host = data?.provider ?? data?.response?.provider ?? data?.error?.metadata?.provider_name;
       if (typeof host === "string" && /^[\w .()/-]{1,60}$/.test(host)) sink.host = host;
       const usage = data?.usage ?? data?.response?.usage ?? data?.message?.usage;
+      // The service tier that served the call, as OpenRouter says it: top level (Chat Completions, Responses), or in
+      // usage (Anthropic Messages, which calls the default tier "standard").
+      const tier = data?.service_tier ?? data?.response?.service_tier ?? usage?.service_tier;
+      if (typeof tier === "string" && /^[a-z_]{1,20}$/.test(tier)) sink.serviceTier = tier === "standard" ? "default" : tier;
       if (typeof usage?.cost !== "number" || !Number.isFinite(usage.cost) || usage.cost < 0) return;
       const upstream = usage.is_byok ? Number(usage.cost_details?.upstream_inference_cost) : 0;
       sink.credits = usage.cost;
@@ -316,6 +320,7 @@ export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefin
         stream.push = event => {
           if (event.type === "done" && sink.cost !== undefined) Object.assign(event.message.usage, { providerCost: sink.cost, providerCreditCost: sink.credits });
           if ((event.type === "done" || event.type === "error") && sink.host) Object.assign((event.type === "done" ? event.message : event.error).usage, { providerHost: sink.host });
+          if (event.type === "done" || event.type === "error") servedTier(model, event.type === "done" ? event.message : event.error, sink.serviceTier);
           push(event);
         };
         return stream;

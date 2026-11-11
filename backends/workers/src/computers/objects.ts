@@ -23,6 +23,9 @@ export { payerSetup } from "./meter.ts";
 import { meterBilling } from "./meter-billing.ts";
 import type { KeyEnv } from "../security-services.ts";
 import type { WebhookEnv } from "../webhooks.ts";
+import { runContainerJob, type JobMeter } from "../jobs/container-job.ts";
+import { inlineFiles, volumeFiles, type VolumeSyncEnv } from "../jobs/camel-sync.ts";
+import { jobLifetimeMs, jobSpec, type JobResult } from "../jobs/job.ts";
 
 type ComputerObjectEnv = KeyEnv & WebhookEnv & { COMPUTER_IMAGE?: string; COMPUTER_INSTANCE?: string; COMPUTER_CONTAINERS?: DurableObjectNamespace<ContainerComputer> };
 /**
@@ -45,6 +48,8 @@ function payerOf(setup?: OperateSetup): ComputerPayer | undefined {
 // without one (the cloud probe) runs unmetered.
 export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
   private queue: Promise<unknown> = Promise.resolve();
+  /** The job this object runs now, when it is a job's object (jobs/driver.ts): its stop. */
+  private job?: AbortController;
   private active = new Map<Promise<unknown>, number>();
   private network(setup?: OperateSetup): ComputerNetwork {
     const idleMs = (setup?.settings.idleSeconds ?? COMPUTER_LIMITS.idleSeconds.default) * 1000;
@@ -230,6 +235,69 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
       .catch((error: unknown) => console.error(JSON.stringify({ type: "computer_unref_failed", error: error instanceof Error ? error.message.slice(0, 200) : "unknown" })));
     return { purged: true as const };
   }
+  // Jobs (jobs/driver.ts): an object named `job:<id>` runs one job at a time, start to stop, in its own container.
+  /** The payer's admission, computer slot (`job:<id>`, expiring with the job) and container-time meter. */
+  private jobMeter(id: string, payer: ComputerPayer): JobMeter {
+    const meter = this.meter(), machine = `job:${id}`;
+    return {
+      admit: async (_instance, until) => {
+        await meter.admit(payer);
+        const limit = (await keyServices(this.env)).accounts.tenants.computerLimit(payer.tenant);
+        await transaction(this.env, async sql => reserveComputer(sql, payer.tenant, payer.agent, machine, until, Date.now(), await limit));
+        await this.ctx.storage.put("computer:permit", { tenant: payer.tenant, machine });
+      },
+      started: (instance, idleMs) => meter.started(payer, instance, idleMs),
+      used: cpu => meter.used(cpu),
+      stopped: async cpu => { await meter.stopped(cpu); await this.releasePermit(); },
+    };
+  }
+  /** Run one job (jobs/container-job.ts). A second call while one runs answers job_running. */
+  async runJob(value: unknown): Promise<JobResult> {
+    const spec = jobSpec(value);
+    const refused = (code: "job_running" | "start_failed", message: string): JobResult => {
+      const at = Date.now();
+      return { ok: false, id: spec.id, code, message, timings: { startedAt: at, endedAt: at, startMs: 0, syncMs: 0, commandMs: 0, collectMs: 0, totalMs: 0 } };
+    };
+    if (this.job) return refused("job_running", `Job ${spec.id} is running`);
+    if (!this.ctx.container) return refused("start_failed", "Job container binding unavailable");
+    const stop = this.job = new AbortController();
+    // The backstop for an object that dies mid-job: its alarm destroys the container after the job's whole lifetime.
+    const deadline = Date.now() + jobLifetimeMs(spec.timeoutSeconds);
+    try {
+      await this.ctx.storage.put("job:deadline", deadline);
+      await this.wake(deadline);
+      const files = spec.files ? inlineFiles(spec.files) : spec.volume ? volumeFiles(this.env as unknown as VolumeSyncEnv, spec.volume) : undefined;
+      return await runContainerJob(spec, {
+        container: this.ctx.container, stop: stop.signal, ...files ? { files } : {},
+        meter: this.jobMeter(spec.id, spec.payer),
+      });
+    } finally {
+      this.job = undefined;
+      await this.ctx.storage.delete("job:deadline");
+    }
+  }
+  /** Stop this object's job: the running one answers `stopped`; a container a dead run left is destroyed. */
+  async stopJob(): Promise<{ stopped: boolean }> {
+    if (this.job) { this.job.abort(); return { stopped: true }; }
+    if (this.ctx.container?.running && await this.ctx.storage.get<number>("job:deadline") !== undefined) {
+      await this.ctx.container.destroy().catch(() => {});
+      await this.meter().stopped();
+      await this.releasePermit();
+      await this.ctx.storage.delete("job:deadline");
+      return { stopped: true };
+    }
+    return { stopped: false };
+  }
+  /** A job whose object died mid-run: past its deadline, its container goes and its slot is given back. */
+  private async jobBackstop() {
+    const deadline = await this.ctx.storage.get<number>("job:deadline");
+    if (deadline === undefined || this.job) return;
+    if (Date.now() < deadline) { await this.wake(deadline); return; }
+    if (this.ctx.container?.running) await this.ctx.container.destroy().catch(() => {});
+    await this.meter().stopped();
+    await this.releasePermit();
+    await this.ctx.storage.delete("job:deadline");
+  }
   /**
    * Put a computer that sleeps when idle to sleep once its idle time is up, settle a session that idled out, retry
    * charges that failed, and drop fork snapshots no child adopted.
@@ -244,6 +312,7 @@ export class ContainerComputer extends DurableObject<ComputerObjectEnv> {
     if (this.active.size) { await this.checkAfterActive(); return; }
     const check = this.queue.then(async () => {
       if (this.active.size) { await this.checkAfterActive(); return; }
+      await this.jobBackstop();
       const provider = this.ctx.container ? this.provider() : undefined;
       const next = await provider?.sleepIfIdle().catch((error: unknown) => {
         console.error(JSON.stringify({ type: "computer_idle_sleep_failed", error: error instanceof Error ? error.message.slice(0, 200) : "unknown" }));

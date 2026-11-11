@@ -3491,6 +3491,16 @@
             },
             "description": "A virtual model's physical models, most preferred first: each request is made on the first that can take it, and its run and usage name the one that did. Its other fields are the first's"
           },
+          "serviceTiers": {
+            "type": "array",
+            "items": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "description": "For each of routes, the OpenRouter service tier the request is asked on (flex, default), or null for the provider's choice; present when a route names one. camelrun/strong asks flex first, then the default tier when flex has no capacity"
+          },
           "id": {
             "type": "string",
             "description": "Pass this as `model` when creating or configuring an agent",
@@ -15396,6 +15406,217 @@
           "snapshot"
         ],
         "additionalProperties": false
+      },
+      "Committed": {
+        "type": "object",
+        "properties": {
+          "seq": {
+            "type": "number",
+            "description": "The volume's seq after the commit"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VolumeFile"
+            },
+            "description": "The files written, each at its new version"
+          },
+          "removed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The paths removed"
+          },
+          "snapshot": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "volume": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "seq": {
+                "type": "number"
+              },
+              "createdAt": {
+                "type": "number"
+              },
+              "files": {
+                "type": "number"
+              },
+              "bytes": {
+                "type": "number"
+              },
+              "pinned": {
+                "type": "boolean",
+                "description": "Kept until unpinned: publish's pruning passes it by, it counts against 10,000 pinned snapshots rather than the 100 others, and deleting it takes unpinning or force"
+              },
+              "labels": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "Your own labels, e.g. {\"release\": \"v12\"}: at most 16, keys of 1–64 characters, values of at most 256"
+              }
+            },
+            "required": [
+              "id",
+              "volume",
+              "name",
+              "seq",
+              "createdAt",
+              "files",
+              "bytes",
+              "pinned",
+              "labels"
+            ],
+            "description": "The snapshot asked for; null when the files were committed but the snapshot then failed (snapshotError says why): take it again, do not retry the commit"
+          },
+          "snapshotError": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "seq",
+          "files",
+          "removed"
+        ]
+      },
+      "CommitConflict": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string",
+            "enum": [
+              "COMMIT_CONFLICT"
+            ]
+          },
+          "conflicts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "headVersion": {
+                  "type": "number",
+                  "description": "The version it is at (0: it does not exist)"
+                }
+              },
+              "required": [
+                "path",
+                "headVersion"
+              ]
+            }
+          }
+        },
+        "required": [
+          "error",
+          "code",
+          "conflicts"
+        ]
+      },
+      "CommitInput": {
+        "type": "object",
+        "properties": {
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommitFileInput"
+            },
+            "description": "1 to 1,000 files; inline contents at most 16 MiB, copied files at most 1 GiB"
+          },
+          "snapshot": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "pinned": {
+                "type": "boolean"
+              },
+              "labels": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "Your own labels, e.g. {\"release\": \"v12\"}: at most 16, keys of 1–64 characters, values of at most 256"
+              }
+            },
+            "description": "Take a snapshot of the volume as the commit leaves it, in the same change"
+          }
+        },
+        "required": [
+          "files"
+        ]
+      },
+      "CommitFileInput": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "description": "The version this commit expects the file to be at now (0: it must not exist). Any file at another version fails the whole commit (409)"
+          },
+          "text": {
+            "type": "string",
+            "description": "The file's new content as text"
+          },
+          "data": {
+            "type": "string",
+            "description": "The file's new content in base64"
+          },
+          "contentType": {
+            "type": "string",
+            "description": "Default: the source file's, else sniffed from the content and name"
+          },
+          "from": {
+            "type": "object",
+            "properties": {
+              "volume": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string",
+                "description": "Default: the same path"
+              },
+              "version": {
+                "type": "integer",
+                "description": "The version the source file must be at (412 otherwise)"
+              }
+            },
+            "required": [
+              "volume"
+            ],
+            "description": "The new content is this file of a volume (a fork this one was the base of, say)"
+          },
+          "delete": {
+            "type": "boolean",
+            "enum": [
+              true
+            ],
+            "description": "Remove the file"
+          }
+        },
+        "required": [
+          "path",
+          "version"
+        ],
+        "description": "One of text, data, from or delete: true"
       },
       "ForkInput": {
         "type": "object",
@@ -30499,6 +30720,72 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/volumes/{id}/commit": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CommitInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Every file is written and removed as given, in one change (and the snapshot taken, when asked)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Committed"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A file is not at the version given: nothing is written",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommitConflict"
                 }
               }
             }

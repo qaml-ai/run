@@ -31,6 +31,8 @@ import { clock } from "./node-context.ts";
 export const CHUNK_BYTES = 1024 * 1024;
 /** What one read of many files (GET /v1/volumes/:id/files?content=true) returns at most. */
 export const READ_ALL_LIMITS = Object.freeze({ files: 1000, bytes: 16 * 1024 * 1024 });
+/** What one atomic commit (POST /v1/volumes/:id/commit) names at most, and the most content it carries inline. */
+export const COMMIT_LIMITS = Object.freeze({ files: 1000, inlineBytes: 16 * 1024 * 1024, copyBytes: 1024 * 1024 * 1024 });
 /** The most one archive (GET /v1/volumes/:id/archive) holds. */
 export const ARCHIVE_LIMITS = Object.freeze({ files: 10_000, bytes: 1024 * 1024 * 1024 });
 /** `data` as text when it is valid UTF-8, else undefined. */
@@ -127,6 +129,58 @@ export async function snapshotContents(volumes: VolumeService, tenant: string, f
   // What was stored, by path, for the caller to check against what it sent.
   const contents = decoded.map(file => ({ path: file.path, size: file.data.length, sha256: createHash("sha256").update(file.data).digest("hex") }));
   return { given, contents };
+}
+
+/**
+ * POST /v1/volumes/:id/commit: each file's content is stored first (inline text or base64 `data`, or `from` another
+ * volume of the tenant, sharing its chunks), then the volume checks every version and writes every file in one flush,
+ * or writes nothing and answers the conflicting paths. Stored chunks of a commit that conflicts are collected as any
+ * unreferenced chunk is.
+ */
+export async function commitContents(volumes: VolumeService, tenant: string, id: string, body: unknown) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw new HttpError(400, "Expected a JSON object");
+  const { files, snapshot } = body as { files?: unknown; snapshot?: unknown };
+  if (!Array.isArray(files) || !files.length || files.length > COMMIT_LIMITS.files) throw new HttpError(400, `files is a list of 1 to ${COMMIT_LIMITS.files} files`);
+  if (snapshot !== undefined && (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot))) throw new HttpError(400, "snapshot is an object: { name?, pinned?, labels? }");
+  const given = files.map((file: any) => {
+    if (!file || typeof file !== "object") throw new HttpError(400, "Each file is an object");
+    const path = normalizePath(file.path);
+    if (path === "/") throw new HttpError(400, "A file needs a name");
+    if (!Number.isSafeInteger(file.version) || file.version < 0) throw new HttpError(400, `${path}: version must be a non-negative integer (0: the file must not exist)`);
+    if ([file.text !== undefined, file.data !== undefined, file.from !== undefined, file.delete === true].filter(Boolean).length !== 1) throw new HttpError(400, `${path}: give exactly one of text, data, from or delete: true`);
+    if (file.text !== undefined && typeof file.text !== "string") throw new HttpError(400, `${path}: text is a string`);
+    if (file.data !== undefined && typeof file.data !== "string") throw new HttpError(400, `${path}: data is base64`);
+    if (file.contentType !== undefined && !validContentType(file.contentType)) throw new HttpError(400, `${path}: contentType must be a specific content type`);
+    if (file.from !== undefined && (!file.from || typeof file.from !== "object" || typeof file.from.volume !== "string")) throw new HttpError(400, `${path}: from is { volume, path?, version? }`);
+    if (file.from?.version !== undefined && (!Number.isSafeInteger(file.from.version) || file.from.version < 1)) throw new HttpError(400, `${path}: from.version is a positive integer`);
+    const bytes = typeof file.text === "string" ? Buffer.from(file.text) : typeof file.data === "string" ? Buffer.from(file.data, "base64") : undefined;
+    return { path, version: file.version as number, bytes, contentType: file.contentType as string | undefined, from: file.from as { volume: string; path?: unknown; version?: number } | undefined, remove: file.delete === true };
+  });
+  if (new Set(given.map(file => file.path)).size !== given.length) throw new HttpError(400, "A path is given twice");
+  if (given.reduce((total, file) => total + (file.bytes?.length ?? 0), 0) > COMMIT_LIMITS.inlineBytes) throw new HttpError(413, `Inline contents exceed ${COMMIT_LIMITS.inlineBytes} bytes`);
+  // Every source is read before anything is stored.
+  const sources = await Promise.all(given.map(async file => {
+    if (!file.from) return undefined;
+    const path = file.from.path === undefined ? file.path : normalizePath(file.from.path);
+    const entry = await volumes.call(file.from.volume, tenant, "stat", { path }) as { type: string; path: string } & Partial<FileEntry>;
+    if (entry.type !== "file") throw new HttpError(400, `${file.from.volume}:${path} is a directory`);
+    if (file.from.version !== undefined && entry.version !== file.from.version) throw new HttpError(412, `${file.from.volume}:${path} is at version ${entry.version}, not ${file.from.version}`);
+    return entry as FileEntry;
+  }));
+  const batch = await Promise.all(given.map(async (file, index) => {
+    if (file.remove) return { path: file.path, ifMatch: file.version, delete: true };
+    const source = sources[index];
+    const stored = source ? { chunks: source.chunks, size: source.size } : await volumes.store(tenant, new Uint8Array(file.bytes!));
+    const contentType = declaredType(file.contentType) ?? (source ? source.contentType : sniffContentType(file.bytes!.subarray(0, 512), file.path));
+    return { path: file.path, ifMatch: file.version, ...stored, contentType };
+  }));
+  try {
+    return await volumes.call(id, tenant, "commitFiles", { files: batch, ...(snapshot !== undefined ? { snapshot } : {}) });
+  } catch (error) {
+    // A node from before this operation owns the volume mid-rollout: nothing was written there; retry.
+    if (error instanceof HttpError && error.status === 400 && /^Unknown volume operation/.test(error.message)) throw new HttpError(503, "The volume's node is being upgraded; retry");
+    throw error;
+  }
 }
 
 /** Labels as given (a string map within LABEL_LIMITS), or a 400. */
@@ -605,6 +659,71 @@ export class VolumeService {
       const entry: FileEntry = { version: seq, size: args.size, chunks: chunks as string[], updatedAt: Date.now(), ...(typeof args.by === "string" ? { by: args.by } : {}), ...(args.contentType ? { contentType: args.contentType } : {}) };
       await this.commit(volume, { t: "put", seq, path, entry });
       return { path, ...entry };
+    }
+    if (op === "commitFiles") {
+      // Every version is checked before anything is written, and every write goes in one flush: all or nothing.
+      const files = args.files as ({ path: string; ifMatch: number; delete?: boolean } & Partial<FileEntry>)[];
+      if (!Array.isArray(files) || !files.length || files.length > COMMIT_LIMITS.files) throw new HttpError(400, `A commit names 1 to ${COMMIT_LIMITS.files} files`);
+      const batch = files.map(file => ({ ...file, path: normalizePath(file.path) }));
+      if (batch.some(file => file.path === "/")) throw new HttpError(400, "A file needs a name");
+      if (new Set(batch.map(file => file.path)).size !== batch.length) throw new HttpError(400, "A path is given twice");
+      for (const file of batch) {
+        if (!Number.isSafeInteger(file.ifMatch) || file.ifMatch < 0) throw new HttpError(400, "version must be a non-negative integer (0: the file must not exist)");
+        if (file.delete && file.ifMatch === 0) throw new HttpError(400, `Removing ${file.path} takes its version`);
+        if (!file.delete && (!Number.isSafeInteger(file.size) || file.size! < 0 || file.size! > VOLUME_LIMITS.fileBytes || !Array.isArray(file.chunks) || file.chunks.length !== Math.ceil(file.size! / CHUNK_BYTES) || !file.chunks.every(hash => typeof hash === "string" && /^[a-f0-9]{64}$/.test(hash)))) throw new HttpError(400, "Invalid file content");
+        if (!file.delete && file.contentType !== undefined && !validContentType(file.contentType)) throw new HttpError(400, "Invalid content type");
+      }
+      const snapshot = args.snapshot as { name?: unknown; pinned?: unknown; labels?: unknown } | undefined;
+      if (snapshot !== undefined) {
+        if (snapshot.name !== undefined && (typeof snapshot.name !== "string" || !snapshot.name.trim() || snapshot.name.length > 120 || snapshot.name.startsWith(TEMPORARY_SNAPSHOT))) throw new HttpError(400, "name must be 1–120 characters");
+        if (snapshot.pinned !== undefined && typeof snapshot.pinned !== "boolean") throw new HttpError(400, "pinned is true or false");
+        if (snapshot.labels !== undefined) labelsInput(snapshot.labels);
+      }
+      const conflicts = batch.flatMap(file => {
+        const head = volume.tree.files.get(file.path)?.version ?? 0;
+        return head === file.ifMatch ? [] : [{ path: file.path, headVersion: head }];
+      });
+      if (conflicts.length) return { conflicts };
+      const removed = new Set(batch.filter(file => file.delete).map(file => file.path));
+      const written = new Set(batch.filter(file => !file.delete).map(file => file.path));
+      for (const path of written) {
+        // As the tree will be: what this commit removes no longer stands in the way, what it writes does.
+        if (volume.tree.children.has(path) && [...volume.tree.walk(path)].some(([file]) => !removed.has(file))) throw new HttpError(409, `${path} is a directory`);
+        if ([...written].some(other => other.startsWith(`${path}/`))) throw new HttpError(409, `${path} is a directory`);
+        for (let directory = parentOf(path); directory !== "/"; directory = parentOf(directory))
+          if ((volume.tree.files.has(directory) && !removed.has(directory)) || written.has(directory)) throw new HttpError(409, `${directory} is a file`);
+      }
+      const added = [...written].filter(path => !volume.tree.files.has(path)).length;
+      if (volume.tree.files.size - removed.size + added > VOLUME_LIMITS.files) throw new HttpError(507, `A volume holds at most ${VOLUME_LIMITS.files} files`);
+      if (snapshot !== undefined) {
+        const pinned = snapshot.pinned === true;
+        const count = (await this.db.query(`select count(*) as count from volume_snapshots where volume = $1 and name not like $2 and pinned = $3`, [id, `${TEMPORARY_SNAPSHOT}%`, pinned])).rows[0].count;
+        const cap = pinned ? VOLUME_LIMITS.pinnedSnapshots : VOLUME_LIMITS.snapshots;
+        if (count >= cap) throw new HttpError(409, pinned ? `A volume keeps at most ${cap} pinned snapshots; unpin or delete one first` : `A volume keeps at most ${cap} snapshots (pinned ones apart); delete one first`);
+      }
+      // Referred to now (a commit from another volume shares its chunks): a collection under way stands down.
+      await this.touch(volume.header.tenant, batch.flatMap(file => file.chunks ?? []));
+      const at = Date.now(), by = typeof args.by === "string" ? { by: args.by } : {};
+      let seq = volume.seq;
+      const records: TreeRecord[] = [];
+      for (const file of batch) if (file.delete) records.push({ t: "del", seq: ++seq, path: file.path, at, ...by });
+      for (const file of batch) if (!file.delete) records.push({ t: "put", seq: ++seq, path: file.path, entry: { version: seq, size: file.size!, chunks: file.chunks!, updatedAt: at, ...by, ...(file.contentType ? { contentType: file.contentType } : {}) } });
+      await this.commitAll(volume, records);
+      // Mutations run one at a time, so the snapshot holds exactly this commit over what was there.
+      // The files are committed now: a snapshot that fails after them (storage, the database) is reported beside the
+      // commit, never as its failure, so a caller does not retry a commit that already landed.
+      let taken: SnapshotSummary | null | undefined, snapshotError: string | undefined;
+      if (snapshot !== undefined) {
+        try { taken = await this.mutate(volume, "snapshot", { name: snapshot.name, pinned: snapshot.pinned, labels: snapshot.labels }); }
+        catch (error) { taken = null; snapshotError = `The files are committed, but the snapshot failed: ${errorText(error)}`; }
+      }
+      return {
+        seq: volume.seq,
+        files: records.flatMap(record => record.t === "put" ? [{ path: record.path, version: record.entry.version, size: record.entry.size, updatedAt: record.entry.updatedAt, contentType: record.entry.contentType ?? guessContentType(record.path), ...by }] : []),
+        removed: [...removed],
+        ...(taken !== undefined ? { snapshot: taken } : {}),
+        ...(snapshotError ? { snapshotError } : {}),
+      };
     }
     if (op === "remove") {
       const path = normalizePath(args.path);

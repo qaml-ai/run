@@ -83,7 +83,7 @@ export function summarize(agent: string, record: any): RunSummary {
   const outcome = record.outcome ?? {};
   const result = outcome.result ?? {};
   const failure = outcome.error ? { code: outcome.uncertain ? "uncertain" : "runtime_error", message: outcome.error }
-    : result.error ? { code: result.code ?? "model_error", message: result.error, ...result.modelError }
+    : result.error ? { code: result.code ?? "model_error", message: result.error, ...result.modelError, ...Object.fromEntries(["limit", "reason", "bucket", "endUser"].flatMap(key => typeof result[key] === "string" ? [[key, result[key]]] : [])) }
     : result.stopped === "spend_limit" ? { code: "spend_limit", message: "The agent reached its spend limit; raise it to go on" }
     : result.stopped === "turn_limit" ? { code: "turn_limit", message: "The run reached its limit of model responses or time; send another message to continue" } : undefined;
   const status = result.stopped === "spend_limit" ? "paused" : failure ? "failed" : result.stopped === "input_required" ? "input_required" : "completed";
@@ -114,7 +114,7 @@ export async function waitFor(api: Api, agentId: string, requestId: string, seco
 export async function run(api: Api, agent: string, text: string, options: { wait?: number; requestId?: string; endUser?: string; from?: string; steer?: boolean; allowDisconnected?: boolean; signal?: AbortSignal } = {}) {
   const id = await api.agentId(agent);
   const record = await api.call("POST", `/v1/agents/${enc(id)}/prompt`, {
-    text, requestId: options.requestId ?? `cli_${crypto.randomUUID()}`, ...(options.allowDisconnected ? { allowDisconnected: true } : {}),
+    text, ...(options.endUser !== undefined ? { endUser: options.endUser } : {}), requestId: options.requestId ?? `cli_${crypto.randomUUID()}`, ...(options.allowDisconnected ? { allowDisconnected: true } : {}),
     ...(options.from ? { from: { id: options.from } } : {}), ...(options.steer ? { whileRunning: "steer" } : {}),
   });
   return options.wait === 0 ? summarize(id, record) : waitFor(api, id, record.id, options.wait ?? Infinity, options.signal);

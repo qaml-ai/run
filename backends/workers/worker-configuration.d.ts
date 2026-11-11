@@ -15,6 +15,7 @@ interface __BaseEnv_Env {
 	AGENTS: DurableObjectNamespace<import("./src/index").CamelAgent>;
 	TENANTS: DurableObjectNamespace<import("./src/index").TenantAdmission>;
 	VOLUMES: DurableObjectNamespace<import("./src/index").Volume>;
+	WORKFLOW_CAPACITY: DurableObjectNamespace<import("./src/index").WorkflowCapacity>;
 	CODEMODE_SANDBOX: DurableObjectNamespace /* CodemodeSandbox from camelrun-proto-workers-codemode */;
 }
 declare namespace Cloudflare {

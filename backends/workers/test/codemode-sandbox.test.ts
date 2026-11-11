@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import { loadQuickJSWasm } from "@earendil-works/pi-codemode";
 import { serveCodemodeRemote, type CodemodeHostCall, type CodemodeOutcome } from "@earendil-works/pi-codemode/portable";
 import { SessionCodemodeSandbox, endScript, waitsOnPerson } from "../codemode/sandbox.ts";
-import { boundedExchange, SANDBOX_INTERRUPT_BUDGET } from "../codemode/limits.ts";
+import { serveExchange, SANDBOX_INTERRUPT_BUDGET } from "../codemode/limits.ts";
+import { CODE_MODE_EXCHANGE } from "../codemode/exchange.ts";
+import { isolatedSandboxRemote } from "../codemode/routing.ts";
 
 /** A durable run as Pi's code mode drives it: every call answered by `answer`, results numbered in delivery order. */
 async function host(code: string, answer: (call: CodemodeHostCall) => Promise<CodemodeOutcome> | CodemodeOutcome, options: { timeoutMs?: number; seed?: number; deadlineMs?: number } = {}) {
@@ -11,7 +13,10 @@ async function host(code: string, answer: (call: CodemodeHostCall) => Promise<Co
   let vms = 0;
   const sandbox = new SessionCodemodeSandbox({
     ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
-    remote: () => ({ execute: (request, exchange) => { vms++; return serveCodemodeRemote(request, boundedExchange(exchange), { wasm, maxInterruptBudget: SANDBOX_INTERRUPT_BUDGET }); } }),
+    // Both sides of the exchange as the agent Worker and the sandbox Worker run them.
+    remote: isolatedSandboxRemote({ agentKey: "session", exchange: CODE_MODE_EXCHANGE, getByName: () => ({
+      execute: (request, exchange) => { vms++; return serveExchange(request, exchange, (served, bounded) => serveCodemodeRemote(served, bounded, { wasm, maxInterruptBudget: SANDBOX_INTERRUPT_BUDGET })); },
+    }) }),
   });
   const calls: CodemodeHostCall[] = [], idle: number[] = [];
   let seq = 0;

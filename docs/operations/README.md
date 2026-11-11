@@ -79,6 +79,9 @@ at the right moment and is honest when no computer is there. It starts its own n
 only the model is real. It needs Postgres as above and `OPENROUTER_API_KEY`, and scores tool calls, files and fixed
 patterns in the reply, with no model grading (the file's header has its options). Run it after changing those tools'
 descriptions, their errors or the runtime's prompt. It stops at `--max-usd` (default 5).
+`evals/workflows/` holds the swarm-workflow evals: tiered tasks with hidden judges, run on the Workers pilot or a local
+Workers runtime in dry (`delegate`) and workflow modes, scored on tests, cost, cache share and gaming
+([its README](../../evals/workflows/README.md)). CI runs only its judges' self-test.
 
 ### CI and deploys
 

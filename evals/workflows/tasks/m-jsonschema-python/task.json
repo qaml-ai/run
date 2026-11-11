@@ -1,0 +1,18 @@
+{
+  "id": "m-jsonschema-python",
+  "version": 0,
+  "tier": "M",
+  "title": "Port @cfworker/json-schema to Python, judged by JSON-Schema-Test-Suite",
+  "status": "planned",
+  "prompt": "/workspace holds @cfworker/json-schema, a JSON Schema validator in TypeScript. Port it to a Python 3.12 package in /workspace/python (package cfjsonschema, standard library only) with the same behaviour for drafts 2019-09 and 2020-12, exposing validate(instance, schema, draft) -> bool. Do not change the TypeScript. Reply with a short summary when done.",
+  "budget": { "usd": 30, "wallMinutes": 90 },
+  "units": 10,
+  "source": {
+    "port": { "repo": "cfworker/cfworker", "ref": "v1.10.1", "license": "MIT", "paths": ["packages/json-schema/src/"], "language": "TypeScript", "approxLines": 1600 },
+    "judge": { "repo": "json-schema-org/JSON-Schema-Test-Suite", "ref": "pin a main commit at prepare time (the suite has no release tags)", "license": "MIT", "language": "language-independent (JSON schema + instance + expected valid)",
+      "command": "python3 judge/run_suite.py --package python --drafts draft2019-09,draft2020-12 --skip optional,refRemote", "cases": "about 1,300 required cases across the two drafts",
+      "parse": "the runner's JSON summary {passed, failed}", "image": "python:3.12-slim with the suite at its commit; --cpus 4, no network" },
+    "why": "A non-systems port (TypeScript to Python) with a large, adversarial, language-independent suite; tests that worker models over-fit to visible examples.",
+    "prepare": "Copy packages/json-schema/src and README into input/; write judge/run_suite.py (a few dozen lines: load each case, call validate, compare)."
+  }
+}
