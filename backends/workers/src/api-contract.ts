@@ -45,6 +45,8 @@ export interface AgentConfiguration {
   builtins?: string[];
   webSearch?: { providers: string[] };
   delegate?: DelegateSettings;
+  /** The workflows builtin (on with delegate settings): false turns it off; maxBudgetUsd bounds one workflow's budget. */
+  workflows?: boolean | { maxBudgetUsd: number };
   decide?: boolean;
   mcp?: { tools: ToolDefinition[] };
   mcpServers?: Record<string, unknown>[];
@@ -105,7 +107,7 @@ export function configuration(input: unknown, defaultModel: string, operation: "
   rejectWorkflow(input);
   let fields: Record<string, unknown>;
   try {
-    fields = object(input, ["model", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "metadata", "name", "type", "thinkingLevel", "mcp", "ttlSeconds", "idleTtlSeconds", "builtins", "webSearch", "delegate", "decide", "mounts", "maxOutputTokens", "temperature", "dataCollection", "language", "modelHeaders", "computerLimit", "runLimits", "queue", "initialMessages", "importMessages", "definition", "subject", "context", "keyScope", "spendLimit", "bucket", "humanInput", "subagents", "workspaceId", "remount", "prompt", "mcpServers", "openApi", "definitionRevision", "definitionOverrides", "computer", "networking"]);
+    fields = object(input, ["model", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "metadata", "name", "type", "thinkingLevel", "mcp", "ttlSeconds", "idleTtlSeconds", "builtins", "webSearch", "delegate", "decide", "mounts", "maxOutputTokens", "temperature", "dataCollection", "language", "modelHeaders", "computerLimit", "runLimits", "queue", "initialMessages", "importMessages", "definition", "subject", "context", "keyScope", "spendLimit", "bucket", "humanInput", "subagents", "workspaceId", "remount", "prompt", "mcpServers", "openApi", "definitionRevision", "definitionOverrides", "computer", "networking", "workflows"]);
   } catch (error) {
     if (error instanceof BadRequest && error.message.startsWith("Unsupported field: "))
       throw new BadRequest(`Unknown agent field: ${error.message.slice("Unsupported field: ".length).split(", ")[0]}`);
@@ -163,6 +165,16 @@ export function configuration(input: unknown, defaultModel: string, operation: "
   }
   if (fields.delegate !== undefined) {
     config.delegate = delegateInput(fields.delegate);
+  }
+  // The workflows builtin comes with delegate settings: false turns it off; { maxBudgetUsd } bounds what one of the
+  // agent's workflows may spend (default $100). Set by whoever configures the agent, never by the agent.
+  if (fields.workflows !== undefined && fields.workflows !== null) {
+    if (fields.workflows === false || fields.workflows === true) config.workflows = fields.workflows;
+    else {
+      const settings = object(fields.workflows, ["maxBudgetUsd"]);
+      if (typeof settings.maxBudgetUsd !== "number" || !Number.isFinite(settings.maxBudgetUsd) || settings.maxBudgetUsd <= 0) throw new BadRequest("workflows.maxBudgetUsd is a positive number of USD");
+      config.workflows = { maxBudgetUsd: settings.maxBudgetUsd };
+    }
   }
   delegateSettings(config.builtins, config.delegate);
   if (fields.mcp !== undefined) {
