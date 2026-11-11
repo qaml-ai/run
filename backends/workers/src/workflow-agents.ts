@@ -194,7 +194,8 @@ export class WorkflowAgents implements EffectExecutor {
       const left = await this.host.budget();
       // A host that says nothing about the budget is a bug, not an unlimited workflow: no cap is said with Infinity.
       if (typeof left !== "number" || Number.isNaN(left)) return this.end(row, "refused", { refused: "The workflow's budget is unknown", code: "budget_exhausted" });
-      if (Number.isFinite(left)) {
+      // Only +Infinity is "no cap": anything else (a negative remainder, -Infinity) is measured, and refused below $0.01.
+      if (left !== Infinity) {
         const free = left - running.reduce((sum, child) => sum + (child.held ?? 0), 0);
         if (free < MIN_CHILD_BUDGET_USD) return this.end(row, "refused", { refused: "The workflow's budget is spent", code: "budget_exhausted" });
         held = free / Math.max(1, this.host.concurrency - running.length);

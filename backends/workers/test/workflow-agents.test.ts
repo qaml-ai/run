@@ -245,6 +245,11 @@ test('a workflow with no cap (Infinity) gives its children no spend limit of its
   await unlimited.agents.start(effect('a'));
   assert.equal(unlimited.submitted[0]!.request.params.spendLimit, undefined);
   assert.equal(unlimited.refused().length, 0);
+  for (const budget of [-Infinity, -5]) {
+    const negative = world({ budget });
+    await negative.agents.start(effect('a'));
+    assert.equal((negative.refused()[0]!.outcome as { code: string }).code, 'budget_exhausted', `budget ${budget}`);
+  }
   const unknown = world({ budget: undefined });
   await unknown.agents.start(effect('a'));
   assert.equal((unknown.refused()[0]!.outcome as { code: string }).code, 'budget_exhausted');
