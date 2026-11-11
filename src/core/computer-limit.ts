@@ -13,15 +13,23 @@ export function computerLimit(value: unknown): number | undefined {
   if (!Number.isInteger(value) || (value as number) < 1 || (value as number) > COMPUTER_LIMIT.max) throw new HttpError(400, 'computerLimit must be an integer from 1 to 64');
   return value as number;
 }
+/**
+ * The root of an agent's tree as stored when it was made: its header's `rootOwner` (the owner model), else the chain
+ * older code stored with its parent (Node's `parent.chain`, Workers' `parentPlace.chain`), else its parent. Read, never
+ * found by walking `agents`.
+ */
+export const STORED_ROOT = (agents: string) => `coalesce(${agents}.header->'rootOwner'->>'id', ${agents}.header->'parent'->'chain'->>0,
+  ${agents}.header->'parentPlace'->'chain'->>0, ${agents}.header->'parent'->>'agentId', ${agents}.header->>'parentAgentId', ${agents}.id)`;
+
 /** A permit is reserved in the same transaction as the root lock, before provider I/O. */
 export async function reserveComputer(sql: Sql, tenant: string, agent: string, machine: string, expiresAt: number, now = Date.now(), tenantDefault?: number) {
-  const chain = (await sql.query(`with recursive lineage as (
-    select id,header,0 as depth from agents where tenant=$1 and id=$2
-    union all select a.id,a.header,l.depth+1 from agents a join lineage l on a.id=coalesce(l.header->'parent'->>'agentId',l.header->>'parentAgentId') where a.tenant=$1 and l.depth<64
-  ) select id,header from lineage order by depth desc limit 1`, [tenant, agent])).rows[0];
-  const root = chain?.id ?? agent;
+  const root = (await sql.query(`select ${STORED_ROOT('a')} as root from agents a where a.tenant=$1 and a.id=$2`, [tenant, agent])).rows[0]?.root as string | undefined ?? agent;
   await sql.query('select pg_advisory_xact_lock(hashtextextended($1,0))', [`computer-limit:${tenant}:${root}`]);
-  const own = computerLimit(chain?.header?.config?.computerLimit);
+  // The tree's own limit is its root agent's. A tree whose root is gone (deleted: its made children go with it, so only
+  // a named worker it started can still be running) or is a workflow has none: the tenant's applies. The walk this
+  // replaced took the last ancestor still there instead; the stored root keeps one ledger key per tree either way.
+  const rootHeader = (await sql.query('select header from agents where tenant=$1 and id=$2', [tenant, root])).rows[0]?.header;
+  const own = computerLimit(rootHeader?.config?.computerLimit);
   const defaults = (await sql.query('select limits from tenants where id=$1', [tenant])).rows[0]?.limits;
   const limit = own ?? computerLimit(tenantDefault ?? defaults?.computerLimit) ?? COMPUTER_LIMIT.default;
   // The slot ledger is authoritative. Import pre-ledger sessions only from this tree, and let expired slots stop counting.
@@ -33,12 +41,12 @@ export async function reserveComputer(sql: Sql, tenant: string, agent: string, m
       or exists(select 1 from computer_leases l where l.tenant=s.tenant and l.connection=s.machine and l.closed_at>s.acquired_at)
     ) and not exists(select 1 from managed_computers m where m.tenant=s.tenant and m.connection=s.machine and m.ended_at is null)
       and not exists(select 1 from computer_leases l where l.tenant=s.tenant and l.connection=s.machine and l.state<>'closed')`, [tenant, root, now]);
-  await sql.query(`with recursive descendants as (
-    select id,header,0 as depth from agents where tenant=$1 and id=$2
-    union all select a.id,a.header,d.depth+1 from agents a join descendants d on coalesce(a.header->'parent'->>'agentId',a.header->>'parentAgentId')=d.id where a.tenant=$1 and d.depth<64
-  ), legacy as (
-    select connection as machine,deadline as expires_at from managed_computers where tenant=$1 and agent in (select id from descendants) and ended_at is null and deadline>$3
-    union all select connection,expires_at from computer_leases where tenant=$1 and agent in (select id from descendants) and state in ('starting','active','uncertain','closing') and expires_at>$3
+  // Pre-ledger sessions of this tree: the tenant's live sessions whose agent's stored root is this one.
+  await sql.query(`with legacy as (
+    select m.connection as machine,m.deadline as expires_at from managed_computers m join agents a on a.tenant=m.tenant and a.id=m.agent
+      where m.tenant=$1 and m.ended_at is null and m.deadline>$3 and ${STORED_ROOT('a')}=$2
+    union all select l.connection,l.expires_at from computer_leases l join agents a on a.tenant=l.tenant and a.id=l.agent
+      where l.tenant=$1 and l.state in ('starting','active','uncertain','closing') and l.expires_at>$3 and ${STORED_ROOT('a')}=$2
   ) insert into computer_slots(tenant,machine,root,expires_at)
     select $1,machine,$2,max(expires_at) from legacy group by machine on conflict(tenant,machine) do nothing`, [tenant, root, now]);
   const existing = (await sql.query('select 1 from computer_slots where tenant=$1 and machine=$2 and expires_at>$3', [tenant, machine, now])).rowCount;

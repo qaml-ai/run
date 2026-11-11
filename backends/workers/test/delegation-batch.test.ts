@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { DelegationNotifications, type NotificationHost } from '../src/delegation-notifications.ts';
 import { Delegation, type DelegatedChild } from '../src/delegation.ts';
 import { renderMessage } from '../src/sender.ts';
+import { withSql, submitViaFetch } from './sql-storage.ts';
 
 // Batched completions (multi-agent.ts BatchedEnding): when one child's notice lands, every other ended child's notice
 // still in the outbox rides in the same turn. Exactly once: no ending is lost or delivered twice, whatever crashes.
@@ -29,6 +30,7 @@ function atomic() {
       return result;
     },
   };
+  withSql(storage);
   return { storage: storage as unknown as DurableObjectStorage, get values() { return values; }, failures };
 }
 
@@ -197,7 +199,7 @@ function plainMemory() {
   const values = new Map<string, unknown>();
   const ops = { async get(k: string) { return structuredClone(values.get(k)); }, async put(k: string, v: unknown) { values.set(k, structuredClone(v)); },
     async delete(k: string) { return values.delete(k); }, async list({ prefix }: { prefix: string }) { return new Map([...values].filter(([k]) => k.startsWith(prefix)).map(([k, v]) => [k, structuredClone(v)])); } };
-  return { ...ops, async transaction(work: any) { return work(ops); }, values };
+  return withSql({ ...ops, async transaction(work: any) { return work(ops); }, values });
 }
 const reviewEnded = (key: string, extra: any = {}) => ({ id: `client_${key}`, key, requestId: `spawn_${key}`, parentRequestId: 'p', toolCallId: `call_${key}`, task: 't', name: key, depth: 1, root: 'root',
   background: true, createdAt: 1, endedAt: 2, status: 'completed', made: true, accepted: true, outcome: { result: { reply: 'r', usage: { responses: 1, input: 1, output: 1, costUsd: 0.01 } } }, ...extra });

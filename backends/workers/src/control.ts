@@ -83,6 +83,9 @@ export interface DirectoryEntry {
   parentAgentId?: string;
   parentRunId?: string;
   parentPlace?: import("./child-parent.ts").ChildPlace;
+  /** A child's owner and its chain's root owner, stored when it was made (child-parent.ts). */
+  owner?: import("../../../shared/owner.ts").Owner;
+  rootOwner?: import("../../../shared/owner.ts").Owner;
   /** Returned for an upsert of an existing agent; never persisted in its header. */
   existingAgent?: true;
 }
@@ -289,7 +292,7 @@ export class Directory {
             : (old?.revision ?? 0) + 1,
         initialized: false,
         ...(old?.tokenVersion ? { tokenVersion: old.tokenVersion } : {}),
-        ...(old?.parentAgentId ? { parentAgentId: old.parentAgentId, parentRunId: old.parentRunId, ...(old.parentPlace ? { parentPlace: old.parentPlace } : {}) } : {}),
+        ...(old?.parentAgentId ? { parentAgentId: old.parentAgentId, parentRunId: old.parentRunId, ...(old.parentPlace ? { parentPlace: old.parentPlace } : {}), ...(old.owner ? { owner: old.owner } : {}), ...(old.rootOwner ? { rootOwner: old.rootOwner } : {}) } : {}),
         ...(pendingFork ? { pendingFork } : {}),
       };
       const written = await sql.query(

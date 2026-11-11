@@ -1,4 +1,5 @@
 import { humanInputSettings, type HumanInputSettings } from "../inputs.ts";
+import { agentOwner } from "../../shared/owner.ts";
 import { checkRequest } from "../../shared/monitors.ts";
 import { applying } from "../../shared/apply-scope.ts";
 import { withOpenRouterDetails } from "../openrouter-model.ts";
@@ -218,7 +219,7 @@ export async function create(ctx: ConfigurationContext, definitions: ToolDefinit
       // A new agent's first ids are reserved with its row (`writeHeader`).
       const cursor = Date.now() * 1000;
       session = {
-        header: { version: 3, id, tenant, digest: hash(token), expiresAt: access.idleTtlMs ? Date.now() + access.idleTtlMs : ttlMs === null ? null : Date.now() + (ttlMs ?? ctx.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, ...(access.idleTtlMs ? { idleTtlMs: access.idleTtlMs } : {}), metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(sources ? { sources } : {}), ...(origin?.overrides?.length ? { overrides: origin.overrides } : {}), ...(identity ? { identity } : {}), ...(access.keyScope ? { keyScope: access.keyScope } : {}), ...(access.bucket ? { bucket: access.bucket } : {}), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}), ...(given !== undefined ? { key: given } : {}), ...(access.fork ? { forkedFrom: access.fork.from } : {}), ...(access.parent ? { parent: access.parent } : {}), ...(access.run ? { run: access.run } : {}) },
+        header: { version: 3, id, tenant, digest: hash(token), expiresAt: access.idleTtlMs ? Date.now() + access.idleTtlMs : ttlMs === null ? null : Date.now() + (ttlMs ?? ctx.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, ...(access.idleTtlMs ? { idleTtlMs: access.idleTtlMs } : {}), metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(sources ? { sources } : {}), ...(origin?.overrides?.length ? { overrides: origin.overrides } : {}), ...(identity ? { identity } : {}), ...(access.keyScope ? { keyScope: access.keyScope } : {}), ...(access.bucket ? { bucket: access.bucket } : {}), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}), ...(given !== undefined ? { key: given } : {}), ...(access.fork ? { forkedFrom: access.fork.from } : {}), ...(access.parent ? { parent: access.parent, owner: agentOwner(access.parent.agentId), rootOwner: agentOwner(access.parent.chain?.[0] ?? access.parent.agentId) } : {}), ...(access.run ? { run: access.run } : {}) },
         claim, requests: new Map(), running: new Map(), log: ctx.storage.log<JournalRecord>(ctx.journalKey(id), claim),
         cursor, reserved: cursor + ctx.eventBlock, events: [], eventBytes: 0, watchers: new Set(), polls: new Set(), inflight: 0, runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
       };

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Delegation, type ChildComputerFork, type DelegatedChild, type DelegationHost } from '../src/delegation.ts';
+import { withSql, submitViaFetch } from './sql-storage.ts';
 
 // computer: "fork": the parent's snapshot is taken while the child is made (both take seconds on Cloudflare), and a
 // fork that cannot be taken still fails the call with nothing kept.
@@ -19,6 +20,7 @@ function world(fork: () => Promise<ChildComputerFork>, options: { definition?: R
       return pending;
     },
   };
+  withSql(storage);
   const order: string[] = [], removed: string[] = [], inherited: unknown[] = [], created: Record<string, any>[] = [];
   const host: DelegationHost = {
     storage: storage as unknown as DurableObjectStorage, secret: 'test-only-delegation-secret',
@@ -40,6 +42,7 @@ function world(fork: () => Promise<ChildComputerFork>, options: { definition?: R
     },
     emit: async () => {}, waitUntil: () => {},
   };
+  host.submitChild = submitViaFetch(host);
   return { host, values, order, removed, inherited, created };
 }
 const snapshot = { native: { snapshot: { id: 'snap', name: 'fork-x', size: 1, image: 'img', createdAt: 1, expiresAt: Date.now() + 86_400_000 }, origin: { parent: 'p', agent: 'parent', batch: 'b', at: 1 } } };

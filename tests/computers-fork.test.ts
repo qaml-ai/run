@@ -212,6 +212,25 @@ test('tree computer cap admits concurrent starts atomically and releases stopped
   assert.equal((await f.service.status('payg', loser)).session!.state, 'active');
 });
 
+test('the tree root is read as stored (rootOwner, else the chain older nodes stored), never walked', async t => {
+  // Three generations under root 'a' (limit 1). The grandchild's header names its root directly and its parent's row is
+  // gone, as a walk would need it; the other child is shaped as an older node wrote it (parent.chain, no rootOwner).
+  const f = await fixture({ extraAgents: ['old-child', 'grandchild'] });
+  t.after(f.done);
+  await f.db.query("update agents set header=header::jsonb || $2::jsonb where id=$1", ['a', JSON.stringify({ config: { computerLimit: 1 } })]);
+  await f.db.query("update agents set header=header::jsonb || $2::jsonb where id=$1", ['grandchild', JSON.stringify({ parent: { agentId: 'deleted-middle' }, owner: { kind: 'agent', id: 'deleted-middle' }, rootOwner: { kind: 'agent', id: 'a' } })]);
+  await f.db.query("update agents set header=header::jsonb || $2::jsonb where id=$1", ['old-child', JSON.stringify({ parent: { agentId: 'a', chain: ['a'] } })]);
+  await f.connect();
+  await f.connect('payg', 'grandchild');
+  await f.connect('payg', 'old-child');
+  await start(f.service, 'grandchild');
+  const slot = (await f.db.query("select s.root from computer_slots s join computer_connections c on c.id=s.machine where c.agent='grandchild'")).rows[0];
+  assert.equal(slot.root, 'a');
+  // The tree's one machine is taken: the root's own start and the older-shaped child's are refused alike.
+  await assert.rejects(start(f.service, 'a'), /concurrent computer limit|Use computer "share"/);
+  await assert.rejects(start(f.service, 'old-child'), /concurrent computer limit|Use computer "share"/);
+});
+
 test('managed starts never list other machines, and expired sharing calls fail without blocking their owner', async t => {
   const f = await fixture({ extraAgents: ['child'] }); t.after(f.done);
   const service = new Computers({ ...f.service.options, provider: 'lambda' });

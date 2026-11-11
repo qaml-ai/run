@@ -1,3 +1,4 @@
+import type { Placement } from "../../../shared/owner.ts";
 import { expiryAnswer, type Answer } from "./input-policy.ts";
 import { steeringCanJoin, steeringJoined } from "./steering-placement.ts";
 import { type Message, type AssistantMessage } from "@earendil-works/pi-ai";
@@ -742,7 +743,7 @@ export async function submitImpl(this: AgentRuntime,
   input: unknown,
   notice?: RuntimeNotice,
   delivery?: NoticeDelivery,
-  acceptedFingerprint?: string, member?: string) {
+  acceptedFingerprint?: string, member?: string, placement?: Placement) {
     // Configuration acceptance joins admission; its application runs separately
     // so the directory's /configuration round trip can acquire admission later.
     if (
@@ -752,7 +753,7 @@ export async function submitImpl(this: AgentRuntime,
     )
       return this.configureRequest(input);
     const result = this.admission.then(() =>
-      this.admit(input, notice, delivery, acceptedFingerprint, member),
+      this.admit(input, notice, delivery, acceptedFingerprint, member, placement),
     );
     this.admission = result.catch(() => {});
     return result;

@@ -77,8 +77,9 @@ export async function delegate(ctx: DelegationContext, session: Session, setting
     if (chain.includes(agent)) throw new Error(`${target!.name} is already working on this task's chain: delegating to it would wait on itself`);
     // The child's row first, kept when the call is made again: an abort that reads the rows after this finds the child.
     const now = Date.now();
-    await underClaim(ctx.db, session.claim, sql => sql.query(`insert into agent_children (id, tenant, parent, child, request_id, name, depth, root, parent_run, tool_call_id, kind, made, checked_at, created_at, updated_at, payer, bucket)
-      values ($1, $2, $3, $4, $1, $5, $6, $7, $8, $9, 'delegate', $10, $11, $11, $11, $12, $13) on conflict do nothing`, [requestId, tenant, header.id, agent, target?.name ?? "subagent", depth, chain[0], run.id, toolCallId, made, now, run.endUser ?? null, spend.bucketOf(ctx.spendContext, session, run)]));
+    // owner_id, root_owner, chain: the owner model (migration 137); parent and root are still written.
+    await underClaim(ctx.db, session.claim, sql => sql.query(`insert into agent_children (id, tenant, parent, child, request_id, name, depth, root, parent_run, tool_call_id, kind, made, checked_at, created_at, updated_at, payer, bucket, owner_id, root_owner, chain)
+      values ($1, $2, $3, $4, $1, $5, $6, $7, $8, $9, 'delegate', $10, $11, $11, $11, $12, $13, $3, jsonb_build_object('kind', 'agent', 'id', $7::text), $14::jsonb) on conflict do nothing`, [requestId, tenant, header.id, agent, target?.name ?? "subagent", depth, chain[0], run.id, toolCallId, made, now, run.endUser ?? null, spend.bucketOf(ctx.spendContext, session, run), JSON.stringify(chain)]));
     // An abort that read the rows before this one was written: the call stops here, before the child has a prompt.
     call.signal.throwIfAborted();
     if (session.aborted?.has(run.id)) throw new Error("The run was aborted");

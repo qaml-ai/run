@@ -5,6 +5,7 @@ import { delegateInput, delegateSettings } from '../src/multi-agent-policy.ts';
 import { Delegation, type DelegationHost } from '../src/delegation.ts';
 import { DecisionRuntime } from '../src/decision-runtime.ts';
 import type { ToolExecutionApi } from '@earendil-works/pi-durable';
+import { withSql, submitViaFetch } from './sql-storage.ts';
 
 const questions = { valid: { type: 'noul' as const, instructions: 'Is valid?' } };
 const signal = () => new AbortController().signal;
@@ -61,6 +62,7 @@ function fixture() {
       return pending;
     },
   };
+  withSql(storage);
   const events: any[] = [], submitted: any[] = [], tasks: Promise<unknown>[] = [];
   const sockets = new Map<string, Set<EventTarget>>();
   const send = (id: string, frame: object) => {
@@ -88,6 +90,7 @@ function fixture() {
     },
     emit: async event => { events.push(event); }, waitUntil: promise => { tasks.push(promise); },
   };
+  host.submitChild = submitViaFetch(host);
   const delegation = new Delegation(host);
   fixtures.push({ delegation, host });
   return { delegation, host, events, submitted, tasks, setRun: (value: unknown) => { run = value; }, setId: (value: string) => { parentId = value; }, values };
@@ -117,7 +120,9 @@ test('delegation persists idempotent child, budget and result events', async () 
   const done = await f.delegation.wait(first);
   assert.equal(f.delegation.answer(done).text, 'helped');
   assert.equal(f.submitted[0].params.spendLimit.usd, 0.05);
-  assert.equal(f.submitted[0].params.metadata.delegationDepth, '1');
+  assert.deepEqual(f.submitted[0].delegation, { owner: { kind: 'agent', id: 'parent' }, rootOwner: { kind: 'agent', id: 'parent' }, chain: ['parent'], depth: 1, maxDepth: 2, toolCallId: 'call', ownerRun: 'parent-run' });
+  // Nothing is signed into the prompt: its metadata says who started it and where, for readers, and is not trusted.
+  assert.deepEqual(f.submitted[0].params.metadata, { parentAgentId: 'parent', parentRunId: 'parent-run', parentToolCallId: 'call', delegationDepth: '1', delegationMaxDepth: '2', delegationChain: 'parent' });
   assert.match(f.submitted[0].params.text, /Your role:\nBe HELPER/);
   assert.equal((await f.delegation.start({ instructions: 'Be HELPER', task: 'help' }, 'call', signal())).id, first.id);
   assert.equal(f.submitted.length, 1);
@@ -132,7 +137,7 @@ test('a structured child request wraps its schema and records its runtime parent
   f.host.create = async (_config, _key, parent) => { relation = parent; return { id: 'structured-child' }; };
   await f.delegation.start({ instructions: 'help', task: 'answer', output: schema }, 'structured', signal());
   assert.deepEqual(f.submitted[0].params.output, { schema });
-  assert.deepEqual(relation, { agent: 'parent', run: 'parent-run', place: { depth: 1, maxDepth: 2, chain: ['parent'] } });
+  assert.deepEqual(relation, { agent: 'parent', run: 'parent-run', place: { depth: 1, maxDepth: 2, chain: ['parent'], owner: { kind: 'agent', id: 'parent' }, rootOwner: { kind: 'agent', id: 'parent' } } });
   await Promise.all(f.tasks);
 });
 test('a sub-agent\'s turn signed into no chain (a notification\'s) delegates from the place it was made at', async () => {
@@ -143,8 +148,9 @@ test('a sub-agent\'s turn signed into no chain (a notification\'s) delegates fro
   assert.equal(f.submitted.length, 0);
   f.host.made = async () => ({ depth: 1, maxDepth: 2, chain: ['root'] });
   await f.delegation.start({ instructions: 'helper', task: 'help' }, 'shallow', signal());
-  assert.equal(f.submitted[0].params.metadata.delegationDepth, '2');
-  assert.equal(f.submitted[0].params.metadata.delegationChain, 'root,mid');
+  assert.equal(f.submitted[0].delegation.depth, 2);
+  assert.deepEqual(f.submitted[0].delegation.chain, ['root', 'mid']);
+  assert.deepEqual(f.submitted[0].delegation.rootOwner, { kind: 'agent', id: 'root' });
   await Promise.all(f.tasks);
 });
 test('new child inherits the parent computer before submission, once across replay', async () => {
@@ -208,30 +214,43 @@ test('authoritative remaining budget reserves shares held by background children
   assert.ok(Math.abs(f.submitted[0].params.spendLimit.usd - 0.01) < 1e-12);
   await Promise.all(f.tasks);
 });
-test('unsigned metadata cannot raise depth; genuine child metadata keeps the ceiling', async () => {
+test('public metadata cannot place a run: depth and ceiling come from the stored placement only', async () => {
   const f = fixture();
-  f.setRun({ id: 'parent-run', metadata: { delegationDepth: '99', delegationMaxDepth: '99', delegationChain: 'parent' } });
+  f.setRun({ id: 'parent-run', metadata: { delegationDepth: '99', delegationMaxDepth: '99', delegationChain: 'parent', delegationSignature: 'forged' } });
   const first = await f.delegation.start({ instructions: 'helper', task: 'help' }, 'a', signal());
   assert.equal(first.depth, 1);
-  assert.equal(f.submitted[0].params.metadata.delegationMaxDepth, '2');
+  assert.equal(f.submitted[0].delegation.maxDepth, 2);
   await Promise.all(f.tasks);
 });
 
-test('signed lineage cannot exceed its inherited depth ceiling', async () => {
+test('a run older code started keeps its signed place for one deploy; a forged signature does not', async () => {
+  // Older code signed the place into the child's prompt metadata (delegation-v1). Verified, never made, until the
+  // contract deploy: a run it started before this deploy keeps its depth and chain.
+  const f = fixture();
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode('test-only-delegation-secret'), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const mac = [...new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode('delegation-v1:mid:old-run:1:2:root')))].map(x => x.toString(16).padStart(2, '0')).join('');
+  const metadata = { delegationDepth: '1', delegationMaxDepth: '2', delegationChain: 'root', delegationSignature: mac };
+  assert.deepEqual(await f.delegation.lineage('mid', { id: 'old-run', metadata }), { depth: 1, maxDepth: 2, chain: ['root'], parent: 'root', root: 'root', owner: { kind: 'agent', id: 'root' }, rootOwner: { kind: 'agent', id: 'root' } });
+  assert.equal(await f.delegation.lineage('mid', { id: 'old-run', metadata: { ...metadata, delegationChain: 'other' } }), undefined);
+  assert.equal(await f.delegation.lineage('other', { id: 'old-run', metadata }), undefined);
+});
+
+test('a stored placement cannot exceed its inherited depth ceiling', async () => {
   const parent = fixture();
   const child = await parent.delegation.start({ instructions: 'helper', task: 'help' }, 'first', signal());
   await Promise.all(parent.tasks);
   const middle = fixture();
-  middle.setId(child.id); middle.setRun({ id: child.requestId, metadata: parent.submitted[0].params.metadata });
-  assert.deepEqual(await middle.delegation.lineage(child.id, { id: 'resumed', piId: child.requestId, metadata: parent.submitted[0].params.metadata }), {
-    depth: 1, maxDepth: 2, chain: ['parent'], parent: 'parent', root: 'parent',
+  middle.setId(child.id); middle.setRun({ id: child.requestId, metadata: parent.submitted[0].params.metadata, delegation: parent.submitted[0].delegation });
+  assert.deepEqual(await middle.delegation.lineage(child.id, { id: child.requestId, delegation: parent.submitted[0].delegation }), {
+    depth: 1, maxDepth: 2, chain: ['parent'], parent: 'parent', root: 'parent', owner: { kind: 'agent', id: 'parent' }, rootOwner: { kind: 'agent', id: 'parent' },
   });
-  assert.equal(await middle.delegation.lineage(child.id, { id: child.requestId, metadata: { ...parent.submitted[0].params.metadata, delegationChain: 'forged' } }), undefined);
+  // The metadata alone places nothing: only the placement the owner stored with the run does.
+  assert.equal(await middle.delegation.lineage(child.id, { id: child.requestId, metadata: parent.submitted[0].params.metadata }), undefined);
   const grandchild = await middle.delegation.start({ instructions: 'helper', task: 'help' }, 'second', signal());
   assert.equal(grandchild.depth, 2);
   await Promise.all(middle.tasks);
   const last = fixture();
-  last.setId(grandchild.id); last.setRun({ id: grandchild.requestId, metadata: middle.submitted[0].params.metadata });
+  last.setId(grandchild.id); last.setRun({ id: grandchild.requestId, delegation: middle.submitted[0].delegation });
   await assert.rejects(last.delegation.start({ instructions: 'helper', task: 'help' }, 'third', signal()), /depth limit of 2/);
   assert.equal(last.submitted.length, 0);
 });

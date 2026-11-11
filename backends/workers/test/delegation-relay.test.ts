@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Delegation, type DelegatedChild, type DelegationHost } from '../src/delegation.ts';
+import { withSql, submitViaFetch } from './sql-storage.ts';
 
 test('child pushes preserve event order, reject unknown runs and settle once without a relay', async () => {
   const child = { id: 'child', key: 'child', requestId: 'child-run', parentRequestId: 'parent-run', toolCallId: 'call', name: 'helper', status: 'running' } as DelegatedChild;
@@ -11,6 +12,7 @@ test('child pushes preserve event order, reject unknown runs and settle once wit
     async list({ prefix }: { prefix: string }) { return new Map([...values].filter(([key]) => key.startsWith(prefix))); },
     async transaction(work: (tx: unknown) => unknown) { return work(storage); },
   };
+  withSql(storage);
   const forwarded: any[] = [];
   const delegation = new Delegation({ storage, async emit(event: unknown) { forwarded.push(event); }, async fetch() { assert.fail('push must not open a relay'); }, waitUntil() {} } as unknown as DelegationHost);
   const frame = (type: string) => ({ agentId: child.id, requestId: child.requestId, event: { type: 'event', event: { type } } });
@@ -39,6 +41,7 @@ test('recovery and a late completion push count and settle the child exactly onc
     async list({ prefix }: { prefix: string }) { return new Map([...values].filter(([key]) => key.startsWith(prefix))); },
     async transaction(work: (tx: unknown) => unknown) { return work(storage); },
   };
+  withSql(storage);
   const forwarded: any[] = [];
   const delegation = new Delegation({ storage, async emit(event: unknown) { forwarded.push(event); }, async fetch() { return Response.json(record); }, waitUntil() {} } as unknown as DelegationHost);
   // Deterministically reproduce the load test's race: the bounded sweep wins before the push arrives.

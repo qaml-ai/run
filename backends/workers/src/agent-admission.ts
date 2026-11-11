@@ -1,4 +1,5 @@
 import { checkRequest, RESERVED_CHECK_ERROR, RESERVED_CHECK_PREFIX } from "../../../shared/monitors.ts";
+import type { Placement } from "../../../shared/owner.ts";
 import { requireActiveMember, sharedPromptInput } from "../../../src/shared-agents.ts";
 import { keyServices } from "./security-services.ts";
 import { EndUserCredits } from "./end-user-credits.ts";
@@ -210,8 +211,11 @@ export async function admitImpl(this: AgentRuntime,
   input: unknown,
   notice?: RuntimeNotice,
   delivery?: NoticeDelivery,
-  acceptedFingerprint?: string, member?: string) {
+  acceptedFingerprint?: string, member?: string, placement?: Placement) {
     await this.config();
+    // Where this run stands in a delegation chain: given only through the binding (a child's start, or a message's
+    // notice), stored with the run, never read from public metadata.
+    const delegation = placement ?? notice?.delegation;
     const request = object(input, ["id", "method", "params"]);
     if (member && member !== "owner") {
       if (request.method !== "prompt") throw new BadRequest("A shared member can only prompt");
@@ -239,7 +243,7 @@ export async function admitImpl(this: AgentRuntime,
     if (!notice && ["prompt", "steer", "continue", "execute"].includes(String(request.method))) {
       const conf = await this.config();
       const metadata = request.params && typeof request.params === "object" ? (request.params as { metadata?: unknown }).metadata : undefined;
-      if (conf.config.type === "subagent" && !await this.delegation.lineage(conf.id, { id, metadata })
+      if (conf.config.type === "subagent" && !await this.delegation.lineage(conf.id, { id, metadata, delegation })
         && await childParent(this.env, conf.tenantId, conf.id))
         throw viaParent(conf.id);
     }
@@ -395,7 +399,7 @@ export async function admitImpl(this: AgentRuntime,
         : boundedText(params.text, "text", 6 * 1024 * 1024);
     const current = await this.config();
     const prior = await this.ctx.storage.get<RequestRecord>(reqKey(id));
-    const lineage = await this.delegation.lineage(current.id, { id, metadata: params.metadata });
+    const lineage = await this.delegation.lineage(current.id, { id, metadata: params.metadata, delegation });
     const shared = prior && Object.hasOwn(prior, "sharedAgent") ? prior.sharedAgent
       : await this.sharedAgents.get(lineage?.root ?? current.id, current.tenantId) ?? null;
     if (notice) {
@@ -499,7 +503,7 @@ export async function admitImpl(this: AgentRuntime,
     if (params.endUser !== undefined) {
       if (request.method !== "prompt") throw new BadRequest("endUser is for a prompt");
       const { accounts } = await keyServices(this.env);
-      const internal = /^(child_|msg_|delegate_|spawn_)/.test(id) && (notice !== undefined || !!await this.delegation.lineage(conf.id, { id, metadata: params.metadata }));
+      const internal = /^(child_|msg_|delegate_|spawn_)/.test(id) && (notice !== undefined || !!await this.delegation.lineage(conf.id, { id, metadata: params.metadata, delegation }));
       if (!internal) await new EndUserCredits(accounts.db).requireExisting(conf.tenantId, params.endUser as string);
     }
     const requestedBucket = params.bucket as string | undefined;
@@ -593,6 +597,7 @@ export async function admitImpl(this: AgentRuntime,
       ...(typeof params.endUser === "string" ? { endUser: params.endUser } : {}),
       agentSpendAt: spend?.setAt ?? null,
       ...(params.metadata !== undefined ? { metadata: params.metadata } : {}),
+      ...(delegation ? { delegation } : {}),
       ...((params.actor ?? (params.from as { id?: string } | undefined)?.id) ? { actor: String(params.actor ?? (params.from as { id: string }).id) } : {}),
       fingerprint,
       state: pending ? "queued" : "running",

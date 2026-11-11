@@ -368,9 +368,10 @@ export class Inputs {
         const priority: Priority = input.detail.priority ?? priorityOf(input.kind);
         input.priority = priority; input.blocking = base.blocking ?? true; input.key = base.itemKey;
         if (input.kind === "approval" && input.detail.applyRecommendationOnExpiry) throw new Error("Approvals cannot apply recommendations on expiry");
+        // owner_kind/owner_id: the input's owner (migration 137); `agent` is still written until the contract deploy.
         await sql.query(`insert into agent_inputs (id, agent, tenant, request_id, tool_call_id, kind, input, created_at, expires_at,
-          priority, priority_rank, blocking, responders, root_agent, lineage, item_key, subject)
-          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $15, $12, $13, $14, $16, $17)`,
+          priority, priority_rank, blocking, responders, root_agent, lineage, item_key, subject, owner_kind, owner_id)
+          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $15, $12, $13, $14, $16, $17, 'agent', $2)`,
           [input.id, input.agent, input.tenant, input.requestId, input.toolCallId, input.kind, JSON.stringify(input.stored), input.createdAt, input.expiresAt,
             priority, PRIORITY_RANK[priority], [...new Set([...input.stored.responders.audience ?? [], ...(input.stored.fixedResponders ? [] : base.approvers ?? [])])], rootAgent ?? null, lineage ?? null, base.blocking ?? true, base.itemKey ?? null, base.subject ?? null]);
       }

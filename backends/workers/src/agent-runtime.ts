@@ -1,3 +1,5 @@
+import type { Placement } from "../../../shared/owner.ts";
+import { ChildRows } from "./children-table.ts";
 import { SharedAgents } from "../../../src/shared-agents.ts";
 import { testAgentRuntimes } from "./agent-internals.ts";
 import { releaseInputPrompts } from "./input-admission.ts";
@@ -49,7 +51,7 @@ import { imageToolsImpl, sourceIdentityImpl, fileRequestIdImpl } from "./agent-a
 import { computerNamesImpl, refreshComputerToolsImpl, enabledToolsImpl, hasNativeComputerImpl, createDecisions, createModels, createHarness } from "./agent-tools.ts";
 import { agentSpendImpl, admitRequestImpl, endUserLimitImpl, requestUsageImpl, usageViewImpl, usageForRequestImpl, flushBillingImpl, createLimits } from "./agent-billing.ts";
 import { admitDelegateWakeImpl, receiveAgentMessageImpl, receiveAgentProgressImpl, hasBackgroundChildImpl, createNotifications, createDelegation } from "./agent-delegation.ts";
-import { replayedRequestImpl, requestResponseImpl, activityImpl, stateImpl, historyImpl, fetchImpl, fetchRequestImpl } from "./agent-http.ts";
+import { replayedRequestImpl, requestResponseImpl, activityImpl, stateImpl, historyImpl, fetchImpl, fetchRequestImpl, admitDelegatedImpl } from "./agent-http.ts";
 import { emitImpl, flushTerminalEventsImpl, recoverWatchersImpl, closeWatchersImpl, checkWatchersImpl, webSocketEventsImpl, negotiateAgentEventsImpl, restoreWebSocketsImpl, sendAttachedSocketImpl, closeBrowserSocketImpl, retireAttachedSocketImpl, webSocketMessageImpl, webSocketCloseImpl, webSocketErrorImpl, replayEventsImpl, runReplayImpl, eventsImpl } from "./agent-transport.ts";
 import { purgeAccountDataImpl, configImpl, scheduleToolsImpl, createScheduleImpl, armImpl, onStartImpl, restorePendingImpl, onJobImpl, wakeImpl } from "./agent-lifecycle.ts";
 import type { CamelAgent } from "./agent.ts";
@@ -148,6 +150,9 @@ export class AgentRuntime extends AgentContext {
   hasBackgroundChild(id: string): Promise<boolean> {
     return hasBackgroundChildImpl.call(this, id);
   }
+
+  /** This agent's children (children-table.ts), shared by its delegation and its notifications. */
+  children = new ChildRows(this.ctx.storage);
 
   notifications: DelegationNotifications = createNotifications.call(this);
 
@@ -364,8 +369,13 @@ export class AgentRuntime extends AgentContext {
     delivery?: NoticeDelivery,
     acceptedFingerprint?: string,
     member?: string,
+    placement?: Placement,
   ) {
-    return submitImpl.call(this, input, notice, delivery, acceptedFingerprint, member);
+    return submitImpl.call(this, input, notice, delivery, acceptedFingerprint, member, placement);
+  }
+
+  admitDelegated(input: unknown, placement: Placement) {
+    return admitDelegatedImpl.call(this, input, placement);
   }
 
   /** A settled input, including cancellation or expiry, releases prompts waiting behind it. */
@@ -450,8 +460,9 @@ export class AgentRuntime extends AgentContext {
     delivery?: NoticeDelivery,
     acceptedFingerprint?: string,
     member?: string,
+    placement?: Placement,
   ) {
-    return admitImpl.call(this, input, notice, delivery, acceptedFingerprint, member);
+    return admitImpl.call(this, input, notice, delivery, acceptedFingerprint, member, placement);
   }
 
   activity() {

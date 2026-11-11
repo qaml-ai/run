@@ -32,8 +32,8 @@ export async function upsertInputMirrors(sql: Sql, rows: InputMirror[]) {
     const rank = { urgent: 0, high: 1, normal: 2, low: 3 }[priority as "urgent" | "high" | "normal" | "low"];
     const result = await sql.query(`insert into agent_inputs
       (id, agent, tenant, request_id, tool_call_id, kind, state, input, answer, created_at, expires_at,
-       priority, priority_rank, blocking, subject, responders, root_agent, lineage, version)
-      values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,true,$14,$15,$16,$17,$18)
+       priority, priority_rank, blocking, subject, responders, root_agent, lineage, version, owner_kind, owner_id)
+      values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,true,$14,$15,$16,$17,$18,'agent',$2)
       on conflict (id) do update set state=excluded.state, input=excluded.input, answer=excluded.answer,
         expires_at=excluded.expires_at, version=excluded.version, updated_at=now()
       where agent_inputs.version < excluded.version returning tenant`,
