@@ -1,11 +1,14 @@
-# Durable swarm workflows and VM-less code work
+# Durable multi-agent workflows: a general harness
 
-Status: proposal (2026-11-11), not built. Goal: make camelRun the place to run many agents on one big coding task,
-orchestrated by code that lives for hours to weeks, over a large git repository that needs no always-on machine.
+Status: proposal (2026-11-11), not built. Goal: make camelRun a general multi-agent harness: many agents on one
+big task, orchestrated by code that lives for hours to weeks, with budgets, human gates, agent types and
+ephemeral compute that serve any domain: research, data analysis, writing, operations, and code. Code work is one
+capability of it; a repository that needs no always-on machine is an optional module (Part 2).
 
-The yardstick is Jarred Sumner's Bun port (Zig to Rust, May 2026): about 50 dynamic workflows over 11 days, 4
-worktrees times 16 Claudes (64 at once), 6,778 commits, 1,448 files ported, $165k at API prices with 72B cached
-input reads against 5.9B uncached. Every failure he hit has a line in this document, and the design answers each one.
+The first test, and the yardstick, is a Bun-shaped port: Jarred Sumner's Zig-to-Rust rewrite (May 2026) ran about
+50 dynamic workflows over 11 days, 4 worktrees times 16 Claudes (64 at once), 6,778 commits, 1,448 files ported,
+$165k at API prices with 72B cached input reads against 5.9B uncached. Every failure he hit has a line in this
+document, and the design answers each one. It is the hardest shape we know of, not the definition of the harness.
 
 ## Swarm agents are not the traditional agent shape
 
@@ -13,9 +16,9 @@ The agent camelRun was built for is long-lived: it keeps a conversation for week
 machine (a computer attached to it, with a session that survives between turns). That shape is right for a chat
 agent, a bot's builder, a person's managed computer, a browser session. It is the wrong shape for a swarm.
 
-A swarm child exists for one effect: port this file, review that diff, fix these errors. It is stateless beyond its
-task, it reads and edits through tools over storage the runtime owns, and when something must compile or run it
-borrows compute for exactly that long. Nothing of it needs to outlive its answer. Designing around that, rather than
+A swarm child exists for one effect: port this file, review that diff, audit this table, critique this section.
+It is stateless beyond its task, it reads and writes through tools over storage the runtime owns, and when
+something must compile, run or query it borrows compute for exactly that long. Nothing of it needs to outlive its answer. Designing around that, rather than
 around a machine each child holds, is what makes the rest work:
 
 | | A machine per agent (shared, forked or persistent) | Compute per job |
@@ -26,8 +29,8 @@ around a machine each child holds, is what makes the rest work:
 | Scaling to 64+ | 64 machines to start, lease, snapshot and sweep; `computerLimit` default 4 | 64 editors cost nothing extra; builds are `jobConcurrency` jobs, however many editors |
 | Merging | Each fork's branch pushed and merged by hand | One object serializes commits onto a branch with a file-level merge |
 
-So the swarm primitive is `agent()` over a repository on our storage plus `job()` for compute, and **no forked or
-persistent VM appears in the swarm path**. Computers stay what they are: for interactive or long-lived agents, for
+So the swarm primitives are `agent()` over storage the runtime owns (volumes, and for code the repository
+module) plus `job()` for compute, and **no forked or persistent VM appears in the swarm path**. Computers stay what they are: for interactive or long-lived agents, for
 browsers, and for people's managed machines. They are not removed; they are not the primitive here.
 
 ## Recommendation
@@ -44,36 +47,40 @@ browsers, and for people's managed machines. They are not removed; they are not 
 3. **Children are remote, always.** A workflow's `agent()` starts a real agent in its own object or node, through
    the existing delegation path, keyed by the effect key for exactly-once. The ~8 concurrent streams one object
    can hold (#696) are not a ceiling: the workflow object streams nothing, it starts and collects.
-4. **Repositories become a volume kind of their own, with a repo object** that holds the tree at a commit, a
-   trigram index, branch heads, and one private **layer** per agent (the files it changed, over the base). Agents
-   read, search, edit and commit with the file tools; there is no checkout, no `stash`, no `reset`, no branch switch
-   to step on. Commits go to the repo object as compare-and-swap on a branch head with a file-level merge. Git
-   objects are written for push and read for pull with the GitHub App token the runtime already mints.
-5. **Compute is a job, not a machine, and jobs are a runtime primitive.** `job({ command, at })` materializes a
-   commit (or an agent's layer) into a container started from a warm snapshot (dependencies and build caches), runs
-   one command under the container's own limits, collects named output files, snapshots the caches if asked, and
-   stops. Nobody shares a checkout, nobody runs `cargo check` beside 63 others, and a test that eats every socket
+4. **Three agent types and three model classes, domain-neutral.** A child is a `worker` (does a task, may write),
+   a `critic` (finds problems in someone else's output, read-only, separate context, answers in a schema, never
+   the model instance that did the work) or a `lead` (plans, decides, judges). Its model is a class: `fast`,
+   `strong` or `auto` (a Fusion-style router that switches at compaction with judgment kept on strong), as
+   late-bound virtual models `camelrun/fast|strong|auto`, pinnable per workflow and per call. Everything
+   domain-specific (implementer, porter, researcher, auditor) is a worker with instructions. A changed mapping
+   never invalidates cached results; the resolved model is recorded on every effect.
+5. **Code work is an optional module: repositories as a volume kind with a repo object** that holds the tree at a
+   commit, a trigram index, branch heads, and one private **layer** per agent (the files it changed, over the
+   base). Agents read, search, edit and commit with the file tools; there is no checkout, no `stash`, no `reset`,
+   no branch switch to step on. Commits go to the repo object as compare-and-swap on a branch head with a
+   file-level merge. Git objects are written for push and read for pull with the GitHub App token the runtime
+   already mints.
+6. **Compute is a job, not a machine, and jobs are a runtime primitive.** `job({ command, at })` materializes a
+   volume, a commit or an agent's layer into a container started from a warm snapshot (toolchains, dependencies,
+   build caches, a query client), runs one command under the container's own limits, collects named output files,
+   snapshots the caches if asked, and stops. A build, a test shard, a 500-table audit query and a notebook are the
+   same primitive. Nobody shares a checkout, nobody runs `cargo check` beside 63 others, and a test that eats every socket
    on the box kills only its job. Jobs are `POST /v1/jobs` and a `jobs` builtin for ordinary agents too, not only
    a workflow global. No forked or persistent VM is in the swarm path; phase 1 is already VM-less for editing,
    on per-child volume forks, with the repo object following in phase 3.
-6. **We run the job VMs ourselves.** Firecracker microVMs on nested-virtualization EC2 hosts with local NVMe
+7. **We run the job VMs ourselves.** Firecracker microVMs on nested-virtualization EC2 hosts with local NVMe
    (R8id for builds, C8id/I7i spot for test shards), copy-on-write clones of warm snapshots on the host, our own
    host agent and scheduler, per-job netns with an egress allowlist and no IMDS. Boat, Cloudflare Containers and
    Lambda MicroVMs are bridges and fallbacks behind the same driver seam.
-7. **Budget, cost and cache-hit reporting per workflow**, hard spend caps, a cap on total effects, and a step-rate
-   guard, with every number on one console page.
-8. **Roles with late-bound models, and a Fusion-style model for single agents.** `agent(task, { role: "reviewer" })`
-   names a definition whose model is a virtual `camelrun/role:<role>` resolved at each call; a workflow may pin
-   roles to models at start and a call may override its own. A changed mapping never invalidates cached results;
-   the resolved model is recorded on every effect. For ordinary agents and a workflow's lead, `camelrun/fusion`
-   pairs a strong main model with a cheap sidekick, switching only at Pi's compaction boundary on a cheap
-   classifier's say, with judgment pinned to the main model. Fusion's measured 41–60% saving on
-   implementation-heavy work puts a Bun-shaped bill at $65–95k, if the eval agrees on quality at equal rounds.
+8. **Budget, cost and cache-hit reporting per workflow**, hard spend caps, a cap on total effects, and a step-rate
+   guard, with every number on one console page. Fusion's measured 41–60% saving on implementation-heavy work
+   puts a Bun-shaped bill at $65–95k with workers on `fast` and critics on `strong`, if the eval agrees on quality
+   at equal rounds.
 9. **Build it in five phases**, the first being the workflow object plus `job()` on bridge providers with children
-   editing on volumes, the second our own job hosts, dogfooding with camelCode on a real refactor of one of our
-   repositories after each.
+   working on volumes, the second our own job hosts, the third the code module. The first test is a Bun-shaped
+   port of one of our repositories; a research sweep and a data audit run on the same phase-1 harness.
 
-## What the Bun port needed, and what camelRun has
+## The first test: what the Bun port needed, and what camelRun has
 
 | Needed | Today | Gap |
 | --- | --- | --- |
@@ -119,7 +126,7 @@ network of its own. Its globals:
 
 | Global | What it does |
 | --- | --- |
-| `agent(task, opts)` | Starts a sub-agent and returns its answer. `opts`: `{ key?, label?, definition?, instructions?, model?, output?, files?, layer?, timeoutSeconds?, phase? }`. With `output` (a JSON Schema) the answer is the validated object; without it, the text. A failed or aborted child returns `null` (and the item records why), so `.filter(Boolean)` is the idiom, as in Claude Code |
+| `agent(task, opts)` | Starts a sub-agent and returns its answer. `opts`: `{ key?, label?, type?, class?, definition?, instructions?, model?, output?, files?, layer?, timeoutSeconds?, phase? }` (`type` is `worker`, `critic` or `lead`; `class` is `fast`, `strong` or `auto`; see Agent types). With `output` (a JSON Schema) the answer is the validated object; without it, the text. A failed or aborted child returns `null` (and the item records why), so `.filter(Boolean)` is the idiom, as in Claude Code |
 | `parallel(thunks)` | Runs thunks at once, up to the workflow's `concurrency`; a barrier |
 | `pipeline(items, ...stages)` | Each item through every stage with no barrier between stages; a stage that throws drops the item to `null` |
 | `job(opts)` | A build or test run in an ephemeral container (Part 3). Returns `{ exitCode, outputs: { name: text }, durationMs }` |
@@ -262,55 +269,71 @@ spend line with cache share, stuck items, the last 50 `log()` lines, each item's
 child's transcript, open gates with answer buttons, the script with a diff against the previous revision, and
 `pause`, `resume`, `abort`, `edit`. `/workflows` lists the tenant's, running first.
 
-### Roles and model routing
+### Agent types and model classes
 
-The Bun port ran every agent on one Mythos-class model. Most of its tokens were implementers and fixers doing
-mechanical work a cheaper model does well enough when two strong reviewers stand behind it. The lever is to name
-the **role** an `agent()` plays and let the runtime pick the model.
+The Bun port ran every agent on one Mythos-class model. Most of its tokens were mechanical work a cheaper model
+does well enough when two strong critics stand behind it. The lever is to separate two things an earlier draft of
+this document conflated: **how hard the thinking is** (the model class) and **what the agent is allowed to do**
+(the type). Neither is a job title; "implementer", "porter", "researcher" and "auditor" are instructions.
 
-**Roles are definitions, with a model class instead of a model.** A definition today names a model (or inherits
-the runtime's default, fixed when the agent is made). A role is a definition whose `model` is a virtual name of
-the form `camelrun/role:<role>`, resolved at each call, the way `camelrun/default` resolves by name to a list of
-real models with failover (`docs/guides/models-and-keys.md`, Virtual models). The runtime ships default roles as
-definitions a tenant can copy or override:
+**Model classes** are late-bound virtual models, resolved at each call the way `camelrun/default` resolves by name
+to a list of real models with failover (`docs/guides/models-and-keys.md`, Virtual models):
 
-| Role | Does | Must not | Default model class |
+| Class | For | Resolves to |
+| --- | --- | --- |
+| `camelrun/fast` | Bulk work: port a file, apply listed findings, extract, summarize, search | A cheap, quick model (today DeepSeek V4.1 Flash over OpenRouter; Haiku 5.5 is about 11x cheaper than Sonnet 5.5 for this shape) |
+| `camelrun/strong` | Judgment: review, plan, decide, read ambiguity, final answers | A frontier model (today Claude Sonnet 5.5 or better, high reasoning effort where the type asks) |
+| `camelrun/auto` | One conversation across tasks of unknown difficulty | A Fusion-style pair (strong main, fast sidekick) that switches only at compaction; below |
+
+**Agent types** are three small sets of behaviours and permissions, shipped as definitions a tenant can copy:
+
+| Type | Does | Permissions | Default class |
 | --- | --- | --- | --- |
-| `implementer` | Writes the code for one item from a spec | Review, judge, merge | Cheap and fast (today DeepSeek V4.1 Flash via OpenRouter; Haiku 5.5 is about 11x cheaper than Sonnet 5.5 for this shape) |
-| `fixer` | Applies a list of findings to the files named | Reinterpret the findings | Cheap and fast |
-| `reviewer` | Finds bugs and spec violations; answers in a schema | Edit anything | Strong (today Claude Sonnet 5.5 or better) |
-| `planner` | Turns a goal into a work-list, a porting guide, a shard plan | Write code | Strong, high reasoning effort |
-| `explorer` | Reads and searches to answer a question about the tree | Write anything | Cheap and fast, large context |
+| `worker` | One task from instructions; may write | File tools, `commit` on its layer, `report_progress`; no sub-agents by default | `fast` |
+| `critic` | Finds problems in someone else's output | Read-only mounts and layers; answers in a schema (`output` required); its own fresh context; never the model instance that did the work | `strong` |
+| `lead` | Plans, decides, judges; turns a goal into a work-list, resolves conflicts, writes the final answer | May write; may `delegate`; may open gates and start workflows (the `workflows` builtin) | `strong`, or `auto` for a long-lived one |
 
-A workflow refers to roles by name: `agent(task, { role: "reviewer" })` (`definition` still names a specific
-definition when the script wants one). A role's prompt is the definition's system prompt, so every call of a role
-shares one prefix and the provider's prompt cache hits across thousands of calls; a workflow that puts PORTING.md
-and LIFETIMES.tsv into each role's system prompt gets Bun's 92% cache share for free. `report_progress`, file tools
-and `commit` come from the role's builtins; a role with `readOnly` layers (reviewer, explorer) cannot write.
+Why three, not two or five. Two (worker, critic) loses the thing Fusion showed must be protected: judgment has to
+live somewhere with a fixed strong class and the permission to decide, and a worker with a strong model is not that
+(it can still be re-pointed at `fast` by a pin). Five (the earlier implementer / fixer / reviewer / planner /
+explorer) encoded a domain in the type system: an explorer is a read-only worker, a fixer is a worker with a
+findings list, a planner is a lead. Types are what the runtime enforces; everything else is a prompt.
 
-**Late binding.** `camelrun/role:reviewer` resolves at the moment of each call to the current route list for that
-role, so a workflow written today gets a better or cheaper model when the role's default moves, with no edit. The
+The Bun loop in these terms: the implementer is a `worker` with the porting instructions, the two adversarial
+reviewers are two `critic`s (which resolve to different models when `strong`'s route list has two), the fixer is a
+`worker` with the findings, and the planner that wrote PORTING.md and LIFETIMES.tsv is a `lead`. A research sweep:
+`worker`s per source, `critic`s per claim, a `lead` to synthesize. A data audit: `worker`s per table with a query
+`job()` each, `critic`s on the flagged ones, a `lead` to rank.
+
+A workflow names them per call: `agent(task, { type: "critic" })`, with `class` to override the type's default and
+`definition` when the script wants a specific definition instead. A type's prompt is its definition's system
+prompt, so every call of a type shares one prefix and the provider's prompt cache hits across thousands of calls;
+a workflow that puts PORTING.md into the worker definition's system prompt gets Bun's 92% cache share for free.
+
+**Late binding.** `camelrun/strong` resolves at the moment of each call to the current route list for that class,
+so a workflow written today gets a better or cheaper model when the class's default moves, with no edit. The
 resolved real model is recorded on every effect (`items[].model`, the ledger, `usage.recorded`'s `servedModel`), so
 a run is reproducible and a cost report says which model did what.
 
-**Pinning.** A start may map roles to models for the whole workflow, and a call may override its own:
+**Pinning.** A start may map classes to models for the whole workflow, and a call may override its own:
 
 ```js
-// POST /v1/workflows { …, roles: { implementer: "openrouter/deepseek/deepseek-v4.1-flash-1017", reviewer: "anthropic/claude-opus-5-5" } }
-await agent(task, { role: "reviewer", model: "anthropic/claude-sonnet-5-5" });   // this call only
+// POST /v1/workflows { …, classes: { fast: "openrouter/deepseek/deepseek-v4.1-flash-1017", strong: "anthropic/claude-opus-5-5" } }
+await agent(task, { type: "critic", model: "anthropic/claude-sonnet-5-5" });   // this call only
 ```
 
-The order is: the call's `model`, then the workflow's `roles` map, then the role's current default. A pinned model
-is a real model: no failover, as for any agent that names one. OpenRouter routes under a role use `provider.only`
-and `ignore` allowlists only, never `order` or `sort`, which disable its load balancing (the 2026-10-18 incident).
+The order is: the call's `model`, then the call's `class`, then the workflow's `classes` map, then the type's
+default class, then the class's current route list. A pinned model is a real model: no failover, as for any agent
+that names one. OpenRouter routes under a class use `provider.only` and `ignore` allowlists only, never `order` or
+`sort`, which disable its load balancing (the 2026-10-18 incident).
 
-**Resume semantics.** A change to a role's default, or to the workflow's `roles` map, does **not** change an
+**Resume semantics.** A change to a class's route list, or to the workflow's `classes` map, does **not** change an
 effect's key, so completed results stay cached: the model is an execution detail, not an argument. The owner who
-wants old work redone on a stronger model says so: `resume({ rerun: ["impl:*"], roles: { implementer: "…" } })`.
-A call's explicit `model` is part of its arguments and does change its key, as any argument does.
+wants old work redone on a stronger model says so: `resume({ rerun: ["impl:*"], classes: { fast: "…" } })`. A
+call's explicit `model` or `class` is part of its arguments and does change its key, as any argument does.
 
-**Within one agent: a Fusion-style virtual model.** Roles are static per `agent()` call: the workflow picks the
-model class for each effect. Cognition's Devin Fusion (June 2026) routes *within* one agent's session instead: a
+**Within one agent: `camelrun/auto`, a Fusion-style class.** Classes are static per `agent()` call: the workflow
+picks one for each effect. Cognition's Devin Fusion (June 2026) routes *within* one agent's session instead: a
 frontier "main" agent and a cheap "sidekick" run in parallel, each with its own tools and its own persistent,
 cached context; the main agent reads minimally, delegates by default, and keeps the plan, the reading of
 ambiguity and the final review; lightweight classifiers decide mid-session when the controlling model should
@@ -320,34 +343,47 @@ and Opus 5 medium at 63.6 / $3.51: up to 60% cheaper, with the largest gains on 
 88% of Cognition's own merged PRs ran entirely on it. What failed for them is the lesson that matters here:
 delegating judgment-heavy work lost the intent (a cross-team feature gated on a flag dropped from 54 to 27).
 
-Recommend offering both. Per-call roles are right for a workflow's items, where the script already knows which
-effect is mechanical and which is judgment, and where a thousand `implementer` calls share one cached prefix. A
-Fusion-style virtual model, `camelrun/fusion`, is right for ordinary agents, for camelCode's long-lived lead, and
-for a workflow's `planner`: anything that holds one conversation across tasks of unknown difficulty. It would:
+Recommend offering both. Per-call classes are right for a workflow's items, where the script already knows which
+effect is mechanical and which is judgment, and where a thousand `worker` calls share one cached prefix.
+`camelrun/auto` is right for ordinary agents, for camelCode's long-lived lead, and for a workflow's `lead`:
+anything that holds one conversation across tasks of unknown difficulty. It would:
 
-- resolve to a pair (`main`, `sidekick`) from the role route lists, strong and cheap, and start the turn on the
-  main model;
+- resolve to a pair (`main` from `strong`'s route list, `sidekick` from `fast`'s) and start the turn on the main
+  model;
 - switch the backing model only at a compaction boundary. Pi's compaction is where camelRun already rebuilds the
   model's context from the journal (`docs/concepts.md`, Long conversations; the summary and recent messages are
   re-sent whole), so a switch there is a context the provider has to read anyway, on either model. Between
   compactions the model is fixed, so the cache keeps hitting;
 - keep a persistent cached context per model: the summary-plus-recent window that compaction produces is the same
   bytes for both, so each model's prefix is warm as long as it is called within the provider's cache TTL;
-- decide with a cheap classifier (a `decide` call on the decision model, which the runtime already has) over the
-  last compaction window: mechanical (tests, formatting, a listed fix) goes to the sidekick, and a question, a
-  design choice, a merge or a final review brings the main model back;
-- never let judgment leave the main model: the plan, ambiguity, approvals, `commit` onto a shared branch and the
-  turn's final answer are main-model steps by rule, not by classifier.
+- decide with **Jev as the router**: the decisions path the runtime already runs (TypeSafe's `typesafe/jev-1.14`
+  through OpenRouter's decisions API, `POST /v1/decisions` and the `decide` builtin, `docs/guides/decisions.md`;
+  `backends/workers/src/decision-policy.ts`, `decision-providers.ts`), which answers a typed question with
+  calibrated probabilities in about 0.2–0.3 s for about $0.00002 a call. The question is typed, over the last
+  compaction window and the pending input: `{ next: "fast" | "strong", effort: "low" | "high" }`; below a
+  confidence threshold (0.7 at first) the answer is `strong`. It is asked **at decision points only**: turn start,
+  each compaction, after a tool-heavy stretch (a run of tool results with no text), and when a worker asks for
+  help. Never per request: a model switched mid-segment throws its prompt cache away, and Fusion's insight is
+  that compaction is where the cache is already lost. OpenRouter's hosted `typesafe/jev-router`, which picks a
+  model and effort per request, is rejected for that reason. Its OpenRouter call uses `provider.only` and
+  `ignore` filters only, never `order` or `sort`;
+- never let judgment leave the main model, whatever Jev says: the plan, ambiguity, approvals, `commit` onto a shared
+  branch and the turn's final answer are main-model steps by rule, not by router;
+- log every routing decision: the probabilities, the chosen model and effort, the decision's own cost, and the
+  decision point, on the effect (`items[].routing[]`) and in the ledger, so the eval can score the router and a
+  cost report can show what `auto` chose and why.
 
 `servedModel` names which model answered each response, as it does for `camelrun/default` today, so usage, the
-ledger and end-user credit holds are unchanged in shape.
+ledger and end-user credit holds are unchanged in shape. The eval for `auto` runs the first test (the Bun-shaped
+port) and one non-code workflow (the research sweep above) three ways, all-`strong`, all-`fast` and `auto`, and
+reports cost per completed task and quality for each; `auto` ships as a default for leads only when it is within
+2% of all-`strong` on quality at a third or more off its cost.
 
 **Cost for the Bun shape, sharpened by Fusion's numbers.** Fusion's implementation-heavy sessions saved 41–62%
 against a pure frontier harness, and its judgment-heavy ones 25–38% or went wrong. The port is overwhelmingly
 implementation-heavy: 1,448 mechanical ports, 16,000 compiler errors, test fixes from stack traces, each behind two
-reviewers. So expect the per-call roles to take the $165k to **$65–95k** (a 41–60% saving) with the reviewers and
-planner still on the strong model, and `camelrun/fusion` on the lead to save a further few percent of a small
-number. The honest caveat stands: a weaker implementer raises the reviewers' findings and the fixers' rounds, and
+critics. So expect workers on `fast` to take the $165k to **$65–95k** (a 41–60% saving) with the critics and the
+lead still on `strong`, and `camelrun/auto` on a long-lived lead to save a further few percent of a small number. The honest caveat stands: a weaker implementer raises the reviewers' findings and the fixers' rounds, and
 the port's 19 regressions were semantic subtleties a reviewer must catch. So the eval measures two things, not one:
 **cost per merged task** (the review loop over a fixed repository and item set, to a green build) and **quality at
 equal rounds** (findings caught and regressions introduced when the loop is capped at the strong model's round
@@ -355,30 +391,30 @@ count). A cheap implementer that needs one more round per item halves the saving
 
 **Guardrails.**
 
-- A role never reviews its own work: the runtime refuses `agent({ role: "reviewer" })` whose `layer` was written by
-  a child on the same resolved model in this workflow, unless the call sets `allowSameModel: true`. Two reviewers
-  of one item resolve to different models when the role's route list has two.
-- A role's default moves only with an eval on the saved pattern scripts (the review loop over a fixed repository
-  and item set, scored on findings caught, rounds to converge and cost) and a turn-outcome watch after the change,
-  as the standing rule for model default changes says. The route list is operator-set (`AGENT_ROLE_MODELS`) and
-  per-tenant overridable with `PUT /v1/tenants/{id}/roles`.
-- `GET /v1/models` lists each `camelrun/role:*` with its `routes`, and `GET /v1/workflows/:id` shows the resolved
-  map at start and any pins, so nobody has to guess which model ran.
-- **Judgment never goes to the cheap model.** `planner` and `reviewer` route lists hold only strong models, the
-  runtime refuses a `roles` pin that puts a cheap-class model on them unless the start says `allowCheapJudgment:
-  true`, and `camelrun/fusion` keeps plan, ambiguity, approvals, shared-branch commits and final review on `main`
-  by rule. Cognition's one failed case is exactly this, and the port's regressions are the same kind.
-- **Account for the cache TTL.** Provider prompt caches expire after about 5 minutes. A role whose calls pause past
+- A critic never reviews its own work: the runtime refuses `agent({ type: "critic" })` whose input (`layer`, or
+  `files`) was written by a child on the same resolved model in this workflow, unless the call sets
+  `allowSameModel: true`. Two critics of one item resolve to different models when `strong`'s route list has two.
+- A class's route list moves only with an eval on the saved pattern scripts (the review loop over a fixed
+  repository and item set, scored on findings caught, rounds to converge and cost) and a turn-outcome watch after
+  the change, as the standing rule for model default changes says. Route lists are operator-set
+  (`AGENT_MODEL_CLASSES`) and per-tenant overridable with `PUT /v1/tenants/{id}/classes`.
+- `GET /v1/models` lists `camelrun/fast`, `camelrun/strong` and `camelrun/auto` with their `routes`, and
+  `GET /v1/workflows/:id` shows the resolved map at start and any pins, so nobody has to guess which model ran.
+- **Judgment never goes to the cheap class.** `critic` and `lead` default to `strong`, the runtime refuses a
+  `class: "fast"` or a `classes` pin that puts a fast-class model on them unless the start says
+  `allowFastJudgment: true`, and `camelrun/auto` keeps plan, ambiguity, approvals, shared-branch commits and the
+  final answer on `main` by rule. Cognition's one failed case is exactly this, and the port's regressions are the
+  same kind.
+- **Account for the cache TTL.** Provider prompt caches expire after about 5 minutes. A type whose calls pause past
   that (a phase that waits on a job, a gate open overnight) loses its prefix, and the next thousand calls pay full
-  price until it is warm again. The workflow runner keeps each active role's prefix warm while the workflow runs
-  (a minimal call every 4 minutes against the role's prefix, costing a few cached tokens) and batches a phase's
-  calls so they land within one window; `cacheShare` on the page shows when this is not working. Fusion names
-  engineering around this TTL as its hardest implementation problem; it is ours too.
+  price until it is warm again. The workflow runner keeps each active type's prefix warm while the workflow runs
+  (a minimal call every 4 minutes against the definition's prefix, costing a few cached tokens) and batches a
+  phase's calls so they land within one window; `cacheShare` on the page shows when this is not working. Fusion
+  names engineering around this TTL as its hardest implementation problem; it is ours too.
 - **Route dynamically mid-task, not only from the first prompt.** A task's difficulty rarely shows in its first
-  message and follow-ups are often harder. Within a workflow the script re-routes by result: a `reviewer` that
-  returns findings above a threshold sends the fixer call to the strong class (`agent(..., { role: "fixer",
-  escalate: true })` picks the role's strong route). Within one agent, `camelrun/fusion`'s classifier runs at every
-  compaction, not once at the start.
+  message and follow-ups are often harder. Within a workflow the script re-routes by result: a critic that returns
+  findings above a threshold sends the next worker call to `strong` (`agent(..., { type: "worker", class: "strong"
+  })`). Within one agent, `camelrun/auto`'s classifier runs at every compaction, not once at the start.
 
 ### A small library of patterns
 
@@ -393,16 +429,16 @@ const r = repo(args.repo);
 await pipeline(args.files, async (file) => {
   const layer = await r.layer(`impl:${file}`, { from: args.branch });
   await agent(`Port ${file} from Zig to Rust following PORTING.md and LIFETIMES.tsv. Write ${rs(file)}. Commit only that file.`,
-    { key: `impl:${file}`, definition: args.implementer, layer, phase: "Implement" });
+    { key: `impl:${file}`, type: "worker", definition: args.porter, layer, phase: "Implement" });
   return layer;
 }, async (layer, file) => {
   const reviews = await parallel([0, 1].map(i => () => agent(
     `Find every way ${rs(file)} differs from ${file} or breaks PORTING.md. Only find bugs; never fix.`,
-    { key: `review:${file}:${i}`, definition: args.reviewer, layer: layer.readOnly(), output: REVIEW, phase: "Review" })));
+    { key: `review:${file}:${i}`, type: "critic", layer: layer.readOnly(), output: REVIEW, phase: "Review" })));
   return { layer, findings: reviews.filter(Boolean).flatMap(r => r.findings) };
 }, async ({ layer, findings }, file) => {
   if (findings.length) await agent(`Apply these review findings to ${rs(file)}:\n${JSON.stringify(findings)}`,
-    { key: `fix:${file}`, definition: args.fixer, layer, phase: "Fix" });
+    { key: `fix:${file}`, type: "worker", layer, phase: "Fix" });
   const diff = await layer.diff();
   if (/\b(todo!|unimplemented!)\(/.test(diff.added)) throw new Error(`stub added in ${file}`);   // the gate the reviewers gamed
   return r.commit({ layer, onto: args.branch, message: `port: ${file}` });
@@ -422,7 +458,7 @@ for (let round = 0; q.size() === 0 || round < args.maxRounds; round++) {
     for (let item; (item = await q.claim(1, { leaseSeconds: 1800 }))[0]; ) {
       const { file, errors } = item[0];
       const layer = await r.layer(`fix:${file}:${round}`, { from: args.branch });
-      await agent(`Fix these compiler errors in ${file}. No stubs. Commit only ${file}.\n${errors}`, { key: `fix:${round}:${file}`, definition: args.fixer, layer });
+      await agent(`Fix these compiler errors in ${file}. No stubs. Commit only ${file}.\n${errors}`, { key: `fix:${round}:${file}`, type: "worker", layer });
       await r.commit({ layer, onto: args.branch, message: `fix: ${file}` }).then(() => q.done(item[0].id), e => q.fail(item[0].id, e.message));
     }
   }));
@@ -435,6 +471,32 @@ A claim is a lease; a child that dies past its lease returns the item to the que
 written to the volume. **Crate by crate**: the queue pattern inside a `for` over `cargo metadata`'s crate list in
 dependency order, one `job` per crate, 64 fixers across crates. **Sharded tests**: `parallel` over N `job`s each
 running a slice of the test list, each failure an item for the review loop.
+
+**Beyond code.** The same primitives, no repository:
+
+```js
+// A research sweep with critics: workers per source, critics per claim, a lead to write.
+const notes = await pipeline(args.sources, src => agent(`Read ${src} and list its claims about ${args.question} with quotes.`,
+  { key: `read:${src}`, type: "worker", output: CLAIMS, files: "/workflow" }));
+const claims = dedupe(notes.filter(Boolean).flatMap(n => n.claims));
+const judged = await pipeline(claims, c => parallel([0, 1].map(i => () => agent(`Try to refute: ${c.text}. Cite the source.`,
+  { key: `refute:${c.id}:${i}`, type: "critic", output: VERDICT }))), votes => votes.filter(Boolean).filter(v => !v.refuted).length >= 2);
+return agent(`Write the report from these surviving claims:\n${JSON.stringify(claims.filter((c, i) => judged[i]))}`,
+  { key: "report", type: "lead", files: "/workflow" });
+```
+
+```js
+// A data audit across 500 tables: a query job per table, a critic on what the worker flags, a lead to rank.
+const audits = await pipeline(args.tables, async table => {
+  const profile = await job({ key: `profile:${table}`, snapshot: "warehouse-client", command: `camel-profile ${table} > /out/profile.json`, outputs: ["profile.json"] });
+  return agent(`Here is the profile of ${table}. Flag anything wrong: nulls, drift, duplicates, PII in the clear.\n${profile.outputs["profile.json"]}`,
+    { key: `audit:${table}`, type: "worker", output: FINDINGS });
+}, async (findings, table) => findings?.items.length
+  ? agent(`Confirm or refute each finding for ${table}: ${JSON.stringify(findings)}`, { key: `confirm:${table}`, type: "critic", output: FINDINGS })
+  : null);
+await gate({ title: "Audit ready", body: `${audits.filter(Boolean).length} tables with confirmed findings`, recommended: "publish" });
+return agent(`Rank these by severity and write the summary:\n${JSON.stringify(audits.filter(Boolean))}`, { key: "rank", type: "lead" });
+```
 
 ### API and SDK
 
@@ -460,7 +522,11 @@ as `<workflow_notification>` runtime notices (the `child_` notification path, wi
 camelCode lead in Slack runs a refactor: it scouts the work-list in its own turn, starts the workflow with the list
 as `args`, and reports as phases end.
 
-## Part 2: code work without a VM
+## Part 2: the code module and jobs
+
+Everything in Part 1 is domain-neutral. This part is the code module (repositories, layers, search, git), which a
+workflow uses only when it names a `repo`, and jobs, which every domain uses: a build, a test shard, a warehouse
+query, a notebook, a scraper are all one command in an ephemeral container.
 
 ### The repository object
 
@@ -495,7 +561,7 @@ await agent(task, { layer });   // the child sees /repo, read-write, through its
 
 Inside the child, `/repo` is a mount like any volume: `read`, `write`, `edit`, `ls`, `glob`, `grep` and `cp`, with
 the "changed since you last read it" check. There is no shell, so there is no `git` to misuse: the layer has
-`commit` as a tool, nothing else. The reviewer's layer is `readOnly()`: the same files, no writes.
+`commit` as a tool, nothing else. A critic's layer is `readOnly()`: the same files, no writes.
 
 **Phase 1: layers from volume forks.** Everything above needs the repo object (phase 3). Phase 1 gets the same shape
 from what volumes do today: `volume.fork({ snapshot })` is metadata-only and shares content
@@ -732,11 +798,11 @@ cost against the same work done by one agent on a computer.
 
 | Phase | Weeks | Delivers | Dogfood |
 | --- | --- | --- | --- |
-| 1. Workflow object and jobs | 4 | `WorkflowObject`, runner, journal, keys, `agent()`, `parallel`, `pipeline`, `gate`, `sleep`, pause/edit/resume, budget, ledger, items API, console page, `workflows` builtin, the five default roles on `camelrun/role:*` virtual models with the `roles` map and per-call pin; `POST /v1/jobs` with the `JobDriver` seam, the Boat and Cloudflare bridge drivers, `camel-sync`, limits, outputs, `jobConcurrency`; children on volume forks with the phase-1 commit and `layer` on `agent()`; contract tests. The nested-virt spike runs in parallel, week 1 | camelCode review loop on a chiridion refactor: 8–16 children editing forks, one typecheck-and-test job per round on Cloudflare, push by job; the same run twice, strong implementer against cheap, as the first role eval |
+| 1. Workflow object and jobs | 4 | `WorkflowObject`, runner, journal, keys, `agent()`, `parallel`, `pipeline`, `gate`, `sleep`, pause/edit/resume, budget, ledger, items API, console page, `workflows` builtin, the three agent types as definitions and the `fast`/`strong` classes as virtual models with the `classes` map and per-call pin (`auto` follows in phase 4); `POST /v1/jobs` with the `JobDriver` seam, the Boat and Cloudflare bridge drivers, `camel-sync`, limits, outputs, `jobConcurrency`; children on volume forks with the phase-1 commit and `layer` on `agent()`; contract tests. The nested-virt spike runs in parallel, week 1 | camelCode review loop on a chiridion refactor: 8–16 children editing forks, one typecheck-and-test job per round on Cloudflare, push by job; the same run twice, workers on `strong` against `fast`, as the first class eval |
 | 2. Our job hosts | 4 | The host image (Firecracker, base rootfs, netns/tap pool, nftables, no IMDS), the host agent, `job_hosts` registration and placement, dm-thin clones of NVMe snapshots pulled from S3, `saveSnapshot` to S3, the ASG with a warm build pool and a spot test pool scaled on queue depth, lease sweeps and retry by key on host loss | The same loop with jobs on our hosts: measure restore p50/p95 at 32 parallel, build time against Bun CI's `r8g.4xlarge`, nested-virt overhead, cost per job against the bridges |
 | 3. Repositories | 4 | `kind: "repo"` volumes, the repo object, layer rows, commit with three-way merge, `diff`, `branch`, `merge`, the trigram index behind `grep`, import job, push and pull through the GitHub App from the object | The loop at 32 children, commits of one file at a time onto one branch, whole-tree `grep` from the object, one push a phase |
 | 4. Queues and scale | 3 | `queue()`, sharded tests on the spot pool, the `jobs` builtin for ordinary agents, `/stuck`, alerts, phase collapse in the journal, 10,000 effects, saved patterns | A compile-error work queue on a Rust or TypeScript repository of ours: 64 fixers, 8 builds on R8id, 32 shards on C8id, a snapshot refreshed per crate |
-| 5. Bun-shaped run and Node | 3 | Node parity through the shared runner, docs, the role eval harness | A full Bun-shaped run on a public repository, measured against the post's numbers: cost, cache share, wall time, conflicts, jobs per hour |
+| 5. Bun-shaped run and Node | 3 | Node parity through the shared runner, docs, the class and `auto` eval harness | A full Bun-shaped run on a public repository, measured against the post's numbers: cost, cache share, wall time, conflicts, jobs per hour |
 
 ### Open questions
 
@@ -759,12 +825,17 @@ cost against the same work done by one agent on a computer.
     zero), or retire them once the pool has run a month? Keeping them costs two drivers to maintain under one seam.
 7. **Pricing of steps and the repo object.** Steps and searches are Durable Object time today, unbilled to tenants,
    as monitor checks are. Measure before deciding.
-8. **Role defaults and `camelrun/fusion`.** Which cheap model is the implementer class and the sidekick on day
-   one, and the eval's pass bar (cost per merged task down by a third or more at quality within 2% at equal
-   rounds?). For `camelrun/fusion`: whether a `decide` classifier at each compaction is accurate enough, or the
-   main model should make the call itself in its compaction summary; whether to keep the sidekick's cache warm
-   while the main model holds the turn (Fusion runs both in parallel; we would pay for two prefixes); and what a
-   compaction-boundary switch costs on providers whose cache keys include the model.
+8. **Day-one models and `auto`'s classifier.** Which model backs `fast` (DeepSeek V4.1 Flash on vetted OpenRouter
+   hosts, or Haiku 5.5?) and `strong` (Sonnet 5.5, or Opus 5.5 for critics only?) on day one, and the eval's
+   pass bar (cost per merged task down by a third or more at quality within 2% at equal rounds?). For
+   `camelrun/auto`: how Jev's routing is scored before the three-way eval (a labelled set of decision points from
+   real sessions, scored on wrong-way switches, with the cost of each kind of error weighed: a fast model on
+   judgment is worse than a strong model on bulk), where the confidence threshold sits, whether to keep the
+   sidekick's cache warm while the main model holds the turn (Fusion runs both in parallel; we would pay for two
+   prefixes), and what a compaction-boundary switch costs on providers whose cache keys include the model.
+11. **Types for other domains.** Three types cover code, research and audits in this document. A domain that needs
+    a fourth (a `negotiator` that may spend, a `operator` that may run side effects without a gate) should argue
+    for a permission the three lack, not a job title.
 9. **Layers for whole-tree refactors.** A refactor that touches 10,000 paths at once (the crate split) is one layer
    at the cap. Raise the cap, or run that phase as a job that commits through the object's bulk API?
 
