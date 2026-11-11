@@ -44,3 +44,18 @@ test('types and classes: defaults, pins, the judgment guard and the critic schem
   assert.equal(classModel({}, 'strong'), 'camelrun/strong');
   assert.equal(classModel({ AGENT_WORKFLOW_CLASS_MODELS: '{"fast":"a/b"}' }, 'fast'), 'a/b');
 });
+
+test('a script edit refuses a non-integer rerunConfirmPercent with 400, before the runner sees it', async () => {
+  const edits: unknown[] = [];
+  const stub = { get: async () => ({ tenant: 'acme' }), view: async () => ({}), edit: async (options: unknown) => { edits.push(options); return { revision: 2 }; } };
+  const env = { AGENT_WORKFLOW_TENANTS: 'acme', WORKFLOWS: { getByName: () => stub } } as never;
+  const edit = (body: unknown) => workflowRoutes(new Request('https://run/v1/workflows/wf_1/script', { method: 'PUT', body: JSON.stringify(body) }), env, 'acme');
+  const refused = await edit({ script: 'x', reason: 'r', rerunConfirmPercent: 12.5 });
+  assert.equal(refused?.status, 400);
+  assert.match(((await refused!.json()) as { error: string }).error, /integer/);
+  assert.equal(edits.length, 0);
+  assert.equal((await edit({ script: 'x', reason: 'r', rerunConfirmPercent: 30 }))?.status, 200);
+  assert.deepEqual(edits, [{ code: 'x', reason: 'r', rerunConfirmPercent: 30 }]);
+  // Another tenant's workflow is not found.
+  assert.equal((await workflowRoutes(new Request('https://run/v1/workflows/wf_1'), { AGENT_WORKFLOW_TENANTS: '*', WORKFLOWS: { getByName: () => stub } } as never, 'other'))?.status, 404);
+});

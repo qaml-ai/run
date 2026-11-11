@@ -97,6 +97,15 @@ export const unwiredExecutor: EffectExecutor = {
 };
 
 /**
+ * `gate()` until it has an executor (an inbox item the workflow owns): it fails at once and clearly, so the script gets
+ * null with the reason on its item, instead of a start that is refused on every wake.
+ */
+export const GATE_UNAVAILABLE = "gate() is not available yet: a workflow cannot ask a person on this runtime. Remove the gate, or end the workflow and ask in your own reply";
+export function gateUnavailable(land: (key: string, attempt: number, outcome: EffectOutcome) => Promise<void>): ChildEffects {
+  return { start: effect => land(effect.key, effect.attempt, { ok: false, error: GATE_UNAVAILABLE }) };
+}
+
+/**
  * One executor from several, by effect kind: `start` and `cancel` go to the kind's executor (a kind with none is
  * refused loudly), `recover` and `abort` to every one, and children's endings and progress to the `agent` executor.
  * Other lanes add a kind with one entry (job, commit, push).
@@ -172,7 +181,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
       classes: () => { const settings = self.settings(); return { ...(settings.classes ? { classes: settings.classes } : {}), ...(settings.allowFastJudgment ? { allowFastJudgment: true } : {}) }; },
       children: workflowChildren(env as unknown as Env, () => { const identity = self.runner.identity(); return { id: name!, tenant: identity.tenant! }; }, { runtimeOrigin: (env as { AGENT_PUBLIC_URL?: string }).AGENT_PUBLIC_URL }),
     });
-    this.executor = env.TEST_MODE === "1" && env.TEST_WORKFLOW_EXECUTOR === "stub" ? testExecutor((...args) => this.land(...args), ctx) : byKind({ agent: this.agents });
+    this.executor = env.TEST_MODE === "1" && env.TEST_WORKFLOW_EXECUTOR === "stub" ? testExecutor((...args) => this.land(...args), ctx) : byKind({ agent: this.agents, gate: gateUnavailable((key, attempt, outcome) => this.land(key, attempt, outcome)) });
     this.runner = new WorkflowRunner(
       { sql: ctx.storage.sql, transactionSync: fn => ctx.storage.transactionSync(fn) },
       sandbox, this.executor,

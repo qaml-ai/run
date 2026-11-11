@@ -20,7 +20,7 @@ export const WORKFLOW_START_DESCRIPTION =
   "Start a workflow: a JavaScript script that runs sub-agents (agent(prompt, { key, type, class, output })), waits on them (parallel(items, fn)), and returns a result. " +
   "Write a workflow when a task is many independent or repeated units of work (per file, per table, per source), needs more than a few sub-agents at once, must keep running after your turn ends, or needs a person's approval or a budget along the way; use `delegate` for a few sub-agents whose answers you need in this turn. " +
   "A workflow outlives your turn and reports back as it goes; you own it: you can edit its script, answer its gates and stop it. " +
-  "Inside parallel(), give every agent() a key. Types: worker (does one task), critic (finds problems; needs output), lead (plans, judges, writes the final answer). The script reads `args`.";
+  "Inside parallel(), give every agent() a key. Types: worker (does one task), critic (reviews another agent's work and reports problems; requires an `output` schema), lead (plans, judges, writes the final answer). The script reads `args`.";
 
 export interface WorkflowToolsHost {
   env: WorkflowEnv;
@@ -101,7 +101,7 @@ export function workflowTools(host: WorkflowToolsHost): ToolRegistration[] {
     }, ["workflowId"], async args => { const stub = await own(args.workflowId); await stub.resume(Array.isArray(args.rerun) ? { rerun: args.rerun } : {}); return brief(args.workflowId, await stub.view() as Record<string, any>); }),
     tool("workflow_abort", "Stop a workflow for good: its running sub-agents stop and nothing new starts.", { workflowId: id }, ["workflowId"],
       async args => { const stub = await own(args.workflowId); await stub.abort(); return brief(args.workflowId, await stub.view() as Record<string, any>); }),
-    tool("workflow_budget", "Change a workflow's budget (USD). A workflow paused for its budget resumes with workflow_resume.", {
+    tool("workflow_budget", "Change a workflow's budget (USD). A workflow stopped for its budget runs again by itself once the new budget is above what it has spent.", {
       workflowId: id, usd: { type: "number", description: "Its new budget in USD" },
     }, ["workflowId", "usd"], async args => {
       const stub = await own(args.workflowId);
