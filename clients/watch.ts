@@ -272,42 +272,28 @@ export function watchAgent(options: WatchOptions): Watcher {
 
   /**
    * Children followed by id: a watcher of each child's own stream, whose messages of the child's run (from its prompt,
-   * whose requestId is the run's, to the next run's) become the sub-agent's `messages`.
+   * whose requestId is the run's, to the next run's) become the sub-agent's `messages`. It stops once the parent said
+   * the run ended and the child's stream has its response.
    */
-  const following = new Map<string, { watcher: Watcher; ended?: ReturnType<typeof setTimeout> }>();
-  function followChild(toolCallId: string, agentId: string, requestId: string | undefined) {
+  const following = new Map<string, Watcher>();
+  function followChild(toolCallId: string, agentId: string, requestId: string) {
     if (!options.subagents || following.has(toolCallId) || following.size >= 16 || closed.signal.aborted) return;
-    const update = (view: AgentView) => {
-      const current = state.subagents.get(toolCallId);
-      if (!current) return;
-      const start = requestId ? view.messages.findIndex(message => message.role === "user" && message.requestId === requestId) : -1;
-      if (start < 0) return;
-      let end = view.messages.length;
-      for (let at = start + 1; at < view.messages.length; at++) {
-        const message = view.messages[at];
-        if (message.role === "user" && message.requestId && message.requestId !== requestId) { end = at; break; }
-      }
-      state.subagents = new Map(state.subagents).set(toolCallId, { ...current, messages: view.messages.slice(start, end) });
-      changed();
-      // Its run ended on its own stream, and the parent said so: nothing more to read.
-      if (current.status && view.lastOutcome?.id === requestId) stopFollowing(toolCallId);
-    };
-    const watcher = watchAgent({ url: options.url, agentId, token, expiresAt, getToken: options.getToken, fetch: options.fetch, transport: options.transport, stallMs: options.stallMs, hiddenGraceMs: options.hiddenGraceMs, pageSize: options.pageSize, onChange: update,
+    following.set(toolCallId, watchAgent({ ...options, agentId, token, expiresAt, subagents: false, onEvent: undefined,
       // A token that reads only a child's events (no children scope) is refused its history and inputs: the stream does.
-      onError: error => { if (![403, 404].includes((error as { status?: number }).status ?? 0) && !/HTTP 40[34]/.test(error.message)) report(error); } });
-    following.set(toolCallId, { watcher });
+      onError: error => { if (!/HTTP 40[34]/.test(error.message)) report(error); },
+      onChange: view => {
+        const current = state.subagents.get(toolCallId);
+        const start = view.messages.findIndex(message => message.role === "user" && message.requestId === requestId);
+        if (!current || start < 0) return;
+        const end = view.messages.findIndex((message, at) => at > start && message.role === "user" && message.requestId && message.requestId !== requestId);
+        state.subagents = new Map(state.subagents).set(toolCallId, { ...current, messages: view.messages.slice(start, end < 0 ? undefined : end) });
+        changed();
+        if (current.status && view.lastOutcome?.id === requestId) stopFollowing(toolCallId);
+      } }));
   }
   function stopFollowing(toolCallId: string) {
-    const entry = following.get(toolCallId);
-    if (!entry) return;
-    clearTimeout(entry.ended);
-    entry.watcher.close();
+    following.get(toolCallId)?.close();
     following.delete(toolCallId);
-  }
-  /** The parent says the child's run ended: its last messages may still be on their way on its stream, so a while longer. */
-  function endFollowing(toolCallId: string) {
-    const entry = following.get(toolCallId);
-    if (entry && !entry.ended) entry.ended = setTimeout(() => stopFollowing(toolCallId), 10_000);
   }
 
   /** Take in one frame of the stream. */
@@ -385,7 +371,6 @@ export function watchAgent(options: WatchOptions): Watcher {
       case "subagent_end": {
         const child = state.subagents.get(event.toolCallId);
         if (child) state.subagents = new Map(state.subagents).set(event.toolCallId, { ...child, status: event.status, ...(event.error ? { error: event.error } : {}) });
-        endFollowing(event.toolCallId);
         break;
       }
       // Its latest report, while it runs: an ending above keeps the last one.
@@ -520,7 +505,7 @@ export function watchAgent(options: WatchOptions): Watcher {
     },
     close() {
       closed.abort();
-      for (const toolCallId of [...following.keys()]) stopFollowing(toolCallId);
+      for (const id of [...following.keys()]) stopFollowing(id);
       clearTimeout(hiding);
       doc?.removeEventListener("visibilitychange", onVisibility);
     },

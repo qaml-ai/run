@@ -412,6 +412,8 @@ export function createAgentHandler<A extends AgentAuth = AgentAuth>(options: Age
     };
     let upstream = await forward(false);
     if (upstream.status === 401) { await upstream.body?.cancel(); upstream = await forward(true); }
+    // Another agent that is not one of the user's agent's sub-agents is not found, as on the runtime.
+    if (requested !== agent.id && upstream.status === 403) { await upstream.body?.cancel(); fail(404, "not_found", "No such agent"); }
     const headers = new Headers({ "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no" });
     const type = upstream.headers.get("content-type");
     if (type) headers.set("Content-Type", type);
