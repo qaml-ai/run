@@ -955,6 +955,11 @@ class _RuntimeCalls:
         """A new signing secret ({"secret"}), shown only now; the old one also signs for 24 hours."""
         return self._rest("POST", f"/v1/webhooks/{_path(webhook_id)}/secret", retry=False)
 
+    @property
+    def workflows(self):
+        """Workflows (Workers runtimes, enabled per account): start, get, items, events, edit, pause, resume, abort, budget, wait."""
+        return Workflows(self)
+
     def _operator(self):
         if not self.api_key:
             raise AgentError("No API key: set CAMELAI_API_KEY (or pass api_key). Create one at https://run.camelai.com/console/tokens")
@@ -1009,8 +1014,10 @@ class AgentRuntime(_RuntimeCalls):
             raise
         return then(value) if then else value
 
-    async def create_agent(self, *, tools, workspace_id=_DEFAULT, system_prompt=None, name=None, type=None, metadata=None, networking=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, definition_revision=None, human_input=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, computer_limit=None, model_headers=None, on_input=None, builtins=None, delegate=None, subagents=False, prompt=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, idle_ttl_seconds=None):
+    async def create_agent(self, *, tools, workspace_id=_DEFAULT, system_prompt=None, name=None, type=None, metadata=None, networking=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, definition_revision=None, human_input=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, computer_limit=None, model_headers=None, on_input=None, builtins=None, delegate=None, workflows=None, subagents=False, prompt=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, idle_ttl_seconds=None):
         """Provision an agent. `model` is "provider/model-id", e.g. "anthropic/claude-sonnet-5-5".
+        `workflows` (with `delegate` settings, on a Workers runtime with workflows enabled): False turns the workflows builtin
+        off; {"maxBudgetUsd": n} is the most one workflow the agent starts may spend (default $100).
         `definition` makes it from a definition (GET /v1/definitions), which supplies the model, system prompt,
         thinking level and tool sources; `tools` are added as the agent's attached MCP server.
         `ttl_seconds` is the agent's lifetime, or None to keep it until it is deleted (default: until deleted with an
@@ -1031,7 +1038,7 @@ class AgentRuntime(_RuntimeCalls):
         # subject: who the agent acts for; context: claims for its tool servers' identity tokens. Set only here.
         body = _provisioning(tools, definition=definition, name=name, type=type, metadata=metadata, networking=networking, system_prompt=system_prompt, model=model, thinking_level=thinking_level,
                              definition_revision=definition_revision, human_input=human_input, workspace_id=workspace_id, mounts=mounts, subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits, computer_limit=computer_limit, model_headers=model_headers, builtins=builtins,
-                             delegate=delegate, prompt=prompt, initial_messages=initial_messages, import_messages=import_messages, max_output_tokens=max_output_tokens, temperature=temperature, data_collection=data_collection, language=language, mcp_servers=mcp_servers)
+                             delegate=delegate, workflows=workflows, prompt=prompt, initial_messages=initial_messages, import_messages=import_messages, max_output_tokens=max_output_tokens, temperature=temperature, data_collection=data_collection, language=language, mcp_servers=mcp_servers)
         # A key of the caller's makes the agent durable (it lives until deleted); one the SDK makes up, only so a retried
         # create finds the same agent, keeps a scratch agent's day, said explicitly since any key would make it durable.
         if idle_ttl_seconds is not None:
@@ -1365,6 +1372,119 @@ class EndUsers:
         return self._runtime._rest("POST", self._path(end_user) + "/entries", body)
 
 
+_WORKFLOW_SETTLED = frozenset(("completed", "failed", "aborted", "paused", "budget_exhausted"))
+
+
+class Workflows:
+    """Workflows (runtime.workflows, agents.workflows): a JavaScript script that runs many sub-agents, durably, under a
+    budget, and outlives the call that started it. Workers runtimes only, enabled per account (an AgentError with code
+    WORKFLOWS_OFF otherwise). See docs/guides/workflows.md. Its calls are awaited from AgentRuntime, and plain from the
+    synchronous one.
+
+        wf = await agents.workflows.start(script, args={"files": files}, budget_usd=20)
+        done = await agents.workflows.wait(wf["id"])
+    """
+
+    def __init__(self, runtime):
+        self._runtime = runtime
+
+    @staticmethod
+    def _path(workflow_id, action=""):
+        if not isinstance(workflow_id, str) or not re.fullmatch(r"wf_[A-Za-z0-9_-]{1,80}", workflow_id):
+            raise AgentError("Invalid workflow id")
+        return f"/v1/workflows/{quote(workflow_id, safe='')}{action}"
+
+    def start(self, script, *, budget_usd, args=None, concurrency=None, classes=None, name=None, allow_fast_judgment=None, idempotency_key=None):
+        """Start one: {"id": "wf_…", "status", "revision", "step", "budget", "spent", "counts", ...}. `script` is its JavaScript
+        (its body runs as an async function, at most 256 KiB); `budget_usd` the most it may spend, or None for no cap (it
+        pauses with status "budget_exhausted" once spent); `args` JSON the script reads as `args`; `concurrency` sub-agents at
+        once (1 to 64, default 8); `classes` pins a type's model class for the whole workflow ({"worker": "strong"});
+        `allow_fast_judgment` lets critics and leads run on the fast class. With `idempotency_key`, a retry with the same
+        key is the same workflow."""
+        body = {"script": script, "budget": {"usd": budget_usd}, **({"args": args} if args is not None else {}), **({"concurrency": concurrency} if concurrency is not None else {}),
+                **({"classes": classes} if classes is not None else {}), **({"name": name} if name is not None else {}),
+                **({"allowFastJudgment": allow_fast_judgment} if allow_fast_judgment is not None else {})}
+        return self._runtime._rest("POST", "/v1/workflows", body, retry=bool(idempotency_key), headers={"Idempotency-Key": idempotency_key} if idempotency_key else None)
+
+    def get(self, workflow_id):
+        """Its status, counts, spend, phase and, once it ends, its "result" (or "error")."""
+        return self._runtime._rest("GET", self._path(workflow_id))
+
+    def items(self, workflow_id, *, after=None, limit=None, status=None, phase=None, kind=None):
+        """Its effects (agents, gates, timers) in journal order, a page at a time: {"items": [{"key", "attempt", "kind", "status",
+        "args", "result"?, "reason"?, "costUsd"?, "ord", ...}], "next"?}; pass next as `after`. `status`: pending, running, done,
+        failed, refused or aborted; `kind`: agent, gate or timer; `limit` at most 500."""
+        query = urlencode({key: value for key, value in (("after", after), ("limit", limit), ("status", status), ("phase", phase), ("kind", kind)) if value is not None})
+        return self._runtime._rest("GET", self._path(workflow_id, "/items") + (f"?{query}" if query else ""))
+
+    def events(self, workflow_id, *, after=None, limit=None):
+        """Its events (created, steps, pauses, edits, its ending) after `after`: {"events": [{"seq", "at", "type", "data"?}]}."""
+        query = urlencode({key: value for key, value in (("after", after), ("limit", limit)) if value is not None})
+        return self._runtime._rest("GET", self._path(workflow_id, "/events") + (f"?{query}" if query else ""))
+
+    def diff(self, workflow_id, revision=None):
+        """What a revision (default: the current one) kept from the journal, issued new, and has not reached yet:
+        {"revision", "reason"?, "kept", "issued", "unseen"}."""
+        return self._runtime._rest("GET", self._path(workflow_id, "/diff") + (f"?revision={revision}" if revision is not None else ""))
+
+    def edit(self, workflow_id, script, *, reason, rerun_confirm_percent=None):
+        """Replace its script: a new revision, replayed at the next step. Effects whose keys and arguments are unchanged keep
+        their results; new or changed ones run. `reason` is kept with the revision. An edit that re-issues more than
+        `rerun_confirm_percent` of the finished effects (default 25) pauses for a confirm. {"revision", "workflow"}."""
+        body = {"script": script, "reason": reason, **({"rerunConfirmPercent": rerun_confirm_percent} if rerun_confirm_percent is not None else {})}
+        return self._runtime._rest("PUT", self._path(workflow_id, "/script"), body, retry=False)
+
+    def pause(self, workflow_id, *, children=None):
+        """Pause it: nothing new starts. Running sub-agents finish, unless children="abort" stops them (they run again on resume)."""
+        return self._runtime._rest("POST", self._path(workflow_id, "/pause"), {"children": children} if children else {})
+
+    def resume(self, workflow_id, *, rerun=None):
+        """Resume a paused one. `rerun` lists effect keys to run again (a new attempt each)."""
+        return self._runtime._rest("POST", self._path(workflow_id, "/resume"), {"rerun": list(rerun)} if rerun else {}, retry=False)
+
+    def abort(self, workflow_id):
+        """Stop it for good: its running sub-agents stop, the journal stays readable."""
+        return self._runtime._rest("POST", self._path(workflow_id, "/abort"), {})
+
+    def budget(self, workflow_id, usd):
+        """Change its budget (USD; None: no cap). One at "budget_exhausted" runs again once the budget is above what it spent."""
+        return self._runtime._rest("POST", self._path(workflow_id, "/budget"), {"usd": usd})
+
+    def wait(self, workflow_id, *, timeout=None, poll=2.0):
+        """Poll until it settles: completed, failed, aborted, paused or budget_exhausted (read "pauseReason" and decide). Every
+        `poll` seconds; raises AgentError after `timeout` seconds (default: no limit), with the latest summary as .workflow."""
+        if inspect.iscoroutinefunction(self._runtime._rest):
+            return self._wait_async(workflow_id, timeout, poll)
+        return self._wait_sync(workflow_id, timeout, poll)
+
+    @staticmethod
+    def _timed_out(workflow_id, workflow, timeout):
+        error = AgentError(f"Workflow {workflow_id} is still {workflow.get('status')} after {timeout} s")
+        error.workflow = workflow
+        return error
+
+    async def _wait_async(self, workflow_id, timeout, poll):
+        deadline = None if timeout is None else asyncio.get_running_loop().time() + timeout
+        while True:
+            workflow = await self.get(workflow_id)
+            if workflow.get("status") in _WORKFLOW_SETTLED:
+                return workflow
+            if deadline is not None and asyncio.get_running_loop().time() + poll > deadline:
+                raise self._timed_out(workflow_id, workflow, timeout)
+            await asyncio.sleep(poll)
+
+    def _wait_sync(self, workflow_id, timeout, poll):
+        import time
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            workflow = self.get(workflow_id)
+            if workflow.get("status") in _WORKFLOW_SETTLED:
+                return workflow
+            if deadline is not None and time.monotonic() + poll > deadline:
+                raise self._timed_out(workflow_id, workflow, timeout)
+            time.sleep(poll)
+
+
 class Voices:
     """Voice library discovery (runtime.voices, agents.voices)."""
 
@@ -1479,11 +1599,11 @@ class Voice:
 
 def _provisioning(tools, *, workspace_id=_DEFAULT, definition=None, definition_revision=None, human_input=None, name=None, type=None, metadata=None, system_prompt=None, model=None, thinking_level=None, mounts=None, remount=None,
                   subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, computer_limit=None, model_headers=None, system_prompt_append=None, file_tools=None, builtins=None,
-                  delegate=None, prompt=None, code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, bucket=None, queue=None, networking=None):
+                  delegate=None, workflows=None, prompt=None, code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, bucket=None, queue=None, networking=None):
     """A create request's body: the tools as the attached MCP server's tools/list, and the fields given."""
     optional = {"metadata": metadata, "definitionRevision": definition_revision, "humanInput": human_input, "definition": definition, "name": name, "type": type, "systemPrompt": system_prompt, "model": model, "thinkingLevel": thinking_level,
                 "mounts": mounts, "remount": remount, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit, "runLimits": run_limits, "computerLimit": computer_limit, "modelHeaders": model_headers,
-                "systemPromptAppend": system_prompt_append, "fileTools": file_tools, "codeMode": code_mode, "builtins": builtins, "delegate": delegate, "mcpServers": mcp_servers, "prompt": prompt,
+                "systemPromptAppend": system_prompt_append, "fileTools": file_tools, "codeMode": code_mode, "builtins": builtins, "delegate": delegate, "workflows": workflows, "mcpServers": mcp_servers, "prompt": prompt,
                 "initialMessages": initial_messages, "importMessages": import_messages, "maxOutputTokens": max_output_tokens, "temperature": temperature, "dataCollection": data_collection, "language": language, "bucket": bucket, "queue": queue, "networking": networking}
     if workspace_id is not _DEFAULT:
         optional["workspaceId"] = workspace_id
@@ -3145,6 +3265,8 @@ class Agents:
         # Voice calls held for your bot: create, get, list, update, end.
         self.voice = self.runtime.voice
         self.voices = self.runtime.voices
+        # Workflows: a script that runs many sub-agents under a budget, outliving the call (see Workflows).
+        self.workflows = self.runtime.workflows
         self._open = set()
         self.connection = connection
 
@@ -3166,7 +3288,7 @@ class Agents:
 
     async def upsert(self, key, *, workspace_id=_DEFAULT, model=None, instructions=None, tools=None, definition=None, definition_revision=None, human_input=None, thinking_level=None, subject=None, context=None,
                      key_scope=None, spend_limit=None, run_limits=None, computer_limit=None, model_headers=None, mounts=None, remount=None, name=None, metadata=None, instructions_append=None, file_tools=None,
-                     builtins=None, delegate=None, subagents=False, on_event=None, on_input=None, on_error=None, attach=None, takeover=False, connection=None,
+                     builtins=None, delegate=None, workflows=None, subagents=False, on_event=None, on_input=None, on_error=None, attach=None, takeover=False, connection=None,
                      code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, bucket=None,
                      queue=None):
         """The agent for `key` (your name for it: "support-triage", or "user-123"), made now if there is none, and set
@@ -3189,12 +3311,14 @@ class Agents:
         `max_output_tokens` caps each model response (within the model's maximum); `temperature` (0 to 2) sets sampling, for a
         model and thinking level that take one (a 400 otherwise). `bucket`, with end-user credits on (agents.end_users), is the bucket
         of its subject's credit its runs spend from (default "default"). `queue` ({"mode": "batch", "windowMs"?}) runs the
-        prompts that wait while a turn runs together as its next turn (see Batching in the concepts guide)."""
+        prompts that wait while a turn runs together as its next turn (see Batching in the concepts guide). `workflows` (with
+        `delegate`, on a Workers runtime with workflows enabled): False turns the workflows builtin off; {"maxBudgetUsd": n} caps
+        what one workflow the agent starts may spend (default $100). See the workflows guide."""
         tools = list(tools or [])
         session = await self.runtime.upsert_agent(key, workspace_id=workspace_id, tools=tools, definition=definition, definition_revision=definition_revision, human_input=human_input, system_prompt=instructions, model=model, thinking_level=thinking_level,
                                                   subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits, computer_limit=computer_limit,
                                                   model_headers=model_headers, mounts=mounts, remount=remount, name=name, metadata=metadata, system_prompt_append=instructions_append, file_tools=file_tools, builtins=builtins,
-                                                  delegate=delegate, code_mode=code_mode, initial_messages=initial_messages, import_messages=import_messages,
+                                                  delegate=delegate, workflows=workflows, code_mode=code_mode, initial_messages=initial_messages, import_messages=import_messages,
                                                   max_output_tokens=max_output_tokens, temperature=temperature, data_collection=data_collection, language=language, mcp_servers=mcp_servers, bucket=bucket,
                                                   queue=queue)
         # The upsert declared these tools already (between the agent's turns, if it runs).

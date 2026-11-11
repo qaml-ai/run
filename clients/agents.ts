@@ -77,6 +77,11 @@ export interface AgentConfig {
    */
   delegate?: DelegateSettings;
   /**
+   * The `workflows` builtin, on for an agent with `delegate` settings (Workers runtimes with workflows enabled): `false` turns
+   * it off; `{ maxBudgetUsd }` is the most one workflow it starts may spend (default $100). See the workflows guide.
+   */
+  workflows?: boolean | { maxBudgetUsd: number };
+  /**
    * Remote MCP servers of the agent's own, without a definition. No credentials: auth `{ type: "runtime" }` (identity
    * tokens naming the agent and its subject) or none. A server that needs a token or headers goes in a definition.
    */
@@ -318,6 +323,8 @@ export class Agents {
   /** Voice calls held for your bot, from the credentials its gateway got: `create`, `get`, `list`, `update`, `end`. */
   get voice() { return this.runtime.voice; }
   get voices() { return this.runtime.voices; }
+  /** Workflows: a script that runs many sub-agents under a budget, outliving the call: `start`, `get`, `items`, `edit`, `pause`, `resume`, `abort`, `wait` (see Workflows). */
+  get workflows() { return this.runtime.workflows; }
   private readonly open = new Set<Agent>();
   private readonly connection: "eager" | "lazy";
   constructor(options: AgentsOptions = {}) {

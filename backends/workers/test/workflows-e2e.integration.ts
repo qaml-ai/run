@@ -33,12 +33,12 @@ function provider(respond: (body: any) => { content?: string; tool?: { name: str
   return { server, bodies };
 }
 
-async function until<T>(check: () => Promise<T | undefined | false>, description: string, timeout = 90_000): Promise<T> {
+async function until<T>(check: () => Promise<T | undefined | false>, description: string, timeout = 90_000, last?: () => Promise<unknown>): Promise<T> {
   const deadline = Date.now() + timeout;
   for (;;) {
     const value = await check();
     if (value) return value;
-    if (Date.now() > deadline) throw new Error(`Timed out: ${description}`);
+    if (Date.now() > deadline) throw new Error(`Timed out: ${description}${last ? ` (last: ${JSON.stringify(await last())})` : ""}`);
     await new Promise(resolve => setTimeout(resolve, 200));
   }
 }
@@ -113,7 +113,8 @@ test("an agent starts a workflow of keyed workers and a critic, owned by the wor
   // budget, and the workflow pauses instead of handing the script a null. A raise and a resume finish it.
   const small = await ok("/v1/workflows", { script: `const a = await agent("EXPENSIVE one", { key: "one" }); const b = await agent("cheap two", { key: "two" }); return [a, b];`, budget: { usd: 0.5 }, concurrency: 1 });
   assert.match(small.id, /^wf_/);
-  const paused = await until(async () => { const value = await ok(`/v1/workflows/${small.id}`); return ["budget_exhausted", "paused"].includes(value.status) && value; }, "the budget pause");
+  const paused = await until(async () => { const value = await ok(`/v1/workflows/${small.id}`); return ["budget_exhausted", "paused"].includes(value.status) && value; }, "the budget pause", 90_000,
+    async () => ({ workflow: await ok(`/v1/workflows/${small.id}`), items: await ok(`/v1/workflows/${small.id}/items?attempts=true`) }));
   assert.equal(paused.status, "budget_exhausted", JSON.stringify(paused));
   assert.ok(paused.spent.usd >= 0.5, JSON.stringify(paused.spent));
   await ok(`/v1/workflows/${small.id}/budget`, { usd: 5 });
