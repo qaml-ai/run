@@ -20,7 +20,7 @@ import type { NativeForkOrigin } from './computers/native-fork.ts';
 import type { ChildPlace } from './child-parent.ts';
 import { ChildRows, CHILDREN_KV_PREFIX } from './children-table.ts';
 import type { ChildEnding, Receipt } from './ending-outbox.ts';
-import { agentOwner, ownerOf, placementOf, type Owner, type Placement } from '../../../shared/owner.ts';
+import { agentOwner, attemptedCall, ownerOf, placementOf, type Owner, type Placement } from '../../../shared/owner.ts';
 
 type Configuration = { bucket?: string; model?: string | object; systemPrompt?: string; delegate?: DelegateSettings; builtins?: string[]; spendLimit?: { usd: number }; [key: string]: unknown };
 export type ParentRun = { id: string; piId?: string; startedAt?: number; params?: { endUser?: string; spendLimit?: { usd: number }; bucket?: string; actor?: string }; metadata?: unknown; delegation?: unknown };
@@ -32,7 +32,7 @@ export function childUsageCost(usage?: ChildUsage) {
 /** A child's progress report as a parent's tool result shows it (`agentUpdates`), with what marks it shown. */
 export type ShownProgress = { key: string; name: string; text: string; at: number; sequence: number };
 export type ChildProgressReport = { agentId: string; requestId: string; text: string; callId: string };
-export type DelegatedChild = { outbox?: boolean; owner?: Owner; rootOwner?: Owner; payer?: string; bucket?: string; id: string; key: string; requestId: string; parentRequestId: string; toolCallId: string; callId?: string; task?: string; payloadBytes?: number; name: string; depth: number; maxDepth?: number; chain?: string[]; root?: string; background?: boolean; folded?: boolean; createdAt: number; endedAt?: number; status: string; made: boolean; held?: number; spent?: number; charged?: boolean; outcome?: ChildRun['outcome']; error?: string; notified?: boolean; landedBy?: 'wait' | 'notice'; accepted?: boolean; cancelRequested?: boolean; progress?: { text: string; at: number; sequence: number }; progressShown?: number; progressCalls?: string[] };
+export type DelegatedChild = { attempt?: number; outbox?: boolean; owner?: Owner; rootOwner?: Owner; payer?: string; bucket?: string; id: string; key: string; requestId: string; parentRequestId: string; toolCallId: string; callId?: string; task?: string; payloadBytes?: number; name: string; depth: number; maxDepth?: number; chain?: string[]; root?: string; background?: boolean; folded?: boolean; createdAt: number; endedAt?: number; status: string; made: boolean; held?: number; spent?: number; charged?: boolean; outcome?: ChildRun['outcome']; error?: string; notified?: boolean; landedBy?: 'wait' | 'notice'; accepted?: boolean; cancelRequested?: boolean; progress?: { text: string; at: number; sequence: number }; progressShown?: number; progressCalls?: string[] };
 /** How many children `GET /v1/agents/{id}/children` lists, newest first (as Node's CHILDREN_LISTED). */
 export const CHILDREN_LISTED = 200;
 /**
@@ -52,7 +52,7 @@ export function childrenView(children: DelegatedChild[]) {
   return [...latest.values()].reverse().slice(0, CHILDREN_LISTED).map(child => {
     const running = child.status === 'running', background = !!child.background;
     return {
-      agentId: child.id, name: child.name, background, status: child.status, requestId: child.requestId, toolCallId: child.toolCallId,
+      agentId: child.id, name: child.name, background, status: child.status, requestId: child.requestId, toolCallId: child.toolCallId, attempt: child.attempt ?? 1,
       startedAt: started.get(child.id)!, ...(!running && child.endedAt !== undefined ? { endedAt: child.endedAt } : {}),
       ...(!running ? { delivered: background ? !!child.landedBy : true } : {}),
       ...(running && child.progress ? { progress: child.progress.text, progressAt: child.progress.at } : {}),
@@ -134,6 +134,11 @@ async function legacySignature(secret: string, agent: string, run: string, depth
 const resumeRequestId = async (paused: DelegatedChild) => `resume_${(await digest(paused.requestId)).slice(0, 40)}`;
 function resumeRow(paused: DelegatedChild, requestId: string): DelegatedChild {
   return { ...paused, outbox: true, key: `${paused.key}:resume`, requestId, payloadBytes: undefined, createdAt: Date.now(), status: 'running', endedAt: undefined, outcome: undefined, error: undefined, spent: undefined, held: undefined, charged: undefined, notified: undefined, landedBy: undefined, progress: undefined, progressCalls: undefined, progressShown: undefined };
+}
+
+/** The digest a call's child is keyed by: its owner run and its attempted call id (`callId`, then `callId:2`, …). */
+export function callIdentity(runId: string, callId: string, attempt = 1) {
+  return digest(`${runId}:${attemptedCall(callId, attempt)}`);
 }
 
 /** A run's place in its chain: its parent (the chain's last) and root (its first) agent ids, with their owners. */
@@ -276,7 +281,11 @@ export class Delegation {
     const rootOwner = (lineage && 'rootOwner' in lineage ? ownerOf(lineage.rootOwner) : undefined) ?? agentOwner(chain[0]!);
     return { depth: parentDepth + 1, maxDepth, chain, owner: agentOwner(id), rootOwner };
   }
-  async start(args: Record<string, unknown>, callId: string, signal: AbortSignal, background = false, api?: ToolExecutionApi, override?: DelegateSettings): Promise<DelegatedChild> {
+  /**
+   * Start (or find) the child of call `callId`, attempt `attempt` (1 unless a caller makes a call again on purpose: a
+   * rerun, or an abort then a re-issue, which then makes a new child instead of returning the stored one).
+   */
+  async start(args: Record<string, unknown>, callId: string, signal: AbortSignal, background = false, api?: ToolExecutionApi, override?: DelegateSettings, attempt = 1): Promise<DelegatedChild> {
     const context = await this.host.context(api), { id, config, run } = context;
     const settings = override ?? config.delegate;
     if (!settings) throw new HttpError(400, 'This agent has no delegation settings');
@@ -287,7 +296,7 @@ export class Delegation {
     if (typeof args.task !== 'string' || !args.task.trim() || args.task.length > MULTI_AGENT_LIMITS.taskChars) throw new HttpError(400, 'Give the sub-agent its task');
     if (args.instructions !== undefined && (typeof args.instructions !== 'string' || !args.instructions.trim() || args.instructions.length > MULTI_AGENT_LIMITS.instructionsChars)) throw new HttpError(400, 'Invalid sub-agent instructions');
     if (args.name !== undefined && (typeof args.name !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(args.name))) throw new HttpError(400, 'Invalid sub-agent name');
-    const identity = await digest(`${run.id}:${callId}`), key = `delegate-${identity.slice(0, 48)}`;
+    const identity = await callIdentity(run.id, callId, attempt), key = `delegate-${identity.slice(0, 48)}`;
     // A call from code (`<codemode call>/c<n>`) is the code mode call's, as the model made it: its child names that call.
     const site = api?.getTask ? await toolCallSite(api) : undefined;
     const toolCallId = site?.innerCallId ? site.toolCallId : callId;
@@ -367,7 +376,7 @@ export class Delegation {
             await tx.put(responseKey, { ...state.delegateResponse!, keys: [...new Set([...(prior?.keys ?? []), key])] });
           } else held = remaining / (maxParallel - running.length);
         }
-        const child: DelegatedChild = { id: '', outbox: true, owner: place.owner, rootOwner: place.rootOwner, payer: run.params?.endUser, bucket: run.params?.bucket ?? config.bucket, key, requestId: `${background ? 'spawn' : 'delegate'}_${identity.slice(0, 48)}`, parentRequestId: run.id, toolCallId, ...(toolCallId !== callId ? { callId } : {}), task: args.instructions === undefined ? args.task as string : roleAndTask(args.instructions as string, args.task as string), name: typeof args.name === 'string' ? args.name : `${target?.name ?? 'subagent'}-${children.length + 1}`, depth: place.depth, maxDepth: place.maxDepth, chain: place.chain, root: place.chain[0], background, createdAt: Date.now(), status: 'running', made: target?.agent === undefined, ...(held !== undefined ? { held } : {}) };
+        const child: DelegatedChild = { id: '', attempt, outbox: true, owner: place.owner, rootOwner: place.rootOwner, payer: run.params?.endUser, bucket: run.params?.bucket ?? config.bucket, key, requestId: `${background ? 'spawn' : 'delegate'}_${identity.slice(0, 48)}`, parentRequestId: run.id, toolCallId, ...(toolCallId !== callId ? { callId } : {}), task: args.instructions === undefined ? args.task as string : roleAndTask(args.instructions as string, args.task as string), name: typeof args.name === 'string' ? args.name : `${target?.name ?? 'subagent'}-${children.length + 1}`, depth: place.depth, maxDepth: place.maxDepth, chain: place.chain, root: place.chain[0], background, createdAt: Date.now(), status: 'running', made: target?.agent === undefined, ...(held !== undefined ? { held } : {}) };
         return this.putChild(tx, child);
       });
       if (admitted) {
@@ -598,6 +607,7 @@ export class Delegation {
     const identity = await digest(`${id}:${run.id}:${callId}`), requestId = `msg_${identity.slice(0, 48)}`;
     if (args.to === 'parent') {
       if (!lineage?.parent) throw new HttpError(400, 'This run has no parent');
+      if (lineage.owner.kind !== 'agent') throw new HttpError(400, "This run was started by a workflow, which can't receive messages. It reads your final answer when you finish; use report_progress to send updates before then.");
       const message = agentMessage({ agentId: id, name: typeof config.name === 'string' ? config.name : 'subagent', root: lineage.root }, args.text, 'parent');
       const response = await this.host.sendMessage(lineage.parent, { id: requestId, method: 'prompt', params: { text: args.text, endUser: run.params?.endUser, bucket: run.params?.bucket ?? config.bucket, allowDisconnected: true, whileRunning: 'followUp' } }, message.notice) as { steer?: string; steeredInto?: string } | undefined;
       return { sent: true, to: 'parent', into: response?.steer === 'accepted' || response?.steeredInto ? 'its running turn' : 'a new turn of its own' };
@@ -763,7 +773,7 @@ export class Delegation {
           // stops, as no one will read its answer. A call cut off otherwise (the agent restarting) keeps its child for
           // the script's replay.
           if (signal.aborted && api.callId.includes('/') && (await scriptOf(api).catch(() => undefined))?.ended)
-            await this.cancel(undefined, undefined, `delegate-${(await digest(`${(await this.host.context(api)).run.id}:${api.callId}`)).slice(0, 48)}`).catch(() => {});
+            await this.cancel(undefined, undefined, `delegate-${(await callIdentity((await this.host.context(api)).run.id, api.callId)).slice(0, 48)}`).catch(() => {});
           throw error;
         }
       }

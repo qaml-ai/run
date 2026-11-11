@@ -6297,6 +6297,10 @@
             "type": "string",
             "description": "The parent's tool call that started that run (spawn_agent, delegate, or send_message)"
           },
+          "attempt": {
+            "type": "integer",
+            "description": "Which attempt of that call the run is: 1, unless the call was made again on purpose (a rerun, or an abort then a re-issue), which makes a new child"
+          },
           "startedAt": {
             "type": "number",
             "description": "When the parent first started it (ms since the epoch)"
@@ -6328,6 +6332,7 @@
           "status",
           "requestId",
           "toolCallId",
+          "attempt",
           "startedAt"
         ]
       },

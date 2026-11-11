@@ -7309,10 +7309,10 @@ one is shown as its latest run says (a message or a resume starts it again):
 ```json
 { "children": [
   { "agentId": "client_…", "name": "readme-badge", "background": true, "status": "completed",
-    "requestId": "spawn_…", "toolCallId": "call_…", "startedAt": 1762400000000, "endedAt": 1762400064000,
+    "requestId": "spawn_…", "toolCallId": "call_…", "attempt": 1, "startedAt": 1762400000000, "endedAt": 1762400064000,
     "delivered": true },
   { "agentId": "client_…", "name": "bump-sdk", "background": true, "status": "running",
-    "requestId": "spawn_…", "toolCallId": "call_…", "startedAt": 1762400100000,
+    "requestId": "spawn_…", "toolCallId": "call_…", "attempt": 1, "startedAt": 1762400100000,
     "progress": "tests pass; pushing", "progressAt": 1762400160000 }
 ] }
 ```
@@ -7323,6 +7323,7 @@ one is shown as its latest run says (a message or a resume starts it again):
 | `status` | `running`, `completed`, `failed`, `aborted` or `input_required`, as `list_agents` says |
 | `requestId` | its latest run, on the child: `GET /v1/agents/{agentId}/requests/{requestId}`, or its events with `?request=` |
 | `toolCallId` | the parent's call that started that run (`spawn_agent`, `delegate` or `send_message`) |
+| `attempt` | which attempt of that call the run is: `1`, unless the call was made again on purpose (a rerun, or an abort then a re-issue), which makes a new child rather than returning the one that ended |
 | `delivered` | for a child that ended or waits on a person: whether its answer has reached the parent yet. That is, its notification landed, or a `wait_agent` or the `delegate` call took it. `false` means a notification is still on its way, and it will start or join a turn of the parent's |
 | `progress`, `progressAt` | a running child's latest [progress report](https://run.camelai.com/docs/guides/multi-agent.md#progress) |
 | `error` | why a background child's run failed or was aborted |

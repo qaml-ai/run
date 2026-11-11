@@ -46,6 +46,7 @@ export class ChildRows {
       owner_kind TEXT NOT NULL DEFAULT 'agent',
       owner_id TEXT NOT NULL DEFAULT '',
       call_id TEXT NOT NULL DEFAULT '',
+      attempt INTEGER NOT NULL DEFAULT 1,
       child_id TEXT NOT NULL DEFAULT '',
       request_id TEXT NOT NULL,
       parent_request_id TEXT NOT NULL DEFAULT '',
@@ -62,7 +63,10 @@ export class ChildRows {
       state TEXT NOT NULL
     )`);
     this.sql.exec('CREATE INDEX IF NOT EXISTS children_status ON children(status, started)');
-    this.sql.exec('CREATE INDEX IF NOT EXISTS children_call ON children(call_id)');
+    // A table an earlier version made has no attempt yet: every row it holds is a first attempt.
+    if (!this.sql.exec<{ name: string }>('PRAGMA table_info(children)').toArray().some(column => column.name === 'attempt'))
+      this.sql.exec('ALTER TABLE children ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1');
+    this.sql.exec('CREATE INDEX IF NOT EXISTS children_call ON children(call_id, attempt)');
     this.sql.exec('CREATE INDEX IF NOT EXISTS children_run ON children(child_id, request_id)');
     this.sql.exec('CREATE INDEX IF NOT EXISTS children_owner_run ON children(parent_request_id, status)');
     this.sql.exec('CREATE TABLE IF NOT EXISTS children_meta (id INTEGER PRIMARY KEY CHECK (id = 1), imported_at INTEGER NOT NULL)');
@@ -79,15 +83,15 @@ export class ChildRows {
 
   private write(child: DelegatedChild) {
     const owner = ownerOf(child.owner);
-    this.sql.exec(`INSERT INTO children (key, owner_kind, owner_id, call_id, child_id, request_id, parent_request_id, status, background, name,
+    this.sql.exec(`INSERT INTO children (key, owner_kind, owner_id, call_id, attempt, child_id, request_id, parent_request_id, status, background, name,
         root_owner, chain, depth, max_depth, started, ended, cost, state)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(key) DO UPDATE SET owner_kind=excluded.owner_kind, owner_id=excluded.owner_id, call_id=excluded.call_id,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET owner_kind=excluded.owner_kind, owner_id=excluded.owner_id, call_id=excluded.call_id, attempt=excluded.attempt,
         child_id=excluded.child_id, request_id=excluded.request_id, parent_request_id=excluded.parent_request_id,
         status=excluded.status, background=excluded.background, name=excluded.name, root_owner=excluded.root_owner,
         chain=excluded.chain, depth=excluded.depth, max_depth=excluded.max_depth, started=excluded.started,
         ended=excluded.ended, cost=excluded.cost, state=excluded.state`,
-      child.key, owner?.kind ?? 'agent', owner?.id ?? '', child.callId ?? child.toolCallId ?? '', child.id ?? '', child.requestId ?? '',
+      child.key, owner?.kind ?? 'agent', owner?.id ?? '', child.callId ?? child.toolCallId ?? '', child.attempt ?? 1, child.id ?? '', child.requestId ?? '',
       child.parentRequestId ?? '', child.status, child.background ? 1 : 0, child.name ?? '',
       child.rootOwner ? JSON.stringify(child.rootOwner) : child.root ? JSON.stringify({ kind: 'agent', id: child.root }) : null,
       child.chain ? JSON.stringify(child.chain) : null, child.depth ?? null, child.maxDepth ?? null,
@@ -119,6 +123,12 @@ export class ChildRows {
   async running(): Promise<DelegatedChild[]> {
     await this.load();
     return this.rows("SELECT state FROM children WHERE status = 'running' ORDER BY started, key");
+  }
+
+  /** Rows in one status, oldest first (a workflow's queued and running children). */
+  async withStatus(status: string): Promise<DelegatedChild[]> {
+    await this.load();
+    return this.rows('SELECT state FROM children WHERE status = ? ORDER BY started, key', status);
   }
 
   /** The children one run of the owner started. */
