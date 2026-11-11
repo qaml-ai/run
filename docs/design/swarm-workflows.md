@@ -451,17 +451,17 @@ model that wants a stronger hand on the script asks for it as an option, not a h
 `workflow_edit` take `draft: "max"`, which runs one `lead` sub-call on `camelrun/max` to write or revise the
 script from the agent's description before the agent reviews and submits it. That keeps the conversation,
 ownership and guardrails with the agent and spends the strong model only on the script, which is where its
-leverage is. Day-one candidates for `max`, for Miguel to choose: Gemini 4 Carbon on the default tier (the same
-model as `strong`, so one eval covers both, at $2/$10 per M and full priority; the tradeoff is no step up in
-capability over the critics); Claude Opus 5.5 (a different family from the workers and critics, which also
-satisfies the never-the-same-model rule for free when an orchestrator reads a critic's work; the tradeoff is a
-second provider's cache and key in the loop); Fable 5 is the strongest known but its access is suspended, so it
-is not a candidate until restored.
+leverage is. Day-one `max`, decided by Miguel (2026-11-11): Claude Fable 5.2 (`anthropic/claude-fable-5.2` on
+OpenRouter, $8/$40 per M, default tier). It is the strongest available, and a different family from the workers
+(`fast`, Muse Ember) and critics (`strong`, Gemini 4 Carbon), so an agent on `max` reading a critic's work
+satisfies the never-the-same-model rule for free. Its price barely registers: the agent's script-writing and
+steering is tens of thousands of tokens against the workers' millions. The tradeoff is a second provider's cache
+and key in the loop.
 
 **When to write a workflow** is model-facing behavior, so the builtin's description says it. Draft, for wording
 review: *"Write a workflow when a task is many independent or repeated units of work (per file, per table, per
-source), needs more than a few sub-agents at once, should keep going if you stop, or needs a human gate or a
-budget; use `delegate` for a few sub-agents whose answers you need in this turn. A workflow outlives your turn
+source), needs more than a few sub-agents at once, must keep running after your turn ends, or needs a person's
+approval or a budget along the way; use `delegate` for a few sub-agents whose answers you need in this turn. A workflow outlives your turn
 and reports back as it goes; you own it: you can edit its script, answer its gates and stop it."*
 
 Orchestrator guardrails, enforced by the runtime, not the prompt, scoped to the agent that owns the workflow:
@@ -1125,11 +1125,9 @@ conflicts per commit, and cost against the same work done by one agent on a comp
    compaction-boundary switch costs on providers whose cache keys include the model.
 9. **Layers for whole-tree refactors.** A refactor that touches 10,000 paths at once (the crate split) is one layer
    at the cap. Raise the cap, or run that phase as a job that commits through the object's bulk API?
-10. **`max` on day one.** Gemini 4 Carbon on the default tier (one eval, no capability step over the critics) or
-    Claude Opus 5.5 (a second family, which keeps the orchestrator's reading of a critic's work on a different
-    model, at the cost of a second provider in the loop)? Miguel's call. Also whether `max` needs its own eval or
-    rides on the class eval's orchestrator transcripts, and whether `draft: "max"` should be the default for an
-    agent on `fast` (a cheap agent writing a $20,000 loop is the case the guardrails exist for).
+10. **`max` evaluation.** `max` is Claude Fable 5.2 (decided). Open: whether `max` needs its own eval or rides on
+    the class eval's orchestrator transcripts, and whether `draft: "max"` should be the default for an agent on
+    `fast` (a cheap agent writing a $20,000 loop is the case the guardrails exist for).
 13. **The builtin's wording.** The "when to write a workflow" description above is a draft; it decides how often
     agents reach for a workflow against `delegate`, so it needs an eval of its own (tasks where a workflow is
     right against tasks where it is overkill) and a wording review before it ships.
