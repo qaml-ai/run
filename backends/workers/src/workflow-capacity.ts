@@ -16,6 +16,11 @@
  * within a workflow to its oldest request. So every competing workflow is guaranteed its share as slots free, and
  * capacity no one else wants is never left idle. Nothing is taken back from a workflow above its share: children end
  * on their own, and their slots go to those below it. A new request queues behind the waiters, never past them.
+ *
+ * The contract for a workflow: from `open` to `close` it calls `renew` on a timer shorter than its lease (10 minutes by
+ * default), whether or not it holds slots or waits for any. A workflow that stops renewing is taken for dead when its
+ * lease runs out: its slots go to waiters, its waiting requests lose their place in line, and its seat among the
+ * tenant's running workflows is freed; it must `open` again, and ask again, at the back of the line.
  */
 import { randomUUID } from "node:crypto";
 
@@ -187,10 +192,12 @@ export class CapacityLedger {
   /** The slot ended (its child or job did): it goes to the next fair waiter. Releasing twice is a no-op. */
   release(workflow: string, id: string): Grant[] {
     return this.atomic(() => {
+      // Expired first: the pump must never grant a waiter whose workflow stopped renewing.
+      const expired = this.expireNow();
       const row = this.sql.exec<Row>("SELECT * FROM capacity_slots WHERE id=? AND workflow=?", id, workflow).toArray()[0];
-      if (!row) return [];
+      if (!row) return expired;
       this.sql.exec("DELETE FROM capacity_slots WHERE id=?", id);
-      return this.pump(row.kind);
+      return [...expired, ...this.pump(row.kind)];
     });
   }
 
@@ -211,9 +218,10 @@ export class CapacityLedger {
   /** The workflow ended: its slots and requests go, and so does its place among the tenant's running workflows. */
   close(workflow: string): Grant[] {
     return this.atomic(() => {
+      const expired = this.expireNow();
       this.sql.exec("DELETE FROM capacity_slots WHERE workflow=?", workflow);
       this.sql.exec("DELETE FROM capacity_workflows WHERE workflow=?", workflow);
-      return SLOT_KINDS.flatMap(kind => this.pump(kind));
+      return [...expired, ...SLOT_KINDS.flatMap(kind => this.pump(kind))];
     });
   }
 
