@@ -131,7 +131,7 @@ async function startChild(ctx: ChildrenContext, session: Session, run: RequestRe
   let { agent } = child;
   const { made, task, output } = child;
   if (chain.includes(agent)) throw new Error(`${child.base} is already working on this task's chain`);
-  const { row, fresh } = await childRow(ctx, session, { id: requestId, child: agent, name: child.name, ...(child.preferred ? { preferred: child.preferred } : {}), base: child.base, depth, root: chain[0], run: run.id, payer: run.endUser, bucket: spend.bucketOf(ctx.spendContext, session, run), toolCallId, made }, settings?.maxParallel ?? MULTI_AGENT_LIMITS.maxParallel);
+  const { row, fresh } = await childRow(ctx, session, { id: requestId, child: agent, name: child.name, ...(child.preferred ? { preferred: child.preferred } : {}), base: child.base, depth, root: chain[0], chain, run: run.id, payer: run.endUser, bucket: spend.bucketOf(ctx.spendContext, session, run), toolCallId, made }, settings?.maxParallel ?? MULTI_AGENT_LIMITS.maxParallel);
   if (row.state !== "running" && row.status === "failed" && !row.ended_at) throw new Error("This sub-agent could not be started");
   (session.children ??= new Map()).set(toolCallId, { agent, requestId, made, done: true });
   const at = { toolCallId, agentId: agent, requestId };
@@ -188,7 +188,7 @@ export async function toolSpawn(ctx: ChildrenContext, session: Session, call: To
  * time per parent (only its owner runs its turns), so `max` running children holds. A name is unique among the running
  * ones: the default is the target's name and the next number.
  */
-async function childRow(ctx: ChildrenContext, session: Session, child: { id: string; child: string; name?: string; base: string; depth: number; root: string; run: string; payer?: string; bucket: string; toolCallId: string; made: boolean; preferred?: string }, max: number) {
+async function childRow(ctx: ChildrenContext, session: Session, child: { id: string; child: string; name?: string; base: string; depth: number; root: string; chain: string[]; run: string; payer?: string; bucket: string; toolCallId: string; made: boolean; preferred?: string }, max: number) {
   const previous = session.spawning ?? Promise.resolve();
   let release!: () => void;
   session.spawning = new Promise<void>(resolve => { release = resolve; });
@@ -206,8 +206,9 @@ async function childRow(ctx: ChildrenContext, session: Session, child: { id: str
     for (let attempt = 0; attempt < 10; attempt++) {
       const name = child.name ?? (attempt === 0 && child.preferred ? child.preferred : `${child.base}-${next++}`);
       const now = Date.now();
-      const { rows } = await underClaim(ctx.db, session.claim, sql => sql.query(`insert into agent_children (id, tenant, parent, child, request_id, name, depth, root, parent_run, tool_call_id, made, checked_at, created_at, updated_at, payer, bucket)
-        values ($1, $2, $3, $4, $1, $5, $6, $7, $8, $9, $10, $11, $11, $11, $12, $13) on conflict do nothing returning *`, [child.id, session.header.tenant, parent, child.child, name, child.depth, child.root, child.run, child.toolCallId, child.made, now, child.payer ?? null, child.bucket]));
+      // owner_id, root_owner, chain: the owner model (migration 137); parent and root are still written.
+      const { rows } = await underClaim(ctx.db, session.claim, sql => sql.query(`insert into agent_children (id, tenant, parent, child, request_id, name, depth, root, parent_run, tool_call_id, made, checked_at, created_at, updated_at, payer, bucket, owner_id, root_owner, chain)
+        values ($1, $2, $3, $4, $1, $5, $6, $7, $8, $9, $10, $11, $11, $11, $12, $13, $3, jsonb_build_object('kind', 'agent', 'id', $7::text), $14::jsonb) on conflict do nothing returning *`, [child.id, session.header.tenant, parent, child.child, name, child.depth, child.root, child.run, child.toolCallId, child.made, now, child.payer ?? null, child.bucket, JSON.stringify(child.chain)]));
       if (rows[0]) return { row: rows[0], fresh: true };
       if (child.name) throw new Error(`A sub-agent named ${child.name} is running: pick another name`);
     }
@@ -509,8 +510,8 @@ async function recordEnding(ctx: ChildrenContext, row: { id: string; tenant?: st
     // Its resume, once a person answers: a row of its own, written with this ending so no sweep can miss it.
     if (done && status === "input_required") {
       const resume = resumeId(done.request_id);
-      await sql.query(`insert into agent_children (id, tenant, parent, child, request_id, name, depth, root, parent_run, tool_call_id, kind, made, checked_at, created_at, updated_at, payer, bucket)
-        values ($1, $2, $3, $4, $1, $5, $6, $7, $8, $9, 'resume', $10, $11, $11, $11, $12, $13) on conflict do nothing`, [resume, done.tenant, done.parent, done.child, done.name, done.depth, done.root, done.parent_run, done.tool_call_id, done.made, now, done.payer, done.bucket]);
+      await sql.query(`insert into agent_children (id, tenant, parent, child, request_id, name, depth, root, parent_run, tool_call_id, kind, made, checked_at, created_at, updated_at, payer, bucket, owner_kind, owner_id, root_owner, chain)
+        values ($1, $2, $3, $4, $1, $5, $6, $7, $8, $9, 'resume', $10, $11, $11, $11, $12, $13, $14, coalesce($15, $3), coalesce($16::jsonb, jsonb_build_object('kind', 'agent', 'id', $7::text)), $17::jsonb) on conflict do nothing`, [resume, done.tenant, done.parent, done.child, done.name, done.depth, done.root, done.parent_run, done.tool_call_id, done.made, now, done.payer, done.bucket, done.owner_kind ?? "agent", done.owner_id ?? null, done.root_owner ? JSON.stringify(done.root_owner) : null, done.chain ? JSON.stringify(done.chain) : null]);
     }
     return done;
   });
@@ -709,8 +710,8 @@ async function sendMessage(ctx: ChildrenContext, session: Session, settings: Del
   // joins it rather than queuing behind all of it.
   if (open) await turnBegun(ctx, child, tenant, open.request_id, call.signal);
   await transaction(ctx.db, async sql => {
-    const { rows } = await sql.query(`insert into agent_children (id, tenant, parent, child, request_id, name, depth, root, parent_run, tool_call_id, kind, made, checked_at, created_at, updated_at, payer, bucket)
-      values ($1, $2, $3, $4, $1, $5, $6, $7, $8, $9, 'message', $10, $11, $11, $11, $12, $13) on conflict do nothing returning id`, [requestId, tenant, header.id, child, latest.name, depth, chain[0], run.id, call.toolCallId, latest.made, now, run.endUser ?? null, spend.bucketOf(ctx.spendContext, session, run)]);
+    const { rows } = await sql.query(`insert into agent_children (id, tenant, parent, child, request_id, name, depth, root, parent_run, tool_call_id, kind, made, checked_at, created_at, updated_at, payer, bucket, owner_id, root_owner, chain)
+      values ($1, $2, $3, $4, $1, $5, $6, $7, $8, $9, 'message', $10, $11, $11, $11, $12, $13, $3, jsonb_build_object('kind', 'agent', 'id', $7::text), $14::jsonb) on conflict do nothing returning id`, [requestId, tenant, header.id, child, latest.name, depth, chain[0], run.id, call.toolCallId, latest.made, now, run.endUser ?? null, spend.bucketOf(ctx.spendContext, session, run), JSON.stringify(chain)]);
     // A new message supersedes what the child waits on a person for: its resume will not come.
     if (rows.length && !running) await sql.query("update agent_children set ended_at = $3, state = 'notified', landed_at = $3, landed_by = 'superseded', updated_at = $3 where parent = $1 and child = $2 and kind = 'resume' and ended_at is null", [header.id, child, now]);
   });

@@ -1,3 +1,4 @@
+import { placementOf, type Placement } from "../../../shared/owner.ts";
 import { checkRequest } from "../../../shared/monitors.ts";
 import { monitorRoutes, monitorToolsHost } from "./agent-monitors.ts";
 import { answerInboxGroup, type InboxAnswer } from "../../../shared/inbox-answers.ts";
@@ -110,6 +111,31 @@ export async function fetchImpl(this: AgentRuntime,
   request: Request): Promise<Response> {
     this.invalidateMaintenance();
     return withMoneyMetrics(this.env, () => this.fetchRequest(request));
+  }
+
+/**
+ * A child run its owner starts (delegation.ts `submitChild`): admitted like a prompt, with its placement stored on the
+ * run. Binding-only, so a placement never comes from a public request. Refusals answer as the HTTP route would.
+ */
+export async function admitDelegatedImpl(this: AgentRuntime,
+  input: unknown, placement: Placement): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+    this.invalidateMaintenance();
+    return withMoneyMetrics(this.env, async () => {
+      try {
+        await this.config();
+        await this.submit(input, undefined, undefined, undefined, undefined, placementOf(placement));
+        return { ok: true as const };
+      } catch (error) {
+        const limited = admissionError(error);
+        if (limited) {
+          const detail = await limited.json().catch(() => undefined) as { error?: unknown } | undefined;
+          return { ok: false as const, status: limited.status, error: typeof detail?.error === "string" ? detail.error : "Child submission refused" };
+        }
+        const status = error instanceof BadRequest ? 400 : ((error as { status?: number }).status ?? errorStatus(error, 500));
+        if (status >= 500) failure(this.env, "agent_http_failed", error);
+        return { ok: false as const, status, error: status >= 500 ? "Backend operation failed" : error instanceof Error ? error.message : "Backend failure" };
+      }
+    });
   }
 
 export async function fetchRequestImpl(this: AgentRuntime,

@@ -1,3 +1,4 @@
+import type { Placement } from "../../../shared/owner.ts";
 import type { CodemodeSandboxDurableObject } from "@earendil-works/pi-codemode/cloudflare";
 import type { ComputerBindings } from "./computers/tool.ts";
 import type { ControlEnv, TurnReceipt } from "./control.ts";
@@ -47,6 +48,8 @@ export type RequestRecord = {
   /** A held prompt whose turn took the prompts after it too (each batchedInto it), in order. */
   batch?: string[];
   metadata?: unknown;
+  /** Where this run stands in a delegation chain, as its owner placed it through the binding (shared/owner.ts). */
+  delegation?: Placement;
   actor?: string;
   usageBaseline?: Record<string, number>;
   fingerprint: string;

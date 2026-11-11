@@ -80,6 +80,9 @@ export interface SessionHeader {
    */
   /** The sub-agent's place as its parent made it: its depth, its chain's limit and its chain (its parent last; missing for one made before they were recorded). */
   parent?: { payer?: string; agentId: string; runId: string; toolCallId: string; depth: number; maxDepth?: number; chain?: string[]; computer?: "none" | "share" | { seed: string } };
+  /** A made child's owner and its chain's root owner, stored when it was made (shared/owner.ts); `reserveComputer` reads the root. */
+  owner?: import("../../shared/owner.ts").Owner;
+  rootOwner?: import("../../shared/owner.ts").Owner;
   /**
    * A stateless run's single-use session (POST /v1/runs): hidden from the agents list, its one prompt's request is the run.
    * Once the run ends its data is kept `retentionMs`, then purged as an expired agent's is. `fingerprint`: the request

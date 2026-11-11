@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Delegation, type DelegatedChild, type DelegationHost } from '../src/delegation.ts';
+import { withSql, submitViaFetch } from './sql-storage.ts';
 
 function fixture() {
   const values = new Map<string, unknown>();
@@ -17,6 +18,7 @@ function fixture() {
     async list({ prefix }: { prefix: string }) { return new Map([...values].filter(([key]) => key.startsWith(prefix)).map(([key, value]) => [key, structuredClone(value)])); },
     async transaction<T>(work: (tx: unknown) => Promise<T>) { return work(storage); },
   } as unknown as DurableObjectStorage;
+  withSql(storage);
   const tasks: Promise<unknown>[] = [];
   const host = { storage, emit: async () => {}, waitUntil: (promise: Promise<unknown>) => { tasks.push(promise); } } as unknown as DelegationHost;
   const delegation = new Delegation(host);

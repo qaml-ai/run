@@ -41,6 +41,7 @@ export async function hasBackgroundChildImpl(this: AgentRuntime,
 export function createNotifications(this: AgentRuntime): DelegationNotifications {
   return new DelegationNotifications({
     storage: this.ctx.storage,
+    children: this.children,
     canLand: async () => !(await this.activity()).busy,
     asap: async () => (await this.config()).config.delegate?.notify === 'asap' && !this.delegation.waiting,
     stage: async (request, notice) => {
@@ -87,6 +88,7 @@ export function createNotifications(this: AgentRuntime): DelegationNotifications
 export function createDelegation(this: AgentRuntime): Delegation {
   return new Delegation({
     storage: this.ctx.storage,
+    children: this.children,
     secret: this.env.API_TOKEN,
     context: async (api) => {
       const conf = await this.config();
@@ -156,6 +158,7 @@ export function createDelegation(this: AgentRuntime): Delegation {
       return { id: entry.id, config: entry.config as never };
     },
     fetch: (id, request) => this.env.AGENTS.getByName(id).fetch(request),
+    submitChild: (id, request, placement) => this.env.AGENTS.getByName(id).admitDelegated(request, placement),
     cancelRequest: (id, requestId) =>
       this.env.AGENTS.getByName(id).cancelRequest(requestId),
     inheritComputer: async (parent, child, computer) => {
