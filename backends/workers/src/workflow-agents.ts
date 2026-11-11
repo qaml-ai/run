@@ -19,6 +19,7 @@ import { recordChildParent, type ChildPlace } from "./child-parent.ts";
 import { Directory } from "./control.ts";
 import { provisionDefinition, resolveDefinition } from "./definitions.ts";
 import type { Env } from "./agent-types.ts";
+import type { WorkflowFork } from "./workflow-volumes.ts";
 
 /** What a script's `agent(prompt, opts)` issues (workflow-vm.ts): its prompt and its options but `key`. */
 export type AgentArgs = { prompt: string; definition?: string; instructions?: string; model?: string; output?: unknown; label?: string; type?: string; [option: string]: unknown };
@@ -65,6 +66,8 @@ export interface WorkflowChildren {
   submit(childId: string, request: { id: string; method: "prompt"; params: Record<string, unknown> }, placement: Placement): Promise<{ ok: true } | { ok: false; status: number; error: string }>;
   /** Stop exactly that run. */
   cancel(childId: string, requestId: string): Promise<unknown>;
+  /** The volume fork a child of `repo` edits for effect `key:attempt` (workflow-volumes.ts): the same fork when made again. */
+  fork(repo: string, effect: { key: string; attempt: number }): Promise<WorkflowFork>;
 }
 
 /** The workflow's one run (steps are not runs): what its children's placements name as the owner's run. */
@@ -72,7 +75,10 @@ export const workflowRun = (id: string) => `${id}:main`;
 
 const ROW_PREFIX = "workflow-";
 /** A child's row in the workflow's table: queued (no slot yet), running, or how it ended. */
-type Row = DelegatedChild & { effectKey: string; args?: AgentArgs; refusal?: Refused; startedRun?: number };
+type Row = DelegatedChild & { effectKey: string; args?: AgentArgs; refusal?: Refused | Extract<EffectOutcome, { refused: string }>; startedRun?: number; fork?: WorkflowFork };
+
+/** Where a child edits its fork (`agent(..., { repo, path })`): /repo unless the script says. */
+export const FORK_MOUNT_PATH = "/repo";
 
 function owner(id: string): Owner { return { kind: "workflow", id }; }
 
@@ -207,6 +213,16 @@ export class WorkflowAgents implements EffectExecutor {
       if (!row.id) {
         const config = await this.host.children.config(args);
         for (const name of WORKFLOW_CHILD_REFUSED_KEYS) delete config[name];
+        // A child of a repo edits a fork of it, mounted read-write; the script lands its edits with commit(result.fork).
+        if (args.repo !== undefined) {
+          if (typeof args.repo !== "string") return this.end(row, "failed", { ok: false, error: "agent() repo is a volume id" });
+          const path = args.path === undefined ? FORK_MOUNT_PATH : args.path;
+          if (typeof path !== "string" || !/^\/[A-Za-z0-9._\/-]{1,200}$/.test(path)) return this.end(row, "failed", { ok: false, error: "agent() path is where the fork is mounted, such as /repo" });
+          const fork = row.fork ?? await this.host.children.fork(args.repo, { key: row.effectKey, attempt: row.attempt ?? 1 });
+          row = { ...row, fork };
+          await this.rows.put(row);
+          config.mounts = [...(Array.isArray(config.mounts) ? config.mounts as unknown[] : []).filter(mount => (mount as { path?: string }).path !== path), { volumeId: fork.volume, path, mode: "rw" }];
+        }
         const { id } = await this.host.children.create({ ...config, name: row.name, type: "subagent", ttlSeconds: MULTI_AGENT_LIMITS.childTtlSeconds, ...(row.bucket ? { bucket: row.bucket } : {}) }, row.key, place);
         row = { ...row, id };
       }
@@ -249,7 +265,9 @@ export class WorkflowAgents implements EffectExecutor {
   /** Land an ended row on its effect, with what its child spent (the ledger keeps one row per `key:attempt`). */
   private async settle(row: Row) {
     const usage = effectUsage(row.outcome ? { state: "completed", outcome: row.outcome } : undefined, row.endedAt && row.startedRun ? row.endedAt - row.startedRun : undefined);
-    const outcome: LandedOutcome = row.refusal ?? (row.outcome ? agentOutcome({ state: "completed", status: row.status, outcome: row.outcome, error: row.error }) : { ok: false, error: row.error ?? `The sub-agent ${row.status}` });
+    let outcome: LandedOutcome = row.refusal ?? (row.outcome ? agentOutcome({ state: "completed", status: row.status, outcome: row.outcome, error: row.error }) : { ok: false, error: row.error ?? `The sub-agent ${row.status}` });
+    // A child of a repo answers its result with its fork, which the script commits (or drops).
+    if (row.fork && "ok" in outcome && outcome.ok && "value" in outcome) outcome = { ok: true, value: { result: outcome.value, fork: { volume: row.fork.volume, base: row.fork.base } } };
     return this.host.land(row.effectKey, row.attempt ?? 1, outcome, usage);
   }
 
@@ -365,5 +383,7 @@ export function workflowChildren(env: Env, workflow: { id: string; tenant: strin
     },
     submit: (childId, request, placement) => env.AGENTS.getByName(childId).admitDelegated(request, placement),
     cancel: (childId, requestId) => env.AGENTS.getByName(childId).cancelRequest(requestId),
+    // Loaded when a child of a repo is made: the volume modules need the Workers runtime, this one's tests do not.
+    fork: async (repo, effect) => (await import("./workflow-volumes.ts")).forkForChild(env as never, workflow.tenant, { workflow: workflow.id, key: effect.key, attempt: effect.attempt, repo }),
   };
 }

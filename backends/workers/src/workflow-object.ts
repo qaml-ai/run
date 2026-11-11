@@ -13,17 +13,20 @@ import type { SecurityEnv } from "./security-services.ts";
 import {
   WorkflowRunner, WorkflowError, type CapacitySeam, type EffectExecutor, type EffectOutcome, type EffectUsage, type StartedEffect, type WorkflowInit,
 } from "./workflow-runner.ts";
+import { WorkflowJobs, type WorkflowJobsEnv } from "./workflow-jobs.ts";
+import { forkForChild } from "./workflow-volumes.ts";
+import { volume } from "./files.ts";
 
 /** The tenant's capacity limiter (WorkflowCapacity, workflow-capacity-object.ts), as this object calls it over RPC. */
 interface CapacityStub {
-  open(workflow: string, asked: { concurrency?: number; leaseMs?: number }, limits: { busyAgents: number | null; computerLimit?: number | null }): Promise<{ ok: true } | { ok: false; code: string; message: string }>;
-  acquire(workflow: string, kind: "child", key: string, leaseMs?: number): Promise<{ ok: true; granted: true; lease: { id: string } } | { ok: true; granted: false } | { ok: false; code: string; message: string }>;
+  open(workflow: string, asked: { concurrency?: number; jobConcurrency?: number; leaseMs?: number }, limits: { busyAgents: number | null; computerLimit?: number | null }): Promise<{ ok: true } | { ok: false; code: string; message: string }>;
+  acquire(workflow: string, kind: "child" | "job", key: string, leaseMs?: number): Promise<{ ok: true; granted: true; lease: { id: string } } | { ok: true; granted: false } | { ok: false; code: string; message: string }>;
   release(workflow: string, id: string): Promise<void>;
-  renew(workflow: string, leaseMs?: number): Promise<{ ok: true; held: { id: string; kind: string; key: string }[] } | { ok: false; code: string; message: string }>;
+  renew(workflow: string, leaseMs?: number): Promise<{ ok: true; held: { id: string; kind: "child" | "job"; key: string }[] } | { ok: false; code: string; message: string }>;
   close(workflow: string): Promise<void>;
 }
 
-export interface WorkflowEnv extends SecurityEnv {
+export interface WorkflowEnv extends SecurityEnv, Omit<WorkflowJobsEnv, keyof SecurityEnv> {
   CODEMODE_SANDBOX: DurableObjectNamespace;
   WORKFLOWS: DurableObjectNamespace<WorkflowObject>;
   /** Absent where the capacity limiter is not deployed: then nothing but the workflow's own concurrency bounds it. */
@@ -57,15 +60,16 @@ function capacitySeam(env: WorkflowEnv, workflow: string, tenant: () => string |
   const refused = (result: { ok: false; code: string; message: string }) => new Error(`Workflow capacity ${result.code}: ${result.message}`);
   return {
     leaseMs: CAPACITY_LEASE_MS,
-    async open(concurrency) {
-      // The tenant's busy-agent limit bounds its workflows' children (Infinity: none).
+    async open(concurrency, jobConcurrency) {
+      // The tenant's busy-agent limit bounds its workflows' children (Infinity: none), its computer limit their jobs.
       const { accounts } = await keyServices(env);
       const { limit } = await accounts.billing.busyLimit(tenant()!);
-      const opened = await stub().open(workflow, { concurrency, leaseMs: CAPACITY_LEASE_MS }, { busyAgents: Number.isFinite(limit) ? limit : null });
+      const computers = accounts.tenants.computerLimit(tenant()!);
+      const opened = await stub().open(workflow, { concurrency, jobConcurrency, leaseMs: CAPACITY_LEASE_MS }, { busyAgents: Number.isFinite(limit) ? limit : null, computerLimit: computers ?? null });
       return opened.ok ? { ok: true } : { ok: false, message: opened.message };
     },
-    async acquire(key) {
-      const slot = await stub().acquire(workflow, "child", key, CAPACITY_LEASE_MS);
+    async acquire(key, kind) {
+      const slot = await stub().acquire(workflow, kind, key, CAPACITY_LEASE_MS);
       if (!slot.ok) throw refused(slot);
       return slot.granted ? { granted: true, lease: slot.lease.id } : { granted: false };
     },
@@ -73,7 +77,7 @@ function capacitySeam(env: WorkflowEnv, workflow: string, tenant: () => string |
     async renew() {
       const renewed = await stub().renew(workflow, CAPACITY_LEASE_MS);
       if (!renewed.ok) return { ok: false, message: `${renewed.code}: ${renewed.message}` };
-      return { ok: true, held: renewed.held.filter(lease => lease.kind === "child").map(lease => ({ key: lease.key, lease: lease.id })) };
+      return { ok: true, held: renewed.held.map(lease => ({ key: lease.key, lease: lease.id, kind: lease.kind })) };
     },
     close: () => stub().close(workflow),
   };
@@ -90,14 +94,45 @@ export const unwiredExecutor: EffectExecutor = {
   },
 };
 
-/** TEST_MODE only: agents answer with their prompt, gates with their recommendation, at once. */
-function testExecutor(land: (key: string, attempt: number, outcome: EffectOutcome, usage?: EffectUsage) => Promise<void>, ctx: DurableObjectState): EffectExecutor {
-  const answer = (effect: StartedEffect): EffectOutcome => effect.kind === "gate"
-    ? { ok: true, value: (effect.args as { recommended?: unknown }).recommended ?? "yes" }
-    : { ok: true, value: { answer: `re: ${(effect.args as { prompt: string }).prompt}` } };
+/**
+ * One executor per kind of effect: agent() and gate() go to the children's executor, job(), commit() and push() to the
+ * workflow's jobs. Recovery and abort reach every one.
+ */
+export function executorsByKind(children: ChildEffects, jobs: EffectExecutor): ChildEffects {
+  const of = (kind: string) => kind === "job" || kind === "commit" || kind === "push" ? jobs : children;
+  return {
+    start: effect => of(effect.kind).start(effect),
+    cancel: async effect => { await of(effect.kind).cancel?.(effect); },
+    poll: async effect => of(effect.kind).poll?.(effect),
+    recover: async () => { await children.recover?.(); await jobs.recover?.(); },
+    abort: async () => { await children.abort?.(); await jobs.abort?.(); },
+    ...(children.receiveEnding ? { receiveEnding: ending => children.receiveEnding!(ending) } : {}),
+    ...(children.receiveProgress ? { receiveProgress: report => children.receiveProgress!(report) } : {}),
+  };
+}
+
+/**
+ * TEST_MODE only: agents answer with their prompt, gates with their recommendation, at once. An agent of a repo gets its
+ * fork (workflow-volumes.ts, as a real child does) and, standing in for the edits a real child makes with its file tools,
+ * writes `testEdits` (path to text) into it, then answers `{ result, fork }`.
+ */
+function testExecutor(land: (key: string, attempt: number, outcome: EffectOutcome, usage?: EffectUsage) => Promise<void>, ctx: DurableObjectState, env: WorkflowEnv, workflow: () => { id: string; tenant: string }): EffectExecutor {
+  const answer = async (effect: StartedEffect): Promise<EffectOutcome> => {
+    if (effect.kind === "gate") return { ok: true, value: (effect.args as { recommended?: unknown }).recommended ?? "yes" };
+    const args = effect.args as { prompt: string; repo?: string; testEdits?: Record<string, string> };
+    const value = { answer: `re: ${args.prompt}` };
+    if (typeof args.repo !== "string") return { ok: true, value };
+    const { id, tenant } = workflow();
+    const fork = await forkForChild(env, tenant, { workflow: id, key: effect.key, attempt: effect.attempt, repo: args.repo });
+    const files = await volume(env, tenant, fork.volume);
+    for (const [path, text] of Object.entries(args.testEdits ?? {})) await files.write(path, new TextEncoder().encode(text), "text/plain; charset=utf-8");
+    return { ok: true, value: { result: value, fork: { volume: fork.volume, base: fork.base } } };
+  };
   return {
     async start(effect) {
-      ctx.waitUntil(Promise.resolve().then(() => land(effect.key, effect.attempt, answer(effect), { costUsd: 0.01, model: "test/echo" })).catch(error => console.error("test executor landing failed", error)));
+      ctx.waitUntil(answer(effect).then(outcome => land(effect.key, effect.attempt, outcome, { costUsd: 0.01, model: "test/echo" }))
+        .catch(error => land(effect.key, effect.attempt, { ok: false, error: error instanceof Error ? error.message : String(error) }))
+        .catch(error => console.error("test executor landing failed", error)));
     },
   };
 }
@@ -112,7 +147,14 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
     const sandbox: WorkflowSandbox = {
       step: request => (env.CODEMODE_SANDBOX.getByName(ctx.id.toString()) as unknown as WorkflowSandbox).step(request),
     };
-    this.executor = env.TEST_MODE === "1" ? testExecutor((...args) => this.land(...args), ctx) : unwiredExecutor;
+    const children: ChildEffects = env.TEST_MODE === "1"
+      ? testExecutor((...args) => this.land(...args), ctx, env, () => ({ id: name ?? "", tenant: this.runner.identity().tenant ?? "" })) : unwiredExecutor;
+    const runner = () => this.runner;
+    const jobs = new WorkflowJobs(env, {
+      get workflow() { return { id: name ?? "", tenant: runner().identity().tenant ?? "" }; },
+      land: (...args) => this.land(...args), waitUntil: promise => ctx.waitUntil(promise), storage: ctx.storage,
+    });
+    this.executor = executorsByKind(children, jobs);
     this.runner = new WorkflowRunner(
       { sql: ctx.storage.sql, transactionSync: fn => ctx.storage.transactionSync(fn) },
       sandbox, this.executor,
@@ -159,7 +201,8 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
   async capacityGranted(tenant: string, grants: CapacityGrant[]) {
     const own = this.runner.identity().tenant;
     if (!own || tenant !== own) { console.error(JSON.stringify({ type: "workflow_capacity_grant_ignored", workflow: this.ctx.id.name, tenant })); return; }
-    await this.runner.capacityGranted(grants.filter(grant => grant.kind === "child" && grant.workflow === this.ctx.id.name).map(grant => ({ key: grant.key, lease: grant.id })));
+    await this.runner.capacityGranted(grants.filter(grant => (grant.kind === "child" || grant.kind === "job") && grant.workflow === this.ctx.id.name)
+      .map(grant => ({ key: grant.key, lease: grant.id, kind: grant.kind as "child" | "job" })));
   }
   /** After an eviction or a deploy: start what was committed but not started, and run due steps. */
   wake() { return this.runner.wake(); }

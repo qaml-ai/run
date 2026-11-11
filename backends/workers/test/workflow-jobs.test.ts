@@ -1,0 +1,212 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { execFile } from "node:child_process";
+import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { registerHooks } from "node:module";
+import type { StartedEffect, EffectOutcome } from "../src/workflow-runner.ts";
+import type { JobResult, JobSpec } from "../src/jobs/job.ts";
+import { harness, FakeCapacity } from "./workflow-harness.ts";
+
+// The job and volume modules reach Durable Objects; a stand-in base class lets them load in Node.
+const hooks = registerHooks({ resolve(specifier, context, nextResolve) {
+  if (specifier === "cloudflare:workers") return { url: "data:text/javascript,export class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } } export class WorkerEntrypoint {}", shortCircuit: true };
+  return nextResolve(specifier, context);
+} });
+const { WorkflowJobs, jobId, redact, PUSH_SCRIPT } = await import("../src/workflow-jobs.ts");
+const { executorsByKind } = await import("../src/workflow-object.ts");
+const { forkChanges } = await import("../src/workflow-volumes.ts");
+hooks.deregister();
+const run = promisify(execFile);
+
+test("job() and push() hold job slots under jobConcurrency, apart from agents; commit() holds none", { timeout: 60_000 }, async () => {
+  const capacity = new FakeCapacity(8);
+  const h = harness({ capacity });
+  h.init({
+    code: `
+      const built = await parallel(["a", "b", "c"], name => job({ key: "build:" + name, command: "make " + name, timeoutSeconds: 60 }));
+      const reviewed = await agent("review", { key: "review" });
+      const landed = await commit("vol_fork", { key: "land" });
+      const pushed = await push({ key: "push", volume: "vol_base", repo: "acme/app", branch: "wf", app: "gha_1" });
+      return { built: built.map(b => b.exitCode), reviewed: reviewed.answer, landed, pushed };`,
+    concurrency: 4, jobConcurrency: 2,
+  });
+  await h.wake();
+  assert.equal(h.runner.get().jobConcurrency, 2);
+  assert.deepEqual(h.world.queue.map(effect => [effect.key, effect.kind]), [["build:a", "job"], ["build:b", "job"]], "two jobs at once");
+  assert.ok(capacity.calls.includes("acquire build:a job") && capacity.calls.includes("acquire build:b job"), JSON.stringify(capacity.calls));
+  const answer = (effect: StartedEffect): EffectOutcome | undefined => {
+    if (effect.kind === "job") return { ok: true, value: { exitCode: 0 } };
+    if (effect.kind === "commit") return { ok: true, value: { committed: true, files: ["/a"] } };
+    if (effect.kind === "push") return { ok: true, value: { pushed: true } };
+    return undefined;
+  };
+  await h.next(answer);
+  assert.deepEqual(h.world.queue.map(effect => effect.key), ["build:b", "build:c"], "a landed job's slot goes to the next");
+  await h.run(answer);
+  const result = h.runner.get();
+  assert.equal(result.status, "completed", JSON.stringify(result));
+  assert.deepEqual(result.result, { built: [0, 0, 0], reviewed: "re: review", landed: { committed: true, files: ["/a"] }, pushed: { pushed: true } });
+  assert.ok(!capacity.calls.some(call => call.startsWith("acquire land")), "a commit takes no slot");
+  assert.ok(capacity.calls.includes("acquire push job"));
+  assert.throws(() => harness().init({ code: "return 1", jobConcurrency: 65, seed: 1, startedAt: 1 }), /jobConcurrency must be an integer from 1 to 64/);
+});
+
+test("the script's job(), commit() and push() check their arguments", { timeout: 60_000 }, async () => {
+  for (const [code, message] of [
+    [`return await job({ timeoutSeconds: 5 })`, /job\(\{ command \}\) needs a command/],
+    [`return await job({ command: "true" })`, /job\(\) needs timeoutSeconds/],
+    [`return await commit({})`, /commit\(fork\) needs a fork/],
+    [`return await push({ volume: "v", repo: "a/b", branch: "x" })`, /push\(\{ volume, repo, branch, app \}\)/],
+  ] as const) {
+    const h = harness();
+    h.init({ code });
+    await h.wake();
+    const state = h.runner.get();
+    assert.equal(state.status, "failed", code);
+    assert.match(state.error ?? "", message, code);
+  }
+});
+
+test("executorsByKind sends agents and gates to the children, job/commit/push to the jobs, and recovers both", async () => {
+  const calls: string[] = [];
+  const executor = (name: string) => ({
+    start: async (effect: StartedEffect) => { calls.push(`${name} start ${effect.kind}`); },
+    cancel: async (effect: StartedEffect) => { calls.push(`${name} cancel ${effect.kind}`); },
+    recover: async () => { calls.push(`${name} recover`); },
+    abort: async () => { calls.push(`${name} abort`); },
+  });
+  const both = executorsByKind(executor("children"), executor("jobs"));
+  const effect = (kind: string) => ({ key: kind, attempt: 1, kind, args: {}, options: undefined, phase: undefined });
+  for (const kind of ["agent", "gate", "job", "commit", "push"]) await both.start(effect(kind));
+  await both.cancel!(effect("job"));
+  await both.recover!();
+  await both.abort!();
+  assert.deepEqual(calls, ["children start agent", "children start gate", "jobs start job", "jobs start commit", "jobs start push", "jobs cancel job", "children recover", "jobs recover", "children abort", "jobs abort"]);
+});
+
+/** WorkflowJobs over a fake driver and storage: what it lands. */
+function jobs(result: (spec: JobSpec) => JobResult | Promise<JobResult>, available = true) {
+  const rows = new Map<string, unknown>();
+  const storage = {
+    put: async (key: string, value: unknown) => { rows.set(key, value); },
+    delete: async (key: string) => rows.delete(key),
+    list: async ({ prefix }: { prefix: string }) => new Map([...rows].filter(([key]) => key.startsWith(prefix))),
+  };
+  const landed: [string, number, unknown][] = [], specs: JobSpec[] = [], pending: Promise<unknown>[] = [], stopped: string[] = [];
+  const driver = { provider: "cloudflare-containers" as const, run: async (spec: JobSpec) => { specs.push(spec); return result(spec); }, stop: async (id: string) => { stopped.push(id); return { stopped: true }; } };
+  const executor = new WorkflowJobs({} as never, {
+    workflow: { id: "wf_1", tenant: "t1" }, storage: storage as never,
+    land: async (key, attempt, outcome) => { landed.push([key, attempt, outcome]); },
+    waitUntil: promise => { pending.push(promise); },
+  }, () => available ? { ok: true, driver } : { ok: false, code: "JOBS_UNAVAILABLE", message: "Jobs need Cloudflare Containers" });
+  return { executor, landed, specs, rows, stopped, settled: async () => { while (pending.length) await pending.shift(); } };
+}
+const effect = (key: string, args: Record<string, unknown>, kind = "job"): StartedEffect => ({ key, attempt: 1, kind, args, options: undefined, phase: undefined });
+const timings = { startedAt: 0, endedAt: 1, startMs: 0, syncMs: 0, commandMs: 0, collectMs: 0, totalMs: 1 };
+
+test("WorkflowJobs: refusals and failures land as values; a job is paid by the workflow; a restart runs it again", async () => {
+  // Off the pilot: a clear failure, no compute.
+  let j = jobs(() => { throw new Error("no driver"); }, false);
+  await j.executor.start(effect("a", { command: "true", timeoutSeconds: 5 }));
+  await j.settled();
+  assert.deepEqual(j.landed, [["a", 1, { ok: false, error: "JOBS_UNAVAILABLE: Jobs need Cloudflare Containers" }]]);
+  assert.equal(j.rows.size, 0, "its row goes once it lands");
+
+  // A bad option fails the effect without starting anything.
+  j = jobs(() => { throw new Error("never"); });
+  await j.executor.start(effect("b", { command: "true", timeoutSeconds: 5, computer: "fresh" }));
+  await j.settled();
+  assert.match((j.landed[0]![2] as { error: string }).error, /job\(\) has no option computer/);
+  assert.equal(j.specs.length, 0);
+
+  // The payer's admission refused: a refusal (the workflow pauses), not a failure.
+  j = jobs(spec => ({ ok: false, id: spec.id, code: "admission_refused", message: "The tenant has no credit left", timings }));
+  await j.executor.start(effect("c", { command: "true", timeoutSeconds: 5, files: { "a.txt": "x" } }));
+  await j.settled();
+  assert.deepEqual(j.landed[0]![2], { refused: "The tenant has no credit left", code: "payer_exhausted" });
+  const spec = j.specs[0]!;
+  assert.deepEqual(spec.payer, { tenant: "t1", agent: "wf_1" }, "the workflow's tenant pays, the workflow is its computer tree");
+  assert.equal(spec.id, await jobId("wf_1", "c", 1));
+  assert.match(spec.id, /^wf-[0-9a-f]{40}$/);
+  assert.deepEqual(Object.keys(spec.files!), ["a.txt"]);
+
+  // A failure lands its code; a run still held by an earlier start lands nothing (that run lands).
+  j = jobs(spec => ({ ok: false, id: spec.id, code: "disk_low", message: "under 2 GiB free", timings }));
+  await j.executor.start(effect("d", { command: "true", timeoutSeconds: 5 }));
+  await j.settled();
+  assert.deepEqual(j.landed[0]![2], { ok: false, error: "disk_low: under 2 GiB free" });
+  j = jobs(spec => ({ ok: false, id: spec.id, code: "job_running", message: "running", timings }));
+  await j.executor.start(effect("e", { command: "true", timeoutSeconds: 5 }));
+  await j.settled();
+  assert.equal(j.landed.length, 0);
+  assert.equal(j.rows.size, 1, "kept, so the next restart asks again");
+
+  // A restart: the row of a job started and not landed runs again; cancel stops its container.
+  let runs = 0;
+  j = jobs(spec => ({ ok: false, id: spec.id, code: runs++ ? "stopped" : "job_running", message: "x", timings }));
+  await j.executor.start(effect("f", { command: "true", timeoutSeconds: 5 }));
+  await j.settled();
+  await j.executor.recover();
+  await j.settled();
+  assert.equal(j.specs.length, 2);
+  assert.deepEqual(j.landed.map(entry => entry[0]), ["f"]);
+  await j.executor.cancel(effect("f", {}));
+  assert.deepEqual(j.stopped, [await jobId("wf_1", "f", 1)]);
+});
+
+test("a fork's changes: written paths are those whose content differs from the base it was made from; removed ones", () => {
+  const file = (path: string, key: string, version = 1) => ({ path, key, version, size: 1, contentType: "text/plain", updatedAt: 0 });
+  const { written, removed, before } = forkChanges(
+    [file("/same", "k1"), file("/changed", "k2"), file("/gone", "k3", 4)],
+    [file("/same", "k1"), file("/changed", "k9", 7), file("/new", "k5", 8)],
+  );
+  assert.deepEqual(written.map(entry => entry.path), ["/changed", "/new"]);
+  assert.deepEqual(removed.map(entry => [entry.path, entry.version]), [["/gone", 4]]);
+  assert.equal(before.get("/changed")?.version, 1, "the base version the commit checks");
+});
+
+test("redact replaces a token wherever a command printed it", () => {
+  const token = "ghs_abcdefghijklmnopqrstuvwxyz123456";
+  assert.equal(redact(`fatal: could not read from https://x-access-token:${token}@github.com\n${token}`, [token]), "fatal: could not read from https://x-access-token:***@github.com\n***");
+  assert.equal(redact("short", ["abc"]), "short", "too short a secret is never matched");
+});
+
+test("the push job writes the volume's tree on the branch, from the branch if it exists, and pushes nothing new twice", { timeout: 60_000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), "push-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const git = (args: string[], cwd = root) => run("git", args, { cwd, env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
+  // A remote with one commit on main, standing in for github.com/acme/app.
+  await git(["init", "-q", "--bare", "-b", "main", join(root, "remote.git")]);
+  await git(["clone", "-q", join(root, "remote.git"), join(root, "seed")]);
+  await writeFile(join(root, "seed", "old.txt"), "old\n");
+  await writeFile(join(root, "seed", "keep.txt"), "keep\n");
+  await git(["add", "-A"], join(root, "seed"));
+  await git(["commit", "-q", "-m", "seed"], join(root, "seed"));
+  await git(["push", "-q", "origin", "HEAD:main"], join(root, "seed"));
+  // The volume's tree: keep.txt changed, old.txt gone, src/new.txt new.
+  const source = join(root, "volume");
+  await mkdir(join(source, "src"), { recursive: true });
+  await writeFile(join(source, "keep.txt"), "kept and changed\n");
+  await writeFile(join(source, "src", "new.txt"), "new\n");
+  const token = "ghs_fake_token_value_that_must_not_print";
+  const env = {
+    PATH: process.env.PATH!, HOME: root, GIT_PUSH_TOKEN: token, PUSH_REPO: "acme/app", PUSH_BRANCH: "wf/edits", PUSH_MESSAGE: "workflow edits",
+    PUSH_NAME: "camelRun workflow", PUSH_EMAIL: "workflows@camelai.com", PUSH_DATE: "@1700000000 +0000", PUSH_SOURCE: source,
+    // github.com/acme/app is the local remote here.
+    GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: `url.${join(root, "remote.git")}.insteadOf`, GIT_CONFIG_VALUE_0: "https://github.com/acme/app.git",
+  };
+  const first = await run("bash", ["-c", PUSH_SCRIPT], { cwd: root, env });
+  assert.match(first.stdout, /^PUSH_RESULT pushed [0-9a-f]{40}$/m);
+  assert.ok(!first.stdout.includes(token) && !first.stderr.includes(token));
+  const files = (await git(["ls-tree", "-r", "--name-only", "wf/edits"], join(root, "remote.git"))).stdout.trim().split("\n");
+  assert.deepEqual(files, ["keep.txt", "src/new.txt"]);
+  assert.equal((await git(["log", "--format=%s %P", "-1", "wf/edits"], join(root, "remote.git"))).stdout.trim().split(" ")[0], "workflow");
+  assert.equal((await git(["rev-list", "--count", "wf/edits"], join(root, "remote.git"))).stdout.trim(), "2", "built on main's history");
+  // Run again (a job made again after a restart): the branch already holds the tree.
+  const again = await run("bash", ["-c", PUSH_SCRIPT], { cwd: root, env });
+  assert.match(again.stdout, /^PUSH_RESULT unchanged [0-9a-f]{40}$/m);
+  assert.equal((await git(["rev-list", "--count", "wf/edits"], join(root, "remote.git"))).stdout.trim(), "2");
+});

@@ -37,6 +37,8 @@ export const WORKFLOW_LIMITS = Object.freeze({
   sweepMs: 5 * 60_000,
   /** Agents running at once: by default, and at most. */
   concurrency: 8, maxConcurrency: 64,
+  /** Jobs (`job()`, `push()`) running at once: by default, and at most (the capacity limiter bounds it by the tenant's too). */
+  jobConcurrency: 8, maxJobConcurrency: 64,
   /** An edit that issues more new effects than this share of the journal's finished ones waits for a confirm. */
   rerunConfirmPercent: 25,
   /** A gate's default expiry. */
@@ -103,6 +105,7 @@ export interface WorkflowSummary {
   fault?: { code: WorkflowFaultCode; message: string };
   budget: { usd: number | null };
   concurrency: number;
+  jobConcurrency: number;
   spent: { usd: number; calls: number; inputTokens: number; cachedInputTokens: number; outputTokens: number };
   counts: Record<string, number>;
   throttledUntil?: number;
@@ -112,7 +115,7 @@ export interface WorkflowSummary {
 
 /** What `init` creates a workflow with. `seed` and `startedAt` fix its `random()` and its clock's start. */
 export interface WorkflowInit {
-  code: string; seed: number; startedAt: number; budgetUsd?: number | null; concurrency?: number;
+  code: string; seed: number; startedAt: number; budgetUsd?: number | null; concurrency?: number; jobConcurrency?: number;
   /** Who the workflow belongs to, fixed at create: it bills `tenant` (in `bucket`), attributed to `endUser`. */
   tenant?: string; bucket?: string; endUser?: string;
 }
@@ -132,7 +135,7 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS workflow_state (
     id INTEGER PRIMARY KEY CHECK (id = 1), seed INTEGER NOT NULL, started_at INTEGER NOT NULL,
     status TEXT NOT NULL, pause_reason TEXT, revision INTEGER NOT NULL, step INTEGER NOT NULL, phase TEXT,
-    result TEXT, error TEXT, fault_code TEXT, budget_usd REAL, concurrency INTEGER NOT NULL,
+    result TEXT, error TEXT, fault_code TEXT, budget_usd REAL, concurrency INTEGER NOT NULL, job_concurrency INTEGER,
     throttled_until INTEGER, swept_at INTEGER, tenant TEXT, bucket TEXT, end_user TEXT, capacity_open INTEGER NOT NULL DEFAULT 0, renewed_at INTEGER,
     created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, version INTEGER NOT NULL)`,
   // A revision is a script and what the journal held when it began (its table): an edit, or a rerun of exact keys.
@@ -171,7 +174,10 @@ const SCHEMA = [
 type Row = Record<string, SqlStorageValue>;
 const bytesOf = (value: SqlStorageValue) => value instanceof Uint8Array ? value : new Uint8Array(value as ArrayBuffer);
 const text = (value: SqlStorageValue) => value === null || value === undefined ? undefined : String(value);
-const EXECUTED = new Set(["agent", "gate"]);
+const EXECUTED = new Set(["agent", "gate", "job", "commit", "push"]);
+/** The effects that hold a capacity slot while they run, and which kind: an agent a child's, a job or push a job's. */
+const SLOTTED: Record<string, "child" | "job"> = { agent: "child", job: "job", push: "job" };
+export const slotKind = (kind: string) => SLOTTED[kind];
 
 /**
  * The tenant's capacity limiter (WorkflowCapacity), as the runner uses it: one slot per running agent, leased and
@@ -181,11 +187,11 @@ const EXECUTED = new Set(["agent", "gate"]);
  */
 export interface CapacitySeam {
   leaseMs: number;
-  open(concurrency: number): Promise<{ ok: true } | { ok: false; message: string }>;
-  acquire(key: string): Promise<{ granted: true; lease: string } | { granted: false }>;
+  open(concurrency: number, jobConcurrency: number): Promise<{ ok: true } | { ok: false; message: string }>;
+  acquire(key: string, kind: "child" | "job"): Promise<{ granted: true; lease: string } | { granted: false }>;
   release(lease: string): Promise<void>;
   /** The leases held (grants whose wake was missed among them), or a refusal: the limiter dropped this workflow. */
-  renew(): Promise<{ ok: true; held: { key: string; lease: string }[] } | { ok: false; message: string }>;
+  renew(): Promise<{ ok: true; held: { key: string; lease: string; kind: "child" | "job" }[] } | { ok: false; message: string }>;
   close(): Promise<void>;
 }
 
@@ -212,6 +218,9 @@ export class WorkflowRunner {
     this.options = options;
     this.sql = storage.sql;
     for (const statement of SCHEMA) this.sql.exec(statement);
+    // A workflow made before jobs had no job_concurrency (null reads as the default).
+    if (!this.sql.exec("SELECT 1 FROM pragma_table_info('workflow_state') WHERE name = 'job_concurrency'").toArray().length)
+      this.sql.exec("ALTER TABLE workflow_state ADD COLUMN job_concurrency INTEGER");
   }
 
   private now() { return (this.options.now ?? Date.now)(); }
@@ -221,18 +230,21 @@ export class WorkflowRunner {
     const concurrency = workflow.concurrency ?? WORKFLOW_LIMITS.concurrency;
     if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > WORKFLOW_LIMITS.maxConcurrency)
       throw new WorkflowError(`concurrency must be an integer from 1 to ${WORKFLOW_LIMITS.maxConcurrency}`, 400);
+    const jobConcurrency = workflow.jobConcurrency ?? WORKFLOW_LIMITS.jobConcurrency;
+    if (!Number.isInteger(jobConcurrency) || jobConcurrency < 1 || jobConcurrency > WORKFLOW_LIMITS.maxJobConcurrency)
+      throw new WorkflowError(`jobConcurrency must be an integer from 1 to ${WORKFLOW_LIMITS.maxJobConcurrency}`, 400);
     if (workflow.budgetUsd !== undefined && workflow.budgetUsd !== null && !(workflow.budgetUsd >= 0)) throw new WorkflowError("budgetUsd must be at least 0", 400);
     if (typeof workflow.code !== "string" || !workflow.code.trim()) throw new WorkflowError("A workflow needs a script", 400);
     const at = this.now();
     this.storage.transactionSync(() => {
       if (this.sql.exec("SELECT 1 FROM workflow_state WHERE id = 1").toArray().length) return;
       this.sql.exec(
-        `INSERT INTO workflow_state (id, seed, started_at, status, revision, step, budget_usd, concurrency, tenant, bucket, end_user, created_at, updated_at, version)
-         VALUES (1, ?, ?, 'running', 1, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        workflow.seed >>> 0, workflow.startedAt, workflow.budgetUsd ?? null, concurrency, workflow.tenant ?? null, workflow.bucket ?? null, workflow.endUser ?? null, at, at, WORKFLOW_RUNNER_VERSION,
+        `INSERT INTO workflow_state (id, seed, started_at, status, revision, step, budget_usd, concurrency, job_concurrency, tenant, bucket, end_user, created_at, updated_at, version)
+         VALUES (1, ?, ?, 'running', 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        workflow.seed >>> 0, workflow.startedAt, workflow.budgetUsd ?? null, concurrency, jobConcurrency, workflow.tenant ?? null, workflow.bucket ?? null, workflow.endUser ?? null, at, at, WORKFLOW_RUNNER_VERSION,
       );
       this.sql.exec("INSERT INTO workflow_revisions (revision, kind, code, at, start_step, rerun_confirm_percent, confirmed) VALUES (1, 'start', ?, ?, 1, 100, 1)", workflow.code, workflow.startedAt);
-      this.event("created", { concurrency, budgetUsd: workflow.budgetUsd ?? null });
+      this.event("created", { concurrency, jobConcurrency, budgetUsd: workflow.budgetUsd ?? null });
     });
   }
 
@@ -254,7 +266,7 @@ export class WorkflowRunner {
     }
     const summary: WorkflowSummary = {
       status: row.status as WorkflowStatus, revision: Number(row.revision), step: Number(row.step),
-      budget: { usd: row.budget_usd === null ? null : Number(row.budget_usd) }, concurrency: Number(row.concurrency),
+      budget: { usd: row.budget_usd === null ? null : Number(row.budget_usd) }, concurrency: Number(row.concurrency), jobConcurrency: Number(row.job_concurrency ?? WORKFLOW_LIMITS.jobConcurrency),
       spent: { usd: Number(spent.usd), calls: Number(spent.calls), inputTokens: Number(spent.input), cachedInputTokens: Number(spent.cached), outputTokens: Number(spent.output) },
       counts, createdAt: Number(row.created_at), updatedAt: Number(row.updated_at),
     };
@@ -440,7 +452,7 @@ export class WorkflowRunner {
       return;
     }
     if (state.status !== "running" && state.status !== "waiting") return;
-    const opened = await capacity.open(Number(state.concurrency));
+    const opened = await capacity.open(Number(state.concurrency), Number(state.job_concurrency ?? WORKFLOW_LIMITS.jobConcurrency));
     this.storage.transactionSync(() => {
       if (opened.ok) this.sql.exec("UPDATE workflow_state SET capacity_open = 1, renewed_at = ? WHERE id = 1", this.now());
       else { this.setStatus("paused", "capacity_refused"); this.event("capacity_refused", { message: opened.message }); }
@@ -453,23 +465,24 @@ export class WorkflowRunner {
    * stops them on the next advance.
    */
   private async cancelEnded() {
-    for (const row of this.sql.exec("SELECT key, attempt, kind, args, options, phase FROM workflow_effects WHERE status IN ('cancelled', 'aborted') AND started = 1 AND cancel_sent = 0 AND kind IN ('agent', 'gate')").toArray()) {
+    for (const row of this.sql.exec("SELECT key, attempt, kind, args, options, phase FROM workflow_effects WHERE status IN ('cancelled', 'aborted') AND started = 1 AND cancel_sent = 0 AND kind IN ('agent', 'gate', 'job', 'push')").toArray()) {
       await this.executor.cancel?.(this.started(row));
       this.sql.exec("UPDATE workflow_effects SET cancel_sent = 1 WHERE key = ? AND attempt = ?", row.key, row.attempt);
     }
   }
 
   /** Slots the limiter granted (a wake, or a renew's `held`): each goes to its effect, or straight back if it has none. */
-  private async assignGrants(grants: { key: string; lease: string }[]) {
+  private async assignGrants(grants: { key: string; lease: string; kind?: "child" | "job" }[]) {
     for (const grant of grants) {
-      const row = this.sql.exec("SELECT attempt, lease FROM workflow_effects WHERE key = ? AND current = 1 AND status = 'pending' AND kind = 'agent'", grant.key).toArray()[0];
+      const row = this.sql.exec("SELECT attempt, lease, kind FROM workflow_effects WHERE key = ? AND current = 1 AND status = 'pending'", grant.key).toArray()
+        .filter(row => slotKind(row.kind as string) !== undefined && (grant.kind === undefined || slotKind(row.kind as string) === grant.kind))[0];
       if (row && (row.lease === null || row.lease === grant.lease)) this.sql.exec("UPDATE workflow_effects SET lease = ? WHERE key = ? AND attempt = ?", grant.lease, grant.key, row.attempt);
       else if (!row) await this.options.capacity?.release(grant.lease);
     }
   }
 
   /** The limiter's wake: slots it granted to effects that waited for one. */
-  capacityGranted(grants: { key: string; lease: string }[]): Promise<void> {
+  capacityGranted(grants: { key: string; lease: string; kind?: "child" | "job" }[]): Promise<void> {
     return this.serial(async () => {
       await this.assignGrants(grants);
       await this.advance();
@@ -481,7 +494,7 @@ export class WorkflowRunner {
     const status = this.state().status as WorkflowStatus;
     if (status !== "running" && status !== "waiting") return;
     const busy = this.sql.exec(
-      `SELECT 1 FROM workflow_effects WHERE current = 1 AND ((status = 'pending' AND kind = 'agent') OR (delivered_step IS NULL AND landed IS NOT NULL)) LIMIT 1`,
+      `SELECT 1 FROM workflow_effects WHERE current = 1 AND ((status = 'pending' AND kind IN ('agent', 'job', 'commit', 'push')) OR (delivered_step IS NULL AND landed IS NOT NULL)) LIMIT 1`,
     ).toArray().length > 0;
     const next: WorkflowStatus = busy ? "running" : "waiting";
     if (next !== status) this.setStatus(next);
@@ -494,9 +507,13 @@ export class WorkflowRunner {
     const held = this.sql.exec("SELECT key, attempt, kind, args, options, phase, lease, start_failures FROM workflow_effects WHERE current = 1 AND status = 'pending' AND started = 0 ORDER BY ord").toArray();
     if (!held.length) return;
     const budget = row.budget_usd === null ? null : Number(row.budget_usd);
-    let running = Number(this.sql.exec("SELECT COUNT(*) AS n FROM workflow_effects WHERE current = 1 AND status = 'pending' AND started = 1 AND kind = 'agent'").one().n);
+    const runningOf = (slot: "child" | "job") => Number(this.sql.exec(
+      `SELECT COUNT(*) AS n FROM workflow_effects WHERE current = 1 AND status = 'pending' AND started = 1 AND kind IN (${slot === "child" ? "'agent'" : "'job', 'push'"})`).one().n);
+    const running = { child: runningOf("child"), job: runningOf("job") };
+    const caps = { child: Number(row.concurrency), job: Number(row.job_concurrency ?? WORKFLOW_LIMITS.jobConcurrency) };
     for (const effect of held) {
-      if (effect.kind === "agent") {
+      const slot = slotKind(effect.kind as string);
+      if (slot) {
         if (budget !== null) {
           const spent = Number(this.sql.exec("SELECT COALESCE(SUM(cost_usd), 0) AS usd FROM workflow_ledger").one().usd);
           if (spent >= budget) {
@@ -504,22 +521,22 @@ export class WorkflowRunner {
             return;
           }
         }
-        if (running >= Number(row.concurrency)) continue;
+        if (running[slot] >= caps[slot]) continue;
         if (this.options.capacity && !row.capacity_open) continue;
         if (this.options.capacity && effect.lease === null) {
-          const slot = await this.options.capacity.acquire(effect.key as string);
+          const granted = await this.options.capacity.acquire(effect.key as string, slot);
           // Not granted: it waits in the limiter's queue, and its grant starts it later.
-          if (!slot.granted) continue;
-          this.sql.exec("UPDATE workflow_effects SET lease = ? WHERE key = ? AND attempt = ?", slot.lease, effect.key, effect.attempt);
+          if (!granted.granted) continue;
+          this.sql.exec("UPDATE workflow_effects SET lease = ? WHERE key = ? AND attempt = ?", granted.lease, effect.key, effect.attempt);
         }
-        running++;
+        running[slot]++;
       }
       if (EXECUTED.has(effect.kind as string)) {
         try { await this.executor.start(this.started(effect)); }
         catch (error) {
           // The effect stays journaled and unstarted; the alarm's sweep (armed while any is unstarted) and every later
           // landing or wake try it again. Recorded, and the other effects still start.
-          if (effect.kind === "agent") running--;
+          if (slot) running[slot]--;
           const message = error instanceof Error ? error.message : String(error);
           console.error(`Workflow effect ${effect.key}:${effect.attempt} did not start`, error);
           this.storage.transactionSync(() => {

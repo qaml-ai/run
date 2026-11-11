@@ -168,7 +168,7 @@ export async function runContainerJob(spec: Spec, options: ContainerJobOptions):
     let exitCode: number | null = null, stdout: JobStream | undefined, stderr: JobStream | undefined;
     try {
       const process = await container.exec(["bash", "-lc", spec.command], {
-        cwd: JOB_REPO, env: { JOB_ID: spec.id, JOB_OUT }, signal, stdout: "pipe", stderr: "pipe",
+        cwd: JOB_REPO, env: { ...spec.secretEnv, JOB_ID: spec.id, JOB_OUT }, signal, stdout: "pipe", stderr: "pipe",
       });
       const kill = () => { try { process.kill(9); } catch { /* already gone */ } };
       signal.addEventListener("abort", kill, { once: true });
