@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import type { Placement } from "../../../shared/owner.ts";
 import { type RuntimeNotice, type NoticeRequest, type WakeDecision } from "./delegation-notifications.ts";
 import type { ChildEvent, ChildProgressReport } from "./delegation.ts";
 import { Env } from "./agent-types.ts";
@@ -48,6 +49,11 @@ export class CamelAgent extends DurableObject<Env> {
   }
 
   receiveChildEvent(event: ChildEvent) { return this.#runtime.receiveChildEvent(event); }
+
+  /** A child run its owner starts, with its placement in the chain (binding-only). */
+  admitDelegated(request: unknown, placement: Placement) {
+    return this.#runtime.admitDelegated(request, placement);
+  }
 
   hasBackgroundChild(id: string): Promise<boolean> {
     return this.#runtime.hasBackgroundChild(id);

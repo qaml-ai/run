@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { DelegationNotifications, DelegationWakeBudget, type NotificationHost } from '../src/delegation-notifications.ts';
 import type { DelegatedChild } from '../src/delegation.ts';
 import { renderMessage } from '../src/sender.ts';
+import { withSql, submitViaFetch } from './sql-storage.ts';
 
 function memory() {
   const values = new Map<string, unknown>();
@@ -12,6 +13,7 @@ function memory() {
     async list({ prefix }: { prefix: string }) { return new Map([...values].filter(([key]) => key.startsWith(prefix)).map(([key, value]) => [key, structuredClone(value)])); },
     async transaction<T>(work: (tx: unknown) => Promise<T>) { return work(storage); },
   };
+  withSql(storage);
   return { storage: storage as unknown as DurableObjectStorage, values };
 }
 const child: DelegatedChild = { id: 'child', key: 'delegate-123', requestId: 'delegate_123', parentRequestId: 'parent-run', toolCallId: 'call', task: 'help', name: 'helper', depth: 1, root: 'root', background: true, createdAt: 1, endedAt: 2, status: 'completed', made: true, accepted: true, outcome: { result: { reply: 'finished', usage: { costUsd: 0.02 } } } };

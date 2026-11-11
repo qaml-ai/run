@@ -23,7 +23,7 @@ type Attribution = { root: string | null; definition: string | null; workspace: 
 /** Indexed metadata reads only. Never reads usage_details from an accounting transaction. */
 const attributionRows = `select t,
   case when t ? 'attribution' then t->'attribution'->>'root' else
-    coalesce(child.root, a.header->'parent'->'chain'->>0, a.header->'parentPlace'->'chain'->>0,
+    coalesce(child.root, a.header->'rootOwner'->>'id', a.header->'parent'->'chain'->>0, a.header->'parentPlace'->'chain'->>0,
       a.header->'parent'->>'agentId', a.header->>'parentAgentId', nullif(t->>'agent','')) end as root_agent,
   case when t ? 'attribution' then t->'attribution'->>'definition' else
     coalesce(a.header->'definition'->>'id', a.header->'config'->>'definition') end as definition,

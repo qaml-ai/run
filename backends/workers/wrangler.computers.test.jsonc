@@ -29,6 +29,10 @@
         "class_name": "Volume"
       },
       {
+        "name": "WORKFLOW_CAPACITY",
+        "class_name": "WorkflowCapacity"
+      },
+      {
         "name": "WORKFLOWS",
         "class_name": "WorkflowObject"
       },
@@ -56,6 +60,12 @@
       "tag": "v2",
       "new_sqlite_classes": [
         "ContainerComputer"
+      ]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": [
+        "WorkflowCapacity"
       ]
     },
     {

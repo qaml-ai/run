@@ -1,0 +1,7 @@
+plan_id,name,monthly_price,currency
+1,Free,0.00,USD
+2,Starter,9.00,USD
+3,Pro,29.00,USD
+4,Team,49.00,USD
+5,Business,99.00,USD
+6,Enterprise,499.00,USD

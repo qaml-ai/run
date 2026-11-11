@@ -1,0 +1,41 @@
+refund_id,payment_id,amount,reason
+1,118,115.32,changed mind
+2,38,90.11,damaged
+3,106,86.89,
+4,78,29.89,changed mind
+5,11,152.21,
+6,74,146.85,
+7,140,12.72,late
+8,75,-30.00,changed mind
+9,110,143.72,late
+10,61,188.86,late
+11,5,191.28,changed mind
+12,88,154.85,late
+13,136,77.36,changed mind
+14,65,28.03,duplicate charge
+15,24,176.04,late
+16,18,65.31,duplicate charge
+17,97,131.53,
+18,122,92.14,changed mind
+19,78,187.13,duplicate charge
+20,90,85.28,damaged
+21,107,84.21,changed mind
+22,75,159.41,duplicate charge
+23,26,35.23,duplicate charge
+24,130,40.90,late
+25,126,133.01,duplicate charge
+26,40,162.70,duplicate charge
+27,80,109.51,late
+28,89,78.68,
+29,113,157.36,damaged
+30,41,155.66,changed mind
+31,110,110.61,changed mind
+32,41,191.33,duplicate charge
+33,34,3.31,
+34,122,100.83,duplicate charge
+35,46,132.53,late
+36,63,106.81,duplicate charge
+37,70,102.03,duplicate charge
+38,127,170.30,
+39,168,186.59,duplicate charge
+40,68,192.71,changed mind

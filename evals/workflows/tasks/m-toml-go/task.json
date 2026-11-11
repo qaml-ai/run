@@ -1,0 +1,18 @@
+{
+  "id": "m-toml-go",
+  "version": 0,
+  "tier": "M",
+  "title": "Port smol-toml (TypeScript) to Go, judged by toml-test",
+  "status": "planned",
+  "prompt": "/workspace holds smol-toml, a TOML 1.0 parser and serializer in TypeScript. Port it to a Go module in /workspace/go (package toml, Go 1.23, standard library only) with the same behaviour, plus two commands, cmd/toml-decoder and cmd/toml-encoder, that speak toml-test's decoder and encoder protocol (README-toml-test.md). Do not change the TypeScript. Reply with a short summary when done.",
+  "budget": { "usd": 30, "wallMinutes": 90 },
+  "units": 12,
+  "source": {
+    "port": { "repo": "squirrelchat/smol-toml", "ref": "v1.9.1", "license": "BSD-3-Clause", "paths": ["src/"], "language": "TypeScript", "approxLines": 1500 },
+    "judge": { "repo": "toml-lang/toml-test", "ref": "v2.2.0", "license": "MIT", "language": "language-independent (TOML in, tagged JSON out)",
+      "command": "toml-test test -toml 1.0 -decoder ./bin/toml-decoder && toml-test test -toml 1.0 -encoder ./bin/toml-encoder", "cases": "about 700 valid and invalid decoder cases, plus encoder cases",
+      "parse": "the summary line 'toml-test v… : passed N, failed M'", "image": "golang:1.23-bookworm with the toml-test binary built in; --cpus 4, no network" },
+    "why": "A real cross-language port where the judge is the language-independent suite every TOML implementation is held to, as Bun's TS tests judged the Rust. Small enough to finish in about an hour with a dozen children.",
+    "prepare": "Clone the port repo at ref into input/ (src, README, LICENSE, the toml-test protocol doc as README-toml-test.md; no tests, so the judge stays hidden); build the judge image; record both commit SHAs in task.json."
+  }
+}

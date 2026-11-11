@@ -1,0 +1,23 @@
+{
+  "id": "l-quickjs-rust",
+  "version": 0,
+  "tier": "L",
+  "title": "Bun-shaped: port QuickJS (C) to Rust, judged by test262",
+  "status": "planned",
+  "prompt": "Port QuickJS to Rust, crate by crate, to the same test262 pass list as the C build.",
+  "budget": { "usd": 20000, "wallMinutes": 20160 },
+  "units": 70,
+  "source": {
+    "port": { "repo": "bellard/quickjs", "ref": "pin a release (2025-04-26 or later)", "license": "MIT", "language": "C", "approxLines": 75000 },
+    "judge": { "repo": "tc39/test262", "ref": "the commit QuickJS's run-test262 config pins", "license": "BSD-3-Clause", "language": "language-independent (JavaScript conformance tests)",
+      "command": "the port's run-test262 against test262 with QuickJS's own exclusion list; pass = every test the C build passes", "cases": "about 45,000 tests in the C build's pass list" },
+    "why": "Closest to Bun's shape: an engine port where a language-independent conformance suite is the judge, tens of thousands of lines, a compile-error queue and sharded tests.",
+    "needs": [
+      "Phase 2, our job hosts: incremental cargo builds of a ~75k-line crate are minutes each; 8 warm build sandboxes on r8gd, not a 4-vCPU Cloudflare container",
+      "Phase 4, sharded tests: test262 in ~32 shards on the c8gd spot pool per round, each failure an item",
+      "Phase 3, repositories: 64 editors committing one file at a time onto one branch, whole-tree search from the repo object",
+      "Phase 4, queue() and 10,000+ effects: the compile-error work queue refilled from cargo check",
+      "The baseline: the C build's test262 pass list, computed once in a job and frozen as the judge's expected set"
+    ]
+  }
+}

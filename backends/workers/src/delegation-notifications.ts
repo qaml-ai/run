@@ -1,8 +1,11 @@
 import { batchedEnding, childNotice, MULTI_AGENT_LIMITS, withBatch, type BatchedEnding } from './multi-agent-policy.ts';
 import { childUsageCost, readChildPayload, type DelegatedChild } from './delegation.ts';
+import type { Placement } from '../../../shared/owner.ts';
+import { ChildRows } from './children-table.ts';
 import type { MessageSource } from './sender.ts';
 
-export type RuntimeNotice = { source: MessageSource; root: string; costUsd: number; metadata: Record<string, unknown> };
+/** `delegation`: where the run the notice starts stands in its chain (an owner's message to its child), stored with it. */
+export type RuntimeNotice = { source: MessageSource; root: string; costUsd: number; metadata: Record<string, unknown>; delegation?: Placement };
 export type NoticeRequest = { id: string; method: 'prompt'; params: { endUser?: string; bucket?: string; text: string; allowDisconnected: true; whileRunning: 'followUp'; metadata?: Record<string, string> } };
 export type WakeDecision = { allowed: boolean; hour: number };
 /** `steer`: offered to the parent's running turn at its next step (delegate.notify "asap"), not queued behind it. */
@@ -41,6 +44,8 @@ export class DelegationWakeBudget {
 
 export interface NotificationHost {
   storage: DurableObjectStorage;
+  /** The owner's children table; one is made over `storage` when left out. */
+  children?: ChildRows;
   /** This is an internal call. A public request cannot provide its own RuntimeNotice. */
   submit(request: NoticeRequest, notice: RuntimeNotice, delivery: NoticeDelivery): Promise<unknown>;
   admitWake(root: string, requestId: string): Promise<WakeDecision>;
@@ -70,7 +75,8 @@ function outboxEntry(child: DelegatedChild): PendingNotice {
 export class DelegationNotifications {
   private active = new Map<string, Promise<unknown>>();
   private host: NotificationHost;
-  constructor(host: NotificationHost) { this.host = host; }
+  private rows: ChildRows;
+  constructor(host: NotificationHost) { this.host = host; this.rows = host.children ?? new ChildRows(host.storage); }
   async deliver(child: DelegatedChild): Promise<void> {
     const key = prefix + child.key;
     if (!await this.host.storage.get(key, { noCache: true })) await this.host.storage.put(key, outboxEntry(child), { noCache: true });
@@ -115,9 +121,9 @@ export class DelegationNotifications {
         // Read again inside the claim: another notice's turn may have carried this one meanwhile (a batch).
         const current = await tx.get<PendingNotice>(key, { noCache: true });
         if (!current || current.delivered) return { state: 'carried' as const };
-        const child = current.childKey ? await tx.get<DelegatedChild>(`delegation:${current.childKey}`) : undefined;
+        const child = current.childKey ? await this.rows.get(current.childKey) : undefined;
         if (child?.landedBy === 'wait') return { state: 'waited' as const };
-        if (child && !child.landedBy) await tx.put(`delegation:${current.childKey}`, { ...child, landedBy: 'notice' });
+        if (child && !child.landedBy) await this.rows.put({ ...child, landedBy: 'notice' }, tx);
         // A child's notice that lands carries every other ended child's notice still in the outbox (a batch), chosen
         // once, in this transaction: each carried one is claimed for it (landedBy, as a wait_agent's take) and marked
         // delivered here, and the batch is stored with this notice, so a send tried again after a crash sends exactly
@@ -130,7 +136,7 @@ export class DelegationNotifications {
         // Siblings are found by their records, not only their outbox entries: a child that has just ended may not have
         // one yet (its notice is written once its events drain), and then gets it here, already carried.
         const batch: BatchedEnding[] = [], carried: NoticeRequest[] = [];
-        for (const sibling of (await tx.list<DelegatedChild>({ prefix: 'delegation:' })).values()) {
+        for (const sibling of await this.rows.ended()) {
           // (Not `notified`: a staged notice's child is marked so before it lands; its entry says whether it was delivered.)
           if (!sibling?.background || !sibling.id || sibling.key === current.childKey || sibling.status === 'running' || sibling.landedBy || sibling.folded) continue;
           // One without an entry is built from its record, if its start was accepted: a child whose start failed has no
@@ -140,7 +146,7 @@ export class DelegationNotifications {
           const other = existing ?? outboxEntry(await readChildPayload(tx, sibling));
           if ((other.request.params.endUser ?? null) !== (current.request.params.endUser ?? null) || (other.request.params.bucket ?? null) !== (current.request.params.bucket ?? null)) continue;
           if (other.delivered || other.delivery || other.notice.metadata.kind === 'message') continue;
-          await tx.put(`delegation:${sibling.key}`, { ...sibling, landedBy: 'notice' });
+          await this.rows.put({ ...sibling, landedBy: 'notice' }, tx);
           await tx.put(otherKey, { ...other, delivered: true, batchedInto: key }, { noCache: true });
           batch.push(batchedEnding({ text: other.request.params.text, notice: other.notice }, other.request.id));
           carried.push(other.request);

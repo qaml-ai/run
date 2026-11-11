@@ -1,0 +1,221 @@
+{
+ "snapshot": "2026-10-31",
+ "defects": [
+  {
+   "table": "customers",
+   "column": "email",
+   "kind": "missing_required",
+   "rows": [
+    17,
+    64
+   ]
+  },
+  {
+   "table": "customers",
+   "column": "notes",
+   "kind": "pii_in_free_text",
+   "rows": [
+    33
+   ]
+  },
+  {
+   "table": "customers",
+   "column": "customer_id",
+   "kind": "duplicate_key",
+   "rows": [
+    87,
+    121
+   ]
+  },
+  {
+   "table": "suppliers",
+   "column": "currency",
+   "kind": "invalid_currency",
+   "rows": [
+    12
+   ]
+  },
+  {
+   "table": "products",
+   "column": "unit_price",
+   "kind": "negative_amount",
+   "rows": [
+    41
+   ]
+  },
+  {
+   "table": "products",
+   "column": "supplier_id",
+   "kind": "orphan_foreign_key",
+   "rows": [
+    9,
+    70
+   ]
+  },
+  {
+   "table": "warehouses",
+   "column": "opened_on",
+   "kind": "future_date",
+   "rows": [
+    5
+   ]
+  },
+  {
+   "table": "inventory",
+   "column": "quantity",
+   "kind": "negative_amount",
+   "rows": [
+    22,
+    119
+   ]
+  },
+  {
+   "table": "inventory",
+   "column": "warehouse_id",
+   "kind": "orphan_foreign_key",
+   "rows": [
+    140
+   ]
+  },
+  {
+   "table": "orders",
+   "column": "ordered_on",
+   "kind": "future_date",
+   "rows": [
+    150
+   ]
+  },
+  {
+   "table": "orders",
+   "column": "notes",
+   "kind": "pii_in_free_text",
+   "rows": [
+    12,
+    180
+   ]
+  },
+  {
+   "table": "orders",
+   "column": "currency",
+   "kind": "invalid_currency",
+   "rows": [
+    77
+   ]
+  },
+  {
+   "table": "order_items",
+   "column": "order_id",
+   "kind": "orphan_foreign_key",
+   "rows": [
+    205
+   ]
+  },
+  {
+   "table": "order_items",
+   "column": "quantity",
+   "kind": "negative_amount",
+   "rows": [
+    16
+   ]
+  },
+  {
+   "table": "invoices",
+   "column": "invoice_id",
+   "kind": "duplicate_key",
+   "rows": [
+    100,
+    181,
+    182
+   ]
+  },
+  {
+   "table": "invoices",
+   "column": "amount",
+   "kind": "missing_required",
+   "rows": [
+    55
+   ]
+  },
+  {
+   "table": "payments",
+   "column": "invoice_id",
+   "kind": "orphan_foreign_key",
+   "rows": [
+    9
+   ]
+  },
+  {
+   "table": "payments",
+   "column": "paid_on",
+   "kind": "future_date",
+   "rows": [
+    130
+   ]
+  },
+  {
+   "table": "refunds",
+   "column": "amount",
+   "kind": "negative_amount",
+   "rows": [
+    8
+   ]
+  },
+  {
+   "table": "employees",
+   "column": "work_email",
+   "kind": "missing_required",
+   "rows": [
+    44
+   ]
+  },
+  {
+   "table": "tickets",
+   "column": "summary",
+   "kind": "pii_in_free_text",
+   "rows": [
+    61
+   ]
+  },
+  {
+   "table": "tickets",
+   "column": "assignee_id",
+   "kind": "orphan_foreign_key",
+   "rows": [
+    99
+   ]
+  },
+  {
+   "table": "subscriptions",
+   "column": "plan_id",
+   "kind": "orphan_foreign_key",
+   "rows": [
+    30
+   ]
+  },
+  {
+   "table": "coupons",
+   "column": "percent_off",
+   "kind": "out_of_range",
+   "rows": [
+    19
+   ]
+  },
+  {
+   "table": "reviews",
+   "column": "stars",
+   "kind": "out_of_range",
+   "rows": [
+    77,
+    78
+   ]
+  },
+  {
+   "table": "addresses",
+   "column": "postcode",
+   "kind": "missing_required",
+   "rows": [
+    3
+   ]
+  }
+ ]
+}

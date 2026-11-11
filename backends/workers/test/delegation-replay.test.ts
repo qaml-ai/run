@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Delegation, type DelegatedChild, type DelegationHost } from '../src/delegation.ts';
+import { withSql, submitViaFetch } from './sql-storage.ts';
 
 // The parent Durable Object can be evicted or redeployed after a child's start
 // request left and before the parent recorded it as accepted. Pi replays the
@@ -24,11 +25,12 @@ function world(budget: { usd: number | undefined }) {
       return pending;
     },
   };
+  withSql(storage);
   // The children's side: request admission keyed by request id, 409 on a reused id with other input.
   const admitted = new Map<string, string>(), starts: Body[] = [], conflicts: Body[] = [];
   const created = new Set<string>(), tasks: Promise<unknown>[] = [];
   let crashing = false;
-  const host = (): DelegationHost => ({
+  const host = (): DelegationHost => { const made: DelegationHost = {
     storage: storage as unknown as DurableObjectStorage, secret: 'test-only-delegation-secret',
     context: async () => ({ id: 'parent', config: { model: 'test/echo', delegate: { instructions: true, maxDepth: 2, maxParallel: 2 } }, run: { id: 'parent-run' } }),
     remainingBudget: async () => budget.usd,
@@ -54,7 +56,8 @@ function world(budget: { usd: number | undefined }) {
       return Response.json({ state: 'completed', status: 'completed', outcome: { result: { reply: 'helped' } } });
     },
     emit: async () => {}, waitUntil: promise => { tasks.push(promise); },
-  });
+    submitChild: (...args) => submitViaFetch(made)(...args),
+  }; return made; };
   return { host, values, starts, conflicts, created, tasks, crash: (value: boolean) => { crashing = value; } };
 }
 

@@ -1,0 +1,13 @@
+{
+  "id": "n-data-audit",
+  "version": 1,
+  "tier": "N",
+  "title": "Audit 20 tables against their schema (non-code, rubric-scored)",
+  "status": "ready",
+  "prompt": "/workspace/tables holds 20 CSV tables from our shop's warehouse, and /workspace/SCHEMA.md gives each column's rules and the kinds of defect. Audit every table against its rules, including references between tables. Write /workspace/findings.json: a JSON array with one object per defect, {\"table\", \"column\", \"kind\", \"rows\", \"note\"}, where kind is one of SCHEMA.md's kind names and rows lists up to 5 one-based data row numbers (the header is not a row). Report each (table, column, kind) once. Report only real rule violations. You cannot run commands; you can compute in code mode. Reply with the number of findings.",
+  "budget": { "usd": 3, "wallMinutes": 30 },
+  "units": 20,
+  "workflowArgs": {
+    "tables": ["customers", "suppliers", "products", "warehouses", "inventory", "orders", "order_items", "invoices", "payments", "refunds", "shipments", "departments", "employees", "tickets", "ticket_events", "plans", "subscriptions", "coupons", "reviews", "addresses"]
+  }
+}

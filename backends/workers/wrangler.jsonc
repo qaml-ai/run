@@ -32,6 +32,10 @@
         "class_name": "Volume"
       },
       {
+        "name": "WORKFLOW_CAPACITY",
+        "class_name": "WorkflowCapacity"
+      },
+      {
         "name": "WORKFLOWS",
         "class_name": "WorkflowObject"
       },
@@ -49,6 +53,12 @@
         "CamelAgent",
         "TenantAdmission",
         "Volume"
+      ]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": [
+        "WorkflowCapacity"
       ]
     },
     {

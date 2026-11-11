@@ -94,6 +94,7 @@ import {
 } from "./agent-spend.ts";
 export { CamelAgent };
 export { TenantAdmission } from "./tenant.ts";
+export { WorkflowCapacity } from "./workflow-capacity-object.ts";
 export { Volume } from "./volume.ts";
 export { WorkflowObject } from "./workflow-object.ts";
 import { workflowTestRoute, type WorkflowEnv } from "./workflow-object.ts";
