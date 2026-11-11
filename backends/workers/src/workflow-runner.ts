@@ -77,7 +77,7 @@ export type EffectOutcome =
    * Refused (a 402, a tenant cap, the child's share of the budget): not a failure, and never shown to the script. The
    * workflow pauses with `code` (`payer_exhausted` by default, or `budget_exhausted`); resume re-issues the effect.
    */
-  | { refused: string; code?: "payer_exhausted" | "budget_exhausted" };
+  | { refused: string; code?: "payer_exhausted" | "budget_exhausted"; spent?: number };
 
 /** One effect's cost, for the ledger. */
 export interface EffectUsage { costUsd: number; model?: string; inputTokens?: number; cachedInputTokens?: number; outputTokens?: number; durationMs?: number }
@@ -367,10 +367,24 @@ export class WorkflowRunner {
     });
   }
 
+  /**
+   * Record effect `key:attempt`'s ending: its cost in the ledger and its outcome on the effect, in one transaction.
+   * The ledger row is idempotent on `key:attempt` (a redelivered ending is charged once) and is written whatever the
+   * effect's state: an ending that arrives after the workflow ended, or after the effect was cancelled or superseded,
+   * is still charged; only its delivery to the script is skipped. A refusal's `spent` is its cost when no usage comes.
+   */
   private record(key: string, attempt: number, outcome: EffectOutcome, usage?: EffectUsage) {
     const row = this.sql.exec("SELECT status, current FROM workflow_effects WHERE key = ? AND attempt = ?", key, attempt).toArray()[0];
     if (!row) throw new WorkflowError(`Effect ${key}:${attempt} is not in the journal`, 404);
     const at = this.now();
+    const cost = usage ?? ("refused" in outcome && outcome.spent !== undefined ? { costUsd: outcome.spent } : undefined);
+    const charge = () => {
+      if (!cost) return;
+      this.sql.exec(
+        "INSERT OR IGNORE INTO workflow_ledger (key, attempt, cost_usd, model, input_tokens, cached_input_tokens, output_tokens, duration_ms, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        key, attempt, cost.costUsd, cost.model ?? null, cost.inputTokens ?? 0, cost.cachedInputTokens ?? 0, cost.outputTokens ?? 0, cost.durationMs ?? null, at,
+      );
+    };
     let value: string | undefined;
     if ("ok" in outcome) {
       if (!outcome.ok) value = JSON.stringify({ message: outcome.error });
@@ -378,16 +392,15 @@ export class WorkflowRunner {
       else {
         value = JSON.stringify(outcome.value ?? null);
         const bytes = new TextEncoder().encode(value).byteLength;
-        if (bytes > WORKFLOW_LIMITS.inlineResultBytes) throw new WorkflowError(`Effect ${key}'s result is ${bytes} bytes; over ${WORKFLOW_LIMITS.inlineResultBytes} it must be landed as a handle`, 400);
+        if (bytes > WORKFLOW_LIMITS.inlineResultBytes) {
+          // The executor's mistake, refused loudly; what the child cost is still charged.
+          this.storage.transactionSync(charge);
+          throw new WorkflowError(`Effect ${key}'s result is ${bytes} bytes; over ${WORKFLOW_LIMITS.inlineResultBytes} it must be landed as a handle`, 400);
+        }
       }
     }
     this.storage.transactionSync(() => {
-      if (usage) {
-        this.sql.exec(
-          "INSERT OR IGNORE INTO workflow_ledger (key, attempt, cost_usd, model, input_tokens, cached_input_tokens, output_tokens, duration_ms, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-          key, attempt, usage.costUsd, usage.model ?? null, usage.inputTokens ?? 0, usage.cachedInputTokens ?? 0, usage.outputTokens ?? 0, usage.durationMs ?? null, at,
-        );
-      }
+      charge();
       if (row.status !== "pending" || row.current !== 1) return;
       if ("refused" in outcome) {
         this.sql.exec("UPDATE workflow_effects SET status = 'refused', reason = ?, ended_at = ? WHERE key = ? AND attempt = ?", outcome.refused, at, key, attempt);

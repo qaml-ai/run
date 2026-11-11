@@ -406,3 +406,52 @@ test("review fixes: a raised budget re-issues budget refusals; rerun past a canc
   await p.runner.pause();
   assert.equal(p.alarmAt, null, "paused with nothing timed: no alarm every five minutes");
 });
+
+test("money: a redelivered ending is charged once, an ending after abort is charged but not delivered, a refusal's spend is charged", { timeout: 60_000 }, async () => {
+  const usage = { costUsd: 0.25, model: "fake/model", inputTokens: 10, cachedInputTokens: 5, outputTokens: 2 };
+  const ledger = (h: ReturnType<typeof harness>) => h.store.db.prepare("SELECT key, attempt, cost_usd FROM workflow_ledger ORDER BY key, attempt").all().map(row => ({ ...row }));
+
+  const again = harness();
+  again.init({ code: `const a = await agent("a", { key: "a" }); const b = await agent("b", { key: "b" }); return [a.answer, b.answer];` });
+  await again.wake();
+  const a = again.world.queue.shift()!;
+  for (let i = 0; i < 3; i++) await again.runner.land(a.key, a.attempt, again.world.answer(a), usage);
+  assert.deepEqual(ledger(again), [{ key: "a", attempt: 1, cost_usd: 0.25 }], "three deliveries, one charge");
+  assert.equal(at(again).spent.usd, 0.25);
+  assert.equal(again.runner.items().items.length, 2, "and one delivery to the script");
+
+  const late = harness();
+  late.init({ code: `return (await agent("a", { key: "a" })).answer;` });
+  await late.wake();
+  const child = late.world.queue.shift()!;
+  await late.runner.abort();
+  await late.runner.land(child.key, child.attempt, late.world.answer(child), usage);
+  assert.deepEqual(ledger(late), [{ key: "a", attempt: 1, cost_usd: 0.25 }], "an aborted child's spend is charged");
+  assert.deepEqual([at(late).status, late.runner.items().items[0]!.status], ["aborted", "aborted"], "but not delivered");
+  // The same after completion, for a child the end cancelled.
+  const done = harness();
+  done.init({ code: `agent("slow", { key: "slow" }); return (await agent("fast", { key: "fast" })).answer;` });
+  await done.wake();
+  const [slow, fast] = done.world.queue.splice(0);
+  await done.runner.land(fast!.key, fast!.attempt, done.world.answer(fast!), usage);
+  await done.runner.land(slow!.key, slow!.attempt, done.world.answer(slow!), { ...usage, costUsd: 0.5 });
+  assert.equal(at(done).spent.usd, 0.75);
+  assert.equal(done.runner.items().items.find(item => item.key === "slow")!.status, "cancelled");
+
+  const refused = harness();
+  refused.init({ code: `return (await agent("a", { key: "a" })).answer;` });
+  await refused.wake();
+  const r = refused.world.queue.shift()!;
+  await refused.runner.land(r.key, r.attempt, { refused: "spend limit reached", code: "payer_exhausted", spent: 0.4 });
+  await refused.runner.land(r.key, r.attempt, { refused: "spend limit reached", code: "payer_exhausted", spent: 0.4 });
+  assert.deepEqual(ledger(refused), [{ key: "a", attempt: 1, cost_usd: 0.4 }], "charged once");
+  assert.deepEqual([at(refused).status, at(refused).pauseReason], ["paused", "payer_exhausted"]);
+  assert.ok(refused.runner.events().filter(event => event.type === "payer_exhausted").length === 1);
+  // A result too large to land inline is refused loudly, and still charged.
+  const big = harness();
+  big.init({ code: `return (await agent("a", { key: "a" })).answer;` });
+  await big.wake();
+  const g = big.world.queue.shift()!;
+  await assert.rejects(big.runner.land(g.key, g.attempt, { ok: true, value: "x".repeat(10_000) }, usage), /must be landed as a handle/);
+  assert.equal(at(big).spent.usd, 0.25);
+});
