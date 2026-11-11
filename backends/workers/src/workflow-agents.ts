@@ -38,7 +38,10 @@ export const MIN_CHILD_BUDGET_USD = 0.01;
 export interface WorkflowAgentsHost {
   storage: DurableObjectStorage;
   workflow: { id: string; tenant: string; bucket?: string };
-  /** What is left of the workflow's budget (`budget.usd` less its ledger), in USD. Every workflow has a budget. */
+  /**
+   * What is left of the workflow's budget (`budget.usd` less its ledger), in USD; `Infinity` for a workflow with no cap,
+   * whose children then run with no spend limit of the workflow's (the tenant's own limits still apply). Never undefined.
+   */
   budget(): Promise<number> | number;
   /** Children running at once, at most (the workflow's `concurrency`). */
   concurrency: number;
@@ -189,10 +192,13 @@ export class WorkflowAgents implements EffectExecutor {
     let held = row.held;
     if (row.status === "queued") {
       const left = await this.host.budget();
-      if (typeof left !== "number" || !Number.isFinite(left)) return this.end(row, "refused", { refused: "The workflow has no budget", code: "budget_exhausted" });
-      const free = left - running.reduce((sum, child) => sum + (child.held ?? 0), 0);
-      if (free < MIN_CHILD_BUDGET_USD) return this.end(row, "refused", { refused: "The workflow's budget is spent", code: "budget_exhausted" });
-      held = free / Math.max(1, this.host.concurrency - running.length);
+      // A host that says nothing about the budget is a bug, not an unlimited workflow: no cap is said with Infinity.
+      if (typeof left !== "number" || Number.isNaN(left)) return this.end(row, "refused", { refused: "The workflow's budget is unknown", code: "budget_exhausted" });
+      if (Number.isFinite(left)) {
+        const free = left - running.reduce((sum, child) => sum + (child.held ?? 0), 0);
+        if (free < MIN_CHILD_BUDGET_USD) return this.end(row, "refused", { refused: "The workflow's budget is spent", code: "budget_exhausted" });
+        held = free / Math.max(1, this.host.concurrency - running.length);
+      }
     }
     const args = row.args!;
     const place: ChildPlace & { ownerRun: string } = { depth: row.depth, maxDepth: row.maxDepth!, chain: row.chain!, owner: row.owner, rootOwner: row.rootOwner, ownerRun: row.parentRequestId };

@@ -9,7 +9,7 @@ import { withSql } from './sql-storage.ts';
 
 type Submitted = { childId: string; request: { id: string; params: Record<string, any> }; placement: Placement };
 
-function world(options: { budget?: number; concurrency?: number; config?: Record<string, unknown> } = {}) {
+function world(options: { budget?: number | undefined; concurrency?: number; config?: Record<string, unknown> } = {}) {
   const values = new Map<string, unknown>();
   const storage = {
     async get(key: string) { return structuredClone(values.get(key)); },
@@ -43,7 +43,7 @@ function world(options: { budget?: number; concurrency?: number; config?: Record
   };
   const agents = new WorkflowAgents({
     storage: storage as unknown as DurableObjectStorage, workflow: { id: 'wf_test', tenant: 'acme', bucket: 'wf-bucket' },
-    budget: () => options.budget ?? 100, concurrency: options.concurrency ?? 4, children,
+    budget: () => ('budget' in options ? options.budget : 100) as number, concurrency: options.concurrency ?? 4, children,
     land: async (key, attempt, outcome, usage) => {
       if (landFails > 0) { landFails--; throw new Error('the workflow object was evicted'); }
       landed.push({ key, attempt, outcome, usage });
@@ -237,4 +237,15 @@ test('cancel stops one effect\'s child', async () => {
   await w.agents.start(effect('b'));
   await w.agents.cancel({ key: 'b', attempt: 1 });
   assert.deepEqual(w.cancelled, [`${w.submitted[1]!.childId}/${w.submitted[1]!.request.id}`]);
+});
+
+test('a workflow with no cap (Infinity) gives its children no spend limit of its own; an unknown budget refuses', async () => {
+  const unlimited = world({ budget: Infinity });
+  await unlimited.agents.start(effect('a'));
+  assert.equal(unlimited.submitted[0]!.request.params.spendLimit, undefined);
+  assert.equal(unlimited.refused().length, 0);
+  const unknown = world({ budget: undefined });
+  await unknown.agents.start(effect('a'));
+  assert.equal((unknown.refused()[0]!.outcome as { code: string }).code, 'budget_exhausted');
+  assert.equal(unknown.created.length, 0);
 });
