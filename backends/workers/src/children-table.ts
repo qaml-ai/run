@@ -24,10 +24,20 @@ export class ChildRows {
 
   private get sql(): Sql { return this.storage.sql; }
 
-  /** Create the table and import the KV rows it lacks, once per instance. */
+  /**
+   * Create the table and import the KV rows it lacks, once per instance. A first load inside a transaction that then
+   * throws is rolled back with it (its table and marker row too): the marker is checked on every call, so the next
+   * load imports again instead of trusting a memo of work that never committed.
+   */
   load(): Promise<void> {
+    if (this.ready && !this.imported()) this.ready = undefined;
     this.ready ??= this.importRows().catch(error => { this.ready = undefined; throw error; });
     return this.ready;
+  }
+
+  private imported() {
+    try { return this.sql.exec<{ n: number }>("SELECT count(*) AS n FROM children_meta WHERE id = 1").one().n === 1; }
+    catch { return false; }
   }
 
   private async importRows() {
@@ -55,7 +65,9 @@ export class ChildRows {
     this.sql.exec('CREATE INDEX IF NOT EXISTS children_call ON children(call_id)');
     this.sql.exec('CREATE INDEX IF NOT EXISTS children_run ON children(child_id, request_id)');
     this.sql.exec('CREATE INDEX IF NOT EXISTS children_owner_run ON children(parent_request_id, status)');
+    this.sql.exec('CREATE TABLE IF NOT EXISTS children_meta (id INTEGER PRIMARY KEY CHECK (id = 1), imported_at INTEGER NOT NULL)');
     const kv = await this.storage.list<DelegatedChild>({ prefix: CHILDREN_KV_PREFIX, noCache: true });
+    this.sql.exec('INSERT OR REPLACE INTO children_meta (id, imported_at) VALUES (1, ?)', Date.now());
     if (!kv.size) return;
     const stored = new Map<string, string>();
     for (const row of this.sql.exec<{ key: string; state: string }>('SELECT key, state FROM children')) stored.set(row.key, row.state);
