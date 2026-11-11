@@ -36,6 +36,10 @@
         "class_name": "WorkflowCapacity"
       },
       {
+        "name": "WORKFLOWS",
+        "class_name": "WorkflowObject"
+      },
+      {
         "name": "CODEMODE_SANDBOX",
         "class_name": "CodemodeSandbox",
         "script_name": "camelrun-proto-workers-codemode"
@@ -55,6 +59,12 @@
       "tag": "v2",
       "new_sqlite_classes": [
         "WorkflowCapacity"
+      ]
+    },
+    {
+      "tag": "workflow-object",
+      "new_sqlite_classes": [
+        "WorkflowObject"
       ]
     }
   ],

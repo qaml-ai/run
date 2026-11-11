@@ -179,7 +179,7 @@ network of its own. Its globals:
 | `gate(opts)` | A decision for a person: an inbox item. Returns the answer when it comes; `expiresInSeconds` and `recommended` as in `request_decision` |
 | `sleep(seconds)` | A journaled timer; the script is not running meanwhile |
 | `phase(title)`, `log(text)` | Progress grouping and a narrator line, as in Claude Code |
-| `now()`, `random()` | Journaled on first use, replayed after. `Date.now()` and `Math.random()` throw, as they would break replay |
+| `now()`, `random()` | The step's clock (when its results landed) and the workflow's seeded generator; `Date.now()` and `Math.random()` read the same, since the VM is restored from a snapshot or replayed deterministically (see "As built") |
 | `args`, `budget` | The start's `args`, and `{ total, spent(), remaining() }` in USD |
 | `workflow(name, args)` | Runs a saved script inline, one level deep, sharing the budget and concurrency |
 | `queue(name)` | A durable work queue: `push(items)`, `claim(n)`, `done(id)`, `fail(id)`, `size()` (below) |
@@ -244,6 +244,34 @@ never `nondeterministic_script`.
 **Determinism faults.** A step whose effect keys diverge from the journal's committed order (a script that depends
 on something unjournaled) fails the step with `nondeterministic_script`, names the key, pauses the workflow, and
 asks the owner. It never silently reruns.
+
+### As built in phase 1 (runner and `WorkflowObject`)
+
+Where the code (#802, #806) departs from the text above, and why:
+
+1. **Snapshots, not replay, between steps** (`docs/design/workflow-step-snapshots.md`). A step restores the guest VM
+   from its snapshot and delivers only the new results; replay from the top is the fallback for a missing, oversized
+   (16 MiB of linear memory, 8 MiB gzipped) or other-build snapshot. A replay re-delivers each step's original batch,
+   not a key → result table, so scripts whose control flow depends on completion order replay exactly.
+2. **The step-rate guard throttles rather than pausing with `step_rate`.** Past 5,000 steps in an hour, steps wait
+   on the alarm for the window to move; the owner has nothing to do.
+3. **`Date.now()` and `Math.random()` do not throw.** They read the step's virtual clock and the workflow's seed,
+   which the snapshot and the replay keep deterministic; `now()` and `random()` are the same values.
+4. **A revision (an edit, or a resume that reruns keys) starts from a table** of what the journal held when it began:
+   effects whose keys the script still asks for are answered from it, so only what changed runs again. A table
+   answers at once, so order-dependent code may differ across an edit (never within a revision). A result that lands
+   for a key the new revision no longer asks for is kept, not a fault, and shows as `unseen` in the key diff. An edit
+   whose new effects exceed `rerunConfirmPercent` (25 by default) of the finished ones it inherited waits paused
+   (`confirm_rerun`) until a resume confirms it.
+5. **A refusal is never shown to the script.** A child refused for credit pauses the workflow (`payer_exhausted`), or,
+   when it was the workflow's own budget share, makes it `budget_exhausted`; resume, or raising the budget, re-issues
+   the effect under its next attempt, and the script, still waiting on the key, gets the new attempt's result.
+6. **`sleep(seconds)` and gate expiry are the object's own alarm**, with the step window, the capacity renew (from
+   open to close, slots held or not) and a five-minute sweep while the workflow runs or waits. One concern failing
+   does not lose the others or the alarm.
+7. **Ending stops what is still running.** Effects still out when a workflow completes, fails or is aborted are
+   cancelled through the executor, their capacity slots given back, and the lease closed.
+8. Deferred: `ttlSeconds` expiry, and the inbox item for `budget_exhausted`.
 
 ### Children and exactly-once
 
@@ -350,7 +378,7 @@ prompt, and `resume({ rerun: [...keys] })` is the deliberate choice if the owner
 | `delegate.maxParallel` | 4, max 64 | Not used; `concurrency` is the fan-out. A child's own `delegate` keeps its own `maxParallel` |
 | Busy agents | by tier | Unchanged; a workflow at 64 needs Tier 1 (250). The step refuses to start a child at the limit and retries at the next step rather than failing the effect |
 | A sub-agent's life | 1 day | The workflow's `ttlSeconds` |
-| `AGENT_WAKES_PER_HOUR` 100 per chain | Notifications to a parent agent | Not a workflow's: a step is not a turn. The step-rate guard instead: 5,000 steps an hour per workflow, then pause with `step_rate` |
+| `AGENT_WAKES_PER_HOUR` 100 per chain | Notifications to a parent agent | Not a workflow's: a step is not a turn. The step-rate guard instead: 5,000 steps an hour per workflow, then steps wait for the window to move (the alarm), with `throttledUntil` on the workflow |
 | Delegate `agents` allowlist 32 | | A workflow names definitions by id; the owner's key scope decides what it may use |
 | Open requests per agent 32 | | A workflow's children are each their own agent; the workflow object's inbound queue is its event log, unbounded in SQLite |
 

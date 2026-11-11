@@ -14,7 +14,7 @@ import {
 } from "./workflow-protocol.ts";
 
 /** Bumped whenever this driver or its prelude changes what a snapshot holds or what a script observes. */
-export const WORKFLOW_DRIVER_VERSION = 1;
+export const WORKFLOW_DRIVER_VERSION = 2;
 /**
  * sha256 of `quickjs-wasi/quickjs.wasm` as this package pins it. Wrangler compiles the module at build time, so its
  * bytes cannot be read at runtime; a test checks this against the installed file, so a dependency bump fails until it
@@ -27,6 +27,12 @@ export const QUICKJS_WASI_VERSION = "3.6.2";
 export const WORKFLOW_HEAP_BYTES = 24 * 1024 * 1024;
 export const WORKFLOW_STACK_BYTES = 256 * 1024;
 export const WORKFLOW_POLL_BUDGET = 10_000;
+/**
+ * The most linear memory a step snapshots. Taking a snapshot copies the image once (the VM is disposed before it is
+ * compressed), so the peak is about twice this plus the compressed bytes; past it the next step replays instead. The
+ * isolate's 128 MiB is shared with code mode's VMs, so this stays well under the 24 MiB heap's worst case.
+ */
+export const WORKFLOW_SNAPSHOT_RAW_BYTES = 16 * 1024 * 1024;
 
 /** FNV-1a, 64 bits, over each UTF-16 unit's two bytes (low first), as 16 hex digits. The guest's copy is the prelude's. */
 export function fnv1a64(text: string) {
@@ -53,14 +59,14 @@ export function canonicalJson(value: unknown): string {
 
 /**
  * The guest's prelude: the workflow globals over one host function, `bridge(kind, ...)` with kind "effect" (key, kind,
- * args JSON, phase), "log" (text, phase), "phase" (name), "fault" (code, message) or "done" (ok, value or error JSON).
- * Evaluates to `{ settle(key, ok, json), run(fn), status() }`. Its references to built-ins are taken before the script
+ * args JSON, phase, options JSON, reused), "log" (text, phase), "phase" (name), "fault" (code, message) or "done" (ok,
+ * value or error JSON). Evaluates to `{ settle(key, ok, json), adopt(tableJson), run(fn), status() }`. Its references to built-ins are taken before the script
  * runs, so a script that patches one changes only its own values, never what is reported.
  */
 export const WORKFLOW_PRELUDE = `(function (bridge) {
   "use strict";
   const stringify = JSON.stringify, parse = JSON.parse, keysOf = Object.keys, isArray = Array.isArray, defineProperty = Object.defineProperty;
-  const PromiseCtor = Promise, all = Promise.allSettled.bind(Promise), resolved = Promise.resolve.bind(Promise), rejected = Promise.reject.bind(Promise);
+  const PromiseCtor = Promise, all = Promise.allSettled.bind(Promise), resolved = Promise.resolve.bind(Promise);
   const ErrorCtor = Error, TypeErrorCtor = TypeError, now = Date.now, random = Math.random;
   const pending = new Map(), settled = new Map(), known = new Map(), occurrences = new Map();
   let parallelDepth = 0, finished = false, phase = "";
@@ -89,17 +95,14 @@ export const WORKFLOW_PRELUDE = `(function (bridge) {
       return stringify({ message: typeof error === "string" ? error : stringify(error) });
     } catch { return stringify({ message: "The script threw a value that cannot be described" }); }
   }
-  function toError(key, value) {
-    const error = new ErrorCtor(value && typeof value.message === "string" ? value.message : "Effect " + key + " failed");
-    error.effect = key;
-    return error;
-  }
   // A fault ends the workflow whatever the script does next: it is reported first, then unwinds the script.
   function fault(code, message) {
     if (!finished) { finished = true; bridge("fault", code, message); }
     throw new ErrorCtor(message);
   }
-  function effect(kind, args, options) {
+  // A failed effect gives the script null (its item records why), so .filter(Boolean) drops it.
+  const outcome = done => done.ok ? done.value : null;
+  function effect(kind, args, options, extra) {
     if (finished) return new PromiseCtor(() => {});
     const json = canonical(args);
     let key;
@@ -118,24 +121,35 @@ export const WORKFLOW_PRELUDE = `(function (bridge) {
     if (before !== undefined) {
       if (before.kind !== kind || before.args !== json) fault("key_conflict", "Key " + stringify(key) + " is already the key of another " + before.kind + "() with other arguments");
       const done = settled.get(key);
-      if (done !== undefined) return done.ok ? resolved(done.value) : rejected(toError(key, done.value));
+      if (done !== undefined) return resolved(outcome(done));
       return pending.get(key).promise;
     }
     known.set(key, { kind, args: json });
-    let resolve, reject;
-    const promise = new PromiseCtor((yes, no) => { resolve = yes; reject = no; });
-    pending.set(key, { promise, resolve, reject });
-    bridge("effect", key, kind, json, phase);
+    // The revision's table: an effect the journal already has is answered from it, or waits for its result.
+    const adopted = table.get(key);
+    if (adopted !== undefined) {
+      table.delete(key);
+      bridge("effect", key, kind, json, phase, extra === undefined ? undefined : stringify(extra), true);
+      if (adopted.value !== undefined) { const done = { ok: adopted.ok, value: parse(adopted.value) }; settled.set(key, done); return resolved(outcome(done)); }
+    } else bridge("effect", key, kind, json, phase, extra === undefined ? undefined : stringify(extra), false);
+    let resolve;
+    const promise = new PromiseCtor(yes => { resolve = yes; });
+    pending.set(key, { promise, resolve });
     return promise;
   }
   function settle(key, ok, json) {
     const entry = pending.get(key);
-    if (entry === undefined) throw new ErrorCtor("A result for effect " + key + ", which is not waiting for one");
+    // A result the script has not asked for (in this revision): an edit dropped the call while it ran, or the script
+    // has not reached it yet. It is kept as if from the table, so a later ask is answered from it.
+    if (entry === undefined) { if (!settled.has(key)) table.set(key, { key, ok, value: json }); return; }
     pending.delete(key);
     const value = parse(json);
-    settled.set(key, { ok, value });
-    if (ok) entry.resolve(value); else entry.reject(toError(key, value));
+    const done = { ok, value };
+    settled.set(key, done);
+    entry.resolve(outcome(done));
   }
+  const table = new Map();
+  function adopt(json) { for (const entry of parse(json)) table.set(entry.key, entry); }
   function options(value, name) {
     if (value !== undefined && (value === null || typeof value !== "object" || isArray(value))) throw new TypeErrorCtor(name + "() options must be an object");
     return value;
@@ -148,9 +162,20 @@ export const WORKFLOW_PRELUDE = `(function (bridge) {
       if (opts) for (const name of keysOf(opts)) if (name !== "key") args[name] = opts[name];
       return effect("agent", args, opts);
     },
-    sleep(ms, opts) {
-      if (typeof ms !== "number" || !(ms >= 0) || ms === Infinity) throw new TypeErrorCtor("sleep(ms) needs a number of milliseconds");
-      return effect("sleep", { ms }, options(opts, "sleep"));
+    sleep(seconds, opts) {
+      if (typeof seconds !== "number" || !(seconds >= 0) || seconds === Infinity) throw new TypeErrorCtor("sleep(seconds) needs a number of seconds");
+      return effect("sleep", { seconds }, options(opts, "sleep"));
+    },
+    // A decision for a person. Answers with what they chose; expires after expiresInSeconds (7 days), then takes
+    // the recommendation when onExpire is "recommended", or pauses the workflow.
+    gate(opts) {
+      options(opts, "gate");
+      if (!opts || typeof opts.title !== "string" || opts.title === "") throw new TypeErrorCtor("gate({ title }) needs a title");
+      const args = {};
+      for (const name of keysOf(opts)) if (name !== "key" && name !== "expiresInSeconds" && name !== "onExpire") args[name] = opts[name];
+      const extra = { expiresInSeconds: opts.expiresInSeconds === undefined ? 604800 : opts.expiresInSeconds, onExpire: opts.onExpire === "recommended" ? "recommended" : "pause" };
+      if (typeof extra.expiresInSeconds !== "number" || !(extra.expiresInSeconds > 0)) throw new TypeErrorCtor("gate() expiresInSeconds must be a positive number");
+      return effect("gate", args, opts, extra);
     },
     // Waits for every branch, even after one fails, so no branch is still issuing effects outside parallel().
     async parallel(items, fn) {
@@ -183,6 +208,7 @@ export const WORKFLOW_PRELUDE = `(function (bridge) {
   for (const name of keysOf(globals)) defineProperty(globalThis, name, { value: globals[name], enumerable: true });
   return {
     settle,
+    adopt,
     run(fn) {
       let promise;
       try { promise = fn(); } catch (error) { finished = true; bridge("done", false, describe(error)); return; }
@@ -204,6 +230,8 @@ export function workflowFingerprint() {
 
 /** Host-side state outside linear memory: with the memory image, everything a restore needs. */
 interface DriverState {
+  /** Where quickjs-wasi's state sits in the image (its `Snapshot` fields), set when a snapshot is taken. */
+  image?: { stackPointer: number; runtimePtr: number; contextPtr: number; bytes: number };
   fingerprint: string;
   script: string;
   clock: { startedAt: number; now: number; seed: number };
@@ -212,6 +240,22 @@ interface DriverState {
 }
 
 class Interrupted extends Error {}
+
+/**
+ * What an uncatchable VM error was: the step's poll budget used up, the heap full (QuickJS fails a promise job it
+ * cannot allocate for), or anything else, which is a VM crash rather than something the script did.
+ */
+export function classifyVmFailure(message: string, polls: number, heapBytes: number): { code: WorkflowFaultCode; message: string } {
+  if (polls > WORKFLOW_POLL_BUDGET) return { code: "step_budget", message: `The step used up its budget of ${WORKFLOW_POLL_BUDGET} interrupt polls` };
+  if (/out of memory/i.test(message) || heapBytes >= WORKFLOW_HEAP_BYTES * 0.9)
+    return { code: "out_of_memory", message: `The script ran out of its ${WORKFLOW_HEAP_BYTES / 1024 / 1024} MiB heap (${message})` };
+  return { code: "vm_crash", message: `The VM failed: ${message}` };
+}
+
+const checkVersion = (vm: QuickJS) => {
+  if (vm.versions["quickjs-wasi"] !== QUICKJS_WASI_VERSION)
+    throw new Error(`The sandbox runs quickjs-wasi ${vm.versions["quickjs-wasi"]}, built for ${QUICKJS_WASI_VERSION}: update QUICKJS_WASI_VERSION and QUICKJS_WASM_SHA256`);
+};
 
 /** One VM for one step, started or restored, reporting into `sink`. */
 class WorkflowVm {
@@ -267,12 +311,14 @@ class WorkflowVm {
     };
   }
 
-  bridge = (kind: JSValueHandle, a: JSValueHandle, b: JSValueHandle, c: JSValueHandle, d: JSValueHandle) => {
+  bridge = (kind: JSValueHandle, a: JSValueHandle, b: JSValueHandle, c: JSValueHandle, d: JSValueHandle, e?: JSValueHandle, f?: JSValueHandle) => {
     const text = (handle: JSValueHandle | undefined) => handle === undefined || handle.isUndefined ? undefined : handle.toString();
     switch (kind.toString()) {
       case "effect": {
-        const phase = text(d);
-        this.issued.push({ key: a.toString(), kind: b.toString(), args: c.toString(), phase: phase || undefined, replayed: this.replaying });
+        const phase = text(d), options = text(e);
+        const effect: IssuedEffect = { key: a.toString(), kind: b.toString(), args: c.toString(), phase: phase || undefined, replayed: this.replaying, reused: f !== undefined && f.toBoolean() };
+        if (options !== undefined) effect.options = options;
+        this.issued.push(effect);
         break;
       }
       case "log": if (!this.replaying) this.logs.push({ phase: text(b) || undefined, text: a.toString() }); break;
@@ -288,7 +334,7 @@ class WorkflowVm {
     const exports = this.vm._getExports();
     let jobs = 0;
     while (exports.qjs_is_job_pending()) {
-      if (exports.qjs_execute_pending_job() < 0) throw new Interrupted("A promise job failed");
+      if (exports.qjs_execute_pending_job() < 0) throw new Interrupted("a promise job failed");
       if (++jobs % 50 === 0 && ++this.polls > WORKFLOW_POLL_BUDGET) throw new Interrupted("Execution interrupted");
     }
   }
@@ -301,8 +347,7 @@ class WorkflowVm {
     self.creating = true;
     const vm = self.vm = await QuickJS.create({ ...self.options(), wasm } as never);
     self.creating = false;
-    if (vm.versions["quickjs-wasi"] !== QUICKJS_WASI_VERSION)
-      throw new Error(`The sandbox runs quickjs-wasi ${vm.versions["quickjs-wasi"]}, built for ${QUICKJS_WASI_VERSION}: update QUICKJS_WASI_VERSION and QUICKJS_WASM_SHA256`);
+    checkVersion(vm);
     const bridge = vm.newFunction("bridge", self.bridge as never);
     self.api = vm.withScope(scope => scope.escape(vm.callFunction(vm.evalCode(WORKFLOW_PRELUDE, "workflow-prelude.js"), vm.undefined, bridge)));
     self.settleFn = self.api.getProp("settle");
@@ -310,10 +355,15 @@ class WorkflowVm {
     return self;
   }
 
-  /** Run the script from its start until it first waits. */
-  begin(code: string) {
+  /** Run the script from its start until it first waits, knowing `table` first. */
+  begin(code: string, table: WorkflowStepRequest["table"]) {
     const vm = this.vm;
     try {
+      if (table?.length) {
+        const adopt = this.api.getProp("adopt");
+        vm.withScope(() => vm.callFunction(adopt, this.api, vm.newString(JSON.stringify(table))));
+        adopt.dispose();
+      }
       const run = this.api.getProp("run");
       const fn = vm.evalCode(`(async () => {${code}\n})`, "workflow.js");
       vm.callFunction(run, this.api, fn).dispose();
@@ -335,9 +385,9 @@ class WorkflowVm {
   }
 
   private crash(error: unknown) {
-    if (error instanceof Interrupted || (error instanceof Error && /interrupted/i.test(error.message)))
-      this.fault ??= { code: "step_budget", message: `The step used up its budget of ${WORKFLOW_POLL_BUDGET} interrupt polls` };
-    else this.fault ??= { code: "nondeterministic_script", message: `The VM failed: ${error instanceof Error ? error.message : String(error)}` };
+    let heap = 0;
+    try { heap = this.heapBytes; } catch { /* a VM too broken to report its heap */ }
+    this.fault ??= classifyVmFailure(error instanceof Error ? error.message : String(error), this.polls, heap);
   }
 
   /** -1 once the script ended, else how many effects it waits on. */
@@ -347,16 +397,22 @@ class WorkflowVm {
     try { return value.toNumber(); } finally { value.dispose(); }
   }
 
-  async snapshot(): Promise<Uint8Array> {
+  get linearBytes() { return this.vm._getExports().memory.buffer.byteLength; }
+
+  /**
+   * The VM's state as the parts of a snapshot: the header (driver state and where quickjs-wasi's state sits) and one
+   * copy of linear memory. The caller disposes the VM before compressing them, so the live memory is not held too.
+   */
+  take(): Uint8Array[] {
     // Exported once: a restored VM keeps exported boxes for good, so the tokens stay valid in every later snapshot.
     this.state.tokens ??= { api: this.vm.exportHandle(this.api), settle: this.vm.exportHandle(this.settleFn), status: this.vm.exportHandle(this.statusFn) };
+    const snapshot = this.vm.snapshot();
+    if (snapshot.extensions.length) throw new Error("A workflow VM has no extensions");
+    this.state.image = { stackPointer: snapshot.stackPointer, runtimePtr: snapshot.runtimePtr, contextPtr: snapshot.contextPtr, bytes: snapshot.memory.byteLength };
     const header = new TextEncoder().encode(JSON.stringify(this.state));
-    const image = QuickJS.serializeSnapshot(this.vm.snapshot());
-    const out = new Uint8Array(4 + header.byteLength + image.byteLength);
-    new DataView(out.buffer).setUint32(0, header.byteLength, true);
-    out.set(header, 4);
-    out.set(image, 4 + header.byteLength);
-    return gzip(out);
+    const length = new Uint8Array(4);
+    new DataView(length.buffer).setUint32(0, header.byteLength, true);
+    return [length, header, snapshot.memory];
   }
 
   /** Read a snapshot's header without restoring it. */
@@ -367,7 +423,11 @@ class WorkflowVm {
 
   static async restore(state: DriverState, image: Uint8Array, wasm: WebAssembly.Module) {
     const self = new WorkflowVm(state);
-    const vm = self.vm = await QuickJS.restore(QuickJS.deserializeSnapshot(image), { ...self.options(), wasm } as never);
+    const at = state.image;
+    if (!at || at.bytes !== image.byteLength) throw new Error("The snapshot's image does not match its header");
+    // The image is a view of the decompressed bytes; restore copies it into the new instance's memory once.
+    const vm = self.vm = await QuickJS.restore({ memory: image, stackPointer: at.stackPointer, runtimePtr: at.runtimePtr, contextPtr: at.contextPtr, extensions: [] }, { ...self.options(), wasm } as never);
+    checkVersion(vm);
     vm.registerHostCallback("bridge", self.bridge as never);
     const tokens = state.tokens!;
     self.api = vm.importHandle(tokens.api);
@@ -380,13 +440,16 @@ class WorkflowVm {
   dispose() { this.vm.dispose(); }
 }
 
-async function pipe(bytes: Uint8Array, stream: { readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> }) {
+async function pipe(parts: Uint8Array[], stream: { readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> }) {
   const writer = stream.writable.getWriter();
-  void writer.write(bytes).then(() => writer.close());
-  return new Uint8Array(await new Response(stream.readable).arrayBuffer());
+  const written = (async () => { for (const part of parts) await writer.write(part); await writer.close(); })();
+  const out = new Uint8Array(await new Response(stream.readable).arrayBuffer());
+  await written;
+  return out;
 }
-export const gzip = (bytes: Uint8Array) => pipe(bytes, new CompressionStream("gzip"));
-export const gunzip = (bytes: Uint8Array) => pipe(bytes, new DecompressionStream("gzip"));
+/** gzip of `parts` in order, without joining them first. */
+export const gzip = (...parts: Uint8Array[]) => pipe(parts, new CompressionStream("gzip"));
+export const gunzip = (bytes: Uint8Array) => pipe([bytes], new DecompressionStream("gzip"));
 
 /**
  * One workflow step, in the sandbox. `wasm` is quickjs-wasi's compiled module (the one Wrangler bundled). Throws only
@@ -397,7 +460,7 @@ export async function serveWorkflowStep(request: WorkflowStepRequest, wasm: WebA
     throw new Error(`Workflow step: protocol ${String(request?.protocol)} is not ${WORKFLOW_STEP_PROTOCOL}, the one this sandbox speaks; the workflow runner and the sandbox Worker run different versions`);
   const fingerprint = workflowFingerprint();
   let vm: WorkflowVm;
-  let replayed = false;
+  let replayed = false, disposed = false;
   if (request.restore) {
     const { state, image } = WorkflowVm.header(await gunzip(request.restore));
     if (state.fingerprint !== fingerprint)
@@ -407,9 +470,10 @@ export async function serveWorkflowStep(request: WorkflowStepRequest, wasm: WebA
     vm = await WorkflowVm.restore(state, image, wasm);
   } else {
     vm = await WorkflowVm.start(request, wasm, fingerprint);
+    if (request.beganAt !== undefined) vm.state.clock.now = Math.max(vm.state.clock.now, request.beganAt);
     replayed = request.replay !== undefined;
     vm.replaying = replayed;
-    vm.begin(request.code);
+    vm.begin(request.code, request.table);
     for (const batch of request.replay ?? []) vm.deliver(batch);
     vm.replaying = false;
   }
@@ -422,15 +486,22 @@ export async function serveWorkflowStep(request: WorkflowStepRequest, wasm: WebA
     }
     if (!vm.fault && !vm.done && vm.status() === 0)
       vm.fault = { code: "stalled", message: "The script waits on nothing that can ever settle: no effect is pending" };
+    const live = !vm.fault && !vm.done;
+    const heapBytes = live ? vm.heapBytes : 0, rawBytes = live ? vm.linearBytes : 0;
+    // Past the raw cap the image is not even copied: the next step replays.
+    const parts = live && rawBytes <= WORKFLOW_SNAPSHOT_RAW_BYTES ? vm.take() : undefined;
+    vm.dispose();
+    disposed = true;
     let snapshot: Uint8Array | undefined, snapshotBytes = 0;
-    if (!vm.fault && !vm.done) {
-      const bytes = await vm.snapshot();
+    if (parts) {
+      const bytes = await gzip(...parts);
+      parts.length = 0;
       snapshotBytes = bytes.byteLength;
       if (snapshotBytes <= request.snapshotCap) snapshot = bytes;
     }
     return {
       kind: "ran", fingerprint, replayed, issued: vm.issued, logs: vm.logs, phase: vm.phase, done: vm.done, fault: vm.fault,
-      snapshot, snapshotBytes, polls: vm.polls, heapBytes: vm.fault || vm.done ? 0 : vm.heapBytes,
+      snapshot, snapshotBytes, snapshotRawBytes: rawBytes, polls: vm.polls, heapBytes,
     };
-  } finally { vm.dispose(); }
+  } finally { if (!disposed) vm.dispose(); }
 }
