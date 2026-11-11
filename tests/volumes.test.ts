@@ -577,6 +577,16 @@ test("the REST API and SDK manage volumes within a tenant, and nothing crosses t
   assert.equal(await fork.readText("data/notes/a b.md"), "spaces are fine");
   assert.deepEqual((await volume.snapshots()).map(entry => entry.id), [snapshot.id]);
   assert.deepEqual((await volume.changes()).changes.map(change => change.kind), ["write", "write", "delete"]);
+  // An atomic commit through the SDK: content from a fork, a snapshot of the result, and { conflicts } when stale.
+  const landed = await volume.commit([{ path: "data/c.txt", version: 0, text: "c" }, { path: "data/notes/a b.md", version: 0, from: { volume: fork.id } }], { snapshot: { name: "v2" } });
+  assert.ok("seq" in landed);
+  assert.equal(landed.snapshot?.name, "v2");
+  assert.deepEqual(landed.files.map(file => file.path), ["/data/c.txt", "/data/notes/a b.md"]);
+  assert.equal(await volume.readText("data/notes/a b.md"), "spaces are fine");
+  assert.deepEqual(await volume.commit([{ path: "data/c.txt", version: 0, text: "again" }, { path: "data/d.txt", version: 0, data: new Uint8Array([1]) }]),
+    { conflicts: [{ path: "/data/c.txt", headVersion: landed.files[0].version }] });
+  await assert.rejects(volume.readText("data/d.txt"), (error: AgentError) => error.status === 404);
+  await volume.commit([{ path: "data/c.txt", version: landed.files[0].version, delete: true }, { path: "data/notes/a b.md", version: landed.files[1].version, delete: true }]);
 
   // Many files read at once, at one seq, or as a snapshot had them.
   const project = a.volume((await a.createVolume({ name: "project" })).id);
@@ -629,7 +639,7 @@ test("the REST API and SDK manage volumes within a tenant, and nothing crosses t
   // Bob sees none of it and cannot reach it by id, through the API, a mount, or his agents' tools.
   assert.deepEqual((await b.listVolumes()).filter(entry => entry.name !== "workspace"), []);
   const theirs = b.volume(created.id);
-  for (const attempt of [() => theirs.info(), () => theirs.read("data/large.bin"), () => theirs.write("data/x", "x"), () => theirs.fork(), () => theirs.snapshot(), () => theirs.remove("data/large.bin"), () => theirs.delete(), () => theirs.list(), () => theirs.changes()]) {
+  for (const attempt of [() => theirs.info(), () => theirs.read("data/large.bin"), () => theirs.write("data/x", "x"), () => theirs.fork(), () => theirs.snapshot(), () => theirs.remove("data/large.bin"), () => theirs.commit([{ path: "data/x", version: 0, text: "x" }]), () => theirs.delete(), () => theirs.list(), () => theirs.changes()]) {
     await assert.rejects(attempt(), (error: AgentError) => error.status === 404);
   }
   await assert.rejects(b.createAgent({ tools: {}, mounts: [{ volumeId: created.id, path: "/stolen", mode: "ro" }] }), /Unknown volume/);

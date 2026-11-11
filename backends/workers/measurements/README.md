@@ -45,6 +45,27 @@ Workers 508 HTTP + 66 SDK-only pass, 17 accepted differences, 0 fail**
 scope. Per-case results: [PARITY.md](../PARITY.md), `parity-node.json`,
 `parity-workers.json`; harness timing history: [parity-speed.md](parity-speed.md).
 
+## Workflow replay in the code mode sandbox
+
+In process on Node (no RPC), 2026-11-11, `test/exchange-replay.ts`: a workflow
+step replays its script from the top in a fresh QuickJS VM under the deployed
+sandbox's limits (24 MiB heap, 10,000 interrupt polls), keys each effect with a
+guest-side hash, and gets result bodies over 8 KiB as host-side handles.
+
+| Step (journaled effects) | Calls through the exchange | Polls used | Guest heap | In-process time |
+| --- | ---: | ---: | ---: | ---: |
+| 500, one call per effect, FNV-1a 64 | 500 | 45 | 227 KiB | 276 ms |
+| 500, journal table in the guest, FNV-1a 64 | 1 | 52 | 379 KiB | 118 ms |
+| 500, journal table, SHA-256 keys | 1 | 125 | 409 KiB | 189 ms |
+| 10,000, one call per effect, FNV-1a 64 | 10,000 | 826 | 608 KiB | 5.6 s |
+| 10,000, journal table, FNV-1a 64 | 1 | 995 | 3.6 MiB | 2.2 s |
+| 10,000, journal table, SHA-256 keys | 1 | 2,440 | 4.1 MiB | 3.7 s |
+
+10,000 polls take about 5.9 s of a non-yielding loop on this machine, and
+`JSON.parse` of the table counts no polls, so time, not the poll budget, is the
+step's real cost. With 20 KB bodies inline, the same journal stops at effect 419
+(8 MiB). `exchange-replay.json`.
+
 ## Test timings
 
 Same date and tree, one Sprite (8 CPUs) per command:

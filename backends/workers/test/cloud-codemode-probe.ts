@@ -1,12 +1,17 @@
 // Fixed synthetic cases only. Deploy under a temporary camelrun-proto-* name and delete afterwards.
 import { SessionCodemodeSandbox } from "../codemode/sandbox.ts";
 import type { CodemodeRemote } from "@earendil-works/pi-codemode/portable";
+import { CODE_MODE_EXCHANGE } from "../codemode/exchange.ts";
+import { hostExchange } from "../codemode/routing.ts";
 
 export default {
   async fetch(request: Request, env: { SANDBOX: DurableObjectNamespace & { getByName(name: string): CodemodeRemote } }) {
     if (new URL(request.url).pathname !== "/smoke" || request.method !== "POST") return new Response("Not found", { status: 404 });
     const session = `cloud-probe-${crypto.randomUUID()}`;
-    const sandbox = new SessionCodemodeSandbox({ remote: () => env.SANDBOX.getByName(session), tools: [{ name: "wait", execute: async (args, { signal }) => {
+    const sandbox = new SessionCodemodeSandbox({ remote: () => ({
+      // Straight to the sandbox, not through isolatedSandboxRemote: the probe checks the sandbox's own concurrency cap.
+      execute: (request, exchange) => env.SANDBOX.getByName(session).execute({ ...request, exchange: CODE_MODE_EXCHANGE } as typeof request, hostExchange(CODE_MODE_EXCHANGE, exchange).exchange),
+    }), tools: [{ name: "wait", execute: async (args, { signal }) => {
       const ms = Number((args as { ms: number }).ms);
       await new Promise<void>((resolve, reject) => {
         const done = () => { clearTimeout(timer); reject(new Error("cancelled")); };
