@@ -83,7 +83,7 @@ export function meterProvider<P extends Provider<any>>(
             return true;
           }
           const attributed = event.type === 'begin' ? { ...event,
-            context: { requestId: identity.requestId, actor: identity.actor, keyScope: identity.keyScope,
+            context: { bucket: identity.bucket ?? null, requestId: identity.requestId, actor: identity.actor, keyScope: identity.keyScope,
               ...(identity.subject !== undefined || identity.context !== undefined ? { identity: {
                 ...(identity.subject !== undefined ? { subject: identity.subject } : {}),
                 ...(identity.context !== undefined ? { context: identity.context } : {}),

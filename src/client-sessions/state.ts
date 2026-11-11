@@ -427,7 +427,7 @@ export type UsageRecord = {
   /** Already persisted beside a Pi journal response. */
   durableReceipt?: boolean;
   /** For a model response: the run it was in, who acted in it, whom the agent acts for, and its key scope (for usage webhooks). */
-  requestId?: string; actor?: string; identity?: AgentIdentity; keyScope?: string;
+  requestId?: string; actor?: string; identity?: AgentIdentity; keyScope?: string; bucket?: string;
 };
 /** Why runs are refused: a message (402), or an error with its own status. */
 export type Refusal = string | HttpError;

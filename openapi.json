@@ -7436,6 +7436,7 @@
                 "agent",
                 "definition",
                 "endUser",
+                "bucket",
                 "model",
                 "day"
               ]
@@ -7534,6 +7535,12 @@
                   ]
                 },
                 "endUser": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "bucket": {
                   "type": [
                     "string",
                     "null"

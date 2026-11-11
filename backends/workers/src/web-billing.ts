@@ -27,7 +27,7 @@ export async function recordWebUsage(env: KeyEnv & WebhookEnv, scope: BuiltinSco
     if (!await recordAuxiliaryUsage(sql, { tenant: scope.tenant, agent: scope.agent, requestId: scope.requestId,
       callId: scope.callId!, startedAt: scope.startedAt!, kind: usage.model as "web_search" | "x_search" | "web_fetch" },
     { costUsd: usage.usage.cost.total, provider: usage.provider, model: usage.model })) return;
-    await accounts.recordUsageIn(sql, scope.tenant, scope.agent, { ...usage,
+    await accounts.recordUsageIn(sql, scope.tenant, scope.agent, { ...usage, bucket: scope.bucket,
       ...(scope.requestId ? { requestId: scope.requestId } : {}), ...(scope.keyScope ? { keyScope: scope.keyScope } : {}),
       ...(scope.identity ? { identity: scope.identity } : {}), ...(scope.actor ? { actor: scope.actor } : {}) });
     // Web calls hold no estimate in src/. Settle their actual cost through the

@@ -181,7 +181,7 @@ export type TranscriptionRequest = TranscriptionOptions & {
   audio: { bytes: Uint8Array } | { url: string };
   keyScope?: string;
   /** Who it is for and who asked, as an agent's identity and a run's actor say (`usage.recorded`'s subject, context and actor). */
-  identity?: AgentIdentity; actor?: string;
+  identity?: AgentIdentity; actor?: string; bucket?: string;
   /** When its end user pays for it: holds the transcription's estimate (USD) of their credit before the audio is sent. */
   hold?: (usd: number) => Promise<{ settle(usd: number): Promise<void>; release(): Promise<void> } | undefined>;
 };
@@ -207,7 +207,7 @@ export async function transcribeRequest(service: TranscriptionService, tenant: s
   try { done = await service.transcriber.transcribe({ tenant, ...(request.keyScope ? { keyScope: request.keyScope } : {}) }, { bytes, header }, options, signal); }
   catch (error) { await held?.release(); throw error; }
   const { transcript, usage } = done;
-  service.record(tenant, { ...usage, ...(request.actor ? { actor: request.actor } : {}), ...(request.identity ? { identity: request.identity } : {}), ...(request.keyScope ? { keyScope: request.keyScope } : {}) });
+  service.record(tenant, { ...usage, ...(request.actor ? { actor: request.actor } : {}), ...(request.bucket === undefined ? {} : { bucket: request.bucket }), ...(request.identity ? { identity: request.identity } : {}), ...(request.keyScope ? { keyScope: request.keyScope } : {}) });
   await held?.settle(usage.usage.cost.total as number);
   return {
     text: transcript.text, language: transcript.language ?? null, durationSeconds: transcript.seconds, model: `${service.transcriber.provider}/${transcript.model}`,

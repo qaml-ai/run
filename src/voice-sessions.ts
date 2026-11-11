@@ -1592,7 +1592,7 @@ export class VoiceSessions {
     } finally { free(); }
     const { transcript, usage } = done;
     const identity = { ...(options.subject !== undefined ? { subject: options.subject } : {}), context: { ...options.context, voiceSession: origin.id } };
-    this.options.record(origin.tenant, { ...usage, identity, ...(options.keyScope ? { keyScope: options.keyScope } : {}) });
+    this.options.record(origin.tenant, { ...usage, bucket: options.bucket, identity, ...(options.keyScope ? { keyScope: options.keyScope } : {}) });
     const usd = usage.usage.cost.total as number;
     const row = await transaction(this.db, async sql => {
       const { rows } = await sql.query(`
@@ -1781,7 +1781,7 @@ export class VoiceSessions {
         this.options.record(held.tenant, {
           provider: provider.id, model: realtime.model, kind: "speech", platform: credentials.platform, speeches: 1, audioSeconds, timestamp: Date.now(),
           usage: { input: usage.inputText + usage.inputAudio, output: usage.outputText + usage.outputAudio, cacheRead: usage.cachedText + usage.cachedAudio, cost: { total: costUsd } },
-          identity: identity(), ...(keyScope ? { keyScope } : {}),
+          bucket: options().bucket, identity: identity(), ...(keyScope ? { keyScope } : {}),
         });
         void write("update voice_sessions set cost = cost + $2, updated_at = $3 where id = $1 returning *", [Math.round(costUsd * 1_000_000), Date.now()]);
       },
@@ -1793,7 +1793,7 @@ export class VoiceSessions {
         const { keyScope } = options();
         if (heard.seconds > 0) this.options.record(held.tenant, {
           provider: provider.id, model: provider.ownsTurns ? realtime.model : REALTIME_TRANSCRIPTION.model, kind: "transcription", platform: credentials.platform, transcriptions: 1, audioSeconds: Math.ceil(heard.seconds),
-          usage: { cost: { total: heard.costUsd } }, timestamp: Date.now(), identity: identity(), ...(keyScope ? { keyScope } : {}),
+          usage: { cost: { total: heard.costUsd } }, timestamp: Date.now(), bucket: options().bucket, identity: identity(), ...(keyScope ? { keyScope } : {}),
         });
         if (!heard.text) return;
         held.media?.notify?.({ type: "utterance", speakerId: heard.speaker, text: heard.text, startedAt: heard.startedAt, endedAt: heard.endedAt, brain: "realtime" });

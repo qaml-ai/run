@@ -468,7 +468,7 @@ export class Accounts {
       platformResponses: message.platform && !lease ? 1 : 0, platformCost: message.platform ? fundedCost : 0,
     };
     add(totals, increment);
-    target.attributed.push({ tenant, agent, requestId: message.requestId, endUser: message.identity?.subject ?? null, timestamp: message.timestamp ?? Date.now(), day, model: JSON.parse(key)[2], ...increment });
+    target.attributed.push({ tenant, agent, requestId: message.requestId, endUser: message.identity?.subject ?? null, bucket: message.bucket ?? null, timestamp: message.timestamp ?? Date.now(), day, model: JSON.parse(key)[2], ...increment });
     target.usage.set(key, totals);
     if (message.platform) {
       const charge = this.charge(tenant, target);

@@ -889,7 +889,7 @@ export class ClientSessions {
           // The runtime selects the payer and bucket; the host cannot override them.
           const payer = event.type === "begin" ? spend.modelPayer(this.spendContext, session, run) : undefined;
           const { endUser: _given, ...asked } = event as Extract<typeof event, { type: "begin" }>;
-          const scoped = event.type === "begin" ? { ...asked, ...(payer ? { endUser: payer } : {}), context: { ...(run ? { requestId: run.id, actor: run.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) } } : event;
+          const scoped = event.type === "begin" ? { ...asked, ...(payer ? { endUser: payer } : {}), context: { bucket: spend.bucketOf(this.spendContext, session, run), ...(run ? { requestId: run.id, actor: run.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) } } : event;
           const tracked = await this.options.modelAttempt?.(session.header.tenant, session.header.id, !!session.platformKey, !!session.catalogPriced, scoped) ?? false;
           // Persisting a begin may span a database outage; recheck ownership before dispatch.
           if (event.type === "begin") {
@@ -2647,7 +2647,7 @@ export class ClientSessions {
     if (!session) return usage;
     const run = usage.requestId ? session.requests.get(usage.requestId) : runningRun(session);
     const identity = spend.billingIdentity(session, run);
-    return { ...usage, ...(run ? { requestId: run.id } : {}), ...(identity ? { identity } : {}) };
+    return { ...usage, bucket: spend.bucketOf(this.spendContext, session, run), ...(run ? { requestId: run.id } : {}), ...(identity ? { identity } : {}) };
   }
 
   /** Who pays for the current run. */

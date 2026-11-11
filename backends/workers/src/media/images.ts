@@ -285,7 +285,7 @@ export type ImageRequest = {
   /** A volume of the tenant's to save the images into, under `path` (a directory), instead of answering their bytes. */
   volume?: { id: string; path: string };
   /** Who it is for and who asked, as an agent's identity and a run's actor say (`usage.recorded`'s subject, context and actor). */
-  identity?: AgentIdentity; actor?: string;
+  identity?: AgentIdentity; actor?: string; bucket?: string;
   /** When its end user pays for it: holds the images' estimate (USD) of their credit before they are asked for. */
   hold?: Hold;
 };
@@ -331,7 +331,7 @@ export async function imageRequest(service: ImageService, tenant: string, reques
   try { made = await service.imager.generate({ tenant, ...(request.keyScope ? { keyScope: request.keyScope } : {}) }, { prompt: request.prompt, images, ...(mask ? { mask } : {}), options: request.options }, signal); }
   catch (error) { await held?.release(); throw error; }
   const { generated, usage } = made;
-  service.record(tenant, { ...usage, ...(request.actor ? { actor: request.actor } : {}), ...(request.identity ? { identity: request.identity } : {}), ...(request.keyScope ? { keyScope: request.keyScope } : {}) });
+  service.record(tenant, { ...usage, ...(request.actor ? { actor: request.actor } : {}), ...(request.bucket === undefined ? {} : { bucket: request.bucket }), ...(request.identity ? { identity: request.identity } : {}), ...(request.keyScope ? { keyScope: request.keyScope } : {}) });
   await held?.settle(usage.usage.cost.total as number);
   const volume = request.volume;
   const stamp = `${new Date().toISOString().replace(/[-:]/g, "").slice(0, 15)}-${randomBytes(3).toString("hex")}`;

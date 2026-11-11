@@ -57,6 +57,7 @@ export function createDecisions(this: AgentRuntime): ReturnType<typeof decisionS
         tenant: conf.tenantId,
         agent: conf.id,
         requestId: run.id === "background" ? undefined : run.id,
+        bucket: (params?.bucket as string | undefined) ?? conf.config.bucket ?? await this.ctx.storage.get<string>("run-bucket") ?? "default",
         spendLimit: (params?.spendLimit as { usd?: number } | undefined)?.usd,
         actor: params?.actor as string | undefined,
         identity: {

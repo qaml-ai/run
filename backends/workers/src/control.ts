@@ -544,7 +544,7 @@ export async function settleTurn(
         responses: receipt.responses ?? 1, input: receipt.inputTokens ?? 0, output: receipt.outputTokens ?? 0, cacheRead: 0, cacheWrite: 0,
         cost: receipt.costMicros / 1_000_000, platformResponses: receipt.responses ?? 1, platformCost: receipt.costMicros / 1_000_000 };
       await applyUsageRows(sql, [totals]);
-      await recordUsageDetails(sql, [{ ...totals, agent: receipt.agentId, endUser: receipt.subject ?? null, timestamp: receipt.startedAt ?? Date.now() }]);
+      await recordUsageDetails(sql, [{ ...totals, agent: receipt.agentId, endUser: receipt.subject ?? null, bucket: receipt.bucket ?? null, timestamp: receipt.startedAt ?? Date.now() }]);
       await applyWorkspaceUsage(sql, [{ ...totals, agent: receipt.agentId, timestamp: receipt.startedAt ?? Date.now() }]);
       if (receipt.subject) await settleUsage(sql, { tenant: receipt.tenantId, endUser: receipt.subject, bucket: receipt.bucket ?? "default",
         day: totals.day, raw: receipt.costMicros, key, metadata: { requestId: receipt.requestId, agent: receipt.agentId } }, Date.now(), endUser);

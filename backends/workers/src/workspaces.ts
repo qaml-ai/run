@@ -62,7 +62,7 @@ export class Workspaces {
   }
 }
 
-export type AttributedUsage = Totals & { tenant: string; agent: string; requestId?: string; endUser?: string | null; timestamp: number; day: string; model: string };
+export type AttributedUsage = Totals & { tenant: string; agent: string; requestId?: string; endUser?: string | null; bucket?: string | null; timestamp: number; day: string; model: string };
 /** In the same transaction as account totals. Signed reconciliation deltas use the original call's timestamp. */
 export async function applyWorkspaceUsage(sql: Sql, rows: AttributedUsage[]) {
   if (!rows.length) return;

@@ -10,6 +10,7 @@ export interface DecisionContext {
   tenant: string;
   agent?: string;
   requestId?: string;
+  bucket?: string;
   callId?: string;
   startedAt?: number;
   keyScope?: string;
@@ -112,12 +113,13 @@ export async function decisionRoute(request: Request, runtime: DecisionRuntime):
   if (new URL(request.url).pathname !== '/v1/decisions' || request.method !== 'POST') return null;
   const raw = await body(request, 2 * 1024 * 1024);
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new HttpError(400, 'Expected an object');
-  const { subject, context, actor, keyScope, dataCollection, ...input } = raw as Record<string, unknown>;
+  const { subject, context, actor, keyScope, dataCollection, bucket, ...input } = raw as Record<string, unknown>;
   if (subject !== undefined && (typeof subject !== 'string' || !subject || subject.length > 200)) throw new HttpError(400, 'subject must be bounded text');
+  if (bucket !== undefined && (typeof bucket !== 'string' || !bucket || bucket.length > 200)) throw new HttpError(400, 'bucket must be bounded text');
   if (actor !== undefined && (typeof actor !== 'string' || !actor || actor.length > 200)) throw new HttpError(400, 'actor must be bounded text');
   if (keyScope !== undefined && typeof keyScope !== 'string') throw new HttpError(400, 'keyScope must be text');
   if (dataCollection !== undefined && dataCollection !== 'deny') throw new HttpError(400, 'dataCollection must be deny');
   if (context !== undefined && (!context || typeof context !== 'object' || Array.isArray(context))) throw new HttpError(400, 'context must be an object');
-  const override: Partial<DecisionContext> = { ...(subject !== undefined || context !== undefined ? { identity: { ...(subject !== undefined ? { subject: subject as string } : {}), ...(context !== undefined ? { context: context as Record<string, unknown> } : {}) } } : {}), ...(actor !== undefined ? { actor: actor as string } : {}), ...(keyScope !== undefined ? { keyScope: keyScope as string } : {}), ...(dataCollection === 'deny' ? { dataCollection } : {}) };
+  const override: Partial<DecisionContext> = { ...(bucket !== undefined ? { bucket: bucket as string } : {}), ...(subject !== undefined || context !== undefined ? { identity: { ...(subject !== undefined ? { subject: subject as string } : {}), ...(context !== undefined ? { context: context as Record<string, unknown> } : {}) } } : {}), ...(actor !== undefined ? { actor: actor as string } : {}), ...(keyScope !== undefined ? { keyScope: keyScope as string } : {}), ...(dataCollection === 'deny' ? { dataCollection } : {}) };
   return Response.json(await runtime.run(input, request.signal, override));
 }

@@ -85,6 +85,7 @@ async function recordAudio(
       await services.accounts.recordUsageIn(sql, scope.tenant, scope.agent, {
         ...usage,
         requestId: scope.requestId,
+        bucket: scope.bucket,
         ...(scope.identity ? { identity: scope.identity } : {}),
         ...(scope.actor ? { actor: scope.actor } : {}),
         ...(scope.keyScope ? { keyScope: scope.keyScope } : {}),

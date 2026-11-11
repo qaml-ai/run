@@ -427,7 +427,7 @@ export type DecisionsRequest = DecisionRequest & {
   /** "deny": only where the provider takes the data policy, as an agent's dataCollection; refused otherwise. */
   dataCollection?: "deny";
   /** Who it is for and who asked, as an agent's identity and a run's actor say (`usage.recorded`'s subject, context and actor). */
-  identity?: AgentIdentity; actor?: string;
+  identity?: AgentIdentity; actor?: string; bucket?: string;
   /** When its end user pays for it: holds the estimate (USD) of their credit before anything is sent. */
   hold?: (usd: number) => Promise<{ settle(usd: number): Promise<void>; release(): Promise<void> } | undefined>;
 };
@@ -447,7 +447,7 @@ export async function decisionsRequest(service: DecisionService, tenant: string,
   let decided: Decided;
   try { decided = await service.decider.decide({ tenant, ...(request.keyScope ? { keyScope: request.keyScope } : {}), ...(request.dataCollection ? { dataCollection: request.dataCollection } : {}) }, request, signal); }
   catch (error) { await held?.release(); throw error; }
-  if (decided.usage) service.record(tenant, { ...decided.usage, ...(request.actor ? { actor: request.actor } : {}), ...(request.identity ? { identity: request.identity } : {}), ...(request.keyScope ? { keyScope: request.keyScope } : {}) });
+  if (decided.usage) service.record(tenant, { ...decided.usage, ...(request.actor ? { actor: request.actor } : {}), ...(request.bucket === undefined ? {} : { bucket: request.bucket }), ...(request.identity ? { identity: request.identity } : {}), ...(request.keyScope ? { keyScope: request.keyScope } : {}) });
   await held?.settle(decided.chargedUsd);
   return decisionsAnswer(decided, request.batch);
 }
