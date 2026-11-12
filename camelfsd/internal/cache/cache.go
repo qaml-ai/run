@@ -14,9 +14,10 @@ import (
 )
 
 type flight struct {
-	done chan struct{}
-	path string
-	err  error
+	done   chan struct{}
+	path   string
+	err    error
+	cancel context.CancelFunc
 }
 type Cache struct {
 	verified                    map[string]time.Time
@@ -40,6 +41,15 @@ func New(dir string, s store.Store, n int) *Cache {
 }
 func (c *Cache) Ensure(h string) (string, error) { return c.EnsureContext(context.Background(), h) }
 func (c *Cache) EnsureContext(ctx context.Context, h string) (string, error) {
+	for {
+		p, e := c.ensure(ctx, h)
+		if e == context.Canceled && ctx.Err() == nil {
+			continue
+		}
+		return p, e
+	}
+}
+func (c *Cache) ensure(ctx context.Context, h string) (string, error) {
 	if !root.Hex(h, 64) {
 		return "", fmt.Errorf("invalid hash")
 	}
@@ -56,6 +66,9 @@ func (c *Cache) EnsureContext(ctx context.Context, h string) (string, error) {
 		return p, nil
 	}
 	if f := c.flights[h]; f != nil {
+		if !store.IsBackground(ctx) && f.cancel != nil {
+			f.cancel()
+		}
 		c.mu.Unlock()
 		select {
 		case <-f.done:
@@ -65,6 +78,12 @@ func (c *Cache) EnsureContext(ctx context.Context, h string) (string, error) {
 		}
 	}
 	f := &flight{done: make(chan struct{})}
+	if store.IsBackground(ctx) {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(ctx)
+		f.cancel = cancel
+		defer cancel()
+	}
 	c.flights[h] = f
 	c.mu.Unlock()
 	defer func() { c.mu.Lock(); delete(c.flights, h); close(f.done); c.mu.Unlock() }()
@@ -79,13 +98,6 @@ func (c *Cache) EnsureContext(ctx context.Context, h string) (string, error) {
 			return p, nil
 		}
 	}
-	select {
-	case c.slots <- struct{}{}:
-	case <-ctx.Done():
-		f.err = ctx.Err()
-		return "", f.err
-	}
-	defer func() { <-c.slots }()
 	b, e := c.Store.Get(ctx, "c/"+h)
 	c.Fetches.Add(1)
 	c.Bytes.Add(int64(len(b)))

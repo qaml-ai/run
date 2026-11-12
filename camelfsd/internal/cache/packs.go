@@ -25,12 +25,6 @@ func (c *Cache) Missing(h string) bool {
 // Pack claims each missing chunk's single flight. Demand can join these flights.
 // No byte from a corrupt pack is published, including chunks preceding corruption.
 func (c *Cache) Pack(ctx context.Context, id string, hashes []string) (err error) {
-	select {
-	case c.slots <- struct{}{}:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	defer func() { <-c.slots }()
 	owned := map[string]*flight{}
 	c.mu.Lock()
 	for _, h := range hashes {
