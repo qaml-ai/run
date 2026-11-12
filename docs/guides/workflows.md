@@ -7,11 +7,15 @@ exactly once, keeps every answer in a journal, and replays the script from the
 top as answers land. You can pause it, change its script while it runs, raise
 its budget, and resume it. A waiting workflow costs nothing.
 
-Write a workflow when a task is many independent or repeated units of work
-(per file, per table, per source), needs more than a few sub-agents at once,
-must keep running after a turn ends, or needs a person's approval or a budget
-along the way. Use [`delegate`](multi-agent.md) for a few sub-agents whose
-answers you need in this turn.
+Write a workflow when a task covers more than about 10 files, tables,
+documents or sources, or is a port, migration, audit or research sweep: list
+its units, give each to its own `agent()`, and keep the agent that owns the
+workflow to planning, checking and reporting. When the units edit files, give
+each `repo` (the volume) and `commit()` its fork. Run a single command with
+`job_run`, not a workflow, and use [`delegate`](multi-agent.md) for a few
+sub-agents whose answers you need in this turn. The `workflows` builtin tells
+agents the same. An agent need not poll a workflow it started: a
+`<workflow_notification>` tells it when the workflow finishes or stops.
 
 Workflows run on Workers runtimes only, and are **enabled per account**: ask
 us to turn them on. Until then every call answers 403 `WORKFLOWS_OFF`, and
