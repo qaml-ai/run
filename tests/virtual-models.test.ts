@@ -1,3 +1,4 @@
+import { getEventListeners } from "node:events";
 import { isRetryableAssistantError, isContextOverflow } from "@earendil-works/pi-ai";
 import { errorClass } from "../src/metrics.ts";
 import { STRONG_UNAVAILABLE_MESSAGE } from "../src/virtual-models.ts";
@@ -405,7 +406,7 @@ test("strong: flex's 429 is asked again within the flex wait, then the default t
       firstFlexFailure ||= Date.now();
     }
     if ((body.service_tier === "flex" && flexFailures-- > 0) || (body.service_tier !== "flex" && defaultDown))
-      return res.writeHead(429, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: body.service_tier === "flex" ? flexError : "google/gemini-4-carbon is temporarily rate-limited upstream", code: 429 } }));
+      return res.writeHead(slowFlex ? 503 : 429, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: body.service_tier === "flex" ? flexError : "google/gemini-4-carbon is temporarily rate-limited upstream", code: slowFlex ? 503 : 429 } }));
     res.writeHead(200, { "Content-Type": "text/event-stream" });
     for (const event of responses([{ type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: `From ${body.service_tier}.`, annotations: [] }] }]).events)
       res.write(`event: ${(event as any).type}\ndata: ${JSON.stringify(event)}\n\n`);
@@ -432,23 +433,22 @@ test("strong: flex's 429 is asked again within the flex wait, then the default t
   slowFlex = false;
   // Both tiers 429: details stay in the log.
   for (flexError of ["429 Rate limited; check your billing settings", "429 Too many tokens per minute"]) {
-  defaultDown = true;
-  requests.length = 0;
-  const down = await r.prompt(agent, "Once more");
-  const error = String(down.outcome?.result?.error ?? JSON.stringify(down.outcome));
-  assert.equal(error, STRONG_UNAVAILABLE_MESSAGE);
-  const failure = { stopReason: "error", errorMessage: error } as any;
-  assert.equal(errorClass(error), "provider_5xx");
-  assert.equal(isModelUnavailable(failure), true);
-  assert.equal(isRetryableAssistantError(failure), true);
-  assert.equal(isContextOverflow(failure), false);
-  assert.ok(r.logs.some(line => line.includes("virtual_model_chain_failed") && line.includes(flexError)));
+    defaultDown = true;
+    requests.length = 0;
+    const down = await r.prompt(agent, "Once more");
+    const error = String(down.outcome?.result?.error ?? JSON.stringify(down.outcome));
+    assert.equal(error, STRONG_UNAVAILABLE_MESSAGE);
+    const failure = { stopReason: "error", errorMessage: error } as any;
+    assert.equal(errorClass(error), "provider_5xx");
+    assert.equal(isModelUnavailable(failure), true);
+    assert.equal(isRetryableAssistantError(failure), true);
+    assert.equal(isContextOverflow(failure), false);
+    assert.ok(r.logs.some(line => line.includes("virtual_model_chain_failed") && line.includes(flexError)));
   }
 });
 
 test("Node flex waits remove abort listeners after four sleeps", async t => {
   const { NodeFlexWait } = await import("../src/model-fallback.ts");
-  const { getEventListeners } = await import("node:events");
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const controller = new AbortController(), wait = new NodeFlexWait();
   const baseline = getEventListeners(controller.signal, "abort").length;
@@ -462,7 +462,6 @@ test("Node flex waits remove abort listeners after four sleeps", async t => {
 
 test("Node abort mid flex wait passes the original failure through without a fallback", async t => {
   const { NodeFlexWait } = await import("../src/model-fallback.ts");
-  const { getEventListeners } = await import("node:events");
   const controller = new AbortController(), wait = new NodeFlexWait();
   let moves = 0, unavailable = 0;
   const message = { role: "assistant", content: [], stopReason: "error", errorMessage: "503 flex unavailable" } as any;
