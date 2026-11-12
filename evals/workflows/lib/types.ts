@@ -18,6 +18,10 @@ export interface Task {
   units: number;
   /** Arguments for the task's reference workflow script (`workflow.js`), in workflow-direct mode. */
   workflowArgs?: Record<string, unknown>;
+  /** The task's own judge image directory (a Dockerfile with pinned toolchains), for judges `node:22` cannot run; such a task scores only in docker. */
+  judgeImage?: string;
+  /** Dry mode's stand-in for `job()`: harness-served build tools for the orchestrator ("go": go_build and go_decode in the judge image). */
+  jobs?: string[];
   /** Planned tasks: where the input comes from and how the judge runs. */
   source?: Record<string, unknown>;
   dir: string;
@@ -40,6 +44,11 @@ export interface Classes { orchestrator: string; worker: string; critic: string;
 export interface CostBreakdown {
   totalUsd: number;
   byType: Partial<Record<AgentType, number>>;
+  /**
+   * Output tokens by agent type: who did the writing. Whether the class under test did the work or the orchestrator and
+   * critics did it for them (Workers volumes record no writer per change, so this is the measure).
+   */
+  outputByType: Partial<Record<AgentType, number>>;
   byModel: Record<string, number>;
   /** Cost by model class, from the served model: the fast class's members, the strong class's, anything else. */
   byClass: Partial<Record<ModelClass | "other", number>>;
@@ -77,6 +86,10 @@ export interface RunResult {
   /** Whether the orchestrator split the work at all, and how. */
   choice: { delegated: boolean; delegateCalls: number; workflowStarted: boolean; workflowIds: string[]; toolCalls: Record<string, number> };
   reply?: string;
+  /** Set when `run.ts rescore` scored the saved output again with a later judge. */
+  rescoredAt?: string;
+  /** The orchestrator agent's id (dry and workflow modes), to read its usage and history while the runtime keeps them. */
+  agentId?: string;
   /** Where this run's artifacts are (events, output tree). */
   artifacts: string;
 }
