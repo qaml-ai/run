@@ -126,7 +126,9 @@ export const WORKFLOW_PRELUDE = `(function (bridge) {
     }
     known.set(key, { kind, args: json });
     // The revision's table: an effect the journal already has is answered from it, or waits for its result.
-    const adopted = table.get(key);
+    let adopted = table.get(key);
+    // Its key with other arguments (or another kind): not that result. The effect is issued again, a rerun of it.
+    if (adopted !== undefined && adopted.args !== undefined && (adopted.args !== json || adopted.kind !== kind)) { table.delete(key); adopted = undefined; }
     if (adopted !== undefined) {
       table.delete(key);
       bridge("effect", key, kind, json, phase, extra === undefined ? undefined : stringify(extra), true);
@@ -137,11 +139,16 @@ export const WORKFLOW_PRELUDE = `(function (bridge) {
     pending.set(key, { promise, resolve });
     return promise;
   }
-  function settle(key, ok, json) {
+  function settle(key, ok, json, kind, args) {
+    // A result for other arguments than the script asks under this key (an edit changed them while the old ran): not its
+    // answer, dropped. Its own result comes from the effect issued with the new arguments.
+    const asked = known.get(key);
+    if (asked !== undefined && args !== undefined && (asked.args !== args || asked.kind !== kind)) return;
     const entry = pending.get(key);
     // A result the script has not asked for (in this revision): an edit dropped the call while it ran, or the script
-    // has not reached it yet. It is kept as if from the table, so a later ask is answered from it.
-    if (entry === undefined) { if (!settled.has(key)) table.set(key, { key, ok, value: json }); return; }
+    // has not reached it yet. It is kept as if from the table (with what it was for), so a later ask is answered from it
+    // only if it asks for the same.
+    if (entry === undefined) { if (!settled.has(key)) table.set(key, { key, ok, value: json, ...(args !== undefined ? { kind, args } : {}) }); return; }
     pending.delete(key);
     const value = parse(json);
     const done = { ok, value };
@@ -539,7 +546,8 @@ class WorkflowVm {
     clock.now = Math.max(clock.now, batch.at);
     try {
       for (const result of batch.results) {
-        vm.withScope(() => vm.callFunction(this.settleFn, this.api, vm.newString(result.key), result.ok ? vm.true : vm.false, vm.newString(result.value)));
+        vm.withScope(() => vm.callFunction(this.settleFn, this.api, vm.newString(result.key), result.ok ? vm.true : vm.false, vm.newString(result.value),
+          result.kind === undefined ? vm.undefined : vm.newString(result.kind), result.args === undefined ? vm.undefined : vm.newString(result.args)));
       }
       this.drain();
     } catch (error) { this.crash(error); }

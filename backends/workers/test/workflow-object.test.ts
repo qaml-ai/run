@@ -652,3 +652,60 @@ test("an edit replacing a held one: its unstarted effects are cancelled, so the 
   assert.deepEqual([at(prepend).status, at(prepend).pauseReason], ["paused", "confirm_rerun"]);
   assert.deepEqual([prepend.runner.events().findLast(event => event.type === "confirm_rerun")!.data.kept, prepend.runner.events().findLast(event => event.type === "confirm_rerun")!.data.reruns], [0, 1]);
 });
+
+test("an edit that changes an effect's arguments under the same key reruns it (counted as a rerun), and stops the old one if it still runs", { timeout: 60_000 }, async () => {
+  const script = (a: string) => `const done = await parallel(["a", "b", "c"], name => agent((name === "a" ? ${JSON.stringify(a)} : "work ") + name, { key: "work:" + name })); return done.map(d => d.answer);`;
+  const h = harness();
+  h.init({ code: script("work ") });
+  await h.wake();
+  await h.run();
+  assert.deepEqual(at(h).result, ["re: work a", "re: work b", "re: work c"]);
+  // Same key, other arguments: not the old result. 1 of 3 finished results goes unused: past 20%, it holds.
+  await h.runner.edit({ code: script("redo "), reason: "redo a", rerunConfirmPercent: 20 });
+  assert.deepEqual([at(h).status, at(h).pauseReason], ["paused", "confirm_rerun"]);
+  assert.equal(h.runner.events().findLast(event => event.type === "confirm_rerun")!.data.reruns, 1);
+  await h.runner.resume();
+  await h.run();
+  assert.deepEqual(at(h).result, ["re: redo a", "re: work b", "re: work c"]);
+  assert.deepEqual(h.runner.items({ attempts: true }).items.filter(item => item.key === "work:a").map(item => [item.attempt, item.status, item.current]), [[1, "done", false], [2, "done", true]]);
+
+  // While it still runs: an edit that changes its arguments stops it and runs the new one.
+  const running = harness();
+  running.init({ code: `const one = await agent("slow one", { key: "one" }); return one.answer;` });
+  await running.wake();
+  assert.deepEqual(running.world.queue.map(effect => effect.key), ["one"]);
+  await running.runner.edit({ code: `const one = await agent("fast one", { key: "one" }); return one.answer;`, reason: "faster" });
+  assert.ok(running.world.cancelled.includes("one:1"), JSON.stringify(running.world.cancelled));
+  await running.run();
+  assert.deepEqual([at(running).status, at(running).result], ["completed", "re: fast one"]);
+});
+
+test("an edit's first step cancels the backlog it no longer asks for: queued effects behind the cap never start", { timeout: 60_000 }, async () => {
+  const h = harness();
+  h.init({ code: `const all = await parallel(["a", "b", "c", "d", "e"], name => agent("work " + name, { key: "work:" + name })); return all.length;`, concurrency: 1 });
+  await h.wake();
+  assert.deepEqual(h.world.queue.map(effect => effect.key), ["work:a"], "one at a time: four wait behind the cap");
+  // The edit keeps only the running one.
+  await h.runner.edit({ code: `const one = await agent("work a", { key: "work:a" }); return one.answer;`, reason: "only a", rerunConfirmPercent: 100 });
+  await h.run();
+  assert.equal(at(h).status, "completed", JSON.stringify(at(h)));
+  assert.deepEqual([...h.world.starts.keys()], ["work:a:1"], "the dropped backlog never started");
+  assert.deepEqual(h.runner.items({ attempts: true }).items.filter(item => item.key !== "work:a").map(item => item.status), ["cancelled", "cancelled", "cancelled", "cancelled"]);
+  assert.equal(h.runner.events().findLast(event => event.type === "edited")!.data.confirm, false);
+});
+
+test("a result for the old arguments that lands after the edit never answers the effect with the new ones", { timeout: 60_000 }, async () => {
+  const h = harness();
+  h.init({ code: `const one = await agent("slow one", { key: "one" }); return one.answer;` });
+  await h.wake();
+  assert.deepEqual(h.world.queue.map(effect => effect.key), ["one"]);
+  // Edited while paused: the old attempt still runs, and its result lands before the revision's first step.
+  await h.runner.pause();
+  await h.runner.edit({ code: `const one = await agent("fast one", { key: "one" }); return one.answer;`, reason: "faster" });
+  await h.runner.land("one", 1, { ok: true, value: { answer: "re: slow one" } });
+  h.world.queue.splice(0);
+  await h.runner.resume();
+  await h.run();
+  assert.deepEqual([at(h).status, at(h).result], ["completed", "re: fast one"]);
+  assert.deepEqual(h.runner.items({ attempts: true }).items.filter(item => item.key === "one").map(item => [item.attempt, item.current]), [[1, false], [2, true]]);
+});
