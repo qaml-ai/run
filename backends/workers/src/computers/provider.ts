@@ -605,6 +605,17 @@ export class ContainerProvider implements ComputerProvider {
     if (!this.container.running) return { saved: false };
     return this.saveAndStop(() => this.snapshot("camelrun-sleep", AbortSignal.timeout(180_000)), force);
   }
+  /**
+   * Stop for a payer that may no longer spend (objects.ts limitStop), without admitting anything: a computer that sleeps
+   * when idle saves its disk first, as its idle sleep does (a spend limit never wipes a workspace); any other is halted
+   * after a last CPU reading. Either ends the metered session, charged up to now.
+   */
+  async stopForLimit(): Promise<{ saved: boolean }> {
+    if (!this.container.running) return { saved: false };
+    if (await this.store.get(IDLE_KEY)) return this.saveAndStop(() => this.capture("camelrun-sleep"), true);
+    await this.halt();
+    return { saved: false };
+  }
   private async saveAndStop(save: () => Promise<ComputerSnapshot>, force: boolean) {
     let saved: ComputerSnapshot | undefined;
     try { saved = await save(); }

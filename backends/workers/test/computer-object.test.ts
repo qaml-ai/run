@@ -138,24 +138,29 @@ test('a running container whose payer may no longer spend is stopped: at its ala
   class Host { ctx: any; env: unknown; constructor(ctx: unknown, env: unknown) { this.ctx = ctx; this.env = env; } }
   class Clock extends Date { static now() { return now; } }
   const refusal = Object.assign(new Error('This tenant has reached its monthly spend limit of $1.00'), { status: 402, code: 'SPEND_LIMIT' });
-  let refuse: Error | undefined = refusal, stops = 0, bound: any;
-  const logged: any[] = [];
+  let refuse: Error | undefined = refusal, session: { tenant: string; agent: string } | undefined = { tenant: 't', agent: 'a' }, bound: any;
+  const logged: any[] = [], limitStops: number[] = [];
+  const container = { running: true, destroy: async () => { container.running = false; } };
   const Computer = runInNewContext(computerSource(), {
     DurableObject: Host, Date: Clock, Promise, JSON, Map, Number, AbortSignal,
     console: { error: (line: string) => logged.push(JSON.parse(line)) },
     COMPUTER_LIMITS: { idleSeconds: { default: 60 } }, meterBilling: () => ({}),
     ComputerMeter: class {
-      async openPayer() { return { tenant: 't', agent: 'a' }; }
-      async isOpen() { return true; }
+      async openPayer() { return session; }
+      async isOpen() { return !!session; }
       async admit() { if (refuse) throw refuse; }
-      async stopped() { stops++; }
+      async stopped() {}
       async alarm() {}
       async started() {}
     },
     computerSpec: () => ({ instance: 'standard-1' }),
-    ContainerProvider: class { constructor(...args: any[]) { bound = args[5]; } async sleepIfIdle() { return undefined; } async dropStale() {} },
+    // The provider's own stop (provider.ts stopForLimit: saves a sleeping computer's disk, else halts): seen here as a count.
+    ContainerProvider: class {
+      constructor(...args: any[]) { bound = args[5]; }
+      async stopForLimit() { limitStops.push(now); container.running = false; return { saved: false }; }
+      async sleepIfIdle() { return undefined; } async dropStale() {}
+    },
   });
-  const container = { running: true, destroy: async () => { container.running = false; } };
   const data = new Map<string, unknown>([['computer:permit', { tenant: 't', machine: 'native:a' }]]);
   let alarm: number | null = null;
   const computer = new Computer({ container, storage: {
@@ -164,24 +169,32 @@ test('a running container whose payer may no longer spend is stopped: at its ala
   } }, {});
   let released = 0;
   computer.releasePermit = async () => { released++; data.delete('computer:permit'); };
+  computer.network = () => ({ key: '', idleMs: 60_000 });
 
-  // At its alarm: refused, so the container is destroyed, charged up to now and its slot given back.
+  // At its alarm: refused, so the container is stopped by the provider (charged up to now) and its slot given back.
   await computer.alarm();
+  assert.equal(limitStops.length, 1);
   assert.equal(container.running, false);
-  assert.equal(stops >= 1, true, 'its session is charged up to now');
   assert.equal(released >= 1, true);
   assert.deepEqual(logged.filter(line => line.type === 'computer_limit_stop').map(line => [line.tenant, line.status, line.code]), [['t', 402, 'SPEND_LIMIT']]);
 
-  // An operation refused for spend: it fails, and the container it would have used stops at once.
+  // An operation refused for the session's own payer: it fails, and the container stops at once.
   container.running = true; logged.length = 0;
-  computer.network = () => ({ key: '', idleMs: 60_000 });
   computer.provider({ settings: {}, identity: { claims: { tenant: 't', agent: 'a' } } });
   await assert.rejects(bound.admit(), (error: unknown) => error === refusal);
-  assert.equal(container.running, false, 'stopped rather than idling out');
-  assert.equal(logged.filter(line => line.type === 'computer_limit_stop').length, 1);
+  assert.equal(limitStops.length, 2, 'stopped rather than idling out');
+
+  // A shared computer: the session bills the owner, and a child at its own spend limit fails only its operation.
+  container.running = true; logged.length = 0;
+  session = { tenant: 't', agent: 'owner' };
+  computer.provider({ settings: {}, shared: true, identity: { claims: { tenant: 't', agent: 'child' } } });
+  await assert.rejects(bound.admit(), (error: unknown) => error === refusal);
+  assert.equal(container.running, true, "the owner's container keeps running");
+  assert.equal(limitStops.length, 2);
+  assert.deepEqual(logged, []);
 
   // Anything else (the database unreadable) stops nothing: it is said, and the next alarm tries again.
-  container.running = true; logged.length = 0;
+  session = { tenant: 't', agent: 'a' };
   refuse = Object.assign(new Error('Query read timeout'), { status: 503 });
   await computer.alarm();
   assert.equal(container.running, true);
