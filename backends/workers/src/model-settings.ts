@@ -18,6 +18,7 @@ import { contentFilterFallbacks } from "./default-model-policy.ts";
 import { isContentFilterBlock, isModelUnavailable } from "./model-errors.ts";
 import { ModelReplayRetry, type ModelRetryEvent } from "./model-replay-retry.ts";
 import { missingModelKey } from "./selfhost-policy.ts";
+import { refusedForeignReasoning, withoutReplayedReasoning } from "../../../shared/gemini-reasoning.ts";
 import { FlexWait, asksFlex, flexFallbackDeltaUsd, flexWaitMs } from "./model-flex-wait.ts";
 
 /** `flexWaitSeconds`: how long a call asked on flex waits for flex capacity before the default tier takes it (model-flex-wait.ts). */
@@ -141,7 +142,7 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
         replayRetry.begin(prepared.config.requestId ?? String(context.messages.findLast(message => message.role === "user")?.timestamp ?? 0));
         // A call asked on flex that found no flex capacity: its wait (`flex`), and, once it moved to the default tier, from what.
         let flex: FlexWait | undefined, fellBack: { model: string; waitedMs: number; attempts: number } | undefined;
-        let retry = false;
+        let retry = false, reasoningDropped = false;
         do {
         retry = false;
         let stalled: Promise<void> | undefined;
@@ -161,6 +162,18 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
           if (event.type === "error" && event.reason !== "aborted" && prepared.model.provider === "openrouter" &&
               !prepared.options.endpointIdentity && refusedReasoningReplay(event.error.errorMessage) &&
               !options?.signal?.aborted && await replayRetry.retry(event.error, options?.signal)) {
+            retry = true;
+            continue;
+          }
+          // Gemini refusing reasoning another provider produced (gemini-reasoning.ts): the same member again, once, with the
+          // history's encrypted reasoning dropped, for this call and every member after it. Never a member failure.
+          if (event.type === "error" && event.reason !== "aborted" && prepared.model.provider === "openrouter" && !reasoningDropped &&
+              refusedForeignReasoning(event.error.errorMessage) && !options?.signal?.aborted) {
+            reasoningDropped = true;
+            context = withoutReplayedReasoning(context);
+            console.log(JSON.stringify({ type: "model_reasoning_replay_dropped", tenant: env.AGENT_TENANT ?? null, model: `${prepared.model.provider}/${prepared.model.id}`,
+              tier: (prepared.model as { serviceTier?: string }).serviceTier ?? null }));
+            prepared = await prepare(prepared.model, context, options);
             retry = true;
             continue;
           }

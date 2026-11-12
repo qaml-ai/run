@@ -143,12 +143,12 @@ test("flex wait: backs off within its window, then says it is spent", async t =>
 /** A provider that answers each call from `script` (an error message, or text), recording what it was asked. */
 type Step = string | { error: string };
 function scriptedProvider(script: Step[] | ((model: Model<Api>) => Step)) {
-  const calls: { model: string; tier?: string; payload: Record<string, unknown> }[] = [];
-  const stream = (model: Model<Api>, _context: unknown, options: any) => {
+  const calls: { model: string; tier?: string; payload: Record<string, unknown>; context: any }[] = [];
+  const stream = (model: Model<Api>, context: unknown, options: any) => {
     const output = createAssistantMessageEventStream();
     void (async () => {
       const payload = await options.onPayload?.({ model: model.id, input: [] }, model) as Record<string, unknown>;
-      calls.push({ model: model.id, tier: tier(model), payload });
+      calls.push({ model: model.id, tier: tier(model), payload, context });
       const step = typeof script === "function" ? script(model) : script.shift() ?? "unscripted";
       const base = { role: "assistant", api: model.api, provider: model.provider, model: model.id, usage: { ...usage(), input: 1_000_000, output: 1_000_000 }, timestamp: Date.now() } as AssistantMessage;
       if (step === "LENGTH") {
@@ -167,14 +167,14 @@ function scriptedProvider(script: Step[] | ((model: Model<Api>) => Step)) {
   return { calls, provider: { stream, streamSimple: stream } as any };
 }
 
-async function call(model: string, script: Step[] | ((model: Model<Api>) => Step), settings: Record<string, unknown> = {}, env: Record<string, string> = {}) {
+async function call(model: string, script: Step[] | ((model: Model<Api>) => Step), settings: Record<string, unknown> = {}, env: Record<string, string> = {}, history: unknown[] = []) {
   const { calls, provider } = scriptedProvider(script);
   const retries: ModelRetryEvent[] = [];
   const configured = withSettings(provider, {
     settings: async () => ({ model, ...settings }) as never, credentials: async () => ({ apiKey: "fixture" }), onRetryEvent: event => { retries.push(event); },
   }, env as never);
   const events = [];
-  for await (const event of configured.stream(resolveModel(model), { messages: [{ role: "user", content: "hi", timestamp: 1 }] } as never, {})) events.push(event);
+  for await (const event of configured.stream(resolveModel(model), { messages: [{ role: "user", content: "hi", timestamp: 1 }, ...history] } as never, {})) events.push(event);
   return { calls, retries, last: events.at(-1) as any };
 }
 
@@ -289,4 +289,31 @@ test("an answer cut off at its output limit is passed through as truncated (stop
   const cut = JSON.parse(logs.find(line => line.includes('"model_output_cut"'))!);
   assert.deepEqual([cut.model, cut.maxTokens, cut.answered], [`openrouter/${CARBON}`, 65_536, false]);
   assert.ok(!logs.some(line => line.includes("virtual_model_chain")));
+});
+
+test("Gemini refusing reasoning another provider produced: the same member again, once, without the history's encrypted reasoning; the chain goes on", async t => {
+  const logs: string[] = [];
+  t.mock.method(console, "log", (line: string) => { logs.push(line); });
+  const REFUSED = { error: "openrouter API error (400): Provider returned error: Gemini models require OpenRouter reasoning details to be preserved in each request." };
+  // A turn flex served: a signed thought and a tool call with its own signature, and its result.
+  const history = [
+    { role: "assistant", api: "openai-completions", provider: "openrouter", model: "google/gemini-4-carbon", stopReason: "toolUse", timestamp: 2, usage: usage(),
+      content: [{ type: "thinking", thinking: "", thinkingSignature: JSON.stringify([{ type: "reasoning.encrypted", data: "AI-STUDIO" }]) },
+        { type: "thinking", thinking: "look at a.go", thinkingSignature: "sig" },
+        { type: "toolCall", id: "c1", name: "read", arguments: { path: "a.go" }, thoughtSignature: "ts" }] },
+    { role: "toolResult", toolCallId: "c1", toolName: "read", content: [{ type: "text", text: "package main" }], isError: false, timestamp: 3 },
+  ];
+  // Flex down (the eval's stall), the default tier refuses the replay, then answers without it.
+  const run = await call("camelrun/strong", [{ error: "Model stream stalled: sent nothing for 45s mid-response (timed out)" }, REFUSED, "read it"], {}, { AGENT_FLEX_WAIT_SECONDS: "0" }, history);
+  assert.equal(run.last.type, "done", JSON.stringify(run.last));
+  assert.deepEqual(run.calls.map(entry => entry.tier), ["flex", "default", "default"]);
+  const assistant = (entry: (typeof run.calls)[number]) => entry.context.messages.find((message: any) => message.role === "assistant");
+  assert.equal(assistant(run.calls[1]!).content.length, 3, "the first default call carried the signed history");
+  const stripped = assistant(run.calls[2]!).content;
+  assert.deepEqual(stripped, [{ type: "thinking", thinking: "look at a.go" }, { type: "toolCall", id: "c1", name: "read", arguments: { path: "a.go" } }], "signatures gone, the thought's text and the call kept");
+  assert.ok(logs.some(line => line.includes('"model_reasoning_replay_dropped"')));
+  // Refused again after the drop: a failure of the member like any other, never a loop.
+  const twice = await call("camelrun/strong", [REFUSED, REFUSED, REFUSED, REFUSED], {}, { AGENT_FLEX_WAIT_SECONDS: "0" }, history);
+  assert.equal(twice.last.type, "error");
+  assert.ok(twice.calls.length <= 4, JSON.stringify(twice.calls.map(entry => entry.tier)));
 });
