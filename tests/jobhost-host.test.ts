@@ -227,3 +227,20 @@ test("the image's scripts parse, and its pins are well-formed", async () => {
   assert.match(packer, /http_tokens\s*=\s*"required"/);
   assert.match(packer, /ssh_interface\s*=\s*"session_manager"/);
 });
+
+test("a guest line past the cap ends the channel instead of growing the host's memory", async () => {
+  const { boundedLines } = await import("../jobhost/vm.ts");
+  const { PassThrough } = await import("node:stream");
+  const stream = new PassThrough();
+  const lines = boundedLines(stream, 1024);
+  stream.write('{"ok":true}\n{"a":');
+  assert.deepEqual(await lines.next(), { value: '{"ok":true}', done: false });
+  stream.write("x".repeat(600)); stream.write("x".repeat(600));
+  await assert.rejects(lines.next(), /over 1024 bytes/);
+  assert.equal(stream.destroyed, true);
+  // Lines split across chunks, and \r\n, come out whole.
+  const other = new PassThrough(), read = boundedLines(other, 1024);
+  other.write('{"a"'); other.write(':1}\r\n'); other.end();
+  assert.deepEqual(await read.next(), { value: '{"a":1}', done: false });
+  assert.deepEqual(await read.next(), { value: undefined, done: true });
+});

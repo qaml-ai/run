@@ -10,11 +10,10 @@ import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { connect, type Socket } from "node:net";
 import { open, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import { DEFAULT_EGRESS, removePolicy, writePolicy } from "./egress-proxy.ts";
 import { guestNetArgs, jobAddress, tapDown, tapUp, MAX_SLOTS } from "./network.ts";
-import { firecrackerConfig, type GuestChannel, type GuestReply, type Vm, type VmLauncher, type VmShape } from "./vm.ts";
+import { boundedLines, firecrackerConfig, type GuestChannel, type GuestReply, type Vm, type VmLauncher, type VmShape } from "./vm.ts";
 
 /** The guest agent's vsock port (the guest's init: socat VSOCK-LISTEN:5000 EXEC:camel-guest). */
 export const GUEST_PORT = 5000;
@@ -69,7 +68,7 @@ export class VsockChannel implements GuestChannel {
       socket.once("error", error => { clearTimeout(timer); reject(error); });
       socket.once("connect", () => {
         socket.write(`CONNECT ${port}\n`);
-        const lines = createInterface({ input: socket, crlfDelay: Infinity })[Symbol.asyncIterator]();
+        const lines = boundedLines(socket);
         lines.next().then(({ value, done }) => {
           clearTimeout(timer);
           if (done || !/^OK \d+$/.test(String(value).trim())) { socket.destroy(); reject(new Error(`vsock refused: ${String(value ?? "closed").slice(0, 80)}`)); return; }

@@ -73,8 +73,9 @@ export type ProxyOptions = {
   /** Open the upstream connection (tests); a TCP connection by default. */
   dial?: (address: string, port: number) => Socket;
   log?: (line: Record<string, unknown>) => void;
-  /** Connections at once per job, past which new ones are refused. */
+  /** Connections at once per job, and over all jobs, past which new ones are refused. */
   perJob?: number;
+  total?: number;
 };
 
 const amazonLookup = () => {
@@ -92,6 +93,7 @@ export function egressProxy(options: ProxyOptions): Server {
   const dial = options.dial ?? ((address, port) => connect({ host: address, port }));
   const log = options.log ?? (line => console.log(JSON.stringify(line)));
   const open = new Map<string, number>();
+  let opened = 0;
   const server = createServer((request, response) => {
     // Plain HTTP (not CONNECT) is never proxied.
     response.writeHead(403, { connection: "close" }).end();
@@ -115,14 +117,15 @@ export function egressProxy(options: ProxyOptions): Server {
       if (!allowed(host, policy.allow)) return refuse("not_allowed", target);
       const count = open.get(source) ?? 0;
       if (count >= (options.perJob ?? 256)) return refuse("too_many", target);
+      if (opened >= (options.total ?? 4096)) return refuse("host_busy", target);
       const addresses = await lookup(host.toLowerCase()).catch(() => [] as string[]);
       if (!addresses.length) return refuse("unresolved", target);
       // Every address public, or none is used: a name that also points inward is refused whole.
       if (!addresses.every(publicAddress)) return refuse("private_address", target);
-      open.set(source, count + 1);
+      open.set(source, count + 1); opened++;
       const upstream = dial(addresses[0]!, 443);
       let released = false;
-      const release = () => { if (released) return; released = true; const left = (open.get(source) ?? 1) - 1; if (left > 0) open.set(source, left); else open.delete(source); };
+      const release = () => { if (released) return; released = true; opened--; const left = (open.get(source) ?? 1) - 1; if (left > 0) open.set(source, left); else open.delete(source); };
       upstream.once("connect", () => {
         client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
         if (head.length) upstream.write(head);
