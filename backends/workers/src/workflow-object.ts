@@ -147,6 +147,11 @@ export function byKind(executors: Record<string, ChildEffects>): ChildEffects {
   };
 }
 
+/** The one alarm: the earlier of the runner's and another's (a notice's retry), or none. */
+export function alarmAt(runner: number | null, other: number | undefined): number | undefined {
+  return runner === null ? other : other === undefined ? runner : Math.min(runner, other);
+}
+
 /** What a workflow is started with beside its script, kept by its object (runner.ts has the script and budget). */
 export interface WorkflowSettings {
   name?: string;
@@ -223,16 +228,20 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
       sql: ctx.storage.sql, workflowId: name ?? "",
       owner: () => self.settings().owner, name: () => self.settings().name, bucket: () => self.runner.identity().bucket,
       send: (owner, request, notice) => (env as unknown as Env).AGENTS.getByName(owner).receiveAgentMessage(request, notice),
-      later: (afterMs, task) => ctx.waitUntil(new Promise(resolve => setTimeout(resolve, afterMs)).then(task).catch(error => console.error(JSON.stringify({ type: "workflow_notice_retry_failed", workflow: name, error: String(error) })))),
+      arm: async at => {
+        const current = await ctx.storage.getAlarm();
+        if (current === null || current > at || current <= Date.now()) await ctx.storage.setAlarm(Math.max(at, Date.now() + 1));
+      },
     });
     this.runner = new WorkflowRunner(
       { sql: ctx.storage.sql, transactionSync: fn => ctx.storage.transactionSync(fn) },
       sandbox, this.executor,
       {
-        // The runner's alarm, or the forks' cleanup retry when it comes first: one alarm for both.
+        // One alarm for the runner, a notice's retry and the forks' cleanup retry, whichever is due first: a notice whose
+        // delivery failed, or a fork delete that failed, is retried even once the workflow has ended.
         alarm: { set: async at => {
-          const retry = await this.forks.retryAt();
-          const next = at === null ? retry : retry === undefined ? at : Math.min(at, retry);
+          const notice = this.notices.retryAt(), fork = await this.forks.retryAt();
+          const next = alarmAt(at, notice === undefined ? fork : fork === undefined ? notice : Math.min(notice, fork));
           await (next === undefined ? ctx.storage.deleteAlarm() : ctx.storage.setAlarm(next));
         } },
         capacity: name ? capacitySeam(env, name, () => this.runner.identity().tenant) : undefined,
@@ -309,7 +318,8 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
   /** After an eviction or a deploy: start what was committed but not started, and run due steps. */
   async wake() { await this.runner.wake(); await this.ended(); this.told(undefined); }
 
-  override async alarm() { await this.runner.alarm(); await this.ended(); this.told(undefined); }
+  // Runner, then fork cleanup, then what the owner hears, then the notices that are due.
+  override async alarm() { await this.runner.alarm(); await this.ended(); this.told(undefined); await this.notices.flush(); }
 
   /** Once the workflow has ended: delete its children's forks, and keep the alarm for a retry if any delete failed. */
   private async ended() {
@@ -320,7 +330,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
     if (current === null || current > retry || current <= Date.now()) await this.ctx.storage.setAlarm(retry);
   }
   /** TEST_MODE: what the alarm does, now. */
-  async fireAlarm() { await this.runner.alarm(); await this.ended(); this.told(undefined); }
+  async fireAlarm() { await this.runner.alarm(); await this.ended(); this.told(undefined); await this.notices.flush(); }
 }
 
 /**
