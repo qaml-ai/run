@@ -13,7 +13,10 @@ export async function score({ tree, input, judge, sandbox }: ScoreContext): Prom
   if (sandbox !== "docker") throw new Error("m-toml-go's judge runs only in its docker image (Go and toml-test)");
   const check = integrity(input, tree, { tests: [], source: ["go/**/*.go"], protected: ["src/**/*.ts"] });
   const goFiles = walk(tree).filter(file => file.startsWith("go/") && file.endsWith(".go"));
-  const imports = new Set(goFiles.flatMap(file => [...(read(tree, file) ?? "").matchAll(/^\s*(?:import\s+)?(?:\w+\s+)?"([^"]+)"\s*$/gm)].map(match => match[1]!)));
+  // Import paths only: single `import "x"` lines and the lines of `import ( … )` blocks, never string literals elsewhere.
+  const importsOf = (text: string) => [...text.matchAll(/^import\s+(?:[\w.]+\s+)?"([^"]+)"|^import\s*\(([\s\S]*?)^\)/gm)]
+    .flatMap(match => match[1] ? [match[1]] : [...match[2]!.matchAll(/^\s*(?:[\w.]+\s+)?"([^"]+)"/gm)].map(line => line[1]!));
+  const imports = new Set(goFiles.flatMap(file => importsOf(read(tree, file) ?? "")));
   const thirdParty = [...imports].filter(path => /^[^/]*\./.test(path));
   const requires = /^\s*require\b/m.test(read(tree, "go/go.mod") ?? "");
   const result = execIn("docker", tree, ["sh", "/judge/run.sh"], { mounts: { "/judge": judge }, image: judgeImage(join(judge, "..", "judge")), timeoutMs: 600_000 });

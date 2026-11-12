@@ -122,12 +122,13 @@ export class Runtime {
       groups.push(...page.groups);
       cursor = page.next;
     } while (cursor);
-    const cost: CostBreakdown = { totalUsd: 0, byType: {}, byModel: {}, byClass: {}, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, cacheShare: 0, responses: 0 };
+    const cost: CostBreakdown = { totalUsd: 0, byType: {}, outputByType: {}, byModel: {}, byClass: {}, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, cacheShare: 0, responses: 0 };
     for (const group of groups) {
       const usd = Number(group.cost ?? 0), model = String(group.model ?? "unknown");
       const type: AgentType = group.definition ? types[String(group.definition)] ?? "other" : "orchestrator";
       cost.totalUsd += usd;
       cost.byType[type] = (cost.byType[type] ?? 0) + usd;
+      cost.outputByType[type] = (cost.outputByType[type] ?? 0) + Number(group.output ?? 0);
       cost.byModel[model] = (cost.byModel[model] ?? 0) + usd;
       cost.byClass[classOf(model)] = (cost.byClass[classOf(model)] ?? 0) + usd;
       for (const key of ["input", "output", "cacheRead", "cacheWrite"] as const) cost.tokens[key] += Number(group[key] ?? 0);
@@ -194,7 +195,7 @@ export class Runtime {
     const byStatus: Record<string, number> = {};
     for (const item of items) byStatus[item.status] = (byStatus[item.status] ?? 0) + 1;
     const agents = items.filter(item => item.kind === "agent");
-    const cost: CostBreakdown = { totalUsd: Number(workflow.spent?.usd ?? 0), byType: {}, byModel: {}, byClass: {}, responses: 0,
+    const cost: CostBreakdown = { totalUsd: Number(workflow.spent?.usd ?? 0), byType: {}, outputByType: {}, byModel: {}, byClass: {}, responses: 0,
       tokens: { input: Number(workflow.spent?.inputTokens ?? 0), output: Number(workflow.spent?.outputTokens ?? 0), cacheRead: Number(workflow.spent?.cachedInputTokens ?? 0), cacheWrite: 0 }, cacheShare: 0 };
     for (const item of items) {
       // An item's type: its own field once PR 8 adds one, else the definition the effect named.
@@ -236,10 +237,10 @@ function jobTools(runtime: Runtime, task: Task, volumeId: string, log: (entry: u
   return {
     go_build: tool({ description: "Build /workspace/go as it is now (go build ./... then go vet ./...) in a fresh container, and answer the compiler's output. Takes up to a minute.",
       input: schema.Object({}, { additionalProperties: false }),
-      execute: () => run(`${go}; go build ./... 2>&1 | head -c 8000; echo "go build exit: $?"; go vet ./... 2>&1 | head -c 4000`) }),
+      execute: () => run(`${go}; go build ./... >/tmp/build.log 2>&1; code=$?; head -c 8000 /tmp/build.log; echo "go build exit: $code"; go vet ./... >/tmp/vet.log 2>&1; code=$?; head -c 4000 /tmp/vet.log; echo "go vet exit: $code"`) }),
     go_decode: tool({ description: "Build cmd/toml-decoder from /workspace/go and run it on the TOML given, answering its stdout, stderr and exit code: for checking the port on examples you write.",
       input: schema.Object({ toml: schema.String({ description: "TOML to decode" }) }, { additionalProperties: false }),
-      execute: ({ toml }) => run(`${go}; go build -o /tmp/decoder ./cmd/toml-decoder 2>&1 | head -c 6000 || exit 1; printf '%s' "$TOML_INPUT" | /tmp/decoder; echo "exit: $?"`, { TOML_INPUT: toml }) }),
+      execute: ({ toml }) => run(`${go}; if ! go build -o /tmp/decoder ./cmd/toml-decoder >/tmp/build.log 2>&1; then head -c 6000 /tmp/build.log; echo "go build failed"; exit 0; fi; printf '%s' "$TOML_INPUT" | /tmp/decoder; echo "decoder exit: $?"`, { TOML_INPUT: toml }) }),
   };
 }
 
@@ -349,7 +350,7 @@ export async function orchestrate(runtime: Runtime, task: Task, options: RunOpti
   const own = await runtime.usage(agent.id, types.ids);
   const cost = workflowStats ? mergeCost(own, workflowStats.cost) : own;
   return {
-    ...base, status: runStatus, error: runError, reply, wallMs: Date.now() - started, volumeId, cleanup,
+    ...base, agentId: agent.id, status: runStatus, error: runError, reply, wallMs: Date.now() - started, volumeId, cleanup,
     cost, effects: workflowStats ? { ...workflowStats.effects, children: workflowStats.effects.children + children.children, grandchildren: children.grandchildren, jobs: (workflowStats.effects.jobs ?? 0) + jobs.count } : { ...children, ...(jobs.count ? { jobs: jobs.count } : {}) },
     conflicts: children.conflicts + (workflowStats?.conflicts ?? 0), retries: workflowStats ? workflowStats.retries : null,
     choice: { delegated: children.children > 0 || delegateCalls > 0, delegateCalls: Math.max(delegateCalls, children.children), workflowStarted: workflowIds.length > 0 || !!toolCalls.workflow_start, workflowIds, toolCalls },
@@ -361,5 +362,5 @@ function mergeCost(a: CostBreakdown, b: CostBreakdown): CostBreakdown {
   const add = <K extends string>(x: Partial<Record<K, number>>, y: Partial<Record<K, number>>) => { const out = { ...x }; for (const [key, value] of Object.entries(y) as [K, number][]) out[key] = (out[key] ?? 0) + value; return out; };
   const tokens = { input: a.tokens.input + b.tokens.input, output: a.tokens.output + b.tokens.output, cacheRead: a.tokens.cacheRead + b.tokens.cacheRead, cacheWrite: a.tokens.cacheWrite + b.tokens.cacheWrite };
   const inputs = tokens.input + tokens.cacheRead + tokens.cacheWrite;
-  return { totalUsd: a.totalUsd + b.totalUsd, byType: add(a.byType, b.byType), byModel: add(a.byModel, b.byModel) as Record<string, number>, byClass: add(a.byClass, b.byClass), tokens, cacheShare: inputs ? +(tokens.cacheRead / inputs).toFixed(4) : 0, responses: a.responses + b.responses };
+  return { totalUsd: a.totalUsd + b.totalUsd, byType: add(a.byType, b.byType), outputByType: add(a.outputByType, b.outputByType), byModel: add(a.byModel, b.byModel) as Record<string, number>, byClass: add(a.byClass, b.byClass), tokens, cacheShare: inputs ? +(tokens.cacheRead / inputs).toFixed(4) : 0, responses: a.responses + b.responses };
 }

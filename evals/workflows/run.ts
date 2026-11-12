@@ -6,8 +6,9 @@
 //   … run.ts score <task> <dir> [--sandbox host]                  score a tree you have
 //   AGENT_URL=https://run-pilot.camelai.dev AGENT_RUNTIME_TOKEN=… \
 //   … run.ts run [--tasks s-ts-port,s-esm-refactor] [--modes dry] [--workers fast,strong] [--runs 1] [--label name] [--max-usd 5]
-//               [--orchestrator camelrun/strong] [--split free|required] [--workflow-api auto|public|test-hook] [--allow-host dev.example] [--keep]
+//               [--orchestrator camelrun/strong] [--classes critic=camelrun/fast,lead=camelrun/fast] [--budget-usd n] [--split free|required] [--workflow-api auto|public|test-hook] [--allow-host dev.example] [--keep]
 //   … run.ts summary .agent-runtime/eval/workflows-<label>.jsonl [more.jsonl]
+//   … run.ts rescore .agent-runtime/eval/workflows-<label>.jsonl   score saved outputs again after a judge fix
 //   AGENT_URL=… AGENT_RUNTIME_TOKEN=… \
 //   … run.ts choice [--modes dry,workflow] [--guidance none,evals/workflows/choice/guidance-design-draft.md] [--prompts esm-400,typo] [--runs 1] [--label name] [--max-usd 3]
 //               scores whether the agent splits work when it should (evals/workflows/choice/prompts.json); stops each run at its first decision
@@ -15,7 +16,7 @@
 // `run` appends one JSON line per run to .agent-runtime/eval/workflows-<label>.jsonl, writes
 // .agent-runtime/eval/workflows-<label>/<task>-<mode>-<workers>-<n>/ (result.json, events.jsonl, output/), and the
 // markdown summary to .agent-runtime/eval/workflows-<label>.md. Model calls cost money: not part of CI.
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { choiceSummary, choose, loadPrompts } from "./lib/choice.ts";
 import { CLASS_MODELS, guardUrl, orchestrate, Runtime } from "./lib/runtime.ts";
@@ -60,6 +61,25 @@ async function main() {
     return;
   }
   if (command === "choice") return choiceCommand();
+  if (command === "rescore") {
+    // After a judge fix: score each run's saved output again and rewrite its line (and result.json).
+    const box = sandbox();
+    for (const path of argv.slice(1).filter(item => !item.startsWith("--"))) {
+      const results = readResults([path]);
+      for (const result of results) {
+        const output = join(result.artifacts, "output");
+        if (!existsSync(output)) continue;
+        const before = result.score?.value;
+        result.score = await scoreTree(findTask(result.task), output, box);
+        result.integrity = result.score.integrity;
+        result.rescoredAt = new Date().toISOString();
+        writeFileSync(join(result.artifacts, "result.json"), JSON.stringify(result, null, 2));
+        console.log(`${result.task} ${result.mode} ${result.workerClass} #${result.run}: ${before ?? "—"} -> ${result.score.value}`);
+      }
+      writeFileSync(path, results.map(result => JSON.stringify(result)).join("\n") + "\n");
+    }
+    return;
+  }
   if (command === "summary") { console.log(summary(readResults(argv.slice(1).filter(path => !path.startsWith("--"))))); return; }
   if (command !== "run") throw new Error("Commands: list, check, score, run, summary (see the header of evals/workflows/run.ts)");
 
@@ -81,12 +101,15 @@ async function main() {
   let spent = 0;
   // One run at a time: comparisons should not share a tenant's busy-agent slots or a provider's rate limit.
   for (const task of tasks) for (const mode of modes) for (const workerClass of workers) for (let run = 1; run <= runs; run++) {
-    if (spent + task.budget.usd > maxUsd) { console.log(`stopping: ${task.id} could take spend from $${spent.toFixed(2)} past --max-usd ${maxUsd}`); break; }
-    const classes: Classes = { orchestrator: arg("orchestrator") ?? CLASS_MODELS.strong, worker: CLASS_MODELS[workerClass], critic: CLASS_MODELS.strong, lead: CLASS_MODELS.strong };
+    const budgetUsd = Number(arg("budget-usd") ?? task.budget.usd);
+    if (spent + budgetUsd > maxUsd) { console.log(`stopping: ${task.id} could take spend from $${spent.toFixed(2)} past --max-usd ${maxUsd}`); break; }
+    // --classes critic=camelrun/fast,lead=… overrides a role's model (e.g. the all-fast arm of the class eval).
+    const overrides = Object.fromEntries(list("classes", "").map(pair => pair.split("=") as [string, string]));
+    const classes: Classes = { orchestrator: arg("orchestrator") ?? CLASS_MODELS.strong, worker: CLASS_MODELS[workerClass], critic: CLASS_MODELS.strong, lead: CLASS_MODELS.strong, ...overrides };
     const dir = join(out, `${task.id}-${mode}-${workerClass}-${run}`);
     let result: RunResult;
     try {
-      const ran = await orchestrate(runtime, task, { label, mode, workerClass, classes, run, dir, budgetUsd: task.budget.usd, split, workflowApi: (arg("workflow-api") ?? "auto") as "auto" | "public" | "test-hook" });
+      const ran = await orchestrate(runtime, task, { label, mode, workerClass, classes, run, dir, budgetUsd, split, workflowApi: (arg("workflow-api") ?? "auto") as "auto" | "public" | "test-hook" });
       const { cleanup, volumeId, ...rest } = ran;
       let score = null;
       if (volumeId && rest.status !== "unavailable") {
@@ -97,7 +120,7 @@ async function main() {
       result = { ...rest, score, integrity: score?.integrity ?? null };
     } catch (error) {
       result = { schema: 1, label, split, task: task.id, taskVersion: task.version, tier: task.tier, mode, workerClass, classes, run, runtime: new URL(url).host, startedAt: new Date().toISOString(), wallMs: 0,
-        status: "error", error: (error as Error).stack?.slice(0, 2000) ?? String(error), score: null, integrity: null, cost: null, budgetUsd: task.budget.usd,
+        status: "error", error: (error as Error).stack?.slice(0, 2000) ?? String(error), score: null, integrity: null, cost: null, budgetUsd,
         effects: { children: 0, grandchildren: 0, failedChildren: 0, byStatus: {} }, conflicts: 0, retries: null, choice: { delegated: false, delegateCalls: 0, workflowStarted: false, workflowIds: [], toolCalls: {} }, artifacts: dir };
     }
     spent += result.cost?.totalUsd ?? 0;
