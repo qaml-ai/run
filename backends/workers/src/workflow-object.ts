@@ -302,6 +302,9 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
     if (!own || tenant !== own) { console.error(JSON.stringify({ type: "workflow_capacity_grant_ignored", workflow: this.ctx.id.name, tenant })); return; }
     await this.runner.capacityGranted(grants.filter(grant => (grant.kind === "child" || grant.kind === "job") && grant.workflow === this.ctx.id.name)
       .map(grant => ({ key: grant.key, lease: grant.id, kind: grant.kind as "child" | "job" })));
+    // A grant starts its effect, which may end the workflow (a start that fails at once).
+    await this.ended();
+    this.told(undefined);
   }
   /** After an eviction or a deploy: start what was committed but not started, and run due steps. */
   async wake() { await this.runner.wake(); await this.ended(); this.told(undefined); }
