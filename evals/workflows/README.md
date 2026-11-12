@@ -186,6 +186,11 @@ know (`--allow-host` for another dev runtime). Keys come from the environment on
   It stores `OPENROUTER_API_KEY` on the local tenant through the API. The token is the local fixture operator token,
   not a credential. `--checkout <dir>` runs another checkout's Workers app, e.g. an unmerged branch.
 
+  Run it from a checkout nobody edits while evals run (`git worktree add --detach ../evals-rt origin/main`, then
+  `--checkout ../evals-rt`): `wrangler dev` reloads when its checkout changes, a reload resets every Durable Object,
+  and the owner's turn ends `interrupted` (it cost one s-esm-refactor run). With `--runtime-log`, each run keeps its
+  slice of the runtime's output as `runtime.log` beside `events.jsonl`.
+
 Judges run model-written code, so by default they run in a throwaway `node:22.21.1-bookworm-slim` container with no
 network, 4 CPUs and 4 GiB (`--sandbox host` only for trees you trust; the CI self-test uses it on fixtures).
 
