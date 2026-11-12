@@ -43,8 +43,12 @@ export function sessionCost(instance: InstanceType, seconds: number, cpuSeconds:
   return seconds * holdRate(instance) + (cpuSeconds + unmeasuredSeconds * vcpu) * CONTAINER_RATES.vcpuSecond;
 }
 
-/** Who pays for a computer's time: the agent (and its tenant) whose tool or session uses it. */
-export type ComputerPayer = { tenant: string; agent: string };
+/**
+ * Who pays for a computer's time: the agent (and its tenant) whose tool or session uses it. With `kind: "workflow"`,
+ * `agent` is a workflow's id: a job of a workflow no agent owns (an API key started it), paid by its tenant, its usage
+ * recorded under the workflow (meter-billing.ts).
+ */
+export type ComputerPayer = { tenant: string; agent: string; kind?: "workflow" };
 /** One container's run, from its start until it stops or idles out. */
 /** `idleMs` is the inactivity timeout this container was started with (a definition's `computer.idleSeconds`). */
 /**
@@ -202,7 +206,7 @@ export class ComputerMeter {
     const measuredSeconds = (measuredUntil - open.startedAt) / 1000;
     const cpuSeconds = Math.min(INSTANCE_RESOURCES[open.instance].vcpu * measuredSeconds,
       Math.max(0, (open.cpuUsec ?? 0) - (open.cpuBaseUsec ?? 0)) / 1e6);
-    const charge: ComputerCharge = { id: open.id, tenant: open.tenant, agent: open.agent, instance: open.instance,
+    const charge: ComputerCharge = { id: open.id, tenant: open.tenant, agent: open.agent, ...(open.kind ? { kind: open.kind } : {}), instance: open.instance,
       startedAt: open.startedAt, endedAt, seconds, cpuSeconds, unmeasuredSeconds,
       costUsd: sessionCost(open.instance, seconds, cpuSeconds, unmeasuredSeconds) };
     // A session that ended as it started costs nothing and records nothing.

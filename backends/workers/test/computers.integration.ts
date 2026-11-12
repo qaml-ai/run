@@ -1074,15 +1074,81 @@ test("workflows: children edit forks of a repo volume with their file tools, com
   }
   assert.equal(await call(`/v1/volumes/${repo.id}/files/src/a.txt`), "one", "the base keeps its content");
 
-  // A workflow an API key started has no owner agent: its job() is refused as a value, not a pause.
+  // A workflow an API key started has no owner agent: its job() runs too, paid by its tenant (the next test has the money).
   const keyStarted = await call("/v1/workflows", { script: `return await job({ key: "j", command: "true", timeoutSeconds: 30 });`, budget: { usd: 1 } });
   let keyDone: Record<string, any> = keyStarted;
-  for (let i = 0; i < 100 && keyDone.status !== "completed"; i++) { await new Promise(resolve => setTimeout(resolve, 200)); keyDone = await call(`/v1/workflows/${keyStarted.id}`); }
+  for (let i = 0; i < 600 && !["completed", "failed", "paused"].includes(keyDone.status); i++) { await new Promise(resolve => setTimeout(resolve, 250)); keyDone = await call(`/v1/workflows/${keyStarted.id}`); }
   assert.equal(keyDone.status, "completed", JSON.stringify(keyDone));
-  assert.equal(keyDone.result, null);
-  const refusedItem = ((await call(`/v1/workflows/${keyStarted.id}/items`)).items as { key: string; status: string; reason?: string }[]).find(item => item.key === "j")!;
-  assert.equal(refusedItem.status, "failed");
-  assert.match(refusedItem.reason ?? "", /^job_payer_unavailable: /);
+  assert.equal(keyDone.result?.exitCode, 0, JSON.stringify(keyDone.result));
+});
+
+test("workflows: an API-started workflow's job is paid by its tenant under the workflow, once across a rerun; no credit pauses it", {
+  timeout: 600_000, skip: requireDocker ? false : unavailable,
+}, async (t) => {
+  assert.equal(unavailable, undefined, unavailable);
+  const egressImage = await egressImageWithoutSocketMatch(t);
+  if (egressImage) {
+    process.env.MINIFLARE_CONTAINER_EGRESS_IMAGE = egressImage;
+    t.after(() => { delete process.env.MINIFLARE_CONTAINER_EGRESS_IMAGE; });
+  }
+  const tenant = "camelrun-proto-local", poor = "camelrun-proto-poor";
+  const tokens = { [tenant]: "local-integration-only-token-with-at-least-32-characters", [poor]: "art_poor-tenant-fixture-token-with-32-characters" };
+  const fixture = await startFixture({ config: "wrangler.computers.test.jsonc", entrypoint: join(process.cwd(), "test/jobs-entry.ts"),
+    tenants: [{ id: tenant, token: tokens[tenant] }, { id: poor, token: tokens[poor], seedCredit: false }], vars: { AGENT_WORKFLOW_TENANTS: "*" } });
+  t.after(async () => {
+    const names = new Set([...fixture.worker.logs().matchAll(/containerName = (workerd-camelrun-proto-workers-computers-local-ContainerComputer-[a-f0-9]{64})/g)].map(match => match[1]));
+    await fixture.stop();
+    for (const name of names) for (const target of [name, `${name}-proxy`]) await run("docker", ["rm", "-f", target]).catch(() => {});
+  });
+  const call = async (path: string, body?: unknown, as = tenant) => {
+    const response = await fetch(fixture.url + path, {
+      method: body === undefined ? "GET" : "POST",
+      headers: { authorization: `Bearer ${tokens[as]}`, "content-type": "application/json" },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(300_000),
+    });
+    const text = await response.text();
+    assert.ok(response.ok, `${path}: ${response.status} ${text}\n${fixture.worker.logs().slice(-4000)}`);
+    return JSON.parse(text);
+  };
+  const until = async <T>(read: () => Promise<T | false | undefined>, what: string) => {
+    for (let i = 0; i < 600; i++) { const value = await read(); if (value) return value; await new Promise(resolve => setTimeout(resolve, 250)); }
+    throw new Error(`Timed out: ${what}\n${fixture.worker.logs().slice(-4000)}`);
+  };
+  const script = `return await job({ key: "check", command: "echo paid > $JOB_OUT/o.txt; echo ran", timeoutSeconds: 60, outputs: ["o.txt"] });`;
+
+  // Started with an API key: no owner agent. Its tenant pays, and the workflow completes.
+  const started = await call("/v1/workflows", { script, budget: { usd: 1 } });
+  assert.equal(started.owner, undefined, "an API start has no owner agent");
+  const done = await until(async () => { const value = await call(`/v1/workflows/${started.id}`); return ["completed", "failed", "paused"].includes(value.status) && value; }, "the API-started workflow");
+  assert.equal(done.status, "completed", JSON.stringify(done));
+  assert.equal(done.result.exitCode, 0, JSON.stringify(done.result));
+  assert.ok(done.spent.usd > 0, `the job's container time counts in the workflow's ledger: ${JSON.stringify(done.spent)}`);
+  // One receipt, under the workflow; the usage rows and details carry it with the workflow as agent and root.
+  const receipts = async () => (await fixture.db.query("select entry_id, message from pi_usage_receipts where tenant=$1 and session_id=$2 and message->'_workersAuxiliary'->>'kind'='computer'", [tenant, started.id])).rows;
+  await until(async () => (await receipts()).length > 0, "the job's computer receipt");
+  const first = await receipts();
+  assert.equal(first.length, 1, JSON.stringify(first));
+  const usage = async () => Number((await fixture.db.query("select coalesce(sum(cost),0) as cost from usage where tenant=$1 and model like 'computer:%'", [tenant])).rows[0].cost);
+  const charged = await usage();
+  assert.ok(charged > 0, "the tenant's usage counts the job's container time");
+  const details = (await fixture.db.query("select agent, root_agent, end_user from usage_details where tenant=$1 and model like 'computer:%'", [tenant])).rows;
+  assert.deepEqual(details, [{ agent: started.id, root_agent: started.id, end_user: null }], "usage shows the workflow, and no end user");
+
+  // The same job delivered again (a restart runs it again under its key:attempt): no second charge.
+  const id = `wf-${createHash("sha256").update(`${started.id}\ncheck\n1`).digest("hex").slice(0, 40)}`;
+  const again = await call("/__test/jobs", { id, command: "echo ran", timeoutSeconds: 60, payer: { tenant, agent: started.id, kind: "workflow" } });
+  assert.equal(again.ok, true, JSON.stringify(again));
+  await new Promise(resolve => setTimeout(resolve, 2_000));
+  assert.deepEqual((await receipts()).map(row => row.entry_id), first.map(row => row.entry_id), "the rerun's charge is the same receipt");
+  assert.equal(await usage(), charged, "and the usage is counted once");
+
+  // A tenant with no credit: the job is refused before any compute, and the workflow pauses for its payer.
+  const broke = await call("/v1/workflows", { script, budget: { usd: 1 } }, poor);
+  const paused = await until(async () => { const value = await call(`/v1/workflows/${broke.id}`, undefined, poor); return value.status !== "running" && value; }, "the refused workflow");
+  assert.equal(paused.status, "paused", JSON.stringify(paused));
+  assert.equal(paused.pauseReason, "payer_exhausted", JSON.stringify(paused));
+  assert.equal((await fixture.db.query("select 1 from pi_usage_receipts where tenant=$1", [poor])).rowCount, 0, "nothing was charged");
+  assert.equal((await fixture.db.query("select 1 from computer_slots where tenant=$1 and expires_at>$2", [poor, Date.now()])).rowCount, 0, "and no computer slot is held");
 });
 
 test("an agent's computer time is admitted by its tenant's monthly spend limit, as a fresh run is: a capped tenant's job is refused before it starts", {

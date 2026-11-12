@@ -201,7 +201,8 @@ export const WORKFLOW_PRELUDE = `(function (bridge) {
     // the recommendation when onExpire is "recommended", or pauses the workflow.
     gate(opts) {
       options(opts, "gate");
-      if (!opts || typeof opts.title !== "string" || opts.title === "") throw new TypeErrorCtor("gate({ title }) needs a title");
+      if (opts && opts.title === undefined && typeof opts.question === "string") { opts = { ...opts, title: opts.question }; delete opts.question; }
+      if (!opts || typeof opts.title !== "string" || opts.title === "") throw new TypeErrorCtor("gate({ title }) needs a title (or a question)");
       const args = {};
       for (const name of keysOf(opts)) if (name !== "key" && name !== "expiresInSeconds" && name !== "onExpire") args[name] = opts[name];
       const extra = { expiresInSeconds: opts.expiresInSeconds === undefined ? 604800 : opts.expiresInSeconds, onExpire: opts.onExpire === "recommended" ? "recommended" : "pause" };

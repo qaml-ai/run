@@ -46,7 +46,7 @@ async function entryId(call: AuxiliaryCall) {
  * SAME transaction as the tool's charge and usage writes, and only write those
  * when true is returned. Already-accounted receipts never enter the model outbox.
  */
-export async function recordAuxiliaryUsage(sql: Sql, call: AuxiliaryCall, cost: AuxiliaryCost): Promise<boolean> {
+export async function recordAuxiliaryUsage(sql: Sql, call: AuxiliaryCall, cost: AuxiliaryCost, owner: "agent" | "workflow" = "agent"): Promise<boolean> {
   if (!call.callId || call.callId.length > 500 || !Number.isSafeInteger(call.startedAt) || call.startedAt < 0 ||
       !Number.isFinite(cost.costUsd) || cost.costUsd < 0) throw new HttpError(400, "Invalid auxiliary usage receipt");
   const message = { _workersAuxiliary: {
@@ -54,9 +54,11 @@ export async function recordAuxiliaryUsage(sql: Sql, call: AuxiliaryCall, cost: 
     costUsd: cost.costUsd, provider: cost.provider ?? null, model: cost.model ?? null,
   } };
   const id = await entryId(call);
+  // An agent's receipt needs the agent; a workflow's (owner "workflow": `agent` is its id, which no agents row has) is
+  // keyed the same way, so a charge made again under the same call finds it.
   const inserted = await sql.query(`insert into pi_usage_receipts(session_id,entry_id,tenant,message,accounted)
-    select $1,$2,$3,$4,true where exists(select 1 from agents where id=$1 and tenant=$3)
-    on conflict(session_id,entry_id) do nothing returning entry_id`, [call.agent, id, call.tenant, JSON.stringify(message)]);
+    select $1,$2,$3,$4,true where $5 or exists(select 1 from agents where id=$1 and tenant=$3)
+    on conflict(session_id,entry_id) do nothing returning entry_id`, [call.agent, id, call.tenant, JSON.stringify(message), owner === "workflow"]);
   if (inserted.rowCount) return true;
   const previous = (await sql.query("select tenant,message from pi_usage_receipts where session_id=$1 and entry_id=$2", [call.agent, id])).rows[0];
   if (!previous) throw new HttpError(404, "Agent not found", "NOT_FOUND");

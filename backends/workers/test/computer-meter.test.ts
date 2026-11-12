@@ -297,3 +297,23 @@ test("a named session (a job's) is charged under its name, its checkpointed part
   assert.equal(h.charges.length, 3);
   assert.ok(!h.charges[2]!.id.startsWith("job:"));
 });
+
+test("a workflow payer's job is charged as one, under the workflow, once per job however often it is run again", async () => {
+  const h = harness();
+  const workflow = { tenant: "t1", agent: "wf_api", kind: "workflow" as const };
+  await h.meter.started(workflow, "standard-1", 60_000, 0, "job:wf-1");
+  h.advance(10_000);
+  await h.meter.stopped();
+  // The job is run again (a redelivery): the same named session, the same charge id.
+  await h.meter.started(workflow, "standard-1", 60_000, 0, "job:wf-1");
+  h.advance(10_000);
+  await h.meter.stopped();
+  assert.deepEqual(h.charges.map(charge => [charge.id, charge.agent, charge.kind]), [["job:wf-1", "wf_api", "workflow"]], "the payer kind travels with the charge; a rerun records nothing new");
+  // A run across a checkpoint keeps the kind on each part.
+  await h.meter.started(workflow, "standard-1", 60_000, 0, "job:wf-2");
+  h.advance(CHECKPOINT_MS);
+  await h.meter.used();
+  h.advance(1_000);
+  await h.meter.stopped();
+  assert.deepEqual(h.charges.slice(1).map(charge => [charge.id, charge.kind]), [["job:wf-2", "workflow"], ["job:wf-2#2", "workflow"]]);
+});
