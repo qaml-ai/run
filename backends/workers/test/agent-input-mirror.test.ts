@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readInputMirrors, restageInputMirrors } from '../src/agent-input-mirror.ts';
+import { readInputMirrors, repairInputMirrors, restageInputMirrors } from '../src/agent-input-mirror.ts';
 import type { AgentRuntime } from '../src/agent-runtime.ts';
 import type { HumanInput } from '../src/human.ts';
 
@@ -40,4 +40,23 @@ test('recovery leaves an ownerless Pi input unbound and does not report it missi
   assert.deepEqual(await restageInputMirrors(runtime, ['input']), []);
   assert.equal(commits, 1, 'the owner and audience are frozen only once');
   assert.equal((data.get('input-mirror-pending:input') as typeof row).requestId, 'original-run');
+});
+
+test("startup's restage flushes after its rows commit: an idle agent's re-staged inputs reach Postgres", async () => {
+  const doc = { requests: { input: { question: 'Which region?', requestId: 'run', createdAt: 1, state: 'pending', policyBound: true } as HumanInput } };
+  const data = new Map<string, unknown>(), order: string[] = [];
+  const storage = {
+    get: async (key: string) => data.get(key),
+    put: async (key: string, value: unknown) => { data.set(key, value); },
+    transaction: async (work: (tx: unknown) => Promise<void>) => { await new Promise(resolve => setTimeout(resolve, 5)); await work(storage); order.push('restaged'); },
+  };
+  const runtime = {
+    config: async () => ({ id: 'agent', tenantId: 'tenant', expiresAt: null, config: {} }),
+    ctx: { storage },
+    harness: { pi: async () => ({ snapshot: async () => doc }) },
+    delegation: { lineage: async () => undefined },
+    webhooks: { flush: async () => { order.push(`flushed ${[...data.keys()].filter(key => key.startsWith('input-mirror-pending:')).length}`); } },
+  } as unknown as AgentRuntime;
+  await repairInputMirrors(runtime);
+  assert.deepEqual(order, ['restaged', 'flushed 1']);
 });

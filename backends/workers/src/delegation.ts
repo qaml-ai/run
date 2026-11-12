@@ -669,8 +669,9 @@ export class Delegation {
     return { reported: true };
   }
   /**
-   * `remote` runs what reaches another object (a child's cancel, a legacy child's reconcile): at startup it is given
-   * the object's waitUntil, so it runs after startup, never inside it (a child's own startup may be waiting on this one).
+   * `remote` runs what reaches another object (a child's cancel or resume, a legacy child's reconcile): at startup it is
+   * given the object's waitUntil, so it is started during startup, not awaited by it (a child's own startup may be
+   * waiting on this one, and children woken one after another could hold startup past its 30 s reset).
    */
   async recover(remote: (task: () => Promise<void>) => void | Promise<void> = task => task()) {
     // Evicted objects can still have the old inline representation. Move it out
@@ -679,7 +680,7 @@ export class Delegation {
       if (child.task !== undefined || child.outcome !== undefined) await this.putChild(this.host.storage, child);
     }
     for (const child of await this.children()) {
-      if (child.background && child.status === 'input_required') await this.resumePaused(child);
+      if (child.background && child.status === 'input_required') await remote(() => this.resumePaused(child));
       if (child.cancelRequested && child.status === 'running') {
         await remote(() => this.cancelRemote(child));
         if (!child.accepted) {

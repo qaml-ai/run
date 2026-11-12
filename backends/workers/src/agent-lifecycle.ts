@@ -5,7 +5,7 @@ import { checkGcDeadline, collectChecks, flushMonitors, monitorDeadline, monitor
 import { flushScheduleOutcomes } from './schedule-outcomes.ts';
 import { HttpError } from "./errors.ts";
 import { expireDecisions } from "./inbox-decisions.ts";
-import { restageInputMirrors } from "./agent-input-mirror.ts";
+import { repairInputMirrors, restageInputMirrors } from "./agent-input-mirror.ts";
 import { inputAdmissionDeadline } from "./input-admission.ts";
 import { viaParent } from "./multi-agent-policy.ts";
 import { childParent } from "./child-parent.ts";
@@ -211,7 +211,7 @@ export function startStuck(runtime: AgentRuntime, step: string) {
 
 export async function restorePendingImpl(this: AgentRuntime) {
     // Startup holds the object's input gate (blockConcurrencyWhile, reset after 30 s): what reaches another object or
-    // Postgres, or waits on work that needs this object started, runs right after it instead, from waitUntil.
+    // Postgres, or waits on work that needs this object started, is started during startup (waitUntil), not awaited by it.
     const afterStart = (step: string, task: () => Promise<unknown>) =>
       this.ctx.waitUntil(task().catch(error => console.error(JSON.stringify({ type: "agent_start_deferred_failed", step, error: error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200) }))));
     const sinceConstructed = Date.now() - this.constructedAt;
@@ -233,12 +233,13 @@ export async function restorePendingImpl(this: AgentRuntime) {
     // Bounded as Pi open's reads are (startDeadline): with them, the whole block stays well under the 30 s reset.
     await timed(this, "promptPreparations.sweep", () => startDeadline("prompt preparations sweep", this.promptPreparations.sweep(Date.now(), true)));
     await timed(this, "resumeKeptQueue", () => this.resumeKeptQueue());
-    await timed(this, "restoreCancellations", () => this.restoreCancellations());
+    await timed(this, "restoreCancellations", () => this.restoreCancellations(task => afterStart("notifications.abortPending", task)));
     await timed(this, "restoreHostAdmissions", () => this.restoreHostAdmissions());
     // Nothing here waits on another object, or on work that needs this one started: startup holds the object's input
     // gate (blockConcurrencyWhile, reset after 30 s). A notice delivered to a cold agent started it from inside its own
     // send, and a drain here waited for that send, which waited for startup: every wake was reset (B3, 2026-11-12). What
-    // reaches out (children's cancels, notices, endings to owners) runs right after startup, from waitUntil.
+    // reaches out (children's cancels and resumes, notices, endings to owners) is started during startup, from waitUntil,
+    // not awaited by it.
     await timed(this, "delegation.recover", () => this.delegation.recover(async task => afterStart("delegation.recover", task)));
     afterStart("notifications.drain", () => this.notifications.drain());
     await timed(this, "outbox", async () => stageMissedEndings(this, await this.records()));
@@ -261,7 +262,9 @@ export async function restorePendingImpl(this: AgentRuntime) {
     // Re-stage retained inputs, including settled ones, before flushing on every start.
     const mirrorConfig = await this.ctx.storage.get<Config>("configuration");
     if (mirrorConfig && !await this.ctx.storage.get("deleted") && (!mirrorConfig.expiresAt || mirrorConfig.expiresAt > Date.now()))
-      afterStart("restageInputMirrors", () => restageInputMirrors(this));
+      // Restaged, then flushed (repairInputMirrors): flushTerminalEvents' own flush may list input-mirror-pending before the
+      // restage commits, which would leave an idle agent's re-staged rows unpushed (webhooks.flush serializes on its own).
+      afterStart("restageInputMirrors", () => repairInputMirrors(this));
     this.ctx.waitUntil(this.flushTerminalEvents());
     this.batchQueue.kick();
     // Recover a settlement whose admission kick was interrupted by an eviction.

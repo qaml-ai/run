@@ -147,7 +147,7 @@ export class DelegationNotifications {
           // now; the earlier ones are folded into it), up to WORKFLOW_NOTICE_BATCH workflows.
           const waiting: [string, PendingNotice][] = [];
           for (const [otherKey, other] of await tx.list<PendingNotice>({ prefix, noCache: true }))
-            if (otherKey !== key && !other.delivered && workflowNotice(other) && (other.request.params.endUser ?? null) === (current.request.params.endUser ?? null) && (other.request.params.bucket ?? null) === (current.request.params.bucket ?? null)) waiting.push([otherKey, other]);
+            if (otherKey !== key && !other.delivered && other.batch === undefined && workflowNotice(other) && (other.request.params.endUser ?? null) === (current.request.params.endUser ?? null) && (other.request.params.bucket ?? null) === (current.request.params.bucket ?? null)) waiting.push([otherKey, other]);
           const own = current.notice.metadata.workflowId, groups = new Map<unknown, [string, PendingNotice][]>();
           for (const entry of waiting) groups.set(entry[1].notice.metadata.workflowId, [...groups.get(entry[1].notice.metadata.workflowId) ?? [], entry]);
           const batch: BatchedEnding[] = [], carried: NoticeRequest[] = [];

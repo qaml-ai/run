@@ -4,10 +4,9 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import { startFixture } from "./fixture.ts";
 
-// Workflows end to end in workerd: an agent writes a workflow with its `workflows` builtin, the workflow runs three
-// keyed agent() children in parallel and a critic, every child a real agent the workflow owns (its ending delivered
-// by the child's outbox), and the agent reports the result. Then a budget too small pauses a workflow, and a raise
-// and a resume finish it. Every model call is the scripted provider below, priced so spend is real.
+// A cold owner woken by its workflow's notice, in workerd: the owner starts a workflow that sleeps, goes idle and cold,
+// and the workflow's ending, delivered by RPC to the cold owner, must start it and land on the first attempt (no startup
+// reset, no retried notice). The model is the scripted provider below.
 
 const textOf = (message: any) => typeof message?.content === "string" ? message.content : (message?.content ?? []).map((part: any) => part.text ?? "").join("\n");
 const systemOf = (body: any) => body.messages.filter((message: any) => message.role === "system").map(textOf).join("\n");

@@ -302,6 +302,17 @@ test('a paused background child produces one new completion notice after its hum
   await Promise.all(f.tasks);
   assert.deepEqual(notified, ['paused:resume']);
 });
+test("startup does not wait on a paused child's resume: recover hands the fetch to after-start", async () => {
+  const f = fixture(), fetched: string[] = [], later: (() => Promise<void>)[] = [];
+  await f.delegation.rows.put({ id: 'child', key: 'paused', requestId: 'child-run', parentRequestId: 'parent-run', toolCallId: 'spawn', task: 'ask', name: 'helper', depth: 1, createdAt: Date.now(), status: 'input_required', background: true, made: true, accepted: true, notified: true } as DelegatedChild);
+  f.host.fetch = async (_id, request) => { fetched.push(new URL(request.url).pathname); return Response.json({ state: 'running' }); };
+  await f.delegation.recover(task => { later.push(task); });
+  assert.deepEqual(fetched, [], 'no child is reached inside startup');
+  assert.equal(await f.delegation.rows.get('paused:resume'), undefined);
+  for (const task of later) await task();
+  assert.ok(fetched.some(path => path.startsWith('/requests/resume_')));
+  assert.equal((await f.delegation.rows.get('paused:resume'))?.status, 'running');
+});
 test('a trusted tool starts an existing tenant worker without exposing a model spawn tool', async () => {
   const f = fixture();
   f.host.target = async ({ agent }) => ({ id: agent!, config: { name: 'prepared' } });

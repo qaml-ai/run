@@ -174,12 +174,18 @@ export function resumeCancellationImpl(this: AgentRuntime,
     this.ctx.waitUntil(work);
   }
 
-export async function restoreCancellationsImpl(this: AgentRuntime) {
+/**
+ * `later` runs what may wait on a send in flight (abortPending awaits each notice's send): at startup it is given the
+ * object's waitUntil, so it is started during startup, not awaited by it (the send that started this object may be one).
+ */
+export async function restoreCancellationsImpl(this: AgentRuntime, later: (task: () => Promise<unknown>) => void | Promise<unknown> = task => task()) {
+    let aborting = false;
     for (const record of await this.records()) {
       if (record.state === "completed" && record.status !== "input_required") continue;
       const cancelled = await this.ctx.storage.get(`cancelled-request:${record.id}`);
       if (cancelled && record.noticeQueued) {
-        await this.notifications.abortPending();
+        if (!aborting) await later(() => this.notifications.abortPending());
+        aborting = true;
         continue;
       }
       if (cancelled === 'keep-queue') this.track(record.id);
