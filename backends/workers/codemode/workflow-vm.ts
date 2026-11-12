@@ -126,7 +126,9 @@ export const WORKFLOW_PRELUDE = `(function (bridge) {
     }
     known.set(key, { kind, args: json });
     // The revision's table: an effect the journal already has is answered from it, or waits for its result.
-    const adopted = table.get(key);
+    let adopted = table.get(key);
+    // Its key with other arguments (or another kind): not that result. The effect is issued again, a rerun of it.
+    if (adopted !== undefined && adopted.args !== undefined && (adopted.args !== json || adopted.kind !== kind)) { table.delete(key); adopted = undefined; }
     if (adopted !== undefined) {
       table.delete(key);
       bridge("effect", key, kind, json, phase, extra === undefined ? undefined : stringify(extra), true);
