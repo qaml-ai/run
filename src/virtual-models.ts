@@ -24,9 +24,9 @@ export const VIRTUAL_PROVIDER = "camelrun";
 type Member = [provider: string, id: string, options?: { serviceTier: ServiceTier; firstTokenBudget?: FirstTokenBudget }];
 /**
  * The longest a call asked on flex waits for flex capacity (asking again with backoff) before the default tier takes it,
- * on both backends. Flex answers a large request with a 429 at once when it has no room (probed 2026-11-12, before and
- * after our own Google key on OpenRouter: 0 of 10 at 60k tokens), so a long wait only delays the default tier. One
- * constant, to change as flex's capacity does.
+ * on both backends. Probed 2026-11-12: on OpenRouter's shared Google quota flex answered every 60k-token request with an
+ * immediate 429; on our own key it answered 8 of 10, but slowly (up to 95 s), while the default tier took 7-12 s. A long
+ * wait only delays the default tier. One constant, to change as flex's capacity does.
  */
 export const STRONG_FLEX_WAIT_CAP_SECONDS = 10;
 /** model-stream.ts `FirstTokenBudget`, restated: the Workers copy of this file is made without its first lines. */
