@@ -121,5 +121,12 @@ if [ -x $B/fuse-loop ]; then
   t0=$(now); tar cf /dev/null -C /bench/mnt/fusept src; rec "fusept_full_read_pagecache_ms=$(ms $t0)"
   umount /bench/mnt/fusept
 fi
+log "raw 4 KiB random reads, QD1 and QD16, direct, 5 s: local loop vs NBD lazy device (chunk cache warm)"
+LB=$(losetup -f --show $IMG)
+for qd in 1 16; do for d in $LB $NBD; do
+  fio --name=r --filename=$d --rw=randread --bs=4k --iodepth=$qd --direct=1 --runtime=5 --time_based --ioengine=libaio --size=${IMG_MB}M --output-format=json 2>/dev/null \
+    | $NODE -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s).jobs[0].read;console.log(`fio_randread_4k_qd'$qd'['$d']: iops=${Math.round(j.iops)} clat_mean_us=${(j.clat_ns.mean/1000).toFixed(1)} p99_us=${(j.clat_ns.percentile["99.000000"]/1000).toFixed(1)}`)})' | tee -a $R
+done; done
+losetup -d $LB
 rec "final store=$(stats) dev=$(devstats) cache_bytes=$(du -sb $CACHE | cut -f1)"
 log "done: $R"
