@@ -723,8 +723,8 @@ export class WorkflowRunner {
       }
       this.refreshLiveness();
       // An edit that reruns many finished effects waits for a confirm (resume, or an edit with confirm) before they start.
-      // A rerun is a new effect while a finished result goes unused (its key dropped, or its arguments changed): a new
-      // effect added beside finished ones that are all still used is new work, never a rerun.
+      // A rerun is a new effect while a finished result goes unused (its key dropped: the table matches by key). New
+      // effects beside finished ones do not count once the script has asked for those (it may ask for a new one first).
       if (!revision.confirmed) {
         const issued = Number(this.sql.exec("SELECT COUNT(*) AS n FROM workflow_effects WHERE revision = ? AND origin = 'script' AND current = 1 AND issued_step >= ?", revision.revision, revision.start_step).one().n);
         const finished = Number(this.sql.exec("SELECT COUNT(*) AS n FROM workflow_revision_table WHERE revision = ? AND settled = 1", revision.revision).one().n);
@@ -921,6 +921,11 @@ export class WorkflowRunner {
       if (status === "aborted") throw new WorkflowError("An aborted workflow cannot be edited");
       let revision = 0;
       this.storage.transactionSync(() => {
+        // An edit held at confirm_rerun is replaced, not adopted: its effects that never started are cancelled, so the new
+        // script asks again for what it still wants (counted, and confirmed or held, as its own), and dropped work never runs.
+        if (status === "paused" && state.pause_reason === "confirm_rerun")
+          this.sql.exec("UPDATE workflow_effects SET status = 'cancelled', reason = 'the held edit was replaced', due_at = NULL, ended_at = ? WHERE current = 1 AND status = 'pending' AND started = 0 AND revision = ?",
+            this.now(), Number(state.revision));
         revision = this.revise("edit", options.code, options.reason ?? null, percent, options.confirm === true);
         // An edit is how a fault is fixed, how a finished workflow goes on, and how a held edit is replaced (the new
         // revision is checked for its own reruns, or confirmed); other pauses (the user's, budget, payer) stay until resume.

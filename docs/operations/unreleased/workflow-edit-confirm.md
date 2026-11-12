@@ -5,7 +5,7 @@ three finished agents. That edit counted as a 33% rerun and paused at `confirm_r
 `confirm: true`, stayed paused for good.
 
 - **What counts as a rerun:** a new effect issued while a finished result goes unused, its key dropped from the script.
-  New effects beside finished results that are all still used are new work, and never pause an edit.
-- **An edit replaces one held at `confirm_rerun`:** the new edit is checked for its own reruns.
+  New effects beside finished results do not count once the script has asked for those results; one it waits on before asking for them still does.
+- **An edit replaces one held at `confirm_rerun`:** the held edit's unstarted effects are cancelled, and the new edit is checked for its own reruns.
 - **`confirm`:** `PUT /v1/workflows/{id}/script` and the SDKs' `edit` take `confirm` to go ahead. `workflow_edit`'s
   `confirm` now confirms the edit instead of raising its threshold to 100%.
