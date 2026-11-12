@@ -1,6 +1,6 @@
 {
   "id": "m-toml-go",
-  "version": 2,
+  "version": 3,
   "tier": "M",
   "title": "Port smol-toml (TypeScript, 1.6k lines) to Go, judged by toml-test",
   "status": "ready",
@@ -54,5 +54,5 @@
     "go"
   ],
   "dryNote": "You have go_build and go_decode tools that build /workspace/go in a fresh container (sub-agents do not have them), so build after each round of changes.",
-  "workflowNote": "A workflow's job() containers have Go 1.27.3, Node 24 and Python, and no network: build and check the port there."
+  "workflowNote": "job_run and a workflow's job() run in containers with Go 1.27.3, Node 24 and Python, and no network: build and check the port there."
 }
