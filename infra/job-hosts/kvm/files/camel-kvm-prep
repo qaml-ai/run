@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Shared by installation and boot. Never format a mounted disk or an unrecognised labelled disk.
+set -euo pipefail
+[[ $EUID == 0 ]] || { echo 'Must run as root' >&2; exit 1; }
+NVME_DEVICE=${NVME_DEVICE:-}
+if [[ -f /etc/camel/kvm-host.conf ]]; then
+  # shellcheck source=/dev/null
+  source /etc/camel/kvm-host.conf
+fi
+fail() { echo "ERROR: $*" >&2; exit 1; }
+echo '== NVMe'
+device=${NVME_DEVICE:-$(lsblk -dpno NAME,MODEL | awk '$2=="Amazon" && $3=="EC2" && $4=="NVMe" && $5=="Instance" && $6=="Storage" {print $1; exit}')}
+[[ -n $device && -b $device ]] || fail 'No instance-store block device found; set NVME_DEVICE'
+device=$(readlink -f "$device")
+model=$(lsblk -dnro MODEL "$device" | xargs)
+label=$(blkid -s LABEL -o value "$device" || true)
+if [[ $label != camel-nvme ]]; then
+  # Check partitions too. A labelled override is not permission to erase an EBS disk.
+  [[ -z $(lsblk -nrpo MOUNTPOINTS "$device" | tr -d '[:space:]') ]] || fail "$device or a child is mounted; refusing to format"
+  [[ -z $(lsblk -nrpo NAME "$device" | tail -n +2) ]] || fail "$device has partitions or holders; refusing to format"
+  [[ $model == 'Amazon EC2 NVMe Instance Storage' ]] || fail "$device is not instance store; refusing to format"
+  echo "== Format instance store $device as camel-nvme (XFS reflink)"
+  mkfs.xfs -q -f -L camel-nvme -m reflink=1 "$device"
+fi
+[[ $(blkid -s TYPE -o value "$device") == xfs ]] || fail 'camel-nvme is not XFS'
+mkdir -p /nvme
+if mountpoint -q /nvme; then
+  [[ $(findmnt -nro MAJ:MIN --target /nvme) == "$(lsblk -dnro MAJ:MIN "$device")" ]] || fail '/nvme is mounted from a different device'
+else
+  mount -o noatime "$device" /nvme
+fi
+xfs_info /nvme | grep -q 'reflink=1' || fail '/nvme must support reflinks'
+if ! grep -Eq '^LABEL=camel-nvme[[:space:]]+/nvme[[:space:]]+xfs[[:space:]]+noatime,nofail[[:space:]]+0[[:space:]]+0$' /etc/fstab; then
+  if awk '$1 !~ /^#/ && $2=="/nvme" {found=1} END {exit !found}' /etc/fstab; then
+    fail 'Conflicting /nvme fstab entry; fix it before running again'
+  fi
+  echo 'LABEL=camel-nvme /nvme xfs noatime,nofail 0 0' >> /etc/fstab
+fi
+mkdir -p /nvme/camel/jobs /nvme/camelfs /run/camel/egress /run/camelfsd
+[[ ${1:-} != --storage-only ]] || exit 0
+echo '== Base image on NVMe'
+base=/var/lib/camel/images/base.ext4
+[[ -f $base ]] || fail 'Root-disk base image is missing'
+if ! cmp -s "$base" /nvme/camel/base.ext4; then
+  cp --sparse=always "$base" /nvme/camel/base.ext4.new
+  mv /nvme/camel/base.ext4.new /nvme/camel/base.ext4
+fi
