@@ -24,7 +24,7 @@ import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
 import { isStalled, streamTimeouts } from "./model-stream.ts";
 import { MODEL_INTERRUPTED, modelFailure, retriesModelError, isContentFilterBlock, isImageRejection, isModelUnavailable } from "./model-errors.ts";
 import { withModelFallback } from "./model-fallback.ts";
-import { refusedForeignReasoning, withoutReplayedReasoning } from "../shared/gemini-reasoning.ts";
+import { geminiOnOpenRouter, ReasoningDrop, refusedForeignReasoning } from "../shared/gemini-reasoning.ts";
 import { askedTier, routeModel, type ModelRouteReason } from "./virtual-models.ts";
 import { forcedToolChoice } from "./tool-choice.ts";
 import { filesRefused, namespaceOf, schemaAccepts } from "./tool-policy.ts";
@@ -178,6 +178,8 @@ export function createAgentHost(hostIO: HostIO) {
   let documents = false;
   /** A provider refused an intact image: omit every image for the rest of this turn only. */
   let omitImages = false;
+  /** Gemini's refusals of another provider's reasoning, remembered for this agent's later Gemini calls (gemini-reasoning.ts). */
+  const reasoning = new ReasoningDrop();
   /** This run's failed model requests Pi made again (`retryDecision`), and whether the latest answer came from a retry. */
   let retries = { failed: 0, pending: 0 };
   /** Whether the running turn can still take a steer sent `whileRunning` (see `steer`). */
@@ -990,11 +992,14 @@ export function createAgentHost(hostIO: HostIO) {
         streamFn: (model, context, options) => {
           const asked = (on: typeof model, toolChoice = outputChoice(on)) => ({ ...options, ...callSettings(on, config, options?.reasoning), ...(toolChoice === undefined ? {} : { toolChoice }), ...(config.dataCollection ? { dataCollection: config.dataCollection } : {}) } as typeof options);
           const messages = context.messages, previous = messages.findLast(message => message.role === "assistant" && message.stopReason !== "error" && message.stopReason !== "aborted") as AssistantMessage | undefined;
+          // The history as this call sends it: without encrypted reasoning once Gemini refused another provider's, for
+          // every member of the chain after that refusal too.
+          const history = (on: typeof model) => reasoning.context(on, context);
           return routedCall(messages.at(-1)?.role === "toolResult" ? "continuation" : "user", on => {
             // Gemini refusing reasoning another provider produced (gemini-reasoning.ts): the same model again, once, with
             // the history's encrypted reasoning dropped, before Pi sees the refusal.
-            const once = stream(on, context, asked(on));
-            const first = on.provider !== "openrouter" ? once : withModelFallback(once, () => stream(on, withoutReplayedReasoning(context), asked(on)), {
+            const once = stream(on, history(on), asked(on));
+            const first = !geminiOnOpenRouter(on) ? once : withModelFallback(once, () => { reasoning.refused(); return stream(on, history(on), asked(on)); }, {
               moves: (message, partial) => refusedForeignReasoning(message.errorMessage) && !partial?.content.length,
               blocked: () => console.log(JSON.stringify({ type: "model_reasoning_replay_dropped", tenant: config.tenant, agent: config.id, model: `${on.provider}/${on.id}`, tier: (on as { serviceTier?: string }).serviceTier ?? null })),
               unavailable: error => console.error(JSON.stringify({ type: "model_reasoning_replay_failed", agent: config.id, model: `${on.provider}/${on.id}`, error: safeError(error) })),
@@ -1003,7 +1008,7 @@ export function createAgentHost(hostIO: HostIO) {
             const fallback = config.contentFilterFallback;
             if (!fallback || fallback.from !== `${on.provider}/${on.id}`) return first;
             const to = `${fallback.model.provider}/${fallback.model.id}`;
-            return withModelFallback(first, () => viaFallback(fallback.model, context, asked(fallback.model)), {
+            return withModelFallback(first, () => viaFallback(fallback.model, history(fallback.model), asked(fallback.model)), {
               blocked: () => recordModelFallback({ tenant: config.tenant, agent: config.id, from: fallback.from, to, reason: "content_filter" }),
               unavailable: error => console.error(JSON.stringify({ type: "model_fallback_failed", agent: config.id, model: fallback.from, fallback: to, error: safeError(error) })),
               aborted: () => !!options?.signal?.aborted,
@@ -1129,7 +1134,7 @@ export function createAgentHost(hostIO: HostIO) {
       if (params.systemPromptAppend !== undefined) config.systemPromptAppend = params.systemPromptAppend;
       if (params.fileTools !== undefined) config.fileTools = params.fileTools;
       if (params.codeMode !== undefined) config.codeMode = params.codeMode;
-      if (params.model !== undefined) { config.model = params.model; agent.state.model = params.model; routed = undefined; }
+      if (params.model !== undefined) { config.model = params.model; agent.state.model = params.model; routed = undefined; reasoning.model_(`${params.model.provider}/${params.model.id}`); }
       if (params.thinkingLevel !== undefined) { config.thinkingLevel = params.thinkingLevel; agent.state.thinkingLevel = params.thinkingLevel; }
       if (params.apiKey !== undefined) config.apiKey = params.apiKey;
       if (params.modelHeaders !== undefined) config.modelHeaders = params.modelHeaders;

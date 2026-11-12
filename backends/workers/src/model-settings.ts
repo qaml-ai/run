@@ -18,7 +18,7 @@ import { contentFilterFallbacks } from "./default-model-policy.ts";
 import { isContentFilterBlock, isModelUnavailable } from "./model-errors.ts";
 import { ModelReplayRetry, type ModelRetryEvent } from "./model-replay-retry.ts";
 import { missingModelKey } from "./selfhost-policy.ts";
-import { refusedForeignReasoning, withoutReplayedReasoning } from "../../../shared/gemini-reasoning.ts";
+import { geminiOnOpenRouter, ReasoningDrop, refusedForeignReasoning } from "../../../shared/gemini-reasoning.ts";
 import { FlexWait, asksFlex, flexFallbackDeltaUsd, flexWaitMs } from "./model-flex-wait.ts";
 
 /** `flexWaitSeconds`: how long a call asked on flex waits for flex capacity before the default tier takes it (model-flex-wait.ts). */
@@ -51,6 +51,8 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
   };
   const outputRequest = new OutputRequest();
   const replayRetry = new ModelReplayRetry(hooks.onRetryEvent);
+  /** Gemini's refusals of another provider's reasoning, remembered for this agent's later Gemini calls (gemini-reasoning.ts). */
+  const reasoning = new ReasoningDrop();
   const filterFallbacks = contentFilterFallbacks(env.AGENT_CONTENT_FILTER_FALLBACKS);
   const prepare = async (model: Model<Api>, context: TranscriptContext, options: StreamOptions = {}) => {
     const callKind = modelCallKind(context);
@@ -138,7 +140,11 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
     const output = createAssistantMessageEventStream();
     void (async () => {
       try {
-        let prepared = await prepare(model, context, options);
+        const original = context;
+        reasoning.model_((await hooks.settings?.().catch(() => undefined) as { model?: string } | undefined)?.model);
+        // Each member gets the history as it may send it: a Gemini member without what was refused, any other as it was.
+        const history = (target: Model<Api>) => reasoning.context(target, original);
+        let prepared = await prepare(model, history(model), options);
         replayRetry.begin(prepared.config.requestId ?? String(context.messages.findLast(message => message.role === "user")?.timestamp ?? 0));
         // A call asked on flex that found no flex capacity: its wait (`flex`), and, once it moved to the default tier, from what.
         let flex: FlexWait | undefined, fellBack: { model: string; waitedMs: number; attempts: number } | undefined;
@@ -167,13 +173,13 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
           }
           // Gemini refusing reasoning another provider produced (gemini-reasoning.ts): the same member again, once, with the
           // history's encrypted reasoning dropped, for this call and every member after it. Never a member failure.
-          if (event.type === "error" && event.reason !== "aborted" && prepared.model.provider === "openrouter" && !reasoningDropped &&
+          if (event.type === "error" && event.reason !== "aborted" && geminiOnOpenRouter(prepared.model) && !reasoningDropped &&
               refusedForeignReasoning(event.error.errorMessage) && !options?.signal?.aborted) {
             reasoningDropped = true;
-            context = withoutReplayedReasoning(context);
+            reasoning.refused();
             console.log(JSON.stringify({ type: "model_reasoning_replay_dropped", tenant: env.AGENT_TENANT ?? null, model: `${prepared.model.provider}/${prepared.model.id}`,
               tier: (prepared.model as { serviceTier?: string }).serviceTier ?? null }));
-            prepared = await prepare(prepared.model, context, options);
+            prepared = await prepare(prepared.model, history(prepared.model), options);
             retry = true;
             continue;
           }
@@ -196,12 +202,12 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
           if (event.type === "error" && event.reason !== "aborted" && prepared.virtualNext && !event.error.content.length && isModelUnavailable(event.error) && !options?.signal?.aborted) {
             routing!.failed = prepared.model;
             failed(prepared.model, event.error);
-            prepared = await prepare(prepared.virtualNext, context, options);
+            prepared = await prepare(prepared.virtualNext, history(prepared.virtualNext), options);
             retry = true;
             continue;
           }
           if (event.type === "error" && event.reason !== "aborted" && prepared.fallback && isContentFilterBlock(event.error) && !options?.signal?.aborted) {
-            try { prepared = await prepare(prepared.fallback, context, options); retry = true; continue; }
+            try { prepared = await prepare(prepared.fallback, history(prepared.fallback), options); retry = true; continue; }
             catch { /* If the fallback is unavailable, retain the provider's original refusal. */ }
           }
           if (event.type === "error" && prepared.options.toolChoice !== undefined && /400/.test(event.error.errorMessage ?? "") && /tool.?choice|forced.*tool/i.test(event.error.errorMessage ?? "")) {
@@ -212,7 +218,7 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
           }
           if (event.type === "done" && prepared.callKind === "response" && !options?.signal?.aborted && outputRequest.remind(event.message, prepared.config)) {
             await hooks.onDiscardedOutput?.(event.message);
-            prepared = await prepare(prepared.model, context, options);
+            prepared = await prepare(prepared.model, history(prepared.model), options);
             retry = true;
             continue;
           }
