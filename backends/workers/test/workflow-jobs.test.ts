@@ -295,7 +295,7 @@ test("a workflow's forks are deleted once it ends; a failed delete is tried agai
   assert.equal(deleted.length, 3);
 });
 
-test("a fork the result cache keeps (pinned) outlives the end; released (unpinned), the next end pass deletes it", async () => {
+test("at the end, a fork the result cache adopts is handed over, not deleted; the rest are deleted; one it cannot tell about waits", async () => {
   const rows = new Map<string, unknown>();
   const storage = {
     get: async (key: string) => rows.get(key),
@@ -304,27 +304,19 @@ test("a fork the result cache keeps (pinned) outlives the end; released (unpinne
     list: async ({ prefix }: { prefix: string }) => new Map([...rows].filter(([key]) => key.startsWith(prefix))),
   };
   const deleted: string[] = [];
-  const forks = new ForkJanitor({ storage: storage as never, now: () => 1_000, deleteFork: async id => { deleted.push(id); } });
+  let unsure = true;
+  const forks = new ForkJanitor({ storage: storage as never, now: () => 1_000, deleteFork: async id => { deleted.push(id); },
+    adopt: async id => { if (id === "vol_unsure" && unsure) throw new Error("the cache is down"); return id === "vol_kept"; } });
   await forks.made("vol_kept");
   await forks.made("vol_free");
-  await forks.pin("vol_kept");
-  assert.deepEqual(await forks.pinned(), [{ fork: "vol_kept", at: 1_000 }]);
-  assert.equal(await forks.ended(), undefined);
+  await forks.made("vol_unsure");
+  assert.equal(await forks.ended(), 1_000 + 60_000, "tried again later");
   assert.deepEqual(deleted, ["vol_free"]);
-  await forks.unpin("vol_kept");
-  await forks.unpin("vol_gone"); // a release for a fork with no row: nothing to do
-  assert.equal(rows.has("workflow-fork:vol_gone"), false);
-  // A pin of a volume this workflow did not make (a forged fork in a child's output naming the owner's repo), and its
-  // release: the end never deletes it, pinned or not.
-  await forks.pin("vol_owners_repo");
+  assert.deepEqual([...rows.keys()].filter(key => key.startsWith("workflow-fork:")), ["workflow-fork:vol_unsure"], "the cache's fork is forgotten here");
+  unsure = false;
   assert.equal(await forks.ended(), undefined);
-  await forks.unpin("vol_owners_repo");
-  assert.equal(await forks.ended(), undefined);
-  assert.ok(!deleted.includes("vol_owners_repo"), "the owner's repo survives");
-  assert.equal(await forks.ended(), undefined);
-  assert.deepEqual(deleted, ["vol_free", "vol_kept"]);
+  assert.deepEqual(deleted, ["vol_free", "vol_unsure"]);
 });
-
 test("a job, commit or push whose landing a crash lost is found by the alarm's sweep, with no capacity alarm to wake it", { timeout: 60_000 }, async () => {
   for (const kind of ["job", "commit", "push"] as const) {
     const h = harness();

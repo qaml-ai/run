@@ -1062,7 +1062,8 @@ test("workflows: children edit forks of a repo volume with their file tools, com
   assert.ok(done.spent.usd >= jobItem.costUsd!, JSON.stringify(done.spent));
 
   // The workflow ended: its children's forks are deleted, which releases their pins on the repo's content. Their results
-  // are cached, but the commits moved the repo past the version those entries are keyed with, so none keeps its fork.
+  // were cached, but the commits moved the repo past the version those entries are keyed with, so the cache does not
+  // take the forks over.
   const forks = (items as unknown as { kind: string; result?: { fork?: { volume: string } } }[]).filter(item => item.kind === "agent").map(item => item.result!.fork!.volume);
   assert.equal(forks.length, 3);
   for (const fork of forks) {

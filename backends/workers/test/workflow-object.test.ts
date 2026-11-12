@@ -657,3 +657,25 @@ test("a cache hit writes no ledger row: no cost, no call; a late real ending for
   assert.equal(at(h).spent.usd, 2, "charged once, by its own ending");
   assert.equal(at(h).result, "re: a", "and not delivered");
 });
+
+test("a payer's probe answered from the cache proves nothing: the next refused effect is the probe, until one runs", { timeout: 60_000 }, async () => {
+  const results = new FakeResults();
+  const h = harness({ results });
+  h.init({ code: `const r = await parallel(["a", "b", "c"], k => agent(k, { key: k })); return r.map(x => x.answer);` });
+  await h.wake();
+  let credit = false;
+  while (h.world.queue.length) await h.next(effect => credit ? undefined : ({ refused: `no credit for ${effect.key}`, code: "payer_exhausted" }));
+  assert.deepEqual([at(h).status, at(h).pauseReason], ["paused", "payer_exhausted"]);
+  // Meanwhile another workflow of the owner finished a: the alarm's probe (a) is answered from the cache.
+  const other = harness({ results });
+  other.init({ code: `return (await agent("a", { key: "a" })).answer;` });
+  await other.wake();
+  await other.run();
+  credit = true;
+  h.clock = h.alarmAt!;
+  await h.runner.alarm();
+  assert.equal(at(h).counts.cached, 1);
+  assert.deepEqual(h.world.queue.map(effect => effect.key), ["b"], "b is the probe now, started for real");
+  await h.run();
+  assert.deepEqual([at(h).status, at(h).result], ["completed", ["re: a", "re: b", "re: c"]]);
+});

@@ -7486,7 +7486,7 @@ Its globals:
 | `now()`, `random()` | The step's clock and the workflow's seeded generator (`Date.now()` and `Math.random()` read the same) |
 | `toBase64(value)`, `fromBase64(text, opts?)` | Base64 of any text (as UTF-8) or bytes, and back: text, or a `Uint8Array` with `{ as: "bytes" }`. `btoa`/`atob` take Latin-1 only. `TextEncoder` and `TextDecoder` (UTF-8) are there too |
 
-A workflow's forks are deleted when it ends, once its commits have landed and no cached result (below) names them.
+A workflow's forks are deleted when it ends, once its commits have landed. One whose result is cached (below) is kept by the cache instead, for as long as the result is.
 
 A script is compiled before it starts: a syntax error is refused as `script_error`, with
 its line and column, and nothing runs.
@@ -7582,7 +7582,8 @@ summary's `counts.cached` counts them.
   branch).
 - `agent(prompt, { repo })` and `job({ at })` are reused only while that
   volume is unchanged since the earlier call started. A reused agent's answer
-  has the same `fork`, which `commit()` lands as before.
+  has a fork of its own: a copy of the earlier one, which `commit()` lands as
+  before. A result with a fork is reused for at most 6 days.
 - An `agent()` is also keyed by the model it resolves to (its `class` or
   `model`, or the workflow's `classes` pin) and by the named `definition`'s
   revision: a restart with a stronger class, or an edited definition, runs

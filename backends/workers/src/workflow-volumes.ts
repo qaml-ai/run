@@ -35,6 +35,23 @@ export async function deleteFork(env: FileBindings, tenant: string, id: string) 
   await env.VOLUMES.getByName(`${tenant}:${id}`).delete();
 }
 
+/**
+ * A copy of fork `source`, for effect `key:attempt` of `workflow` (which owns it, as a fork it made): its files as they
+ * are, metadata only, with the same origin, so `commit()` lands it on the same base the same way. A workflow whose
+ * agent() was answered from the result cache gets this rather than the cached fork itself. Made again for the same
+ * effect, it is the same copy.
+ */
+export async function copyFork(env: FileBindings, tenant: string, source: string, effect: { workflow: string; key: string; attempt: number }): Promise<string> {
+  const created = await createVolume(env, tenant, { name: `copy of ${source} for ${effect.workflow}`.slice(0, 120), key: forkKey(effect) });
+  const copy = await volume(env, tenant, created.id);
+  if ((await copy.info()).origin) return created.id;
+  const from = await volume(env, tenant, source);
+  const origin = (await from.info()).origin;
+  if (!origin?.snapshot) throw new FileError(`Volume ${source} is not a workflow fork`, 409);
+  await copy.seed((await from.readSet("/")).files, origin);
+  return created.id;
+}
+
 export async function forkForChild(env: FileBindings, tenant: string, effect: { workflow: string; key: string; attempt: number; repo: string }): Promise<WorkflowFork> {
   if (typeof effect.repo !== "string" || !effect.repo) throw new FileError("repo is a volume id");
   const name = `${effect.workflow} ${(await digest(new TextEncoder().encode(effect.key))).slice(0, 12)}`;

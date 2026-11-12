@@ -240,7 +240,7 @@ export interface ResultCache {
    * is offered under the key it was looked up with, never one made after it ran, so a result is only ever found again
    * on the version it could have read (a volume's version only grows: a key made before a change is never made again).
    */
-  lookup(kind: string, args: string): Promise<{ key: string; hit?: { value: unknown; source: string } }>;
+  lookup(kind: string, args: string, effect: { key: string; attempt: number }): Promise<{ key: string; hit?: { value: unknown; source: string } }>;
   /** A cacheable effect landed `ok` with `value`: offered to the cache under `cacheKey` (best effort, in the background). */
   landed(effect: { key: string; attempt: number; kind: string; args: string; value: unknown; cacheKey: string }): void;
 }
@@ -665,7 +665,7 @@ export class WorkflowRunner {
    */
   private async fromCache(effect: Row): Promise<boolean> {
     let found: Awaited<ReturnType<ResultCache["lookup"]>>;
-    try { found = await this.options.results!.lookup(effect.kind as string, effect.args as string); }
+    try { found = await this.options.results!.lookup(effect.kind as string, effect.args as string, { key: effect.key as string, attempt: Number(effect.attempt) }); }
     catch (error) {
       // A miss, never a fault; with no key its result is not offered either.
       this.sql.exec("UPDATE workflow_effects SET cache_key = NULL WHERE key = ? AND attempt = ? AND status = 'pending'", effect.key, effect.attempt);
@@ -684,6 +684,13 @@ export class WorkflowRunner {
       // No usage: a hit writes no ledger row (it cost nothing, and is no call). A real ending for the same key:attempt
       // that still arrives (a run started before a crash) is charged in full by its own row.
       this.record(effect.key as string, Number(effect.attempt), { ok: true, value: hit.value });
+      // A payer's probe answered from the cache proves nothing about its credit: the next refused effect is the probe
+      // (until one starts for real, which lands and brings the rest; with none left, the payer's stop is over).
+      if (this.state().payer_since !== null) {
+        const next = this.sql.exec("SELECT key FROM workflow_effects WHERE current = 1 AND status = 'refused' ORDER BY ord LIMIT 1").toArray()[0];
+        if (next) this.nextAttempt(next.key as string, "reissue");
+        else this.sql.exec("UPDATE workflow_state SET payer_since = NULL WHERE id = 1");
+      }
       return true;
     });
   }

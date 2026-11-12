@@ -165,7 +165,7 @@ export class FakeResults implements ResultCache {
   failLookup?: string;
   /** What a volume-reading effect's key adds (the volume's version, in the object): set to move the "version". */
   version = 0;
-  async lookup(kind: string, args: string) {
+  async lookup(kind: string, args: string, _effect?: { key: string; attempt: number }) {
     this.lookups++;
     if (this.failLookup) throw new Error(this.failLookup);
     const key = `${kind}\n${args}\n@${this.version}`;

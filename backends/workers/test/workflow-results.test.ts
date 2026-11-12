@@ -11,7 +11,7 @@ const hooks = registerHooks({ resolve(specifier, context, nextResolve) {
 const { WorkflowResults, cacheKey, RESULT_CACHE_LIMITS } = await import("../src/workflow-results.ts");
 hooks.deregister();
 
-function cache(t: { after(fn: () => void): void }, released: (workflow: string, fork: string) => void = () => {}) {
+function cache(t: { after(fn: () => void): void }, deleted: (tenant: string, fork: string) => void = () => {}) {
   const db = new DatabaseSync(":memory:");
   t.after(() => db.close());
   const sql = { exec(query: string, ...args: any[]) {
@@ -22,9 +22,8 @@ function cache(t: { after(fn: () => void): void }, released: (workflow: string, 
   } } as unknown as SqlStorage;
   const state = { alarm: null as number | null, clock: 1_000_000 };
   const ctx = { storage: { sql, setAlarm: async (at: number) => { state.alarm = at; }, deleteAlarm: async () => { state.alarm = null; } } };
-  const env = { WORKFLOWS: { getByName: (workflow: string) => ({ forkReleased: async (fork: string) => released(workflow, fork) }) } };
-  const object = new WorkflowResults(ctx as never, env as never);
-  (object as unknown as { now: () => number }).now = () => state.clock;
+  const object = new WorkflowResults(ctx as never, {} as never);
+  Object.assign(object, { now: () => state.clock, deleteFork: async (tenant: string, fork: string) => deleted(tenant, fork) });
   return { object, state, db };
 }
 
@@ -44,67 +43,71 @@ test("a result is kept once per kind and key: the first stays, a hit answers it 
   assert.equal(await object.lookup("job", "big"), undefined);
 });
 
-test("an entry lives 7 days from its last hit; when it goes, its fork's workflow is told, again until it answers", async t => {
-  const told: string[] = [];
-  let failing = 1;
-  const { object, state } = cache(t, (workflow, fork) => { if (failing-- > 0) throw new Error("the workflow is down"); told.push(`${workflow}/${fork}`); });
-  await object.put({ kind: "agent", key: "k", source: "wf1:k:1", workflow: "wf1", value: { text: "t", fork: { volume: "vol_f" } }, fork: "vol_f" });
+
+test("an entry lives 7 days from its last hit", async t => {
+  const { object, state } = cache(t);
+  await object.put({ kind: "job", key: "k", source: "wf1:k:1", workflow: "wf1", value: 1 });
   assert.equal(state.alarm, state.clock + RESULT_CACHE_LIMITS.ttlMs);
   state.clock += RESULT_CACHE_LIMITS.ttlMs - 1;
-  assert.ok(await object.lookup("agent", "k"), "a hit just before the expiry");
+  assert.ok(await object.lookup("job", "k"), "a hit just before the expiry");
   state.clock += RESULT_CACHE_LIMITS.ttlMs - 1;
   await object.alarm();
-  assert.ok(await object.lookup("agent", "k"), "the hit gave it another 7 days");
+  assert.ok(await object.lookup("job", "k"), "the hit gave it another 7 days");
   state.clock += RESULT_CACHE_LIMITS.ttlMs;
   await object.alarm();
-  assert.equal(await object.lookup("agent", "k"), undefined);
-  assert.deepEqual(told, [], "the first release failed");
-  assert.equal(state.alarm, state.clock + RESULT_CACHE_LIMITS.releaseRetryMs, "and is tried again later");
-  state.clock = state.alarm!;
-  await object.alarm();
-  assert.deepEqual(told, ["wf1/vol_f"]);
+  assert.equal(await object.lookup("job", "k"), undefined);
   assert.equal(state.alarm, null, "nothing left");
 });
 
-test("past its caps a scope drops the least recently hit first; a fork still named by another entry is not released", async t => {
-  const told: string[] = [];
-  const { object, state } = cache(t, (_workflow, fork) => { told.push(fork); });
-  await object.put({ kind: "agent", key: "old", source: "wf1:old:1", workflow: "wf1", value: 1, fork: "vol_shared" });
-  state.clock += 1;
-  await object.put({ kind: "agent", key: "same fork", source: "wf1:same:1", workflow: "wf1", value: 2, fork: "vol_shared" });
-  for (let i = 0; i < RESULT_CACHE_LIMITS.entries - 2; i++) { state.clock += 1; await object.put({ kind: "job", key: `k${i}`, source: `wf1:k${i}:1`, workflow: "wf1", value: i }); }
+test("a fork has one owner: its workflow until it ends, then the cache if an entry names it, which deletes it when the entry goes", async t => {
+  const deleted: string[] = [];
+  let failing = 1;
+  const { object, state } = cache(t, (tenant, fork) => { if (failing-- > 0) throw new Error("storage down"); deleted.push(`${tenant}/${fork}`); });
+  const fork = { tenant: "acme", volume: "vol_f" };
+  await object.put({ kind: "agent", key: "k", source: "wf1:k:1", workflow: "wf1", value: { fork: { volume: "vol_f" } }, fork });
+  assert.equal(await object.adopt("vol_f", "acme"), true, "an entry names it: the cache owns it now");
+  // The entry is evicted (expired): the fork is deleted, again after a failure.
+  state.clock += RESULT_CACHE_LIMITS.ttlMs;
+  await object.alarm();
+  assert.deepEqual(deleted, []);
+  assert.equal(state.alarm, state.clock + RESULT_CACHE_LIMITS.retryMs);
+  state.clock = state.alarm!;
+  await object.alarm();
+  assert.deepEqual(deleted, ["acme/vol_f"]);
+
+  // No entry names it: the workflow keeps (deletes) it, and a put naming it after that is refused.
+  assert.equal(await object.adopt("vol_g", "acme"), false);
+  assert.deepEqual(await object.put({ kind: "agent", key: "late", source: "wf2:late:1", workflow: "wf2", value: 1, fork: { tenant: "acme", volume: "vol_g" } }), { stored: false });
+  assert.equal(await object.lookup("agent", "late"), undefined);
+
+  // Its base moved on (a commit landed): the entries go, and the workflow deletes the fork.
+  await object.put({ kind: "agent", key: "m", source: "wf3:m:1", workflow: "wf3", value: 1, fork: { tenant: "acme", volume: "vol_m" } });
+  assert.equal(await object.adopt("vol_m", "acme", true), false);
+  assert.equal(await object.lookup("agent", "m"), undefined);
+
+  // A fork no workflow handed over (an entry naming any volume, the owner's repo say) is never deleted here.
+  await object.put({ kind: "agent", key: "forged", source: "wf5:x:1", workflow: "wf5", value: 1, fork: { tenant: "acme", volume: "vol_owners_repo" } });
+  state.clock += RESULT_CACHE_LIMITS.ttlMs;
+  await object.alarm();
+  assert.equal(await object.lookup("agent", "forged"), undefined);
+  assert.ok(!deleted.includes("acme/vol_owners_repo"), "only a fork its workflow handed over is the cache's to delete");
+
+  // An entry naming a fork lives at most forkEntryMs, hits or not (its base snapshot's life).
+  await object.put({ kind: "agent", key: "n", source: "wf4:n:1", workflow: "wf4", value: 1, fork: { tenant: "acme", volume: "vol_n" } });
+  assert.equal(await object.adopt("vol_n", "acme"), true);
+  for (let day = 1; day < 6; day++) { state.clock += 86_400_000; assert.ok(await object.lookup("agent", "n")); }
+  state.clock += 86_400_000;
+  await object.alarm();
+  assert.equal(await object.lookup("agent", "n"), undefined);
+  assert.ok(deleted.includes("acme/vol_n"));
+});
+
+test("past its caps a scope drops the least recently hit first", async t => {
+  const { object, state } = cache(t);
+  await object.put({ kind: "agent", key: "old", source: "wf1:old:1", workflow: "wf1", value: 1 });
+  for (let i = 0; i < RESULT_CACHE_LIMITS.entries - 1; i++) { state.clock += 1; await object.put({ kind: "job", key: `k${i}`, source: `wf1:k${i}:1`, workflow: "wf1", value: i }); }
   assert.equal(Number((await object.stats()).n), RESULT_CACHE_LIMITS.entries);
   state.clock += 1;
   assert.deepEqual(await object.put({ kind: "job", key: "one more", source: "wf2:x:1", workflow: "wf2", value: "x" }), { stored: true });
   assert.equal(await object.lookup("agent", "old"), undefined, "the least recently hit went");
-  assert.ok(await object.lookup("agent", "same fork"));
-  await object.alarm();
-  assert.deepEqual(told, [], "its fork is still named by another entry");
-});
-
-test("a workflow that got a fork from a hit holds it until it ends; drop frees an unreachable fork only when nobody holds it; a missing source counts as told", async t => {
-  const told: string[] = [];
-  let missing = false;
-  const { object, state } = cache(t, (workflow, fork) => { if (missing) throw new Error("No workflow"); told.push(`${workflow}/${fork}`); });
-  await object.put({ kind: "agent", key: "k", source: "wf1:k:1", workflow: "wf1", value: { fork: { volume: "vol_f" } }, fork: "vol_f" });
-  assert.ok(await object.lookup("agent", "k", "wf2"));
-  assert.equal(await object.drop("vol_f"), false, "wf2 holds it: its commit must find it");
-  assert.equal(await object.holds("vol_f"), true);
-  // The entry expires; the fork stays for wf2 until wf2 ends.
-  state.clock += RESULT_CACHE_LIMITS.ttlMs;
-  await object.alarm();
-  assert.deepEqual(told, []);
-  await object.unholdAll("wf2");
-  assert.deepEqual(told, ["wf1/vol_f"]);
-  assert.equal(await object.holds("vol_f"), false);
-
-  await object.put({ kind: "agent", key: "k2", source: "wf3:k2:1", workflow: "wf3", value: 1, fork: "vol_g" });
-  assert.equal(await object.drop("vol_g"), true);
-  assert.equal(await object.lookup("agent", "k2"), undefined, "its entries went with it");
-
-  missing = true;
-  await object.put({ kind: "agent", key: "k3", source: "wf9:k3:1", workflow: "wf9", value: 1, fork: "vol_h" });
-  state.clock += RESULT_CACHE_LIMITS.ttlMs;
-  await object.alarm();
-  assert.equal(state.alarm, null, "a release to a workflow that does not exist is not retried");
 });

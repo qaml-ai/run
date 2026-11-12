@@ -13,9 +13,9 @@ import { keyServices } from "./security-services.ts";
 import type { SecurityEnv } from "./security-services.ts";
 import { agentCacheSalt, WorkflowAgents, workflowChildren, type AgentArgs } from "./workflow-agents.ts";
 import { WorkflowJobs, type WorkflowJobsEnv } from "./workflow-jobs.ts";
-import { deleteFork, forkForChild, forkId } from "./workflow-volumes.ts";
+import { copyFork, deleteFork, forkForChild, forkId } from "./workflow-volumes.ts";
 import { ForkJanitor } from "./workflow-forks.ts";
-import { cacheKey, type WorkflowResults } from "./workflow-results.ts";
+import { cacheKey, type CachedResult, type WorkflowResults } from "./workflow-results.ts";
 import { volume } from "./files.ts";
 
 const ENDED = new Set(["completed", "failed", "aborted"]);
@@ -195,7 +195,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
       step: request => (env.CODEMODE_SANDBOX.getByName(ctx.id.toString()) as unknown as WorkflowSandbox).step(request),
     };
     const self = this;
-    this.forks = new ForkJanitor({ storage: ctx.storage, deleteFork: id => deleteFork(env, self.runner.identity().tenant!, id) });
+    this.forks = new ForkJanitor({ storage: ctx.storage, deleteFork: id => deleteFork(env, self.runner.identity().tenant!, id), adopt: fork => self.adopt(fork) });
     this.agents = new WorkflowAgents({
       storage: ctx.storage,
       get workflow() { const identity = self.runner.identity(); return { id: name!, tenant: identity.tenant!, ...(identity.bucket ? { bucket: identity.bucket } : {}) }; },
@@ -261,88 +261,77 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
     );
   }
 
+  /** The owner's result cache: `tenant:agent`, or `tenant:api` for a workflow started with an API key; none without a tenant. */
+  private results(env: WorkflowEnv) {
+    const tenant = this.runner.identity().tenant;
+    if (!tenant || !env.WORKFLOW_RESULTS) return undefined;
+    const owner = this.settings().owner;
+    return { tenant, cache: env.WORKFLOW_RESULTS.getByName(`${tenant}:${owner?.kind === "agent" ? owner.id : "api"}`) };
+  }
+
   /**
-   * The owner's result cache, as the runner uses it (workflow-results.ts). Scoped to the owner agent (`tenant:agent`), or
-   * `tenant:api` for a workflow started with an API key; with no tenant there is no cache (a lookup refuses: a miss, and
-   * nothing offered). An effect that reads a volume (an agent() on a fork of `repo`, a job() `at` one) is keyed with that
-   * volume's version at lookup, which the runner keeps for its landing (`ResultCache`); an agent() also with what
-   * decides its answer beyond its arguments (`agentCacheSalt`: its model under this workflow's classes, its definition).
-   * A landing of an agent() with `repo` pins its fork here first (the end does not delete it while an entry keeps it).
-   * Only then: its `fork` is the runtime's (spread over the child's answer, workflow-agents.ts), where a child's own
-   * output could name any volume.
+   * The owner's result cache, as the runner uses it (workflow-results.ts). An effect that reads a volume (an agent() on a
+   * fork of `repo`, a job() `at` one) is keyed with that volume's version at lookup, which the runner keeps for its
+   * landing (`ResultCache`); an agent() also with what decides its answer beyond its arguments (`agentCacheSalt`).
+   * Forks: a landing offers its fork with the result only for an agent() with `repo`, whose `fork` is the runtime's
+   * (spread over the child's answer, workflow-agents.ts); the cache takes it over at this workflow's end (`adopt`, the
+   * janitor). A hit with a fork gets a copy of its own, made as one of this workflow's forks.
    */
   private resultCache(env: WorkflowEnv, name: string): ResultCache {
-    const tenant = () => { const id = this.runner.identity().tenant; if (!id) throw new Error("The workflow has no tenant: no result cache"); return id; };
-    const scope = () => { const owner = this.settings().owner; return `${tenant()}:${owner?.kind === "agent" ? owner.id : "api"}`; };
+    const scope = () => { const found = this.results(env); if (!found) throw new Error("The workflow has no tenant: no result cache"); return found; };
     const parse = (args: string) => { try { return JSON.parse(args) as Record<string, unknown>; } catch { return {}; } };
     const read = (kind: string, parsed: Record<string, unknown>) => {
       const source = kind === "agent" ? parsed.repo : kind === "job" ? parsed.at : undefined;
       return typeof source === "string" ? source : undefined;
     };
-    const cache = () => env.WORKFLOW_RESULTS!.getByName(scope());
     return {
-      lookup: async (kind, args) => {
+      lookup: async (kind, args, effect) => {
+        const { tenant, cache } = scope();
         const parsed = parse(args), source = read(kind, parsed);
-        let key = cacheKey(args, source === undefined ? undefined : (await (await volume(env, tenant(), source)).info()).seq);
+        let key = cacheKey(args, source === undefined ? undefined : (await (await volume(env, tenant, source)).info()).seq);
         if (kind === "agent") {
           const settings = this.settings();
-          key += `\n@agent:${await agentCacheSalt(env as unknown as Env, tenant(), parsed as AgentArgs, { ...(settings.classes ? { classes: settings.classes } : {}), ...(settings.allowFastJudgment ? { allowFastJudgment: true } : {}) })}`;
+          key += `\n@agent:${await agentCacheSalt(env as unknown as Env, tenant, parsed as AgentArgs, { ...(settings.classes ? { classes: settings.classes } : {}), ...(settings.allowFastJudgment ? { allowFastJudgment: true } : {}) })}`;
         }
-        const hit = await cache().lookup(kind, key, name);
-        return { key, ...(hit ? { hit } : {}) };
+        const hit = await cache.lookup(kind, key) as CachedResult | undefined;
+        if (!hit) return { key };
+        const cached = kind === "agent" && source !== undefined ? (hit.value as { fork?: { volume?: unknown } } | null)?.fork : undefined;
+        if (typeof cached?.volume !== "string") return { key, hit };
+        // Its own copy, recorded first as a fork this workflow made (its end deletes it). Gone meanwhile: a miss.
+        try {
+          await this.forks.made(await forkId(tenant, { workflow: name, key: effect.key, attempt: effect.attempt }));
+          const copy = await copyFork(env, tenant, cached.volume, { workflow: name, key: effect.key, attempt: effect.attempt });
+          return { key, hit: { ...hit, value: { ...(hit.value as object), fork: { ...cached, volume: copy } } } };
+        } catch (error) {
+          console.error(JSON.stringify({ type: "workflow_cache_fork_copy_failed", workflow: name, key: effect.key, error: error instanceof Error ? error.message.slice(0, 200) : String(error) }));
+          return { key };
+        }
       },
       landed: effect => {
         const trusted = effect.kind === "agent" && read("agent", parse(effect.args)) !== undefined;
         const named = trusted ? (effect.value as { fork?: { volume?: unknown } } | null)?.fork?.volume : undefined;
-        const fork = typeof named === "string" ? named : undefined;
-        // Pinned before anything else (its write is issued now), so an end that follows the landing keeps the fork.
-        const pinned = fork !== undefined ? this.forks.pin(fork) : undefined;
-        const release = async () => { if (fork !== undefined) { await this.forks.unpin(fork); await this.ended(); } };
         this.ctx.waitUntil((async () => {
-          await pinned;
-          const { stored } = await cache().put({ kind: effect.kind, key: effect.cacheKey, source: `${name}:${effect.key}:${effect.attempt}`, workflow: name, value: effect.value, ...(fork !== undefined ? { fork } : {}) });
-          if (!stored) await release();
-        })().catch(async error => {
-          console.error(JSON.stringify({ type: "workflow_cache_put_failed", workflow: name, key: effect.key, error: error instanceof Error ? error.message.slice(0, 200) : String(error) }));
-          await release().catch(() => {});
-        }));
+          const { tenant, cache } = scope();
+          await cache.put({ kind: effect.kind, key: effect.cacheKey, source: `${name}:${effect.key}:${effect.attempt}`, workflow: name, value: effect.value, ...(typeof named === "string" ? { fork: { tenant, volume: named } } : {}) });
+        })().catch(error => console.error(JSON.stringify({ type: "workflow_cache_put_failed", workflow: name, key: effect.key, error: error instanceof Error ? error.message.slice(0, 200) : String(error) }))));
       },
     };
   }
 
   /**
-   * At the end, the pins the cache no longer needs go, so the end deletes those forks now rather than when an entry
-   * expires: a fork whose base moved on since it was made (a commit landed there) can never be found by its entries
-   * again (their keys have the base's version from before), unless a workflow that got it from a hit still holds it
-   * (`drop`); and a pin older than a minute that no entry or holder keeps was left by a put that never landed (a crash).
-   * Also, the forks this workflow got from hits are let go of (`unholdAll`), once. Answers whether to try again later.
+   * At the end, fork `fork` goes to the owner's result cache if an entry names it (`adopt`). One whose base moved on
+   * since it was made (a commit landed there) can never be found by its entries again: the cache drops them and the
+   * fork is deleted now.
    */
-  private async settlePins(): Promise<boolean> {
-    const env = this.env as WorkflowEnv, tenant = this.runner.identity().tenant, name = this.ctx.id.name;
-    if (!tenant || !name || !env.WORKFLOW_RESULTS) return false;
-    const owner = this.settings().owner;
-    const cache = env.WORKFLOW_RESULTS.getByName(`${tenant}:${owner?.kind === "agent" ? owner.id : "api"}`);
-    let again = false;
-    if (!this.ctx.storage.kv.get("workflow-results-unheld")) {
-      try { await cache.unholdAll(name); this.ctx.storage.kv.put("workflow-results-unheld", true); }
-      catch (error) { again = true; console.error(JSON.stringify({ type: "workflow_cache_unhold_failed", workflow: name, error: error instanceof Error ? error.message.slice(0, 200) : String(error) })); }
-    }
-    for (const { fork, at } of await this.forks.pinned()) {
-      try {
-        const origin = (await (await volume(env, tenant, fork)).info()).origin;
-        const moved = origin !== undefined && (await (await volume(env, tenant, origin.volume)).info()).seq > origin.seq;
-        if (moved ? await cache.drop(fork) : Date.now() - at > 60_000 && !await cache.holds(fork)) await this.forks.unpin(fork);
-      } catch (error) {
-        console.error(JSON.stringify({ type: "workflow_fork_check_failed", fork, error: error instanceof Error ? error.message.slice(0, 200) : String(error) }));
-      }
-    }
-    return again;
-  }
-
-  /** The result cache let go of a fork this workflow made (its entry expired or was evicted): an ended workflow deletes it. */
-  async forkReleased(fork: string) {
-    await this.forks.unpin(fork);
-    await this.ended();
+  private async adopt(fork: string) {
+    const env = this.env as WorkflowEnv, found = this.results(env);
+    if (!found) return false;
+    let moved = false;
+    try {
+      const origin = (await (await volume(env, found.tenant, fork)).info()).origin;
+      moved = origin !== undefined && (await (await volume(env, found.tenant, origin.volume)).info()).seq > origin.seq;
+    } catch { /* unreadable: the cache decides from its entries alone */ }
+    return await found.cache.adopt(fork, found.tenant, moved);
   }
 
   /**
@@ -509,9 +498,7 @@ export class WorkflowObject extends DurableObject<WorkflowEnv> {
   /** Once the workflow has ended: delete its children's forks, and keep the alarm for a retry if any delete failed. */
   private async ended() {
     if (!ENDED.has(this.runner.get().status)) return;
-    const again = await this.settlePins();
-    let retry = await this.forks.ended();
-    if (again) retry = Math.min(retry ?? Infinity, Date.now() + 60_000);
+    const retry = await this.forks.ended();
     if (retry === undefined) return;
     await this.armBy(retry);
   }
