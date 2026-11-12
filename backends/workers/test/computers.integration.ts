@@ -1116,6 +1116,8 @@ test("workflows: an API-started workflow's job is paid by its tenant under the w
   };
   const script = `return await job({ key: "check", command: "echo paid > $JOB_OUT/o.txt; echo ran", timeoutSeconds: 60, outputs: ["o.txt"] });`;
 
+  // A webhook endpoint for usage: the account's per-customer signal, computer time included.
+  await call("/v1/webhooks", { url: "http://127.0.0.1:9/usage", events: ["usage.recorded"] });
   // Started with an API key: no owner agent. Its tenant pays, and the workflow completes.
   const started = await call("/v1/workflows", { script, budget: { usd: 1 } });
   assert.equal(started.owner, undefined, "an API start has no owner agent");
@@ -1141,6 +1143,12 @@ test("workflows: an API-started workflow's job is paid by its tenant under the w
   await new Promise(resolve => setTimeout(resolve, 2_000));
   assert.deepEqual((await receipts()).map(row => row.entry_id), first.map(row => row.entry_id), "the rerun's charge is the same receipt");
   assert.equal(await usage(), charged, "and the usage is counted once");
+  // One usage.recorded for the job's time: the workflow named, no agent, its seconds and cost; the rerun adds none.
+  const events = (await fixture.db.query("select body from webhook_deliveries where tenant=$1 and body->>'type'='usage.recorded' and body->'data'->>'kind'='computer'", [tenant])).rows.map(row => row.body.data);
+  assert.equal(events.length, 1, JSON.stringify(events));
+  assert.equal(events[0].workflowId, started.id);
+  assert.equal(events[0].agentId, null);
+  assert.ok(events[0].seconds > 0 && events[0].cost.usd > 0, JSON.stringify(events[0]));
 
   // A tenant with no credit: the job is refused before any compute, and the workflow pauses for its payer.
   const broke = await call("/v1/workflows", { script, budget: { usd: 1 } }, poor);

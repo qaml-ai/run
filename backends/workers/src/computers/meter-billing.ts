@@ -43,7 +43,7 @@ export function meterBilling(env: KeyEnv & WebhookEnv): MeterBilling {
           startedAt: charge.startedAt, kind: "computer" }, { costUsd: charge.costUsd, provider: CONTAINER_PROVIDER, model: charge.instance },
           charge.kind === "workflow" ? "workflow" : "agent")) return;
         await accounts.recordUsageIn(sql, charge.tenant, charge.agent, { provider: CONTAINER_PROVIDER, model: charge.instance,
-          kind: "computer", platform: true, seconds: charge.seconds, timestamp: charge.endedAt,
+          kind: "computer", platform: true, seconds: charge.seconds, timestamp: charge.endedAt, ...(charge.kind === "workflow" ? { workflowId: charge.agent } : {}),
           usage: { input: 0, output: 0, cost: { total: charge.costUsd } } });
       });
       await accounts.usageCommitted(charge.tenant);
