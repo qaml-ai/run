@@ -184,30 +184,48 @@ export class JobHostRegistry extends DurableObject<JobHostsEnv> {
       const known = this.ctx.storage.sql.exec<{ slots: number }>("SELECT slots FROM hosts WHERE name = ?", name).toArray()[0];
       if (!known || free > known.slots) throw new Error("Invalid host capacity");
     }
+    // Its slots and pool as it says (its pool is its credential's); what it runs is the registry's own count, below.
     this.ctx.storage.sql.exec(`INSERT INTO hosts (name, slots, free, seen_at, pool) VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(name) DO UPDATE SET slots = COALESCE(?, slots), free = excluded.free, seen_at = excluded.seen_at, pool = COALESCE(?, pool)`,
-      name, slots ?? free, free, Date.now(), pool ?? "test", slots ?? null, pool ?? null);
-    this.ctx.storage.sql.exec("UPDATE hosts SET idle_since = CASE WHEN free < slots THEN NULL ELSE COALESCE(idle_since, ?) END WHERE name = ?", Date.now(), name);
+      ON CONFLICT(name) DO UPDATE SET slots = COALESCE(?, slots), seen_at = excluded.seen_at, pool = COALESCE(?, pool)`,
+      name, slots ?? free, slots ?? free, Date.now(), pool ?? "test", slots ?? null, pool ?? null);
     if (Array.isArray(running) && running.length <= 1024 && running.every(id => typeof id === "string")) {
-      // The memory its VMs hold is what its placed jobs that still run (or were placed too recently to show up in a
-      // heartbeat) asked for: a job object that died before it released its placement stops counting.
-      const sql = this.ctx.storage.sql, recent = Date.now() - PLACEMENT_GRACE_MS, ids = JSON.stringify(running);
-      sql.exec("DELETE FROM placements WHERE host = ? AND at <= ? AND job NOT IN (SELECT value FROM json_each(?))", name, recent, ids);
-      sql.exec("UPDATE hosts SET used_mib = (SELECT COALESCE(SUM(mib), 0) FROM placements WHERE host = ?) WHERE name = ?", name, name);
+      // The jobs it runs are its placed jobs that it lists (or were placed too recently to show up in a heartbeat), and
+      // any it lists that no placement knows (from before the registry forgot them; their memory unknown): a job
+      // object that died before it released its placement stops counting.
+      const sql = this.ctx.storage.sql, now = Date.now(), ids = JSON.stringify(running);
+      sql.exec("DELETE FROM placements WHERE host = ? AND at <= ? AND job NOT IN (SELECT value FROM json_each(?))", name, now - PLACEMENT_GRACE_MS, ids);
+      sql.exec("INSERT OR IGNORE INTO placements (job, host, mib, at) SELECT value, ?, 0, ? FROM json_each(?)", name, now, ids);
     }
+    this.recount(name);
   }
+  /**
+   * A host's free slots and used memory, from its placements alone (the one source: place and release add and drop
+   * them, a heartbeat reconciles them), so neither a heartbeat nor a release can count a job twice or undo a placement.
+   */
+  private recount(name: string) {
+    this.ctx.storage.sql.exec(`UPDATE hosts SET
+        free = MAX(0, slots - (SELECT COUNT(*) FROM placements WHERE host = ?)),
+        used_mib = (SELECT COALESCE(SUM(mib), 0) FROM placements WHERE host = ?)
+      WHERE name = ?`, name, name, name);
+    this.ctx.storage.sql.exec("UPDATE hosts SET idle_since = CASE WHEN free < slots THEN NULL ELSE COALESCE(idle_since, ?) END WHERE name = ?", Date.now(), name);
+  }
+  /** The job is about to be sent: its placement counts though no heartbeat lists it yet (a slow start does not drop it). */
+  touch(job: string) { this.ctx.storage.sql.exec("UPDATE placements SET at = ? WHERE job = ?", Date.now(), job); }
   /**
    * A fresh, allowed, undrained host of `pool` with a free slot and room for `memoryMiB` within its pool's sandbox
    * memory, which are taken; undefined: none. A VM that would not fit is never sent to boot (and charged for a failed
    * boot).
    */
-  place(pool: HostPool = "test", memoryMiB = 0, job?: string): string | undefined {
+  place(pool: HostPool, memoryMiB: number, job: string): string | undefined {
     const room = HOST_POOL_PRICES[pool].memoryGiB * 1024 - memoryMiB;
     if (room < 0) return undefined;
     const row = this.ctx.storage.sql.exec<{ name: string }>("SELECT name FROM hosts WHERE seen_at > ? AND free > 0 AND revoked = 0 AND draining = 0 AND pool = ? AND used_mib <= ? ORDER BY free DESC, name LIMIT 1", Date.now() - HOST_STALE_MS, pool, room).toArray()[0];
     if (!row) return undefined;
-    this.ctx.storage.sql.exec("UPDATE hosts SET free = free - 1, used_mib = used_mib + ?, idle_since = NULL WHERE name = ?", memoryMiB, row.name);
-    if (job) this.ctx.storage.sql.exec("INSERT OR REPLACE INTO placements (job, host, mib, at) VALUES (?, ?, ?, ?)", job, row.name, memoryMiB, Date.now());
+    // A job placed again (a run made again) moves: its old host is recounted without it.
+    const before = this.ctx.storage.sql.exec<{ host: string }>("SELECT host FROM placements WHERE job = ?", job).toArray()[0]?.host;
+    this.ctx.storage.sql.exec("INSERT OR REPLACE INTO placements (job, host, mib, at) VALUES (?, ?, ?, ?)", job, row.name, memoryMiB, Date.now());
+    if (before && before !== row.name) this.recount(before);
+    this.recount(row.name);
     return row.name;
   }
   /**
@@ -231,10 +249,9 @@ export class JobHostRegistry extends DurableObject<JobHostsEnv> {
   }
   /** A waiting job that stopped waiting (it gave up, or was stopped). */
   unwant(job: string) { this.ctx.storage.sql.exec("DELETE FROM waiting WHERE job = ?", job); }
-  release(name: string, memoryMiB = 0, job?: string) {
-    if (job) this.ctx.storage.sql.exec("DELETE FROM placements WHERE job = ?", job);
-    this.ctx.storage.sql.exec("UPDATE hosts SET free = MIN(slots, free + 1), used_mib = MAX(0, used_mib - ?) WHERE name = ? AND revoked = 0", memoryMiB, name);
-    this.ctx.storage.sql.exec("UPDATE hosts SET idle_since = ? WHERE name = ? AND free = slots AND idle_since IS NULL", Date.now(), name);
+  release(name: string, _memoryMiB: number, job: string) {
+    this.ctx.storage.sql.exec("DELETE FROM placements WHERE job = ? AND host = ?", job, name);
+    this.recount(name);
   }
   list() { return this.ctx.storage.sql.exec("SELECT name, pool, slots, free, seen_at AS seenAt, revoked, draining, idle_since AS idleSince FROM hosts ORDER BY name").toArray(); }
   /** Drain a host (the scaler, before it ends it): no new job is placed on it. Undefined: no such host. */
@@ -545,8 +562,11 @@ export class JobHost extends DurableObject<JobHostsEnv> {
    * Stop a job on this host. One not sent yet (its dispatch is on its way here) is remembered, and its dispatch then
    * answers `stopped` without sending it: a cancel that overtakes its job never leaves the job to run.
    */
-  cancel(id: string) {
+  cancel(id: string, inFlight = false) {
     if (!this.pending.has(id)) {
+      // Remembered only for a job whose dispatch is on its way (its HostJob says so): never for one already answered,
+      // whose id a later run may use again.
+      if (!inFlight) return false;
       this.cancelled.set(id, Date.now());
       for (const [old, at] of this.cancelled) if (Date.now() - at > 2 * 60_000) this.cancelled.delete(old);
       return true;
@@ -560,7 +580,7 @@ const stream = (wire: WireStream): JobStream => ({ bytes: fromBase64(wire.data),
 
 /** One job on a host: admission, a slot, placement, the meter, the result. */
 export class HostJob extends DurableObject<JobHostsEnv> {
-  private active?: { host: string; id: string; stopped: boolean; sent?: boolean };
+  private active?: { host: string; id: string; stopped: boolean; sent?: boolean; answered?: boolean };
   constructor(ctx: DurableObjectState, env: JobHostsEnv) {
     super(ctx, env);
     guardAlarms(this, ctx, "HostJob", { test: env.TEST_MODE === "1" });
@@ -620,7 +640,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     }
     if (waiting.stopped) return stopped(host, true);
     const release = () => withSql(this.env, sql => releaseComputer(sql, spec.payer.tenant, machine));
-    const active: { host: string; id: string; stopped: boolean; sent?: boolean } = this.active = { host, id: spec.id, stopped: false };
+    const active: { host: string; id: string; stopped: boolean; sent?: boolean; answered?: boolean } = this.active = { host, id: spec.id, stopped: false };
     this.waiting = undefined;
     let wire: WireResult & { ranFrom?: number; ranUntil?: number } = { ok: false, code: "container_failed", message: "No result" }, costUsd = 0;
     // A session is open from dispatch, at the rate fixed at admission, under the job's own name (a run made again is the
@@ -641,6 +661,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
       this.active = undefined;
       return fail("stopped", "The job was stopped");
     }
+    await registry(this.env).touch(spec.id).catch(() => {});
     const dispatchedAt = Date.now();
     active.sent = true;
     try {
@@ -651,6 +672,7 @@ export class HostJob extends DurableObject<JobHostsEnv> {
         limits: { cpus: shape.vcpus, memoryMiB: shape.memoryMiB, diskMiB: shape.diskMiB, ...(spec.limits?.pids ? { pids: spec.limits.pids } : {}) },
         ...(spec.secretEnv ? { secretEnv: spec.secretEnv } : {}),
       }, lifetimeMs).catch((error: unknown): WireResult => ({ ok: false, code: "container_failed", message: `The job could not be sent to its host: ${error instanceof Error ? error.message.slice(0, 200) : "unknown"}` }));
+      active.answered = true;
     } finally {
       // Charged for the span its VM ran: from its host's `started` report (or, for a result that says it ran, what its
       // timings say: a `started` lost on a reconnect never makes a job that ran free), to its result, or until its host
@@ -718,7 +740,8 @@ export class HostJob extends DurableObject<JobHostsEnv> {
     // cancel that overtakes the job itself).
     this.active.stopped = true;
     if (!this.active.sent) return { stopped: true };
-    return { stopped: await this.env.JOB_HOSTS!.getByName(this.active.host).cancel(this.active.id) };
+    if (this.active.answered) return { stopped: false };
+    return { stopped: await this.env.JOB_HOSTS!.getByName(this.active.host).cancel(this.active.id, true) };
   }
   /** Charges a failed settle left, retried (computers/meter.ts). */
   async alarm() { await this.meter(60_000).alarm(false); }
