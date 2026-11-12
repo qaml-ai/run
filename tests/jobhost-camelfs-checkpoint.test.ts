@@ -39,12 +39,14 @@ const published = { tree: newTree, root: "new-root", parentRoot: "old-root", che
   changedChunks: 2, uploadedChunks: 1, changedBytes: 9, reflinkMs: 1, fiemapMs: 2, hashMs: 3, uploadMs: 4 };
 type Stream = { header: Record<string, unknown>; ops: Record<string, unknown>[]; data: Record<string, string>; trailer: Record<string, unknown> };
 
-async function setup(t: TestContext, options: { command?: string; scenario?: string; second?: boolean } = {}) {
+async function setup(t: TestContext, options: { command?: string; scenario?: string; second?: boolean; postDelayMs?: number; timeoutSeconds?: number } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "cfs-cp-")), repo = join(dir, "disk"), vsock = join(dir, "job-1.vsock");
   await mkdir(repo);
   const streams: Stream[] = [], peers = new Set<Socket>(), servers: ReturnType<typeof createNetServer>[] = [];
   let pending: import("node:http").ServerResponse | undefined;
-  let listening = false;
+  let unarmed = 0, checkpointSpanMs = 0;
+  const bodies: unknown[] = [];
+  const unarmedConnection = Promise.withResolvers<void>();
   let posts = 0, before: unknown, after: unknown, second: GuestReply | undefined;
   const track = (socket: Socket) => { peers.add(socket); socket.on("error", () => {}); socket.on("close", () => peers.delete(socket)); };
   const listen = async (port: number, handler: (socket: Socket) => void) => {
@@ -66,6 +68,16 @@ async function setup(t: TestContext, options: { command?: string; scenario?: str
     }
     socket.end(encodeFrame(options.scenario === "nack" ? { ack: false, error: "bad" } : { ack: true }));
   };
+  await listen(5200, socket => {
+    const response = pending;
+    if (!response) { unarmed++; unarmedConnection.resolve(); socket.destroy(); return; }
+    socket.write(encodeFrame({ ready: true }));
+    void receive(socket).then(() => {
+      response.statusCode = options.scenario === "fenced" ? 409 : 200;
+      response.end(JSON.stringify(options.scenario === "fenced" ? { error: "fenced" } : published));
+    }).catch(error => { response.statusCode = 422; response.end(JSON.stringify({ error: "bad-stream", detail: String(error) })); })
+      .finally(() => { pending = undefined; });
+  });
   const api = createServer(async (req, res) => {
     try {
       const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(chunk);
@@ -79,20 +91,12 @@ async function setup(t: TestContext, options: { command?: string; scenario?: str
         });
         res.end(JSON.stringify({ image: repo, warm: true, root: "old-root", tree, mountMs: 1, hydrating: false }));
       } else if (req.url?.endsWith("/checkpoint")) {
-        posts++; assert.deepEqual(JSON.parse(Buffer.concat(chunks).toString()), { timeoutMs: 600_000 });
-        assert.equal(pending, undefined); pending = res;
-        if (!listening) {
-          listening = true;
-          await listen(5200, socket => {
-            const response = pending;
-            if (!response) { socket.destroy(); return; }
-            void receive(socket).then(() => {
-              response.statusCode = options.scenario === "fenced" ? 409 : 200;
-              response.end(JSON.stringify(options.scenario === "fenced" ? { error: "fenced" } : published));
-            }).catch(error => { response.statusCode = 422; response.end(JSON.stringify({ error: "bad-stream", detail: String(error) })); })
-              .finally(() => { pending = undefined; });
-          });
+        posts++; bodies.push(JSON.parse(Buffer.concat(chunks).toString()));
+        if (options.postDelayMs) {
+          await unarmedConnection.promise;
+          await new Promise(resolve => setTimeout(resolve, options.postDelayMs));
         }
+        assert.equal(pending, undefined); pending = res;
       } else res.end("{}");
     } catch (error) { res.statusCode = 500; res.end(JSON.stringify({ error: String(error) })); }
   });
@@ -108,7 +112,9 @@ async function setup(t: TestContext, options: { command?: string; scenario?: str
     const vm = await launcher.boot(...args);
     return { ...vm, async request(request) {
       if (request.op === "camelfs_checkpoint") before = await index();
-      return vm.request(request);
+      const started = Date.now(), reply = await vm.request(request);
+      if (request.op === "camelfs_checkpoint") checkpointSpanMs = Date.now() - started;
+      return reply;
     }, async destroy() {
       after = await index();
       if (options.second) {
@@ -123,14 +129,15 @@ async function setup(t: TestContext, options: { command?: string; scenario?: str
     } };
   } };
   const h = await host(t, camelfsdClient(join(dir, "api.sock")), wrapped);
-  await h.agent.run("job-1", { command: options.command ?? "printf new > edit; printf created > created; rm delete; ln -s edit link; chmod +x exec", files: [], outputs: [], internet: false, limits: {}, timeoutSeconds: 5, camelfs: { lineage: "test", tree, commit: true } });
-  return { result: await h.result, streams, before, after, second, posts, repo };
+  await h.agent.run("job-1", { command: options.command ?? "printf new > edit; printf created > created; rm delete; ln -s edit link; chmod +x exec", files: [], outputs: [], internet: false, limits: {}, timeoutSeconds: options.timeoutSeconds ?? 5, camelfs: { lineage: "test", tree, commit: true } });
+  return { result: await h.result, streams, before, after, second, posts, repo, unarmed, bodies, checkpointSpanMs };
 }
 
 test("round trip publishes index, exact operations and metrics; next checkpoint is empty", async t => {
   const r = await setup(t, { second: true });
   assert.equal(r.result.ok, true); if (!r.result.ok) return;
   const c = r.result.camelfs!;
+  assert.deepEqual(r.bodies, [{ timeoutMs: 600_000, commit: { trailers: { kind: "job", job: "job-1", exitCode: 0 } } }, { timeoutMs: 600_000 }]);
   assert.equal(c.checkpointError, undefined); assert.equal(c.tree, newTree); assert.equal(c.root, published.root); assert.equal(c.checkpointMs, 17);
   for (const key of ["walkMs", "streamMs", "freezeMs", "files", "bytes", "skipped"] as const) assert.equal(typeof c.checkpoint?.[key], "number");
   for (const key of ["changedChunks", "uploadedChunks", "changedBytes", "reflinkMs", "fiemapMs", "hashMs", "uploadMs"] as const) assert.equal(c.checkpoint?.[key], published[key]);
@@ -158,9 +165,12 @@ test("nack is a guest error and leaves index unchanged", async t => {
   const r = await setup(t, { scenario: "nack" }); assert.equal(r.result.ok, true); if (!r.result.ok) return;
   assert.match(r.result.camelfs!.checkpointError!, /^guest: .*bad/); assert.deepEqual(r.after, r.before);
 });
-test("nonzero command never attempts checkpoint", async t => {
-  const r = await setup(t, { command: "exit 2" }); assert.equal(r.result.ok, true); if (!r.result.ok) return;
-  assert.equal(r.result.exitCode, 2); assert.equal(r.posts, 0); assert.equal(r.result.camelfs!.checkpointError, "not checkpointed: the command did not exit 0");
+test("nonzero command checkpoints its tree and keeps its exit code", async t => {
+  const r = await setup(t, { command: "printf failed > created; exit 2" }); assert.equal(r.result.ok, true); if (!r.result.ok) return;
+  assert.equal(r.result.exitCode, 2); assert.equal(r.posts, 1);
+  assert.deepEqual(r.streams[0]!.data, { created: "failed" });
+  assert.equal(r.result.camelfs!.checkpointError, undefined); assert.equal(r.result.camelfs!.tree, newTree);
+  assert.deepEqual(r.bodies, [{ timeoutMs: 600_000, commit: { trailers: { kind: "job", job: "job-1", exitCode: 2 } } }]);
 });
 test("FIFO is counted; git and temporary names are skipped", async t => {
   const r = await setup(t, { command: "mkfifo fifo; mkdir .git; echo x > .git/x; echo x > .camelfs-tmp-9" });
@@ -179,11 +189,27 @@ test("missing index and pending checkpoint are rejected", async () => {
 test("silent ack is bounded by guest deadline", async t => {
   const dir = await mkdtemp(join(tmpdir(), "cfs-deadline-")); await mkdir(join(dir, "repo"));
   const old = process.env.CAMEL_VSOCK_UDS; process.env.CAMEL_VSOCK_UDS = join(dir, "vsock");
-  const peers: Socket[] = [], server = createNetServer(socket => { peers.push(socket); socket.resume(); });
+  const peers: Socket[] = [], server = createNetServer(socket => { peers.push(socket); socket.write(encodeFrame({ ready: true })); socket.resume(); });
   await new Promise<void>(resolve => server.listen(join(dir, "vsock_5200"), resolve));
   t.after(async () => { if (old === undefined) delete process.env.CAMEL_VSOCK_UDS; else process.env.CAMEL_VSOCK_UDS = old; for (const peer of peers) peer.destroy(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(dir, { recursive: true, force: true }); });
   const guest = new Guest(dir, () => {}); guest.camelfsIndex = { tree, entries: [] };
   const result = await guest.handle({ op: "camelfs_checkpoint", jobId: "job-1", timeoutMs: 80 }) as GuestReply;
   assert.equal(result.ok, false); assert.match(result.error!, /checkpoint timed out/);
   assert.deepEqual(await guest.handle({ op: "camelfs_checkpointed", tree }), { ok: false, error: "no pending checkpoint" });
+});
+
+test("connections before the delayed POST retry readiness and stream exactly once", async t => {
+  const r = await setup(t, { postDelayMs: 300 });
+  assert.equal(r.result.ok, true); if (!r.result.ok) return;
+  assert.ok(r.unarmed > 0); assert.equal(r.streams.length, 1); assert.equal(r.posts, 1);
+  assert.equal(r.result.camelfs!.checkpointError, undefined); assert.equal(r.result.camelfs!.tree, newTree);
+  assert.ok(r.checkpointSpanMs - r.result.camelfs!.checkpoint!.freezeMs >= 250, "connect wait must be excluded from freezeMs");
+});
+test("timed out command checkpoints with exitCode -1 in commit trailers", async t => {
+  const r = await setup(t, { command: "printf partial > created; sleep 2", timeoutSeconds: 1 });
+  assert.equal(r.result.ok, true); if (!r.result.ok) return;
+  assert.equal(r.result.timedOut, true); assert.equal(r.result.exitCode, null);
+  assert.deepEqual(r.streams[0]!.data, { created: "partial" });
+  assert.equal(r.result.camelfs!.checkpointError, undefined); assert.equal(r.result.camelfs!.tree, newTree);
+  assert.deepEqual(r.bodies, [{ timeoutMs: 600_000, commit: { trailers: { kind: "job", job: "job-1", exitCode: -1 } } }]);
 });

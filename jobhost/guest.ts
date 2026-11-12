@@ -247,7 +247,7 @@ export class Guest {
     const vm = process.env.CAMEL_VSOCK_CONNECT === "1", started = Date.now();
     let freezeChild: ReturnType<typeof spawn> | undefined;
     let success: { freezeMs: number } | undefined;
-    let expired = false, freezeStarted = started, frozen = false, trailerSent = false;
+    let expired = false, freezeStarted = started, frozen = false, trailerSent = false, ready = false;
     let input: import("node:stream").Readable | undefined, output: import("node:stream").Writable | undefined;
     let child: ReturnType<typeof spawn> | undefined, socket: ReturnType<typeof connect> | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -266,6 +266,38 @@ export class Guest {
     try {
       const work = async () => {
         if (vm && !(await readFile("/proc/self/mountinfo", "utf8")).split("\n").some(line => line.split(" ")[4] === "/repo")) throw new Error("the camelFS repo disk is not mounted");
+        let reader: FrameReader, streamStarted = Date.now();
+        // A transport connection can precede the POST. Only the ready frame arms this attempt.
+        for (;;) {
+          check();
+          const remaining = 10_000 - (Date.now() - started);
+          if (remaining <= 0) throw new Error("checkpoint connect timed out after 10 s");
+          streamStarted = Date.now();
+          if (vm) {
+            const attempt = spawn("socat", ["-", "VSOCK-CONNECT:2:5200,connect-timeout=10"], { stdio: ["pipe", "pipe", "ignore"] });
+            child = attempt; input = attempt.stdout!; output = attempt.stdin!;
+            const incoming = input;
+            attempt.on("error", error => incoming.destroy(error));
+            attempt.on("exit", () => incoming.destroy(new Error("checkpoint connection closed")));
+          } else {
+            socket = connect({ path: process.env.CAMEL_VSOCK_UDS + "_5200", allowHalfOpen: true });
+            input = socket; output = socket;
+          }
+          input.on("error", () => {}); output.on("error", () => {});
+          const incoming = input;
+          const deadline = setTimeout(() => incoming.destroy(new Error("checkpoint connect timed out after 10 s")), remaining);
+          try {
+            reader = new FrameReader(incoming);
+            const first = await reader.next(); check();
+            if (!first || jsonFrame(first).ready !== true) throw new Error("checkpoint connection closed without ready");
+            ready = true; break;
+          } catch (error) {
+            incoming.destroy(); socket?.destroy(); child?.kill();
+            check();
+            if (Date.now() - started >= 10_000) throw new Error("checkpoint connect timed out after 10 s");
+          } finally { clearTimeout(deadline); }
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
         check(); freezeStarted = Date.now();
         // Mark before invoking freeze so cleanup also thaws a partially completed freeze.
         frozen = vm; if (vm) await freeze("-f"); check();
@@ -297,25 +329,7 @@ export class Guest {
           if (name.split("/").some(part => part.startsWith(".camelfs-tmp-"))) continue;
           if (!seen.has(name)) ops.push({ path: checkPath(name), op: "del" });
         }
-        const walkMs = Date.now() - walkStarted, streamStarted = Date.now();
-        if (vm) {
-          child = spawn("socat", ["-", "VSOCK-CONNECT:2:5200,connect-timeout=10"], { stdio: ["pipe", "pipe", "ignore"] });
-          input = child.stdout!; output = child.stdin!;
-          child.on("error", error => input!.destroy(error));
-          child.on("exit", () => input!.destroy(new Error("checkpoint connection closed")));
-        } else {
-          // The POST arms the listener asynchronously. Retry until it has bound its socket.
-          for (;;) {
-            check(); socket = connect({ path: process.env.CAMEL_VSOCK_UDS + "_5200", allowHalfOpen: true });
-            const connecting = socket;
-            const deadline = setTimeout(() => connecting.destroy(new Error("checkpoint connect timed out after 10 s")), Math.max(1, 10_000 - (Date.now() - streamStarted)));
-            try { await new Promise<void>((resolve, reject) => { connecting.once("connect", resolve); connecting.once("error", reject); }); break; }
-            catch (error) { connecting.destroy(); if (Date.now() - streamStarted >= 10_000) throw new Error("checkpoint connect timed out after 10 s"); check(); await new Promise(resolve => setTimeout(resolve, 20)); }
-            finally { clearTimeout(deadline); }
-          }
-          input = socket; output = socket;
-        }
-        input.on("error", () => {}); output.on("error", () => {});
+        const walkMs = Date.now() - walkStarted;
         await send({ v: 1, kind: "checkpoint", jobId, baseTree: this.camelfsIndex!.tree, walkMs });
         for (const op of ops) {
           await send(op);
@@ -333,7 +347,7 @@ export class Guest {
           } finally { await file.close(); }
         }
         await send({ end: true, files: ops.length, bytes, freezeMs: Date.now() - freezeStarted, skipped }); trailerSent = true;
-        const streamMs = Date.now() - streamStarted, frame = await new FrameReader(input).next(); check();
+        const streamMs = Date.now() - streamStarted, frame = await reader.next(); check();
         if (!frame) throw new Error("unexpected EOF awaiting checkpoint ack");
         const ack = jsonFrame(frame);
         if (ack.ack !== true) throw new Error(String(ack.error ?? "invalid checkpoint ack"));
@@ -346,7 +360,7 @@ export class Guest {
       })]);
     } catch (error) {
       const message = (error instanceof Error ? error.message : String(error)).slice(0, 300);
-      if (!expired && !trailerSent && output && !output.destroyed) await send({ end: true, error: message }).catch(() => {});
+      if (ready && !expired && !trailerSent && output && !output.destroyed) await send({ end: true, error: message }).catch(() => {});
       return { ok: false, error: message };
     } finally {
       clearTimeout(timer); input?.destroy(); socket?.destroy(); child?.kill();

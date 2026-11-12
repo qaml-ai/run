@@ -186,31 +186,28 @@ export class HostAgent {
       };
       if (spec.camelfs?.commit && result.camelfs && collected.ok) {
         const cfs = result.camelfs;
-        if (ran.exitCode !== 0 || ran.timedOut) cfs.checkpointError = "not checkpointed: the command did not exit 0";
-        else {
-          const [daemon, guest] = await Promise.allSettled([
-            Promise.resolve().then(() => {
-              if (!this.options.camelfsd!.checkpoint) throw new Error("This host has no camelFS checkpoint adapter");
-              return this.options.camelfsd!.checkpoint(id, 600_000);
-            }),
-            Promise.resolve().then(() => vm.request({ op: "camelfs_checkpoint", jobId: id, timeoutMs: 600_000 })),
-          ]);
-          const reason = (error: unknown) => error instanceof Error ? error.message : String(error);
-          let error = guest.status === "rejected" ? `guest: ${reason(guest.reason)}`
-            : !guest.value.ok ? `guest: ${guest.value.error}`
-            : daemon.status === "rejected" ? `daemon: ${reason(daemon.reason)}` : undefined;
-          error = error?.slice(0, 300);
-          try {
-            const confirmed = await vm.request({ op: "camelfs_checkpointed", ...(error ? { error } : { tree: daemon.status === "fulfilled" ? daemon.value.tree : undefined }) });
-            if (!error && !confirmed.ok) error = `guest: ${confirmed.error}`.slice(0, 300);
-          } catch (failure) { error ??= `guest: ${reason(failure)}`.slice(0, 300); }
-          if (error) cfs.checkpointError = error;
-          else if (daemon.status === "fulfilled" && guest.status === "fulfilled") {
-            const d = daemon.value, g = guest.value;
-            cfs.tree = d.tree; cfs.root = d.root; cfs.checkpointMs = d.checkpointMs;
-            cfs.checkpoint = { walkMs: Number(g.walkMs), streamMs: Number(g.streamMs), freezeMs: Number(g.freezeMs), files: Number(g.files), bytes: Number(g.bytes), skipped: Number(g.skipped),
-              changedChunks: d.changedChunks, uploadedChunks: d.uploadedChunks, changedBytes: d.changedBytes, reflinkMs: d.reflinkMs, fiemapMs: d.fiemapMs, hashMs: d.hashMs, uploadMs: d.uploadMs };
-          }
+        const [daemon, guest] = await Promise.allSettled([
+          Promise.resolve().then(() => {
+            if (!this.options.camelfsd!.checkpoint) throw new Error("This host has no camelFS checkpoint adapter");
+            return this.options.camelfsd!.checkpoint(id, 600_000, { trailers: { kind: "job", job: id, exitCode: ran.timedOut ? -1 : (ran.exitCode as number | null) ?? -1 } });
+          }),
+          Promise.resolve().then(() => vm.request({ op: "camelfs_checkpoint", jobId: id, timeoutMs: 600_000 })),
+        ]);
+        const reason = (error: unknown) => error instanceof Error ? error.message : String(error);
+        let error = guest.status === "rejected" ? `guest: ${reason(guest.reason)}`
+          : !guest.value.ok ? `guest: ${guest.value.error}`
+          : daemon.status === "rejected" ? `daemon: ${reason(daemon.reason)}` : undefined;
+        error = error?.slice(0, 300);
+        try {
+          const confirmed = await vm.request({ op: "camelfs_checkpointed", ...(error ? { error } : { tree: daemon.status === "fulfilled" ? daemon.value.tree : undefined }) });
+          if (!error && !confirmed.ok) error = `guest: ${confirmed.error}`.slice(0, 300);
+        } catch (failure) { error ??= `guest: ${reason(failure)}`.slice(0, 300); }
+        if (error) cfs.checkpointError = error;
+        else if (daemon.status === "fulfilled" && guest.status === "fulfilled") {
+          const d = daemon.value, g = guest.value;
+          cfs.tree = d.tree; cfs.root = d.root; cfs.checkpointMs = d.checkpointMs;
+          cfs.checkpoint = { walkMs: Number(g.walkMs), streamMs: Number(g.streamMs), freezeMs: Number(g.freezeMs), files: Number(g.files), bytes: Number(g.bytes), skipped: Number(g.skipped),
+            changedChunks: d.changedChunks, uploadedChunks: d.uploadedChunks, changedBytes: d.changedBytes, reflinkMs: d.reflinkMs, fiemapMs: d.fiemapMs, hashMs: d.hashMs, uploadMs: d.uploadMs };
         }
         result.timings.totalMs = Date.now() - began;
       }
